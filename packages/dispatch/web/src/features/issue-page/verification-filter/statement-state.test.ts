@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { Artifact, ArtifactBlock, CheckBlock, IssueDetails } from "../../../api/types";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
-import { NODE_STATE_WORDS } from "../page-words";
+import { NODE_STATE_WORDS, RESULT_STANDS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
 import { blockNodeId } from "../tree-drafts";
 import { treeRows } from "../tree-fold";
@@ -30,10 +30,10 @@ import {
 } from "./verification-fixtures";
 
 /**
- * How the Verification filter reads the issue's results (dispatch://INFRA-1196 R17): the one
- * commit the page names, how each statement stands at it, and how many statements carry a
- * check. Each row below is one of the ways a statement can stand, read over the tree the filter
- * leaves and the results read the page already made.
+ * How the Verification filter reads the issue's results: the one commit the page names, how
+ * each statement stands at it, and how many statements carry a check. Each row below is one of
+ * the ways a statement can stand, read over the tree the filter leaves and the results read the
+ * page already made.
  *
  * What the body draws of this reading is `VerificationFilterBody.drawn.test.tsx`.
  */
@@ -47,7 +47,8 @@ function reading(
   return verificationReading({ checks, view: verificationView([...statements, ...loose]) });
 }
 
-/** A check that passed at the commit the page names. */
+/** A check that passed at the commit the page names, which is the basis it compares with, so
+ *  the server reads its pass there (`at_basis`). */
 function passing(blockId: string): CheckBlock {
   return check({
     block_id: blockId,
@@ -86,14 +87,22 @@ test("a statement one of whose checks failed at that commit reads Not met", () =
 });
 
 // R17: "a result recorded against another commit reads Out of date and makes its statement
-// Unknown". The server still answers that the pass stands - it compares a result with the basis
-// its own check carries - and the page reads every result of the issue against the one commit
-// it names.
+// Unknown". The commit is the one the server names for the check - the basis it compares with
+// (`compared_with`) - and the server reads this pass at another commit (`other_commit`), so no
+// pass of the check stands (`pass_stands` is `no`) and the check reads Out of date, as the
+// pass's own fact does.
 test("a pass recorded against another commit reads Out of date and leaves its statement Unknown", () => {
   const elsewhere = check({
     block_id: "c-two",
-    pass_stands: { answer: "yes" },
-    results: [result({ check_block_id: "c-two", commit_sha: OTHER_COMMIT, id: "result-two" })],
+    pass_stands: { answer: "no" },
+    results: [
+      result({
+        check_block_id: "c-two",
+        commit_sha: OTHER_COMMIT,
+        commit_stands: { answer: "other_commit" },
+        id: "result-two",
+      }),
+    ],
   });
   const blocks = [passing("c-one"), elsewhere];
   const statement = statementNode("r1", "The page draws the checks.", blocks.map(checkNode));
@@ -101,18 +110,25 @@ test("a pass recorded against another commit reads Out of date and leaves its st
 
   expect(read.commit).toBe(COMMIT);
   expect(read.statements[0]?.checks.map((held) => held.state)).toEqual(["passed", "older"]);
-  expect(read.statements[0]?.checks.map((held) => held.atNamedCommit)).toEqual([true, false]);
+  expect(read.statements[0]?.checks.map((held) => held.atBasis)).toEqual([true, false]);
   expect(read.statements.map((held) => held.state)).toEqual(["unknown"]);
   expect(NODE_STATE_WORDS.check.older).toBe("Out of date");
 });
 
-// A statement whose only check passed at another commit has no result at the commit the page
-// names at all, so the page names the commit of the result it does hold.
+// A statement whose only check passed at another commit than the one its check compares with:
+// the page names the commit of the one result it holds, and the check still reads as the server
+// reads that pass (`other_commit`), since the commit the page names decides no check's state.
 test("a pass at another commit alone names that commit and leaves the statement Unknown", () => {
   const elsewhere = check({
     block_id: "c-one",
-    pass_stands: { answer: "yes" },
-    results: [result({ commit_sha: OTHER_COMMIT, id: "result-one" })],
+    pass_stands: { answer: "no" },
+    results: [
+      result({
+        commit_sha: OTHER_COMMIT,
+        commit_stands: { answer: "other_commit" },
+        id: "result-one",
+      }),
+    ],
   });
   const read = reading(
     [statementNode("r1", "The page draws it.", [checkNode(elsewhere)])],
@@ -120,9 +136,8 @@ test("a pass at another commit alone names that commit and leaves the statement 
   );
 
   expect(read.commit).toBe(OTHER_COMMIT);
-  // The one result the issue holds is the commit the page names, so the pass is at it.
-  expect(read.statements[0]?.checks.map((held) => held.state)).toEqual(["passed"]);
-  expect(read.statements.map((held) => held.state)).toEqual(["met"]);
+  expect(read.statements[0]?.checks.map((held) => held.state)).toEqual(["older"]);
+  expect(read.statements.map((held) => held.state)).toEqual(["unknown"]);
 });
 
 // A withdrawn result is no evidence (`results_comparison.go`, `tree-drafts.ts`), so it neither
@@ -325,17 +340,30 @@ test("the latest result a check draws is the newest that stands", () => {
   expect(read.statements.map((held) => held.state)).toEqual(["met"]);
 });
 
-// R17: "Not met where one failed there". The server's `pass_stands` says yes for any pass at a
-// basis, whatever later fails exist, so a check with an older pass at another commit and a fail
-// at the commit the page names read "Out of date" and left its statement Unknown. The fail at
-// the named commit is what the page reads.
+// R17: "Not met where one failed there". The commit is the one the server names for the check:
+// it compares with the heads of two pull requests, and the server reads both results at its
+// basis (`at_basis`), the older pass at one head and the newer fail at the other, which is the
+// commit the page names too. The server's `pass_stands` says yes for any pass at a basis,
+// whatever later fails exist, so a check with an older pass at another commit and a fail at the
+// commit the page names read "Out of date" and left its statement Unknown. The fail at the
+// basis is what the page reads.
 const regressed = check({
   block_id: "c-one",
+  compared_with: [
+    { commit: COMMIT, kind: "pull_request", pull_request: 7 },
+    { commit: OTHER_COMMIT, kind: "pull_request", pull_request: 8 },
+  ],
   pass_stands: { answer: "yes" },
   results: [
-    result({ created_at: "2026-11-15T09:00:00Z", id: "fail-here", verdict: "fail" }),
+    result({
+      commit_stands: { answer: "at_basis" },
+      created_at: "2026-11-15T09:00:00Z",
+      id: "fail-here",
+      verdict: "fail",
+    }),
     result({
       commit_sha: OTHER_COMMIT,
+      commit_stands: { answer: "at_basis" },
       created_at: "2026-11-13T09:00:00Z",
       id: "pass-elsewhere",
     }),
@@ -350,7 +378,7 @@ test("a fail at the commit the page names reads Failed whatever older pass still
 
   expect(read.commit).toBe(COMMIT);
   expect(read.statements[0]?.checks[0]).toMatchObject({
-    atNamedCommit: true,
+    atBasis: true,
     standsOn: "fail-here",
     state: "failed",
   });
@@ -467,7 +495,7 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
 // its row and was off the fold's frontier, so its statement arrived folded with the regression
 // inside it, and the filter row counted nothing failing, while this body read it Failed; a fail
 // that stands at another commit read Failed on the row and in the count, and Out of date here.
-// The tree's node holds the one reading this body draws (`checkStanding`).
+// The tree's node holds the one reading this body draws (`checkStanding`), which is the server's.
 test("a check reads one state on its row, in the fold, in the filter row and in the body", () => {
   const statement = blockNodeId(SPEC_SLUG, "r1");
   const checkId = (blockId: string) => blockNodeId(VERIFICATION_SLUG, blockId);
@@ -495,8 +523,10 @@ test("a check reads one state on its row, in the fold, in the filter row and in 
     flag: { count: 1, word: "failing" },
   });
 
-  // The reverse: a fail that stands at the commit its own check compared with, which is not the
-  // commit the page names, since another check's pass is newer.
+  // The reverse: a fail that stands at the commit its own check compares with, which is not the
+  // commit the page names, since another check's pass is newer. The server reads it at its
+  // check's basis (`at_basis`), so it is a fail on its row, in the body and in the count alike,
+  // as its own fact reads it.
   const passedHere = check({ block_id: "c-one", results: [result({ id: "pass-here" })] });
   const failedElsewhere = check({
     block_id: "c-two",
@@ -514,23 +544,79 @@ test("a check reads one state on its row, in the fold, in the filter row and in 
     ],
   });
   const reverse = issueTree([passedHere, failedElsewhere]);
-  expect(placed(reverse, "c-two")?.state).toBe("older");
-  expect(bodyStates(reverse, [passedHere, failedElsewhere])).toEqual(["passed", "older"]);
-  expect(filterSignals(reverse, "").verification).toEqual({ count: 2 });
+  expect(placed(reverse, "c-two")?.state).toBe("failed");
+  expect(bodyStates(reverse, [passedHere, failedElsewhere])).toEqual(["passed", "failed"]);
+  expect(filterSignals(reverse, "").verification).toEqual({
+    count: 2,
+    flag: { count: 1, word: "failing" },
+  });
+});
+
+// The server reads each result at the commit it names for that result's own
+// check. A `before_merge` check compares with the pull request's head, and an `after_merge` one
+// with the branch the pull request merged into, so a newer result of the second at another
+// commit says nothing of the first. The page read every check against the one commit it names,
+// the newest result's, so a pass at the head read Out of date on its row while its own fact read
+// "Up to date". The commit each check is read at is the one the server names for it, so the row
+// reads what the fact reads.
+test("a before_merge pass at the head reads Passed beside another check's newer result elsewhere", () => {
+  const atHead = check({
+    block_id: "c-one",
+    compared_with: [{ commit: COMMIT, kind: "pull_request", pull_request: 7 }],
+    pass_stands: { answer: "yes" },
+    results: [result({ commit_stands: { answer: "at_basis" }, id: "pass-at-head" })],
+    when: "before_merge",
+  });
+  const merged = check({
+    block_id: "c-two",
+    compared_with: [{ branch: "main", kind: "branch" }],
+    pass_stands: { answer: "yes" },
+    results: [
+      result({
+        check_block_id: "c-two",
+        commit_sha: OTHER_COMMIT,
+        commit_stands: { answer: "at_basis" },
+        created_at: "2026-11-15T09:00:00Z",
+        id: "pass-on-main",
+      }),
+    ],
+    when: "after_merge",
+  });
+  const checks = [atHead, merged];
+  const tree = issueTree(checks);
+  const row = tree.children
+    .find((child) => child.id === blockNodeId(SPEC_SLUG, "r1"))
+    ?.children.find((child) => child.id === blockNodeId(VERIFICATION_SLUG, "c-one"));
+  const read = verificationReading({ checks, view: presetView(tree, "verification", "").root });
+
+  // The page names the newest result's commit, and reads no check against it.
+  expect(read.commit).toBe(OTHER_COMMIT);
+  expect(row?.state).toBe("passed");
+  expect(read.statements[0]?.checks.map((held) => held.state)).toEqual(["passed", "passed"]);
+  expect(read.statements.map((held) => held.state)).toEqual(["met"]);
+  expect(filterSignals(tree, "").verification).toEqual({ count: 2 });
+  // The pass's own fact reads the server's answer, which is the row's.
+  const stands = row?.children
+    .find((child) => child.id === "pass-at-head")
+    ?.facts.find((fact) => fact.name === "stands");
+  expect(stands?.value).toBe(RESULT_STANDS_WORDS.at_basis);
+  expect(RESULT_STANDS_WORDS.at_basis).toBe("Up to date");
 });
 
 // A check fails, its author fixes the check's words, and nobody has run it again. A fail
 // recorded against words the check no longer has stands for nothing, as `checkState` and the
 // server's `standingCommit` read it, so it is no fail at the commit the page names either: the
 // check is Out of date and its statement Unknown, not Not met on evidence about words the check
-// no longer has.
+// no longer has. Such a result names no commit either, so another check's result names it here.
 test("a fail at the commit the page names whose check's words moved reads Out of date", () => {
   const moved = check({
     block_id: "c-one",
     pass_stands: { answer: "no" },
     results: [result({ check_words_moved: true, failed: 1, id: "fail-moved", verdict: "fail" })],
   });
-  const read = reading([statementNode("r1", "The page draws it.", [checkNode(moved)])], [moved]);
+  const blocks = [moved, passing("c-two")];
+  const statement = statementNode("r1", "The page draws it.", blocks.map(checkNode));
+  const read = reading([statement], blocks);
 
   expect(read.commit).toBe(COMMIT);
   expect(read.statements[0]?.checks[0]?.state).toBe("older");
@@ -538,16 +624,140 @@ test("a fail at the commit the page names whose check's words moved reads Out of
   expect(read.statements.map((held) => held.state)).toEqual(["unknown"]);
 });
 
-// Ruling 6: the body draws the newest result of each check and folds the rest, so the model
-// hands it the rest apart, newest first, and names the result the state stands on.
+// The server's `standingCommit` gives a result recorded against words its check no longer has
+// no standing, and the page's own reading says it stands for nothing. The page still named its
+// commit where it was the newest result, and read every result over the check's words now
+// against a commit that only evidence about other words had run at.
+test("a result over words its check no longer has names no commit, however new it is", () => {
+  const reworded = check({
+    block_id: "c-one",
+    results: [
+      result({
+        check_words_moved: true,
+        commit_sha: OTHER_COMMIT,
+        created_at: "2026-11-15T09:00:00Z",
+        id: "pass-moved",
+      }),
+      result({ created_at: "2026-11-14T09:00:00Z", id: "pass-current" }),
+    ],
+  });
+  const movedOnly = check({
+    block_id: "c-one",
+    results: [result({ check_words_moved: true, id: "pass-moved" })],
+  });
+
+  expect(namedCommit([reworded])).toBe(COMMIT);
+  expect(namedCommit([movedOnly])).toBeUndefined();
+});
+
+// A fail recorded against words the check no longer has is no result at the check's basis, the
+// commit the server names for it (here the commit the page names too), so an older pass over the
+// check's words now at that commit is what the check reads.
+test("a fail over moved words at the named commit does not read Failed over a pass there", () => {
+  const reworded = check({
+    block_id: "c-one",
+    pass_stands: { answer: "yes" },
+    results: [
+      result({
+        check_words_moved: true,
+        created_at: "2026-11-15T09:00:00Z",
+        failed: 1,
+        id: "fail-moved",
+        verdict: "fail",
+      }),
+      result({ created_at: "2026-11-14T09:00:00Z", id: "pass-current" }),
+    ],
+  });
+  const read = reading(
+    [statementNode("r1", "The page draws it.", [checkNode(reworded)])],
+    [reworded]
+  );
+
+  expect(read.commit).toBe(COMMIT);
+  expect(read.statements[0]?.checks[0]).toMatchObject({
+    atBasis: true,
+    standsOn: "pass-current",
+    state: "passed",
+  });
+  expect(read.statements.map((held) => held.state)).toEqual(["met"]);
+});
+
+// The other side of the same rule: the result at the named commit was the newest that stands
+// there, whatever words it was recorded against, so a newer pass over words the check no longer
+// has hid a fail over its words now at that commit, and the check read Out of date where it
+// failed. The newest result over the check's words now is the fail, at the check's basis.
+test("a newer result over moved words at the named commit hides no fail over the words now", () => {
+  const reworded = check({
+    block_id: "c-one",
+    pass_stands: { answer: "no" },
+    results: [
+      result({ check_words_moved: true, created_at: "2026-11-15T09:00:00Z", id: "pass-moved" }),
+      result({
+        created_at: "2026-11-14T09:00:00Z",
+        failed: 1,
+        id: "fail-current",
+        verdict: "fail",
+      }),
+    ],
+  });
+  const read = reading(
+    [statementNode("r1", "The page draws it.", [checkNode(reworded)])],
+    [reworded]
+  );
+
+  expect(read.commit).toBe(COMMIT);
+  expect(read.statements[0]?.checks[0]).toMatchObject({
+    atBasis: true,
+    standsOn: "fail-current",
+    state: "failed",
+  });
+  expect(read.statements.map((held) => held.state)).toEqual(["not_met"]);
+});
+
+// A passed check stands on its newest pass, which the body draws as the evidence, and the page
+// took a newer pass over words the check no longer has for it: one at another commit read the
+// check Out of date, although a pass over its words now stands at the check's basis.
+test("a passed check stands on its newest pass over the words it has now", () => {
+  const reworded = check({
+    block_id: "c-one",
+    pass_stands: { answer: "yes" },
+    results: [
+      result({
+        check_words_moved: true,
+        commit_sha: OTHER_COMMIT,
+        created_at: "2026-11-15T09:00:00Z",
+        id: "pass-moved",
+      }),
+      result({ created_at: "2026-11-14T09:00:00Z", id: "pass-current" }),
+    ],
+  });
+  const read = reading(
+    [statementNode("r1", "The page draws it.", [checkNode(reworded)])],
+    [reworded]
+  );
+
+  expect(read.commit).toBe(COMMIT);
+  expect(read.statements[0]?.checks[0]).toMatchObject({
+    atBasis: true,
+    standsOn: "pass-current",
+    state: "passed",
+  });
+  expect(read.statements.map((held) => held.state)).toEqual(["met"]);
+});
+
+// The body draws the newest result of each check and folds the rest, so the model
+// hands it the rest apart, newest first, and names the result the state stands on. Each result
+// ran at the commit the server names for the check, its basis (`at_basis`), so the newest pass
+// is what the passed check stands on.
 test("a check's other results are handed apart from its latest, newest first", () => {
+  const atBasis = { answer: "at_basis" } as const;
   const busy = check({
     block_id: "c-one",
     pass_stands: { answer: "yes" },
     results: [
-      result({ created_at: "2026-11-12T09:00:00Z", id: "oldest" }),
-      result({ created_at: "2026-11-14T09:00:00Z", id: "newest" }),
-      result({ created_at: "2026-11-13T09:00:00Z", id: "middle" }),
+      result({ commit_stands: atBasis, created_at: "2026-11-12T09:00:00Z", id: "oldest" }),
+      result({ commit_stands: atBasis, created_at: "2026-11-14T09:00:00Z", id: "newest" }),
+      result({ commit_stands: atBasis, created_at: "2026-11-13T09:00:00Z", id: "middle" }),
     ],
   });
   const read = reading([statementNode("r1", "The page draws it.", [checkNode(busy)])], [busy]);
@@ -559,7 +769,9 @@ test("a check's other results are handed apart from its latest, newest first", (
 });
 
 // R10: a check of a descendant issue counts. The coverage read counts it for the statement and
-// this issue's tree holds no node for it, so the statement is covered and draws no check.
+// this issue's tree holds no node for it, so the statement is covered and draws no check. Its
+// state is read from its checks' own states, each at the commit the server names for that
+// check, and it holds none here, so it is Unknown.
 test("a statement a child issue's check serves is covered", () => {
   const served = {
     ...statementNode("r1", "The page draws it.", []),
@@ -625,7 +837,9 @@ test("the body is given the checks that serve no statement and every other row t
   expect(read.covered).toBe(0);
 });
 
-// The page draws a commit as the picture draws it, in the short form git itself writes.
+// The page draws a commit as the picture draws it, in the short form git itself writes. The
+// commit is the one the page names for its results (R17), which decides no check's state: each
+// check is read at the commit the server names for it, its basis.
 test("a commit is drawn in the short form the picture draws", () => {
   expect(shortCommit(COMMIT)).toBe(COMMIT.slice(0, COMMIT_CHARACTERS));
   expect(shortCommit(COMMIT)).toHaveLength(10);

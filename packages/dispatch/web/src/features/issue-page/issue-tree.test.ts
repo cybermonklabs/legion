@@ -38,12 +38,27 @@ import {
   targetNames,
 } from "./issue-tree";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
-import { addressesAsShortForms, blockNodeId, plainWords, plainWordsRaw } from "./tree-drafts";
+import { filterSignals, presetView } from "./presets";
+import {
+  addressesAsShortForms,
+  blockNodeId,
+  checkStanding,
+  nodeIdOf,
+  plainWords,
+  plainWordsRaw,
+  treeContext,
+} from "./tree-drafts";
+import { treeRows } from "./tree-fold";
 import { nodesInOrder } from "./tree-keys";
+import {
+  statementCounts,
+  statementStandings,
+  verificationReading,
+} from "./verification-filter/statement-state";
 
 /**
  * The tree model, read as the page reads it: one call with the page's reads in and the issue's
- * root node out (dispatch://INFRA-1196 R4, `dispatch://INFRA-1196/artifact/plan-md#b-t13`).
+ * root node out.
  *
  * The `from` edge the placements are read from is not in today's block schema - a `requirement`
  * declares no attributes at all - so the tests that prove the placement hand the model a block
@@ -165,8 +180,8 @@ function coverage(requirements: readonly RequirementCoverage[]): IssueCoverage {
 const RESULT_COMMIT = "c".repeat(40);
 
 /** One result recorded against a check, with the negative control it recorded; `""` is a result
- *  that recorded none, which the page draws no gap for, since dispatch://INFRA-1253 R3 refuses
- *  such a result. `extra` is whatever the case changes about it: the verdict it reached, the
+ *  that recorded none, which the page draws no gap for, since the server is to refuse such a
+ *  result. `extra` is whatever the case changes about it: the verdict it reached, the
  *  retraction that withdrew it, or the words of its check having moved under it. */
 function recorded(
   id: string,
@@ -513,6 +528,38 @@ test("a `from` and a `shaped` that disagree place by `from` and draw the gap", (
   ]);
 });
 
+// R4: the gap is the two edges disagreeing, and today a decision's links stand for its `shaped`
+// edge. The page drew the gap wherever a requirement had a `from` and any decision linked to it,
+// so a requirement that came from a decision and is linked by that decision drew "Sources
+// disagree" over two edges that agree. It draws the gap only where another decision links to it.
+test("a requirement linked by the decision its `from` names draws no gap; another decision does", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const treeOf = (shapers: readonly Decision[]): TreeNode =>
+    buildIssueTree({
+      coverage: coverage([requirement("r1", "The requirement the first decision made.")]),
+      decisions: decisions(shapers),
+      documents: [
+        {
+          artifactId: spec.id,
+          blocks: [
+            block("r1", "requirement", { from: `dispatch://${KEY}/artifact/decisions-md#b-d1` }),
+          ],
+        },
+        { artifactId: made.id, blocks: [block("d1", "decision"), block("d2", "decision")] },
+      ],
+      issue: issueDetails([spec, made]),
+    });
+  const origin = decision("d1", "Makes the requirement.", ["r1"]);
+  const statement = blockNodeId(SPEC, "r1");
+
+  expect(nodeOf(treeOf([origin]), statement)?.gaps).toEqual([]);
+  const other = decision("d2", "Says it shaped the requirement too.", ["r1"]);
+  expect(nodeOf(treeOf([origin, other]), statement)?.gaps).toEqual(["shaped_disagreement"]);
+  // A decision is never a requirement's parent: the `from` naming one places nothing.
+  expect(placementsOf(treeOf([origin]), statement).map((one) => one.parent)).toEqual([KEY]);
+});
+
 // R4: every edge that is not the spine is a chip naming its target; a target nothing answers to
 // now is drawn as gone, with no name, rather than dropped.
 test("a pointer whose target is gone is drawn as a chip that says so", () => {
@@ -548,7 +595,7 @@ test("a pointer whose target is gone is drawn as a chip that says so", () => {
   ]);
 });
 
-// Decision 62: the batched read answers a short reference whose id two or more targets carry as
+// The batched read answers a short reference whose id two or more targets carry as
 // gone and ambiguous, and the chip says it is ambiguous, so it can draw the reference as written
 // rather than as a target deleted. A target that is gone and no more carries no `ambiguous`.
 test("a chip of an ambiguous short reference says so, and a gone target's chip does not", () => {
@@ -576,10 +623,10 @@ test("a chip of an ambiguous short reference says so, and a gone target's chip d
   ]);
 });
 
-// Decisions 62 and 89: an ambiguous short reference has no name, as a gone target has none, so
-// the page publishes neither among its names (`targetNames`); it publishes the ambiguous one
-// among the references it read as ambiguous (`ambiguousTargets`), by the chip's own rule, so a
-// link draws it as written and links nothing, where it reads a gone one's own.
+// An ambiguous short reference has no name, as a gone target has none, so the page publishes
+// neither among its names (`targetNames`); it publishes the ambiguous one among the references
+// it read as ambiguous (`ambiguousTargets`), by the chip's own rule, so a link draws it as
+// written and links nothing, where it reads a gone one's own.
 test("the page publishes an ambiguous short reference as ambiguous, and a gone target nowhere", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
@@ -803,7 +850,7 @@ test("a needs chip of a block the read sent no words for is named by its kind's 
   ]);
 });
 
-// Decision 143: one needs chip per task needed. The server accepts a task needed by a pinned and
+// One needs chip per task needed. The server accepts a task needed by a pinned and
 // an unpinned pointer at once, and both need the one task, so it is one chip: its unpinned
 // pointer's, which names the block's current words. A task only pinned pointers name is one chip,
 // the first one's, and two tasks stay two chips, in the order their pointers first name them.
@@ -995,7 +1042,7 @@ test("a first line cut at the limit never ends inside a surrogate pair", () => {
   });
 });
 
-// R1 and decision 51: a statement opens on its label - `R1.`, `12.`, `1.2.` - and the label is
+// R1: a statement opens on its label - `R1.`, `12.`, `1.2.` - and the label is
 // part of its first line, not a sentence end. A first word that ends in `.` and is longer than
 // five characters or holds no digit is no label, and ends the line as any other sentence does.
 test("a leading label is no sentence end", () => {
@@ -1069,7 +1116,7 @@ test("a stored text read to plain words keeps what markdown reads literally and 
 // the blocks they open and no word of them, so a stored text read to plain words drops them at
 // the start of each line, nested ones and a task box included, and a heading's marker after
 // them. What markdown reads literally keeps them: an escaped `1\.` or `\-` opens no list, and
-// `**bold**` at a line's start is no bullet, so a plan task's label still reads `1.` (decision 51).
+// `**bold**` at a line's start is no bullet, so a plan task's label still reads `1.`.
 test("a stored text read to plain words drops the markers of a quote and of a list", () => {
   for (const [stored, words] of [
     ["- Hold the deploy.\n- Then ship.", "Hold the deploy. Then ship."],
@@ -1111,24 +1158,27 @@ test("a stored text read to plain words keeps the author's private-use character
   }
 });
 
-// Ruling 1 and row 20 of the differences: a line that is a whole sentence ends on its own mark,
-// so a cut after it draws no ellipsis - "Thread 1 opens here.…" reads as four dots - and a cut
-// that ended inside a sentence draws one.
+// A line that is a whole sentence ends on its own mark, so a cut after it draws no ellipsis -
+// "Thread 1 opens here.…" reads as four dots - and a cut that ended inside a sentence draws one.
 test("a first line draws its ellipsis only where the cut ended inside a sentence", () => {
-  expect(drawnLine({ cut: true, line: "Thread 1 opens here." })).toBe("Thread 1 opens here.");
+  expect(drawnLine({ cut: true, line: "Thread 1 opens here.", sentence: true })).toBe(
+    "Thread 1 opens here."
+  );
   expect(drawnLine(firstLineOf("Thread 1 opens here. Thread 2 follows."))).toBe(
     "Thread 1 opens here."
   );
   const inside = firstLineOf(`${"word ".repeat(30)}and the end.`);
   expect(inside.cut).toBe(true);
   expect(drawnLine(inside)).toBe(`${inside.line}…`);
-  expect(drawnLine({ cut: false, line: "No mark at its end" })).toBe("No mark at its end");
+  expect(drawnLine({ cut: false, line: "No mark at its end", sentence: false })).toBe(
+    "No mark at its end"
+  );
   // A token cut hard at the limit whose last kept character is a dot ends no sentence, so its
   // line draws the ellipsis all the same.
   expect(drawnLine(firstLineOf(`${"x".repeat(99)}.yyyy more words here`)).endsWith("…")).toBe(true);
 });
 
-// Ruling 1: a line cut just after an ellipsis of the author's own draws no second one, since
+// A line cut just after an ellipsis of the author's own draws no second one, since
 // `wait……` reads as six dots. The ellipsis is no sentence end, since it often stands inside one,
 // so a cut that ended inside a sentence on any other character still draws one.
 test("a first line cut after the author's own ellipsis draws no second one", () => {
@@ -1136,7 +1186,7 @@ test("a first line cut after the author's own ellipsis draws no second one", () 
   const trailing = firstLineOf(`${words} and then more words follow here.`);
   expect(trailing).toEqual({ cut: true, line: words, sentence: false });
   expect(drawnLine(trailing)).toBe(words);
-  expect(drawnLine({ cut: true, line: "Hold on, wait…" })).toBe("Hold on, wait…");
+  expect(drawnLine({ cut: true, line: "Hold on, wait…", sentence: false })).toBe("Hold on, wait…");
   const plain = firstLineOf(`${"word ".repeat(30)}and the end.`);
   expect(plain.sentence).toBe(false);
   expect(drawnLine(plain)).toBe(`${plain.line}…`);
@@ -1343,7 +1393,7 @@ test("a node's one line is cut from its first block that holds words, past a rul
   ]);
 });
 
-// Decision 51: a plan task opens on its label, which its stored text writes escaped, `1\.`,
+// A plan task opens on its label, which its stored text writes escaped, `1\.`,
 // inside the bold of its first sentence. Its line holds that label and runs to the first
 // sentence end after it, read from the server's reading of the task and, where the read sent
 // none, from the stored text read to plain words, whose `**` after `today.` hid that sentence
@@ -1455,7 +1505,7 @@ test("no document is a node, and each typed block and child sits under the issue
     "CORE-2",
   ]);
   // Each child is a node of its own, carrying the child the issue read answered, whose row
-  // draws its status, what blocks it, who holds it and its key (the architect's ruling 5).
+  // draws its status, what blocks it, who holds it and its key.
   expect(nodeOf(root, "CORE-2")?.type).toBe("child_issue");
   expect(nodeOf(root, "CORE-2")?.text).toBe("A child.");
   expect(nodeOf(root, "CORE-2")?.child?.status).toBe("todo");
@@ -1566,6 +1616,42 @@ test("a block whose text cites a document carries a chip that opens it", () => {
   expect(chipsOf("r3")).toEqual([]);
 });
 
+// Which document plays which part is the id the issue read names for it, or
+// nothing, as the tree reads each part's blocks (`primarySpec`, `roleDocument`). An issue read
+// that names no decisions document at all - a Dispatch older than the part, which sends no
+// `decisions_artifact_id` - and one that names no spec (`""`) leave a document's own `role` and
+// its `primary` flag no say: a chip naming such a document draws the page's word for any
+// document, never "Decisions" or "Spec" for a document whose blocks the tree never reads. The
+// document the issue does name for a part is named by that part's word.
+test("a document chip names a part only where the issue read names that document for it", () => {
+  const flagged = artifact("artifact-old-spec", "old-spec-md", "old-spec.md", true);
+  const made = {
+    ...artifact("artifact-decisions", "decisions-md", "decisions.md"),
+    role: "decisions",
+  };
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const cited = ["old-spec-md", "decisions-md", "plan-md"].map(
+    (slug) => `dispatch://${KEY}/artifact/${slug}`
+  );
+  const root = buildIssueTree({
+    comments: [
+      { ...comment("c1", "2026-11-04T09:00:00Z"), body: `Read ${cited.join(", ")} first.` },
+    ],
+    issue: {
+      ...issueDetails([flagged, made, plan]),
+      decisions_artifact_id: undefined as unknown as string,
+      plan_artifact_id: plan.id,
+      primary_artifact_id: "",
+    },
+  });
+
+  expect(nodeOf(root, "c1")?.chips.map(({ name, ref }) => ({ name, ref }))).toEqual([
+    { name: NODE_TYPE_NAMES.document, ref: cited[0] },
+    { name: NODE_TYPE_NAMES.document, ref: cited[1] },
+    { name: PRESET_NAMES.plan, ref: cited[2] },
+  ]);
+});
+
 // R4: a decision sits under the ask it answers - the asks its blocks mention - edited under the
 // first and shown under the others, each placement naming the rest; an ask the tree holds no
 // node for stays a chip and places nothing, and a decision that answers no question of the
@@ -1657,7 +1743,7 @@ test("a requirement whose `from` names a decision sits under the issue", () => {
   expect(placementsOf(root, blockNodeId(SPEC, "r1")).map((one) => one.parent)).toEqual([KEY]);
 });
 
-// INFRA-1150 R3, R1: a person's answer is part of the ask and no node of its own. The ask's
+// A person's answer is part of the ask and no node of its own. The ask's
 // node carries it as the store holds it, who answered, what they chose and what they wrote, and
 // the ask holds no child for it.
 test("an ask's answer is part of the ask's node and no node of its own", () => {
@@ -1708,10 +1794,10 @@ test("the conversation's turns are drawn by the time each was made", () => {
   expect(root.children.map((child) => child.id)).toEqual(["c0", "c1", "c2", "a-message"]);
 });
 
-// The tester's placement note: a question asked of the issue and a comment are one conversation,
-// so both are drawn by the time each was made, a question among the comments it was asked
-// between, and the newest write of either kind is the outline's last row. Two questions were
-// drawn in the order of their ids before, and every question before every comment.
+// A question asked of the issue and a comment are one conversation, so both are drawn by the
+// time each was made, a question among the comments it was asked between, and the newest write
+// of either kind is the outline's last row. Two questions were drawn in the order of their ids
+// before, and every question before every comment.
 test("a question of the issue is drawn among the turns, by the time it was asked", () => {
   const root = buildIssueTree({
     asks: [
@@ -1775,7 +1861,7 @@ test("an issue with more than a thousand children draws them in order, the conve
   ]);
 });
 
-// The tester's F4: an open question waits on the reader only where its turn is the reader's own
+// An open question waits on the reader only where its turn is the reader's own
 // (`waiting_on_person`), as every other count of what waits on them reads it; a question that
 // waits on somebody else is open all the same, and the fold still opens the path to it.
 test("an open question waits on the reader only where its turn is theirs", () => {
@@ -1799,10 +1885,9 @@ test("an open question waits on the reader only where its turn is theirs", () =>
   expect(waiting(undefined)).toEqual([]);
 });
 
-// The tester's F6: a Change is a comment a person anchored to a decision's words in the
-// decisions document. The fixture is the shape the Change control (`DecisionActions.tsx`) stored
-// on a running build of the checkpoint (preview of 29111db16c41,
-// dispatch://INFRA-3951/artifact/f6-reads-json), read with `Dispatch-Trees: 1`: the Change is
+// A Change is a comment a person anchored to a decision's words in the decisions document. The
+// fixture is the shape the Change control (`DecisionActions.tsx`) stored on a running build of
+// the checkpoint (preview of 29111db16c41), read with `Dispatch-Trees: 1`: the Change is
 // anchored with the decisions document's id (`api/anchors.go`'s `resolveAnchor`), while the
 // decisions read names that document by its address (`api/decisions.go`). A Change newer than
 // the decision's words sits under the decision, which then reads Change requested and waits on
@@ -2238,7 +2323,7 @@ test("a reply carrying no answered entry is drawn under its thread's head", () =
   expect(placementsOf(root, "c0").map((one) => one.parent)).toEqual([KEY]);
 });
 
-// R16, dispatch://INFRA-3677: a reply to an ask names the ask alone (`ask_id`), and is drawn
+// R16: a reply to an ask names the ask alone (`ask_id`), and is drawn
 // under the ask's node whatever state the ask is in - an open, an answered and a resolved ask
 // alike, and an ask indexed from a block by that block's node.
 test("a reply to an ask is drawn under the ask, whatever state it is in", () => {
@@ -2446,7 +2531,7 @@ test("a plan task that names no requirement and no declaration draws the gap", (
         blocks: [
           block("t1", "plan_task", { serves: `dispatch://${KEY}/spec#b-r1` }),
           block("t2", "plan_task"),
-          // The declarations read of dispatch://INFRA-1278 lands as this pointer, read from
+          // The planned declarations read lands as this pointer, read from
           // the same `block[]` attributes every other pointer is read from.
           block("t3", "plan_task", {
             attempts: `dispatch://${KEY}/artifact/declarations-md#b-d1`,
@@ -2500,7 +2585,7 @@ test("a check whose citation names no requirement draws the gap, and keeps its p
 });
 
 // R10: a check is held to no gap about its results. A result that records no negative control
-// is one dispatch://INFRA-1253 R3 refuses, so the lack names nothing the page could hold.
+// is one the server is to refuse, so the lack names nothing the page could hold.
 test("a check whose latest result records no negative control draws no gap", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
@@ -2516,6 +2601,141 @@ test("a check whose latest result records no negative control draws no gap", () 
     blockNodeId(VERIFICATION, "c1"),
   ]);
   expect(nodesInOrder(root).flatMap((node) => node.gaps)).toEqual([]);
+});
+
+// A statement is a `requirement` block of the issue's own spec. One of the plan
+// keeps its type and is a block and nothing more: no row of the Spec filter and none of its
+// count, no statement of the Verification body, and nothing placed under it - a check whose
+// `serves` names it keeps its place under the issue and draws the gap that says it serves no
+// statement. The spec's own requirement blocks are statements before the coverage read answers
+// as after it.
+test("a requirement block outside the spec is no statement, and the spec's are, before coverage and after", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const statement = blockNodeId(SPEC, "r1");
+  const planned = blockNodeId("plan-md", "r9");
+  const treeOf = (covered: boolean): TreeNode =>
+    buildIssueTree({
+      ...(covered ? { coverage: coverage([requirement("r1", "The spec's own.")]) } : {}),
+      documents: [
+        { artifactId: spec.id, blocks: [block("r1", "requirement")] },
+        { artifactId: plan.id, blocks: [block("r9", "requirement")] },
+        {
+          artifactId: checks.id,
+          blocks: [
+            block("c1", "check", { serves: `dispatch://${KEY}/spec#b-r1` }),
+            block("c9", "check", { serves: `dispatch://${KEY}/artifact/plan-md#b-r9` }),
+          ],
+        },
+      ],
+      issue: {
+        ...issueDetails([spec, plan, checks]),
+        plan_artifact_id: plan.id,
+        verification_artifact_id: checks.id,
+      },
+    });
+
+  for (const covered of [false, true]) {
+    const read = covered ? "after the coverage read" : "before the coverage read";
+    const root = treeOf(covered);
+    expect(nodeOf(root, statement)?.statement, read).toBe(true);
+    expect(nodeOf(root, planned)?.type, read).toBe("requirement");
+    expect(nodeOf(root, planned)?.statement, read).toBeUndefined();
+    // The Spec filter draws and counts the spec's statement alone.
+    expect(
+      presetView(root, "spec", "").root.children.map((row) => row.id),
+      read
+    ).toEqual([statement]);
+    expect(filterSignals(root, "").spec, read).toEqual({ count: 1 });
+    // The Verification body reads the spec's statement alone.
+    const body = verificationReading({
+      checks: [],
+      view: presetView(root, "verification", "").root,
+    });
+    expect(
+      body.statements.map((held) => held.node.id),
+      read
+    ).toEqual([statement]);
+    expect(statementCounts(body.statements), read).toEqual({ met: 0, not_met: 0, unknown: 1 });
+    // A check serving the spec's statement sits under it; one serving the plan's block does not.
+    expect(
+      placementsOf(root, blockNodeId(VERIFICATION, "c1")).map((one) => one.parent),
+      read
+    ).toEqual([statement]);
+    expect(
+      placementsOf(root, blockNodeId(VERIFICATION, "c9")).map((one) => one.parent),
+      read
+    ).toEqual([KEY]);
+    expect(nodeOf(root, planned)?.children, read).toEqual([]);
+    expect(nodeOf(root, blockNodeId(VERIFICATION, "c9"))?.gaps, read).toEqual([
+      "serves_not_requirement",
+    ]);
+  }
+});
+
+// A `check` block of a document other than the issue's Verification document
+// is a block and nothing more. The results read never answers for it, so it draws no state word
+// - "No result" would be drawn on it for ever - and it is no check of the Verification filter's
+// rows or count, of the statement it serves, or of the fold's frontier. The Verification
+// document's own check reads No result until the results read answers, and then as it stands.
+test("a check block outside the Verification document draws no state and is counted nowhere", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const statement = blockNodeId(SPEC, "r1");
+  const verified = blockNodeId(VERIFICATION, "c1");
+  const planned = blockNodeId("plan-md", "c9");
+  const serves = { serves: `dispatch://${KEY}/spec#b-r1` };
+  const results = checkedResults([
+    { blockId: "c1", results: [recorded("result-pass", "Break it and it fails.")] },
+  ]);
+  const treeOf = (answered: boolean): TreeNode =>
+    buildIssueTree({
+      coverage: coverage([{ ...requirement("r1", "The spec's own."), checks: 1 }]),
+      documents: [
+        { artifactId: spec.id, blocks: [block("r1", "requirement")] },
+        { artifactId: plan.id, blocks: [block("c9", "check", serves)] },
+        { artifactId: checks.id, blocks: [block("c1", "check", serves)] },
+      ],
+      issue: {
+        ...issueDetails([spec, plan, checks]),
+        plan_artifact_id: plan.id,
+        verification_artifact_id: checks.id,
+      },
+      ...(answered ? { results } : {}),
+    });
+
+  const unread = treeOf(false);
+  expect(nodeOf(unread, verified)?.state).toBe("no-result");
+  expect(nodeOf(unread, planned)?.type).toBe("check");
+  expect(nodeOf(unread, planned)?.state).toBeUndefined();
+
+  const root = treeOf(true);
+  expect(nodeOf(root, verified)?.state).toBe("passed");
+  expect(nodeOf(root, planned)?.state).toBeUndefined();
+  // The Verification filter draws and counts the Verification document's check alone.
+  const view = presetView(root, "verification", "");
+  expect(view.root.children.map((row) => row.children.map((child) => child.id))).toEqual([
+    [verified],
+  ]);
+  expect(filterSignals(root, "").verification).toEqual({ count: 1 });
+  // The statement is read from its one check, which passed.
+  const answered = results.checks ?? [];
+  expect(
+    verificationReading({ checks: answered, view: view.root }).statements.map((held) =>
+      held.checks.map((one) => one.node.id)
+    )
+  ).toEqual([[verified]]);
+  expect(statementStandings(root, answered).get(statement)).toEqual({
+    covered: true,
+    state: "met",
+  });
+  // Nothing under the statement is open, so the fold leaves it folded.
+  expect(treeRows(root).some((row) => row.kind === "node" && row.node.id === planned)).toBe(false);
+  expect(
+    treeRows(root).find((row) => row.kind === "node" && row.node.id === statement)
+  ).toMatchObject({ expanded: false });
 });
 
 /** The state the page reads for the one check of a Verification document: what `payload`
@@ -2610,6 +2830,64 @@ test("a retracted pass over an older fail that stands is drawn as failed", () =>
   ).toBe("failed");
 });
 
+// The results read answers newest first, and `checkState` took the first result a retraction
+// left standing as the newest, while `checkStanding` and the Verification filter's body sort them
+// by the time each was recorded. Sent oldest first, a fail at the compared commit under a newer
+// pass at another commit read Failed, where read newest first it read Out of date. Every reading
+// sorts by time now, so the order the read sends changes no state. The state it reads is the
+// latest evidence at the check's basis: the fail there, which the newer pass at another commit
+// says nothing about, so it reads Failed in both orders, and the order still changes nothing.
+test("a check reads one state whatever order the read sends its results in", () => {
+  const failed = recorded("result-failed", "Fix the fault and it passes.", {
+    created_at: "2026-11-05T00:00:00Z",
+    failed: 1,
+    verdict: "fail",
+  });
+  const elsewhere = recorded("result-elsewhere", "Keep the pass and it stands.", {
+    commit_sha: "d".repeat(40),
+    commit_stands: { answer: "other_commit" },
+    created_at: "2026-11-06T00:00:00Z",
+  });
+  for (const [order, results] of [
+    ["newest first", [elsewhere, failed]],
+    ["oldest first", [failed, elsewhere]],
+  ] as const) {
+    expect(
+      checkStanding({ pass_stands: { answer: "no" }, results: [...results] }),
+      order
+    ).toMatchObject({ stands: { id: "result-failed" }, state: "failed" });
+    expect(stateOfOneCheck({ pass_stands: { answer: "no" } }, results), order).toBe("failed");
+  }
+});
+
+// The latest evidence at the check's basis decides, and a newer result at another
+// commit says nothing about the basis. A check passed at its basis and then failed there is
+// Failed, though the server still counts the older pass as standing (`pass_stands` is yes) and
+// a newer fail at another commit is the newest result of all.
+test("a pass and then a fail at the basis read Failed under a newer fail elsewhere", () => {
+  const results = [
+    recorded("result-elsewhere", "Fix the fault and it passes.", {
+      commit_sha: "d".repeat(40),
+      commit_stands: { answer: "other_commit" },
+      created_at: "2026-11-07T00:00:00Z",
+      failed: 1,
+      verdict: "fail",
+    }),
+    recorded("result-failed", "Fix the fault and it passes.", {
+      created_at: "2026-11-06T00:00:00Z",
+      failed: 1,
+      verdict: "fail",
+    }),
+    recorded("result-passed", "Break it and it fails.", { created_at: "2026-11-05T00:00:00Z" }),
+  ];
+
+  expect(checkStanding({ pass_stands: { answer: "yes" }, results })).toMatchObject({
+    stands: { id: "result-failed" },
+    state: "failed",
+  });
+  expect(stateOfOneCheck({ pass_stands: { answer: "yes" } }, results)).toBe("failed");
+});
+
 // The deployed server sends no `pass_stands` at all, and Dispatch rolls out with two builds
 // behind one load balancer, so a page meets a payload without it. Reading it unguarded threw
 // inside `buildIssueTree`, which is every preset of the issue page and not the checks alone.
@@ -2694,9 +2972,9 @@ test("a node holds the server's reading of its text where its read sends one", (
   }
 });
 
-// The tester's F14: the coverage read's and the results read's plain words leave out every
+// The coverage read's and the results read's plain words leave out every
 // `dispatch://` word of a statement and a check, and a block's stored excerpt stops at 480 runes.
-// Each read also sends the server's reading of the whole text (`text_tree`, part C), which keeps
+// Each read also sends the server's reading of the whole text (`text_tree`), which keeps
 // every reference, and a node's words are that reading's (`nodeWords`).
 test("the words of a statement, a check and a block keep the references of their reading", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
@@ -2768,7 +3046,7 @@ function planTasks(words: readonly string[], read: boolean): TreeNode {
   });
 }
 
-// R22, decision 95: the server's reading keeps a bare `dispatch://` address in a node's words as
+// R22: the server's reading keeps a bare `dispatch://` address in a node's words as
 // a plain text run, which is no link, so a line cut from those words drew the raw address. A
 // node's one line reads each bare address as its target's short form, as a link to it draws it,
 // from the reading and, where the read sent none, from the stored text; the punctuation that
@@ -2778,8 +3056,8 @@ test("a bare address in a node's line reads as its target's short form, from a r
   const lines = [
     ["Do it as dispatch://CORE-2 says. Then more.", "Do it as CORE-2 says."],
     [
-      "As dispatch://INFRA-1196/spec#b-r1, read it first. Then more.",
-      "As INFRA-1196 spec block, read it first.",
+      "As dispatch://ACME-1196/spec#b-r1, read it first. Then more.",
+      "As ACME-1196 spec block, read it first.",
     ],
     ["It is in dispatch://CORE-2/comment/c9. Then more.", "It is in CORE-2 comment."],
   ] as const;
@@ -2803,7 +3081,7 @@ test("a bare address in a node's line reads as its target's short form, from a r
   }
 });
 
-// R22, decision 95: a comment's body is stored markdown, which a chip naming the comment draws
+// R22: a comment's body is stored markdown, which a chip naming the comment draws
 // read to plain words (`plainWords`), so a bare address in the body reads as its target's short
 // form in the chip's name and in the name the page publishes for it (`targetNames`). A link
 // whose target is an address reads as its words, as it did.
@@ -2843,7 +3121,7 @@ test("a node's words keep the bare address its line reads as a short form", () =
   }
 });
 
-// Decision 95: only an address that names a target (`parseDispatchReference`) has a short form,
+// Only an address that names a target (`parseDispatchReference`) has a short form,
 // so a span that only looks like one - a path no route reads, a key in lower case, or the scheme
 // alone - stays in a line as its author wrote it, beside an address written short.
 test("a string that only looks like an address stays as written in a node's line", () => {
@@ -2860,7 +3138,7 @@ test("a string that only looks like an address stays as written in a node's line
   }
 });
 
-// Decision 140: a caller that names each reference itself, by the name the page publishes for
+// A caller that names each reference itself, by the name the page publishes for
 // it, reads a node's words before any address in them is written short, or it finds no address
 // left to name. The first block of a reading (`firstBlockWordsRaw`) and a stored text read to
 // plain words (`plainWordsRaw`) keep each bare address and each autolink's URL as written, and
@@ -2875,7 +3153,7 @@ test("the raw words of a reading and of a stored text keep each address as writt
   expect(plainWords(stored)).toBe("Do it as CORE-2 says, see CORE-3.");
 });
 
-// Decision 140: a caller that names each reference itself cuts a node's line from words in which
+// A caller that names each reference itself cuts a node's line from words in which
 // no address is written short (`lineWordsRaw`), or it finds no address left to name. It walks a
 // node as `lineWords` does - the first block of its reading, and where it has none, the first
 // block of its stored text that holds words, a heading to its own line - and keeps each bare
@@ -2911,4 +3189,39 @@ test("a node's raw line keeps each bare address as written, from a reading and f
     expect(node === undefined ? "" : lineWords(node), row.block_id).toBe(line);
     expect(lineWordsRaw({ text: row.text, tree: row.text_tree }), row.block_id).toBe(raw);
   }
+});
+
+// A caller that needs a node id and no chip reads it from the issue alone, and the
+// tree addresses nodes by the same rule, so the two never differ: the spec and its blocks by the
+// spec's slug, another document and its blocks by the document's, an ask, a comment and a message
+// by their ids, the issue by its key, and a reference to another issue by nothing.
+test("an issue addresses a node as its tree does, from the issue alone", () => {
+  const issue = issueDetails([artifact("a-spec", SPEC, "spec.md", true)]);
+  const references = [
+    `dispatch://${KEY}`,
+    `dispatch://${KEY}/spec`,
+    `dispatch://${KEY}/spec#b-r1`,
+    `dispatch://${KEY}/artifact/plan-md`,
+    `dispatch://${KEY}/artifact/plan-md#b-t1`,
+    `dispatch://${KEY}/ask/a1`,
+    `dispatch://${KEY}/comment/c1`,
+    `dispatch://${KEY}/message/m1`,
+    "dispatch://CORE-2/spec#b-r1",
+    "not a reference",
+  ];
+  const alone = nodeIdOf(issue);
+  expect(references.map(alone)).toEqual([
+    KEY,
+    SPEC,
+    blockNodeId(SPEC, "r1"),
+    "plan-md",
+    blockNodeId("plan-md", "t1"),
+    "a1",
+    "c1",
+    "m1",
+    undefined,
+    undefined,
+  ]);
+  const context = treeContext({ issue }, () => "");
+  expect(references.map(context.nodeIdOf)).toEqual(references.map(alone));
 });

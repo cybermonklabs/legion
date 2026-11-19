@@ -3,7 +3,7 @@ import { checkFacts, resultFacts } from "../check-facts";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
 import { type PresetView, presetView } from "../presets";
-import { blockNodeId, checkStanding, namedCommit } from "../tree-drafts";
+import { blockNodeId, checkStanding } from "../tree-drafts";
 
 /**
  * The reads the Verification filter's body is drawn from, as the page holds them: checks of the
@@ -15,10 +15,13 @@ import { blockNodeId, checkStanding, namedCommit } from "../tree-drafts";
 
 export const ISSUE_KEY = "CORE-1";
 
-/** The commit the page names in these cases: the one the newest standing result ran at. */
+/** The commit the page names in these cases: the one the newest standing result ran at, and the
+ *  one each check compares with (`compared_with`), so a result at it stands at its check's basis
+ *  (`commit_stands` is `at_basis`). */
 export const COMMIT = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 
-/** Another commit, which a result recorded against it is out of date at. */
+/** Another commit, which a result recorded against it is out of date at where its check does
+ *  not compare with it (`commit_stands` is `other_commit`). */
 export const OTHER_COMMIT = "99887766554433221100ffeeddccbbaa99887766";
 
 export const VERIFICATION_SLUG = "verification-md";
@@ -63,8 +66,8 @@ export function check(partial: Partial<CheckBlock> & { block_id: string }): Chec
   };
 }
 
-/** One result recorded against a check: a pass at the commit the page names, with whatever the
- *  case changes about it. */
+/** One result recorded against a check: a pass at the commit the page names, which is the basis
+ *  its check compares with (`at_basis`), with whatever the case changes about it. */
 export function result(partial: Partial<CheckResult> & { id: string }): CheckResult {
   return {
     actor: { id: "tester", kind: "session", origin: { session_title: "the tester" } },
@@ -94,8 +97,8 @@ export function result(partial: Partial<CheckResult> & { id: string }): CheckRes
 }
 
 /** A check's node, as `tree-drafts.ts` builds one for an issue with this check alone: the
- *  block's address as its reference, the state `checkStanding` reads at the commit its own
- *  results name (`namedCommit`), the four attributes its body draws, and one node per result. */
+ *  block's address as its reference, the state `checkStanding` reads from its results, the four
+ *  attributes its body draws, and one node per result. */
 export function checkNode(block: CheckBlock): TreeNode {
   return node({
     children: (block.results ?? []).map((recorded) =>
@@ -111,13 +114,14 @@ export function checkNode(block: CheckBlock): TreeNode {
     facts: checkFacts(block),
     id: blockNodeId(VERIFICATION_SLUG, block.block_id),
     reference: block.ref,
-    state: checkStanding(block, namedCommit([block])).state,
+    state: checkStanding(block).state,
     text: block.text,
     type: "check",
   });
 }
 
-/** A statement's node with the checks that serve it under it, as the tree places them. */
+/** A statement's node with the checks that serve it under it, as the tree places them: a
+ *  requirement of the spec, which is a statement (`isStatement`). */
 export function statementNode(
   blockId: string,
   text: string,
@@ -127,6 +131,7 @@ export function statementNode(
     children: checks,
     id: blockNodeId(SPEC_SLUG, blockId),
     reference: `dispatch://${ISSUE_KEY}/${SPEC_SLUG}#b-${blockId}`,
+    statement: true,
     text,
     type: "requirement",
   });

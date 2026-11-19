@@ -21,7 +21,7 @@ export const DETAILS_ROW_REQUEST_EVENT = "details-row-request";
  * (`DETAILS_ROW_REQUEST_EVENT`), the row is brought into its view, and the
  * focus goes to the row's first control - or, with `press`, that control is pressed, as the
  * labels key presses Edit labels - so the reader is where the control that sent them said
- * (dispatch://INFRA-1196 R13). The focus is placed two frames on, after the drawer has given it
+ * (R13). The focus is placed two frames on, after the drawer has given it
  * to its own Close as it opens (`Margin.tsx`) and after the row's editor, where one opens, has
  * mounted. Outside a shell that draws Details the panel is in the page's own column, and the
  * row is reached there.

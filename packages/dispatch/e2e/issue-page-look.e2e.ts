@@ -260,6 +260,8 @@ test("the new issue page draws the whole document in the shipped typeface @phone
   // own until the header's menu comes, so the row moves through the router's history there: the
   // move a link makes, with no reload.
   const rail = page.getByTestId("icon-rail");
+  // The new page was drawn above, and the shell draws the rail in the render that routes to that
+  // page, from a width query read as it renders, so one count says whether this width has it.
   if ((await rail.count()) > 0) {
     await rail.getByRole("link", { name: /^Inbox/ }).click();
   } else {

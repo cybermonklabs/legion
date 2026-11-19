@@ -86,7 +86,7 @@ export function Margin({
   // a move: the drawer opens once per navigation, the first time the margin holds that card, and
   // a reader who closes it again keeps it closed. An address that names a node of the issue's
   // outline marks that item and is no pick: it lands on the node, and Details stays as it was
-  // (dispatch://INFRA-1196 R20). Every other page has no drawer, and nothing here runs there.
+  // (R20). Every other page has no drawer, and nothing here runs there.
   const pickedCard = model.selection.selectedItemId;
   const routeMarked = model.selection.routeMarkedItemId;
   const handledCard = useRef(pickedCard);
@@ -229,7 +229,7 @@ export const KEEPS_DETAILS_ATTRIBUTE = "data-keeps-details";
 
 /**
  * The new issue page's panel as a drawer, Details, which opens over the right of the page rather
- * than keeping a column of its own (dispatch://INFRA-1196 R14, the prototype's `#details`), so
+ * than keeping a column of its own (R14, the prototype's `#details`), so
  * the page's own column is the window less the navigation rail. It keeps what the margin's
  * column had: the width the reader gave it, kept across loads, and the handle that resizes it,
  * at its leading edge; its collapse is the drawer closed, as every load opens it. It casts the
@@ -387,6 +387,10 @@ function DetailsDrawer({
         }}
         role={isPhoneViewport ? "dialog" : undefined}
         style={isPhoneViewport ? undefined : { width: `${width}px` }}
+        // On the phone the sheet is a modal dialog, so a press on its text keeps the focus in it:
+        // with no focusable box there the press moves the focus to the body, and the sheet's own
+        // `Shift+M` above, which acts only while the focus is inside, no longer closes it.
+        tabIndex={isPhoneViewport ? -1 : undefined}
       >
         {isPhoneViewport ? null : (
           <DetailsResizeHandle onWidthChange={onWidthChange} width={width} />

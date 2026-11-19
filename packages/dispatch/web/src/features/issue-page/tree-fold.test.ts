@@ -13,9 +13,8 @@ import {
 } from "./tree-fold";
 
 /**
- * The fold, over a tree built by hand (dispatch://INFRA-1196 R1, R6,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t14`): the page opens folded to the frontier and not
- * to a fixed depth, and a question's path costs no other branch a row.
+ * The fold, over a tree built by hand: the page opens folded to the frontier and not to a fixed
+ * depth, and a question's path costs no other branch a row.
  */
 
 function node(
@@ -331,11 +330,13 @@ test("a replaced decision folds to one line with a count, and is not deleted", (
 // open question. A branch the reader cannot close is a branch they cannot read past.
 test("a branch the reader folds shut stays shut, whatever drew it open", () => {
   const root = node("CORE-1", "issue", [
-    node("spec#b-r1", "requirement", [node("verification-md#b-c1", "check")]),
+    node("spec#b-r1", "requirement", [
+      node("verification-md#b-c1", "check", [], { state: "no-result" }),
+    ]),
     node("doc-1", "document", [node("question", "ask", [], { question: true, state: "open" })]),
   ]);
-  // Nothing folded by hand: the requirement is open, because its check carries no state and so
-  // counts as not passed, and so is the path down to the open question.
+  // Nothing folded by hand: the requirement is open, because its check has no result and so has
+  // not passed, and so is the path down to the open question.
   expect(idsOf(treeRows(root))).toEqual([
     "CORE-1",
     "spec#b-r1",

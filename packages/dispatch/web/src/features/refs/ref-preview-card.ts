@@ -20,7 +20,7 @@ export function refPreviewOpenedIn(root: Element): boolean {
 }
 
 /** The attribute a surface carries whose references open no card on hover: the new issue page's
- *  frame (dispatch://INFRA-1196 R6) - `<main>` in it (`app.tsx`) and Details beside it
+ *  frame (R6) - `<main>` in it (`app.tsx`) and Details beside it
  *  (`features/margin/Margin.tsx`) - whose reader works it from the keyboard. A reference there
  *  still opens its card when the keyboard focuses it. */
 export const NO_HOVER_PREVIEW_ATTRIBUTE = "data-no-hover-preview";

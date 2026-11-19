@@ -18,9 +18,8 @@ import { waitingOnReader } from "./waiting";
 
 /**
  * What waits on the reader, read two ways from the same reads: the header's count
- * (`waitingOnReader`) and the tree's own `waiting` on each node (dispatch://INFRA-1196 R7, R13,
- * R35). The two must agree, or the count puts the focus on a node that does not wait, or counts
- * one it can never reach.
+ * (`waitingOnReader`) and the tree's own `waiting` on each node. The two must agree, or the
+ * count puts the focus on a node that does not wait, or counts one it can never reach.
  */
 
 const KEY = "CORE-1";
@@ -218,8 +217,9 @@ const change: Comment = {
 
 /** Whether `reference` names a statement of the issue, as the header reads it: by the coverage
  *  read's statements, each addressed as the tree addresses it, and none while that read has not
- *  answered. */
-const nodeIdOf = treeContext({ issue }).nodeIdOf;
+ *  answered. Only the context's addresses are read here and no chip's name, so the line it names
+ *  a block by is the whole reading's words (`wordsOf`), which nothing below reads. */
+const nodeIdOf = treeContext({ issue }, wordsOf).nodeIdOf;
 function statementsOf(read: IssueCoverage | undefined): (reference: string) => boolean {
   const statements = new Set(read?.requirements?.map((one) => nodeIdOf(one.ref)));
   return (reference) => statements.has(nodeIdOf(reference));
@@ -345,7 +345,7 @@ function changePlaces(
   return { chosen, own };
 }
 
-// R7, R13, R35, and the tester's F4 and F6: what waits on the reader is each open question whose
+// R7, R13, R35: what waits on the reader is each open question whose
 // turn is theirs, each decision of the review list - an agent's decision that waits, that a tie
 // names a statement for, and that the reader has not asked to change since it changed - and each
 // open approval request whose turn is theirs. The tree marks the same question and the same
@@ -496,7 +496,7 @@ test("a tie to a requirement the coverage read does not hold puts no decision on
 /** An intro of the decisions document that holds none of the quotes below. */
 const PLAIN_INTRO = "The decisions this issue made.";
 
-// Decision 92 of dispatch://INFRA-1196: a Change is a comment anchored to the decision's first
+// A Change is a comment anchored to the decision's first
 // block below its heading, and the server refuses a quote that matches more than one place in the
 // decisions document unless the write names which one. Here the first and the third decision open
 // with the same sentence: each Change names the occurrence that is its own block's, counted over
@@ -538,7 +538,7 @@ test("a Change of a decision whose first sentence another decision also opens wi
   expect(changeAnchor(headingOnly, rows, decisionsDocument(PLAIN_INTRO, sections))).toBeUndefined();
 });
 
-// Decision 92 of dispatch://INFRA-1196 as amended: the server counts a quote's places over the
+// The server counts a quote's places over the
 // whole decisions document, the text above its first decision included, which no row of the
 // decisions read holds. Here the intro quotes the first decision's opening sentence at the end of
 // its own words: that is the quote's first match, so the first decision's own block is its
@@ -569,7 +569,7 @@ test("a Change counts the quote's match in the decisions document's intro above 
   expect(places.chosen).toEqual(places.own);
 });
 
-// Decision 92 of dispatch://INFRA-1196 as amended: the server counts over the whole document,
+// The server counts over the whole document,
 // the `## Replaced` section and a `#` section included, and the decisions read holds every
 // decision in document order, the replaced ones in their place. The decisions are found by the
 // server's section rule: a `##` heading outside `## Replaced`, a `###` one under it, and a heading
@@ -615,7 +615,7 @@ test("a Change counts the quote's matches in a replaced decision and in a # sect
   expect(places.chosen).toEqual(places.own);
 });
 
-// Decision 92 of dispatch://INFRA-1196: the server's text holds one space between two list items
+// The server's text holds one space between two list items
 // (`buildFlattenedText`), so a decision whose first block below its heading is a list is quoted by
 // the list's words, its items one space apart, and the same words in an earlier decision's list
 // are a match above it. The second decision's list holds "Hold the deploy." and "Then ship.":
@@ -655,7 +655,7 @@ test("a Change of a decision whose first block is a list counts the same words i
   }
 });
 
-// Decision 92 of dispatch://INFRA-1196: the server lists every match of a quote, overlapping ones
+// The server lists every match of a quote, overlapping ones
 // included (`findAll`), so a match that starts in a decision's heading and runs into its first
 // block is listed before the block's own. The second decision's heading ends with "go" and its
 // first paragraph is "go go go": its words, "Ready, set, go go go go", hold the quote where the
@@ -760,7 +760,7 @@ const PURITY_DOCUMENT = decisionsDocument("Keep the model pure.", [
   paragraph("Test it alone."),
 ]);
 
-// Decision 92 of dispatch://INFRA-1196, from a pod of the build before during a rolling deploy,
+// A Change's occurrence, from a pod of the build before during a rolling deploy,
 // whose read sends no reading of a decision's text: the quote is then the first paragraph below
 // the heading as markdown (`anchorQuote`), and the count still comes from the document's reading.
 // Where that markdown is the paragraph's words, the reading lines up, and the two decisions

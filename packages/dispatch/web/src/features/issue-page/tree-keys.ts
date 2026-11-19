@@ -2,10 +2,9 @@ import type { TreeNode } from "./issue-tree";
 import type { DrawnRow, OpenedBranches } from "./tree-fold";
 
 /**
- * What the tree's keyboard asks of the model (dispatch://INFRA-1196 R9,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t15`). Pure, over the tree `issue-tree.ts` builds
- * and the rows `tree-fold.ts` draws, so the keys hold no reading of the model of their own and
- * a unit test answers the same question the page does.
+ * What the tree's keyboard asks of the model. Pure, over the tree `issue-tree.ts` builds and the
+ * rows `tree-fold.ts` draws, so the keys hold no reading of the model of their own and a unit
+ * test answers the same question the page does.
  */
 
 /** What tells two rows apart: the path from the root down to the node the row draws. A node

@@ -1451,12 +1451,63 @@ function askThreadsOn(issue: string): RefreshTarget {
 }
 
 /**
+ * Every names read the app holds (`referenceTargetsQuery`, `["reference-targets", <sorted
+ * addresses>]`, by that prefix) on an event that changes the words under an address a names read
+ * can already name, and none on any other: a comment's edit (its body), an ask's edit (its
+ * question) and a document's new version (its blocks' words), on whichever issue or project
+ * document it is, since a page's words can cite another issue's target. The issue page's
+ * names reads are kept fresh by events (`useIssueTree`'s `EVENT_FRESH`), never by their age,
+ * and a names read's key is the set of addresses it names, so a page that comes to hold
+ * another set reads again under a key of its own: only a change of words under the same
+ * address needs a rule.
+ * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
+ * naming none, as an older server sends it) renames every address to that issue, since a names
+ * read names an issue by its title, so it refreshes them too.
+ * A document's rename (`artifact.renamed`) moves the name the read answers for an address to the
+ * document, and its removal (`artifact.removed`) makes every address to it and to its blocks
+ * name nothing (`gone`), so each refreshes them too.
+ *
+ * A person's edit of a document (`artifact.human_edited`) is none of them: it is the notice sent
+ * once the document has been quiet after those edits, each of which wrote a version that sent
+ * its own `artifact.version` (the notice's branch of `ownerTargets`), so it changes no text. Nor
+ * is a message: the feed has no `message.edited` (its message events are `message.created`,
+ * `message.delivery`, `message.accepted` and `message.answered`), so a message's body never
+ * changes under its address.
+ *
+ * It costs one read per names query the app holds and renders (one request per batch of its
+ * addresses, which no ordinary issue passes), at most two for an open issue page - the tree's
+ * own and the one naming what a typed block's words cite (`useIssueTree`) - and marks stale one
+ * the app holds and renders not. It refreshes through the same `refreshQueries` every other
+ * rule does, so a read already out, or begun under a second ago, is fetched again once those
+ * rules allow.
+ */
+function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
+  switch (event.type) {
+    case "artifact.removed":
+    case "artifact.renamed":
+    case "artifact.version":
+    case "ask.edited":
+    case "comment.edited":
+      return [{ queryKey: ["reference-targets"] }];
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("title")
+        ? [{ queryKey: ["reference-targets"] }]
+        : [];
+    }
+    default:
+      return [];
+  }
+}
+
+/**
  * The reads one event of the feed can change, each a query key (a prefix unless `exact`) and, where
  * only some of a family's reads can have moved, a test of the read's data. `signedInLogin` is the
  * viewer's: the per-viewer events and the Replies rule read it.
  */
 export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string): RefreshTarget[] {
   const targets = [...ownerTargets(event, signedInLogin), ...changedReferenceTargets(event)];
+  targets.push(...referenceNameTargets(event));
   const threadsIssue = askThreadsIssue(event);
   if (threadsIssue !== null) {
     targets.push(askThreadsOn(threadsIssue));

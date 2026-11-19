@@ -39,7 +39,7 @@ import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
 /**
- * The new issue page's frame (dispatch://INFRA-3946, part D of dispatch://INFRA-1196): the icon
+ * The new issue page's frame (part D): the icon
  * rail, Details over the page, the Contents pane and the Outline sheet, the view row and its
  * chords, the frame's skeleton, and the guards that today's shell is what every other reader
  * and every other page still gets. Every row but the preference-off guard turns the new page on
@@ -115,7 +115,7 @@ async function focusNothing(page: Page): Promise<void> {
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 }
 
-/** `locator`'s box, failing the row where it draws none. */
+/** `locator`'s box once it is drawn, failing the row where it is never drawn. */
 async function boxOf(
   locator: Locator,
   what: string
@@ -125,6 +125,8 @@ async function boxOf(
   x: number;
   y: number;
 }> {
+  await expect(locator, `${what} is not drawn`).toBeVisible();
+  // The wait above drew the element, and a drawn element has a box, so the box is there.
   const box = await locator.boundingBox();
   if (box === null) throw new Error(`${what} draws no box`);
   return box;
@@ -412,10 +414,15 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
         await assertPageFits(page);
         await assertWhole(filterRow(page));
         await assertNoSidewaysScroll(filterRow(page), `the view row at ${width} px`);
+        // The shell draws the rail in the render that routes to the new page, from a width query
+        // read as it renders, and the view row was drawn above, so one count says whether this
+        // width has the rail.
         if ((await iconRail(page).count()) > 0) {
           await assertWhole(iconRail(page));
           await assertNoSidewaysScroll(iconRail(page), `the rail at ${width} px`);
         }
+        // The page draws the Contents pane in the render that draws the view row read above,
+        // from a width query read as it renders, so one count says whether this width has it.
         if ((await contentsPane(page).count()) > 0) {
           await assertNoSidewaysScroll(contentsPane(page), `the pane at ${width} px`);
         }
@@ -428,6 +435,8 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
           await closeDetails(page);
         }
       }
+      // The view row read above draws the Outline control in its own render, from a width query
+      // read as it renders, so one count says whether this width has it.
       if ((await outlineControl(page).count()) > 0) {
         await outlineControl(page).click();
         await assertNoSidewaysScroll(outlineSheet(page), `the Outline sheet at ${width} px`);
@@ -671,9 +680,13 @@ test("the five controls are toggles with an address each, one line at every widt
         ).toBeGreaterThanOrEqual(24);
       }
       // A control's words are the text it shows less what it hides from assistive technology,
-      // such as the menu control's `▾`, a glyph that names nothing (WCAG 2.5.3 reads words).
+      // such as a glyph that names nothing (WCAG 2.5.3 reads words).
       const named = filterRow(page).locator("button:visible");
+      // The poll above waited for the row to draw at this width and its controls were measured
+      // since, with no press between, so one count lists the buttons it shows.
       for (let at = 0; at < (await named.count()); at += 1) {
+        // The count above found this control drawn, and its words are the ones its render wrote,
+        // so one read says whether it shows any words.
         const words = await named.nth(at).evaluate((control: HTMLElement) => {
           let text = control.innerText;
           for (const hidden of control.querySelectorAll<HTMLElement>('[aria-hidden="true"]')) {
@@ -706,7 +719,7 @@ test("the five controls are toggles with an address each, one line at every widt
 
 // "760 px and below" starts at 760 px itself, where `HEADER_SCROLLS_QUERY` (`(max-width:
 // 760px)`) matches, the header scrolls away and the view row is the band that stays (decision
-// 72 of INFRA-1196's parts). Tailwind builds `max-[760px]:` as `@media not all and (min-width:
+// 72 of the parts). Tailwind builds `max-[760px]:` as `@media not all and (min-width:
 // 760px)`, which is under 760 px alone, so the row's classes are `max-[761px]:`; with
 // `max-[760px]:` the row has no sticky box at 760 px, and this row fails on "the view row has no
 // sticky box at 760 px", and with the one control's `max-[760px]:flex-1` it fails on "the one
@@ -779,7 +792,7 @@ async function topPadding(page: Page): Promise<{ padding: string; stays: number 
 }
 
 // What a scroll brings into view stands below everything that stays at the top of the screen
-// (decision 113 of INFRA-1196's parts): the page scrolls the document, whose
+// (decision 113 of the parts): the page scrolls the document, whose
 // `scroll-padding-top` is the height of the bands above the rows that are sticky at that width,
 // the view row at 390 px and the header's identity block, where a part draws it, at 1440 px. A
 // later part's focused row lands by `scrollIntoView`, which reads that padding. With no padding
@@ -820,7 +833,7 @@ async function scrollYInTwoFrames(page: Page): Promise<number> {
 }
 
 // A focus that enters the view row while it stays at the top of the screen leaves a scrolled page
-// where it is (decision 113 of INFRA-1196's parts, review 5930786767): each control in the row
+// where it is (decision 113 of the parts, review 5930786767): each control in the row
 // takes a top scroll margin of minus the row's height. The row stands in the band the page's
 // `scroll-padding-top` keeps clear, so without that margin the browser scrolls the page up to
 // bring a focused control below the band, and the row does not move: this row then fails on
@@ -895,9 +908,67 @@ test("at 390 px a focus that enters the view row leaves a scrolled page where it
   });
 });
 
+/** How many rows the cost row draws beside the view row: as many as a long outline holds. */
+const MANY_ROWS = 5000;
+
+/** The most elements whose style one added row may recalculate: the row and its neighbours. */
+const RECALCULATED_FOR_ONE_ROW = 100;
+
+// A change the new page makes recalculates the style of what it changed, not of the whole page:
+// adding one row to a page of `MANY_ROWS` rows recalculates the style of that row alone. The
+// view row's scroll margin once read `html:has([data-issue-page]) [data-filter-row] *`. A
+// selector whose subject is universal under an `html:has()` ancestor made each element added
+// with an attribute recalculate every element, so the issue page's rows drew four times
+// slower. The reading is Chrome's own count of the elements a style recalculation visits
+// (`UpdateLayoutTree`'s `elementCount`), not a time. On a reduced page of 5000 rows in Chrome 158,
+// one added row recalculated 10012 elements with that rule, and 3 (1440 px) or 5 (390 px)
+// without it. So with it this row fails on "adding one row recalculated the style of".
+test("adding one row to a page of many rows recalculates the style of that row alone, not of the whole page", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    for (const width of [390, 1440]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${key}`);
+      const elements = await issuePage(page).evaluate((root, many) => {
+        const list = document.createElement("ol");
+        list.id = "e2e-many-rows";
+        for (let at = 0; at < many; at += 1) {
+          const row = document.createElement("li");
+          row.textContent = `row ${at}`;
+          list.append(row);
+        }
+        root.append(list);
+        getComputedStyle(list.lastElementChild ?? list).color;
+        return document.getElementsByTagName("*").length;
+      }, MANY_ROWS);
+      await browser.startTracing(page, { categories: ["devtools.timeline"] });
+      await page.evaluate(() => {
+        const row = document.createElement("li");
+        row.setAttribute("data-added", "");
+        document.getElementById("e2e-many-rows")?.append(row);
+        getComputedStyle(row).color;
+      });
+      const trace = JSON.parse((await browser.stopTracing()).toString()) as {
+        traceEvents: { args?: { elementCount?: number }; name: string }[];
+      };
+      const recalculations = trace.traceEvents.filter((event) => event.name === "UpdateLayoutTree");
+      expect(recalculations.length, "the trace read no style recalculation").toBeGreaterThan(0);
+      const recalculated = recalculations.reduce(
+        (sum, event) => sum + (event.args?.elementCount ?? 0),
+        0
+      );
+      expect(
+        recalculated,
+        `adding one row recalculated the style of ${recalculated} elements of the page's ${elements} at ${width} px`
+      ).toBeLessThan(RECALCULATED_FOR_ONE_ROW);
+    }
+  });
+});
+
 // From an address that names a node (`#b-`), a pointer press on Spec, then on Decisions, then on
 // Verification's count moves to each view's address, one history entry each, and leaves the
-// focus where it was (decision 93 of INFRA-1196's parts). There, a press whose mousedown took the
+// focus where it was (decision 93 of the parts). There, a press whose mousedown took the
 // focus out of the outline closed the body of the outline's row, the page grew shorter under the
 // pointer, and the press ended elsewhere and did nothing. The outline is a later part's; here the
 // page's `main`, which takes the focus on a page change, holds it in the row's place. A count is
@@ -934,6 +1005,34 @@ test("from an address that names a node, a press on Spec, on Decisions and on Ve
       before + 3
     );
     await expect(holder, "a press on Verification's count took the focus").toBeFocused();
+  });
+});
+
+// On the phone, Details is a modal dialog, so a press on its text keeps the focus inside it, and
+// the sheet's own `Shift+M`, which acts only while the focus is inside, still closes it (decision
+// 168 of the parts). With no focusable box in the sheet, the press moves the focus to
+// the body, and this row fails on "a press on Details' text took the focus out of the sheet".
+test("at 390 px a press on Details' text keeps the focus in the sheet, and Shift+M then closes it", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await page.setViewportSize(viewportAt(390));
+    await gotoIssue(page, `/issues/${key}`);
+    await focusNothing(page);
+    await page.keyboard.press("Shift+M");
+    const phoneDetails = page.getByRole("dialog", { exact: true, name: "Details" });
+    await expect(phoneDetails, "Shift+M did not open the phone's Details").toBeVisible();
+    await expect(detailsClose(page)).toBeFocused();
+    await phoneDetails.getByRole("heading", { exact: true, name: "Details" }).click();
+    expect(
+      await phoneDetails.evaluate((sheet) => sheet.contains(document.activeElement)),
+      "a press on Details' text took the focus out of the sheet"
+    ).toBe(true);
+    await page.keyboard.press("Shift+M");
+    await expect(
+      phoneDetails,
+      "Shift+M after a press on Details' text did not close the sheet"
+    ).toBeHidden();
   });
 });
 
@@ -1004,8 +1103,8 @@ test("a reader with the preference off keeps today's shell on the issue page", a
 });
 
 /**
- * The new page fills a slot in the shell's margin and draws its own frame (dispatch://INFRA-1196
- * R12, R14), and the margin is mounted once for every route. These three rows say the frame
+ * The new page fills a slot in the shell's margin and draws its own frame (R12, R14), and the
+ * margin is mounted once for every route. These three rows say the frame
  * changed no other page for a reader who turned the new page on: each draws its margin as it did,
  * no rail, and no Details. Details carries `data-details` (`margin-slot.tsx`'s
  * `DETAILS_ATTRIBUTE`) open or closed, wherever the shell hands the margin a drawer.

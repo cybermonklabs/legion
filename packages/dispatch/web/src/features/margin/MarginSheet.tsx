@@ -137,7 +137,7 @@ interface MarginSheetProps {
    *  `DetailsDrawer`): a box that scrolls inside the drawer at every width, with no sheet of its
    *  own below `xl`, which draws only what the page put in the margin's slot - the slot's fill,
    *  handed this sheet's content - and nothing while the page has put nothing there
-   *  (dispatch://INFRA-1196 R14). False everywhere else. */
+   *  (R14). False everywhere else. */
   drawer?: boolean;
   model: MarginSheetModel;
 }
@@ -476,8 +476,7 @@ export function MarginSheet({
  * the new issue page's Details it is the sheet's own box. In Details it draws only what the page
  * put in the margin's slot (`margin-slot.tsx`), which is handed this content and answers what is
  * drawn in its place, and nothing while the page has put nothing there, so the content is drawn
- * once per load rather than plain first and again inside the page's panel (dispatch://INFRA-1196
- * R14, INFRA-2004).
+ * once per load rather than plain first and again inside the page's panel (R14).
  */
 function SheetBody({
   children,

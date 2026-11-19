@@ -124,7 +124,7 @@ export const anchoredAsk: Ask = {
  *  (`issue-page/issue-address.ts`'s `documentItem`). Every other address of the issue that names
  *  the comment - its own route (`/issues/KEY/comments/<id>`), `?comment=` - opens the new page's
  *  outline on the comment's node, and the margin in Details only marks its card there
- *  (`useMarginSheet.ts`'s `routeItemBesideDocument`, dispatch://INFRA-1196 R20). */
+ *  (`useMarginSheet.ts`'s `routeItemBesideDocument`, R20). */
 export function markedCommentPath(id: string): string {
   return `${buildIssuePath({ key: "CORE-1", kind: "artifact", slug: "spec" })}?mark=${id}`;
 }

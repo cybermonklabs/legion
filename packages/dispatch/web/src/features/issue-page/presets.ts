@@ -1,4 +1,13 @@
-import { drawnLine, firstLineOf, heldBy, lineWords, nodeWords, type TreeNode } from "./issue-tree";
+import {
+  drawnLine,
+  firstLineOf,
+  heldBy,
+  isCheck,
+  isStatement,
+  lineWords,
+  nodeWords,
+  type TreeNode,
+} from "./issue-tree";
 import {
   type FILTER_SIGNAL_WORDS,
   NODE_TYPE_NAMES,
@@ -7,8 +16,7 @@ import {
 } from "./page-words";
 
 /**
- * The page with no filter on, and the four filters, as views of the one tree
- * (dispatch://INFRA-1196 R1, R2).
+ * The page with no filter on, and the four filters, as views of the one tree.
  *
  * With no filter on - Conversation - the view is the whole tree, folded to the frontier by the
  * outline (`tree-fold.ts`). The words filter (`?q=`) narrows it to the nodes whose words hold
@@ -17,15 +25,19 @@ import {
  *
  * A filter draws as rows its own kinds and no other (R2): Spec the requirements; Verification
  * each requirement as context with the checks under it and their results; Plan the plan tasks;
- * Decisions the asks and the decisions. The issue itself is no row of a filter. Every other
- * parent of a drawn node - an ask, a comment, a message, a requirement under Plan - is one line
- * on its child's row (`TreeNode.parentLine`), never a row: a drawn node whose parent is no row
- * is drawn where that parent stood, under the nearest drawn node above it, or at the top. A
- * check serves several requirements and Verification draws it under each, as the outline does;
- * every other filter draws a node once, at its own place, since a plan task drawn under each
- * requirement it serves would be one step drawn several times (R26).
+ * Decisions the asks and the decisions. The issue itself is no row of a filter. A requirement
+ * is one only where it is a statement of the spec (`isStatement`), and a check only where it is
+ * a check of the Verification document (`isCheck`): a `requirement` or `check` block of any
+ * other document is a block and nothing more, which no filter draws or counts as its kind
+ * (`kindOf`). Every other parent of a drawn node - an ask,
+ * a comment, a message, a requirement under Plan - is one line on its child's row
+ * (`TreeNode.parentLine`), never a row: a drawn node whose parent is no row is drawn where that
+ * parent stood, under the nearest drawn node above it, or at the top. A check serves several
+ * requirements and Verification draws it under each, as the outline does; every other filter
+ * draws a node once, at its own place, since a plan task drawn under each requirement it serves
+ * would be one step drawn several times (R26).
  *
- * Today's reads give no query node (dispatch://INFRA-1253), so each filter is read off the tree
+ * Today's reads give no query node, so each filter is read off the tree
  * `issue-tree.ts` builds from the reads that exist: the kinds are R2's, and the context and the
  * parent's line are this module's.
  *
@@ -93,6 +105,16 @@ export interface PresetView {
   /** Whether the issue itself is the outline's first row: with no filter on, and never under a
    *  filter, which draws its own kinds as rows and no other (R2). */
   readonly rootRow: boolean;
+}
+
+/** The kind a filter reads `node` as: its type, but for a requirement that is no statement
+ *  (`isStatement`) and a check that is no check (`isCheck`), which are blocks of a document that
+ *  does not play that part and nothing more, so no filter draws or counts either as its kind;
+ *  undefined for both. */
+function kindOf(node: TreeNode): NodeType | undefined {
+  if (node.type === "requirement" && !isStatement(node)) return undefined;
+  if (node.type === "check" && !isCheck(node)) return undefined;
+  return node.type;
 }
 
 /** Whether `node`'s words hold `wanted`, which is already lowercased; `""` holds everywhere.
@@ -182,10 +204,16 @@ function filterView(
   const lift = (node: TreeNode): { readonly drawn: boolean; readonly rows: TreeNode[] } => {
     if (!everyPlacement && node.transcluded) return { drawn: false, rows: [] };
     const parts = node.children.map(lift);
-    const own = named.has(node.id) || (rows.includes(node.type) && holds(node, wanted));
+    // A `requirement` or `check` block of a document that does not play that part is of no
+    // kind a filter draws (`kindOf`): it is a row only where the address names it, and counted
+    // nowhere.
+    const kind = kindOf(node);
+    const own =
+      named.has(node.id) || (kind !== undefined && rows.includes(kind) && holds(node, wanted));
     const placing =
       !own &&
-      contextKinds.includes(node.type) &&
+      kind !== undefined &&
+      contextKinds.includes(kind) &&
       (wanted === "" || holds(node, wanted) || parts.some((part) => part.rows.length > 0));
     const drawn = own || placing;
     // A drawn child under a node that is no row carries that node as its one line, cut by R1's
@@ -212,7 +240,7 @@ function filterView(
         : part.rows
     );
     if (!drawn) return { drawn: false, rows: below };
-    if (own && counted.includes(node.type)) matched.add(node.id);
+    if (own && kind !== undefined && counted.includes(kind)) matched.add(node.id);
     if (placing) context.add(node.id);
     return { drawn: true, rows: [{ ...node, children: below, held: heldBy(below) }] };
   };
@@ -248,11 +276,12 @@ export interface PresetSignal {
   readonly unit?: keyof typeof FILTER_SIGNAL_WORDS;
 }
 
-/** The distinct nodes of `type` the view draws that `counts` holds for. */
+/** The distinct nodes of `type` the view draws that `counts` holds for, each read as its kind
+ *  (`kindOf`), so a block that is no check is no failing check. */
 function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boolean): number {
   const found = new Set<string>();
   const walk = (node: TreeNode): void => {
-    if (node.type === type && counts(node)) found.add(node.id);
+    if (kindOf(node) === type && counts(node)) found.add(node.id);
     for (const child of node.children) walk(child);
   };
   walk(root);
@@ -285,7 +314,7 @@ export function filterSignals(
   const view = (filter: Filter) => presetView(root, filter, query);
   const verification = view("verification");
   const decisions = view("decisions");
-  // A check's state is the page's one reading of it at the commit the page names
+  // A check's state is the page's one reading of it, as the server reads its results
   // (`tree-drafts.ts`'s `checkStanding`), so this flag and the Verification body count the same
   // checks as failed.
   const failing = countOf(verification.root, "check", (node) => node.state === "failed");

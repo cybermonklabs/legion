@@ -17,7 +17,7 @@ import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
 /**
- * How a browser row opens the new issue page (dispatch://INFRA-1196) and reads its frame: the
+ * How a browser row opens the new issue page and reads its frame: the
  * page's root, the view row, the icon rail, Details and the Contents pane and sheet.
  *
  * This is part D's file, and no later part changes it (decision 2 of the parts): each later part
@@ -176,6 +176,8 @@ export function detailsClose(page: Page): Locator {
 
 /** Opens Details with its key, `Shift+M`, unless it is open already. */
 export async function openDetails(page: Page): Promise<void> {
+  // Details opens only on a press and every load draws it closed, and each caller has waited on
+  // a load or on Details itself since its last press, so one read says whether it is open.
   if (await marginShell(page).isVisible()) return;
   await page.keyboard.press("Shift+M");
   await expect(marginShell(page), "Shift+M did not open Details").toBeVisible();
@@ -185,6 +187,8 @@ export async function openDetails(page: Page): Promise<void> {
  *  which the drawer hands the focus back, so a key pressed next reaches what the caller focuses
  *  and not the drawer's opener. */
 export async function closeDetails(page: Page): Promise<void> {
+  // Details closes only on a press or a load, and each caller has waited for it to open since
+  // its last press, so one read says whether it is open.
   if (!(await marginShell(page).isVisible())) return;
   await expect(detailsClose(page), "Details draws no Close").toHaveCount(1);
   await detailsClose(page).click();

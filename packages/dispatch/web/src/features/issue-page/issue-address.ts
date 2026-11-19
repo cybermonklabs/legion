@@ -8,8 +8,7 @@ import type { Preset } from "./page-words";
 import { blockNodeId } from "./tree-drafts";
 
 /**
- * What one address of the issue page says (dispatch://INFRA-1196 R19,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t9`).
+ * What one address of the issue page says.
  *
  * Every address the old page's nine tabs answered still resolves, and this module is the one
  * place that says what each one opens: which preset, which document is opened in place of the
@@ -37,8 +36,8 @@ export type AddressTarget =
    *  (`agentsOnlyItem`). */
   | { readonly kind: "item"; readonly id: string }
   /** The issue's children, by the issue's own key: the children's own address (`/children`,
-   *  `t h`) names the first row of their group in the outline (the architect's ruling 5 on R12),
-   *  which the page unfolds the path to and puts the focus on. */
+   *  `t h`) names the first row of their group in the outline, which the page unfolds the path
+   *  to and puts the focus on. */
   | { readonly kind: "children"; readonly id: string };
 
 /** What one address of the issue page opens. */

@@ -18,7 +18,7 @@ const PARTS = {
 } as const;
 
 /** What takes the focus inside each part, where the part itself does not: the tree's one tab
- *  stop (`dispatch://INFRA-1196/artifact/plan-md#b-t18`). */
+ *  stop. */
 const TAKES_FOCUS: Readonly<Record<keyof typeof PARTS, string | undefined>> = {
   tree: '[data-node-row][tabindex="0"]',
 };

@@ -212,7 +212,7 @@ function Details({
   );
 }
 
-// dispatch://INFRA-1196 R20: on the new issue page a comment's own route, and `?comment=` on an
+// R20: on the new issue page a comment's own route, and `?comment=` on an
 // issue's address, open the outline on the comment's node, focused. The margin in Details marks
 // its copy of the comment and expands nothing at a desktop width either: an expanded thread's
 // Reply box takes the focus off that node as it mounts.
@@ -262,7 +262,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
   }
 });
 
-// dispatch://INFRA-1196 R14: Details is closed on every load, but a reader who follows a link to
+// R14: Details is closed on every load, but a reader who follows a link to
 // a comment beside its document asked to see that comment's card, so the drawer opens for it -
 // once, so their Close keeps it closed. A link to a comment's node lands on the outline and
 // leaves Details closed.
@@ -313,7 +313,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
   }
 });
 
-// R14 of INFRA-1196: on a phone Details is a sheet over the whole page, so a link followed inside
+// R14: on a phone Details is a sheet over the whole page, so a link followed inside
 // it closes the sheet. The page draws its panels into the drawer through a portal, outside the
 // drawer's React tree, so the drawer must hear the link's click from the DOM.
 test("on a phone, a link followed in a panel portaled into Details closes the sheet", async () => {

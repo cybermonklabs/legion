@@ -30,12 +30,12 @@ import type { PresetSignal } from "./presets";
 import { useShortcutHelpOpener } from "./shortcut-help-opener";
 
 /**
- * The view row (dispatch://INFRA-1196 R2, R11, R20, and the prototype's view tabs): five
+ * The view row (R2, R11, R20, and the prototype's view tabs): five
  * controls, Conversation - the page with no view on - then Spec, Verification, Plan and
  * Decisions, each with its signal; and Keys at its right end.
  *
- * The row is one line at every width (ruling 5 of dispatch://INFRA-1196/artifact/build-rulings-md,
- * the 1440 and 390 px pictures). At 760 px and below the row is the one control and Outline,
+ * The row is one line at every width (the architect's ruling 5, the 1440 and 390 px pictures).
+ * At 760 px and below the row is the one control and Outline,
  * which stay at the top of the screen while the header scrolls away (`identity-block.ts` finds
  * the row by `FILTER_ROW_ATTRIBUTE`), and Keys is not drawn.
  *
@@ -247,9 +247,7 @@ export function IssuePresets({
               </span>
               <Signal preset={active} signal={signals[active]} />
             </span>
-            <span aria-hidden="true" {...pageChrome}>
-              ▾
-            </span>
+            <MenuMark />
           </button>
           {open === "presets" ? (
             <div className={`${pageMenu} left-0`} onKeyDown={walkMenu} role="menu">
@@ -363,6 +361,24 @@ export function IssuePresets({
       <span className="flex-1" />
       <div className="mb-[7px]">{atTheEnd}</div>
     </div>
+  );
+}
+
+/** The one control's ▾, drawn one em square so it takes the size of the control's text, in its
+ *  colour. It is a shape and not text, as `StatusGlyph`'s are, because the page's typeface lacks
+ *  ▾: as text, it is drawn in a face of the reader's own machine, at that face's width. The
+ *  control's `aria-haspopup` says it opens a menu, so the shape is hidden from assistive
+ *  technology. */
+function MenuMark(): ReactNode {
+  return (
+    <svg
+      aria-hidden="true"
+      className="inline-block size-[1em] shrink-0 align-middle"
+      focusable="false"
+      viewBox="0 0 16 16"
+    >
+      <path d="M4.5 6.5h7L8 10.5z" fill="currentColor" />
+    </svg>
   );
 }
 

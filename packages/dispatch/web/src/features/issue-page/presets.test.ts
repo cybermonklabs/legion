@@ -8,9 +8,9 @@ import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
 
 /**
- * The page with no filter on and the four filters as views of the one tree (dispatch://INFRA-1196
- * R1, R2): with no filter on the whole tree, folded to the frontier; under a filter its own
- * kinds as rows and no other, each other parent a line on its child's row.
+ * The page with no filter on and the four filters as views of the one tree: with no filter on
+ * the whole tree, folded to the frontier; under a filter its own kinds as rows and no other, each
+ * other parent a line on its child's row.
  */
 
 function node(
@@ -35,6 +35,16 @@ function node(
     waiting: false,
     ...extra,
   };
+}
+
+/** A requirement of the spec, which the tree marks a statement (`isStatement`): the requirement
+ *  the Spec filter draws as a row and the Verification filter as context. */
+function statement(
+  id: string,
+  children: readonly TreeNode[] = [],
+  extra: Partial<TreeNode> = {}
+): TreeNode {
+  return node(id, "requirement", children, { statement: true, ...extra });
 }
 
 /** The ids of every row drawn, in reading order; a branch's own row reads as `more:<id>`. */
@@ -81,12 +91,12 @@ function issue(): TreeNode {
       "ask-1",
       "ask",
       [
-        node("spec#b-r1", "requirement", [check(false), node("plan#b-t1", "plan_task")]),
+        statement("spec#b-r1", [check(false), node("plan#b-t1", "plan_task")]),
         node("decision-1", "decision", [], { state: "kept" }),
       ],
       { state: "answered", text: "Which layout does the page take? The three pictures show it." }
     ),
-    node("spec#b-r2", "requirement", [
+    statement("spec#b-r2", [
       check(true),
       node("plan#b-t1", "plan_task", [], { transcluded: true }),
     ]),
@@ -241,7 +251,7 @@ test("the Decisions count leaves out a section that restates a person's answer",
 // parent's own address where the model gives it one, so the line is the link to that node.
 test("a parent line carries the parent's own address", () => {
   const root = node("CORE-1", "issue", [
-    node("spec#b-r1", "requirement", [node("plan#b-t1", "plan_task")], {
+    statement("spec#b-r1", [node("plan#b-t1", "plan_task")], {
       reference: "dispatch://CORE-1/spec#b-r1",
     }),
     node("comment-1", "comment", [node("plan#b-t2", "plan_task")]),
@@ -258,7 +268,7 @@ test("a parent line carries the parent's own address", () => {
   ]);
 });
 
-// R1, R2 and the architect's ruling 1: a parent's line is drawn as a row's first line is
+// R1, R2: a parent's line is drawn as a row's first line is
 // (`drawnLine`), with an ellipsis where the cut ended inside a sentence and none where the line
 // is a whole sentence, whose own mark ends it.
 test("a parent's line draws its ellipsis only where the cut ended inside a sentence", () => {
@@ -269,11 +279,11 @@ test("a parent's line draws its ellipsis only where the cut ended inside a sente
     "an issue that holds many asks and",
   ].join(" ");
   const root = node("CORE-1", "issue", [
-    node("ask-1", "ask", [node("spec#b-r1", "requirement")], {
+    node("ask-1", "ask", [statement("spec#b-r1")], {
       state: "answered",
       text: `${kept} many comments?`,
     }),
-    node("ask-2", "ask", [node("spec#b-r2", "requirement")], {
+    node("ask-2", "ask", [statement("spec#b-r2")], {
       state: "answered",
       text: "Which layout does the page take? The three pictures show it.",
     }),
@@ -303,12 +313,12 @@ test("a parent whose reading opens with a heading draws that heading alone as it
   };
   const text = `## ${heading}\n\nThe three pictures show it.`;
   const root = node("CORE-1", "issue", [
-    node("ask-1", "ask", [node("spec#b-r1", "requirement")], {
+    node("ask-1", "ask", [statement("spec#b-r1")], {
       state: "answered",
       text,
       tree: reading,
     }),
-    node("ask-2", "ask", [node("spec#b-r2", "requirement")], { state: "answered", text }),
+    node("ask-2", "ask", [statement("spec#b-r2")], { state: "answered", text }),
   ]);
   expect(parentLines(presetView(root, "spec", "").root)).toEqual({
     "spec#b-r1": `ask: ${heading}`,
@@ -322,7 +332,7 @@ test("a parent whose reading opens with a heading draws that heading alone as it
 test("a parent with no words is drawn on its child's row as its kind's word, never its id", () => {
   const ruled: DisplayTree = { content: [{ type: "horizontal_rule" }], type: "doc" };
   const root = node("CORE-1", "issue", [
-    node("spec#b-r1", "requirement", [node("plan#b-t1", "plan_task")], { text: "" }),
+    statement("spec#b-r1", [node("plan#b-t1", "plan_task")], { text: "" }),
     node("comment-1", "comment", [node("plan#b-t2", "plan_task")], { text: "---", tree: ruled }),
     node("ask-1", "ask", [node("plan#b-t3", "plan_task")], { state: "answered", text: "" }),
   ]);

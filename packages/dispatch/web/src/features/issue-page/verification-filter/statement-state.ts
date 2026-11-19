@@ -1,11 +1,10 @@
 import type { CheckBlock } from "../../../api/types";
-import type { TreeNode } from "../issue-tree";
+import { isCheck, isStatement, type TreeNode } from "../issue-tree";
 import type { CheckState, StatementState } from "../page-words";
-import { checkStanding, namedCommit, newestFirst } from "../tree-drafts";
+import { checkStanding, newestFirst, standingResults } from "../tree-drafts";
 
 /**
- * How each statement of the issue stands, and the one commit the page names for its results
- * (dispatch://INFRA-1196 R17, R2's Verification clauses).
+ * How each statement of the issue stands, and the one commit the page names for its results.
  *
  * The Verification filter draws each statement with the checks that serve it and their latest
  * results. R17 adds three readings over that, and all three are here, pure, so the body draws
@@ -13,25 +12,35 @@ import { checkStanding, namedCommit, newestFirst } from "../tree-drafts";
  *
  * - **One commit for the issue's results.** The page names it once, where the results are read,
  *   rather than on every result (`VerificationFilterBody.tsx`). It is the commit of the newest
- *   result recorded against any check of the issue that still stands: a withdrawn result is no
- *   evidence, as the server counts it (`results_comparison.go`'s `passStandsOf` skips it, and
- *   `tree-drafts.ts`'s `checkState` reads the newest result a retraction left standing), so a
- *   withdrawal may not move the commit every other result is read against and leave a page of
- *   results that each read "Out of date".
- * - **Met, Not met, Unknown.** A statement reads Met where every check of it passed at that
- *   commit, Not met where one failed there, and Unknown otherwise - no check at all, a result
- *   recorded against another commit, a withdrawn one, or a check Dispatch could not read. The
- *   checks' own states say which of those it is, in the words `NODE_STATE_WORDS.check` declares.
+ *   result recorded against any check of the issue that still stands, against the words its
+ *   check has now: a withdrawn result is no evidence, as the server counts it
+ *   (`results_comparison.go`'s `passStandsOf` skips it, and `tree-drafts.ts`'s `checkStanding`
+ *   reads only the results a retraction left standing), so a withdrawal may not move the commit
+ *   the page names; and a result recorded against words its check no longer has stands for
+ *   nothing either (the server's `standingCommit`), so it names no commit. It is what the body
+ *   names, and nothing more: it decides no check's state and no statement's.
+ * - **Met, Not met, Unknown.** A statement reads Met where every check of it reads Passed, Not
+ *   met where one reads Failed, and Unknown otherwise - no check at all, a result recorded
+ *   against another commit than its check compares with, a withdrawn one, or a check Dispatch
+ *   could not read. The checks' own states say which of those it is, in the words
+ *   `NODE_STATE_WORDS.check` declares.
  * - **Covered.** How many statements carry a check. It is covered and never proven or met: a
  *   statement that has a check is not a statement that is true (R17, R22).
  *
  * How one check stands is `tree-drafts.ts`'s `checkStanding`, the page's one reading of it:
- * `checkState`'s answer over the basis the check itself carries (`compared_with`), turned over
- * at the one commit the page names, because R17 reads every result of the issue against that
- * commit - a fail there reads Failed whatever older pass the server still counts, and a pass or
- * a fail recorded against another commit reads "Out of date". The tree's check node holds the
- * same reading (`addChecks`), so this body, the outline's row, the fold's frontier and the
- * filter row's failing count say one word for one check.
+ * each of its results read against the commit the server names for that check, the basis it
+ * compares with (`commit_stands`), as the server reads it, where the newest result over the
+ * check's words now at that basis decides - a fail there is Failed whatever older pass the
+ * server still counts, and a newer result at another commit says nothing about it. Two checks
+ * of one issue compare with different commits, so no check is read against the one commit the
+ * page names.
+ * The tree's check node holds the same reading (`addChecks`), so this body, the outline's row,
+ * the fold's frontier and the filter row's failing count say one word for one check, and it is
+ * the word the check's result says of itself (`check-facts.ts`'s `resultFacts`).
+ *
+ * A statement is a requirement of the issue's spec (`isStatement`) and a check a check of its
+ * Verification document (`isCheck`): a `requirement` or `check` block of any other document is a
+ * block and nothing more, which this reading neither draws as a statement nor counts as a check.
  *
  * The model holds no React and makes no request: the body draws it, and the unit rows read the
  * same functions.
@@ -42,20 +51,19 @@ export const STATEMENT_STATES: readonly StatementState[] = ["met", "not_met", "u
 
 /** One check of a statement, as the body draws it. */
 export interface CheckReading {
-  /** Whether the result its state stands on ran at the commit the page names, which is what
-   *  "passed at that commit" and "failed there" are read from (R17). */
-  readonly atNamedCommit: boolean;
+  /** Whether the result its state stands on stands for something at the commit the server names
+   *  for the check: at the basis the check compares with (`commit_stands` is `at_basis`) and
+   *  recorded against the check's words now, as the server's `standingCommit` reads it. */
+  readonly atBasis: boolean;
   /** Every other result of the check, newest first, which the body folds into one line with
-   *  their count under the latest (ruling 6 of build-rulings-md: a check with 431 results drew
-   *  a page 149,936 px tall). */
+   *  their count under the latest (a check with 431 results drew a page 149,936 px tall). */
   readonly earlier: readonly TreeNode[];
   /** The result the body draws under the check: the newest that still stands, or, where every
    *  result of it was withdrawn, the newest withdrawn one, since that is what the reader is
    *  owed. Absent where the check has no result at all, and where the results read has not
    *  answered for the check. */
   readonly latest?: TreeNode;
-  /** The id of the result the check's state stands on - the newest pass that stands for a
-   *  check that passed, and the newest result that stands for every other - which the body
+  /** The id of the result the check's state stands on (`CheckStanding.stands`), which the body
    *  marks wherever it draws it; absent where none stands. */
   readonly standsOn?: string;
   /** The check's own node, with its words and the four attributes its body draws. */
@@ -100,14 +108,30 @@ export function shortCommit(sha: string): string {
   return sha.slice(0, COMMIT_CHARACTERS);
 }
 
-/** The one commit the page names for the issue's results (R17): the commit of the newest result
- *  that still stands and names one. The rule is `tree-drafts.ts`'s, beside `checkStanding`,
- *  since the tree reads every check's state at this commit too and cannot import this module. */
-export { namedCommit };
+/**
+ * The one commit the page names for the issue's results (R17): the commit of the newest result
+ * recorded against any check of the issue that still stands, against the words its check has
+ * now, and names one. A result nobody withdrew is the evidence the page reads, so a withdrawn
+ * result names no commit here; nor does one recorded against words its check no longer has
+ * (`check_words_moved`), which the server's `standingCommit` (`results_comparison.go`) gives no
+ * standing; and a result recorded with no commit at all names none either.
+ *
+ * It is the commit the Verification filter's body names, and nothing reads a check's or a
+ * statement's state at it: each check is read at the commit the server names for that check
+ * (`tree-drafts.ts`'s `checkStanding`).
+ */
+export function namedCommit(checks: readonly CheckBlock[]): string | undefined {
+  const named = checks.flatMap((check) =>
+    standingResults(check).filter(
+      (result) => result.commit_sha !== "" && result.check_words_moved !== true
+    )
+  );
+  return newestFirst(named)[0]?.commit_sha;
+}
 
 /**
  * The reading the body draws: the one commit, each statement with its checks and their latest
- * results, how each statement stands at that commit, and how many carry a check.
+ * results, how each statement stands, and how many carry a check.
  *
  * `view` is the tree the Verification filter left (`presets.ts`'s `presetView`): its top rows
  * are the statements the filter draws as context, each with the checks that serve it under it
@@ -123,19 +147,18 @@ export function verificationReading({
   readonly checks: readonly CheckBlock[];
   readonly view: TreeNode;
 }): VerificationReading {
-  const { commit, read } = checkReader(checks);
-  const statements = view.children
-    .filter((node) => node.type === "requirement")
-    .map((node): StatementReading => {
-      const readings = node.children.filter((child) => child.type === "check").map(read);
-      return { checks: readings, node, state: statementState(readings) };
-    });
+  const read = checkReader(checks);
+  const commit = namedCommit(checks);
+  const statements = view.children.filter(isStatement).map((node): StatementReading => {
+    const readings = node.children.filter(isCheck).map(read);
+    return { checks: readings, node, state: statementState(readings) };
+  });
   return {
     ...(commit === undefined ? {} : { commit }),
     covered: statements.filter((statement) => carriesCheck(statement.node, statement.checks))
       .length,
-    loose: view.children.filter((node) => node.type === "check").map(read),
-    others: view.children.filter((node) => node.type !== "requirement" && node.type !== "check"),
+    loose: view.children.filter(isCheck).map(read),
+    others: view.children.filter((node) => !isStatement(node) && !isCheck(node)),
     statements,
   };
 }
@@ -158,20 +181,20 @@ export interface StatementStanding {
 }
 
 /**
- * How every statement of the whole tree stands at the commit the page names, by its node id:
- * the reading the Verification filter draws beside each statement, for the Spec filter's mark,
- * so one statement never reads Met in one view and something else in the other (R17). `root`
- * is the whole tree, where each check sits under every statement it serves.
+ * How every statement of the whole tree stands, by its node id: the reading the Verification
+ * filter draws beside each statement, for the Spec filter's mark, so one statement never reads
+ * Met in one view and something else in the other (R17). `root` is the whole tree, where each
+ * check sits under every statement it serves.
  */
 export function statementStandings(
   root: TreeNode,
   checks: readonly CheckBlock[]
 ): ReadonlyMap<string, StatementStanding> {
-  const { read } = checkReader(checks);
+  const read = checkReader(checks);
   const standings = new Map<string, StatementStanding>();
   const walk = (node: TreeNode): void => {
-    if (node.type === "requirement" && !standings.has(node.id)) {
-      const readings = node.children.filter((child) => child.type === "check").map(read);
+    if (isStatement(node) && !standings.has(node.id)) {
+      const readings = node.children.filter(isCheck).map(read);
       standings.set(node.id, {
         covered: carriesCheck(node, readings),
         state: statementState(readings),
@@ -184,15 +207,15 @@ export function statementStandings(
 }
 
 /**
- * How a statement stands at the commit the page names: Met where every check of it passed
- * there, Not met where one failed there, and Unknown otherwise, which is where it carries no
- * check, where a check's evidence was recorded against another commit, and where a check
- * stands in any of the other five states (R17).
+ * How a statement stands, from its checks' own states (R17): Met where every check of it reads
+ * Passed, Not met where one reads Failed, and Unknown otherwise, which is where it carries no
+ * check, where a check's evidence was recorded against another commit than the one the server
+ * names for it, and where a check stands in any of the other five states.
  */
 export function statementState(checks: readonly CheckReading[]): StatementState {
   if (checks.length === 0) return "unknown";
-  if (checks.every((check) => check.state === "passed" && check.atNamedCommit)) return "met";
-  if (checks.some((check) => check.state === "failed" && check.atNamedCommit)) return "not_met";
+  if (checks.every((check) => check.state === "passed")) return "met";
+  if (checks.some((check) => check.state === "failed")) return "not_met";
   return "unknown";
 }
 
@@ -205,39 +228,28 @@ export function statementCounts(
   return counts;
 }
 
-/** The commit the page names for `checks`' results, and how one check node of the tree reads at
- *  it (`checkReading`): the node is tied to its block by its own address, which the tree carries
- *  (`tree-drafts.ts` writes `check.ref` into the node's `reference`). */
-function checkReader(checks: readonly CheckBlock[]): {
-  readonly commit: string | undefined;
-  readonly read: (node: TreeNode) => CheckReading;
-} {
+/** How one check node of the tree reads (`checkReading`): the node is tied to its block by its
+ *  own address, which the tree carries (`tree-drafts.ts` writes `check.ref` into the node's
+ *  `reference`). */
+function checkReader(checks: readonly CheckBlock[]): (node: TreeNode) => CheckReading {
   const blocks = new Map(
     checks.filter((check) => check.ref !== "").map((check) => [check.ref, check])
   );
-  const commit = namedCommit(checks);
-  return {
-    commit,
-    read: (node) => checkReading(node, blocks.get(node.reference ?? ""), commit),
-  };
+  return (node) => checkReading(node, blocks.get(node.reference ?? ""));
 }
 
 /**
- * How one check stands at the commit the page names, and the result the body draws under it.
+ * How one check stands, and the result the body draws under it.
  *
  * The state, and the result it stands on, are `checkStanding`'s (`tree-drafts.ts`): the one
- * reading of a check the tree's node holds too, which is `checkState`'s answer turned over at
- * the named commit (R17). What this adds is the body's own: whether that result ran at the
- * named commit, the latest result the body draws under the check, and every other result, which
- * the body folds under it.
+ * reading of a check the tree's node holds too, which reads each result at the commit the server
+ * names for the check. What this adds is the body's own: whether that result stands at the
+ * check's basis, the latest result the body draws under the check, and every other result,
+ * which the body folds under it.
  */
-function checkReading(
-  node: TreeNode,
-  block: CheckBlock | undefined,
-  commit: string | undefined
-): CheckReading {
-  if (block === undefined) return { atNamedCommit: false, earlier: [], node };
-  const { state, stands } = checkStanding(block, commit);
+function checkReading(node: TreeNode, block: CheckBlock | undefined): CheckReading {
+  if (block === undefined) return { atBasis: false, earlier: [], node };
+  const { state, stands } = checkStanding(block);
   const results = newestFirst(block.results ?? []);
   // What the body draws under the check: the newest result that stands, and where a retraction
   // left none standing the newest withdrawn one, which is what a retracted check has to show.
@@ -247,7 +259,10 @@ function checkReading(
   );
   const drawnResult = latest === undefined ? undefined : resultNodes.get(latest.id);
   return {
-    atNamedCommit: stands !== undefined && commit !== undefined && stands.commit_sha === commit,
+    atBasis:
+      stands !== undefined &&
+      stands.check_words_moved !== true &&
+      stands.commit_stands?.answer === "at_basis",
     earlier: results.flatMap((result) => {
       const held = resultNodes.get(result.id);
       return held === undefined || result.id === latest?.id ? [] : [held];

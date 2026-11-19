@@ -16,7 +16,7 @@ import { buildProjectPath } from "../refs/routes";
 /**
  * The shell's navigation on the issue page, from the phone's width up: a 56 px column of icons
  * in place of the 320 px sidebar, so the issue's header and outline have the window less 56 px
- * (dispatch://INFRA-1196 R14, the prototype's `#rail`). Every other page keeps the sidebar.
+ * (R14, the prototype's `#rail`). Every other page keeps the sidebar.
  *
  * Each icon is a link whose accessible name is its label, the words the sidebar gives the same
  * entry, and nothing opens on hover: the page carries no tooltip (R6). What the sidebar holds

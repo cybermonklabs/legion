@@ -1,14 +1,18 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
+import { eventRefreshTargets } from "../../api/event-refresh";
+import { MIN_REFETCH_INTERVAL_MS, refreshQueries } from "../../api/query-refresh";
 import type {
   Artifact,
   ArtifactBlock,
   Comment,
+  DispatchEvent,
   DisplayTree,
+  EventType,
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
@@ -18,6 +22,8 @@ import {
   ReferenceNamesProvider,
   useKnownAmbiguousReferences,
   useKnownReferenceName,
+  useKnownReferenceNames,
+  usePublishReferenceNames,
 } from "./reference-names";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
@@ -292,7 +298,7 @@ const TREE_READS: readonly TreeRead[] = [
   "login",
 ];
 
-// The tester's F17: the names come last and all at once. While any one read of the tree is still
+// The names come last and all at once. While any one read of the tree is still
 // out - the comments, the asks, the coverage, the decisions, the messages, the results, the
 // plan's blocks or the reader's login - the addresses known so far are not read; once it
 // answers, every address the tree holds - a block's own, and one a comment's words cite - is
@@ -353,10 +359,10 @@ test("The names are read in one batched request, after every other read has answ
   }
 });
 
-// dispatch://INFRA-1196 R9 and decision 55: the batched read resolves an id a comment writes
-// short in the owner the reference names, and answers under the reference as the request wrote
-// it. So the names read is asked for the short address itself, and the page publishes its answer
-// under that address, which is the one a row links it by.
+// The batched read resolves an id a comment writes short in the owner the reference names, and
+// answers under the reference as the request wrote it. So the names read is asked for the short
+// address itself, and the page publishes its answer under that address, which is the one a row
+// links it by.
 test("a short address a comment cites is read as written and named from that answer", async () => {
   const cited = `dispatch://${KEY}/comment/c0b271c7`;
   const asked: string[][] = [];
@@ -395,11 +401,11 @@ test("a short address a comment cites is read as written and named from that ans
   }
 });
 
-// dispatch://INFRA-1196 decisions 62 and 89: the batched read answers a short reference whose id
-// two or more targets carry gone and ambiguous, and one whose target is gone gone alone. Neither
-// has a name, so the page publishes none for either; it publishes the ambiguous one among the
-// references it read as ambiguous, which a link draws as written and links nothing, and leaves
-// the gone one out of them, which a link reads its own.
+// The batched read answers a short reference whose id two or more targets carry gone and
+// ambiguous, and one whose target is gone gone alone. Neither has a name, so the page publishes
+// none for either; it publishes the ambiguous one among the references it read as ambiguous,
+// which a link draws as written and links nothing, and leaves the gone one out of them, which a
+// link reads its own.
 test("the page publishes an ambiguous reference a comment cites as ambiguous, a gone one not", async () => {
   const ambiguous = `dispatch://${KEY}/comment/c0b271c7`;
   const gone = `dispatch://${KEY}/comment/c0ffee00`;
@@ -441,6 +447,93 @@ test("the page publishes an ambiguous reference a comment cites as ambiguous, a 
   } finally {
     for (const stub of stubs) stub.mockRestore();
   }
+});
+
+/** What one surface publishes: the names it read and the references it read as ambiguous. */
+interface Published {
+  readonly ambiguous: ReadonlySet<string>;
+  readonly names: ReadonlyMap<string, string>;
+}
+
+/** What a link under the provider read on its latest render. */
+interface Seen {
+  ambiguous?: ReadonlySet<string>;
+  names?: ReadonlyMap<string, string>;
+}
+
+/** A surface that publishes `published` for as long as it is mounted. */
+function Publisher({ published }: { readonly published: Published }): ReactNode {
+  usePublishReferenceNames(published.names, published.ambiguous);
+  return null;
+}
+
+/** A link under the provider, which writes what it reads into `seen` on every render. */
+function Reader({ seen }: { readonly seen: Seen }): ReactNode {
+  seen.ambiguous = useKnownAmbiguousReferences();
+  seen.names = useKnownReferenceNames();
+  return null;
+}
+
+// More than one surface can publish under the one provider at a time: the page's own column and
+// a sheet that draws the outline beside it each read the tree and publish what they read. One of
+// them leaving - the sheet closing, or a pane unmounting at a narrow width while the outline
+// stays - withdraws only what it published itself, so every link keeps the names the surfaces
+// still mounted read, and draws the references they read as ambiguous as written.
+test("one publisher leaving keeps the names and ambiguous references another published", () => {
+  const shared = `dispatch://${KEY}/comment/c0ffee00`;
+  const other = "dispatch://CORE-7";
+  const pageAmbiguous = `dispatch://${KEY}/comment/c0b271c7`;
+  const sheetAmbiguous = `dispatch://${KEY}/ask/a5`;
+  const page: Published = {
+    ambiguous: new Set([pageAmbiguous]),
+    names: new Map([
+      [TASK_REF, TASK_WORDS],
+      [shared, "Hold the deploy."],
+    ]),
+  };
+  const sheet: Published = {
+    ambiguous: new Set([sheetAmbiguous]),
+    names: new Map([
+      [other, "Another issue"],
+      [shared, "Hold the deploy until Friday."],
+    ]),
+  };
+  const seen: Seen = {};
+  const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
+    <ReferenceNamesProvider>
+      {mounted.page && <Publisher published={page} />}
+      {mounted.sheet && <Publisher published={sheet} />}
+      <Reader seen={seen} />
+    </ReferenceNamesProvider>
+  );
+
+  // Both publish, the sheet last, so its name stands for the reference both name.
+  const view = render(surfaces({ page: true, sheet: true }));
+  expect(seen.names).toEqual(
+    new Map([
+      [TASK_REF, TASK_WORDS],
+      [shared, "Hold the deploy until Friday."],
+      [other, "Another issue"],
+    ])
+  );
+  expect(seen.ambiguous).toEqual(new Set([pageAmbiguous, sheetAmbiguous]));
+  // A render in which no publisher changes hands the link the same map and the same set.
+  const { ambiguous, names } = seen;
+  view.rerender(surfaces({ page: true, sheet: true }));
+  expect(seen.names).toBe(names);
+  expect(seen.ambiguous).toBe(ambiguous);
+
+  // The sheet closes: the page's names stay, its own for the reference both named among them,
+  // and so does the reference it read as ambiguous.
+  view.rerender(surfaces({ page: true, sheet: false }));
+  expect(seen.names).toEqual(page.names);
+  expect(seen.ambiguous).toEqual(page.ambiguous);
+
+  // The page leaves too: nothing is published.
+  view.rerender(surfaces({ page: false, sheet: false }));
+  expect(seen.names).toEqual(new Map());
+  expect(seen.ambiguous).toEqual(new Set());
+  view.unmount();
 });
 
 // R21: the batched read names an ask by its question as stored, which is markdown, and every
@@ -595,7 +688,7 @@ test("once the second read has nothing left to name, the first read's newer name
   }
 });
 
-// The tester's F17: one block read for every document of the issue was 25 of a first load's 47
+// One block read for every document of the issue was 25 of a first load's 47
 // requests. The tree reads the blocks of the spec and of the plan, Verification and decisions
 // documents, whose typed blocks the page draws, and of no other document: each the one the issue
 // read names by its id, as the server answers which document plays which part.
@@ -717,7 +810,7 @@ test("A published name of a typed block is never its directive line", async () =
   }
 });
 
-// dispatch://INFRA-1196 decision 98: a refetch of a document's blocks that fails keeps the blocks
+// A refetch of a document's blocks that fails keeps the blocks
 // the first read answered - TanStack holds a query's data through a failed refetch, and the tree
 // is still built from them - so a view that draws from the blocks it holds keeps drawing them
 // (`blocksHeld`), while a view that needs every read to have answered stops waiting on one that
@@ -759,6 +852,197 @@ test("blocks a failed refetch leaves in hand stay held while they stop counting 
     view.unmount();
   } finally {
     blocksOut.resolve();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// The page's stage mounts the tree's slot again on every
+// press of a view, and under the app's `staleTime` a read is stale 30 s after it answered
+// (`main.tsx`). The tree's reads are kept fresh by events instead: the slot mounted again more
+// than 30 s on draws from what the client holds and sends no read, and a comment's edit reads the
+// comments again and the names, and nothing else.
+test("a tree mounted again past 30 s reads nothing, and a comment event reads the comments", async () => {
+  const stored: Comment[] = [comment];
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), { comments: stored });
+  const requests = () => stubs.reduce((sent, stub) => sent + stub.mock.calls.length, 0);
+  // The app's client's `staleTime` (`main.tsx`), which a read that sets none of its own takes.
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const first = renderHook(() => useIssueTree(issue).root, { wrapper });
+    // Every read has answered, the names last of all.
+    await waitFor(() => expect(taskWords(first.result.current)).toBe(TASK_WORDS));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    const loaded = requests();
+    first.unmount();
+
+    // A press of another view, more than 30 s after the load, mounts the slot again.
+    setSystemTime(Date.now() + 31_000);
+    const again = renderHook(() => useIssueTree(issue).root, { wrapper });
+    expect(taskWords(again.result.current)).toBe(TASK_WORDS);
+    // Long enough for a read the mount started to have been sent.
+    await act(async () => {
+      const waited = Promise.withResolvers<void>();
+      setTimeout(waited.resolve, 50);
+      await waited.promise;
+    });
+    expect(client.isFetching()).toBe(0);
+    expect(requests(), "no read is sent for a slot mounted again").toBe(loaded);
+
+    // The comment is edited, and the feed refreshes what that event names.
+    const edited: Comment = {
+      ...comment,
+      body: "One more turn, reworded.",
+      edited_at: "2026-11-05T02:00:00Z",
+    };
+    stored[0] = edited;
+    // The page's `Comment` is the read's row and the feed's payload is the contract's, so the
+    // event is cast as the feed's own tests cast theirs (`event-feed.test.ts`).
+    const event = {
+      actor: { id: "alice", kind: "user" },
+      created_at: "2026-11-05T02:00:00Z",
+      id: 2,
+      issue_key: KEY,
+      notify: true,
+      payload: { ...edited, artifact_name: "" },
+      project: "CORE",
+      seq: 2,
+      type: "comment.edited",
+    } as DispatchEvent;
+    await act(async () => {
+      refreshQueries(client, eventRefreshTargets(event, "alice"));
+    });
+    // The tree draws the comment's new words, from the comments read the event sent.
+    await waitFor(() => {
+      const turn = nodesInOrder(again.result.current).find((node) => node.id === comment.id);
+      expect(turn?.text).toBe(edited.body);
+    });
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(api.listComments).toHaveBeenCalledTimes(2);
+    expect(api.getReferenceTargets).toHaveBeenCalledTimes(2);
+    expect(requests(), "the event sends two reads, the comments' and the names'").toBe(loaded + 2);
+    again.unmount();
+  } finally {
+    setSystemTime();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+/** An event of the feed on the issue, with the payload its rules read. The page's rows are not
+ *  the contract's payloads, so it is cast as the feed's own tests cast theirs
+ *  (`event-feed.test.ts`). */
+function feedEvent(type: EventType, payload: Record<string, unknown>): DispatchEvent {
+  return {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-11-05T02:00:00Z",
+    id: 2,
+    issue_key: KEY,
+    notify: true,
+    payload,
+    project: "CORE",
+    seq: 2,
+    type,
+  } as unknown as DispatchEvent;
+}
+
+// A names read is keyed by the addresses it names, so only
+// words that change under an address already named need a rule - a comment's edit, an ask's edit
+// and a document's new version - and each refreshes every names read the app holds, by the key's
+// prefix; so do a document's rename and its removal, which rename or empty every address to it,
+// and an issue's write that changes its title, which names every address to it. A new
+// comment is a new address, which the tree reads under a key of its own, a person's edit of a
+// document is the notice after the versions that already refreshed them, and an issue's write that
+// leaves its title alone renames nothing.
+test("an edited comment or ask and a document's new version refresh every names read, a new comment none", () => {
+  const editsWords = [
+    feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
+    feedEvent("ask.edited", { anchor: null, id: "ask-1" }),
+    feedEvent("artifact.version", { artifact_id: plan.id, name: "Plan" }),
+    feedEvent("artifact.renamed", { artifact: plan }),
+    feedEvent("artifact.removed", { artifact: plan }),
+    feedEvent("issue.updated", { changed: ["title"] }),
+  ];
+  for (const event of editsWords) {
+    expect(eventRefreshTargets(event, "alice"), event.type).toContainEqual({
+      queryKey: ["reference-targets"],
+    });
+  }
+  const editsNoWords = [
+    feedEvent("comment.created", { anchor: null, ask_id: null, id: "comment-2" }),
+    feedEvent("artifact.human_edited", { artifact_id: plan.id, from_version: 1, to_version: 2 }),
+    feedEvent("issue.updated", { changed: ["status"] }),
+  ];
+  for (const event of editsNoWords) {
+    const keys = eventRefreshTargets(event, "alice").map((target) => target.queryKey[0]);
+    expect(keys, event.type).not.toContain("reference-targets");
+  }
+});
+
+// The same rule on the page: every read of the tree is kept fresh by events, so a comment a
+// node's words cite, edited under the same address, is named anew only by the feed's rule for
+// the edit. The edit reads the names once more, and the page publishes the comment's new words
+// under its address, which every link beside the tree draws.
+test("a cited comment's edit reads the names once more, and the page publishes its new words", async () => {
+  const cited: Comment = { ...comment, body: "Hold the deploy.", id: "comment-2" };
+  const address = `dispatch://${KEY}/comment/${cited.id}`;
+  const stored: Comment[] = [{ ...comment, body: `Read ${address} first.` }, cited];
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(
+    async (refs) => {
+      asked.push([...refs]);
+      return {
+        targets: namedTargets(refs).targets.map((target) =>
+          target.ref === address
+            ? { ...target, kind: "comment", name: stored[1]?.body ?? "" }
+            : target
+        ),
+      };
+    },
+    { comments: stored }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return useKnownReferenceName(address);
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current).toBe("Hold the deploy."));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    const named = asked.length;
+
+    // The comment is edited: the stubbed reads answer its new words from now on.
+    const edited: Comment = {
+      ...cited,
+      body: "Hold the deploy until Friday.",
+      edited_at: "2026-11-05T02:00:00Z",
+    };
+    stored[1] = edited;
+    // A second on, so the scheduler's interval between two fetches of one read
+    // (`MIN_REFETCH_INTERVAL_MS`) holds back none of the reads the event sends.
+    setSystemTime(Date.now() + MIN_REFETCH_INTERVAL_MS);
+    const event = feedEvent("comment.edited", { ...edited, artifact_name: "" });
+    await act(async () => {
+      refreshQueries(client, eventRefreshTargets(event, "alice"));
+    });
+    await waitFor(() => expect(view.result.current).toBe("Hold the deploy until Friday."));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(asked.length, "the edit sends one names read").toBe(named + 1);
+    expect(asked.at(-1)).toContain(address);
+    view.unmount();
+  } finally {
+    setSystemTime();
     for (const stub of stubs) stub.mockRestore();
   }
 });

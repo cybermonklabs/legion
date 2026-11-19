@@ -1,8 +1,8 @@
-import type { TreeNode } from "./issue-tree";
+import { isCheck, type TreeNode } from "./issue-tree";
 
 /**
- * How much of the issue's tree is drawn (dispatch://INFRA-1196 R1, R6). Pure, over the model
- * `issue-tree.ts` builds, so the rows, the zoom and the unit tests fold the same way.
+ * How much of the issue's tree is drawn. Pure, over the model `issue-tree.ts` builds, so the
+ * rows, the zoom and the unit tests fold the same way.
  *
  * The first drawing is the frontier's own: the path to what is open and unanswered is
  * unfolded whatever its depth, and every other branch arrives folded to one row saying how
@@ -109,12 +109,14 @@ function unanswered(node: TreeNode): boolean {
     case "ask":
       return node.question;
     // A check that has not passed: any of the six other states the page's one reading of a
-    // check gives at the commit it names (`tree-drafts.ts`'s `checkStanding`), which the page
-    // draws as Failed, Out of date, Retracted, Cannot tell, Could not read and No result
+    // check gives, as the server reads its results (`tree-drafts.ts`'s `checkStanding`), which
+    // the page draws as Failed, Out of date, Retracted, Cannot tell, Could not read and No result
     // (`NODE_STATE_WORDS.check`). Each leaves the work it covers unproved, which is what the
-    // reader came to see; only `passed` says the issue need not look.
+    // reader came to see; only `passed` says the issue need not look. A `check` block of a
+    // document other than the Verification document is no check (`isCheck`): it draws no state,
+    // the results read never answers for it, and it holds the reader up for nothing.
     case "check":
-      return node.state !== "passed";
+      return isCheck(node) && node.state !== "passed";
     // A decision that waits for the reader's review: Keep and Change are drawn on exactly
     // these (`DecisionActions.tsx`), so it is the one kind of decision the issue is waiting
     // on an answer to. A decision a person made, one the reader kept and one a later

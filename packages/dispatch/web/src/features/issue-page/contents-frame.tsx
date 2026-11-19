@@ -29,7 +29,7 @@ export const CONTENTS_PANE_QUERY = "(min-width: 64rem)";
 export const PAGE_INSET = "px-3.5 md:px-7";
 
 /**
- * The Contents pane at the left of the issue page (dispatch://INFRA-1196 R14, R8, the
+ * The Contents pane at the left of the issue page (R14, R8, the
  * prototype's `#left`), which draws `slots/contents.tsx`. It is drawn from 1024 px up with no
  * view on, beside the outline; under a view it is not drawn, and the view's body has the whole
  * width (the architect's ruling 5). Below 1024 px the same slot is in the sheet the Outline

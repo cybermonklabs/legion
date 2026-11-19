@@ -1,8 +1,7 @@
 import type { Artifact, IssueDetails } from "../../api/types";
 
 /**
- * Which artifact of the issue each node of the tree belongs to (dispatch://INFRA-1196 R30,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t17`).
+ * Which artifact of the issue each node of the tree belongs to.
  *
  * A node's id is its own address inside the issue: a block of a document is
  * `<slug>#b-<block id>` (`tree-drafts.ts`'s `blockNodeId`). So the document a row's caret goes
