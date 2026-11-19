@@ -20,11 +20,13 @@ import { type NatsGate, natsGate } from "./nats-gate"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
-/** Each wait's deadline: every step here is a whole server process, which a loaded machine
- *  starts and runs slowly. */
-export const PROCESS_WAIT_MS = 15_000
-/** Each row's: above its chain of waits, so a stuck wait names its step. */
-export const ROW_TIMEOUT_MS = 180_000
+/** Each wait's last-resort bound. Every step here is a whole server process, which a loaded
+ *  machine starts and runs slowly, and each wait ends the moment its fact holds: this bound never
+ *  decides a row that works, only names the step of one that is stuck. A row that took 25.8 s
+ *  alone took longer than an earlier 15 s bound beside other suites at a load of thousands. */
+export const PROCESS_WAIT_MS = 120_000
+/** Each row's: above its chain of waits, so a stuck wait names its step before the runner does. */
+export const ROW_TIMEOUT_MS = 600_000
 
 /** How many times `text` holds `part`. */
 export function count(text: string, part: string): number {
