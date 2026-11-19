@@ -191,9 +191,8 @@ export const IDEMPOTENCY_ANSWER_NOT_KEPT = "ANSWER_NOT_KEPT";
  * anything runs, its key untouched, when the request's caller is another person or no person at
  * all, so a write one person pressed never runs under another's session - another tab signs in
  * in place, and this tab's retry goes out on the new cookie before it learns of it. A caller that
- * resolves to nobody (a lapsed cookie) is answered by the `401` written further in: the keyed
- * layer's for a keyed write, the handler's for any other. A write without the header (the
- * `dispatch` command, an agent) is not checked.
+ * resolves to nobody (a lapsed cookie) is answered by the route's own `401`. A write without the
+ * header (the `dispatch` command, an agent) is not checked.
  */
 export const DISPATCH_LOGIN_HEADER = "Dispatch-Login";
 

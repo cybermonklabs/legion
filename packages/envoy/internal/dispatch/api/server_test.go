@@ -61,6 +61,10 @@ type testServerOptions struct {
 	newIssueLabel   string
 	newIssueSession string
 	testHooks       bool
+	// documentHooks builds the document service with its test hooks (docs.Deps.TestHooks), so a
+	// test reads what its rooms did (docs.Service.RoomCounters): production turns them on with
+	// the API's under DISPATCH_TEST_HOOKS=1.
+	documentHooks bool
 	// store is the database the server runs on; nil opens one of its own (storetest.Open). A
 	// test that counts a read's round trips passes a traced store (storetest.Traced).
 	store *store.Store
@@ -254,7 +258,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle, TestHooks: options.documentHooks})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)

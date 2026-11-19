@@ -52,7 +52,7 @@ func mounted(t *testing.T) *recordingMux {
 // so the census reads the routes from that mounting rather than from a list kept beside it. Each
 // that serves a write - a POST or PATCH pattern, or one that names no method and so serves every
 // method - is a row of the API's table, which the API wraps in its keyed layer and walks row by row
-// (the api package's TestAKeyedWriteNeverRunsUnkeyed), or one of browserWrites. A write mounted
+// (the api package's TestAKeyedWriteNeverWritesUnkeyed), or one of browserWrites. A write mounted
 // later beside them fails here, as the control's does.
 func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 	t.Run("control", func(t *testing.T) {

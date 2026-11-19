@@ -86,8 +86,7 @@ func canonicalizeUUIDPath(r *http.Request, name string) {
 // reach the handler and be refused for that other reason first, and the prefix is refused here.
 //
 // Nothing is read for a caller that did not authenticate: every route with an id in its path is
-// an authenticated one, and its refusal is written further in, by the keyed layer for a keyed
-// write and by the handler for any other.
+// an authenticated one, and its own refusal is the handler's to write.
 func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	entry, named := idRoutes[route.Method+" "+route.Pattern]
 	if !named {

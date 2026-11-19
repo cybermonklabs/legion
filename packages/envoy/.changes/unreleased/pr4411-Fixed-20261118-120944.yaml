@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  A keyed Dispatch write (a `POST` or `PATCH` with an `Idempotency-Key`) whose caller the keyed
+  layer cannot resolve is refused as it was before #4350: the route's own answer again, such as
+  `403 REPLY_FORBIDDEN` on the message and comment replies and `403 ACCEPT_FORBIDDEN` on a
+  delivery's accept for a request with no `Authorization`, where #4350 answered `401`, `503` or
+  `500` in the keyed layer. The handler gets the layer's refusal as its caller and never looks the
+  caller up again, so a caller whose lookup fails once and then succeeds still writes once when it
+  resends under the key. A keyed write whose body declares no length and runs past the route's
+  limit gets the route's `413` at the handler's caller lookup, as #4350 answers it, unless the
+  route refuses it first for a reason of its own, as the bearer-only routes' `403` does again.
+time: 2026-11-18T12:09:44.668131759Z
+custom:
+    Issue: pr4411

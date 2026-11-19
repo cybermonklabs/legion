@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -70,26 +71,27 @@ func (rig *lookupRig) write(_ int32, w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, map[string]int32{"stored": rig.stored.Add(1)})
 }
 
-// Once a write carries an Idempotency-Key, no path of the keyed layer runs its handler without the
-// key. The census of the paths that ran a handler with a key present and unused, each closed and
-// each a row below:
+// Once a write carries an Idempotency-Key, nothing it makes lands without the key. The census of
+// the paths that hand a keyed request to its handler, or answer it, with no key claimed, each a row
+// below:
 //
 //   - the caller lookup failed (optionalActor's error): the handler ran with no key, and one that
 //     resolved the caller again with a lookup that now succeeded made the write, so its resend
-//     under the key made it a second time. The layer now answers the refusal itself.
+//     under the key made it a second time. The handler now meets the layer's refusal at its own
+//     lookup, and a transaction it opens that wrote is refused at its COMMIT (writeless).
 //   - the declared body was past the route's limit (ContentLength): the layer answers the route's
-//     413 itself.
-//   - a body that declared no length ran past the limit as it was spooled (body.size): the same.
-//   - every POST and PATCH row of the table, each a row of the walk: whether its chain held a
-//     handler back from a failed lookup was up to the layer that looked first. A row that names
-//     OAuth scopes was held back by its scope gate (gateRouteScopes), which resolves the caller
-//     ahead of the keyed layer and refuses one it cannot; every other row ran its handler and left
-//     the refusal to it, and a handler that never looks up its caller would have written with no
-//     key. The layer's own refusal now holds every row back, whatever its handler does.
+//     413 itself, and no handler runs.
+//   - a body that declared no length ran past the limit as it was spooled (body.size): the handler
+//     ran as its caller, and the routes that read no body - the revokes, the comment reopen, the
+//     architecture syncs - made their writes with no key claimed. The handler now meets the route's
+//     413 at its caller lookup, writeless too (TestAnUndeclaredBodyPastTheLimitReachesNoWrite).
+//   - every POST and PATCH row of the table, each a row of the walk, with its handler replaced by
+//     one that never looks up its caller and writes: whichever layer of the row looks first, the
+//     write does not land.
 //
 // A write with no key runs unkeyed by design and is no path of this census. Each row's control is
 // a subtest of its own, so a row that fails still runs it.
-func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
+func TestAKeyedWriteNeverWritesUnkeyed(t *testing.T) {
 	t.Run("the caller lookup fails for a passing reason", func(t *testing.T) {
 		t.Run("control", func(t *testing.T) {
 			// The fallback the layer took before: its lookup fails, and the handler, run with no
@@ -137,44 +139,72 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// A handler that never looks up its caller and writes a row, as no route's handler
+			// does: what reaches it, and what the second guard (writeless's COMMIT) lets land.
+			writing := func(t *testing.T) *keyedRig {
+				return newWritingRig(t, func(_ int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
+					if err := write(r.Context(), nil); err != nil {
+						writeError(w, "WRITE_REFUSED", http.StatusConflict, err.Error())
+						return
+					}
+					w.WriteHeader(http.StatusCreated)
+				})
+			}
 			t.Run("control", func(t *testing.T) {
-				// The same write with no key runs its handler, as the layer used to run it.
-				rig := newKeyedRig(t, answerRun)
+				// The same write with no key runs its handler, which writes, as the layer used to
+				// run it with the key.
+				rig := writing(t)
 				response := httptest.NewRecorder()
 				rig.handler.ServeHTTP(response, writeRequest(t, "a", body, "alice", "", undeclared))
-				if rig.runs.Load() != 1 {
-					t.Fatalf("handler runs=%d status=%d, want the unkeyed write to run", rig.runs.Load(), response.Code)
+				if rig.runs.Load() != 1 || len(rig.writes(t)) != 1 {
+					t.Fatalf("handler runs=%d writes=%v status=%d, want the unkeyed write to run and land", rig.runs.Load(), rig.writes(t), response.Code)
 				}
 			})
 
-			rig := newKeyedRig(t, answerRun)
+			rig := writing(t)
 			response := httptest.NewRecorder()
 			rig.handler.ServeHTTP(response, writeRequest(t, "a", body, "alice", "big-1", undeclared))
-			if response.Code != http.StatusRequestEntityTooLarge || rig.runs.Load() != 0 {
-				t.Fatalf("keyed: status=%d handler runs=%d body=%s, want 413 and no run", response.Code, rig.runs.Load(), response.Body.String())
+			if writes, keys := rig.writes(t), rig.rows(t); len(writes) != 0 || keys != 0 {
+				t.Fatalf("keyed: status=%d handler runs=%d writes=%v key rows=%d body=%s, want nothing landed and no key kept",
+					response.Code, rig.runs.Load(), writes, keys, response.Body.String())
+			}
+			if !undeclared && (response.Code != http.StatusRequestEntityTooLarge || rig.runs.Load() != 0) {
+				t.Fatalf("declared: status=%d handler runs=%d body=%s, want the layer's 413 and no run", response.Code, rig.runs.Load(), response.Body.String())
 			}
 		})
 	}
 
 	// Every POST and PATCH row of the table, each through the chain register mounts it behind
-	// (routeHandler), with its handler replaced by a recorder that resolves no caller, as the
-	// read-only walk builds them (read_only_token_test.go): a keyed write whose caller lookup fails
-	// runs no handler, whichever layer of the row looks first, and its resend under the key, once
-	// the lookup works, runs it once. Each row's control is the fallback the layer took before: the
-	// write handed on with no key, which a row that names OAuth scopes holds back at its scope gate
-	// (gateRouteScopes) and every other row runs. The walk's chain is one it builds, so each row is
+	// (routeHandler), with its handler replaced by one that never looks up its caller and writes a
+	// row, as no route's handler does: a keyed write whose caller lookup fails lands nothing,
+	// whichever layer of the row looks first, and its resend under the key, once the lookup works,
+	// lands once. Each row's control is the same write with no key, which lands where the layers
+	// ahead of the handler let it run: every row but those that name OAuth scopes, which their
+	// scope gate (gateRouteScopes) holds back. The walk's chain is one it builds, so each row is
 	// also sent through the server's own mux with a malformed key, which only the keyed layer
 	// answers (400 KEY_INVALID, before any handler runs): a row register mounted without that layer
 	// fails here. That every write the server mounts is a row of this table is the routes package's
 	// TestAKeyedWriteNeverRunsUnkeyed.
 	t.Run("the caller lookup fails on a write route of the server", func(t *testing.T) {
-		handler, _, _, served := newRegisteredTestServer(t, testServerOptions{testHooks: true})
+		handler, database, _, served := newRegisteredTestServer(t, testServerOptions{testHooks: true})
 		// TEST-1, open, is the issue every probe path names, so the issue upload's check of its
 		// issue (refuseUploadToAClosedIssue) lets the probe through to the keyed layer.
 		createArtifactIssue(t, handler)
 		flaky := &flakyIdentity{inner: served.deps.Identity}
 		served.deps.Identity = flaky
 		replays := served.keyedReplays()
+		if _, err := database.Pool.Exec(context.Background(), `create table unkeyed_walk_writes (route text not null)`); err != nil {
+			t.Fatalf("create the walk's table: %v", err)
+		}
+		landed := func(name string) int {
+			t.Helper()
+			var count int
+			if err := database.Pool.QueryRow(context.Background(),
+				`select count(*) from unkeyed_walk_writes where route = $1`, name).Scan(&count); err != nil {
+				t.Fatalf("count the walk's writes: %v", err)
+			}
+			return count
+		}
 		t.Run("control", func(t *testing.T) {
 			// A write row mounted with its handler bare, as register would mount one it forgot to
 			// wrap, answers the malformed key with its handler's own answer, not the keyed layer's.
@@ -197,9 +227,18 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 			}
 			name := route.Method + " " + route.Pattern
 			walked++
-			var ran atomic.Int32
-			route.Handler = func(w http.ResponseWriter, _ *http.Request) {
-				ran.Add(1)
+			route.Handler = func(w http.ResponseWriter, r *http.Request) {
+				tx, err := database.Pool.Begin(r.Context())
+				if err == nil {
+					defer tx.Rollback(r.Context())
+					if _, err = tx.Exec(r.Context(), `insert into unkeyed_walk_writes (route) values ($1)`, name); err == nil {
+						err = tx.Commit(r.Context())
+					}
+				}
+				if err != nil {
+					served.writeHandlerError(w, err)
+					return
+				}
 				w.WriteHeader(http.StatusNoContent)
 			}
 			// On a mux of its own, as register mounts it, so the path's values reach every layer.
@@ -224,26 +263,26 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				t.Run("control", func(t *testing.T) {
-					want := int32(1)
+					want := 1
 					if len(route.OAuthScopes) > 0 {
 						want = 0
 					} else {
 						handedOn++
 					}
-					before := ran.Load()
-					if response := send("", true); ran.Load()-before != want {
-						t.Fatalf("handed on with no key: handler runs=%d status=%d body=%s, want %d", ran.Load()-before, response.Code, response.Body.String(), want)
+					before := landed(name)
+					if response := send("", true); landed(name)-before != want {
+						t.Fatalf("handed on with no key: writes landed=%d status=%d body=%s, want %d", landed(name)-before, response.Code, response.Body.String(), want)
 					}
 				})
 
 				key := fmt.Sprintf("row-%d", row)
-				before := ran.Load()
-				if refused := send(key, true); ran.Load() != before || refused.Code != http.StatusServiceUnavailable {
-					t.Fatalf("lookup failed: handler runs=%d status=%d body=%s, want the lookup's 503 and no run",
-						ran.Load()-before, refused.Code, refused.Body.String())
+				before := landed(name)
+				if refused := send(key, true); landed(name) != before || refused.Code != http.StatusServiceUnavailable {
+					t.Fatalf("lookup failed: writes landed=%d status=%d body=%s, want the lookup's 503 and nothing landed",
+						landed(name)-before, refused.Code, refused.Body.String())
 				}
-				if response := send(key, false); ran.Load() != before+1 {
-					t.Fatalf("resend: handler runs=%d status=%d body=%s, want one", ran.Load()-before, response.Code, response.Body.String())
+				if response := send(key, false); landed(name) != before+1 {
+					t.Fatalf("resend: writes landed=%d status=%d body=%s, want one", landed(name)-before, response.Code, response.Body.String())
 				}
 
 				mounted := httptest.NewRequest(route.Method, routeProbePath(route.Pattern), strings.NewReader(routeProbeBody(route)))
@@ -269,7 +308,7 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 		if walked == 0 || walked != mounted || handedOn == 0 {
 			t.Fatalf("walked %d write rows (%d handed on with no key), want every one of the %d the server mounts and some handed on", walked, handedOn, mounted)
 		}
-		t.Logf("walked %d POST and PATCH rows of the table (test hooks in): %d ran a write handed on with no key, %d were held by their scope gate",
+		t.Logf("walked %d POST and PATCH rows of the table (test hooks in): %d wrote when handed on with no key, %d were held by their scope gate",
 			walked, handedOn, walked-handedOn)
 	})
 }

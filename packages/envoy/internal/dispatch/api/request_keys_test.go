@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,9 +21,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 // keyedRequest sends body to target as login, under key when key is not empty, as the dashboard
@@ -98,6 +106,17 @@ func countRequestKeys(t *testing.T, database *store.Store) int {
 	var count int
 	if err := database.Pool.QueryRow(context.Background(), `select count(*) from request_keys`).Scan(&count); err != nil {
 		t.Fatalf("count request keys: %v", err)
+	}
+	return count
+}
+
+// countComments counts issue's comments whose body is body.
+func countComments(t *testing.T, database *store.Store, issue, body string) int {
+	t.Helper()
+	var count int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from comments where issue_key = $1 and body = $2`, issue, body).Scan(&count); err != nil {
+		t.Fatalf("count comments: %v", err)
 	}
 	return count
 }
@@ -964,13 +983,407 @@ func TestACommentPostedAgainUnderItsKeyLandsOnce(t *testing.T) {
 	if decodeBody[model.Comment](t, first).ID != decodeBody[model.Comment](t, again).ID {
 		t.Fatalf("the repeat answered another comment: %s vs %s", first.Body.String(), again.Body.String())
 	}
-	var comments int
-	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from comments where issue_key = $1 and body = 'Looks right to me.'`, issue).Scan(&comments); err != nil {
-		t.Fatal(err)
-	}
-	if comments != 1 {
+	if comments := countComments(t, database, issue, "Looks right to me."); comments != 1 {
 		t.Fatalf("the issue holds %d comments, want one", comments)
+	}
+}
+
+// outageIdentity answers its next failures calls as down does - a sign-in issuer or a session
+// store down for a moment - and every later one as up does. Where flakyIdentity answers one
+// refusal, this one answers each kind of outage's own.
+type outageIdentity struct {
+	up, down identity.Identity
+	failures *atomic.Int32
+}
+
+func (f outageIdentity) Login(r *http.Request) (string, error) {
+	if f.failures.Add(-1) >= 0 {
+		return f.down.Login(r)
+	}
+	return f.up.Login(r)
+}
+
+// flakyVerifier answers its next failures calls as issuerDownVerifier does and verifies every
+// later token as serviceTokenSubject's.
+type flakyVerifier struct{ failures *atomic.Int32 }
+
+func (f flakyVerifier) Verify(ctx context.Context, token string) (oidc.Claims, error) {
+	if f.failures.Add(-1) >= 0 {
+		return issuerDownVerifier{}.Verify(ctx, token)
+	}
+	return oidc.Claims{Subject: serviceTokenSubject}, nil
+}
+
+// INFRA-840, found by the review of #4140. The keyed layer resolved a keyed write's caller and,
+// when that failed, ran the handler unkeyed, which resolved the caller again. A failure that
+// cleared between the two lookups - the sign-in issuer, a session store or a service-account
+// token's issuer down for a moment - let the write land with no key, so the client's retry under
+// the key wrote a second time. The layer now hands the handler its refusal as the caller: the
+// first attempt is refused with nothing kept, the retry writes once, and a repeat of the retry is
+// its answer replayed.
+func TestACallerResolvedOnlyByItsRetryWritesOnce(t *testing.T) {
+	const text = "Resolved on the retry."
+	for _, test := range []struct {
+		name       string
+		status     int
+		code       string
+		options    func(database *store.Store, failures *atomic.Int32) testServerOptions
+		credential http.Header
+		body       map[string]any
+	}{{
+		name: "the sign-in issuer down for a moment", status: http.StatusServiceUnavailable, code: "SIGNIN_UNAVAILABLE",
+		options: func(database *store.Store, failures *atomic.Int32) testServerOptions {
+			return testServerOptions{store: database, identity: outageIdentity{up: headerIdentity(database), down: signInDownIdentity{}, failures: failures}}
+		},
+		credential: asUser("alice"),
+		body:       map[string]any{"body": text},
+	}, {
+		name: "a session store down for a moment", status: http.StatusInternalServerError, code: codeInternal,
+		options: func(database *store.Store, failures *atomic.Int32) testServerOptions {
+			return testServerOptions{store: database, identity: outageIdentity{up: headerIdentity(database), down: storeDownIdentity{}, failures: failures}}
+		},
+		credential: asUser("alice"),
+		body:       map[string]any{"body": text},
+	}, {
+		name: "a service-account token's issuer down for a moment", status: http.StatusServiceUnavailable, code: "OIDC_ISSUER_UNAVAILABLE",
+		options: func(database *store.Store, failures *atomic.Int32) testServerOptions {
+			return testServerOptions{store: database, oidc: flakyVerifier{failures}}
+		},
+		credential: withBearer("header.payload.signature"),
+		body:       map[string]any{"body": text, "actor": map[string]string{"kind": "session", "id": "ses-retry"}},
+	}} {
+		t.Run(test.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			failures := new(atomic.Int32)
+			handler, _, _ := newTestServer(t, test.options(database, failures))
+			issue := createTestIssue(t, handler, "KEYS", "A caller resolved on its retry")
+			post := func() *httptest.ResponseRecorder {
+				t.Helper()
+				request := jsonRequest(t, http.MethodPost, "/api/v1/issues/"+issue+"/comments", test.body, nil)
+				request.Header.Set(contracts.IdempotencyKeyHeader, "comment-retried-1")
+				maps.Copy(request.Header, test.credential)
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				return response
+			}
+
+			// The next resolution fails, and every one after it resolves: the first the layer
+			// makes, and the handler's own behind it.
+			failures.Store(1)
+			first := post()
+			firstComments, firstKeys := countComments(t, database, issue, text), countRequestKeys(t, database)
+			retry := post()
+			again := post()
+
+			if code, _ := refusalOf(t, first); first.Code != test.status || code != test.code || firstComments != 0 || firstKeys != 0 {
+				t.Errorf("the first attempt: status=%d body=%s, leaving %d comments and %d key rows; want %d %s, nothing written and the key untouched",
+					first.Code, first.Body.String(), firstComments, firstKeys, test.status, test.code)
+			}
+			if retry.Code != http.StatusCreated || replayed(retry) {
+				t.Errorf("the retry under the key: status=%d replayed=%v body=%s, want 201 run", retry.Code, replayed(retry), retry.Body.String())
+			}
+			// A comment's repeat is answered from its recovery point, the comment as it stands now
+			// (keyedReplays), so it names the comment the retry made rather than repeating its bytes.
+			if again.Code != http.StatusCreated || !replayed(again) ||
+				decodeBody[model.Comment](t, again).ID != decodeBody[model.Comment](t, retry).ID {
+				t.Errorf("a repeat of the retry: status=%d replayed=%v body=%s, want the retry's comment %s replayed",
+					again.Code, replayed(again), again.Body.String(), retry.Body.String())
+			}
+			if count, keys := countComments(t, database, issue, text), countRequestKeys(t, database); count != 1 || keys != 1 {
+				t.Errorf("the issue holds %d comments under %d key rows, want one comment under one: a write under the key landed more than once", count, keys)
+			}
+		})
+	}
+}
+
+// A keyed write whose caller does not resolve at all is refused as it always was, now that the
+// keyed layer hands its handler that refusal rather than letting it resolve the caller again
+// (TestACallerResolvedOnlyByItsRetryWritesOnce). On every POST and PATCH route, and for each way a
+// caller fails to resolve - no credential, a bearer nobody issued, a revoked personal token, the
+// sign-in issuer down, a session store down and a service-account token's issuer down - the answer
+// under a key is the one without a key, which the handler writes as it always has: the same
+// status, headers and body, whatever the handler checks before it resolves its caller (the
+// bearer-only reply and accept routes refuse a request that presents no bearer first). Nothing is
+// written and no key is kept for any of them.
+func TestACallerThatDoesNotResolveIsRefusedUnderAKeyAsWithoutOne(t *testing.T) {
+	type unresolved struct {
+		name       string
+		credential http.Header
+	}
+	for _, deployment := range []struct {
+		name    string
+		options testServerOptions
+		callers func(t *testing.T, database *store.Store) []unresolved
+	}{{
+		name:    "every issuer up",
+		options: testServerOptions{},
+		callers: func(t *testing.T, database *store.Store) []unresolved {
+			revoked := personalTokenHolding(t, database, model.ScopePerson)
+			if _, err := database.Pool.Exec(context.Background(), `update agent_tokens set revoked_at = now()`); err != nil {
+				t.Fatalf("revoke the personal token: %v", err)
+			}
+			return []unresolved{
+				{"no credential", nil},
+				{"a bearer nobody issued", withBearer("dsp_nobody-issued-this")},
+				{"a revoked personal token", withBearer(revoked)},
+			}
+		},
+	}, {
+		name:    "both issuers down",
+		options: testServerOptions{identity: signInDownIdentity{}, oidc: issuerDownVerifier{}},
+		callers: func(*testing.T, *store.Store) []unresolved {
+			return []unresolved{
+				{"the sign-in issuer down", nil},
+				{"a service-account token's issuer down", withBearer("header.payload.signature")},
+			}
+		},
+	}, {
+		name:    "the session store down",
+		options: testServerOptions{identity: storeDownIdentity{}},
+		callers: func(*testing.T, *store.Store) []unresolved {
+			return []unresolved{{"a session store down", nil}}
+		},
+	}} {
+		t.Run(deployment.name, func(t *testing.T) {
+			handler, database, _ := newTestServer(t, deployment.options)
+			probe := func(route apiRoute, caller unresolved, key string) *httptest.ResponseRecorder {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				request := httptest.NewRequestWithContext(ctx, route.Method, routeProbePath(route.Pattern), strings.NewReader(routeProbeBody(route)))
+				request.Header.Set("Content-Type", "application/json")
+				if key != "" {
+					request.Header.Set(contracts.IdempotencyKeyHeader, key)
+				}
+				maps.Copy(request.Header, caller.credential)
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				return response
+			}
+			callers := deployment.callers(t, database)
+			before := databaseFingerprint(t, database)
+			compared := 0
+			for _, caller := range callers {
+				for _, route := range (&server{}).routes() {
+					if !keyedMethod(route.Method) {
+						continue
+					}
+					what := route.Method + " " + route.Pattern + " with " + caller.name
+					sameRefusal(t, what, probe(route, caller, "unresolved-caller"), probe(route, caller, ""))
+					compared++
+				}
+			}
+			if compared == 0 {
+				t.Fatal("no POST or PATCH route was probed, so nothing was compared")
+			}
+			t.Logf("compared %d keyed answers with their unkeyed ones", compared)
+			if keys := countRequestKeys(t, database); keys != 0 {
+				t.Errorf("%d key rows were kept for callers that never resolved, want none", keys)
+			}
+			assertUnchanged(t, "a write by a caller that never resolved", before, databaseFingerprint(t, database))
+		})
+	}
+}
+
+// sameRefusal fails unless keyed, what's answer under a key, is a refusal and is the answer the
+// same request got without a key: the same status, every header and the same body.
+func sameRefusal(t *testing.T, what string, keyed, unkeyed *httptest.ResponseRecorder) {
+	t.Helper()
+	if keyed.Code < http.StatusBadRequest {
+		t.Errorf("%s: status=%d body=%.300s, want a refusal", what, keyed.Code, keyed.Body.String())
+		return
+	}
+	if keyed.Code != unkeyed.Code || !maps.EqualFunc(keyed.Header(), unkeyed.Header(), slices.Equal) || keyed.Body.String() != unkeyed.Body.String() {
+		t.Errorf("%s: under a key status=%d headers=%v body=%.300s; without one status=%d headers=%v body=%.300s; want the same answer",
+			what, keyed.Code, keyed.Header(), keyed.Body.String(), unkeyed.Code, unkeyed.Header(), unkeyed.Body.String())
+	}
+}
+
+// The refusals TestACallerThatDoesNotResolveIsRefusedUnderAKeyAsWithoutOne's walk cannot present,
+// each on one route, read under a key as they do without one, and keep no key: a broker-issued
+// token the broker does not hold live and the broker check's rate limit, with its Retry-After,
+// which decideBrokerToken decides before any layer; a deployment with no identity service; and an
+// upload whose body the handler refuses before it resolves its caller, a precedence a refusal the
+// keyed layer wrote itself would have reversed.
+func TestEveryOtherRefusalOfAnUnresolvedCallerReadsTheSameUnderAKey(t *testing.T) {
+	const comments = "/api/v1/issues/TEST-1/comments"
+	keyed := func(request *http.Request) *http.Request {
+		request.Header.Set(contracts.IdempotencyKeyHeader, "unresolved-caller")
+		return request
+	}
+	t.Run("a broker-issued token the broker does not hold live", func(t *testing.T) {
+		rig := newBrokerTokenRig(t)
+		caller := newBrokerCaller(t)
+		body := map[string]any{"body": "Not live."}
+		under := rig.serve(keyed(caller.presenting(t, http.MethodPost, comments, "a-token-no-broker-issued", body)))
+		sameRefusal(t, "a token not live", under, rig.serve(caller.presenting(t, http.MethodPost, comments, "a-token-no-broker-issued", body)))
+		if code, _ := refusalOf(t, under); under.Code != http.StatusUnauthorized || code != "BROKER_TOKEN_NOT_ACTIVE" {
+			t.Errorf("a token not live: status=%d code=%s, want 401 BROKER_TOKEN_NOT_ACTIVE", under.Code, code)
+		}
+		if keys := countRequestKeys(t, rig.database); keys != 0 {
+			t.Errorf("%d key rows were kept, want none", keys)
+		}
+	})
+	t.Run("the broker check's rate limit", func(t *testing.T) {
+		rig := newBrokerTokenRig(t, func(o *brokertoken.Options) {
+			o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
+		})
+		caller := newBrokerCaller(t)
+		rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", "the-token-that-spends-the-bucket", nil))
+		body := map[string]any{"body": "Limited."}
+		under := rig.serve(keyed(caller.presenting(t, http.MethodPost, comments, "a-second-token", body)))
+		sameRefusal(t, "a rate-limited token", under, rig.serve(caller.presenting(t, http.MethodPost, comments, "a-second-token", body)))
+		if code, _ := refusalOf(t, under); under.Code != http.StatusTooManyRequests || code != "BROKER_TOKEN_RATE_LIMITED" || under.Header().Get("Retry-After") != "60" {
+			t.Errorf("a rate-limited token: status=%d code=%s Retry-After=%q, want 429 BROKER_TOKEN_RATE_LIMITED after 60",
+				under.Code, code, under.Header().Get("Retry-After"))
+		}
+		if keys := countRequestKeys(t, rig.database); keys != 0 {
+			t.Errorf("%d key rows were kept, want none", keys)
+		}
+	})
+	t.Run("no identity service", func(t *testing.T) {
+		handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+		served.deps.Identity = nil
+		send := func(request *http.Request) *httptest.ResponseRecorder {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			return response
+		}
+		body := map[string]any{"body": "Nobody to sign in."}
+		under := send(keyed(jsonRequest(t, http.MethodPost, comments, body, nil)))
+		sameRefusal(t, "no identity service", under, send(jsonRequest(t, http.MethodPost, comments, body, nil)))
+		if code, _ := refusalOf(t, under); under.Code != http.StatusInternalServerError || code != "IDENTITY_ERROR" {
+			t.Errorf("no identity service: status=%d code=%s, want 500 IDENTITY_ERROR", under.Code, code)
+		}
+		if keys := countRequestKeys(t, database); keys != 0 {
+			t.Errorf("%d key rows were kept, want none", keys)
+		}
+	})
+	t.Run("an upload whose body names no multipart boundary", func(t *testing.T) {
+		handler, database, _ := newTestServer(t, testServerOptions{})
+		send := func(key string) *httptest.ResponseRecorder {
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/TEST-1/artifacts", strings.NewReader("no parts"))
+			request.Header.Set("Content-Type", "multipart/form-data")
+			if key != "" {
+				request.Header.Set(contracts.IdempotencyKeyHeader, key)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			return response
+		}
+		under := send("unresolved-caller")
+		sameRefusal(t, "a boundless upload with no credential", under, send(""))
+		if code, _ := refusalOf(t, under); under.Code != http.StatusBadRequest || code != "ARTIFACT_INPUT" {
+			t.Errorf("a boundless upload with no credential: status=%d code=%s, want the handler's own 400 ARTIFACT_INPUT ahead of its caller's refusal", under.Code, code)
+		}
+		if keys := countRequestKeys(t, database); keys != 0 {
+			t.Errorf("%d key rows were kept, want none", keys)
+		}
+	})
+}
+
+// An issue upload runs a check of its own ahead of the keyed layer, the closed-issue refusal, which
+// resolves the caller first and leaves a failure to the layers behind it
+// (refuseUploadToAClosedIssue). A caller both those lookups failed and the handler's resolved had
+// its file stored with no key, and its retry under the key stored it again, as a second version. It
+// is refused with nothing stored, its retry stores one version, and a repeat replays the retry.
+func TestAnUploadWhoseCallerResolvesOnlyOnItsRetryStoresOneVersion(t *testing.T) {
+	database := storetest.Open(t)
+	failures := new(atomic.Int32)
+	handler, _, _ := newTestServer(t, testServerOptions{store: database,
+		identity: outageIdentity{up: headerIdentity(database), down: signInDownIdentity{}, failures: failures}})
+	issue := createTestIssue(t, handler, "KEYS", "An upload resolved on its retry")
+	upload := func() *httptest.ResponseRecorder {
+		t.Helper()
+		// A fresh multipart boundary for every attempt, as a client builds one, which the key's
+		// digest masks (TestAMultipartRetryUnderANewBoundaryIsARepeat).
+		body, bodyType, err := apitest.MultipartUpload(map[string]string{"name": "report.txt"}, "report.txt", "text/plain", []byte("the report"))
+		if err != nil {
+			t.Fatalf("build the upload: %v", err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", body)
+		request.Header.Set("Content-Type", bodyType)
+		request.Header.Set(contracts.IdempotencyKeyHeader, "upload-retried-1")
+		maps.Copy(request.Header, asUser("alice"))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	versions := func() int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(context.Background(), `
+			select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id
+			where a.issue_key = $1 and a.name = 'report.txt'
+		`, issue).Scan(&count); err != nil {
+			t.Fatalf("count the upload's versions: %v", err)
+		}
+		return count
+	}
+
+	// The closed-issue check's lookup and the keyed layer's fail, and every one after them
+	// resolves: the handler's own behind them.
+	failures.Store(2)
+	first := upload()
+	firstVersions, firstKeys := versions(), countRequestKeys(t, database)
+	retry := upload()
+	again := upload()
+
+	if code, _ := refusalOf(t, first); first.Code != http.StatusServiceUnavailable || code != "SIGNIN_UNAVAILABLE" || firstVersions != 0 || firstKeys != 0 {
+		t.Errorf("the first attempt: status=%d body=%.300s, leaving %d versions and %d key rows; want 503 SIGNIN_UNAVAILABLE, nothing stored and the key untouched",
+			first.Code, first.Body.String(), firstVersions, firstKeys)
+	}
+	if retry.Code != http.StatusCreated || replayed(retry) {
+		t.Errorf("the retry under the key: status=%d replayed=%v body=%.300s, want 201 run", retry.Code, replayed(retry), retry.Body.String())
+	}
+	if again.Code != http.StatusCreated || !replayed(again) || again.Body.String() != retry.Body.String() {
+		t.Errorf("a repeat of the retry: status=%d replayed=%v body=%.300s, want the retry's answer replayed", again.Code, replayed(again), again.Body.String())
+	}
+	if count, keys := versions(), countRequestKeys(t, database); count != 1 || keys != 1 {
+		t.Errorf("the upload has %d versions under %d key rows, want one version under one: the file was stored more than once", count, keys)
+	}
+}
+
+// A key whose first request made a comment is left as it is by a repeat whose caller does not
+// resolve: the repeat is refused as the same request without a key is, nothing changes anywhere,
+// and once the caller resolves again the repeat is answered the comment the first request made.
+func TestARepeatWhoseCallerDoesNotResolveLeavesItsKeyAsItWas(t *testing.T) {
+	const text = "Made before the outage."
+	database := storetest.Open(t)
+	failures := new(atomic.Int32)
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{store: database,
+		identity: outageIdentity{up: headerIdentity(database), down: signInDownIdentity{}, failures: failures}})
+	issue := createTestIssue(t, handler, "KEYS", "A key held through an outage")
+	post := func(key string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := jsonRequest(t, http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{"body": text}, nil)
+		if key != "" {
+			request.Header.Set(contracts.IdempotencyKeyHeader, key)
+		}
+		maps.Copy(request.Header, asUser("alice"))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	first := post("comment-held-1")
+	if first.Code != http.StatusCreated {
+		t.Fatalf("the first request: status=%d body=%s, want 201", first.Code, first.Body.String())
+	}
+	awaitBackgroundWrites(t, served)
+
+	// The sign-in issuer is down for every lookup from here until it is restored below.
+	failures.Store(1 << 30)
+	before := databaseFingerprint(t, database)
+	sameRefusal(t, "a repeat while the caller does not resolve", post("comment-held-1"), post(""))
+	assertUnchanged(t, "a repeat while the caller does not resolve", before, databaseFingerprint(t, database))
+
+	failures.Store(0)
+	again := post("comment-held-1")
+	if again.Code != http.StatusCreated || !replayed(again) || decodeBody[model.Comment](t, again).ID != decodeBody[model.Comment](t, first).ID {
+		t.Errorf("the repeat once the caller resolves: status=%d replayed=%v body=%.300s, want the first comment replayed", again.Code, replayed(again), again.Body.String())
+	}
+	if count := countComments(t, database, issue, text); count != 1 {
+		t.Errorf("the issue holds %d comments, want the first request's alone", count)
 	}
 }
 

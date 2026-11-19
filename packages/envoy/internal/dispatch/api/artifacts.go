@@ -143,10 +143,9 @@ const issueUploadRoute = http.MethodPost + " /api/v1/issues/{key}/artifacts"
 // (drainBeforeAnswer), so a client that sends it whole before it reads the answer gets the
 // answer. register mounts it ahead of the keyed layer, so the refusal claims no key. The handler's
 // locked check still decides an issue that closes meanwhile; this one only spares the spool. A
-// caller that resolves to nobody is left to the 401 written further in (the keyed layer's for a
-// keyed upload, the handler's for an unkeyed one), and a malformed Idempotency-Key to the keyed
-// layer's 400, which spools no body either and refuses the request's form before anything is
-// looked up.
+// caller that resolves to nobody is left to the route's own 401, and a malformed Idempotency-Key
+// to the keyed layer's 400, which spools no body either and refuses the request's form before
+// anything is looked up.
 //
 // The refusal stands in for the handler, so it answers only a request whose handler would run. A
 // repeat under a key the keyed layer answers itself (requestKeyAnswersItself) - its first upload's
