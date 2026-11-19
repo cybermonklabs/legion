@@ -52,7 +52,7 @@
  * `draft-matrix.inline-reply.coverage.ts`, which holds each census item this file answers for to
  * a test above or to one of them.
  */
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
@@ -80,7 +80,14 @@ import {
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { threadReplySendKey } from "./usePhoneThread";
+
+// The docked composer draws the quote of the comment it answers through the Markdown engine, a
+// module loaded on first use (`markdown-engine.ts`). A cell reads that quote in the commit after
+// its press, which a first load of the engine can come after, so the engine is loaded before the
+// rows begin, as in `draft-matrix.docked.test.tsx`.
+beforeAll(warmMarkdownRenderer);
 
 const HOST = "inline reply";
 

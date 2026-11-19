@@ -61,7 +61,7 @@
  * `draft-matrix.agents-row.coverage.ts`, which holds each census item this file answers for to a
  * test above or to one of them.
  */
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -89,6 +89,13 @@ import type { IssueSummary, Message } from "../../api/types";
 import { AuthGate } from "../../app";
 import type { ReplyTarget } from "../conversation/composer-model";
 import type { SentRequest } from "../conversation/send-request";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+
+// The composer draws the quote of the message it answers through the Markdown engine, a module
+// loaded on first use (`markdown-engine.ts`). A cell reads what the composer quotes in the commit
+// after its press, which a first load of the engine can come after, so the engine is loaded
+// before the rows begin, as in `draft-matrix.docked.test.tsx`.
+beforeAll(warmMarkdownRenderer);
 
 const HOST = "Agents row";
 
