@@ -9,7 +9,9 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"math/rand/v2"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -700,6 +702,131 @@ func TestTheMaskWritesALineThatIsNoJSONObjectAsNotJSON(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAWriteOfManyLinesKeepsEachLineAndTheCallersBytes: a Write can hold many lines, and the mask
+// reads each on its own. Each row is one Write of many lines that mixes four kinds, in an order of
+// its own: clean lines, lines that hold a placeholder, lines that spell one in \u escapes, and
+// lines that are no JSON object; some rows are drawn at random, from a fixed seed. Each Write
+// comes out as as many lines as went in, in their order, and each line as a Write of that line
+// alone writes it: a clean line as it came, a line that held a placeholder masked, a line that is
+// no JSON object as NotJSON. And the caller's buffer, to the end of its capacity, is byte for byte
+// as it was: io.Writer's Write must not change p, so the mask writes the lines it changes into a
+// buffer of its own, never over the bytes it reads.
+func TestAWriteOfManyLinesKeepsEachLineAndTheCallersBytes(t *testing.T) {
+	type line struct{ kind, in, want string }
+	var clean, notJSON []line
+	for _, in := range []string{
+		`{"severity":"INFO","message":"airlock proxy: a call to a bound host","host":"api.example.com","status":200}`,
+		`{"m":"a\"b\\c\/d\u2028","n":[1,-2.5e3,true,null,{"o":"p"}]}`,
+		`{"message":"agent-secrets-placehold, the prefix cut short, and ünïcode"}`,
+		" \t{\"m\":\"x\"}\r",
+	} {
+		clean = append(clean, line{"clean", in, in})
+	}
+	placeholders := []line{
+		{"placeholder", `{"severity":"INFO","message":"a call","path":"/v1/` + held + `"}`, `{"severity":"INFO","message":"a call","path":"/v1/` + Mark + `"}`},
+		{"placeholder", `{"` + held + `":1,"m":"` + strings.ToUpper(other) + ` and <&>` + digitsFirst + `"}`, `{"` + Mark + `":1,"m":"` + Mark + ` and <&>` + Mark + `"}`},
+	}
+	tail := held[len(requests.PlaceholderPrefix):]
+	escaped := []line{
+		{"\\u-escaped placeholder", `{"m":"\u0061gent-secrets-placeholder-` + tail + `"}`, `{"m":"` + Mark + `"}`},
+		{"\\u-escaped placeholder", `{"` + escapedEach(held) + `":"v","n":2}`, `{"` + Mark + `":"v","n":2}`},
+		{"\\u-escaped placeholder", `{"m":"a\"` + requests.PlaceholderPrefix + tail[:4] + escapedEach(tail[4:8]) + tail[8:] + `\n"}`, `{"m":"a\"` + Mark + `\n"}`},
+	}
+	for _, in := range []string{"level=INFO msg=" + held, `["` + held + `"]`, `{"message":"` + held, `{"m":"x"} {"n":"y"}`, "", `{"m":"\q"}`} {
+		notJSON = append(notJSON, line{"not-JSON", in, NotJSON})
+	}
+	kinds := [][]line{clean, placeholders, escaped, notJSON}
+	every := slices.Concat(kinds...)
+	for _, l := range every {
+		var alone bytes.Buffer
+		if _, err := Writer(&alone).Write([]byte(l.in + "\n")); err != nil || alone.String() != l.want+"\n" {
+			t.Fatalf("a Write of the %s line %q alone wrote %q, %v; want %q", l.kind, l.in, alone.String(), err, l.want+"\n")
+		}
+	}
+	inTurn := func(rounds int) []line {
+		var lines []line
+		for r := range rounds {
+			for _, kind := range kinds {
+				lines = append(lines, kind[r%len(kind)])
+			}
+		}
+		return lines
+	}
+	backwards := func(lines []line) []line {
+		lines = slices.Clone(lines)
+		slices.Reverse(lines)
+		return lines
+	}
+	type row struct {
+		name  string
+		lines []line
+	}
+	rows := []row{
+		{"every line, in the table's order", every},
+		{"every line, last to first", backwards(every)},
+		{"clean lines only", slices.Repeat(clean, 8)},
+		{"lines that are no JSON object only", slices.Repeat(notJSON, 4)},
+		{"many clean lines, then a placeholder", append(slices.Repeat(clean, 8), placeholders[0])},
+		{"an escaped placeholder, then many clean lines", append([]line{escaped[1]}, slices.Repeat(clean, 8)...)},
+		{"the kinds in turn", inTurn(12)},
+		{"the kinds in turn, last to first", backwards(inTurn(12))},
+	}
+	draw := rand.New(rand.NewPCG(1, 2))
+	for i := range 64 {
+		lines := make([]line, 2+draw.IntN(47))
+		for j := range lines {
+			lines[j] = every[draw.IntN(len(every))]
+		}
+		rows = append(rows, row{fmt.Sprintf("drawn %d", i), lines})
+	}
+	for _, r := range rows {
+		t.Run(r.name, func(t *testing.T) {
+			var in []byte
+			for _, l := range r.lines {
+				in = append(append(in, l.in...), '\n')
+			}
+			// p is the caller's buffer with room past its end, as a bytes.Buffer's has; the Write
+			// may change none of it.
+			p := append(make([]byte, 0, len(in)+64), in...)
+			whole := p[:cap(p)]
+			for i := len(p); i < len(whole); i++ {
+				whole[i] = '#'
+			}
+			before := bytes.Clone(whole)
+			var out bytes.Buffer
+			if n, err := Writer(&out).Write(p); err != nil || n != len(p) {
+				t.Fatalf("Write = %d, %v; want %d, nil", n, err, len(p))
+			}
+			for i := range whole {
+				if whole[i] != before[i] {
+					t.Errorf("the Write changed the caller's buffer from byte %d on, of %d and its room past them: %q, was %q",
+						i, len(p), whole[i:min(i+48, len(whole))], before[i:min(i+48, len(before))])
+					break
+				}
+			}
+			got := out.String()
+			written := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+			if !strings.HasSuffix(got, "\n") || len(written) != len(r.lines) {
+				t.Fatalf("a Write of %d lines, each ending in a newline, came out as %d: %q", len(r.lines), len(written), got)
+			}
+			for i, l := range r.lines {
+				if written[i] != l.want {
+					t.Fatalf("line %d of %d, a %s line, came out as %q; want %q, as a Write of it alone writes it", i, len(r.lines), l.kind, written[i], l.want)
+				}
+			}
+		})
+	}
+}
+
+// escapedEach is text, ASCII, with each of its bytes written as a JSON \u escape.
+func escapedEach(text string) string {
+	var escaped strings.Builder
+	for i := range len(text) {
+		fmt.Fprintf(&escaped, `\u%04x`, text[i])
+	}
+	return escaped.String()
 }
 
 // TestAStringTheMaskCannotDecodeIsWrittenAsTheMark: Writer reads only a line json.Valid passes, so
