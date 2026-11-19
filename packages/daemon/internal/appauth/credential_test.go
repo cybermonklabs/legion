@@ -83,12 +83,12 @@ type installedOn struct {
 // installedOnOwners is an App installed on owners and nothing else.
 func installedOnOwners(owners ...string) *installedOn { return &installedOn{owners: owners} }
 
-// installedEverywhere is an App installed on every owner the project serves a repository of,
-// which is the ordinary deployment and what a test that is not about the two differing wants.
-func installedEverywhere(repos func() []ghrepo.Repository) *installedOn {
+// installedEverywhere is an App installed on every owner of names, which is the ordinary
+// deployment and what a test that is not about the two differing wants.
+func installedEverywhere(names ...string) *installedOn {
 	owners := map[string]bool{}
-	for _, repo := range repos() {
-		owners[strings.ToLower(repo.Owner())] = true
+	for _, name := range names {
+		owners[strings.ToLower(ghrepo.MustParse(name).Owner())] = true
 	}
 	return installedOnOwners(slices.Sorted(maps.Keys(owners))...)
 }
@@ -139,22 +139,27 @@ func bundleTokens(t *testing.T, bundle ghconfig.Bundle) map[string]string {
 	return tokens
 }
 
-// projectRepos is the mapping's repositories as the daemon serves them.
-func projectRepos(names ...string) func() []ghrepo.Repository {
+// projectRepos is the rename rule's served predicate over names, as the daemon's repository state
+// answers it (repositories.servesRepository): a repository is served when it is one of names,
+// compared without case as GitHub compares names, which is a name both role Apps answered
+// installed on.
+func projectRepos(names ...string) func(ghrepo.Repository) bool {
 	repos := make([]ghrepo.Repository, 0, len(names))
 	for _, name := range names {
 		repos = append(repos, ghrepo.MustParse(name))
 	}
-	return func() []ghrepo.Repository { return repos }
+	return func(repo ghrepo.Repository) bool {
+		return slices.ContainsFunc(repos, func(name ghrepo.Repository) bool { return strings.EqualFold(name.String(), repo.String()) })
+	}
 }
 
 // A role's gh bundle holds one directory per owner account its App is installed on, and nothing
 // smaller: each of them holds that owner's own installation lease at the role's own
 // permissions, the implement App's write set or the review App's review set, and each reaches
 // every repository its installation holds, so no repository of an installed owner needs a
-// directory of its own and none has one. An owner whose repositories the project maps none of
-// is an owner of the bundle all the same: the installation is what decides, not the mapping. A
-// repository outside the project's set still makes its owner's directory the default, since a
+// directory of its own and none has one. An owner none of whose repositories the rename rule
+// serves is an owner of the bundle all the same: the installation is what decides. A
+// repository outside the served names still makes its owner's directory the default, since a
 // role's repository is its issue's, from the daemon's own record. A call that names no
 // repository holds the same leases and takes the first owner sorted as its default. A mint
 // that fails for the issue's own owner fails the bundle, naming that owner, while one for any
@@ -162,7 +167,7 @@ func projectRepos(names ...string) func() []ghrepo.Repository {
 func TestGitHubCredentialBundlesEveryOwnerTheAppIsInstalledOn(t *testing.T) {
 	repos := projectRepos("sjawhar/legion", "Acme/widgets", "acme/gadgets")
 	installed := NewInstalled()
-	// The App is installed on both accounts the mapping names, spelled as GitHub spells them:
+	// The App is installed on both accounts the served names hold, spelled as GitHub spells them:
 	// every directory is lowercased, whatever case the account's login carries.
 	installs := installedOnOwners("Acme", "sjawhar")
 	credential := GitHubCredential(sourceOf(ownerTokens{}, installs), repos, ghrepo.Renames{}, installed, nil, quietBundleLog())
@@ -246,9 +251,9 @@ func TestGitHubCredentialBundlesEveryOwnerTheAppIsInstalledOn(t *testing.T) {
 // it, with no clock moved, no timer and no restart. The drift check reads the record the last
 // build wrote (Installed), never GitHub, and is handed what that build saw.
 //
-// The case: the App is installed on two accounts and the project maps one repository of one of
-// them. The bundle holds a directory for each account, one lease each and no repository
-// directory — the mapping decides nothing here — and a second build, after GitHub gains a third
+// The case: the App is installed on two accounts and the rename rule serves one repository of one
+// of them. The bundle holds a directory for each account, one lease each and no repository
+// directory — the served names decide nothing here — and a second build, after GitHub gains a third
 // installation, holds three.
 func TestABundleReadsEachAppsInstallationsFromGitHubAtEveryBuild(t *testing.T) {
 	now := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
@@ -258,8 +263,8 @@ func TestABundleReadsEachAppsInstallationsFromGitHubAtEveryBuild(t *testing.T) {
 		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "widgets")
 	}
 	tokens := keyModeManager(t, github, &now, &stderr)
-	// The project maps one repository of one of the two accounts: the other is an owner of the
-	// bundle because the App is installed on it, which the mapping says nothing about.
+	// The rule serves one repository of one of the two accounts: the other is an owner of the
+	// bundle because the App is installed on it, which the served names say nothing about.
 	repos := projectRepos("acme/widgets")
 	installed := NewInstalled()
 	credential := GitHubCredential(tokens, repos, ghrepo.Renames{}, installed, NewLeftOut(), quietBundleLog())
@@ -381,8 +386,8 @@ func TestAnOwnerThatIsNoDirectoryNameIsLeftOutOfTheBundle(t *testing.T) {
 }
 
 // A managed user's login ends in `_<shortcode>`, and a repository of that account is one
-// ghrepo parses and the daemon admits an issue on whenever both Apps are installed there,
-// mapped or not (INFRA-2543 R4). Its owner is a directory like any other: the bundle of such an
+// ghrepo parses and the daemon admits an issue on whenever both Apps are installed there
+// (INFRA-2543 R4). Its owner is a directory like any other: the bundle of such an
 // issue builds, holding that owner's directory with its own lease minted, routes the issue's
 // repository to it as the bundle's default, the directory GH_CONFIG_DIR names, and the drift
 // check names it among the directories a pod must hold. A controller asked for that owner, in
@@ -571,7 +576,7 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 	t.Run("no pair configured", func(t *testing.T) {
 		var minted []string
 		both := projectRepos("Cybermonklabs/legion", "sjawhar/legion")
-		credential := GitHubCredential(sourceOf(countingTokens{minted: &minted}, installedEverywhere(both)), both,
+		credential := GitHubCredential(sourceOf(countingTokens{minted: &minted}, installedEverywhere("Cybermonklabs/legion", "sjawhar/legion")), both,
 			ghrepo.Renames{}, nil, nil, quietBundleLog())
 		bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("cybermonklabs/legion"))
 		if err != nil {
@@ -598,7 +603,7 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 	t.Run("the owner it moved from is an owner of the project under the pair's own from", func(t *testing.T) {
 		var minted []string
 		both := projectRepos("Cybermonklabs/legion", "sjawhar/legion")
-		credential := GitHubCredential(sourceOf(countingTokens{minted: &minted}, installedEverywhere(both)), both,
+		credential := GitHubCredential(sourceOf(countingTokens{minted: &minted}, installedEverywhere("Cybermonklabs/legion", "sjawhar/legion")), both,
 			ghrepo.MustRenames(legionRename), nil, nil, quietBundleLog())
 		bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("cybermonklabs/legion"))
 		if err != nil {
@@ -878,9 +883,10 @@ func (t countingTokens) ReadToken(ctx context.Context, role AppRole, owner strin
 func TestARefusedLeaseCostsItsOwnersDirectoryAndNotTheBundle(t *testing.T) {
 	var minted []string
 	log, said := bundleLog()
-	repos := projectRepos("sjawhar/legion", "refusedlabs/widgets", "refusedlabs/gadgets")
+	names := []string{"sjawhar/legion", "refusedlabs/widgets", "refusedlabs/gadgets"}
+	repos := projectRepos(names...)
 	tokens := countingTokens{ownerTokens: ownerTokens{unreachable: map[string]bool{"refusedlabs": true}}, minted: &minted}
-	credential := GitHubCredential(sourceOf(tokens, installedEverywhere(repos)), repos, ghrepo.Renames{}, nil, nil, log)
+	credential := GitHubCredential(sourceOf(tokens, installedEverywhere(names...)), repos, ghrepo.Renames{}, nil, nil, log)
 
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
@@ -910,9 +916,10 @@ func TestARefusedLeaseCostsItsOwnersDirectoryAndNotTheBundle(t *testing.T) {
 // directory was left out of a bundle that was served, and no bundle was.
 func TestGitHubCredentialFailsOnARefusedDefaultOwnersLease(t *testing.T) {
 	log, said := bundleLog()
-	repos := projectRepos("acme/widgets", "sjawhar/legion")
+	names := []string{"acme/widgets", "sjawhar/legion"}
+	repos := projectRepos(names...)
 	tokens := ownerTokens{unreachable: map[string]bool{"acme": true}}
-	credential := GitHubCredential(sourceOf(tokens, installedEverywhere(repos)), repos, ghrepo.Renames{}, nil, nil, log)
+	credential := GitHubCredential(sourceOf(tokens, installedEverywhere(names...)), repos, ghrepo.Renames{}, nil, nil, log)
 
 	bundle, err := credential(context.Background(), claim.RoleReviewer, ghrepo.MustParse("acme/widgets"))
 	if !errors.Is(err, ErrNarrowingRefused) || len(bundle.Dirs) != 0 {
@@ -933,9 +940,10 @@ func TestGitHubCredentialFailsOnARefusedDefaultOwnersLease(t *testing.T) {
 // grant shortfall once.
 func TestGitHubCredentialSaysARefusedOwnerOnceOverTwoBundles(t *testing.T) {
 	log, said := bundleLog()
-	repos := projectRepos("oncelabs/served", "oncelabs/twice")
+	names := []string{"oncelabs/served", "oncelabs/twice"}
+	repos := projectRepos(names...)
 	tokens := ownerTokens{unreachable: map[string]bool{"oncelabs": true}}
-	credential := GitHubCredential(sourceOf(tokens, installedEverywhere(repos)), repos, ghrepo.Renames{}, nil, nil, log)
+	credential := GitHubCredential(sourceOf(tokens, installedEverywhere(names...)), repos, ghrepo.Renames{}, nil, nil, log)
 
 	for i := range 2 {
 		if _, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("other/thing")); err != nil {
@@ -954,9 +962,10 @@ func TestGitHubCredentialSaysARefusedOwnerOnceOverTwoBundles(t *testing.T) {
 // would come back without the one directory it is served from, which ghconfig.Bundle.Validate
 // refuses long after the ask that could say why.
 func TestABundleTakesItsDefaultFromTheOwnersTheMintAnsweredFor(t *testing.T) {
-	repos := projectRepos("defaultlabs/widgets", "sjawhar/legion")
+	names := []string{"defaultlabs/widgets", "sjawhar/legion"}
+	repos := projectRepos(names...)
 	tokens := ownerTokens{unreachable: map[string]bool{"defaultlabs": true}}
-	credential := GitHubCredential(sourceOf(tokens, installedEverywhere(repos)), repos, ghrepo.Renames{}, nil, NewLeftOut(), quietBundleLog())
+	credential := GitHubCredential(sourceOf(tokens, installedEverywhere(names...)), repos, ghrepo.Renames{}, nil, NewLeftOut(), quietBundleLog())
 
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.Repository{})
 	if err != nil {
@@ -978,11 +987,12 @@ func TestABundleTakesItsDefaultFromTheOwnersTheMintAnsweredFor(t *testing.T) {
 // served another owner's directory instead, so an owner GitHub refuses the lease of is
 // ErrNarrowingRefused, naming the owner the lease would have been minted on.
 func TestABundleRefusesADefaultOwnerGitHubRefusesEveryLeaseOf(t *testing.T) {
-	repos := projectRepos("deflabs/widgets", "deflabs/gadgets", "sjawhar/legion")
+	names := []string{"deflabs/widgets", "deflabs/gadgets", "sjawhar/legion"}
+	repos := projectRepos(names...)
 	tokens := ownerTokens{unreachable: map[string]bool{"deflabs": true}}
 	left := NewLeftOut()
 
-	controller := ControllerCredential(sourceOf(tokens, installedEverywhere(repos)), repos, ghrepo.Renames{}, nil, left, quietBundleLog())
+	controller := ControllerCredential(sourceOf(tokens, installedEverywhere(names...)), repos, ghrepo.Renames{}, nil, left, quietBundleLog())
 	bundle, err := controller(context.Background(), "Deflabs")
 	if !errors.Is(err, ErrNarrowingRefused) || len(bundle.Dirs) != 0 {
 		t.Fatalf("the controller's bundle on a refused default owner = %+v, %v; want no bundle and ErrNarrowingRefused", bundle, err)
@@ -1195,8 +1205,9 @@ func (troubledTokens) Token(context.Context, AppRole, string) (Lease, error) {
 func TestGitHubsTroubleThatReadsAsARefusalFailsTheBundleAndLeavesNothingOut(t *testing.T) {
 	log, said := bundleLog()
 	installed, left := NewInstalled(), NewLeftOut()
-	repos := projectRepos("acme/gadgets", "acme/widgets", "sjawhar/legion")
-	credential := GitHubCredential(sourceOf(troubledTokens{}, installedEverywhere(repos)), repos, ghrepo.Renames{}, installed, left, log)
+	names := []string{"acme/gadgets", "acme/widgets", "sjawhar/legion"}
+	repos := projectRepos(names...)
+	credential := GitHubCredential(sourceOf(troubledTokens{}, installedEverywhere(names...)), repos, ghrepo.Renames{}, installed, left, log)
 
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	var trouble *TransientError

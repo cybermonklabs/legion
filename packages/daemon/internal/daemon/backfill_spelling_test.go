@@ -1,11 +1,14 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -60,7 +64,7 @@ func TestTheBackfillKeepsTheSpellingOfAnExistingClone(t *testing.T) {
 			github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@release/v7.1"})
 			w := &workflowRuntime{pool: pool, records: records, defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
 			client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-301", ResolvedRepo: "acme/widgets"}}}
-			if err := backfillRepositories(ctx, pool, records, client, "LEGION", state, w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
+			if _, _, err := backfillRepositories(ctx, pool, records, client, "LEGION", state, w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil {
 				t.Fatal(err)
 			}
 			repo, branch, err := w.issueRepository(ctx, "LEGION-301")
@@ -84,9 +88,29 @@ func TestTheBackfillKeepsTheSpellingOfAnExistingClone(t *testing.T) {
 	}
 }
 
+// leftAs is the log line the backfill writes for key's record when it leaves it as it is
+// (leaveUnfilled): the issue, the repository the backfill read for it, and the cause, which names
+// the step that settles it, as the text handler quotes them.
+func leftAs(key, repo, cause string) string {
+	return "issue=" + key + " repo=" + repo + " cause=" + strconv.Quote(cause)
+}
+
+// backfillLogged runs the backfill of project LEGION with a logger it answers the lines of, and
+// whether a record is left.
+func backfillLogged(t *testing.T, pool *store.Pool, records record.Store, client dispatch.Client, state string, named *defaultBranches, renames ghrepo.Renames) (bool, string) {
+	t.Helper()
+	var logs bytes.Buffer
+	_, left, err := backfillRepositories(context.Background(), pool, records, client, "LEGION", state, named, renames, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err != nil {
+		t.Fatalf("backfill = %v, want no error: one record's repository never stops the boot", err)
+	}
+	return left, logs.String()
+}
+
 // Two shared clones that spell one repository in two ways leave the backfill no spelling to keep,
-// so it refuses, naming both, rather than move an issue's workspace onto either by guess.
-func TestTheBackfillRefusesTwoClonesOfOneRepository(t *testing.T) {
+// so it leaves the record as it is and says why, naming both, rather than move an issue's
+// workspace onto either by guess; the boot goes on (INFRA-4401 D11).
+func TestTheBackfillLeavesARecordTwoClonesOfOneRepositorySpell(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
@@ -107,26 +131,30 @@ func TestTheBackfillRefusesTwoClonesOfOneRepository(t *testing.T) {
 	}
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-301", ResolvedRepo: "acme/widgets"}}}
-	err := backfillRepositories(ctx, pool, record.NewStore(), client, "LEGION", state,
-		newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{}, quietLogger())
-	want := "fill the repository of LEGION-301: two shared clones spell acme/widgets (" + clones[1] + ", " + clones[0] + "); remove the one no issue works in and restart"
-	if err == nil || err.Error() != want {
-		t.Fatalf("backfill = %v, want %q", err, want)
+	left, logged := backfillLogged(t, pool, record.NewStore(), client, state,
+		newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{})
+	want := leftAs("LEGION-301", "acme/widgets", "two shared clones spell acme/widgets ("+clones[1]+", "+clones[0]+"): remove the one no issue works in")
+	if !left || !strings.Contains(logged, want) {
+		t.Fatalf("backfill left %t, logging:\n%s\nwant the record left, logged as %s", left, logged, want)
+	}
+	if got := recordedIssue(t, &workflowRuntime{pool: pool, records: record.NewStore()}, "LEGION-301"); got.Repo != "" {
+		t.Fatalf("LEGION-301 = %s after the backfill left it, want it unfilled", got.Repo)
 	}
 }
 
 // A record written before the record carried its repository may already have a pull request,
 // which names the repository the issue worked in. The fill takes Dispatch's resolution only when
 // that pull request is on it, in any case: one on another repository (the issue's own repository
-// or an ancestor's, set in Dispatch since, outranking the project's default) refuses the boot,
-// naming the issue, both repositories and the fix, and fills nothing, since a record on the wrong
-// repository would create branches there and disarm a stranger's pull request.
-func TestTheBackfillRefusesARecordWhosePullRequestIsOnAnotherRepository(t *testing.T) {
+// or an ancestor's, set in Dispatch since, outranking the project's default) leaves the record as
+// it is and says why, naming the issue, both repositories and the fix, since a record on the wrong
+// repository would create branches there and disarm a stranger's pull request; the boot goes on
+// (INFRA-4401 D11).
+func TestTheBackfillLeavesARecordWhosePullRequestIsOnAnotherRepository(t *testing.T) {
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
 	for _, tc := range []struct{ name, prRepo, want string }{
-		{"on another repository", "zeta/tools", "fill the repository of LEGION-1: Dispatch resolves it to acme/widgets, but its pull request #7 is on zeta/tools: set the issue's repository in Dispatch to zeta/tools (dispatch issue-update --issue LEGION-1 --repo zeta/tools) and restart"},
+		{"on another repository", "zeta/tools", "Dispatch resolves it to acme/widgets, but its pull request #7 is on zeta/tools: set the issue's repository in Dispatch to zeta/tools (dispatch issue-update --issue LEGION-1 --repo zeta/tools)"},
 		{"on the resolved repository in another case", "ACME/Widgets", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -143,20 +171,20 @@ func TestTheBackfillRefusesARecordWhosePullRequestIsOnAnotherRepository(t *testi
 				t.Fatal(err)
 			}
 			w := &workflowRuntime{pool: pool, records: records, log: quietLogger()}
-			err := backfillRepositories(ctx, pool, records, client, "LEGION", t.TempDir(),
-				newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{}, quietLogger())
+			left, logged := backfillLogged(t, pool, records, client, t.TempDir(),
+				newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{})
 			got := recordedIssue(t, w, "LEGION-1")
 			if tc.want != "" {
-				if err == nil || err.Error() != tc.want {
-					t.Fatalf("backfill = %v, want %q", err, tc.want)
+				if want := leftAs("LEGION-1", "acme/widgets", tc.want); !left || !strings.Contains(logged, want) {
+					t.Fatalf("backfill left %t, logging:\n%s\nwant the record left, logged as %s", left, logged, want)
 				}
 				if got.Repo != "" {
-					t.Fatalf("LEGION-1 = %s after a refused backfill, want it unfilled", got.Repo)
+					t.Fatalf("LEGION-1 = %s after the backfill left it, want it unfilled", got.Repo)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatal(err)
+			if left {
+				t.Fatalf("backfill left a record, logging:\n%s\nwant LEGION-1 filled", logged)
 			}
 			if got.Repo != "acme/widgets" || got.GitHubRepo != "acme/widgets" {
 				t.Fatalf("LEGION-1 = %s (GitHub's %s), want acme/widgets", got.Repo, got.GitHubRepo)
@@ -167,15 +195,16 @@ func TestTheBackfillRefusesARecordWhosePullRequestIsOnAnotherRepository(t *testi
 
 // A record written before the record carried its repository may have no pull request yet but a
 // workspace a tmux daemon provisioned, which names the repository the issue works in. The fill
-// refuses a resolution elsewhere, naming the workspace and the fix, rather than provision the issue
-// anew in another repository and strand its unpushed work; a workspace under the resolved
-// repository, in any case, fills.
-func TestTheBackfillRefusesARecordWhoseWorkspaceIsInAnotherRepository(t *testing.T) {
+// leaves a record whose resolution is elsewhere as it is and says why, naming the workspace and
+// the fix, rather than provision the issue anew in another repository and strand its unpushed
+// work; a workspace under the resolved repository, in any case, fills. The boot goes on
+// (INFRA-4401 D11).
+func TestTheBackfillLeavesARecordWhoseWorkspaceIsInAnotherRepository(t *testing.T) {
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"})
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-1", ResolvedRepo: "acme/widgets"}}}
 	for _, tc := range []struct{ name, workspaceIn, want string }{
-		{"in another repository", "zeta/tools", "fill the repository of LEGION-1: Dispatch resolves it to acme/widgets, but its workspace %s is in zeta/tools: set the issue's repository in Dispatch to zeta/tools (dispatch issue-update --issue LEGION-1 --repo zeta/tools) and restart"},
+		{"in another repository", "zeta/tools", "Dispatch resolves it to acme/widgets, but its workspace %s is in zeta/tools: set the issue's repository in Dispatch to zeta/tools (dispatch issue-update --issue LEGION-1 --repo zeta/tools)"},
 		{"in the resolved repository in another case", "ACME/Widgets", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -194,20 +223,20 @@ func TestTheBackfillRefusesARecordWhoseWorkspaceIsInAnotherRepository(t *testing
 			}
 			records := record.NewStore()
 			w := &workflowRuntime{pool: pool, records: records, log: quietLogger()}
-			err = backfillRepositories(ctx, pool, records, client, "LEGION", state,
-				newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{}, quietLogger())
+			left, logged := backfillLogged(t, pool, records, client, state,
+				newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), ghrepo.Renames{})
 			got := recordedIssue(t, w, "LEGION-1")
 			if tc.want != "" {
-				if want := fmt.Sprintf(tc.want, location.Dir); err == nil || err.Error() != want {
-					t.Fatalf("backfill = %v, want %q", err, want)
+				if want := leftAs("LEGION-1", "acme/widgets", fmt.Sprintf(tc.want, location.Dir)); !left || !strings.Contains(logged, want) {
+					t.Fatalf("backfill left %t, logging:\n%s\nwant the record left, logged as %s", left, logged, want)
 				}
 				if got.Repo != "" {
-					t.Fatalf("LEGION-1 = %s after a refused backfill, want it unfilled", got.Repo)
+					t.Fatalf("LEGION-1 = %s after the backfill left it, want it unfilled", got.Repo)
 				}
 				return
 			}
-			if err != nil || got.Repo != "acme/widgets" {
-				t.Fatalf("backfill = %v, LEGION-1 = %s; want it filled with acme/widgets", err, got.Repo)
+			if left || got.Repo != "acme/widgets" {
+				t.Fatalf("backfill left %t, LEGION-1 = %s; want it filled with acme/widgets", left, got.Repo)
 			}
 		})
 	}
@@ -215,9 +244,10 @@ func TestTheBackfillRefusesARecordWhoseWorkspaceIsInAnotherRepository(t *testing
 
 // A repository GitHub renamed (acme/old, which GitHub answers with a 301 to acme/new) while
 // Dispatch still resolves an issue to its old name: with no shared clone the record takes GitHub's
-// new name; a shared clone under the old name, which the workspace would keep, refuses the boot
-// naming what fixes it; and a record already on the old name with no GitHub spelling, which no
-// later boot can rename, refuses the boot naming why.
+// new name; a shared clone under the old name, which the workspace would keep, leaves the record
+// as it is, the log naming what fixes it; and a record already on the old name with no GitHub
+// spelling, which no later boot can rename, is left as it is, the log naming why. Neither stops
+// the boot (INFRA-4401 D11).
 func TestTheBackfillOfARepositoryGitHubRenamedNamesTheFix(t *testing.T) {
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/old": "301 acme/new", "acme/new": "acme/new@main"})
@@ -232,14 +262,15 @@ func TestTheBackfillOfARepositoryGitHubRenamedNamesTheFix(t *testing.T) {
 		return &workflowRuntime{pool: pool, records: record.NewStore(), log: quietLogger(),
 			defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}, t.TempDir()
 	}
-	backfill := func(w *workflowRuntime, state string) error {
-		return backfillRepositories(ctx, w.pool, w.records, client, "LEGION", state, w.defaultBranches, ghrepo.Renames{}, quietLogger())
+	backfill := func(t *testing.T, w *workflowRuntime, state string) (bool, string) {
+		t.Helper()
+		return backfillLogged(t, w.pool, w.records, client, state, w.defaultBranches, ghrepo.Renames{})
 	}
 
 	t.Run("no shared clone", func(t *testing.T) {
 		w, state := seed(t, "", "")
-		if err := backfill(w, state); err != nil {
-			t.Fatal(err)
+		if left, logged := backfill(t, w, state); left {
+			t.Fatalf("backfill left a record, logging:\n%s\nwant LEGION-1 filled", logged)
 		}
 		if got := recordedIssue(t, w, "LEGION-1"); got.Repo != "acme/new" || got.DefaultBranch != "main" || got.GitHubRepo != "acme/new" {
 			t.Fatalf("LEGION-1 = %s@%s (GitHub's %s), want acme/new@main (GitHub's acme/new)", got.Repo, got.DefaultBranch, got.GitHubRepo)
@@ -255,25 +286,25 @@ func TestTheBackfillOfARepositoryGitHubRenamedNamesTheFix(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(clone.Clone, ".git"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		want := "fill the repository of LEGION-1: GitHub renamed acme/old to acme/new, and the shared clone " + clone.Clone +
-			" still has the old name: map acme/new in Dispatch (Settings → Repositories → Projects), or remove that clone if no issue works in it, and restart"
-		if err := backfill(w, state); err == nil || err.Error() != want {
-			t.Fatalf("backfill = %v, want %q", err, want)
+		want := leftAs("LEGION-1", "acme/old", "GitHub renamed acme/old to acme/new, and the shared clone "+clone.Clone+
+			" still has the old name: set the repository of LEGION-1 in Dispatch to acme/new, or remove that clone if no issue works in it")
+		if left, logged := backfill(t, w, state); !left || !strings.Contains(logged, want) {
+			t.Fatalf("backfill left %t, logging:\n%s\nwant the record left, logged as %s", left, logged, want)
 		}
 		if got := recordedIssue(t, w, "LEGION-1"); got.Repo != "" || got.GitHubRepo != "" {
-			t.Fatalf("LEGION-1 = %s (GitHub's %s) after a refused backfill, want it unfilled", got.Repo, got.GitHubRepo)
+			t.Fatalf("LEGION-1 = %s (GitHub's %s) after the backfill left it, want it unfilled", got.Repo, got.GitHubRepo)
 		}
 	})
 
 	t.Run("a record on the old name with no GitHub spelling", func(t *testing.T) {
 		w, state := seed(t, "acme/old", "main")
-		want := "name the repository of LEGION-1: GitHub renamed acme/old to acme/new, and a record's repository never changes; " +
-			"only a pre-release build of this daemon leaves a record with no GitHub spelling, so recreate that build's database"
-		if err := backfill(w, state); err == nil || err.Error() != want {
-			t.Fatalf("backfill = %v, want %q", err, want)
+		want := leftAs("LEGION-1", "acme/old", "GitHub renamed acme/old to acme/new, and a record's repository never changes; "+
+			"only a pre-release build of this daemon leaves a record with no GitHub spelling, so recreate that build's database")
+		if left, logged := backfill(t, w, state); !left || !strings.Contains(logged, want) {
+			t.Fatalf("backfill left %t, logging:\n%s\nwant the record left, logged as %s", left, logged, want)
 		}
 		if got := recordedIssue(t, w, "LEGION-1"); got.Repo != "acme/old" || got.GitHubRepo != "" {
-			t.Fatalf("LEGION-1 = %s (GitHub's %s) after a refused backfill, want it unchanged", got.Repo, got.GitHubRepo)
+			t.Fatalf("LEGION-1 = %s (GitHub's %s) after the backfill left it, want it unchanged", got.Repo, got.GitHubRepo)
 		}
 	})
 }
@@ -296,17 +327,17 @@ func (t servedOwnerTokens) Token(ctx context.Context, role appauth.AppRole, owne
 	return t.roleTokens.Token(ctx, role, owner)
 }
 
-// A transfer the deployment configures as a pair (`repository_renames`) refuses no boot: GitHub
-// holds the repository under cybermonklabs/legion, which the project serves, while Dispatch still
+// A transfer the deployment configures as a pair (`repository_renames`) leaves no record: GitHub
+// holds the repository under cybermonklabs/legion, which the rename rule serves, while Dispatch still
 // resolves sjawhar/legion and the record keeps the name it was recorded under for its whole life,
 // so the backfill writes the pair's spelling of that same name as GitHub's spelling of it. A
 // record's two repository columns must name one repository (record.Store.FillIssueRepository,
 // NameIssueRepository), which the name it moved to would not.
 //
-// Each backfill reads GitHub for the repository the mapping serves the recorded one as
+// Each backfill reads GitHub for the repository the rename rule serves the recorded one as
 // (defaultBranches, through repositories.serving), because only cybermonklabs' installation
 // covers it now: a read minted for sjawhar is refused, as this token source refuses it, and that
-// refusal would refuse the boot. Both backfills do it: the record written before the record
+// refusal would leave the record. Both backfills do it: the record written before the record
 // carried its repository, whose shared clone keeps the old name, and the record on the old name
 // with no GitHub spelling. The repository is then heard under both names, so the events GitHub
 // publishes under the name it moved to reach the record all the same.
@@ -321,16 +352,17 @@ func TestTheBackfillOfAConfiguredRenameFillsTheRecordsOwnName(t *testing.T) {
 			values ('LEGION-1', 'LEGION-1', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1, $1, $2)`, repo, branch); err != nil {
 			t.Fatal(err)
 		}
-		// Dispatch maps the repository under the name it moved to, which is what the project
-		// serves and what makes cybermonklabs the owner whose installation holds it.
+		// Both role Apps answered installed on the name the repository moved to, which is what
+		// the rename rule serves and what makes cybermonklabs the owner whose installation holds it.
 		repos := newRepositories("LEGION", transferredLegion)
-		repos.set([]mappedRepository{{Repo: ghrepo.MustParse("cybermonklabs/legion"), Default: true}}, nil)
+		repos.fill(ghrepo.MustParse("cybermonklabs/legion"))
 		return &workflowRuntime{pool: pool, records: projectRecords{Store: record.NewStore(), project: "LEGION"}, log: quietLogger(),
 			repositories:    repos,
 			defaultBranches: newDefaultBranches(servedOwnerTokens{owner: "cybermonklabs"}, repos, github.url, defaultBranchTTL, time.Now)}, t.TempDir()
 	}
 	backfill := func(w *workflowRuntime, state string) error {
-		return backfillRepositories(ctx, w.pool, w.records, client, "LEGION", state, w.defaultBranches, transferredLegion, quietLogger())
+		_, _, err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", state, w.defaultBranches, transferredLegion, quietLogger())
+		return err
 	}
 
 	t.Run("a record with no repository whose shared clone keeps the old name", func(t *testing.T) {

@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -57,10 +56,11 @@ func (loginTokens) InstalledOn(context.Context, appauth.AppRole, ghrepo.Reposito
 	return true, nil
 }
 
-// InstalledOwners answers no owner list: opening the workflow builds no gh bundle, and a test
-// that builds one names its owners itself.
+// InstalledOwners answers each App installed on no account, which the boot's proof of each App's
+// key takes (proveAppKeys): opening the workflow builds no gh bundle, and a test that builds one
+// names its owners itself.
 func (loginTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
-	return nil, errors.New("loginTokens lists no owner accounts, which a gh bundle holds one directory per owner of")
+	return nil, nil
 }
 
 // Forget drops nothing: every lease is minted afresh.
@@ -93,7 +93,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 		"no review login":        {appauth.Implement: "legion-implementer[bot]"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), log, tokens, github, nil)
+			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, github, nil)
 			if err == nil || !strings.Contains(err.Error(), "the workflow needs two different Apps") {
 				t.Fatalf("openWorkflow = %v, want the two-Apps refusal", err)
 			}

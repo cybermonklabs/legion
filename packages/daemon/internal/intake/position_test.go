@@ -84,7 +84,7 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 // events were published is created at the last message it applied, so every event published while
 // it was missing is applied, and none twice: the one at its position, already applied, is
 // delivered again and dropped as a duplicate. Both ways a consumer is created do it: the boot's
-// OpenConsumers, and a mapping refresh's SetRepositories mid-run.
+// OpenConsumers, and a SetRepositories mid-run, as a recording on a repository not heard yet makes.
 func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 	for _, reopen := range []struct {
 		name string

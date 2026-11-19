@@ -29,17 +29,17 @@ import (
 var transferredLegion = ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
 
 // transferStates are the states a transferred repository's calls are driven in: the configured
-// pair with the project serving the repository GitHub holds it under, that same pair with one
-// more repository of the owner the transfer moved it away from served beside it, and no pair at
-// all. The second is the state of the production failure of 2026-11-06 — sjawhar/oh-my-pi added
-// to the project's mapping made sjawhar an owner of the project, which switched the live pair
-// off under the owner rule this replaced, and 47 trees could not push for 42 minutes — and it
-// must address exactly what the first does. The third is the control: with no pair configured
-// every call is addressed at the recorded repository, as it always was.
+// pair with both role Apps answered installed on the name GitHub holds the repository under, that
+// same pair with one more repository of the owner the transfer moved it away from served beside
+// it, and no pair at all. The second is the state of the production failure of 2026-11-06 —
+// sjawhar/oh-my-pi served beside the pair made sjawhar an owner of the project, which switched the
+// live pair off under the owner rule this replaced, and 47 trees could not push for 42 minutes —
+// and it must address exactly what the first does. The third is the control: with no pair
+// configured every call is addressed at the recorded repository, as it always was.
 var transferStates = []struct {
 	name    string
 	renames ghrepo.Renames
-	// served is the project's mapping, as GitHub names each repository it serves.
+	// served is the names both role Apps answered installed on, as GitHub names each.
 	served []string
 	// want is the repository every GitHub call for a tree recorded on sjawhar/legion addresses,
 	// and whose owner its token is minted for.
@@ -52,21 +52,20 @@ var transferStates = []struct {
 	{name: "no pair configured", served: []string{"sjawhar/legion"}, want: "sjawhar/legion"},
 }
 
-// renamedRepositories is the project's mapping as the boot builds it: the repositories Dispatch
-// maps, the first of them the project's default, under the configured pairs.
+// renamedRepositories is the repository state the refresher's preparation leaves (prepareLive):
+// both role Apps answered installed on each of served (repositories.fill), under the configured
+// pairs.
 func renamedRepositories(served []string, renames ghrepo.Renames) *repositories {
 	repos := newRepositories("LEGION", renames)
-	mapped := make([]mappedRepository, 0, len(served))
-	for i, repo := range served {
-		mapped = append(mapped, mappedRepository{Repo: ghrepo.MustParse(repo), Default: i == 0})
+	for _, repo := range served {
+		repos.fill(ghrepo.MustParse(repo))
 	}
-	repos.set(mapped, nil)
 	return repos
 }
 
 // renameOutbox is the outbox a transfer's rows run on: the implement App (roleTokens, whose token
-// names the owner it was minted for), GitHub at api, and the project's mapping — served, the
-// repositories Dispatch maps, and the configured pairs — as the boot builds it.
+// names the owner it was minted for), GitHub at api, and the repository state — served, the names
+// both role Apps answered installed on, and the configured pairs — as the refresher leaves it.
 func renameOutbox(t *testing.T, pool *store.Pool, records record.Store, api string, served []string, renames ghrepo.Renames) *outbox {
 	t.Helper()
 	return &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, tokens: roleTokens{},

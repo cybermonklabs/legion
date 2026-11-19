@@ -68,7 +68,7 @@ func TestThePullRequestReadsOfATreeRecordedBeforeItsTransferAddressTheRepository
 					seedRenamedCapture(t, pool, pr)
 					w := readRuntime(pool, github.url, quietLogger())
 					repos := newRepositories("CAPTURE", tc.renames)
-					repos.set([]mappedRepository{{Repo: ghrepo.MustParse(tc.served), Default: true}}, nil)
+					repos.fill(ghrepo.MustParse(tc.served))
 					w.repositories = repos
 					// roleTokens names the owner each lease was minted for, which is half of what
 					// this case reads: the other half is the repository the path addresses.

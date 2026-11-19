@@ -16,7 +16,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -292,7 +291,7 @@ func (stopped) Stop() bool { return true }
 
 // built is what the daemon handed the runtime it built: the connection directory, the address
 // every pane's shim dials, the workflow's App tokens and repository rule, the store it reads, and
-// the repositories the project's mapping names.
+// the cache set, the repositories the Sandbox runtime keeps a repository cache of.
 type built struct {
 	mu         sync.Mutex
 	conns      runtime.Conns
@@ -300,7 +299,7 @@ type built struct {
 	apps       appauth.Source
 	repository func(context.Context, string) (ghrepo.Repository, string, error)
 	store      *store.Store
-	mapped     func() []ghrepo.Repository
+	cached     func() []ghrepo.Repository
 }
 
 // fakeRuntime is a daemon whose runtime is rt — the fake, or a test's runtime built over it: the
@@ -308,10 +307,10 @@ type built struct {
 func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 	return overrides{
 		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Source,
-			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 			record.mu.Lock()
 			defer record.mu.Unlock()
-			record.conns, record.address, record.apps, record.repository, record.store, record.mapped = listener, address, apps, repository, st, mapped
+			record.conns, record.address, record.apps, record.repository, record.store, record.cached = listener, address, apps, repository, st, cached
 			return rt, nil
 		},
 		clock:  stillClock{},
@@ -1127,18 +1126,52 @@ func (s *shim) prompt() shimwire.Prompt {
 	return prompt
 }
 
-// A project whose every mapped repository lacks an App boots, serving none: it mints for no owner,
-// still knows the review App's login, and its state names each left-out repository with the App it
-// lacks, for an operator to install.
-func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
-	cfg := workflowConfig(t, workflowNATS(t))
-	tokens := &workflowTokenRecorder{missing: map[string]bool{"review acme/widgets": true}}
+// liveTreeBoard is the Dispatch of a daemon booted over a live tree (bootOverALiveTree): the calls
+// every boot makes (servedBootCall) and an empty listing of issues, with every other call
+// answered 404. A request under /api/v1/settings/repo-projects, Dispatch's repo-projects table,
+// fails the test, since the daemon reads nothing of it.
+func liveTreeBoard(t *testing.T, project string) string {
+	t.Helper()
+	return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/settings/repo-projects"):
+			t.Errorf("Dispatch request = %s %s: the daemon reads no repo-projects table", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		case servedBootCall(t, w, r, project):
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+				t.Errorf("write Dispatch issues: %v", err)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+// bootOverALiveTree boots a daemon whose store holds one live tree of its project, its root
+// running in implementing on repo (seedWorkflowTree), with tokens, GitHub's REST API at githubAPI
+// and logging to log. It answers the root's key, the daemon's configuration and the state's
+// entry for repo once that entry carries what the refresher's preparation of the records'
+// repositories kept (its Apps or its read error): the boot itself reads GitHub for no repository,
+// and the preparation runs once the API serves (prepareAtStart, INFRA-4401 D4).
+func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubAPI string, log *slog.Logger) (string, config.Config, api.LiveRepositoryView) {
+	t.Helper()
+	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := cfg.Project + "-1"
+	seedWorkflowTree(t, cfg.PostgresDSN, project, record.Issue{Key: root, Repo: repo, DefaultBranch: "main", GitHubRepo: repo,
+		Project: cfg.Project, Tree: root, Title: "a tree on " + repo, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
+		DispatchStatus: "in_progress", HandedOver: true, Rank: "A"})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, cfg, quietLogger(), overrides{
+		done <- run(ctx, cfg, log, overrides{
 			listen: heldListen, runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{},
-			workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
+			workflowTokens: tokens, githubAPI: githubAPI,
 		})
 	}()
 	t.Cleanup(func() {
@@ -1152,102 +1185,175 @@ func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
 			t.Error("daemon did not stop")
 		}
 	})
-	var state api.State
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state"); err == nil {
-			err = json.NewDecoder(response.Body).Decode(&state)
-			response.Body.Close()
-			if err == nil && response.StatusCode == http.StatusOK {
-				break
-			}
-		}
+	var entry api.LiveRepositoryView
+	if !testwait.Holds(20*time.Second, 20*time.Millisecond, func() bool {
 		select {
 		case err := <-done:
 			t.Fatalf("the daemon stopped instead of booting: %v", err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the daemon never answered its state")
+		response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state")
+		if err != nil {
+			return false
 		}
-		time.Sleep(20 * time.Millisecond)
+		defer response.Body.Close()
+		var state api.State
+		if json.NewDecoder(response.Body).Decode(&state) != nil || response.StatusCode != http.StatusOK {
+			return false
+		}
+		for _, live := range state.Repositories.Live {
+			if live.Repo == repo && (live.Apps != nil || live.ReadError != "") {
+				entry = live
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatalf("the daemon's state never named %s with what GitHub answered for it", repo)
 	}
-	want := api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets",
-		Apps: &api.AppInstallationsView{Implement: true}}}}
-	if len(state.Repositories.Owners) != 0 || len(state.Repositories.Mapped) != 0 || !reflect.DeepEqual(state.Repositories.Refused, want.Refused) {
-		t.Fatalf("state's repositories = %+v, want none served and acme/widgets left out for its review App", state.Repositories)
+	return root, cfg, entry
+}
+
+// warnLinesNaming is each WARN line of logged, a daemon's JSON log, that holds every one of words.
+func warnLinesNaming(logged string, words ...string) []string {
+	var lines []string
+	for line := range strings.SplitSeq(logged, "\n") {
+		if !strings.Contains(line, `"level":"WARN"`) {
+			continue
+		}
+		if !slices.ContainsFunc(words, func(word string) bool { return !strings.Contains(line, word) }) {
+			lines = append(lines, line)
+		}
 	}
-	if roles := tokens.Roles(); len(roles) != 0 {
-		t.Fatalf("the boot minted %v with no owner to mint for", roles)
+	return lines
+}
+
+// errorLines is every ERROR line of logged, a daemon's JSON log. pollClient bounds each readiness
+// poll at a second, and a poll the daemon answers more slowly than that is abandoned by the test;
+// the API logs the request whose context went with it at Warn, because the failure is the
+// request's own ending (api's logRequestFailure), so an ERROR line here is the daemon's.
+func errorLines(logged string) []string {
+	var lines []string
+	for line := range strings.SplitSeq(logged, "\n") {
+		if strings.Contains(line, `"level":"ERROR"`) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// A daemon over a live record on a repository a role App is not installed on boots and serves,
+// and its state names the repository with each App's installation, the review App's missing, for
+// an operator to install: a project works in each repository both role Apps reach, so a missing
+// App refuses no boot (INFRA-4401 A2), and the record is left as it is.
+func TestABootOverARecordOnARepositoryAnAppIsNotInstalledOnNamesTheApp(t *testing.T) {
+	tokens := &workflowTokenRecorder{missing: map[string]bool{"review acme/widgets": true}}
+	_, _, entry := bootOverALiveTree(t, "acme/widgets", tokens, repositoriesGitHub(t), quietLogger())
+	if entry.Apps == nil || !entry.Apps.Implement || entry.Apps.Review || entry.ReadError != "" {
+		t.Fatalf("state's entry for acme/widgets = %+v, want the implement App installed and the review App not", entry)
+	}
+	if got, want := entry.NotInstalled(), "the review App is not installed on acme/widgets"; got != want {
+		t.Fatalf("state's entry for acme/widgets says %q, want %q", got, want)
 	}
 }
 
-// A project whose every mapped repository's installation read fails boots all the same, serving
-// none: its API answers, its state names each repository left out with the App, the repository and
-// GitHub's failure, and one ERROR line says so, where the boot used to exit into its supervisor's
-// restart and the same failure.
-func TestWorkflowBootWhoseEveryInstallationReadFailsAnswersItsState(t *testing.T) {
-	cfg := workflowConfig(t, workflowNATS(t))
+// A daemon over a live record whose repository's installation read fails boots all the same: its
+// API answers, and its state names the repository with the App and GitHub's failure as its read
+// error, for the refresher to read again (rereadBadAnswers), where a boot once exited into its
+// supervisor's restart and the same failure. The daemon writes no ERROR line: the failure is one
+// repository's, said once at WARN.
+func TestABootOverARecordWhoseInstallationReadFailsAnswersItsState(t *testing.T) {
 	failure := errors.New("read whether the implement App is installed on acme/widgets failed (403)")
 	tokens := &workflowTokenRecorder{failing: map[string]error{"implement acme/widgets": failure}}
 	var logged syncBuffer
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(&logged, nil)), overrides{
-			listen: heldListen, runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{},
-			workflowTokens: tokens, githubAPI: repositoriesGitHub(t),
-		})
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("run: %v", err)
-			}
-		case <-time.After(15 * time.Second):
-			t.Error("daemon did not stop")
-		}
+	_, _, entry := bootOverALiveTree(t, "acme/widgets", tokens, repositoriesGitHub(t), slog.New(slog.NewJSONHandler(&logged, nil)))
+	want := "the implement App's installation on acme/widgets could not be read: " + failure.Error()
+	if entry.Apps != nil || entry.ReadError != want {
+		t.Fatalf("state's entry for acme/widgets = %+v, want no Apps and the read error %q", entry, want)
+	}
+	if failed := errorLines(logged.String()); len(failed) != 0 {
+		t.Fatalf("ERROR lines = %q, want none: one repository's failed read refuses no boot", failed)
+	}
+	if warned := warnLinesNaming(logged.String(), "leaves it unworkable for now", `"repo":"acme/widgets"`, failure.Error()); len(warned) != 1 {
+		t.Fatalf("WARN lines naming the failed read = %q, want one", warned)
+	}
+}
+
+// A daemon over a live record on a repository GitHub answers 404 for boots and serves: /readyz
+// answers 200, the state's entry for the repository carries the 404 as its read error beside both
+// Apps installed, one WARN line names it, and the record is unchanged. A boot read of a
+// repository a record names never stops the boot (INFRA-4401 A2): a 404 is shown in legion state
+// and the log and changes no record.
+//
+// The control is a boot preparation that returns the 404 as an error that stops the boot
+// (INFRA-4401 P4, check a-go item 4): the daemon then exits before its state names the repository.
+func TestABootOverARecordOnAMissingRepositoryServes(t *testing.T) {
+	missing := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+	}})
+	var logged syncBuffer
+	root, cfg, entry := bootOverALiveTree(t, "acme/gone", &workflowTokenRecorder{}, missing, slog.New(slog.NewJSONHandler(&logged, nil)))
+	if entry.Apps == nil || !entry.Apps.Implement || !entry.Apps.Review || !strings.HasPrefix(entry.ReadError, "the name and default branch of acme/gone could not be read: ") ||
+		!strings.Contains(entry.ReadError, "404") {
+		t.Fatalf("state's entry for acme/gone = %+v, want both Apps installed and GitHub's 404 as its read error", entry)
+	}
+	response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/readyz")
+	if err != nil {
+		t.Fatalf("GET /readyz: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /readyz = %d, want 200: the daemon serves over a record on a missing repository", response.StatusCode)
+	}
+	if warned := warnLinesNaming(logged.String(), "leaves it unworkable for now", `"repo":"acme/gone"`, "the name and default branch of acme/gone could not be read: "); len(warned) != 1 {
+		t.Fatalf("WARN lines naming acme/gone's read error = %q, want one", warned)
+	}
+	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	defer st.Close()
+	var kept *record.Issue
+	if err := pgx.BeginFunc(context.Background(), st.Pool(), func(tx pgx.Tx) error {
+		kept, err = record.NewStore().Issue(context.Background(), tx, root)
+		return err
+	}); err != nil {
+		t.Fatalf("read %s: %v", root, err)
+	}
+	if kept == nil || kept.Repo != "acme/gone" || kept.GitHubRepo != "acme/gone" || kept.DefaultBranch != "main" || kept.Phase != phase.Implementing {
+		t.Fatalf("%s after the boot = %+v, want it unchanged on acme/gone@main in implementing", root, kept)
+	}
+}
+
+// No boot warning names commit_issue_trailer_repos or a configured rename: the daemon reads no
+// table of Dispatch's about repositories, so a trailer repository or a pair's name that no such
+// table names is no gap to warn of, and nothing of the boot or of the refresher's first job says
+// either (check a-go, item 9). Here the project's commit_issue_trailer_repos names orbit/gadgets
+// and repository_renames pairs sjawhar/legion with cybermonklabs/legion, and no record names any
+// of them. Control: with either warning back (the boot's warning of a trailer repository, or of a
+// pair naming a repository the project does not serve), a WARN line names it.
+func TestNoBootWarningNamesTheTrailerSettingOrARename(t *testing.T) {
+	cfg := workflowConfig(t, workflowNATS(t))
+	if cfg.Projects == nil {
+		cfg.Projects = map[string]config.Project{}
+	}
+	project := cfg.Projects[cfg.Project]
+	project.CommitIssueTrailerRepos = []ghrepo.Repository{ghrepo.MustParse("orbit/gadgets")}
+	cfg.Projects[cfg.Project] = project
+	cfg.RepositoryRenames = ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+	var logged syncBuffer
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	o.workflowTokens = &workflowTokenRecorder{}
+	startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(&logged, nil)))
+	testwait.Eventually(t, "the refresher's first job", func() bool {
+		return strings.Contains(logged.String(), "legion workflow prepared the repositories its records name")
 	})
-	var state api.State
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state"); err == nil {
-			err = json.NewDecoder(response.Body).Decode(&state)
-			response.Body.Close()
-			if err == nil && response.StatusCode == http.StatusOK {
-				break
-			}
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("the daemon stopped instead of booting: %v", err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the daemon never answered its state")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	want := []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the implement App's installation on acme/widgets could not be read: " + failure.Error() + "; Legion reads it again"}}
-	if len(state.Repositories.Mapped) != 0 || !reflect.DeepEqual(state.Repositories.Refused, want) {
-		t.Fatalf("state's repositories = %+v, want none served and acme/widgets left out for its failed read", state.Repositories)
-	}
-	// Every ERROR line the booting daemon writes, counted whole. pollClient bounds each readiness
-	// poll at a second (:275), and a poll the daemon answers more slowly than that - on a busy
-	// machine, or under the race detector - is abandoned by this test; the API logs the request
-	// whose context went with it at Warn, because the failure is the request's own ending
-	// (api's logRequestFailure). So the test's own doing costs this row nothing, and the row is
-	// the end-to-end guard it reads as: an ERROR line here is the boot's.
-	var errorLines []string
 	for line := range strings.SplitSeq(logged.String(), "\n") {
-		if strings.Contains(line, `"level":"ERROR"`) {
-			errorLines = append(errorLines, line)
+		lower := strings.ToLower(line)
+		if strings.Contains(line, `"level":"WARN"`) && (strings.Contains(lower, "commit_issue_trailer_repos") || strings.Contains(lower, "rename")) {
+			t.Errorf("WARN line %s names the trailer setting or a rename, want none", line)
 		}
-	}
-	if len(errorLines) != 1 || !strings.Contains(errorLines[0], "every mapped repository's GitHub App installation read failed") || !strings.Contains(errorLines[0], failure.Error()) {
-		t.Fatalf("ERROR lines = %q, want one naming the failed read", errorLines)
 	}
 }
 
@@ -1296,12 +1402,12 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// The boot mints the implement then the review App's token, then reads each served repository
-	// as the implement App.
-	if got := tokens.Roles(); len(got) != 3 || got[0] != appauth.Implement || got[1] != appauth.Review || got[2] != appauth.Implement {
-		t.Fatalf("App token roles = %v, want implement then review, then implement for the repository read", got)
+	// The boot mints no App token: it proves each App's key by reading its installations
+	// (proveAppKeys), and the project's records name no repository to read.
+	if got := tokens.Roles(); len(got) != 0 {
+		t.Fatalf("App token roles = %v, want none: the boot mints no token", got)
 	}
-	want := []string{"prompts", "store", "config", "dispatch", "appauth", "repositories", "launcher", "intake", "admission", "outbox", "api"}
+	want := []string{"prompts", "store", "config", "appauth", "launcher", "intake", "admission", "outbox", "api"}
 	var got []string
 	for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
 		var entry struct {
@@ -1545,45 +1651,6 @@ func TestRunWaitsThroughADispatch503BeforeServing(t *testing.T) {
 	}
 }
 
-// The boot's first Dispatch read is the repository mapping. A Dispatch with no ready endpoint,
-// fronted here by a proxy that answers 503 for it, fails that read for as long as it has none, and
-// the boot waits that out (readinessRetry, without limit) as it waits out the listing for
-// admission, and comes up once Dispatch answers. Bounded at appMintRetry's attempts, the read
-// exited the daemon, and its supervisor restarted it straight back into the same refusal. Here
-// Dispatch fails the mapping read two times more than appMintRetry's budget allows.
-func TestRunWaitsForTheRepositoryMappingThroughADispatchOutage(t *testing.T) {
-	quickAppMints(t)
-	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
-	refusals := int64(appMintRetry.Attempts + 2)
-	var reads atomic.Int64
-	cfg := workflowConfigOn(t, workflowNATS(t), func(t *testing.T, project string) string {
-		return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects" && reads.Add(1) <= refusals {
-				http.Error(w, "no healthy upstream", http.StatusServiceUnavailable)
-				return
-			}
-			if servedBootCall(t, w, r, project) {
-				return
-			}
-			if r.Method != http.MethodGet || r.URL.Path != "/api/v1/issues" {
-				t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			if err := json.NewEncoder(w).Encode([]any{}); err != nil {
-				t.Errorf("write Dispatch issues: %v", err)
-			}
-		})
-	})
-
-	if err := bootsOrExits(t, cfg, &workflowTokenRecorder{}, 60*time.Second); err != nil {
-		t.Fatalf("boot = %v, want it to wait out %d failed mapping reads and come up", err, refusals)
-	}
-	if got := reads.Load(); got <= refusals {
-		t.Fatalf("Dispatch saw %d mapping reads, want the %d it failed and the one the daemon booted on", got, refusals)
-	}
-}
-
 // workflowDispatchToken is the bearer the daemon of workflowConfig presents to Dispatch.
 const workflowDispatchToken = "dispatch-test-token"
 
@@ -1685,16 +1752,17 @@ func (r *workflowTokenRecorder) InstalledOn(_ context.Context, role appauth.AppR
 	return !r.missing[key], nil
 }
 
-// InstalledOwners answers no owner list: the recorder knows which repositories each App is
-// installed on (InstalledOn) and not the accounts, and no rig builds a gh bundle over it, since
-// each replaces the runtime that would. A rig that builds one names its owners itself.
+// InstalledOwners answers each App installed on acme, the account of acme/widgets, which every
+// rig over the recorder works in: the boot's proof of each App's key reads it (proveAppKeys) and
+// records it as that App's installations, so a launch's addressing names acme from the first
+// launch. No rig builds a gh bundle over the recorder, since each replaces the runtime that would.
 func (r *workflowTokenRecorder) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
-	return nil, errors.New("the workflow token recorder lists no owner accounts, which a gh bundle holds one directory per owner of")
+	return []string{"acme"}, nil
 }
 
 // servedBootCall answers the calls every boot makes of Dispatch, whatever the test is about:
-// the repository mapping, acme/widgets the default of project; the webhook App check, Dispatch's
-// GitHub App installed on every repository; the publish of the project's gated design steps,
+// the webhook App check, Dispatch's GitHub App installed on every repository; the publish of the
+// project's gated design steps,
 // which the boot queues for its own project (daemon.queueGatedStepsPublish) and the outbox's
 // first sweep sends; the publish of the documents a gated issue's own gates record, which the
 // boot queues for every recorded issue Dispatch has not closed (daemon.queueRecordedGatesPublish)
@@ -1729,8 +1797,6 @@ func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, projec
 	}
 	var body any
 	switch {
-	case r.URL.Path == "/api/v1/settings/repo-projects":
-		body = []map[string]any{{"repo": "acme/widgets", "project": project, "default": true}}
 	case strings.HasPrefix(r.URL.Path, "/api/v1/github/app-installation/"):
 		body = map[string]bool{"installed": true}
 	case strings.HasPrefix(r.URL.Path, "/api/v1/artifacts/") &&

@@ -310,6 +310,13 @@ func appTransient(err error) bool {
 // (appauth.ErrCommandPending, most often a grant that waits on a person's approval). A pending
 // attempt spends no retry: the command goes on, and the next attempt joins it, so the boot waits
 // for the grant with one request and never kills it.
+//
+// An attempt that failed because its own bound ended while the boot's ctx is still alive is
+// transient too: a request GitHub has not answered is GitHub's trouble, not the App's, and is
+// run again within appMintRetry rather than refusing the boot (#1347). The next attempt of an
+// App's installation read joins the shared read still in flight (appauth.Manager.InstalledOwners),
+// which appauth drops at its installationReadLimit (1 min) when GitHub never answers it, inside
+// appMintRetry's worst case of 2 min 20 s, so an attempt after that asks GitHub afresh.
 func appAttempt(attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)
@@ -320,7 +327,7 @@ func appAttempt(attempt func(context.Context) error) func(context.Context) bootp
 			return bootprobe.Outcome{Passed: true}
 		case errors.Is(err, appauth.ErrCommandPending):
 			return bootprobe.Outcome{Pending: err.Error()}
-		case appTransient(err):
+		case appTransient(err), errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
 			return bootprobe.Outcome{Detail: err.Error()}
 		default:
 			return bootprobe.Outcome{Refusal: err}
@@ -360,34 +367,42 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger)
 // proveAppKeys proves each role App's key with GitHub's App-level read of its installations
 // (appauth.OwnerInstallations.InstalledOwners: GET /app/installations under the App's JWT, or, for
 // an App on token_command, the command's release of every installation), one App after the other,
-// each as one attempt run again after a failure GitHub reports as its own trouble
-// (appauth.TransientError), with a pending command spending no attempt (appAttempt); any other
-// failure stops the boot with a refusal that names the App. A key GitHub takes is the whole proof:
-// an App with no installation boots, and one WARN line names it, since a project works in each
-// repository both role Apps reach and an operator may install an App after the daemon is up. The
-// owners each read answers are recorded as that App's installations (appauth.Installed.Record),
-// so every launch's addressing names its App's own owners from the first launch on (plan.appOwners),
-// and nothing of the boot mints a token for an owner.
+// both reads as one attempt run again after a failure GitHub reports as its own trouble
+// (appauth.TransientError), with a pending command spending no attempt (appAttempt): the two Apps
+// share one retry budget, so the boot waits at most appMintRetry however the failures fall between
+// them, and an attempt after one App's read answered reads only the other's. Any other failure
+// stops the boot with a refusal that names the App. A key GitHub takes is the whole proof: an App
+// with no installation boots, and one WARN line names it, since a project works in each repository
+// both role Apps reach and an operator may install an App after the daemon is up. The owners each
+// read answers are recorded as that App's installations (appauth.Installed.Record) once both are
+// proved, so every launch's addressing names its App's own owners from the first launch on
+// (plan.appOwners), and nothing of the boot mints a token for an owner.
 func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installed *appauth.Installed, log *slog.Logger) error {
-	for _, role := range appauth.Roles {
-		var owners []string
-		err := bootprobe.Run(ctx, "GitHub "+string(role)+" App key proof", appMintRetry, log, appAttempt(func(ctx context.Context) error {
-			var err error
-			if owners, err = apps.InstalledOwners(ctx, role); err != nil {
+	owners := make(map[appauth.AppRole][]string, len(appauth.Roles))
+	err := bootprobe.Run(ctx, "GitHub App key proof", appMintRetry, log, appAttempt(func(ctx context.Context) error {
+		for _, role := range appauth.Roles {
+			if _, proved := owners[role]; proved {
+				continue
+			}
+			read, err := apps.InstalledOwners(ctx, role)
+			if err != nil {
 				return fmt.Errorf("prove the %s App's key by reading its installations: %w", role, err)
 			}
-			return nil
-		}))
-		if err != nil {
-			return err
+			owners[role] = read
 		}
-		installed.Record(role, owners)
-		if len(owners) == 0 {
+		return nil
+	}))
+	if err != nil {
+		return err
+	}
+	for _, role := range appauth.Roles {
+		installed.Record(role, owners[role])
+		if len(owners[role]) == 0 {
 			log.Warn("workflow: a GitHub App is installed on no account, so its role reaches no repository until an account installs it",
 				"app", string(role))
 			continue
 		}
-		log.Info("legion workflow proved a GitHub App's key", "app", string(role), "installedOn", owners)
+		log.Info("legion workflow proved a GitHub App's key", "app", string(role), "installedOn", owners[role])
 	}
 	return nil
 }

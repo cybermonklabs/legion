@@ -72,16 +72,14 @@ func (g *checkWakeGitHub) read() []string {
 	return append([]string(nil), g.paths...)
 }
 
-// checkWakeDispatch is a Dispatch that maps sjawhar/legion to project as its default and lists no
-// issues; every other call is unavailable, as a Dispatch whose dependencies are down answers, and
-// is not what these tests are about.
+// checkWakeDispatch is a Dispatch of project that lists no issues; every other call is
+// unavailable, as a Dispatch whose dependencies are down answers, and is not what these tests are
+// about.
 func checkWakeDispatch(t *testing.T, project string) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects":
-			_, _ = io.WriteString(w, `[{"repo":"sjawhar/legion","project":"`+project+`","default":true}]`)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
 			_, _ = io.WriteString(w, `[]`)
 		default:

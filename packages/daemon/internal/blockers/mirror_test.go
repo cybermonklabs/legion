@@ -52,9 +52,9 @@ func TestMirrorWritesNothingForAnotherFactKind(t *testing.T) {
 	records := record.NewStore()
 	mirror := NewMirror(records, testProject)
 	inTx(t, pool, func(tx pgx.Tx) {
-		result, err := mirror.Apply(context.Background(), tx, intake.RepoMappingChanged{Project: testProject})
+		result, err := mirror.Apply(context.Background(), tx, intake.ListenerWake{Kind: intake.ListenerWakeReady, Report: "listener-report-1"})
 		if err != nil {
-			t.Fatalf("apply the mapping change: %v", err)
+			t.Fatalf("apply the listener's wake: %v", err)
 		}
 		if result.Refusal != nil {
 			t.Fatalf("the mirror refused %#v; it decides nothing", result.Refusal)
