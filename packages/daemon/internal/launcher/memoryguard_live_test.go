@@ -87,9 +87,10 @@ const (
 	controllerLiveMappedBound = 30 * time.Minute
 	// controllerLivePoolBound bounds the wait for the exit of every grower of the pool and of each
 	// of the tester's other probes of six growers, and of the probe itself (awaitGrowers): their
-	// growers reach the mark in a few seconds, and the guard ends one at a reading, or every one
-	// that grew over its window at a reading at or above the urgent share, or after its wait of 1
-	// second, until none is left.
+	// growers reach the mark in a few seconds, and the guard ends one at a reading, or at a reading
+	// at or above the urgent share every one that grew over its window and, where the decision holds
+	// a process that is not new to the stay, every one new to it with memory of its own (R1 of spec
+	// versions 39, 41 and 42), or after its wait of 1 second, until none is left.
 	controllerLivePoolBound = 5 * time.Minute
 	// controllerLivePoolGrowers is how many growers the pool starts at once: six of `grow`'s rise
 	// about 1.5 GiB a second together, the fastest rise INFRA-3531's tester measured.
@@ -414,7 +415,9 @@ print("probe: done", flush=True)
 // guard's first kill came within two intervals of its first reading at or above the mark
 // (markToKill); the guard went on as R1 says (judgeTrace): for the kills of each reading, one, or
 // at a reading at or above the urgent share every process the guard may end that grew over its
-// window (R1 of spec version 39), whose processes had all exited before a later reading of the
+// window and, where the decision holds one that is not new to the stay, every one new to it with
+// memory of its own (R1 of spec versions 39, 41 and 42), whose processes had all exited before a
+// later reading of the
 // guard's at or above the mark and controllerLiveGrowerStep or more above the reading at those
 // kills, while a grower lived, the guard's next kill acted on the first such reading; and the first
 // kill of each reading that followed a kill of the same rise (no reading of the guard's below the
@@ -1452,8 +1455,10 @@ func (r *controllerLiveRun) printTrace() (stop func()) {
 // reading has not fallen below the reading at its kill and a process the guard may end has grown
 // since that kill, the guard ends the next in its order at once. It is judged for the kills of
 // each reading together (controllerLiveReadingKills): one kill, or at a reading at or above the
-// urgent share every process the guard may end that grew over its window, each a kill of its own
-// at that same reading (spec version 39), after which the guard waits until every one of them has
+// urgent share every process the guard may end that grew over its window and, where the decision
+// holds one that is not new to the stay, every one new to it with memory of its own, each a kill
+// of its own at that same reading (spec versions 39, 41 and 42), after which the guard waits until
+// every one of them has
 // exited. For the kills of a reading whose processes its pidfds showed all exited before a later
 // reading of the guard's, the first such reading after the last exit, at or above the mark and
 // controllerLiveGrowerStep or more above the reading at those kills while a grower lived
@@ -1472,7 +1477,8 @@ func (r *controllerLiveRun) printTrace() (stop func()) {
 // no run (printFirstKill). A kill after one, at a reading less than that above the kill's, is not
 // judged either, since the reading may have fallen and no grower need have grown; nor is a kill
 // sent beside the first of its reading (`same-reading`), which shares that kill's reading and ended
-// a process that grew over the window.
+// a process that grew over the window or, where the decision held one that is not new to the stay,
+// one new to it with memory of its own.
 func (r *controllerLiveRun) judgeTrace(names map[int]string) (wentOn int, fail string) {
 	t := r.watch.traceCopy()
 	for i := 0; i < len(t.kills); {
@@ -1525,8 +1531,10 @@ func (r *controllerLiveRun) judgeTrace(names map[int]string) (wentOn int, fail s
 // the pass reason. Such a kill fails a run only where judgeTrace says so: a first kill of a rise
 // may end a sleeping fork or the parent, and so may a kill after one at a reading less than
 // controllerLiveGrowerStep above that kill's; a kill sent beside another at the same reading ended
-// a process that grew over the guard's window (INFRA-3531 R1 of spec version 39), and is counted
-// apart, since it is neither the first of its rise nor the guard's answer to a later reading.
+// a process that grew over the guard's window or, where the decision held one that is not new to
+// the stay, one new to it with memory of its own (INFRA-3531 R1 of spec versions 39, 41 and 42),
+// and is counted apart, since it is neither the first of its rise nor the guard's answer to a
+// later reading.
 func (r *controllerLiveRun) printKinds(names map[int]string) string {
 	t := r.watch.traceCopy()
 	counts := map[string]int{}
@@ -1587,9 +1595,10 @@ func controllerLiveRise(k controllerLiveTraceKill) string {
 // one reading, end, the index after the last of them (each after the first marked sameReading),
 // and last, the one of them whose process exited last, -1 where the exit of one of them was not
 // measured. At a reading at or above the urgent share the guard ends every process it may end that
-// grew over its window, and it waits after them until every one has exited (INFRA-3531 R1 of spec
-// version 39), so its go-on is judged from the last of those exits; below that share a reading's
-// kills are one, and end is i+1.
+// grew over its window and, where the decision holds one that is not new to the stay, every one
+// new to it with memory of its own, and it waits after them until every one has exited (INFRA-3531
+// R1 of spec versions 39, 41 and 42), so its go-on is judged from the last of those exits; below
+// that share a reading's kills are one, and end is i+1.
 func controllerLiveReadingKills(kills []controllerLiveTraceKill, i int) (end, last int) {
 	last = i
 	for end = i; end < len(kills) && (end == i || kills[end].sameReading); end++ {
@@ -2116,11 +2125,12 @@ type controllerLiveReading struct {
 // the first kill of its rise, the trace's first or one after a reading below the mark, and not one
 // that follows a kill of the same rise; sameReading whether the kill before it acted on the same
 // reading, a process the guard ended beside the first of that reading at a reading at or above
-// the urgent share, where it ends every process it may end that grew over its window (INFRA-3531
-// R1 of spec version 39), which keeps the first's firstOfRise; and exitAt the time the pidfd the
-// sink opened on the process it ended first read readable, the process's exit, zero while it has
-// not or where it was not measured; exitNote says why it was not, or how it was where that was not
-// the pidfd's own word (sink).
+// the urgent share, where it ends every process it may end that grew over its window and, where
+// the decision holds one that is not new to the stay, every one new to it with memory of its own
+// (INFRA-3531 R1 of spec versions 39, 41 and 42), which keeps the first's firstOfRise; and exitAt
+// the time the pidfd the sink opened on the process it ended first read readable, the process's
+// exit, zero while it has not or where it was not measured; exitNote says why it was not, or how
+// it was where that was not the pidfd's own word (sink).
 type controllerLiveTraceKill struct {
 	shimwire.LauncherMemoryKill
 	readingAt   time.Time

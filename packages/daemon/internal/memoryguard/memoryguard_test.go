@@ -2777,8 +2777,9 @@ func TestMemoryGuardSendsEveryKillOfAnUrgentReadingBeforeItReadsTheCounter(t *te
 // set, pid 300, python3 grow.py, which grows 40 MiB at each reading. After the band's last reading
 // three processes start: pid 701, a fork of pid 700 that runs its program and reports its 1 GiB as
 // its own, so it ranks at nothing; pid 710, python3 worker.py of 300 MiB; and pid 711, the newest,
-// of 200 MiB. Each smaps read at the mark takes perRead by the guard's clock.
-func newTierAtTheMark(t *testing.T, grower bool, perRead time.Duration, reading uint64) *harness {
+// of 200 MiB. Each smaps read at the mark takes perRead by the guard's clock. It answers the time of
+// the reading at the mark by the guard's clock too.
+func newTierAtTheMark(t *testing.T, grower bool, perRead time.Duration, reading uint64) (*harness, time.Time) {
 	t.Helper()
 	pod := newFakePod(t)
 	parent := fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: gib}
@@ -2811,19 +2812,21 @@ func newTierAtTheMark(t *testing.T, grower bool, perRead time.Duration, reading 
 	grow()
 	pod.setAnon(reading * mib)
 	read.Store(int64(perRead))
+	markAt := h.clock.Now().Add(h.pending.d)
 	h.tick()
 	read.Store(0)
-	return h
+	return h, markAt
 }
 
-// At a reading at or above the urgent share the guard ends every process new to this stay that
-// holds memory of its own, beside the first, and not a fork whose parent's size covers its own,
-// which ranks at nothing (INFRA-3531 R1 of spec version 41). At the reading at the mark, 3800 MiB,
-// the search finds pids 701, 710 and 711 started since the band's last reading: it ends pid 710,
-// the largest of the new tier, by that tier, and pid 711 by the urgent rule, each line with the
-// decision's new_read, and not pid 701, nor pid 700 or pid 303, which are not new.
+// At a reading at or above the urgent share, where the decision holds a process that is not new to
+// the stay, the guard ends every process new to it that holds memory of its own, beside the first,
+// and not a fork whose parent's size covers its own, which ranks at nothing (INFRA-3531 R1 of spec
+// versions 41 and 42). At the reading at the mark, 3800 MiB, the search finds pids 701, 710 and
+// 711 started since the band's last reading: it ends pid 710, the largest of the new tier, by that
+// tier, and pid 711 by the urgent rule, each line with the decision's new_read, and not pid 701,
+// nor pid 700 or pid 303, which are not new.
 func TestMemoryGuardEndsAtAnUrgentReadingEveryNewProcessWithMemoryOfItsOwnAndNotAForkThatRanksAtNothing(t *testing.T) {
-	h := newTierAtTheMark(t, false, 0, 3800)
+	h, _ := newTierAtTheMark(t, false, 0, 3800)
 	want := []endedChoice{{710, "new", "search", 0}, {711, "urgent", "search", 0}}
 	if got := endedChoices(h); !slices.Equal(got, want) {
 		t.Fatalf("at the urgent reading at the mark the guard ended %+v, want %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
@@ -2838,7 +2841,7 @@ func TestMemoryGuardEndsAtAnUrgentReadingEveryNewProcessWithMemoryOfItsOwnAndNot
 // newTierAtTheMark builds with no grower, the guard ends pid 710, the largest of the new tier,
 // alone, and not pid 711, new with memory of its own too.
 func TestMemoryGuardEndsOneProcessNewToTheStayBelowTheUrgentShare(t *testing.T) {
-	h := newTierAtTheMark(t, false, 0, 3700)
+	h, _ := newTierAtTheMark(t, false, 0, 3700)
 	want := []endedChoice{{710, "new", "search", 0}}
 	if got := endedChoices(h); !slices.Equal(got, want) {
 		t.Fatalf("below the urgent share the guard ended %+v, want %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
@@ -2846,32 +2849,84 @@ func TestMemoryGuardEndsOneProcessNewToTheStayBelowTheUrgentShare(t *testing.T) 
 }
 
 // At an urgent reading at the mark the guard searches for the processes started since the band's
-// last reading though a held process grew, since it ends every one new to the stay with memory of
-// its own there (INFRA-3531 R1 of spec version 41), and the window's growers come first: it ends
-// pid 300, grown in the band and since, by its tier, and pids 710 and 711, found by the search, by
-// the urgent rule. The search has no budget of its own: where each smaps read at the mark takes 60
-// ms, the read again of pid 300 spends the half interval, and the search, having read no process
-// new to the stay with memory of its own, reads on, the newest first, and stops after the read in
-// hand, pid 711's: pid 710, unread at this reading, is not ended at it.
+// last reading though a held process grew, since, pids 700 and 303 not new to the stay, it ends
+// every one new to it with memory of its own there (INFRA-3531 R1 of spec versions 41 and 42),
+// and the window's growers come first: it ends pid 300, grown in the band and since, by its tier,
+// and pids 710 and 711, found by the search, by the urgent rule. It sends pid 300's kill before
+// the search, since a process the search finds has no growth over the window and cannot go before
+// it: the first kill waits for no search it does not need (INFRA-3531 R1 of spec version 43). The
+// search has no budget of its own: where each smaps read at the mark takes 60 ms, the read again
+// of pid 300 spends the half interval, and pid 300's kill goes 60 ms after the reading at the
+// mark, one read; the search, having read no process new to the stay with memory of its own,
+// reads on, the newest first, and stops after the read in hand, pid 711's: pid 710, unread at this
+// reading, is not ended at it. At 15b73ba6, which searched before that kill, pid 300's kill went
+// 120 ms after the reading at the mark.
 func TestMemoryGuardSearchesAtAnUrgentReadingAtTheMarkThoughAHeldProcessGrew(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		perRead time.Duration
 		want    []endedChoice
 		newRead string
+		// firstKill is the time from the reading at the mark to the first kill.
+		firstKill time.Duration
 	}{
-		{"reads that take no time", 0, []endedChoice{{300, "grew", "search", 0}, {710, "urgent", "search", 0}, {711, "urgent", "search", 0}}, "3:2"},
-		{"each smaps read at the mark taking 60 ms", 60 * time.Millisecond, []endedChoice{{300, "grew", "search", 0}, {711, "urgent", "search", 0}}, "1:1"},
+		{"reads that take no time", 0, []endedChoice{{300, "grew", "search", 0}, {710, "urgent", "search", 0}, {711, "urgent", "search", 0}}, "3:2", 0},
+		{"each smaps read at the mark taking 60 ms", 60 * time.Millisecond, []endedChoice{{300, "grew", "search", 0}, {711, "urgent", "search", 0}}, "1:1", 60 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newTierAtTheMark(t, true, tc.perRead, 3800)
+			h, markAt := newTierAtTheMark(t, true, tc.perRead, 3800)
 			if got := endedChoices(h); !slices.Equal(got, tc.want) {
 				t.Fatalf("at the urgent reading at the mark the guard ended %+v, want %+v; the log:\n%s", got, tc.want, strings.Join(h.log.all(), "\n"))
 			}
 			for _, c := range tc.want {
 				requireNewRead(h, c.pid, tc.newRead)
 			}
+			if got := h.killed()[0].At.Sub(markAt); got != tc.firstKill {
+				t.Fatalf("pid 300's kill went %s after the reading at the mark, want %s, before the search", got, tc.firstKill)
+			}
 		})
+	}
+}
+
+// A fork the search finds started since the band's last reading, running the program of a parent
+// the search found too, ranks by its size less its parent's read by that search, since the guard
+// has read that parent in this stay (INFRA-3531 R1 of spec version 43): a fork whose parent's size
+// covers its own ranks at nothing and is not ended for urgency. The band reads pid 700, python3
+// pool.py of 1 GiB, and pid 303, idle, at its three readings, so neither is new to the stay. After
+// the band's last reading three processes start: pid 720, python3 job.py of 400 MiB; pid 721, its
+// fork, which runs its program and reports its 400 MiB as its own; and pid 730, python3 worker.py
+// of 200 MiB. The search reads them the newest first, the fork before its parent. At the reading at
+// the mark, 3800 MiB, at or above the urgent share, nothing has grown: the guard ends pid 720 by the
+// new tier and pid 730 by the urgent rule, and not pid 721 (new_read=3:2). At 15b73ba6 the fork
+// ranked by its whole size, and the guard ended it first and pids 720 and 730 beside it.
+func TestMemoryGuardRanksAForkTheSearchFoundBesideItsFoundParentAtNothingAndDoesNotEndItForUrgency(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(agent(2*gib),
+		fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: gib},
+		fakeProcess{pid: 303, ppid: 100, start: 5100, args: []string{"python3", "idle.py"}, anon: 300 * mib})
+	pod.setAnon(3100 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	for _, r := range []uint64{3200, 3300, 3400} {
+		pod.setAnon(r * mib)
+		h.tick()
+	}
+	h.requireKilled()
+	job := []string{"python3", "job.py"}
+	pod.add(
+		fakeProcess{pid: 720, ppid: 100, start: 7000, exe: "/usr/bin/python3.13", args: job, anon: 400 * mib},
+		fakeProcess{pid: 721, ppid: 720, start: 7100, exe: "/usr/bin/python3.13", args: job, anon: 400 * mib},
+		fakeProcess{pid: 730, ppid: 100, start: 7200, args: []string{"python3", "worker.py"}, anon: 200 * mib},
+	)
+	pod.setAnon(3800 * mib)
+	h.tick()
+	want := []endedChoice{{720, "new", "search", 0}, {730, "urgent", "search", 0}}
+	if got := endedChoices(h); !slices.Equal(got, want) {
+		t.Fatalf("at the urgent reading at the mark the guard ended %+v, want %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
+	}
+	for _, c := range want {
+		requireNewRead(h, c.pid, "3:2")
 	}
 }
 
@@ -2933,6 +2988,42 @@ func TestMemoryGuardEndsOneProcessAtAnUrgentReadingWhereEveryProcessIsNewThoughT
 	h.tick()
 	if got := endedChoices(h); len(got) != 1 {
 		t.Fatalf("at the urgent reading at the mark where every process is new the guard ended %+v, want one process; the log:\n%s", got, strings.Join(h.log.all(), "\n"))
+	}
+}
+
+// Whether an urgent reading also ends every process new to the stay with memory of its own is
+// taken on the processes the decision holds, once the reads at the mark have left out those they
+// could not read (INFRA-3531 R1 of spec version 43: "where the decision also holds a process it may
+// end that is not new to the stay"). The band holds two readings, 3200 and 3400 MiB: pid 300 is read
+// at both and grows 20 MiB between them, and pids 310 and 311 start between them, so each has one
+// read and is new to the stay. Pid 300 is gone by the reading at the mark, 3800 MiB, at or above
+// the urgent share, and the reads at the mark leave it out: the decision holds no process that is
+// not new, and the guard ends pid 310, the larger, alone. At 15b73ba6, which took this on the
+// band's held processes, pid 300 among them, the guard ended pid 311 too, by the urgent rule.
+func TestMemoryGuardEndsOneProcessAtAnUrgentReadingWhereTheOneProcessNotNewIsGoneAtTheMark(t *testing.T) {
+	pod := newFakePod(t)
+	grower := fakeProcess{pid: 300, ppid: 100, start: 3000, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+	pod.add(agent(2*gib), grower)
+	pod.setAnon(3000 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	pod.setAnon(3200 * mib)
+	h.tick()
+	pod.resize(&grower, grower.anon+20*mib)
+	pod.add(
+		fakeProcess{pid: 310, ppid: 100, start: 3100, args: []string{"python3", "a.py"}, anon: 300 * mib},
+		fakeProcess{pid: 311, ppid: 100, start: 3110, args: []string{"python3", "b.py"}, anon: 250 * mib},
+	)
+	pod.setAnon(3400 * mib)
+	h.tick()
+	h.requireKilled()
+	pod.remove(grower.pid)
+	pod.setAnon(3800 * mib)
+	h.tick()
+	want := []endedChoice{{310, "new", "reread", 0}}
+	if got := endedChoices(h); !slices.Equal(got, want) {
+		t.Fatalf("at the urgent reading at the mark the guard ended %+v, want %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
 	}
 }
 
@@ -3457,8 +3548,9 @@ func endedChoices(h *harness) []endedChoice {
 // each 1 MiB apart. The guard then ends a grower at each reading: where one grew over the window,
 // as new to the stay, or, at a reading with no grower's step inside the window, by its growth since
 // the stay's first kill, which the parent and its forks show none of (spec version 34); and at a
-// reading at or above the urgent share, 92.5% of the limit, every grower that grew over the window,
-// the first by its tier and each other by the urgent rule (spec version 39). With the six growers
+// reading at or above the urgent share, 92.5% of the limit, every grower that grew over the window
+// and, since the parent and its forks are not new to the stay, every grower new to it, the first by
+// its tier and each other by the urgent rule (spec versions 39, 41 and 42). With the six growers
 // ended, at the readings left, which fall, it ends the largest: the parent, whose own program is
 // not its parent's, the agent's, at its whole 2.4 GB, and then, no read parent discounting the
 // forks any longer, the forks, the newest first, each at its whole size. No fork, and not the
@@ -3758,7 +3850,9 @@ type latepoolRun struct {
 	grown []uint64
 	// newRead is the first kill's new_read, and lastNewRead, where set, the last kill's; atMark is
 	// how many kills the reading at the mark sends, one where it is 0: at or above the urgent share,
-	// every process that grew over the window (INFRA-3531 R1 of spec version 39).
+	// every process that grew over the window and, where the decision holds a process that is not
+	// new to the stay, every one new to it with memory of its own (INFRA-3531 R1 of spec versions
+	// 39, 41 and 42).
 	newRead, lastNewRead string
 	atMark               int
 	want                 []endedChoice

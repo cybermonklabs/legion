@@ -40,8 +40,9 @@ import (
 // Its rule and sizes, which come before the executable so that the name stays last, say why that
 // process was first (INFRA-3531 R3 of spec version 31): rule is the tier of the order of ends that
 // put it first, or the urgent rule for a process ended beside the first at a reading at or above
-// the urgent share, one that grew over the window or one new to the stay with memory of its own
-// (ruleUrgent, spec versions 39 and 41), and sizes where the sizes the guard chose it by came
+// the urgent share, one that grew over the window or, where the decision holds a process that is
+// not new to the stay, one new to it with memory of its own (ruleUrgent, spec versions 39, 41 and
+// 42), and sizes where the sizes the guard chose it by came
 // from. Its less_parent, after sizes, is how much of its size its rank did not count
 // (INFRA-3531 R1 of spec version 33): for a fork that runs its parent's executable with its
 // parent's arguments, its parent being one the guard has read in this stay, its parent's size at
@@ -51,14 +52,17 @@ import (
 // process's own.
 //
 // Its new_read, after less_parent, says what the reads at the reading at the mark read of the
-// processes new to the stay, those the band read once at its last reading and those started since
-// it (INFRA-3531 R1 of spec versions 31, 32 and 34), for a first kill decided where no held process
-// had grown by the band's reads, or at a reading at or above the urgent share, where the mark reads
-// the band's growers again whatever the held reads show (endHeld, spec version 39), whatever its
-// sizes: `<reached>:<own>`, how many of those processes they read the smaps of, and of them how
-// many rank above nothing, holding memory of their own after the fork discount, their identity read
-// again (newRead, reidentify); each process ended beside the first at an urgent reading carries the
-// first's. So `new_read=3:0` reads that the mark read three processes new to the stay, each a fork
+// processes new to the stay, those the band read once at its last reading and those started
+// since it (INFRA-3531 R1 of spec versions 31, 32 and 34), for a first kill decided where no held
+// process had grown by the band's reads, or at a reading at or above the urgent share, where the
+// mark reads the band's growers again whatever the held reads show (endHeld, spec version 39),
+// whatever its sizes: `<reached>:<own>`, how many of those processes they read the smaps of,
+// and of them how many rank above nothing, holding memory of their own after the fork discount,
+// their identity read again (newRead, reidentify); each process ended beside the first at an
+// urgent reading carries the first's. A first kill sent before the search at an urgent reading,
+// where a held process grew (endHeld, spec version 43), carries what every read at the mark read,
+// the search's among them, since its line comes after every kill of the reading and the decision
+// is one. So `new_read=3:0` reads that the mark read three processes new to the stay, each a fork
 // whose parent's size covers its own, and the tiers below the new decided, and `new_read=0:0` that
 // it read none. It is `-` where the kill was decided on no read at the mark: a first kill on the
 // band's held reads alone, one of them having grown by them, below the urgent share, every kill on
@@ -83,10 +87,12 @@ const (
 // reading the guard would end a process at, the processes it may end hold less than the floor
 // between them, or there are none. It is given up with reasonNotFallen where the wait after a
 // kill has passed with the reading not below the reading at the kill, and either no process the
-// guard may end has grown since that kill (grownSinceKill) or they hold less than the floor: the
-// guard goes on after a kill that lowered nothing only while one of them has grown since it
-// (INFRA-3531 R1 of spec version 25), so a rise that is a protected process's own, which no kill
-// of the guard's lowers, ends at most one process before this reason.
+// guard may end has grown since that kill (grownSinceKill) or they hold less than the floor:
+// the guard goes on after a kill that lowered nothing only while one of them has grown since it
+// (INFRA-3531 R1 of spec version 25), so below the urgent share a rise that is a protected
+// process's own, which no kill of the guard's lowers, ends at most one process before this reason;
+// at or above it, in a stay with history, the urgent rule can end beside that one each process new
+// to the stay with memory of its own (spec version 43).
 const (
 	reasonNotFallen    = "not fallen"
 	reasonNothingToEnd = "nothing to end"
@@ -103,11 +109,13 @@ const (
 // versions 34 and 37; candidate.sinceFirstKill); ruleLargest, none of these applies and it is the
 // largest. ruleUrgent is a process ended beside the first at a reading at or above the urgent
 // share, the mark plus half the distance from the mark to the limit, where the guard ends every
-// process that grew over the window and every process new to the stay that holds memory of its
-// own, a fork whose parent's size covers its own not among them, each with its line, the first
-// naming its own tier and each other this rule, whichever of the two groups it is of (endAt,
-// INFRA-3531 R1 of spec versions 39 and 41; `4g-latepool-4tpqx`). ruleKernel is a process the
-// guest kernel killed (Guest), which the kernel chose by rules of its own.
+// process that grew over the window and, where the decision holds a process that is not new to the
+// stay, every process new to it that holds memory of its own, a fork whose parent's size covers
+// its own not among them, each with its line, the first naming its own tier and each other this
+// rule, whichever of the two groups it is of (endUrgent, INFRA-3531 R1 of spec versions 39, 41 and
+// 42; `4g-latepool-4tpqx`). Where every process is new to the stay, it ends the window's growers
+// alone beside the first. ruleKernel is a process the guest kernel killed (Guest), which the
+// kernel chose by rules of its own.
 const (
 	ruleGrew          = "grew"
 	ruleNew           = "new"

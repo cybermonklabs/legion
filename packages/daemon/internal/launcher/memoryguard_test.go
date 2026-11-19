@@ -2192,8 +2192,9 @@ var (
 // off. It ends a grower at each reading, where one grew over the window, as new to the stay, or by
 // its growth since the stay's first kill, at a reading with no grower's step inside the window;
 // the parent and its forks show no growth. At a reading at or above the urgent share, 92.5% of the
-// limit, it ends every grower that grew over the window, the first by its tier and each other by
-// the urgent rule (INFRA-3531 R1 of spec version 39). With the six growers ended, at the readings
+// limit, it ends every grower that grew over the window and, since the parent and its forks are not
+// new to the stay, every grower new to it, the first by its tier and each other by the urgent rule
+// (INFRA-3531 R1 of spec versions 39, 41 and 42). With the six growers ended, at the readings
 // left, which fall, it ends the largest: the probe's parent, at its whole 2.4 GB, its own program
 // not its parent's, the shell's; then, no read parent discounting the forks any longer, the forks,
 // the newest first, each at its whole size. Neither the parent nor a fork ends while a grower
@@ -2437,7 +2438,9 @@ type guardLatepoolRun struct {
 	grown []uint64
 	// newRead is the first kill's new_read, and lastNewRead, where set, the last kill's; atMark is
 	// how many kills the reading at the mark sends, one where it is 0: at or above the urgent share,
-	// every process that grew over the window (INFRA-3531 R1 of spec version 39).
+	// every process that grew over the window and, where the decision holds a process that is not
+	// new to the stay, every one new to it with memory of its own (INFRA-3531 R1 of spec versions
+	// 39, 41 and 42).
 	newRead, lastNewRead string
 	atMark               int
 	want                 []guardEnded
