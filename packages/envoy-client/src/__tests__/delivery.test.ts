@@ -1350,6 +1350,36 @@ describe("renderInbound dispatch events", () => {
       }
     });
 
+    // A reply on a project document's ask names that document only in project_key and
+    // artifact_slug, since the owner's own topic names none, and the command that answers the ask
+    // posts into it. The stand-in keeps both whole however long the document's slug, so the
+    // owner's card still carries that command.
+    test("a stand-in of a reply on a project document's ask gives its owner, on its own topic, the command that answers the ask, whatever the slug's length", () => {
+      const document = "a4cf7999-cab2-4326-939d-cb1e76733cc3";
+      const slug = Array.from({ length: 11 }, () => "design-notes-for-the-queue").join("-");
+      expect(JSON.stringify(slug).length).toBeGreaterThan(256);
+      const { body: _body, ...kept } = askReply;
+      const raw = copy(
+        {
+          ...kept,
+          issue_key: null,
+          artifact_id: document,
+          project_key: "CORE",
+          artifact_slug: slug,
+          payload_omitted: true,
+        },
+        { issue_key: null, artifact_id: document, project: "CORE" }
+      );
+
+      const decoded = card(raw, asker);
+
+      expect(decoded.envoy.dispatch.relation).toBe("replied on your ask");
+      expect(decoded.envoy.reply_with).toEqual({
+        command: `dispatch comment --project CORE --artifact ${slug} --body ... --reply-to-ask ask-1`,
+      });
+      expect(decoded.envoy.dispatch.waiting_on).toBe("agent");
+    });
+
     // A stand-in with no list is one a Dispatch older than ask_sessions sent: the card is the one
     // this renderer gave a stand-in before it read the field, byte for byte.
     test("a stand-in that carries no ask_sessions shows the card it showed before, with no relation", () => {

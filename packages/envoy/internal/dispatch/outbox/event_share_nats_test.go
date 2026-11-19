@@ -271,3 +271,66 @@ func TestRunStandInKeepsAnAsksSessionsWholeThroughNATS(t *testing.T) {
 			payload["ask_sessions"], len(owners), owners)
 	}
 }
+
+// A person's reply in the thread of a project document's ask names that document only in
+// project_key and artifact_slug: an owner reads the reply on its own topic, which names no
+// document, and its card's command that answers the ask posts into the document those two name.
+// A slug grows with the document's name, here past the standInPayloadFieldBytes a stand-in keeps
+// of any other field, so the stand-in NATS carries in place of the refused event keeps both whole,
+// beside ask_sessions. Without them the owner's card would carry no command that answers the ask.
+func TestRunStandInKeepsTheDocumentOfADocumentAsksReplyWholeThroughNATS(t *testing.T) {
+	database := storetest.Open(t)
+	client, subscriber, _ := grantedNATS(t, "notifications.dispatch.>", "_INBOX.>", "$JS.API.>")
+	broker := events.NewBroker()
+	seedIssue(t, database, "T-1", nil)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	slug := strings.TrimSuffix(strings.Repeat("design-notes-for-the-queue-", 11), "-")
+	if encoded, err := json.Marshal(slug); err != nil || len(encoded) <= standInPayloadFieldBytes {
+		t.Fatalf("the slug encodes to %d bytes (%v), want more than the %d a stand-in keeps of another field",
+			len(encoded), err, standInPayloadFieldBytes)
+	}
+	document := seedDocument(t, database, nil, slug, alice)
+	documentTopic := "notifications.dispatch.document.TT." + slug + ".comment.created"
+	received := subscribe(t, subscriber, documentTopic)
+	const askID = "7f3c9a2e-1b4d-4e8f-9a6c-2d5e8b1f4a70"
+	const owner = "01a1e182-0be0-7786-b3f7-a997f855c04b"
+	body := strings.Repeat("a", 1_200_000)
+	if int64(len(body)) <= subscriber.MaxPayload() {
+		t.Fatalf("a body of %d bytes fits the server's maximum payload of %d, so it is not refused",
+			len(body), subscriber.MaxPayload())
+	}
+	event := appendEvent(t, database, broker, model.Event{
+		ArtifactID: new(document), Project: "TT", Type: "comment.created", Actor: alice,
+		Payload: model.CommentEventPayload{
+			Comment: model.Comment{
+				ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", ArtifactID: new(document), Body: body,
+				Author: alice, AskID: new(askID),
+			},
+			ProjectKey: "TT", ArtifactSlug: slug, AskSessions: []string{owner},
+		},
+	})
+	stop := run(t, database, client, broker)
+	defer stop()
+
+	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+		return publishedAt(t, database, event.ID) != nil
+	})
+	_, payload := eventPayload(t, received, documentTopic)
+	if payload["payload_omitted"] != true {
+		t.Fatalf("the copy does not say its payload was left out, so it is no stand-in: %v", payload["payload_omitted"])
+	}
+	if _, kept := payload["body"]; kept {
+		t.Fatalf("the stand-in kept the body NATS refused, so it is refused too")
+	}
+	if payload["project_key"] != "TT" {
+		t.Fatalf("the stand-in's project_key is %v, want TT", payload["project_key"])
+	}
+	if payload["artifact_slug"] != slug {
+		t.Fatalf("the stand-in's artifact_slug is %v, want the document's %d-byte slug whole: %s",
+			payload["artifact_slug"], len(slug), slug)
+	}
+	if listed, _ := payload["ask_sessions"].([]any); payload["ask_id"] != askID || !slices.Equal(listed, []any{owner}) {
+		t.Fatalf("the stand-in names ask %v and its sessions %v, want ask %s and [%s]",
+			payload["ask_id"], payload["ask_sessions"], askID, owner)
+	}
+}

@@ -85,9 +85,10 @@ export type ThreadLoginsPayload = z.output<typeof ThreadLoginsPayloadSchema>;
  *
  *  `payload_omitted` is that the message bus refused this event whole, so Dispatch's outbox
  *  published a stand-in in its place: the payload holds the original's top-level fields that are
- *  short enough to send, and a reply's `ask_sessions` whole whatever its size, which tells each
- *  reader whether the ask is its own, and nothing else, so `body` and every other long field is
- *  absent. The item itself answers the rest. */
+ *  short enough to send and, whatever their size, a reply's `ask_sessions`, which tells each
+ *  reader whether the ask is its own, and a document comment's `project_key` and
+ *  `artifact_slug`, which name the document a reply posts into; nothing else, so `body` and every
+ *  other long field is absent. The item itself answers the rest. */
 export const carriedBodyFields = {
   body_truncated: z.boolean().optional(),
   payload_omitted: z.boolean().optional(),
