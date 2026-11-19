@@ -142,6 +142,8 @@ const natsStandInConnect = async (options: ConnectionOptions = {}): Promise<Nats
   const name = options.name ?? "";
   await natsConnectGates.get(name)?.();
   const endings: (() => void)[] = [];
+  // Settles when the connection is dropped, as nats.js's `closed()` settles when it closes.
+  const shut = Promise.withResolvers<void>();
   const connection = {
     name,
     subjects: [] as string[],
@@ -149,6 +151,7 @@ const natsStandInConnect = async (options: ConnectionOptions = {}): Promise<Nats
     closed: false,
     drop: () => {
       connection.closed = true;
+      shut.resolve();
       for (const end of endings.splice(0)) end();
     },
   };
@@ -158,6 +161,7 @@ const natsStandInConnect = async (options: ConnectionOptions = {}): Promise<Nats
     close: async () => undefined,
     drain: async () => undefined,
     isClosed: () => connection.closed,
+    closed: () => shut.promise,
     flush: async () => undefined,
     publish: () => undefined,
     subscribe: (subject: string) => {
