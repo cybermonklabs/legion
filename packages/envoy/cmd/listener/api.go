@@ -302,23 +302,29 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
 // answered, so the body must not say it did not, but the same message is taken once the stream
 // has room, so the caller's retry is right.
+//
+// A publish that went out and was never acknowledged (bus.ErrUnacknowledged) may be stored, also
+// when the resend after it met a full stream: either 503 then carries listenerwire.CodeMaybeStored,
+// so a sender treats it as a send that may have landed rather than one that stored nothing.
 func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	if errors.Is(err, bus.ErrPublishDenied) {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
 		return http.StatusForbidden
 	}
+	maybeStored := errors.Is(err, bus.ErrUnacknowledged) && !errors.Is(err, bus.ErrRefused)
 	if errors.Is(err, bus.ErrStreamFull) {
 		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", streamFullPrefix, err))
+		answer := listenerwire.APIError{Error: fmt.Sprintf("%s: %s", streamFullPrefix, err)}
+		if maybeStored {
+			answer.Code = listenerwire.CodeMaybeStored
+		}
+		writeJSON(w, http.StatusServiceUnavailable, answer)
 		return http.StatusServiceUnavailable
 	}
 	if !errors.Is(err, bus.ErrRefused) {
 		w.Header().Set("Retry-After", "1")
 	}
-	// A publish that went out and was never acknowledged (bus.ErrUnacknowledged) may be stored:
-	// the 503 says so in its code, so a sender treats it as a receipt timeout rather than as a send
-	// that stored nothing (listenerwire.CodeMaybeStored).
-	if errors.Is(err, bus.ErrUnacknowledged) && !errors.Is(err, bus.ErrRefused) {
+	if maybeStored {
 		writeJSON(w, http.StatusServiceUnavailable, listenerwire.APIError{
 			Code:  listenerwire.CodeMaybeStored,
 			Error: fmt.Sprintf("%s: %s", busUnansweredPrefix, err),

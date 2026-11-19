@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -120,4 +121,40 @@ func sendThroughDispatch(t *testing.T, mux http.Handler, target string) (int, st
 	mu.Lock()
 	defer mu.Unlock()
 	return status, body, err
+}
+
+// A publish whose first send went unanswered and whose resend the full stream refused is both
+// bus.ErrUnacknowledged and bus.ErrStreamFull (bus.sendStored), and a kept role-route send whose
+// keep's publish went unacknowledged reaches the 503 wrapped (keepRoleSend): either may have stored
+// the message, so its 503 carries listenerwire.CodeMaybeStored. The controls are a full stream that
+// sent nothing and a keep that stored nothing, which carry no code.
+func TestEveryBusUnavailableAnswerThatMayHaveStoredTheMessageSaysSo(t *testing.T) {
+	unacknowledged := fmt.Errorf("%w: %w", bus.ErrUnacknowledged, errors.New("nats: connection closed"))
+	for _, row := range []struct {
+		name  string
+		err   error
+		maybe bool
+	}{
+		{"an unacknowledged send whose resend met a full stream", fmt.Errorf("%w: %w", bus.ErrUnacknowledged, fmt.Errorf("%w: maximum bytes exceeded", bus.ErrStreamFull)), true},
+		{"a kept role-route send whose keep went unacknowledged", fmt.Errorf("the kept lane of role r did not store the message: %w", fmt.Errorf("keep the role r message on its kept lane under k: %w", unacknowledged)), true},
+		{"control: a full stream that sent nothing", fmt.Errorf("%w: maximum bytes exceeded", bus.ErrStreamFull), false},
+		{"control: a keep that stored nothing", fmt.Errorf("the kept lane of role r did not store the message: %w", errors.New("nats: no responders")), false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			status := writeBusUnavailable(recorder, row.err)
+			var body listenerwire.APIError
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode the answer %q: %v", recorder.Body.String(), err)
+			}
+			want := ""
+			if row.maybe {
+				want = listenerwire.CodeMaybeStored
+			}
+			if status != http.StatusServiceUnavailable || body.Code != want || recorder.Header().Get("Retry-After") != "1" {
+				t.Fatalf("answered %d, code %q, Retry-After %q (%s); want 503, code %q, Retry-After 1",
+					status, body.Code, recorder.Header().Get("Retry-After"), body.Error, want)
+			}
+		})
+	}
 }

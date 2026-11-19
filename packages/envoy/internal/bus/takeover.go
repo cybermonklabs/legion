@@ -57,6 +57,11 @@ type TakeoverRecord struct {
 	// life after ClaimedAt and read to the end of the previous holder's subject. No pass runs for
 	// a finished record, which ages out with the stream.
 	Finished bool `json:"finished,omitempty"`
+	// HolderSeenAt is when a pass last found the role's claim naming Previous again, in
+	// milliseconds since the epoch on the listener's clock, and 0 while none has: the claim did not
+	// land, or the role went back to Previous. When it is later than ClaimedAt, the copy's hour
+	// counts from it instead, since Previous held the role and read its messages until then.
+	HolderSeenAt int64 `json:"holder_seen_at,omitempty"`
 }
 
 // StoredTakeoverRecord is a takeover record as the stream holds it: its subject, its newest body,

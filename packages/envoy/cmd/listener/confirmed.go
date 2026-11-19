@@ -217,7 +217,7 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
 	s.record.charge.woke()
 	if s.keep && roleKeepable(result) {
-		if kept, ok := keepForNextHolder(*s.d.delivery, s.role, s.item); ok {
+		if kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item); err == nil {
 			s.kept(result, kept)
 			return
 		}

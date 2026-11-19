@@ -267,9 +267,12 @@ func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 
 // takeoverRecordRefresh is how old a takeover record's last write may be before a pass that
 // copies nothing, because the record's previous holder holds the role (runTakeoverPass), writes it
-// again: well inside the stream's age limit less the record's life, so no record ages out of the
-// stream while a pass may still need it, and such a pass costs no write in most sweeps.
-const takeoverRecordRefresh = time.Hour
+// again with the time it found that holder (bus.TakeoverRecord.HolderSeenAt): well inside the
+// stream's age limit less the record's life, so no record ages out of the stream while a pass may
+// still need it, and short enough that the hour a record copies from once that holder loses the
+// role starts at most this much before the hour before it lost it. Such a pass costs no write in
+// two sweeps of three.
+const takeoverRecordRefresh = 15 * time.Minute
 
 // runTakeoverPass is one pass of the takeover record stored, and returns the record as it stands
 // after the pass, and whether this record's passes are done for now: the pass read to the end of
@@ -287,16 +290,19 @@ const takeoverRecordRefresh = time.Hour
 // takeover's record does, and does not copy them from the sequence this record had reached. A
 // record that never moved keeps its state, since a claim of its own still pending lands with
 // nothing read yet. Such a pass writes the record again only when it sets it back, once its last
-// write is takeoverRecordRefresh old, or to mark it finished once the record's life has passed. A
-// claim read that failed ends the pass with nothing written.
+// write is takeoverRecordRefresh old, or to mark it finished once the record's life has passed,
+// each time with the time it found that holder (HolderSeenAt). A claim read that failed ends the
+// pass with nothing written.
 //
 // Otherwise, on the record's first pass it finds where to start (takeoverStart): the floor of the
 // previous holder's session consumer, else the floor the listener recorded when it deleted that
 // consumer, else - on the sweep's pass after one that found neither, since a relay's restart
 // deletes a consumer and creates it again within moments - the first message stored roleKeepWindow
-// before the claim's time. It then reads the previous holder's agent subject from there, at most
+// before the record's base time: the claim's time, or the last time a pass found the previous
+// holder holding the role again (HolderSeenAt) where that is later, since it read its messages
+// until then. It then reads the previous holder's agent subject from there, at most
 // roleKeepScanMax messages, and copies each role message of the record's role stored roleKeepWindow
-// before the claim's time or later to the role's kept lane (keepTakenRoleFrame). Every such pass
+// before that base time or later to the role's kept lane (keepTakenRoleFrame). Every such pass
 // writes the record again with the sequence it reached, so the stream's age limit never removes a
 // record a pass still needs, and the next pass reads only what is new; the first pass that starts
 // more than takeoverRecordLife after the claim's time and reads to the end marks it finished.
@@ -327,9 +333,10 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 		case started.Sub(stored.Written) < takeoverRecordRefresh:
 			return stored, true, nil
 		}
+		record.HolderSeenAt = started.UnixMilli()
 		return written(record, true, nil)
 	}
-	since := claimedAt.Add(-roleKeepWindow)
+	since := time.UnixMilli(max(record.ClaimedAt, record.HolderSeenAt)).Add(-roleKeepWindow)
 	agent := contracts.LegacyAgentSubject(record.Previous)
 	next := record.Next
 	if next == 0 {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -43,13 +44,16 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 // listenerwire.KeptSendResponse, with the copy the lane holds as the record's envelope. The wake
 // costs the sender one, and so does a copy the keep stored; one the lane already held inside its
 // hour costs nothing (senderCharge). A keep that stored nothing is the bus-unavailable 503, which
-// the sender retries under the same key, and the lane stores that message once (bus.KeptMsgID).
+// the sender retries under the same key, and the lane stores that message once (bus.KeptMsgID); a
+// keep whose publish went unacknowledged may have stored the copy, so its 503 says so
+// (writeBusUnavailable, listenerwire.CodeMaybeStored) and it costs the sender as a stored one.
 func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, target, holder string, expectsReply json.RawMessage) {
 	reportRoleWake(d, d.delivery.logger, item.Role)
 	charge.woke()
-	kept, ok := keepForNextHolder(*d.delivery, item.Role, *item)
-	if !ok {
-		record.refuseBusUnavailable(w, fmt.Errorf("the kept lane of role %s did not store the message", item.Role))
+	kept, err := keepForNextHolder(*d.delivery, item.Role, *item)
+	if err != nil {
+		charge.published(bus.StoredAck{}, err)
+		record.refuseBusUnavailable(w, fmt.Errorf("the kept lane of role %s did not store the message: %w", item.Role, err))
 		return
 	}
 	if kept.repeat {
