@@ -735,6 +735,50 @@ func TestTheLoadersRefuseAWriterAudienceThatAnOperatorsPodTokenAlsoCarries(t *te
 	}
 }
 
+// Google takes a token for a workload identity provider whose allowed audiences are left empty when
+// the token's audience is the provider's full resource name "with or without the HTTPS prefix"
+// (gcloud iam workload-identity-pools providers create-oidc, --allowed-audiences). So a token of
+// the audience https:<writer_audience> that every role reads, the broker's or an operator's, is a
+// writer token there too, and the loaders refuse it as they refuse the writer audience itself,
+// naming the writer audience and the member that carries the other token.
+func TestTheLoadersRefuseTheHTTPSFormOfTheWriterAudienceOnARoleReadableToken(t *testing.T) {
+	const https = "https:" + testWriterAudience
+	database := withSessionStore("    session_store: cloudsql-iam\n" +
+		"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions," +
+		" user: legion-sessions@example-project.iam, impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com," +
+		" writer_audience: \"" + testWriterAudience + "\"}\n")
+	broker := "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile
+	operator := func(audience string) string {
+		return "    pod:\n" +
+			"      volumes:\n" +
+			"        - name: operator-token\n" +
+			"          projected: {sources: [{service_account_token: {audience: \"" + audience + "\", expiration_seconds: 3600, path: token}}]}\n" +
+			"      volume_mounts:\n" +
+			"        - {volume: operator-token, mount_path: /var/run/operator}\n"
+	}
+	for _, tc := range []struct{ name, body, member string }{
+		{"the broker's audience", database + broker + "      audience: \"" + https + "\"\n", "runtime.kubernetes.agent_secrets.audience"},
+		{"the broker's exchange audience", database + broker + "      exchange_audience: \"" + https + "\"\n", "runtime.kubernetes.agent_secrets.exchange_audience"},
+		{"an operator's pod token", database + operator(https), "runtime.kubernetes.pod.volumes[0]"},
+	} {
+		for _, loader := range []struct {
+			name string
+			load func(string, func(string) string) (Config, error)
+		}{{"LoadForValidation", LoadForValidation}, {"Load", Load}} {
+			t.Run(tc.name+"/"+loader.name, func(t *testing.T) {
+				_, err := loader.load(writeConfigFile(t, tc.body), noEnv)
+				if err == nil || !strings.Contains(err.Error(), "runtime.kubernetes.session_database.writer_audience") ||
+					!strings.Contains(err.Error(), tc.member) {
+					t.Fatalf("%s error = %v; want a refusal that names the writer audience and %s", loader.name, err, tc.member)
+				}
+			})
+		}
+	}
+	if _, err := LoadForValidation(writeConfigFile(t, database+broker+"      audience: \"https://secrets.internal.example\"\n"+operator("model-gateway.example.com")), noEnv); err != nil {
+		t.Fatalf("LoadForValidation of the file with the broker's and the operator's tokens of other audiences: %v", err)
+	}
+}
+
 func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 	for _, tc := range []struct {
 		name string
