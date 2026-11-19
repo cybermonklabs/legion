@@ -1229,8 +1229,11 @@ const (
 // because the only thing it says failed is a check the repository does not require, which is no
 // reason to hold the work; has_hooks counts because it is clean on a repository whose pre-receive
 // hooks run on the merge. blocked does not count: GitHub holds the head on a check or a review
-// the repository itself requires, and GitHub weighs those rules, so the daemon reads no rulesets
-// of its own. dirty, behind, draft and unknown are not states GitHub would merge from either.
+// the repository itself requires, and GitHub weighs those rules, so this judgement reads no
+// rulesets of the daemon's own. The daemon reads the base's rules for its required checks only on
+// a read that finds the head conflicting with its base (BaseRules), which R0 decides a confirmed
+// conflict on (dispatch://INFRA-4374 R0), not whether a head may advance. dirty, behind, draft and
+// unknown are not states GitHub would merge from either.
 func (m MergeState) Mergeable() bool {
 	return m == MergeStateClean || m == MergeStateUnstable || m == MergeStateHasHooks
 }

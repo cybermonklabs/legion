@@ -44,16 +44,22 @@ import (
 // attempt and not a count of reads. Any other answer, or the failed read of the last attempt,
 // applies intake.MergeQueueReadDone, whose transaction writes the merger's message
 // (record.MergeQueueRemoval) while the issue still merges at that head, Unread when no read
-// succeeded. The read applies nothing else: no mergeability and no synchronize of the head, since
-// a fact of that kind can move a phase (workflow's mergeability), and a removal moves none
-// (dispatch://INFRA-3274/spec R1).
+// succeeded.
 //
-// Both facts are applied under an event id that names the row, so a row run again after its finish
-// was lost applies neither a second time. The read and the wait are the runtime's, which attach
-// gives the outbox: an outbox a test builds by hand has neither, and the row fails with an error
-// that names the missing read rather than reading nothing.
+// A read that answered and is no merge first applies what it says about merging the head
+// (applyMergeability, as every read of the pull request does, the base's rules read with it on a
+// conflicting answer), under an event id that names the row and the attempt: mergeability moves no
+// phase - a conflicting head is read a second time and merged forward in the phase the issue
+// stands in (workflow's mergeability, dispatch://INFRA-4374 R1, R2) - so recording it here moves
+// nothing a removal must not move (dispatch://INFRA-3274/spec R1). It applies no synchronize of
+// the head, which is the per-issue read's to apply (followHead).
+//
+// Every fact is applied under an event id that names the row, so a row run again after its finish
+// was lost applies none a second time. The read, its apply and the wait are the runtime's, which
+// attach gives the outbox: an outbox a test builds by hand has none of them, and the row fails with
+// an error that names the missing read rather than reading nothing.
 func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, payload record.MergeQueueRead) error {
-	if r.readPullRequest == nil || r.mergeStateWait == nil {
+	if r.readPullRequest == nil || r.applyMergeability == nil || r.mergeStateWait == nil {
 		return errors.New("merge-queue read executor has no read of a pull request from GitHub")
 	}
 	_, pr, left, err := r.mergingAt(ctx, row.Issue, payload.Number, payload.Head)
@@ -67,8 +73,9 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 	}
 	attempt := row.Attempts + 1
 	bounded, cancel := context.WithTimeout(ctx, issueRead)
-	pull, failed := r.readPullRequest(bounded, *pr)
+	github, pull, failed := r.readPullRequest(bounded, *pr)
 	cancel()
+	readAt := r.now().UTC()
 	attributes := []any{"row", row.ID, "issue", row.Issue, "pullRequest", payload.Number, "head", payload.Head, "attempt", attempt}
 	switch {
 	case failed == nil && pull.Merged:
@@ -79,13 +86,17 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 		}
 		return nil
 	case failed == nil:
-		r.log.Info("outbox merge-queue read: GitHub answered not merged; the merger is told", append(attributes, "state", pull.State)...)
+		r.log.Info("outbox merge-queue read: GitHub answered not merged; the merger is told", append(attributes, "state", pull.State,
+			"mergeable", string(pull.mergeability()), "mergeState", string(pull.mergeState()))...)
+		if err := r.applyMergeability(ctx, github, *pr, pull, readAt, fmt.Sprintf("merge-queue-mergeability:%s:%d:%d", row.Issue, row.ID, attempt)); err != nil {
+			return fmt.Errorf("apply the mergeability of %s's pull request #%d: %w", row.Issue, payload.Number, err)
+		}
 	case attempt < mergeStateLadderReads:
 		after, _ := githubrest.RetryAfter(failed)
 		delay := max(r.mergeStateWait(), after)
 		r.log.Warn("outbox merge-queue read: the read of GitHub failed; it reads again",
 			append(attributes, "attempts", mergeStateLadderReads, "wait", delay, "error", failed)...)
-		return wait.Until(r.now().UTC().Add(delay), fmt.Sprintf("the merge-queue read of %s's pull request #%d reads GitHub again in %s, after the read of attempt %d of %d failed: %v",
+		return wait.Until(readAt.Add(delay), fmt.Sprintf("the merge-queue read of %s's pull request #%d reads GitHub again in %s, after the read of attempt %d of %d failed: %v",
 			row.Issue, payload.Number, delay, attempt, mergeStateLadderReads, failed))
 	default:
 		r.log.Error("outbox merge-queue read: the read of the last attempt failed; the merger is told that no read succeeded",
