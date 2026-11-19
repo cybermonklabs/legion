@@ -13,4 +13,7 @@ body: |-
 
   The `dispatch_request_approval` tool's `summary` no longer asks a Legion architect for a
   sentence with its two spec reviews' results. The summary says what the human is approving, and
-  nothing else.
+  nothing else. The `dispatch_issue` and `dispatch_request_approval` descriptions no longer have a
+  fresh read-only reader check the spec before every call: where the spec is large, or changed in
+  a way you cannot check alone, a fresh read-only reader can find its gaps and check its factual
+  claims, and a Legion architect can use `plan-gap-analyst` and `plan-reviewer`.

@@ -45,8 +45,8 @@ the task agents Legion's prompts and skills dispatch (`oracle`; the reviewer's p
 `thermonuclear-deep-review` and `thermonuclear-code-quality`; `deep-worker`; the architect's
 `design-outsider`, which reads no file of the repository, and `goal-red-team`, which judges a
 change against its issue's goal and requirements; the planner's
-`plan-gap-analyst` and `plan-reviewer`, which also review a root spec before every approval
-request, `plan-reviewer` checking each of its factual claims), each
+`plan-gap-analyst` and `plan-reviewer`, which an architect may also run on a spec, `plan-reviewer`
+checking each of its factual claims), each
 declaring its model as a role the operator maps (`docs/kubernetes.md`, "Model roles"). The Dispatch
 and Envoy skills, the text skills and the secrets broker's client (`agent-secrets`, `asd-ste100`,
 `dispatch`, `dispatch-first`, `dispatch-writing-specs`, `envoy`, `outside-message` and

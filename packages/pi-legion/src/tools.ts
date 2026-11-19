@@ -358,7 +358,7 @@ export function createLegionTool(deps: {
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
         "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
-        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
+        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent is accepted only once the work beneath it is done: run each one " +
         "to done, and sign off again. " +
         "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
         "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +

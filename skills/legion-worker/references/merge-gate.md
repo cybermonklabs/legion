@@ -155,7 +155,7 @@ changed (*The reviewer*, below).
   Read the difference from that commit to the head (`git diff <sha> <head>`), and each thread: you need not read again what you read before that commit.
   On a new head, that commit is your earlier head, unless it is not an ancestor of the head (`git merge-base --is-ancestor <sha> <head>` does not exit 0): then you read the whole change, as for `none`.
   Size your review to the change you read: review again only what it can affect, and confirm the rest by naming the earlier head.
-  Each agent of the pair reviews only the diff its task supplies, so name in each task the commit, the head and `git diff <sha> <head>` as the diff to review.
+  Each agent of the pair reviews only the diff its task supplies, so name in each task the commit, the head and the diff the rule below has you review: `git diff <sha> <head>`, or, for a merge of the base, its resolution and this change's own commits since that commit.
   The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other, and *No deferrals* in `skill://legion-worker` holds for it.
   For a merge of the base, `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in.
   A check those files or the resolution can reach runs again, and a check the merge was made for has no pass to carry.
@@ -166,8 +166,10 @@ changed (*The reviewer*, below).
 - Answer every thread you opened, and every thread a bot opened that is none of Legion's role
   Apps, as `skill://legion-worker/references/review-threads.md` says; the same reference says
   when every thread is settled enough to approve, and resolving one never gates your approval.
-- A prose fault (wording, a count, a tense, a citation) is a finding for the implementer, and it
-  need not hold your approval; the implementer's fix carries every pass it cannot affect.
+- A prose defect (a false statement, a contradiction, or an instruction a role would follow
+  wrongly) is a finding like any other and requests changes, and the implementer's fix for it
+  carries every pass it cannot affect; a wording preference is not a finding, is not raised, and
+  holds nothing.
 
 A reviewer's phase ends with its completion, not with its review. Every round records a handoff
 and takes this order: read CI as above; write the handoff and record it with

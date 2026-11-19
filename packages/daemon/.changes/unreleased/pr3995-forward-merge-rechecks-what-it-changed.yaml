@@ -2,24 +2,27 @@ kind: Changed
 custom:
   Issue: pr3995
 body: |-
-  On a new head, the implementer's, the tester's and the reviewer's role prompts read what changed
-  since the head they last recorded, tested or approved (`git diff`), and size their work to that
-  change. For a merge of the base, `git show --remerge-diff <merge>` shows its resolution, and
-  `git diff --stat <merge>^1 <merge>` lists the files the base brought in; a check those files or
-  the resolution can reach runs again, and a check the merge was made for has no pass to carry.
-  The reviewer reviews the resolution and this change's own commits since its earlier head, and
-  reads the base's files only for where they meet this change. A check the change cannot affect
-  is recorded again at the new head as carried from the earlier head, and is not run again. The
-  worker prompt's carry commit, which changes no file, carries every check the same way. The
-  unchanged-diff fingerprint is gone from the prompts. Before, a changed fingerprint meant a full
-  test round and a new review round, and every push meant running every check again. The
-  reviewer's earlier head is the head it last approved, or, where it approved none, the head it
-  last reviewed, and a re-review after a request for changes also checks each of its findings
-  against the new head. The reviewer's prompt names in each thermonuclear task the diff the pair
-  audits: the branch's whole diff on its first review of the pull request, then only what it
-  reviews on a later head. No pair runs when that diff touches no runtime code.
+  On a new head, the implementer's and the tester's role prompts read what changed since the head
+  they last recorded or tested (`git diff`), and the reviewer's reads what changed since the
+  `Last reviewed commit` its task names, the head of its newest deciding review (an approval or a
+  request for changes). Each sizes its work to that change. For a merge of the base,
+  `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>`
+  lists the files the base brought in; a check those files or the resolution can reach runs again,
+  and a check the merge was made for has no pass to carry. The reviewer reviews the resolution and
+  this change's own commits since that commit, and reads the base's files only for where they meet
+  this change. A check the change cannot affect is recorded again at the new head as carried from
+  the earlier head, and is not run again. The worker prompt's carry commit, which changes no file,
+  carries every check the same way. The unchanged-diff fingerprint is gone from the prompts.
+  Before, a changed fingerprint meant a full test round and a new review round, and every push
+  meant running every check again. A re-review after a request for changes also checks each of its
+  findings against the new head. The reviewer's prompt names in each thermonuclear task the diff
+  it reviews: `git diff` from that commit, or, for a merge of the base, the merge's resolution and
+  this change's own commits since that commit. No pair runs when that diff touches no runtime code.
 
   The root and sub-architect prompts sign off a parent after its last round, on an approved head
   at which its checks pass. Before, that head had to carry the merges of every child the parent's
   criteria need, which a forced merge of the base gave it. The tester's prompt no longer runs a
-  full test round in a parent's last round.
+  full test round in a parent's last round. The `SIGNOFF_CHILD_IN_WORKFLOW` refusal, and the
+  architect prompts that name it, give its reason as "a parent is accepted only once the work
+  beneath it is done". Before, the reason was that a parent's head proves its children's merged
+  work, which a parent's last round no longer makes true.

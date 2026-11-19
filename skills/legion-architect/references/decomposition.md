@@ -46,21 +46,7 @@ EOF
   names a role, write one `after_merge` check for the production check in each child's
   Verification document, with its spec and while the child is open, because a closed issue
   refuses every new document. Under `Production check: off`, write none.
-- Before `dispatch issue` creates any child, dispatch a fresh red-team subagent
-  (`task(agent="oracle")`) with your own issue's spec (the root spec in a root session), the
-  tree's open children with their repositories and pull requests, and the proposed
-  child list, each child's title and whole spec. Its mandate: *"You did not write this list. Argue
-  that each child should not exist. Name every child that is a to-do, a fix found in review, a
-  proof of the acceptance of the issue it is filed under, or a part of the architect's own work,
-  and say where it folds: that issue's own pull request or an open child's. Weigh each separate
-  pull request against combining
-  its work. Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
-  Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
-  It can also conflict with the default branch.
-  Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
-  They can conflict with each other, and dependent slices run in sequence."*
-  `wait` for its verdict, since it runs as a job of its own.
-  Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
+- Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
   Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
   It can also conflict with the default branch.
   Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
@@ -68,28 +54,15 @@ EOF
   A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
   A repeated change — the same edit per program, directory or instance of this tree's own work — is one child, never one per instance.
   Include deletion of what this tree replaced in this tree's work, sized by those reasons.
-  Post the verdict, with the folds you made, as one `dispatch comment` on your own issue: the
-  root in a root session, your child in a sub-architect session. Its first line is exactly
-  `Red-team verdict for <your issue key>:`, with your own issue's key in place of the
-  placeholder, so a reader can find it among the issue's comments. The controller's weekly audit
-  matches that line, and counts no child filed before the release that first asked for it. The
-  architect who wrote the list reads every child on it as needed, and the comment stops a later
-  session filing the same children again.
 - A child that duplicates another issue and is not yet released is never released: fold it by the
   duplicate rule of `skill://dispatch-first`. The daemon records a child at its release and
   re-asserts a status only on an issue it has recorded, so that close stands. A released duplicate
   goes out with `park_child` instead, because its work is folded into the issue you keep.
   Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue:
   for a duplicate, name the issue you keep in a `dispatch comment` on the child.
-- Then paste each survivor's whole spec into a fresh `task(agent="plan-gap-analyst")` to check it
-  against `skill://dispatch-writing-specs`, `wait` for its result, and fix what it flags: your own
-  reread misses the terms
-  and item numbers you already know. File only the survivors, and reply under the verdict comment
-  with each one's key.
-- Before `release_children`, check that every child you filed is named under a verdict comment,
-  because a child filed without one skipped the check. A child a human created is adopted as it is
-  and needs none. Check too that the current version of each child you filed has your approving
-  `Spec review of` comment ("Reviewing a child's spec", below).
+- Before `release_children`, check that the current version of each child you filed has your
+  approving `Spec review of` comment ("Reviewing a child's spec", below). A child a human created
+  is adopted as it is.
 - `--project` is the issue key's prefix before `-<n>` (`LEGSMOKE-3` → `LEGSMOKE`).
 - `--parent` is your own issue, `$LEGION_ISSUE`: the root in a root session (it equals
   `$LEGION_TREE`), your child in a sub-architect session. Never file below a child of yours:
@@ -134,16 +107,13 @@ spec. Review each version whoever wrote it, and before the child's work goes on 
 the version you file a child with before `release_children`, and a later version when you hear
 of it.
 
-1. Dispatch a fresh reader, `task(agent="plan-reviewer")`, and tell it the documents are a
-   child's spec and its Verification document. Give it your own spec: a root's at the version its
-   gate approved, a child's at the version its own parent's review approved. Give it the child's
-   two documents at the versions you review. Its mandate: *"Does this version serve each
-   requirement of the parent spec that it names? Does it narrow or contradict any of them? Does it
-   add scope the parent spec does not ask for? Does each fact it states hold? Check each fact
-   against the code, the docs or a read-only command."* `wait` for its result, since it runs as a
-   job of its own.
-2. Decide from its result and your own reading: approve the version, or request changes. Give a
-   reason for either.
+1. Read the child's spec and its Verification document, at the versions you review, against your
+   own spec: a root's at the version its gate approved, a child's at the version its own parent's
+   review approved. Ask whether the version serves each requirement of your spec that it names,
+   whether it narrows or contradicts any of them, whether it adds scope your spec does not ask
+   for, and whether each fact it states holds in the code, the docs or a read-only command. Use a
+   reader (`plan-reviewer`, `plan-gap-analyst`) where the reading needs one.
+2. Approve the version, or request changes. Give a reason for either.
 3. Post one `dispatch comment` on the child issue. Its first line is exactly one of these two,
    with the child's key, the spec's version and your own issue's key in place of the
    placeholders:

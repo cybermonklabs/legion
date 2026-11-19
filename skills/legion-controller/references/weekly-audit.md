@@ -67,30 +67,10 @@ The report carries the two measures, under the keys `forced_creates_by_filer` an
 ## 3. The nudges
 
 Ask the architect of each tree the counts name to fold what can ride in an open pull request.
-Both rules below count only a tree with at least one open descendant, a descendant whose status
-is not `done`. A tree whose descendants are all closed has nothing left to fold, and a nudge
-sent to one asks its architect to fold work that is already finished.
-
-- a tree with at least one open descendant, and more than 8 descendants in all or more than 2
-  levels below its root;
-- a tree with at least one open descendant that filed a child no red-team verdict names. Each
-  architect posts its verdict on its own issue, the issue it files its children under: a comment
-  whose first line reads `Red-team verdict for <issue key>:`, with that issue's key
-  (`skill://legion-architect/references/decomposition.md`). The root's architect posts on the
-  root, and a child's own architect posts on that child. So read the verdicts on every
-  architect's issue of the tree, not only the root's: the root and each issue of the tree that has
-  children. Read each one's comments with `dispatch read --issue <KEY> --all-events` and the
-  replies under each verdict comment. A child named in none of the tree's verdicts was filed
-  without the check.
-
-  Count no child created before that first line existed. The architects write it from the Legion
-  release that carries this file, so every child filed before then has no verdict comment to
-  find and is not evidence of a skipped check: read the release's own publication time from its
-  tag and leave out every child created at or before it. Without that, the first run of this
-  pass nudges nearly every tree that has children. Until a release carries this file, there is
-  no such tag to read: when `git tag --contains <the commit that added this file>` names no
-  release, the cutoff is the time of your run, so every child that exists counts as filed
-  before the rule and no tree is nudged for a missing verdict yet.
+Nudge a tree with at least one open descendant, a descendant whose status is not `done`, and more
+than 8 descendants in all or more than 2 levels below its root. A tree whose descendants are all
+closed has nothing left to fold, and a nudge sent to one asks its architect to fold work that is
+already finished.
 
 Each nudge is one `dispatch comment` on the tree's root, naming what you counted and asking the
 architect to fold what can ride in an open pull request of the tree. End the comment with
@@ -99,9 +79,7 @@ architect for the tree (`read_state`'s `issues.<KEY>`), send the same text to th
 role topic with `envoy_publish`.
 
 Send no new comment to a tree whose architect replied in the thread of your newest nudge comment
-there, until the tree's descendants pass the number that comment ends with. A tree whose children
-were all filed before the verdict's first line existed has no such comment and is nudged once;
-the architect's reply then settles it until the tree grows.
+there, until the tree's descendants pass the number that comment ends with.
 
 List every nudge you sent in the day's report.
 

@@ -722,12 +722,12 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 // entry's task. The core part names the commit in the daemon part's words, the head the Legion
 // footer of the reviewer's own newest deciding review named, since a deciding review whose footer
 // names no entry or another one moves no commit. It says to read the difference from that commit
-// and each thread, takes that commit as the earlier head the review sizes itself to, gives the
-// thermonuclear pair that same diff, keeps every defect seen outside it a finding, and reads the
-// whole change where the commit is no ancestor of the head. The pair's old sentence, which ran it
-// over the whole change in every round, is gone, and so is the unchanged-diff fingerprint, which
-// dispatch://INFRA-4406 R1 deleted from the role prompts. This shows the text is loaded, never that
-// a reviewer follows it.
+// and each thread, takes that commit as the earlier head the review sizes itself to, names in each
+// task of the thermonuclear pair the diff it reviews, keeps every defect seen outside it a
+// finding, and reads the whole change where the commit is no ancestor of the head. The pair's old
+// sentence, which ran it over the whole change in every round, is gone, and so is the
+// unchanged-diff fingerprint, which dispatch://INFRA-4406 R1 deleted from the role prompts. This
+// shows the text is loaded, never that a reviewer follows it.
 func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {

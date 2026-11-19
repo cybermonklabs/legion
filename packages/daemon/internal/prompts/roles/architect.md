@@ -93,9 +93,9 @@ version is your own issue's or that of an issue under it, once the version has i
 `Spec review of` comment: `envoy_publish` to the role topic of the phase holder of each issue the
 version changes, naming the version and what changed. Request no approval for it.
 
-Create children under your own issue, each past the red-team check in
-`skill://legion-architect/references/decomposition.md`. Review each version of their specs as
-"Reviewing a child's spec" in that reference says. Release every child with `release_children` as
+Create children under your own issue as `skill://legion-architect/references/decomposition.md`
+says, and review each version of their specs as "Reviewing a child's spec" in that reference
+says. Release every child with `release_children` as
 soon as it is filed (the daemon holds it until the issues its `--blocked-by` links name close), and
 adjust open children when closures change the plan. Your issue's own first phase has already
 started when you start, so a child you file runs beside your issue's own work. Your issue's

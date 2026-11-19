@@ -338,7 +338,6 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
     expect(dispatching.sort()).toEqual([
       "skills/AGENTS.md",
       "skills/legion-architect/SKILL.md",
-      "skills/legion-architect/references/decomposition.md",
       "skills/legion-architect/references/design-gate.md",
       "skills/legion-controller/references/consolidation.md",
       "skills/legion-oracle/SKILL.md",
@@ -346,7 +345,6 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
       "skills/legion-worker/references/merge-gate.md",
       "skills/simplify-settled-diff/SKILL.md",
       "the fresh Claude plugin's skills/legion-architect/SKILL.md",
-      "the fresh Claude plugin's skills/legion-architect/references/decomposition.md",
       "the fresh Claude plugin's skills/legion-architect/references/design-gate.md",
       "the fresh Claude plugin's skills/legion-controller/references/consolidation.md",
       "the fresh Claude plugin's skills/legion-oracle/SKILL.md",
@@ -435,10 +433,11 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
 
 // The task of a later review round names the commit read by the newest of the reviewer's own
 // deciding reviews whose footer named the entry of its round, so the reviewer reads the
-// difference from it and hands the pair that same diff in each agent's task text, since each
-// agent reviews only the diff its task supplies. That commit is the earlier head the review sizes
-// itself to, a defect seen outside the difference stays a finding, and a commit that is no
-// ancestor of the head reads the whole change, as a task that names none does; the unchanged-diff
+// difference from it and names in each task of the pair the diff it reviews: that difference,
+// or, for a merge of the base, its resolution and this change's own commits since that commit,
+// since each agent reviews only the diff its task supplies. That commit is the earlier head the
+// review sizes itself to, a defect seen outside the difference stays a finding, and a commit that
+// is no ancestor of the head reads the whole change, as a task that names none does; the unchanged-diff
 // fingerprint is no case of it (dispatch://INFRA-4406 R1 deleted it). The daemon's prompts
 // carry the same rule; prompts_test.go pins the composed reviewer prompt. The pull request body's
 // guide records it: the `Thermo` line's pair half names the range the pair read, and a later round
@@ -468,7 +467,7 @@ test("a later review round reads from the commit its task names, and the pair re
     "Read the difference from that commit to the head (`git diff <sha> <head>`), and each thread: you need not read again what you read before that commit."
   );
   expect(mergeGate).toContain(
-    "Each agent of the pair reviews only the diff its task supplies, so name in each task the commit, the head and `git diff <sha> <head>` as the diff to review."
+    "Each agent of the pair reviews only the diff its task supplies, so name in each task the commit, the head and the diff the rule below has you review: `git diff <sha> <head>`, or, for a merge of the base, its resolution and this change's own commits since that commit."
   );
   expect(mergeGate).toContain(
     "The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other"
@@ -485,7 +484,7 @@ test("a later review round reads from the commit its task names, and the pair re
     "The reviewer's pair runs at the head each round reviews, when the diff touches runtime code."
   );
   expect(prBody).toContain(
-    "The reviewer's pair runs at the head each round reviews, over the diff that round reads (the whole change, or the difference from the commit the round's task names as `Last reviewed commit:`), when that diff touches runtime code. Record both in the `Thermo` line, the pair half with the range the pair read."
+    "The reviewer's pair runs at the head each round reviews, over the diff the reviewer's rule for a new head has it review (*The reviewer* in `skill://legion-worker/references/merge-gate.md`): the whole change, `git diff <sha> <head>` from the commit the round's task names as `Last reviewed commit:`, or, for a merge of the base, its resolution and this change's own commits since that commit. It runs only when that diff touches runtime code. Record both in the `Thermo` line, the pair half with the range the pair read."
   );
   expect(prBody).toContain(
     "When a later round's pair reads only a range, the pair half of each earlier round stays in the line beside the new one, because a range is read on top of the round that read the code up to its start."

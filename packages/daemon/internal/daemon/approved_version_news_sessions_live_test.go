@@ -235,7 +235,7 @@ const (
 // the daemon sends no news of (prompts/go/architect-common.md); a phase worker's is its answer to a
 // news task (prompts/go/worker-common.md).
 const (
-	sessionsArchitectMark = "Send that news yourself once you write such a version"
+	sessionsArchitectMark = "Send that news yourself: for a version of a child's documents"
 	sessionsWorkerMark    = "A news task tells you that a person approved a new version of your tree's design."
 )
 

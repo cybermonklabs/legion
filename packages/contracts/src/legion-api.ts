@@ -1745,7 +1745,7 @@ export const LegionEscalateRequest = z.strictObject({
  * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). */
+ * parent, since a parent is accepted only once the work beneath it is done (dispatch://INFRA-980). */
 export const LegionSignOffRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
