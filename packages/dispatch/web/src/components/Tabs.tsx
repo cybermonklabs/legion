@@ -24,38 +24,21 @@ export function tabButtonId(idPrefix: string, id: string): string {
   return `${idPrefix}-${id}-tab`;
 }
 
-/** A tablist may be narrower than its tabs (a phone, or the issue page beside its comment
- *  margin); a tab focused from the keyboard or selected must be fully visible, which Chromium's
- *  `focus()` alone does not guarantee. Only the tablist scrolls: `scrollIntoView` would also move
- *  the page, undoing the per-tab scroll position IssuePage restores when a panel comes back.
+/** Puts the tablist where its current layout alone puts `node`, the selected tab or the one a
+ *  keystroke focused. A tablist may be narrower than its tabs (a phone, or the issue page beside
+ *  its comment margin), and that tab must be fully visible, which Chromium's `focus()` alone does
+ *  not guarantee. Only the tablist scrolls: `scrollIntoView` would also move the page, undoing the
+ *  per-tab scroll position IssuePage restores when a panel comes back.
  *
  *  While tabs lie past its trailing edge, the tablist's last `scrollFadeTrailingPx` wear the
- *  trailing fade, so a tab is whole only clear of it: the tab stops that far inside the edge. A
- *  tab too near the end of the scroll for that stops at the end instead, where the fade is off.
+ *  trailing fade, so a tab is whole only clear of it. The tablist goes to the smallest scroll that
+ *  shows the tab whole and clear of the fade: the start when the tab fits there, the tab's own left
+ *  edge when the tab is wider than what the fade leaves, and the end of the scroll, where the fade
+ *  is off, when the tab is too near the end for that.
  *
- *  This one is the keyboard's: it moves the tablist by the least that brings the focused tab into
- *  view, from wherever the tablist is. */
-function revealTab(node: HTMLElement | null | undefined): void {
-  const list = node?.parentElement;
-  if (node === null || node === undefined || list === null || list === undefined) {
-    return;
-  }
-  const listBox = list.getBoundingClientRect();
-  const box = node.getBoundingClientRect();
-  const visibleRight = listBox.right - scrollFadeTrailingPx;
-  if (box.left < listBox.left) {
-    list.scrollLeft += box.left - listBox.left;
-  } else if (box.right > visibleRight) {
-    list.scrollLeft += box.right - visibleRight;
-  }
-}
-
-/** Puts the tablist where its current layout alone puts the selected tab: at the smallest scroll
- *  that shows the tab whole and clear of the trailing fade, which is the start when the tab fits
- *  there, and at the tab's own left edge when the tab is wider than what the fade leaves. It is
- *  set rather than moved by a delta, so where the tablist stops after the page settles does not
- *  depend on the layouts it passed through: a narrower moment that scrolled the tab clear of the
- *  fade leaves nothing behind once the tablist widens again. */
+ *  The scroll is set, not moved by a delta, so where the tablist stops does not depend on the
+ *  layouts it passed through: a narrower moment that scrolled the tab clear of the fade leaves
+ *  nothing behind once the tablist widens again. */
 function settleTab(node: HTMLElement | null | undefined): void {
   const list = node?.parentElement;
   if (node === null || node === undefined || list === null || list === undefined) {
@@ -122,14 +105,17 @@ export function Tabs<Id extends string>({
     selectTab(next.id);
     const node = tabRefs.current[next.id];
     node?.focus();
-    revealTab(node);
+    // In the reader's own keystroke, so a caller that does not change `activeTab` on select still
+    // shows the focused tab; one that does settles the same tab again in the effect below.
+    settleTab(node);
   };
 
   // Settle the selected tab when it is chosen, when the list narrows or widens (the comment margin
   // opens, or the window changes), when a tab's width changes (a live count grows), and when a tab
   // is added or taken away (the project's Architecture tab arriving before Issues). A preceding
   // tab can move the selection under the fade without changing the list's or selected tab's
-  // width. A sideways scroll the reader makes in between is none of these, and stays.
+  // width. Each of these puts back a sideways scroll the reader made: the strip goes to where its
+  // layout puts the selected tab. A scroll alone is none of them, so it stays until one comes.
   useEffect(() => {
     const selected = tabRefs.current[activeTab];
     settleTab(selected);
@@ -144,8 +130,8 @@ export function Tabs<Id extends string>({
   // Compact tabs sit tighter on phones, which is what keeps the shorter tablists on one line. The
   // issue's ten tabs, one carrying a count pill, no longer fit a 390 px viewport, nor the issue
   // page at 1440 px beside its comment margin: there the tablist scrolls sideways, as it already
-  // did at 360 px, wears the trailing fade while tabs lie past its edge, and `revealTab` keeps the
-  // focused tab and `settleTab` the selected tab fully visible and clear of the fade. Every tab
+  // did at 360 px, wears the trailing fade while tabs lie past its edge, and `settleTab` keeps the
+  // selected tab, and the one a keystroke focused, fully visible and clear of the fade. Every tab
   // stays reachable and keeps its 44 px target.
   const tabPadding = compact ? "px-1.5 md:px-2" : "px-3";
   const tabGap = compact ? "gap-0 md:gap-1" : "gap-1";

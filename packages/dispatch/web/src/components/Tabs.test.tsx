@@ -32,6 +32,32 @@ function TabsHarness() {
   );
 }
 
+/** A tablist whose parent takes each selection at once, as both pages that use `Tabs` do: they
+ *  navigate on select (`IssueTabs`, `ProjectPage`), so a keystroke that selects a tab also runs the
+ *  effect that settles the selected tab. */
+function SelectingTabs<Id extends string>({
+  ariaLabel,
+  idPrefix,
+  initial,
+  tabs,
+}: {
+  ariaLabel: string;
+  idPrefix: string;
+  initial: Id;
+  tabs: readonly { count?: number; id: Id; label: string }[];
+}) {
+  const [activeTab, setActiveTab] = useState<Id>(initial);
+  return (
+    <Tabs
+      activeTab={activeTab}
+      ariaLabel={ariaLabel}
+      idPrefix={idPrefix}
+      onSelect={setActiveTab}
+      tabs={tabs}
+    />
+  );
+}
+
 test("tablist moves focus and selection with arrow, Home, and End keys and marks aria-selected", async () => {
   const user = userEvent.setup();
   const view = render(<TabsHarness />);
@@ -161,11 +187,10 @@ test("a tablist with tabs past its trailing edge wears the trailing fade, and on
 test("a tab reached from the keyboard stops clear of the trailing fade while tabs lie past it", async () => {
   const user = userEvent.setup();
   const view = render(
-    <Tabs
-      activeTab="issues"
+    <SelectingTabs
       ariaLabel="Project"
       idPrefix="project"
-      onSelect={() => {}}
+      initial="issues"
       tabs={[
         { id: "issues", label: "Issues" },
         { id: "documents", label: "Documents" },
@@ -260,10 +285,13 @@ const issueTabs = [
 function issueTablist(sizes: ResizeControl) {
   const tablist = screen.getByRole("tablist", { name: "Issue detail" });
   const artifacts = screen.getByRole("tab", { name: "Artifacts 5" });
+  const activity = screen.getByRole("tab", { name: "Activity" });
   const box = { client: 528, scroll: 749 };
   layOutScrollBox(tablist, box);
   tablist.getBoundingClientRect = () => rect(0, box.client);
   artifacts.getBoundingClientRect = () => rect(410 - tablist.scrollLeft, 505 - tablist.scrollLeft);
+  // Activity is the tab after Artifacts, 509 to 580 from the start of the scroll.
+  activity.getBoundingClientRect = () => rect(509 - tablist.scrollLeft, 580 - tablist.scrollLeft);
   /** Lays the tablist out `client` px wide and tells its observers. A browser clamps the scroll to
    *  the new width as it lays the tablist out, before any observer runs, so this does too. */
   const layOut = (client: number) => {
@@ -271,7 +299,12 @@ function issueTablist(sizes: ResizeControl) {
     tablist.scrollLeft = Math.min(tablist.scrollLeft, Math.max(box.scroll - client, 0));
     sizes.resize();
   };
-  return { artifacts, layOut, tablist };
+  /** The reader's own sideways scroll: the strip's scroll event, which user-event has no form for. */
+  const scrollTo = (scrollLeft: number) => {
+    tablist.scrollLeft = scrollLeft;
+    fireEvent.scroll(tablist);
+  };
+  return { activity, artifacts, layOut, scrollTo, tablist };
 }
 
 test("the strip stops where its last layout puts it, not where a narrower layout before it left it", () => {
@@ -308,7 +341,8 @@ test("the strip stops where its last layout puts it, not where a narrower layout
 });
 
 // The strip moves itself only when the selected tab or its layout changes; a sideways scroll the
-// reader makes in between is the reader's, and stays.
+// reader makes in between is the reader's, and stays until one of those comes. When one comes,
+// the reader's scroll is not kept: the strip goes to where that layout puts the selected tab.
 test("a sideways scroll the reader makes stays until the strip's layout changes", () => {
   const sizes = installResizeObserver();
   const view = render(
@@ -322,19 +356,113 @@ test("a sideways scroll the reader makes stays until the strip's layout changes"
   );
 
   try {
-    const { layOut, tablist } = issueTablist(sizes);
+    const { layOut, scrollTo, tablist } = issueTablist(sizes);
     layOut(528);
     expect(tablist.scrollLeft).toBe(9);
 
-    // The reader scrolls the strip to its end: the strip's own scroll event, which user-event has
-    // no form for.
-    tablist.scrollLeft = 221;
-    fireEvent.scroll(tablist);
+    scrollTo(221);
     expect(tablist.scrollLeft).toBe(221);
 
-    // The layout changes; the strip goes back to where that layout puts it.
+    // The tablist narrows to 400 px; the strip goes to where that layout puts Artifacts:
+    // 505 - (400 - 32) = 137.
+    layOut(400);
+    expect(tablist.scrollLeft).toBe(137);
+  } finally {
+    view.unmount();
+    sizes.restore();
+  }
+});
+
+/** Waits out one animation frame, so a settle the effect defers to a frame has run before a row
+ *  reads the strip. Without it a row would read the strip before such a settle and fail on a
+ *  correct one; with it, a row also fails on a deferred reveal that moves by a delta. */
+async function nextFrame(): Promise<void> {
+  const painted = Promise.withResolvers<void>();
+  requestAnimationFrame(() => painted.resolve());
+  await painted.promise;
+}
+
+// A change of the selected tab settles the strip on the new tab from its layout alone, wherever
+// the reader had scrolled it, even when the new tab was already in view.
+test("a newly selected tab settles the strip where its layout puts that tab, not where the reader left it", async () => {
+  const sizes = installResizeObserver();
+  const renderTabs = (activeTab: (typeof issueTabs)[number]["id"]) => (
+    <Tabs
+      activeTab={activeTab}
+      ariaLabel="Issue detail"
+      idPrefix="issue"
+      onSelect={() => {}}
+      tabs={issueTabs}
+    />
+  );
+  const view = render(renderTabs("artifacts"));
+
+  try {
+    const { layOut, scrollTo, tablist } = issueTablist(sizes);
     layOut(528);
     expect(tablist.scrollLeft).toBe(9);
+    scrollTo(221);
+
+    // Activity, whole at 288 to 359 of the 528 px tablist, is selected: the strip goes to where
+    // the layout puts it, 580 - (528 - 32) = 84.
+    view.rerender(renderTabs("activity"));
+    await nextFrame();
+    expect(tablist.scrollLeft).toBe(84);
+  } finally {
+    view.unmount();
+    sizes.restore();
+  }
+});
+
+// A keystroke that selects a tab, with a parent that takes the selection at once as both pages
+// do: the strip settles on the tab the keystroke reached, from the layout alone.
+test("a tab a keystroke selects settles the strip where its layout puts that tab", async () => {
+  const user = userEvent.setup();
+  const sizes = installResizeObserver();
+  const view = render(
+    <SelectingTabs ariaLabel="Issue detail" idPrefix="issue" initial="activity" tabs={issueTabs} />
+  );
+
+  try {
+    const { activity, artifacts, layOut, scrollTo, tablist } = issueTablist(sizes);
+    layOut(300);
+    // The reader scrolls the strip to its end, 749 - 300 = 449.
+    scrollTo(449);
+    activity.focus();
+    await user.keyboard("{ArrowLeft}");
+    await nextFrame();
+
+    // Artifacts is selected and focused; the strip is where the layout puts it,
+    // 505 - (300 - 32) = 237.
+    expect(artifacts).toHaveFocus();
+    expect(artifacts).toHaveAttribute("aria-selected", "true");
+    expect(tablist.scrollLeft).toBe(237);
+  } finally {
+    view.unmount();
+    sizes.restore();
+  }
+});
+
+// A tab wider than what the fade leaves of the tablist cannot end clear of the fade: the strip
+// shows the tab from its own left edge instead of cutting its start off.
+test("a selected tab wider than what the fade leaves settles at its own left edge", () => {
+  const sizes = installResizeObserver();
+  const view = render(
+    <Tabs
+      activeTab="artifacts"
+      ariaLabel="Issue detail"
+      idPrefix="issue"
+      onSelect={() => {}}
+      tabs={issueTabs}
+    />
+  );
+
+  try {
+    const { artifacts, layOut, tablist } = issueTablist(sizes);
+    // 100 px leaves 68 clear of the fade, and Artifacts is 95 px wide.
+    layOut(100);
+    expect(tablist.scrollLeft).toBe(410);
+    expect(artifacts.getBoundingClientRect().left).toBe(0);
   } finally {
     view.unmount();
     sizes.restore();

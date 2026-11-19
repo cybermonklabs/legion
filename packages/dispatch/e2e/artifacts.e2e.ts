@@ -446,6 +446,10 @@ test("the issue's tab strip rests where its last layout puts the selected tab, w
     "true"
   );
   await expect(tablist.getByRole("tab")).toHaveCount(10);
+  // The comment margin loads after the first paint, and until it is drawn the tablist is wider
+  // and every tab fits: a resting point read then would be the start, and the strip moves again
+  // once the margin arrives. So the resting point is read only with the margin drawn.
+  await expect(page.getByTestId("desktop-margin-shell")).toBeVisible();
   // Where the strip is, and where its layout alone puts the selected tab: its right edge in the
   // strip's content, less what the fade leaves of the tablist. Sub-pixel layout rounds a scroll
   // to a whole pixel, so the two are compared within one.
@@ -454,10 +458,17 @@ test("the issue's tab strip rests where its last layout puts the selected tab, w
       const tab = list.querySelector('[role="tab"][aria-selected="true"]');
       const right = (tab?.getBoundingClientRect().right ?? 0) - list.getBoundingClientRect().left;
       const target = Math.max(0, right + list.scrollLeft - (list.clientWidth - fade));
-      return { offBy: Math.abs(list.scrollLeft - target), scrollLeft: list.scrollLeft };
+      return {
+        offBy: Math.abs(list.scrollLeft - target),
+        overflow: list.scrollWidth - list.clientWidth,
+        scrollLeft: list.scrollLeft,
+      };
     }, scrollFadeTrailingPx);
   await expect.poll(async () => (await place()).offBy).toBeLessThanOrEqual(1);
-  const rested = (await place()).scrollLeft;
+  const { overflow, scrollLeft: rested } = await place();
+  // The strip can scroll past where it rests, so a strip left at the end of its scroll is a
+  // different reading from the resting one, and the last assertion below can fail.
+  expect(overflow).toBeGreaterThan(rested + 1);
 
   await tablist.evaluate((list) => {
     list.style.width = "300px";
