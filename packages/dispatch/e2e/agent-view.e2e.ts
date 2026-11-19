@@ -6,6 +6,7 @@ import {
   type FakeSession,
   getSentMessages,
   openAgents,
+  setListsState,
   setLiveSessions,
   setSessionState,
   setSessionStopped,
@@ -982,12 +983,20 @@ function connection(page: Page): Locator {
 /** A change of the registry reaches an open live view on the shell's next poll of the agent list
  *  (`AGENT_REGISTRY_POLL_MS`, `web/src/features/refs/agent-registry.ts`); this is that poll twice
  *  over. The row below waits for the poll in real time rather than jumping the page's clock to it
- *  as other rows do: its three changes would take three 15 s jumps, which leave the live socket
- *  more than 45 s without a frame unless one arrives between them. That is past the page's
- *  silence limit (`LIVE_SOCKET_SILENT_MS`, read by `replaceIfSilent` in
- *  `web/src/api/live-socket.ts`), so the page would replace the socket, and the new one sends
- *  again the subscribe the row asserts is sent once. */
+ *  as other rows do: its six changes would take six 15 s jumps, which leave the live socket more
+ *  than 45 s without a frame unless one arrives between them. That is past the page's silence
+ *  limit (`LIVE_SOCKET_SILENT_MS`, read by `replaceIfSilent` in `web/src/api/live-socket.ts`), so
+ *  the page would replace the socket, and the new one sends again the subscribe the row asserts
+ *  is sent once. A listener that is down refuses the poll's read with no wait named, so the
+ *  page's two retries of it come half a second apart and the view says it is unreachable within
+ *  this too. */
 const REGISTRY_POLL_TIMEOUT = 2 * AGENT_REGISTRY_POLL_MS;
+
+/** A list that starts refilling reaches an open live view later than another change: the view
+ *  says so only once the page's two retries of the poll's refused read are out, and each waits
+ *  the listener's `Retry-After: 5` and up to as much again (`queryRetryDelay`,
+ *  `web/src/api/query-client.ts`). */
+const REGISTRY_REFILLING_TIMEOUT = REGISTRY_POLL_TIMEOUT + 20_000;
 
 /** A session of a row's own, listed beside the planner. `last_seen` is taken when the row seeds,
  *  never at this module's scope, which a worker evaluates once and every later spec of that worker
@@ -1010,15 +1019,18 @@ function listedSession(
 // the list says and no more, and a turn the session still streams changes neither. A lost socket
 // is the view's own connection: the header says it is reconnecting, and the relay's line stays.
 // The registry's word moves the view on its next poll, both ways, over the subscription the page
-// already holds: the page asks the session for nothing again.
-// SLOW(>=2s): three live views, a reconnect the page draws its own wait for, and three changes of
-// the registry each waited on through the shell's 15 s poll of the agent list.
+// already holds: the page asks the session for nothing again. A read of the list that fails, the
+// list refilling or the listener down, is no word of the registry's: the header says why it has
+// no list to read, and the last list's word stands beside that, in the header and in the line.
+// SLOW(>=2s): three live views, a reconnect the page draws its own wait for, and six changes of
+// the registry each waited on through the shell's 15 s poll of the agent list, one of them a
+// refilling list the page retries twice for before it says so.
 test("a silent session says so in the header and in a line above its messages, in the relay's words or the registry's", async ({
   browser,
 }) => {
-  // Three changes of the registry, each given `REGISTRY_POLL_TIMEOUT`, beside three page loads
-  // and a reconnect.
-  test.setTimeout(120_000);
+  // Six changes of the registry, each given `REGISTRY_POLL_TIMEOUT` and the refilling one
+  // `REGISTRY_REFILLING_TIMEOUT`, beside three page loads and a reconnect.
+  test.setTimeout(240_000);
   const stored = listedSession("01a0e0c1-0000-7000-8000-0000000043a1", "Stored");
   const empty = listedSession("01a0e0c1-0000-7000-8000-0000000043a2", "Empty");
   const answering = listedSession("01a0e0c1-0000-7000-8000-0000000043a3", "Answering");
@@ -1131,6 +1143,22 @@ test("a silent session says so in the header and in a line above its messages, i
     await expect(view.getByText(NOT_ANSWERING_ABOVE_TURNS)).toHaveCount(0);
     expect(subscribed()).toBe(1);
 
+    // The list starts refilling. The header says so, and the list's last word stands beside it:
+    // the session is still unresponsive, the header still reads no Live beside its note, and the
+    // line still says what the list says.
+    await setListsState("refilling");
+    await expect(view.getByTestId("agent-list-refilling")).toBeVisible({
+      timeout: REGISTRY_REFILLING_TIMEOUT,
+    });
+    await expect(unresponsive).toHaveText(/^Unresponsive/);
+    await expect(connection(page)).toHaveCount(0);
+    await expect(view.getByTestId("agent-not-answering")).toHaveText(MISSED_HEARTBEATS);
+    expect(subscribed()).toBe(1);
+    await setListsState("ok");
+    await expect(view.getByTestId("agent-list-refilling")).toHaveCount(0, {
+      timeout: REGISTRY_POLL_TIMEOUT,
+    });
+
     // Its heartbeats are back.
     await setSessionState(answering.session_id, "live");
     await expect(connection(page)).toHaveAttribute("title", CONNECTION_LIVE, {
@@ -1149,6 +1177,17 @@ test("a silent session says so in the header and in a line above its messages, i
     });
     await expect(view.getByTestId("agent-not-answering")).toHaveText(LEFT_LIST);
     expect(subscribed()).toBe(1);
+
+    // The listener goes down. The header says the list is unreachable, and the list's last word
+    // stands beside it: the session is still not in the list, in the header and in the line.
+    await setListsState("down");
+    await expect(view.getByTestId("agent-list-unreachable")).toBeVisible({
+      timeout: REGISTRY_POLL_TIMEOUT,
+    });
+    await expect(connection(page)).toHaveAttribute("title", NOT_LISTED);
+    await expect(view.getByTestId("agent-not-answering")).toHaveText(LEFT_LIST);
+    expect(subscribed()).toBe(1);
+    await setListsState("ok");
   } finally {
     await context.close();
   }

@@ -2076,39 +2076,6 @@ test("a session the registry never listed whose relay answers reads live", async
   expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
 });
 
-// R2. Only a current list judges the session: one that is refilling or unreachable says nothing
-// of it, whatever the last good read held, and the header reads what the relay says.
-test("a registry list that is not current judges nothing of a session it held", async () => {
-  const view = renderLiveView({
-    agentState: {},
-    messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
-    responding: true,
-  });
-  await screen.findByTestId("agent-footer-machine");
-  await nextRegistryRead(view, [{ ...agent, state: "unresponsive" }]);
-  await screen.findByTestId("agent-unresponsive");
-  expect(connectionStatus()).toEqual([]);
-
-  await nextRegistryRead(
-    view,
-    new ApiError(503, { code: "ENVOY_REFILLING", error: AGENT_LIST_REFILLING })
-  );
-  await screen.findByTestId("agent-list-refilling");
-  expect(connectionStatus()).toEqual(["Live"]);
-  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOTHING_YET_TEXT);
-
-  await nextRegistryRead(view, []);
-  await waitFor(() => expect(connectionStatus()).toEqual(["Not in the session list"]));
-  await nextRegistryRead(
-    view,
-    new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "Envoy listener unreachable" })
-  );
-  await screen.findByTestId("agent-list-unreachable");
-  expect(connectionStatus()).toEqual(["Live"]);
-  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOTHING_YET_TEXT);
-});
-
 // R2 (INFRA-4325, the tester's red test of the review round at ead082ee). A failed read of the
 // registry list is no later current list, so the registry's last word on the session stands
 // through it: the Unresponsive note the header keeps from that word is not drawn beside Live, and
