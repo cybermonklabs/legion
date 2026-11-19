@@ -1,0 +1,5 @@
+kind: Fixed
+body: The leak guard no longer reads a Lean namespace or an OCaml value path that puts an `Internal` segment after a capitalised name as a private internal host, so a push carrying Lake's or Rocq's own sources is no longer refused. A host whose label in front of `.internal.` is lowercase, with that label in any case, or a host wholly in capitals, is still refused.
+time: 2026-11-19T17:00:40.73931353Z
+custom:
+    Issue: pr4528
