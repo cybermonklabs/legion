@@ -111,8 +111,9 @@ export function Tabs<Id extends string>({
     // Settled in the reader's own keystroke too, for a key that changes no selection and so runs
     // no effect below: Home or End onto the tab already selected after the reader scrolled the
     // strip away, an arrow key in a strip of one tab, or a key whose selection the page refuses or
-    // defers. Without this the focused tab would stay out of view. A key that changes the
-    // selection has the effect settle the same tab again.
+    // defers. Without this the tab could stay out of view or cut off: `focus()` does not scroll a
+    // tab that already has focus, and leaves a partly hidden one where it is. A key that changes
+    // the selection has the effect settle the same tab again.
     settleTab(node);
   };
 
