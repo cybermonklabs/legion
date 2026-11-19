@@ -528,30 +528,38 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	first := bus.KeptMsgID(item.DedupeKey, role)
 	msgID := first
 	// ownSend is whether a send of this keep under msgID went out unanswered before the stream
-	// refused a later one as in process.
+	// refused a later one as in process, or a duplicate answered the bus's resend: that send may
+	// have stored the copy, so a keep that then fails says so whatever its last failure was (fail).
 	ownSend := false
+	fail := func(err error) (keptRoleCopy, error) {
+		if ownSend && !errors.Is(err, bus.ErrUnacknowledged) {
+			err = fmt.Errorf("%w: %w", bus.ErrUnacknowledged, err)
+		}
+		return keptRoleCopy{}, err
+	}
 	for {
 		published := cfg.now()
 		ack, err := publish(ctx, subject, item, msgID)
 		if errors.Is(err, bus.ErrDuplicateInProcess) {
 			ownSend = ownSend || errors.Is(err, bus.ErrUnacknowledged)
 			if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
-				return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w (after %w)", role, msgID, waitErr, err)
+				return fail(fmt.Errorf("keep the role %s message under %s: %w (after %w)", role, msgID, waitErr, err))
 			}
 			continue
 		}
 		if err != nil {
-			return keptRoleCopy{}, fmt.Errorf("keep the role %s message on its kept lane under %s: %w", role, msgID, err)
+			return fail(fmt.Errorf("keep the role %s message on its kept lane under %s: %w", role, msgID, err))
 		}
 		if !ack.Duplicate {
 			return keptRoleCopy{item: item, until: keptRoleCopyUntil(ctx, cfg, role, item, ack.Sequence, published), sequence: ack.Sequence}, nil
 		}
+		ownSend = ownSend || ack.Resent
 		held, inside, err := heldKeptRoleCopy(ctx, cfg, role, ack.Sequence)
 		if err != nil {
-			return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w", role, msgID, err)
+			return fail(fmt.Errorf("keep the role %s message under %s: %w", role, msgID, err))
 		}
 		if inside {
-			held.repeat = !ack.Resent && !ownSend
+			held.repeat = !ownSend
 			return held, nil
 		}
 		msgID = first + ":after:" + strconv.FormatUint(ack.Sequence, 10)

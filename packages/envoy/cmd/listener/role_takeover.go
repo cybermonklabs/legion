@@ -270,8 +270,8 @@ func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // again with the time it found that holder (bus.TakeoverRecord.HolderSeenAt): well inside the
 // stream's age limit less the record's life, so no record ages out of the stream while a pass may
 // still need it, and short enough that the hour a record copies from once that holder loses the
-// role starts at most this much before the hour before it lost it. Such a pass costs no write in
-// two sweeps of three.
+// role starts at most this much and one sweep interval (roleWakeInterval) before the hour before it
+// lost it. Such a pass costs no write in two sweeps of three.
 const takeoverRecordRefresh = 15 * time.Minute
 
 // runTakeoverPass is one pass of the takeover record stored, and returns the record as it stands
