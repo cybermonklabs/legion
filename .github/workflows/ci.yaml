@@ -385,7 +385,7 @@ jobs:
       contracts: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.contracts }}
       test_fixtures: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.test_fixtures }}
       conflicts_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.conflicts_script }}
-      broker_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.broker_client }}
+      broker_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.broker_client }}
       envoy_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.envoy_client }}
       pi_shared: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.pi_shared }}
       pi_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.pi_envoy }}
@@ -1701,6 +1701,9 @@ jobs:
               # hold them.
               - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
               - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
+              # Another reads the two steps that run database-skips.sh, each with its own arguments.
+              - '.github/workflows/ci-job-envoy-go.yaml'
+              - '.github/workflows/ci-job-envoy-go-race-api.yaml'
               # Its last case hashes each script AUDITED_SCRIPTS reads, so a pull request that
               # edits one runs it and is told to read the script again, and it imports
               # ci_job_reads.py to hold each such script to this gate's declared reads.
@@ -2287,22 +2290,6 @@ jobs:
               # and its last step holds the bun on PATH to that row's digest.
               - '.github/ci-tools.yaml'
               - '.github/scripts/ci-tools.sh'
-            # The secrets broker's TypeScript client: its own sources and tests, the one
-            # first-party package its sources import, the fixtures its tests use, the Bun install
-            # and the Bun it runs, and Biome.
-            broker_client:
-              - *ci_router
-              - '.github/workflows/ci-job-broker-client.yaml'
-              - *bun_install
-              - 'packages/broker-client/**'
-              # src/token-client.ts imports @legion/contracts/trailing-slash.
-              - 'packages/contracts/src/**'
-              # src/__tests__ import @legion/test-fixtures.
-              - 'packages/test-fixtures/src/**'
-              # The one corpus both clients read: src/__tests__/wire.test.ts:23-29 reads the Go
-              # package's own testdata by relative path, that file itself and never a copy, so a
-              # field added there must start this job.
-              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
             # The private workspace package both Oh My Pi plugins import, and the jj
             # .github/actions/install-jj installs for the one case of src/jj-attribution.test.ts
             # that runs the real jj.
@@ -2515,8 +2502,10 @@ jobs:
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
+              - 'packages/contracts/src/held-secrets.ts'
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
+              - 'packages/contracts/src/log-text.ts'
               - 'packages/contracts/src/related-forms.ts'
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
@@ -2629,8 +2618,10 @@ jobs:
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
+              - 'packages/contracts/src/held-secrets.ts'
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
+              - 'packages/contracts/src/log-text.ts'
               - 'packages/contracts/src/related-forms.ts'
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
@@ -3048,8 +3039,10 @@ jobs:
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
+              - 'packages/contracts/src/held-secrets.ts'
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
+              - 'packages/contracts/src/log-text.ts'
               - 'packages/contracts/src/related-forms.ts'
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
@@ -3144,8 +3137,10 @@ jobs:
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
               - 'packages/contracts/src/going.ts'
+              - 'packages/contracts/src/held-secrets.ts'
               - 'packages/contracts/src/index.ts'
               - 'packages/contracts/src/legion-roles.ts'
+              - 'packages/contracts/src/log-text.ts'
               - 'packages/contracts/src/related-forms.ts'
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
@@ -3550,6 +3545,29 @@ jobs:
               # which topics reach a private stream subject, the file
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
               - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
+            # The secrets broker's TypeScript client: its own sources and tests, the one
+            # first-party package its sources import, the fixtures its tests use, the Bun install
+            # and the Bun it runs, and Biome.
+            broker_client:
+              - *ci_router
+              - '.github/workflows/ci-job-broker-client.yaml'
+              - *bun_install
+              - 'packages/broker-client/**'
+              # src/token-client.ts imports @legion/contracts/trailing-slash.
+              - 'packages/contracts/src/**'
+              # src/__tests__ import @legion/test-fixtures.
+              - 'packages/test-fixtures/src/**'
+              # src/__tests__/dpop.test.ts reads both signers' connection proofs.
+              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-*.json'
+              # src/__tests__/refusal-corpus.test.ts reads the broker's refusal texts and its OAuth
+              # codes as its library writes them (internal/broker/oauth's refusal-corpus test
+              # writes both), and holds LIBRARY_OAUTH_ERROR_CODES to the codes.
+              - 'packages/envoy/internal/broker/oauth/testdata/refusal-descriptions.json'
+              - 'packages/envoy/internal/broker/oauth/testdata/refusal-codes.json'
+              # The one corpus both clients read: src/__tests__/wire.test.ts reads the Go
+              # package's own testdata by relative path (CORPUS_PATH), that file itself and never a
+              # copy, so a field added there must start this job.
+              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
             envoy_go:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go.yaml'
@@ -3583,10 +3601,10 @@ jobs:
               - 'packages/contracts/fixtures/checks-settlement/**'
               - 'packages/contracts/fixtures/daemon-api/state.json'
               # The API package's test binary, whose xid window tests the race-impossible step runs
-              # (ci_job_reads.py, RACE_IMPOSSIBLE_SCRIPT): its live-feed fixtures
-              # (internal/dispatch/api/delivery_live_diff_test.go:1016), the committed OpenAPI
-              # document (internal/dispatch/api/openapi_test.go:189-190) and the ask reply's copies
-              # (internal/dispatch/api/session_answers_test.go:1496).
+              # (ci_job_reads.py, RACE_IMPOSSIBLE_SCRIPT) and which the skip counter's test runs too:
+              # its live-feed fixtures (internal/dispatch/api/delivery_live_diff_test.go:1016), the
+              # committed OpenAPI document (internal/dispatch/api/openapi_test.go:189-190) and the
+              # ask reply's copies (internal/dispatch/api/session_answers_test.go:1496).
               - 'packages/contracts/fixtures/live/**'
               - 'packages/contracts/schemas/dispatch-openapi.json'
               - 'packages/contracts/fixtures/ask-reply-recipients.json'
@@ -3603,6 +3621,10 @@ jobs:
               # Its natslive step takes that tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
               - '.github/scripts/pg-connection-ceiling.sh'
+              # The skip counter its database-skips step runs, and the counter's own test, which
+              # the step before it runs (packages/envoy/** names both too).
+              - 'packages/envoy/scripts/database-skips.sh'
+              - 'packages/envoy/scripts/database-skips.test.sh'
               # internal/dispatch/testlimits/testlimits_test.go holds this script's
               # max_connections to testlimits.ServerConnections.
               - 'packages/daemon/docker/legion-testpg'
@@ -3882,6 +3904,8 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-race-api.yaml'
               - *go_workspace
+              # Its race step runs the package through this skip counter.
+              - 'packages/envoy/scripts/database-skips.sh'
               - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'

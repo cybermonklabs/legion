@@ -59,6 +59,7 @@ import {
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
   temporaryDirectories,
@@ -367,6 +368,14 @@ const hook = (handlers: Map<string, Handler>, name: string): Handler => {
   if (found === undefined) throw new Error(`the ${name} handler was not registered`);
   return found;
 };
+
+/** The controller's registration secret: random, as a real one is, since the process holds it
+ *  and every line it prints is scrubbed of it (`@legion/contracts/held-secrets`); one spelled from
+ *  words would be scrubbed out of the lines that hold those words. */
+const CONTROLLER_SECRET = fixtureSecret("ctl");
+
+/** The boot token the daemon writes for the controller it launches: random for the same reason. */
+const LAUNCH_BOOT_TOKEN = fixtureSecret("boot");
 
 const originalFetch = globalThis.fetch;
 
@@ -945,10 +954,12 @@ async function claimPane(options: {
     issue,
     role: options.role,
     generation: 2,
-    secret: `secret-${sessionId}`,
+    secret: fixtureSecret("reg"),
     promptAgents: options.promptAgents ?? [],
   };
-  const bootToken = `boot-${sessionId}`;
+  // Random, as the daemon's is: the pane holds it, and one spelled from the session's id would be
+  // scrubbed out of every line naming the role (`@legion/contracts/held-secrets`).
+  const bootToken = `boot-${crypto.randomUUID()}`;
   const stateDir = paneStateDirectory();
   const secretsDir = path.join(stateDir, "secrets");
   await mkdir(secretsDir, { mode: 0o700 });
@@ -1223,7 +1234,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(() =>
       classifySession({
         LEGION_CONTROLLER: "1",
-        LEGION_CONTROLLER_SECRET: "controller-secret",
+        LEGION_CONTROLLER_SECRET: CONTROLLER_SECRET,
         LEGION_TREE: "REPO-42",
       })
     ).toThrow("both controller and tree launch markers");
@@ -1382,7 +1393,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       process.env.ENVOY_URL = "http://envoy.test";
       process.env.LEGION_DAEMON_URL = "http://daemon.test";
       process.env.LEGION_PROJECT = "omp";
-      process.env.LEGION_CONTROLLER_SECRET = "controller-capability";
+      process.env.LEGION_CONTROLLER_SECRET = CONTROLLER_SECRET;
       const requests: string[] = [];
       globalThis.fetch = (async (input) => {
         requests.push(new URL(input.toString()).pathname);
@@ -1753,14 +1764,22 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       body: { bootToken: pane.bootToken },
     });
   });
-  test("exits the phase worker naming LEGION_BOOT_TOKEN_FILE and its path when the file is unreadable, never falling back to LEGION_BOOT_TOKEN", async () => {
+  // The variable is named and the path is not: a token pasted where the path goes would be the
+  // path, and the error is printed (envoy-client's readSecretFile).
+  test("exits the phase worker naming LEGION_BOOT_TOKEN_FILE, never its path, when the file is unreadable, never falling back to LEGION_BOOT_TOKEN", async () => {
     const pane = await claimPane({ role: "tester" });
     process.env.LEGION_BOOT_TOKEN = "decoy";
     process.env.LEGION_BOOT_TOKEN_FILE = "/nonexistent/legion-secrets/tester";
 
-    await expect(pane.start()).rejects.toThrow(
-      "LEGION_BOOT_TOKEN_FILE names /nonexistent/legion-secrets/tester, which could not be read"
+    const refusal = await pane.start().then(
+      () => undefined,
+      (error: unknown) => error
     );
+    expect(refusal).toBeInstanceOf(Error);
+    expect((refusal as Error).message).toContain(
+      "LEGION_BOOT_TOKEN_FILE names a file that could not be read (ENOENT)"
+    );
+    expect(Bun.inspect(refusal)).not.toContain("/nonexistent/legion-secrets/tester");
     expect(daemonRequests(pane.requests)).toEqual([]);
   });
   test("registers the legion tool, and only it, once a sub-architect's claim boots", async () => {
@@ -2205,7 +2224,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         {
           claimToken: worker.claimToken,
           sessionId: "ses_stall",
-          secret: "secret-ses_stall",
+          secret: worker.registration.secret,
           generation: 2,
           sequence: 1,
           outcome: "clean",
@@ -2213,7 +2232,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         {
           claimToken: worker.claimToken,
           sessionId: "ses_stall",
-          secret: "secret-ses_stall",
+          secret: worker.registration.secret,
           generation: 2,
           sequence: 2,
           outcome: "refused",
@@ -2934,7 +2953,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     const pane = await bootPane({ role: "architect", issue: "REPO-42", sessionId: "ses_gate" });
     // The lookup reads the pane's Dispatch configuration when it runs, and fails to connect.
     process.env.DISPATCH_URL = "http://dispatch.unreachable.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = fixtureSecret("dsp");
     const paneFetch = globalThis.fetch;
     globalThis.fetch = (async (input, init) => {
       if (new URL(input.toString()).host === "dispatch.unreachable.test") {
@@ -2958,7 +2977,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       content: [
         {
           type: "text",
-          text: 'register_gate could not look up document "spec" on REPO-42 in Dispatch: Unable to connect. Is the computer able to access the url?',
+          // The Dispatch client names a request that reached no server by the failure's class.
+          text: 'register_gate could not look up document "spec" on REPO-42 in Dispatch: Dispatch at http://dispatch.unreachable.test is unreachable: TypeError (message withheld). If the Dispatch URL changed, restart this agent process so it picks up the new configuration.',
         },
       ],
     });
@@ -2973,8 +2993,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
   test("register_gate looks the document up in the Dispatch of the envoy.json the Envoy entry chose", async () => {
     const profile = await mkdtemp(path.join(os.tmpdir(), "legion-profile-"));
     temporaryPaths.push(profile);
+    const fileToken = fixtureSecret("file");
     const dispatchFile = (serverUrl: string) =>
-      JSON.stringify({ dispatch: { enabled: true, serverUrl, token: "file-token" } });
+      JSON.stringify({ dispatch: { enabled: true, serverUrl, token: fileToken } });
     await writeFile(
       path.join(profile, "envoy.json"),
       dispatchFile("https://profile.dispatch.example")
@@ -3976,18 +3997,18 @@ async function launchedController(options: {
   readonly roleClaim?: () => Response | undefined | Promise<Response | undefined>;
 }): Promise<LaunchedController> {
   const project = options.project ?? "omp";
-  const token = `legion-${project}-controller`;
+  const token = `legion-${project}-controller`; // fixture-secret: the controller's claim token, the role the daemon and the listener name it by; no client holds it
   const registration = {
     claimToken: token,
     role: "controller",
     generation: 2,
-    secret: `controller-secret-${options.sessionId}`,
+    secret: fixtureSecret("reg"),
   };
   const stateDir = controllerStateDirectory();
   const secretsDir = path.join(stateDir, "secrets");
   await mkdir(secretsDir, { mode: 0o700 });
   const capabilityFile = path.join(secretsDir, token);
-  await writeFile(capabilityFile, "controller-capability\n", { mode: 0o600 });
+  await writeFile(capabilityFile, `${CONTROLLER_SECRET}\n`, { mode: 0o600 });
   process.env.LEGION_CONTROLLER = "1";
   process.env.LEGION_ROLE = "controller";
   process.env.LEGION_CONTROLLER_SECRET_FILE = capabilityFile;
@@ -4325,7 +4346,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       {
         path: "/legion/v1/claims/register",
         body: {
-          bootToken: "controller-capability",
+          bootToken: CONTROLLER_SECRET,
           sessionId: "ses_controller",
           ompSessionFile: "/tmp/ses_controller.jsonl",
           agentId: "ses_controller",
@@ -5276,7 +5297,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       "the daemon-launched controller",
       async (controller: LaunchedController) => {
         const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-        await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+        await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
         delete process.env.LEGION_CONTROLLER_SECRET_FILE;
         process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
         process.env.LEGION_SLACK_CHANNELS = "";
@@ -5385,7 +5406,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       },
     });
     const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
     delete process.env.LEGION_CONTROLLER_SECRET_FILE;
     delete process.env.LEGION_CONTROLLER_START_MESSAGE;
     process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
@@ -5408,7 +5429,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       {
         path: "/legion/v1/claims/register",
         body: {
-          bootToken: "launch-boot-token",
+          bootToken: LAUNCH_BOOT_TOKEN,
           sessionId: "ses_controller_pod",
           ompSessionFile: "/tmp/ses_controller_pod.jsonl",
           agentId: "ses_controller_pod",
@@ -5446,8 +5467,9 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       sessionId: "ses_controller_pod",
       register: () => Response.json({ error: "invalid boot token" }, { status: 403 }),
     });
+    const staleBootToken = fixtureSecret("boot");
     const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, "stale-boot-token\n", { mode: 0o600 });
+    await writeFile(bootFile, `${staleBootToken}\n`, { mode: 0o600 });
     delete process.env.LEGION_CONTROLLER_SECRET_FILE;
     process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
     process.env.LEGION_SLACK_CHANNELS = "";
@@ -5487,11 +5509,11 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         .map((request) => request.body)
     ).toEqual([
       expect.objectContaining({
-        bootToken: "controller-capability",
+        bootToken: CONTROLLER_SECRET,
         sessionId: "ses_controller_pane",
       }),
       expect.objectContaining({
-        bootToken: "controller-capability",
+        bootToken: CONTROLLER_SECRET,
         sessionId: "ses_controller_takeover",
       }),
     ]);
@@ -5868,7 +5890,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       const secrets = await mkdtemp(path.join(os.tmpdir(), "legion-controller-boot-"));
       temporaryPaths.push(secrets);
       const bootFile = path.join(secrets, "LEGION_BOOT_TOKEN");
-      await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+      await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
       process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
       if (channels === undefined) delete process.env.LEGION_SLACK_CHANNELS;
       else process.env.LEGION_SLACK_CHANNELS = channels;
@@ -6518,6 +6540,26 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       "[legion] claims/register for the controller failed (403): Invalid boot token"
     );
     expect(controller.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
+  });
+
+  // The daemon's detail is its own text: one that echoes the capability it was sent prints none of
+  // it, in the log line or the notice, since the capability is held (#4140, P-k).
+  test("a refusal whose detail echoes the capability prints none of it", async () => {
+    const controller = await launchedController({
+      sessionId: "ses_controller_echo",
+      register: () =>
+        Response.json({ error: `Invalid boot token ${CONTROLLER_SECRET}` }, { status: 403 }),
+    });
+
+    const { notices, errors } = await startRefusedController(
+      controller,
+      controller.context("ses_controller_echo")
+    );
+    expect(errors).toContain(
+      "[legion] claims/register for the controller failed (403): Invalid boot token <withheld>"
+    );
+    const lines = [...errors, ...notices.map((notice) => String(notice.message))];
+    for (const line of lines) expect(line).not.toContain(CONTROLLER_SECRET.slice(4, 18));
   });
 });
 

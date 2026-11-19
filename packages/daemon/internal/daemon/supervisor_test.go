@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -203,6 +204,9 @@ type relaunchingStore struct {
 	mu          sync.Mutex
 	currentHash []byte
 	current     supervise.Claim
+	// Holds holds each session name for the first claim that records it, as the store's
+	// claim_sessions table does (supervise.Store.HoldSessions).
+	supervisetest.Holds
 }
 
 func (s *relaunchingStore) ClaimByBootTokenHash(_ context.Context, hash []byte) (supervise.Claim, bool, error) {
@@ -220,6 +224,10 @@ func (s *relaunchingStore) PutClaim(_ context.Context, c supervise.Claim) error 
 	s.currentHash = c.BootTokenHash
 	s.current = c
 	return nil
+}
+
+func (s *relaunchingStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.Holds.ReleaseWith(ctx, s.PutClaim, c, holds)
 }
 
 func (s *relaunchingStore) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
@@ -532,6 +540,10 @@ func (e *recordingEnroller) Revoke(_ context.Context, enrollment string) error {
 	defer e.mu.Unlock()
 	e.revoked = append(e.revoked, enrollment)
 	return nil
+}
+
+func (*recordingEnroller) Carried(context.Context, []string) ([]supervise.CarriedEnrollment, error) {
+	return nil, errors.New("unexpected carry question")
 }
 
 func (e *recordingEnroller) revocations() []string {

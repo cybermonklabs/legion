@@ -15,6 +15,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, ErrorCode, headers, type NatsConnection, NatsError, StringCodec } from "nats";
 import { z } from "zod";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
@@ -39,6 +40,8 @@ const omp = process.env.LEGION_TEST_OMP;
 const natsUrl = process.env.LEGION_TEST_NATS_URL;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 const skip = (omp === undefined || natsUrl === undefined) && !onActions;
+/** The Dispatch token the session is handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** The binary and NATS server a case runs against; throws on GitHub Actions without them. */
 function setup(): { readonly binary: string; readonly nats: string } {
@@ -47,9 +50,13 @@ function setup(): { readonly binary: string; readonly nats: string } {
   return { binary: omp, nats: natsUrl };
 }
 
+/** How long a case waits for one thing the session owes it before failing on it. */
+const DEADLINE_MS = 30_000;
+
 // The real `connect`'s connection reports the server it reached (`getServer`); the mock's has no
 // such method. Checked once, before any case spends a binary's startup on a connection that
-// reaches no server.
+// reaches no server. Bounded as a case's wait is, not by the runner's 5 s hook default: on a
+// loaded machine the connection alone has taken longer.
 beforeAll(async () => {
   if (skip) return;
   const probe = await connect({ servers: setup().nats });
@@ -62,10 +69,7 @@ beforeAll(async () => {
   } finally {
     await probe.close();
   }
-});
-
-/** How long a case waits for one thing the session owes it before failing on it. */
-const DEADLINE_MS = 30_000;
+}, DEADLINE_MS);
 
 /** How often one session may put its context usage on the wire in these cases, the interval the
  *  check names (`ENVOY_CONTEXT_FRAME_INTERVAL_MS`). */
@@ -76,11 +80,12 @@ const CONTEXT_INTERVAL_MS = 2_000;
 const SHELL_LIMIT_MS = 2_000;
 
 /** The sessions these cases share are torn down once, at the end: each boot costs the real
- *  binary's startup, and every case of a session leaves it settled for the next one. */
+ *  binary's startup, and every case of a session leaves it settled for the next one. Each
+ *  teardown step is a real binary's stop, so the whole is bounded as a case's wait is. */
 const cleanup: Cleanup = [];
 afterAll(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, DEADLINE_MS);
 
 function text(reply: string): Block {
   return { type: "text", text: reply };
@@ -307,7 +312,7 @@ async function startSession(
         ENVOY_URL: base,
         ENVOY_NATS_URL: nats,
         DISPATCH_URL: base,
-        DISPATCH_TOKEN: "session-surface-token",
+        DISPATCH_TOKEN,
         ...(noWindowModel && { NO_WINDOW_PROVIDER_BASE_URL: `${base}/anthropic` }),
         ...env,
       },

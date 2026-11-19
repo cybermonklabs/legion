@@ -187,10 +187,11 @@ func TestAnEnrollmentNamingNoSessionBindsNothing(t *testing.T) {
 // enrols under that same name: the exchange binds the name to exchange.AccountPrincipal of the
 // ServiceAccount subject the pod's projected token proved (exchange.Set.Pod), and the enrolment
 // binds it to exchange.AccountPrincipal of the subject the same kind of token proved
-// (carryPrincipal). Those are one string, and this measures it both ways — by comparing the
-// principal the exchange decides with the one the enrolment recorded, and by letting each of the
-// two claim a name the other has already claimed, which the table itself would refuse if they
-// disagreed.
+// (namePrincipal), even though the enrolment's grants follow the pair of that account and the
+// daemon's login (carryPrincipal). Those are one string, and this measures it both ways — by
+// comparing the principal the exchange decides with the one the enrolment bound the name to, and
+// by letting each of the two claim a name the other has already claimed, which the table itself
+// would refuse if they disagreed.
 func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
@@ -205,7 +206,7 @@ func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.
 	podToken := func(uid string) map[string]any {
 		return map[string]any{"sub": subject, "kubernetes.io": map[string]any{"pod": map[string]any{"uid": uid}}}
 	}
-	cred := mintCredential(t, svc, nil, str("legion-daemon"), "cluster")
+	cred := daemonLogin(t, svc)
 	binder := oauthstore.New(svc.Store.Pool)
 	hour := time.Now().Add(time.Hour)
 
@@ -220,10 +221,8 @@ func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.
 		if err != nil {
 			t.Fatalf("the exchange's reading of the same pod's token: %v", err)
 		}
-		recorded := carryPrincipalOf(t, svc, enr.ID)
-		if claims.Principal != recorded {
-			t.Fatalf("the exchange calls this pod %q and its enrolment calls it %q, want one spelling: a pod that has exchanged under its name must not be refused that name by its own enrolment",
-				claims.Principal, recorded)
+		if recorded, want := carryPrincipalOf(t, svc, enr.ID), exchange.PodLaunchPrincipal(subject, exchange.AccountPrincipal(carryDaemonAccount)); recorded != want {
+			t.Fatalf("the enrolment's grants follow %q, want the pair of the pod's account and its daemon's login, %q", recorded, want)
 		}
 		if got := sessionNameHolder(t, svc, session); got != claims.Principal {
 			t.Fatalf("the name %s is held by %q, want the exchange's own %q", session, got, claims.Principal)
@@ -243,13 +242,13 @@ func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.
 		if _, err := binder.BindSession(ctx, session, claims.Principal, false, hour); err != nil {
 			t.Fatalf("the pod's first trade: %v", err)
 		}
-		enr, err := svc.Create(ctx, cred, Enrollment{Kind: "pod", RuntimeID: uid, Thumbprint: "tp-" + uid, SessionID: str(session),
+		_, err = svc.Create(ctx, cred, Enrollment{Kind: "pod", RuntimeID: uid, Thumbprint: "tp-" + uid, SessionID: str(session),
 			PodToken: mintPodToken(t, issuer, key, subject, uid)})
 		if err != nil {
 			t.Fatalf("the pod's enrolment after its trade = %v, want it enrolled: the name is already its own", err)
 		}
-		if got := carryPrincipalOf(t, svc, enr.ID); got != claims.Principal {
-			t.Fatalf("the enrolment records %q, want the principal its trade bound the name to, %q", got, claims.Principal)
+		if got := sessionNameHolder(t, svc, session); got != claims.Principal {
+			t.Fatalf("the name %s is held by %q after the enrolment, want the principal its trade bound the name to, %q", session, got, claims.Principal)
 		}
 	})
 }

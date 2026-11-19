@@ -120,7 +120,7 @@ itself, whose tests import its sources by relative path.
 - Take a port from the kernel: bind port 0, read back the port the listener reports, and hold that
   listener from the moment it binds, so nothing else on the machine can take the port between the
   question and the row that asks it (`stubBroker` in
-  `packages/envoy-client/src/__tests__/broker-credential.test.ts`). Never write a port number into a
+  `packages/envoy-client/src/__tests__/broker-stand-ins.ts`). Never write a port number into a
   test. The Dispatch e2e harness is the same rule at the scale of a run: a port variable left unset
   is port 0, one that is set is used as given, and two variables naming one port are refused where
   the ports resolve rather than by whichever listener loses the race (`harnessPort` and
