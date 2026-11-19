@@ -6356,16 +6356,21 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       jest.useFakeTimers();
       natsConnectGates.set("omp-ses_controller_first", async () => undefined);
       failingConnect.reject(new Error("nats: connection refused"));
-      // The failed redial schedules the next one on the long interval. Wait for that timer to
-      // exist before moving the clock, not for a fixed number of turns: how many turns the
-      // failure takes to reach `retryRelay` is the dial's business.
-      for (let turn = 0; turn < 10_000 && jest.getTimerCount() === 0; turn++) {
-        await Promise.resolve();
+      // The failed redial schedules the next one on the long interval. The clock moves until the
+      // relay subject is subscribed again, not a fixed number of turns or timers: how many turns
+      // the failure takes to reach `retryRelay`, and which other timers are set first, is the
+      // code's business. Each turn yields to the event loop too (bun's fake clock does not own
+      // `setImmediate`), so a step that waits on a macrotask still runs.
+      let reopenedYet = false;
+      void reopened.promise.then(() => {
+        reopenedYet = true;
+      });
+      for (let turn = 0; turn < 2_000 && !reopenedYet; turn++) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (jest.getTimerCount() > 0) jest.advanceTimersByTime(60_000);
       }
-      expect(jest.getTimerCount()).toBeGreaterThan(0);
-      jest.advanceTimersByTime(60_000);
       jest.useRealTimers();
-      await reopened.promise;
+      expect(reopenedYet).toBe(true);
       const settled = Promise.withResolvers<void>();
       setImmediate(settled.resolve);
       await settled.promise;
