@@ -379,9 +379,14 @@ func TestAnUnreachableStoreLeavesTheOutcomeUnknownUntilItAnswers(t *testing.T) {
 	if !strings.Contains(got.err.Error(), "transaction "+xid) {
 		t.Fatalf("Transact = %v, want an error naming transaction %s", got.err, xid)
 	}
+	// Why the store could not answer: the error of the status read, which readOutcome writes.
+	statusRead := "read the status of transaction " + xid + ":"
+	if !strings.Contains(got.err.Error(), statusRead) {
+		t.Fatalf("Transact = %v, want an error that carries the status read's error (%q)", got.err, statusRead)
+	}
 	rig.wantHooks(t, 0)
-	if n := logged(log, lostReplyUnknown, "transaction="+xid+" "); n != 1 {
-		t.Fatalf("when Transact returned, the log held %d lines %q naming transaction %s, want 1; the log:\n%s", n, lostReplyUnknown, xid, log.String())
+	if n := logged(log, lostReplyUnknown, "transaction="+xid+" ", `status_error="`+statusRead); n != 1 {
+		t.Fatalf("when Transact returned, the log held %d lines %q naming transaction %s with the status read's error, want 1; the log:\n%s", n, lostReplyUnknown, xid, log.String())
 	}
 
 	// The control transaction: the caller's next transaction, open on the caller's mark before the

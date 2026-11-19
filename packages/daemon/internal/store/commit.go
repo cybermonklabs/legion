@@ -106,9 +106,10 @@ func CommitScoped(ctx context.Context) bool {
 //     wrote nothing holds the same rows either way, so its hooks run. Otherwise the store is asked
 //     on a fresh connection, under a hold mark of its own, for at most outcomeReadBound
 //     (readOutcome). Committed logs a warning and runs the hooks. Aborted returns an error, and
-//     no hook runs. A store that cannot say logs a warning naming the transaction before Transact
-//     returns ErrCommitOutcomeUnknown, and leaves the hooks to a watcher that runs them once the
-//     store says the transaction committed (watchOutcome).
+//     no hook runs. A store that cannot say logs a warning naming the transaction, the commit's
+//     error and the status read's error before Transact returns ErrCommitOutcomeUnknown with both
+//     errors, and leaves the hooks to a watcher that runs them once the store says the
+//     transaction committed (watchOutcome).
 //
 // So a caller whose context ends waits at most CommitSettleBound more for its commit's outcome.
 func Transact(ctx context.Context, pool TxPool, write func(ctx context.Context, tx pgx.Tx) error) error {
@@ -160,7 +161,8 @@ func settleLostReply(ctx context.Context, pool TxPool, xid string, hooks []func(
 	}
 	reading, cancel := context.WithTimeout(ForConcurrentWorker(context.WithoutCancel(ctx)), outcomeReadBound)
 	defer cancel()
-	switch result, _ := readOutcome(reading, pool, xid); result {
+	result, statusErr := readOutcome(reading, pool, xid)
+	switch result {
 	case outcomeCommitted:
 		slog.Warn("store: a commit's reply was lost; the store says the transaction committed",
 			"transaction", xid, "error", lost)
@@ -170,9 +172,9 @@ func settleLostReply(ctx context.Context, pool TxPool, xid string, hooks []func(
 		return fmt.Errorf("transaction %s did not commit: %w", xid, lost)
 	default:
 		slog.Warn("store: a commit's reply was lost and the store cannot say whether it landed; its commit hooks wait until it can",
-			"transaction", xid, "hooks", len(hooks), "error", lost)
+			"transaction", xid, "hooks", len(hooks), "error", lost, "status_error", statusErr)
 		go watchOutcome(ForConcurrentWorker(context.WithoutCancel(ctx)), pool, xid, hooks)
-		return fmt.Errorf("%w: transaction %s: %w", ErrCommitOutcomeUnknown, xid, lost)
+		return fmt.Errorf("%w: transaction %s: %w; %w", ErrCommitOutcomeUnknown, xid, lost, statusErr)
 	}
 }
 
