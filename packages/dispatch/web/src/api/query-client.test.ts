@@ -130,6 +130,42 @@ test("a value put over a query's reads is there at once and stays over a read as
   }
 });
 
+// A read the write cancels was asked for a reason - here another issue's change, which the
+// server holds by the time of the write. Its answer would have brought that news beside the old
+// value of the written entry; once the write is in, the query is read again, and the read asked
+// then answers both.
+test("a read a value is put over is asked again once the value is in, and brings what it was asked for", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const server = heldServer("before");
+  const observer = new QueryObserver(queryClient, {
+    queryFn: server.queryFn,
+    queryKey: ["user-state"],
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    expect(server.requests()).toBe(1);
+
+    server.write("the write and the other issue's news");
+    replaceQueryData<string>(queryClient, ["user-state"], "the write");
+    expect(queryClient.getQueryData<string>(["user-state"])).toBe("the write");
+    await settle();
+    expect(server.requests()).toBe(2);
+
+    // The cancelled read lands with what the server held before the write, and is dropped.
+    server.answer();
+    await settle();
+    expect(queryClient.getQueryData<string>(["user-state"])).toBe("the write");
+    server.answer();
+    await settle();
+    expect(queryClient.getQueryData<string>(["user-state"])).toBe(
+      "the write and the other issue's news"
+    );
+  } finally {
+    unsubscribe();
+  }
+});
+
 // An optimistic write stands in its query until its answer is in. A read asked after the write
 // but answered before the server took it would put back the state the write replaced, so the read
 // waits: it asks once the hold ends, and reads what the write left.
