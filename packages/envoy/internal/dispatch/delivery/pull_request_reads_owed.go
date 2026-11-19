@@ -10,7 +10,7 @@ package delivery
 // its read is owed, how often the reconcile has read it, when it was last owed and its revision,
 // and nothing an envelope says: no head, no state, no issue.
 //
-// Three writers record one. Intake.deliver records a failure at the delivery of an envelope whose
+// Four writers record one. Intake.deliver records a failure at the delivery of an envelope whose
 // head write failed, and acknowledges the envelope once that record is written; a later read that
 // writes the head deletes what was owed before it began (settleOwedRead). recordPullRequestHead
 // records a refusal for GitHub's refusal of a read, a pull request it does not know or a repository
@@ -25,8 +25,9 @@ package delivery
 // row a read of GitHub wrote. An insert of the release before, and its update of a row no read
 // marked, owe nothing: the reconcile's open arm reads such an open row, its facts line a merged
 // one while its texts do not describe its head, and a closed one stays closed, which is no basis.
-// An envelope leaves the intake with no record of its pull request only where it names no pull
-// request GitHub can have
+// And a link by hand records a failure for each pull request that it adds and that has no head
+// row (OweLinkedPullRequestReads). No event carries a link. An envelope leaves the intake with no
+// record of its pull request only where it names no pull request GitHub can have
 // (Intake.deliver), which is checked before anything is read or written (pullRequestNamed). Where
 // its repository's canonical name is no name GitHub can have, the read is owed under the name the
 // envelope gave (owePullRequestRead); a GitHub answer that holds a value no head row holds is a
@@ -85,10 +86,15 @@ package delivery
 // and its way out. A release before this one neither reads nor writes the two columns.
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -105,7 +111,8 @@ type owedReason string
 const (
 	// owedFailure is a read GitHub did not answer: a 5xx, a timeout, a rate limit, a head write
 	// that failed; or a write no read of GitHub has the last word on (the triggers above).
-	// GitHub will answer it once it answers at all, so it is read before any refusal.
+	// GitHub will answer it once it answers at all, so it is read before any refusal. A link by
+	// hand of a pull request with no head row owes one too (OweLinkedPullRequestReads).
 	owedFailure owedReason = "failure"
 	// owedRefusal is a read GitHub answered with a refusal: it does not have the pull request
 	// (404 or 410), or the App cannot read its repository.
@@ -200,25 +207,27 @@ func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number
 // (RefreshPullRequestHead), so the read stays owed while the target stands and is read once it is
 // corrected. The reason is one of this package's two constants. So no value this writes is one
 // the table refuses, and a failure of a statement is the database's alone, which the intake hands
-// back (recordRefused). Its statements run within owedReadWriteTimeout of the call.
+// back (recordRefused). Its statements run within owedReadWriteTimeout of the call. They run on
+// db: the pool, or the transaction of a link write, which fails with them
+// (OweLinkedPullRequestReads).
 //
 // refusedAs is the word of GitHub's refusal where reason is owedRefusal (refusalOf), and "" for a
 // failure. A row that becomes a refusal takes the time of this write as refused_since, a row that
 // stays one keeps its time, and a row that becomes a failure clears both columns (owedRefusalSet).
-func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, number int, reason owedReason, refusedAs string) error {
+func owePullRequestRead(ctx context.Context, db owedWriter, given string, number int, reason owedReason, refusedAs string) error {
 	ctx, cancel := owedTableBound(ctx)
 	defer cancel()
 	if err := checkPullRequestKey(given, number); err != nil {
 		return fmt.Errorf("the read %.140q#%d is owed: %w", given, number, err)
 	}
-	repoFull, err := refs.CanonicalRepo(ctx, pool, given)
+	repoFull, err := refs.CanonicalRepo(ctx, db, given)
 	if err != nil {
 		return err
 	}
 	if checkPullRequestKey(repoFull, number) != nil {
 		repoFull = given
 	}
-	if _, err := pool.Exec(ctx, `
+	if _, err := db.Exec(ctx, `
 		insert into pull_request_reads_owed (repo, number, reason, refused_as, refused_since)
 		values ($1, $2, $3::text, case when $3::text = 'refusal' then nullif($4::text, '') end,
 			case when $3::text = 'refusal' then now() end)
@@ -227,6 +236,104 @@ func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, num
 				`+owedRefusalSet("excluded.reason", "excluded.refused_as", "excluded.refused_since", "pull_request_reads_owed.")+`
 	`, repoFull, number, string(reason), refusedAs); err != nil {
 		return fmt.Errorf("record the read %s#%d is owed: %w", repoFull, number, err)
+	}
+	return nil
+}
+
+// owedWriter is what owePullRequestRead writes through: the pool, or a transaction open on it.
+type owedWriter interface {
+	refs.Queryer
+	refs.Execer
+}
+
+// pullRequestURLPrefix is how the URL of each pull request that GitHub gives (html_url) starts.
+const pullRequestURLPrefix = "https://github.com/"
+
+// linkedPullRequest is the repository and the number of the pull request whose own URL link is,
+// with ok true. GitHub gives that URL as https://github.com/<owner>/<repo>/pull/<number>. The
+// statement ties a link to a pull request where lower() of the two URLs is equal
+// (attributedTerms). So this takes that form in any letter case, and no other form: no other part,
+// and no zero before the number. ok is false for each other URL, and for a name or a number that
+// no pull request of GitHub can have (checkPullRequestKey). The repository keeps the letters of
+// the link.
+func linkedPullRequest(link string) (repo string, number int, ok bool) {
+	for i := range len(link) {
+		if link[i] >= utf8.RuneSelf {
+			return "", 0, false
+		}
+	}
+	if len(link) <= len(pullRequestURLPrefix) || !strings.EqualFold(link[:len(pullRequestURLPrefix)], pullRequestURLPrefix) {
+		return "", 0, false
+	}
+	parts := strings.Split(link[len(pullRequestURLPrefix):], "/")
+	if len(parts) != 4 || !strings.EqualFold(parts[2], "pull") {
+		return "", 0, false
+	}
+	digits := parts[3]
+	if digits == "" || digits[0] == '0' || strings.Trim(digits, "0123456789") != "" {
+		return "", 0, false
+	}
+	number, err := strconv.Atoi(digits)
+	if err != nil {
+		return "", 0, false
+	}
+	repo = parts[0] + "/" + parts[1]
+	if checkPullRequestKey(repo, number) != nil {
+		return "", 0, false
+	}
+	return repo, number, true
+}
+
+// linkOwesARead is whether a link by hand owes a read of its pull request: $1 is the repository
+// that the link names, and $2 is the link. The repository is one that Dispatch maps, by its own
+// name or as a rename target (repo_projects). No stored head row has the link as its URL, by the
+// comparison of the statement (attributedTerms), which pull_request_heads_url_lower serves.
+const linkOwesARead = `select exists (select 1 from repo_projects p
+			where lower(p.repo) = lower($1::text) or lower(p.renamed_to) = lower($1::text))
+		and not exists (select 1 from pull_request_heads h
+			where lower(h.url) = lower($2::text) and octet_length(h.url) <= 1024)`
+
+// OweLinkedPullRequestReads owes a read of GitHub for each pull request that a person or an agent
+// links to an issue by hand. It writes in tx, the transaction of the link write (api's
+// patchIssue). urls are the links that the write adds. This is R5 of the results lookup. No event
+// carries a link, so without the owe a pull request with no event and no result has no head row.
+// Then the checks of the issue compare with nothing.
+//
+// A link owes the read only where three things are true. It is the URL of a pull request
+// (linkedPullRequest). Dispatch maps its repository, and no stored head row has that URL
+// (linkOwesARead). Each other link owes nothing. A stored row has a head that a read of GitHub
+// gave, or one that the reconcile reads. While a read is owed, the readers answer that head as not
+// read (owedReadJoin). So an owe for a stored row would remove a known head for up to one pass.
+//
+// The read is owed as a failure (owePullRequestRead), as for an event whose read failed. So the
+// next reconcile pass reads it before any refusal (readOwedPullRequests). The owe stays until
+// GitHub answers (R4). The owes go in the order of the repository and the number. So two link
+// writes lock the rows of pull_request_reads_owed in one order.
+func OweLinkedPullRequestReads(ctx context.Context, tx pgx.Tx, urls []string) error {
+	type linked struct {
+		url, repo string
+		number    int
+	}
+	var links []linked
+	for _, url := range urls {
+		if repo, number, ok := linkedPullRequest(url); ok {
+			links = append(links, linked{url: url, repo: repo, number: number})
+		}
+	}
+	slices.SortFunc(links, func(a, b linked) int {
+		return cmp.Or(strings.Compare(strings.ToLower(a.repo), strings.ToLower(b.repo)), cmp.Compare(a.number, b.number))
+	})
+	for _, link := range links {
+		var owes bool
+		if err := tx.QueryRow(ctx, linkOwesARead, link.repo, link.url).Scan(&owes); err != nil {
+			return fmt.Errorf("read whether the link %s owes a read of its pull request: %w", link.url, err)
+		}
+		if !owes {
+			continue
+		}
+		if err := owePullRequestRead(ctx, tx, link.repo, link.number, owedFailure, ""); err != nil {
+			return err
+		}
 	}
 	return nil
 }

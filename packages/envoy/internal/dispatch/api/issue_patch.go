@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -453,6 +454,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// No event of a pull request carries a link to it. So each pull request with no head row
+		// that this write links owes a read of GitHub. The next reconcile pass stores its head (R5
+		// of the results lookup, delivery.OweLinkedPullRequestReads).
+		if err := delivery.OweLinkedPullRequestReads(r.Context(), tx, addedLinks(heldBefore, *input.ExternalLinks)); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		changed = true
 	}
 	if !changed {
@@ -660,4 +668,17 @@ func isExternalLinksSubset(requested, existing []model.ExternalLink) bool {
 		}
 	}
 	return true
+}
+
+// addedLinks is each URL of sent that held does not have in any letter case: the links that a
+// write adds to an issue. The statement ties a link to a pull request without case
+// (delivery's attributedTerms), so a URL held before in other letters adds no link.
+func addedLinks(held []string, sent []model.ExternalLink) []string {
+	var added []string
+	for _, link := range sent {
+		if !slices.ContainsFunc(held, func(url string) bool { return strings.EqualFold(url, link.URL) }) {
+			added = append(added, link.URL)
+		}
+	}
+	return added
 }

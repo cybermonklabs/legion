@@ -11,6 +11,11 @@ body: |-
     issue said what the rule gave at a row's last read, so such a tie reached a merged pull
     request late or never.
 
+    A link by hand of a pull request (`PATCH /api/v1/issues/{key}` with `external_links`) owes a
+    read of that pull request, where Dispatch maps its repository and holds no head row of it. The
+    next reconcile pass reads it from GitHub and stores its head. Before, such a pull request with
+    no event and no result had no head, and the checks of its issue compared with nothing.
+
     A pull request whose texts are current, whose commit messages are not read, and whose other
     facts name no issue held to its repository is not known. The results route then answers
     `unknown` with the new reason `issue_not_known` where that pull request can decide a check,

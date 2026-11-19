@@ -1476,6 +1476,10 @@ So a tie made with no event of the pull request reaches every stored pull reques
 Such a tie is a link to the pull request's own URL, a link to a GitHub issue its body cites, an issue its branch, title or body names made later, a new parent, or a changed repository mapping (`TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt`, `api.TestATieMadeAfterAMergeIsFollowedAtTheResultsRead`).
 A write of an issue's links (`PATCH /api/v1/issues/{key}` with `external_links`) marks no row: the next read of the results or of the timeline reads the link (`api.TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk`).
 A head write in flight while the link is written cannot hide it, because no write of a head row reads a link (`TestALinkWrittenWhileAHeadWriteIsInFlightIsFollowedByTheNextPass`).
+A link by hand owes a read of the pull request that it links, where Dispatch holds no head row of that pull request (`delivery.OweLinkedPullRequestReads`).
+The link write records it in its own transaction, as a `failure` in `pull_request_reads_owed`, only for a pull request's own URL in a repository that Dispatch maps.
+The next reconcile pass reads that pull request from GitHub and stores its head, so its issue's checks have a head before anyone records a result (`api.TestALinkByHandStoresTheHeadOfThePullRequestItLinks`).
+A link to a pull request whose head row is stored owes no read, because an owed read makes that head no basis until the pass reads it.
 A link outranks a branch name: a link on another issue takes its pull request, within the bounds of the repository and of a fork's head (`attributionHeld`, `headInOwnRepository`).
 The link check compares a URL in every letter case: a write that adds a URL that another issue holds in another letter case is refused with `409 EXTERNAL_LINK_TAKEN` (`api/issue_patch.go`).
 The check compares with other issues only, and never refuses a URL that the issue held before the write.
