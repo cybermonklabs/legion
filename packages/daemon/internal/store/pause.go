@@ -855,9 +855,10 @@ func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) (
 
 // StoppedByAPause is the id of the pause whose stop of claim token is the claim's newest stop that
 // ended `stopped`, where that stop ended after issue's newest pod release, whichever pause made it,
-// and 0 otherwise. It is the held role message's rule (internal/daemon's outbox.heldMessageOwed,
-// R4 of dispatch://INFRA-3759): a role message a pause held is owed to a role a pause stopped
-// until the role's session holds its topic, and a release recorded after the stop ends that debt.
+// and 0 otherwise. It is the stop heldMessageOwed reads (internal/daemon's outbox.heldMessageOwed,
+// the one statement of the held role message's debt, R4 of dispatch://INFRA-3759): a role message
+// a pause held is owed to a role a pause stopped until the role's session holds its topic, and a
+// release recorded after the stop ends that debt.
 // A later stop of the claim that is still open, or that ended any other way, is passed over: a
 // cancelled stop stopped nothing, and what a taken-over or failed one signals, the claim's state or
 // a later pod release already says. It reads no ready, unlike StoppingPauseTx: a woken agent says
@@ -886,8 +887,8 @@ func (s *Store) StoppedByAPause(ctx context.Context, project, issue string, toke
 // release's words are the true ones. A ready after it is the agent of a launch since, such as the
 // resume's, so something later stopped that session: an idle release suspends the role (its
 // outbox `suspend` row) before its teardown records the release, and a wake taken in between is
-// the release's. The held role message's rule is StoppedByAPause, not this. project is the project
-// token, as pod_releases holds it.
+// the release's. The held role message's debt reads StoppedByAPause, through heldMessageOwed, not
+// this. project is the project token, as pod_releases holds it.
 func StoppingPauseTx(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token) (int64, error) {
 	var pause int64
 	if err := tx.QueryRow(ctx, `select coalesce((select case when s.ended_as = $4
