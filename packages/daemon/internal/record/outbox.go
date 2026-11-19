@@ -1629,15 +1629,19 @@ var conflictWhys = map[ConflictWhy]bool{ConflictMergeNext: true, ConflictRulesUn
 // The hold gives why the daemon acted, and tells the worker that the implementer is asked to merge
 // the head forward in the workspace they share and that the issue stays in its phase, to stop
 // writing the workspace now (the merger also: not to merge the pull request or put it in the merge
-// queue), to keep its session and its turn's jobs, that it is told the new head when it lands, and
-// that a result it recorded at the old head stays a result of the old head.
+// queue), not to complete its phase at the old head but at the new head the daemon names, to keep
+// its session and its turn's jobs, that it is told the new head when it lands, and that a result
+// it recorded at the old head stays a result of the old head.
 //
 // The landed names both heads and how to read what changed: `git diff` from the old head to the
 // new, and, for a merge of the base, `git show --remerge-diff` for how the merge resolved the
 // conflict and `git diff --stat` against the merge's first parent for the files the base brought
-// in. Then the worker goes on at the new head. The review names both heads and the phase, tells
-// the reviewer to read the merge the same way and to approve the new head by its SHA, with its
-// review's Legion footer naming that head, or to request changes, with no handoff and no
+// in. Then the worker goes on at the new head. To the merger in merging it also says to merge the
+// pull request or put it in the merge queue at the new head only once the reviewer's approval of
+// that head is on the pull request: in merging the landing asks the reviewer for that review, and
+// the merger's task says the same (workflow's task). The review names both heads and the phase,
+// tells the reviewer to read the merge the same way and to approve the new head by its SHA, with
+// its review's Legion footer naming that head, or to request changes, with no handoff and no
 // completion, and then to tell what it decided, on their role topics, to the architect and to the
 // worker of the phase the issue stands in (the implementer in retro, the merger in merging; the
 // architect alone in accepting).
@@ -1664,13 +1668,18 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s. %s"+
 			" The implementer is asked to merge %s forward in the issue workspace, $LEGION_WORKSPACE, which you share with it."+
 			" The issue stays in %s. Stop writing the workspace now.%s"+
+			" Do not complete your phase at head %s. Complete it at the new head that the daemon names."+
 			" Keep your session and the jobs of your turn. The daemon tells you the new head when it lands."+
 			" A result you recorded at head %s stays a result of head %s.",
-			issue, pull, p.Head, p.Base, mergeForwardReason(p.Why, p.Base), p.Base, p.Phase, merger, p.Head, p.Head)
+			issue, pull, p.Head, p.Base, mergeForwardReason(p.Why, p.Base), p.Base, p.Phase, merger, p.Head, p.Head, p.Head)
 	case MergeForwardLanded:
+		merge := ""
+		if p.Role == claim.RoleMerger && p.Phase == phase.Merging {
+			merge = fmt.Sprintf(" Merge the pull request or put it in the merge queue at head %s only once the reviewer's approval of that head is on the pull request.", p.Landed)
+		}
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s. The old head is %s, and the new head is %s."+
-			" The issue stays in %s. Read what changed since the old head: %s Then go on with your work at the new head.",
-			issue, p.Base, pull, p.Head, p.Landed, p.Phase, p.readMerge())
+			" The issue stays in %s. Read what changed since the old head: %s Then go on with your work at the new head.%s",
+			issue, p.Base, pull, p.Head, p.Landed, p.Phase, p.readMerge(), merge)
 	default: // MergeForwardReview, the one step left: validateOutboxPayload admits no other.
 		tell := "the architect, on its role topic"
 		switch p.Phase {

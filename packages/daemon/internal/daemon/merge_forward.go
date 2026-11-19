@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // mergeForwardMessage publishes one message of a merge forward (record.MergeForwardMessage,
@@ -25,11 +26,14 @@ import (
 // holds the role.
 //
 // Each attempt first reads the issue, its pull request and whether its tree lingers in one
-// transaction, and finishes the row undelivered, with one log line naming why, once the merge
-// forward no longer stands at the row's head (mergeForwardLeft: the record holds no merge forward,
-// or one of another head, or the issue has left the workflow, or its tree lingers); what follows -
-// a claim that failed or retired, the design gate, the wake and the publish - is deliverHeld's, as
-// it is a merge-queue removal's.
+// transaction, and finishes the row undelivered, with one log line naming why, once the message is
+// no longer to be delivered by the workflow's rule for these rows (workflow.MergeForwardAt): the
+// record holds no such issue, the issue has left the workflow, its tree lingers, the record holds
+// no pull request or one that is not open, it holds no merge forward or one of another head, or the
+// row is an ask or a hold and the merge forward has landed. Role-message rows run in no order of
+// the issue's, so a hold still queued behind its landed would otherwise tell the worker to wait for
+// a head that already came. What follows - a claim that failed or retired, the design gate, the
+// wake and the publish - is deliverHeld's, as it is a merge-queue removal's.
 func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage) error {
 	if r.notices == nil {
 		return errors.New("merge-forward message executor has no Envoy publisher")
@@ -43,19 +47,19 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	}
 	var issue *record.Issue
 	var pr *record.PullRequest
-	var lingers bool
+	var left string
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		var err error
-		if issue, pr, err = issueRecordIn(ctx, tx, r.records, row.Issue); err != nil || issue == nil {
-			return err
-		}
-		lingers, err = record.TreeLingers(ctx, r.records, tx, issue.Tree)
+		issue, pr, left, err = workflow.MergeForwardAt(ctx, r.records, tx, row.Issue, payload.Step, payload.Head)
 		return err
 	}); err != nil {
 		return fmt.Errorf("read the issue and the pull request of %s: %w", row.Issue, err)
 	}
+	if issue == nil {
+		left = "the issue is not recorded"
+	}
 	attributes := []any{"row", row.ID, "issue", row.Issue, "role", payload.Role, "step", payload.Step, "head", payload.Head}
-	if left := mergeForwardLeft(issue, lingers, pr, payload.Head); left != "" {
+	if left != "" {
 		r.log.Info("outbox merge-forward message finished undelivered: the merge forward no longer stands at that head", append(attributes, "why", left)...)
 		return nil
 	}
@@ -64,29 +68,4 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 		attributes: attributes,
 		claimEnded: "outbox merge-forward message finished undelivered: the role's claim has failed or retired",
 		delivered:  "outbox merge-forward message delivered"})
-}
-
-// mergeForwardLeft says why a merge-forward message of head is no longer to be delivered, "" while
-// it is: the record holds the issue in the workflow, its tree not lingering (lingers,
-// record.TreeLingers), and a merge forward of head on its pull request
-// (record.PullRequest.MergeForward). A merge forward of another head is a newer ask, which has its
-// own messages, and the workflow drops the ask on a move into implementing and when the issue
-// leaves the workflow (workflow's clearMergeForward), so a message about an ask that no longer
-// stands would tell its role of work nobody wants any more.
-func mergeForwardLeft(issue *record.Issue, lingers bool, pr *record.PullRequest, head string) string {
-	switch {
-	case issue == nil:
-		return "the issue is not recorded"
-	case !record.InWorkflow(*issue):
-		return fmt.Sprintf("the issue has left the workflow, at status %s in %s", issue.Status, issue.Phase)
-	case lingers:
-		return "the issue's tree lingers or has closed"
-	case pr == nil:
-		return "the record holds no pull request for the issue"
-	case pr.MergeForward == nil:
-		return "the record holds no merge forward"
-	case pr.MergeForward.Head != head:
-		return fmt.Sprintf("the merge forward the record holds is of head %s", pr.MergeForward.Head)
-	}
-	return ""
 }

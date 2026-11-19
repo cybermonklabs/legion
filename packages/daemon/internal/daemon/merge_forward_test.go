@@ -32,11 +32,17 @@ const (
 // (RunOnce), as hookRunner's does, and logs to the buffer it answers.
 func mergeForwardRunner(t *testing.T, publisher notify.Publisher, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
+	return mergeForwardRunnerIn(t, publisher, record.PullRequestOpen, asked)
+}
+
+// mergeForwardRunnerIn is mergeForwardRunner with the pull request recorded in state.
+func mergeForwardRunnerIn(t *testing.T, publisher notify.Publisher, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
+	t.Helper()
 	ctx := context.Background()
 	logs := &syncBuffer{}
 	runner, sup, pool := runnerIn(t, phase.Testing, "testing", publisher, slog.New(slog.NewJSONHandler(logs, nil)))
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return runner.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
+		return runner.records.PutPullRequest(ctx, tx, record.PullRequest{State: state, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: time.Now(), Failing: []string{},
 			CheckRuns: []record.AttemptRun{}, Base: "main", MergeForward: asked})
 	}); err != nil {
@@ -48,9 +54,11 @@ func mergeForwardRunner(t *testing.T, publisher notify.Publisher, asked *record.
 // The merge forward is a message, not a phase start (dispatch://INFRA-4374 R1), so nothing else
 // brings the implementer to the merge: its row wakes a released implementer, waits while no
 // session holds the role, and publishes once one does, on the role's own topic under the row's
-// key; a message about an ask the record no longer holds at that head - a newer ask replaced it,
-// or the workflow dropped it - and a message to a claim that will never hold its role again end
-// with nothing published.
+// key. A message about an ask the record no longer holds at that head (a newer ask replaced it,
+// or the workflow dropped it), an ask or a hold still queued once the merge landed, a message of a
+// pull request that is not open, and a message to a claim that will never hold its role again end
+// with nothing published (workflow.MergeForwardAt); a landed still queued once the merge landed is
+// delivered.
 func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
 		Phase: phase.Testing, PullRequest: 86, Why: classify.ConflictCheckNotGreen}
@@ -97,19 +105,35 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		}
 	})
 
+	landed := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: classify.ConflictCheckNotGreen,
+		AskedAt: time.Now(), Landed: "sha-2"}
+	hold := record.MergeForwardMessage{Role: claim.RoleTester, Step: record.MergeForwardHold, Head: "sha-1", Base: "main",
+		Phase: phase.Testing, PullRequest: 86, Why: classify.ConflictCheckNotGreen}
 	for _, tc := range []struct {
-		name  string
-		asked *record.MergeForward
-		why   string
+		name    string
+		state   record.PullRequestState
+		asked   *record.MergeForward
+		message record.MergeForwardMessage
+		why     string
 	}{
 		{name: "an ask of another head ends undelivered", asked: &record.MergeForward{Head: "sha-2", Base: "main", Phase: phase.Testing,
-			Why: classify.ConflictCheckNotGreen, AskedAt: time.Now()}, why: "of head sha-2"},
-		{name: "an ask the workflow dropped ends undelivered", why: "no merge forward"},
+			Why: classify.ConflictCheckNotGreen, AskedAt: time.Now()}, message: ask, why: "of head sha-2"},
+		{name: "an ask the workflow dropped ends undelivered", message: ask, why: "no merge forward"},
+		// Role-message rows run in no order of the issue's: a hold that reached the tester after
+		// its landed would tell it to wait for a head that already came.
+		{name: "a hold queued behind the merge's landing ends undelivered", asked: landed, message: hold, why: "landed at head sha-2"},
+		{name: "an ask queued behind the merge's landing ends undelivered", asked: landed, message: ask, why: "landed at head sha-2"},
+		{name: "an ask of a closed pull request ends undelivered", state: record.PullRequestClosed, asked: asked, message: ask,
+			why: "the pull request is closed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			state := record.PullRequestOpen
+			if tc.state != "" {
+				state = tc.state
+			}
 			publisher := &holderPublisher{}
-			runner, _, pool, logs := mergeForwardRunner(t, publisher, tc.asked)
-			enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ask, time.Now().Add(-time.Minute)))
+			runner, _, pool, logs := mergeForwardRunnerIn(t, publisher, state, tc.asked)
+			enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", tc.message, time.Now().Add(-time.Minute)))
 			drainAt(t, runner, 0, "the row's attempt")
 			if attempts, _ := publisher.snapshot(); attempts != 0 || outboxRows(t, pool) != 0 {
 				t.Fatalf("the row made %d publishes and %d rows are left, want the row finished with nothing published", attempts, outboxRows(t, pool))
@@ -119,6 +143,30 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a landed queued behind the merge's landing is told to the tester", func(t *testing.T) {
+		publisher := &holderPublisher{}
+		runner, _, pool, logs := mergeForwardRunner(t, publisher, landed)
+		told := record.MergeForwardMessage{Role: claim.RoleTester, Step: record.MergeForwardLanded, Head: "sha-1", Landed: "sha-2",
+			Base: "main", Phase: phase.Testing, PullRequest: 86}
+		tester := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleTester))
+		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", told, time.Now().Add(-time.Minute)))
+		id := noticeRowID(t, pool)
+
+		drainAt(t, runner, 0, "the row's attempt")
+		_, delivered := publisher.snapshot()
+		if len(delivered) != 1 || delivered[0].topic != tester || delivered[0].message != told.Message("LEGION-208", "acme/widgets") ||
+			delivered[0].key != record.OutboxKey(id) || delivered[0].keep {
+			t.Fatalf("delivered %+v, want the landed once to %s under its row's key", delivered, tester)
+		}
+		if left := outboxRows(t, pool); left != 0 {
+			t.Fatalf("outbox rows left = %d, want the delivered row finished", left)
+		}
+		if lines := loggedLines(t, logs.String(), mergeForwardDelivered); len(lines) != 1 || lines[0]["step"] != string(record.MergeForwardLanded) ||
+			lines[0]["role"] != string(claim.RoleTester) || lines[0]["head"] != "sha-1" {
+			t.Fatalf("the row logged %v, want one delivery of the landed of sha-1 to the tester", lines)
+		}
+	})
 
 	t.Run("a retired implementer is not told", func(t *testing.T) {
 		publisher := &holderPublisher{}

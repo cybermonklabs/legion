@@ -1540,8 +1540,9 @@ GitHub answered before the newest read the record holds of the same head is drop
 `workflow: GitHub's merge state answered before the read the record holds; the read is dropped`,
 so an answer that waited behind a newer one never releases a first read or clears a conflict. A merge
 forward keeps the phase: the implementer merges in the issue workspace and pushes with no handoff
-and no completion, the phase's worker is told to stop writing the workspace and then the new head,
-and `workflow: the merge forward landed` names both heads. A completion that names a head a merge
+and no completion, the phase's worker is told to stop writing the workspace and not to complete
+its phase at the old head, and is then told the new head, and `workflow: the merge forward landed`
+names both heads. A completion that names a head a merge
 forward replaced, the head an earlier merge forward replaced included, is refused
 `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is made again at the new
 head. Past review the reviewer is asked to read the merge and approve the new head. A red check

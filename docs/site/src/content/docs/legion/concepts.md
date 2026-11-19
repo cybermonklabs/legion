@@ -410,9 +410,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
   When it acts, the issue keeps its phase and takes no admission slot for the merge. The
   implementer is asked on its role topic to merge the base forward in the issue workspace and
   push, with no handoff and no completion for it. The tester, the reviewer or the merger holding
-  the phase is told to stop writing the workspace, and keeps its turn, its background jobs, its
-  process and its session. The architect is told once with a `checks-red` notice naming the phase
-  the issue stays in. In `implementing` only the implementer is told.
+  the phase is told to stop writing the workspace and not to complete its phase at the old head,
+  and keeps its turn, its background jobs, its process and its session. The architect is told once
+  with a `checks-red` notice naming the phase the issue stays in. In `implementing` only the
+  implementer is told.
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion that names the replaced head is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made
   again at the new head. Past review the daemon asks the reviewer to read the merge and approve

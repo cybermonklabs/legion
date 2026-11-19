@@ -191,32 +191,23 @@ func (w *workflowRuntime) tellMissing(ctx context.Context, issue record.Issue, p
 }
 
 // issueRecord is key's issue record and its pull request record, both nil for what is not
-// recorded, read in one transaction (issueRecordIn): what the per-issue read and the merge-state
-// ladder read before they read GitHub (issuePullRequest, readMergeState), and what the second read
-// of a conflict reads before it acts (outbox's conflictConfirm).
+// recorded, read in one transaction: what the per-issue read and the merge-state ladder read
+// before they read GitHub (issuePullRequest, readMergeState), and what the second read of a
+// conflict reads before it acts (outbox's conflictConfirm).
 func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, key string) (*record.Issue, *record.PullRequest, error) {
 	var issue *record.Issue
 	var pr *record.PullRequest
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error
-		issue, pr, err = issueRecordIn(ctx, tx, records, key)
+		if issue, err = records.Issue(ctx, tx, key); err != nil || issue == nil {
+			return err
+		}
+		pr, err = records.PullRequest(ctx, tx, key)
 		return err
 	}); err != nil {
 		return nil, nil, fmt.Errorf("read the record of %s: %w", key, err)
 	}
 	return issue, pr, nil
-}
-
-// issueRecordIn reads key's issue record and its pull request record in tx, both nil for what is
-// not recorded: issueRecord's read, and the start of a merge-forward message's, which reads its
-// tree's linger in the same transaction (outbox's mergeForwardMessage).
-func issueRecordIn(ctx context.Context, tx pgx.Tx, records record.Store, key string) (*record.Issue, *record.PullRequest, error) {
-	issue, err := records.Issue(ctx, tx, key)
-	if err != nil || issue == nil {
-		return nil, nil, err
-	}
-	pr, err := records.PullRequest(ctx, tx, key)
-	return issue, pr, err
 }
 
 // readIssuesAtStart reads the pull request of each issue in the workflow once as the runtime starts

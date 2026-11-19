@@ -211,6 +211,67 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	return nil
 }
 
+// MergeForwardAt reads in tx what a merge-forward message (record.MergeForwardMessage) of issue
+// key is judged by: the issue, whether its tree lingers (record.TreeLingers) and the pull request
+// the record holds for it. It returns the issue and that pull request, with why a message of step
+// about the merge forward asked of head is no longer to be delivered (leftMergeForwardAt), "" while
+// it is. An issue the record does not hold is a nil issue, no pull request and no reason. The rule
+// states, for a row already queued, the states the workflow writes these rows in (mergeForward,
+// mergeForwardLanded) and drops the ask they are about in (clearMergeForward), and the daemon's
+// executor reads it in one transaction at each attempt of a row, just before it delivers (the
+// daemon's mergeForwardMessage): so the workflow and the executor judge a row by this one rule,
+// kept beside the code that writes the rows, and no row outlives the state it was written for. It
+// is exported for that executor.
+func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, step record.MergeForwardStep, head string) (*record.Issue, *record.PullRequest, string, error) {
+	issue, err := store.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return nil, nil, "", err
+	}
+	lingers, err := record.TreeLingers(ctx, store, tx, issue.Tree)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	pr, err := store.PullRequest(ctx, tx, key)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return issue, pr, leftMergeForwardAt(*issue, lingers, pr, step, head), nil
+}
+
+// leftMergeForwardAt says why a merge-forward message of step about the merge forward asked of
+// head is no longer to be delivered, or "" while it is: the issue is in the workflow, its tree does
+// not linger (lingers, record.TreeLingers), and the pull request the record holds for it (pr, nil
+// for none) is open and holds a merge forward of head (record.PullRequest.MergeForward) that, for
+// an ask or a hold, has not landed. In each other state the message would tell its role of work
+// nobody wants any more. The roles of a tree that lingers are suspended. The workflow drops the ask
+// on a move into implementing and when the issue leaves the workflow (clearMergeForward), and a
+// merge forward of another head is a newer ask, which has its own messages. A pull request that is
+// not open ends every step: mergeForward asks nothing for one, and once it closed or merged nothing
+// is left to merge forward, to hold for or to review. The ask and the hold end at the landing
+// (record.MergeForward.Landed): role-message rows run in no order of the issue's, so a hold still
+// queued would reach the worker after its landed and tell it to wait for a head that already came,
+// and an ask would ask for a merge already pushed. The landed and the review are the landing's own
+// messages, and they still go after it.
+func leftMergeForwardAt(issue record.Issue, lingers bool, pr *record.PullRequest, step record.MergeForwardStep, head string) string {
+	switch {
+	case !record.InWorkflow(issue):
+		return fmt.Sprintf("the issue has left the workflow, at status %s in %s", issue.Status, issue.Phase)
+	case lingers:
+		return "the issue's tree lingers or has closed"
+	case pr == nil:
+		return "the record holds no pull request for the issue"
+	case pr.State != record.PullRequestOpen:
+		return fmt.Sprintf("the pull request is %s", pr.State)
+	case pr.MergeForward == nil:
+		return "the record holds no merge forward"
+	case pr.MergeForward.Head != head:
+		return fmt.Sprintf("the merge forward the record holds is of head %s", pr.MergeForward.Head)
+	case (step == record.MergeForwardAsk || step == record.MergeForwardHold) && pr.MergeForward.Landed != "":
+		return fmt.Sprintf("the merge forward landed at head %s", pr.MergeForward.Landed)
+	}
+	return ""
+}
+
 // mergeForwardReviewOwed says whether the review a landed merge forward asked of the reviewer
 // stands for pr's head (mergeForwardLanded): it was asked, and the head is still the one the merge
 // left. The merger's task reads it (task).
