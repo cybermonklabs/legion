@@ -4184,8 +4184,8 @@ Each item below names a case and how it is driven, then what must hold for it to
 
 - `values-kept` — one issue with three `before_merge` checks, and five steps.
   Step 1 records a result for the first check with `--run "go test ./internal/workflow/ -run 'AppendOnly|Line|StartWrittenOverAnOwedRow' -count=1"`, with `--observed-file -` fed the two lines `--- PASS: TestAppendOnly (0.00s)` and `ok`, and with `--negative-control "-run 'A|B' with the guard taken out: 2 tests fail"`.
-  Step 2 records a result for the second check with `--observed='--- PASS: TestLine (0.00s)'`, and with `--negative-control-file` naming a file that holds the one ASCII character `-` and no line feed.
-  Step 3 records a result for the third check with `--observed-file -` fed the one ASCII character `-` and no line feed.
+  Step 2 records a result for the second check with `--observed='--- PASS: TestLine (0.00s)'`, and with `--negative-control-file` naming a file that holds the one character `-` and no line feed.
+  Step 3 records a result for the third check with `--observed-file -` fed the one character `-` and no line feed.
   Step 4 gives the third check `--observed '--- PASS: TestLine (0.00s)'`, the value as a word of its own.
   Step 5 reads `GET /api/v1/issues/{key}/results`
 
