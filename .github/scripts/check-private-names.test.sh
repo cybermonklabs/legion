@@ -159,7 +159,7 @@ mentions=(
 )
 assert_each_refused company "names the company" mentions
 
-echo "case: a private internal host is refused, written in lowercase or in capitals"
+echo "case: a private internal host is refused, whatever its case"
 # shellcheck disable=SC2034 # read by name through assert_each_refused's nameref
 hosts=(
   "https://listener.$internal.$private_host_suffix"
@@ -174,11 +174,19 @@ hosts=(
   "listener.$internal.$private_host_suffix"
   "see _listener.$internal.${private_host_suffix}_ in italics"
   "NATS_URLS=a.$internal.$example_host_suffix,b.$internal.$private_host_suffix"
+  "Listener.$internal.$private_host_suffix answers on 443."
+  "LISTENER.$internal.$private_host_suffix"
+  "fooBar.$internal.$private_host_suffix"
+  "Listener.${internal^^}.$private_host_suffix"
+  "Lean.$internal.otherName"
+  "Lean.$internal.cmdlineSnapshotsX.get opts"
+  "xLean.$internal.cmdlineSnapshots"
+  "Lean.$internal.cmdlineSnapshots.get.listener"
 )
 assert_each_refused host "names a private internal host" hosts
 
 echo "case: a reserved example host passes, the vendored NATS client's property in its own file, and" \
-  "a namespace with an ${internal^} segment"
+  "Lean and OCaml names"
 root=$(fixture public-host)
 printf 'https://listener.%s.%s\n' "$internal" "$example_host_suffix" > "$root/docs/notes.md"
 printf 'nats://nats.%s.%s.com:4222\n' "$internal" "$example_host_suffix" >> "$root/docs/notes.md"
@@ -190,13 +198,17 @@ printf '        this.%s.push(sv);\n' "$internal" > "$root/$vendored_nats"
 git -C "$root" add "$vendored_nats"
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-# A Lean namespace and OCaml value paths, each in its own file: an Internal segment after a
-# capitalised name names no host.
+# A Lean namespace, OCaml value paths, a Lean function's namespace and Lean's own option of the
+# cmdline snapshots, each in its own file: none of them names a host.
 namespaces=(
   "import Std.${internal^}.UV.System"
   "  if Environ.${internal^}.is_above_prop env q then"
   "  (Environ.${internal^}.View.view answer_env).Environ.${internal^}.View.env_modtypes"
   "      Classes.${internal^}.add_instance ~locality inst"
+  "This module proves the one-step unfolding lemma \`repeatM.${internal^}.eq_of_monadTail\`,"
+  "  rw [repeatM.${internal^}.eq_of_monadTail]; unfold repeatM.body; rw [bind_assoc]"
+  "    rw [_root_.repeatM.${internal^}.eq_of_monadTail (f := f) a]"
+  "  let opts := Lean.$internal.cmdlineSnapshots.setIfNotSet opts incrSaveFileName?.isNone"
 )
 for index in "${!namespaces[@]}"; do
   root=$(fixture "namespace-$index")

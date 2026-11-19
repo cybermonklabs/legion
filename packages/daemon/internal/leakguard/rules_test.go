@@ -59,13 +59,15 @@ func TestTheRulesPassWhatTheyAreWrittenToPass(t *testing.T) {
 	}
 }
 
-// The host rule reads a host, not a module path (dispatch://INFRA-3332). A Lean namespace and an
-// OCaml value path put an Internal segment after a capitalised name, as Lake's sources and Rocq's
-// kernel do, and they pass. A host keeps its labels in lowercase, with that label in any case, or
-// writes itself wholly in capitals, and every such form is refused: at the start of a record, on
-// a later line, in italics, and right after a reserved example host. The texts are assembled
-// from pieces, as every refusable literal of these tests is, so that no line of this file names
-// one whole, and so that a guard still reading a namespace as a host passes the file too.
+// The host rule reads a host, not a Lean or OCaml name (dispatch://INFRA-3332). A name holding a
+// capital letter, then a segment spelled exactly Internal, passes: Lake's and Rocq's module paths,
+// and a Lean function's own namespace. So does Lean's own option of the cmdline snapshots under
+// its Lean namespace, and no name near it. Every other host is refused, whatever the case of its
+// labels: at the start of a record, on a later line, in italics, right after a reserved example
+// host, and with a capital letter in its first label while the segment is not spelled Internal.
+// The texts are assembled from pieces, as every refusable literal of these tests is, so that no
+// line of this file names one whole, and so that a guard still reading a namespace as a host
+// passes the file too.
 func TestThePrivateHostRuleReadsAHostNotANamespace(t *testing.T) {
 	engine, err := compiled()
 	if err != nil {
@@ -94,6 +96,13 @@ func TestThePrivateHostRuleReadsAHostNotANamespace(t *testing.T) {
 			"  (Environ." + capital + ".View.view answer_env).Environ." + capital + ".View.env_modtypes",
 			"      Classes." + capital + ".add_instance ~locality inst",
 			"import Std.Async",
+			// The lines of leanprover/lean4's src the namespace alone would leave refused: a
+			// function's namespace (Init/Internal/Order/While.lean, twice, and both
+			// SpecLemmas.lean of Std's Do and WP), and the option (Lean/Elab/Frontend.lean).
+			"This module proves the one-step unfolding lemma `repeatM." + capital + ".eq_of_monadTail`,",
+			"  rw [repeatM." + capital + ".eq_of_monadTail]; unfold repeatM.body; rw [bind_assoc]",
+			"    rw [_root_.repeatM." + capital + ".eq_of_monadTail (f := f) a]",
+			"  let opts := Lean." + label + ".cmdlineSnapshots.setIfNotSet opts incrSaveFileName?.isNone",
 		} {
 			if lines := scan(t, Record{Label: "the body", Text: text}); len(lines) != 0 {
 				t.Errorf("%q: the report is %q, want nothing", text, lines)
@@ -129,6 +138,16 @@ func TestThePrivateHostRuleReadsAHostNotANamespace(t *testing.T) {
 			"ip-10-0-0-7." + label + ".quietforge.net:443",
 			"https://dispatch." + label + ".quietforge.com/",
 			"this." + label + ".push(value)",
+			"Beacon." + label + ".quietforge answers on 443.",
+			"BEACON." + label + ".quietforge",
+			"fooBar." + label + ".quietforge",
+			"Beacon." + upper + ".quietforge",
+			// Near names of the one Lean option the rule allows: another option, a longer name,
+			// a name glued in front, and a host after its method.
+			"Lean." + label + ".otherName",
+			"Lean." + label + ".cmdlineSnapshotsX.get opts",
+			"xLean." + label + ".cmdlineSnapshots",
+			"Lean." + label + ".cmdlineSnapshots.get.beacon",
 		} {
 			if lines, want := scan(t, Record{Label: "the body", Text: text}), []string{"the body: " + class}; !slices.Equal(lines, want) {
 				t.Errorf("%q: the report is %q, want %q", text, lines, want)

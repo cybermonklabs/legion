@@ -343,7 +343,7 @@ mentions=(
 )
 compare_each company mentions
 
-echo "rule case 4: a private internal host, written in lowercase or in capitals"
+echo "rule case 4: a private internal host, whatever its case"
 hosts=(
   "https://$host_label.$internal.$host_suffix"
   "https://$host_label.${internal^^}.$host_suffix"
@@ -357,13 +357,21 @@ hosts=(
   "$host_label.$internal.$host_suffix"
   "see _$host_label.$internal.${host_suffix}_ in italics"
   "NATS_URLS=a.$internal.$example_host_suffix,b.$internal.$host_suffix"
+  "${host_label^}.$internal.$host_suffix answers on 443."
+  "${host_label^^}.$internal.$host_suffix"
+  "fooBar.$internal.$host_suffix"
+  "${host_label^}.${internal^^}.$host_suffix"
+  "Lean.$internal.otherName"
+  "Lean.$internal.cmdlineSnapshotsX.get opts"
+  "xLean.$internal.cmdlineSnapshots"
+  "Lean.$internal.cmdlineSnapshots.get.$host_label"
 )
 for index in "${!hosts[@]}"; do
   compare "host-$index" "${hosts[index]}"
   check "host-$index: both engines refuse it" "$(is "$frozen_status:$door_status" 1:3)"
 done
 
-echo "rule case 5: a reserved example host passes, and so does a namespace with an ${internal^} segment"
+echo "rule case 5: a reserved example host passes, and so do Lean and OCaml names"
 compare example-host "$(printf 'https://%s.%s.%s\nnats://nats.%s.%s.com:4222\nPoint it at api.%s.%s.\n%s.%s.%s at the start of a line\nnow https://ENVOY.%s.%s' \
   "$host_label" "$internal" "$example_host_suffix" \
   "$internal" "$example_host_suffix" "$internal" "$example_host_suffix" \
@@ -374,6 +382,10 @@ namespaces=(
   "  if Environ.${internal^}.is_above_prop env q then"
   "  (Environ.${internal^}.View.view answer_env).Environ.${internal^}.View.env_modtypes"
   "      Classes.${internal^}.add_instance ~locality inst"
+  "This module proves the one-step unfolding lemma \`repeatM.${internal^}.eq_of_monadTail\`,"
+  "  rw [repeatM.${internal^}.eq_of_monadTail]; unfold repeatM.body; rw [bind_assoc]"
+  "    rw [_root_.repeatM.${internal^}.eq_of_monadTail (f := f) a]"
+  "  let opts := Lean.$internal.cmdlineSnapshots.setIfNotSet opts incrSaveFileName?.isNone"
 )
 for index in "${!namespaces[@]}"; do
   compare "namespace-$index" "${namespaces[index]}"
