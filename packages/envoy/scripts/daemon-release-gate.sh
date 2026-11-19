@@ -29,17 +29,18 @@
 # listener in place of `envoyImage`, the Dispatch server's (the deployment's dispatch/main.go,
 # pinListenerImage), and, when the deployment declares its VM hub, envoy/Pulumi.prod.yaml
 # `listenerImage`, which only that hub's listener reads. Whether it declares the VM hub is decided
-# from the envoy/ program itself, never from the pin: the gate reads every Go file a build of
-# envoy/ compiles from the deployment repository (envoy/ and its subdirectories, and each
-# directory a local `replace` of envoy/go.mod names, without _test.go files and the testdata/, _
-# and . directories go build leaves out), and the program declares the hub when its code, outside
-# comments and strings, uses the identifier `NewNatsHub` anywhere but as the name of the func
-# that defines it. Declared, the pin is read, and a stack that sets none is UNKNOWN. Declared by no
-# file, every file read, the gate prints `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and
-# reads no VM pin. A listing, a read or a go.mod that fails, a listing GitHub truncated, a program
-# with no Go file and a file the scan cannot read as Go are UNKNOWN, so a missing pin never reads as
-# a hub that is gone. A dispatch stack that sets no `listenerImage` is UNKNOWN: its deployment
-# requires that key, and the listener runs no other image.
+# from its program, never from the pin: the gate fetches the deployment repository at the one
+# commit as one archive and reads every Go file in it that is not a `_test.go`, so no rule of which
+# directories a build compiles can leave a use unread; the deployment declares the hub when that
+# code, outside comments and strings, uses the identifier `NewNatsHub` anywhere but as the name of
+# the func that defines it. Declared, it prints `VM HUB: <file>:<line> at <sha> uses NewNatsHub`
+# and reads the pin, and a stack that sets none is UNKNOWN. Used nowhere, every file read, it prints
+# `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and reads no VM pin. An archive it cannot
+# fetch or unpack, an envoy/ with no Go file or no go.mod, a local `replace` or `use` of envoy/go.mod
+# or a go.work that leaves the repository, and a file that names `NewNatsHub` and cannot be read as
+# Go are UNKNOWN, so a missing pin never reads as a hub that is gone. A module fetched from outside
+# the repository is not read. A dispatch stack that sets no `listenerImage` is UNKNOWN: its
+# deployment requires that key, and the listener runs no other image.
 #
 # With --clients it reads the clients that deliver to a session, each of which must carry
 # <commit>'s client follow filter, since an older one passes a frame in a form it does not match
@@ -56,17 +57,19 @@
 #   - on this developer box, the `@sjawhar/pi-envoy` pin of ~/.dotfiles/omp/plugins/package.json
 #     and, where it differs from the pin, the version installed beside it, each resolved to its
 #     release tag; each claude-envoy@legion-plugins install the dotfiles' Claude Code plugin record
-#     (~/.dotfiles/.claude/plugins/installed_plugins.json) holds; and the claude-envoy version the
-#     marketplace `legion-plugins` serves to ~/.dotfiles/.claude/settings.json: the marketplace's
-#     `.claude-plugin/marketplace.json`, read from the GitHub repository settings.json names for
-#     it, gives one npm package and a version range, the highest version npm matches to the range
-#     is the served one, and `claude-envoy-v<version>` its release tag. A settings.json that
-#     enables no `claude-envoy@legion-plugins` is SKIPPED. A pi-envoy installed in an Oh My Pi
-#     plugin tree whose copy is not ~/.dotfiles/omp/plugins' (~/.omp/plugins, or a profile's), a
-#     claude-envoy installed in ~/.claude/plugins or from another marketplace, and a plugin record
-#     it cannot read are UNKNOWN: the dotfiles' pins say nothing about them. A session started
-#     before a pin moved still runs the plugin it loaded; the gate reads pins and installs, not
-#     processes.
+#     (~/.dotfiles/.claude/plugins/installed_plugins.json) holds, by the version of the manifest
+#     at its installPath, which must lie inside ~/.dotfiles/.claude; and the claude-envoy version
+#     the marketplace `legion-plugins` serves to ~/.dotfiles/.claude/settings.json: the
+#     marketplace's `.claude-plugin/marketplace.json`, read from the GitHub repository
+#     settings.json names for it, gives one npm package and a version range, the highest version
+#     npm matches to the range by semantic-version precedence is the served one, and
+#     `claude-envoy-v<version>` its release tag. A settings.json that enables no
+#     `claude-envoy@legion-plugins` is SKIPPED. A pi-envoy installed in an Oh My Pi plugin tree
+#     whose copy is not ~/.dotfiles/omp/plugins' (~/.omp/plugins, or a profile's), a link at any of
+#     those paths that does not resolve, a claude-envoy installed in ~/.claude/plugins, another
+#     CLAUDE_CONFIG_DIR or from another marketplace, and a plugin record or install it cannot read
+#     are UNKNOWN: the dotfiles' pins say nothing about them. A session started before a pin moved
+#     still runs the plugin it loaded; the gate reads pins and installs, not processes.
 #   Each commit is compared with <commit> as a daemon's revision is. A version that is no exact
 #   release version, or one no release tag names, is UNKNOWN.
 #
@@ -544,79 +547,131 @@ listener() {
   judge "$key" "$ref"
 }
 
-# vm_hub sets $hub to yes when the deployment's envoy/ program at $head uses NewNatsHub, to no when
-# every Go file of it was read and none does, and returns 0. The program is every Go file a build
-# of envoy/ compiles from this repository: envoy/ and its subdirectories, and each directory a local
-# `replace` of envoy/go.mod names, each without its _test.go files and its testdata/, _ and .
-# directories, which go build leaves out. A use is the identifier NewNatsHub anywhere in code but a
-# comment or a string and but the name of a func it declares, so `NewNatsHub (`, a comment between
-# it and its call, a reference that calls it later and a call from a helper package all count. A
-# listing, a read or a go.mod that fails, a listing GitHub truncated, a program with no Go file and
-# a file the scan cannot read as Go (an unterminated comment or string) print UNKNOWN and return 1.
-# The pin is never the evidence: the hub's removal deletes its config keys too, so an absent
-# listenerImage cannot tell a gone hub from a stack file that lost its pin.
+# vm_hub sets $hub to yes and $hub_use to the file and line of a use when the deployment repository
+# at $head uses NewNatsHub, and $hub to no when every Go file of it was read and none does; it
+# returns 0. It reads the whole repository in one archive (`gh api repos/<repository>/tarball/<sha>`)
+# and every Go file in it but a _test.go, which no build of a program compiles: envoy/, every
+# directory it imports or a go.mod or go.work replaces with, testdata/ and _ directories included,
+# so no rule of which directories a build reads can leave a use unread, and a use outside envoy/
+# reads as one in it, which only ever reads the VM pin. A use is the identifier NewNatsHub in code,
+# outside comments and strings, anywhere but as the name of the func that defines it. A file that
+# names NewNatsHub and cannot be read as Go (no UTF-8, or a comment or string with no end) is
+# UNKNOWN; a file that does not name it cannot use it. A local replace or use of envoy/go.mod, or of
+# a go.work at the repository's root or in envoy/, that leaves the repository is UNKNOWN, since the
+# gate cannot read what it names; so are an archive it cannot fetch or unpack and an envoy/ with no
+# Go file. A module fetched from outside the repository is not read. The pin is never the evidence:
+# the hub's removal deletes its config keys too, so an absent listenerImage cannot tell a gone hub
+# from a stack file that lost its pin.
 vm_hub() {
-  local root path type truncated files=0
-  if ! deployment_file envoy/go.mod "$work/go.mod"; then
-    printf 'UNKNOWN: envoy: cannot read %s envoy/go.mod at %s: %s\n' "$deployment" "$head" "$(first_line "$work/err")"
+  if ! gh api "repos/$deployment/tarball/$head" >"$work/repo.tgz" 2>"$work/err"; then
+    printf 'UNKNOWN: envoy: cannot fetch %s at %s: %s\n' "$deployment" "$head" "$(first_line "$work/err")"
     return 1
   fi
-  if ! python3 - "$work/go.mod" >"$work/go.roots" 2>"$work/err" <<'PY'; then
+  if ! python3 - "$work/repo.tgz" >"$work/go.hub" 2>"$work/err" <<'PY'; then
+import json
 import posixpath
 import re
 import sys
+import tarfile
 
-text = re.sub(r"//[^\n]*", "", open(sys.argv[1]).read())
-roots = ["envoy"]
-blocks = re.findall(r"^replace\s*\(([^)]*)\)", text, re.M)
-lines = re.findall(r"^replace\s+([^(\s][^\n]*)$", text, re.M)
-for line in lines + [entry for block in blocks for entry in block.splitlines()]:
-    if "=>" not in line:
-        continue
-    target = line.split("=>", 1)[1].split()
-    if len(target) == 1 and target[0].startswith(("./", "../")):
-        root = posixpath.normpath(posixpath.join("envoy", target[0]))
-        if root == ".." or root.startswith("../") or root.startswith("/"):
-            sys.exit(f"envoy/go.mod replaces a module with {target[0]}, outside this repository")
-        if root not in roots:
-            roots.append(root)
-print("\n".join(roots))
-PY
-    printf 'UNKNOWN: envoy: cannot read %s envoy/go.mod at %s: %s\n' "$deployment" "$head" "$(last_line "$work/err")"
-    return 1
-  fi
-  rm -rf "$work/go"
-  mkdir "$work/go"
-  while read -r root; do
-    if ! gh api "repos/$deployment/git/trees/$head:$root?recursive=1" \
-      --jq '(.truncated | tostring), (.tree[] | [.path, .type] | @tsv)' >"$work/go.tree" 2>"$work/err"; then
-      printf 'UNKNOWN: envoy: cannot list %s %s/ at %s: %s\n' "$deployment" "$root" "$head" "$(first_line "$work/err")"
-      return 1
-    fi
-    truncated=$(head -n 1 "$work/go.tree")
-    if [ "$truncated" != false ]; then
-      printf 'UNKNOWN: envoy: GitHub listed %s %s/ at %s truncated (%s), so not every Go file can be read\n' "$deployment" "$root" "$head" "$truncated"
-      return 1
-    fi
-    while IFS=$'\t' read -r path type; do
-      [ "$type" = blob ] && [[ $path == *.go ]] && [[ $path != *_test.go ]] || continue
-      [[ /$path != */testdata/* && /$path != */_* && /$path != */.* ]] || continue
-      files=$((files + 1))
-      mkdir -p "$work/go/$root/$(dirname "$path")"
-      if ! deployment_file "$root/$path" "$work/go/$root/$path"; then
-        printf 'UNKNOWN: envoy: cannot read %s %s/%s at %s: %s\n' "$deployment" "$root" "$path" "$head" "$(first_line "$work/err")"
-        return 1
-      fi
-    done < <(tail -n +2 "$work/go.tree")
-  done <"$work/go.roots"
-  if [ "$files" -eq 0 ]; then
-    printf 'UNKNOWN: envoy: %s envoy/ at %s lists no Go file to read the VM hub from\n' "$deployment" "$head"
-    return 1
-  fi
-  if ! python3 - "$work/go" >"$work/go.hub" 2>"$work/err" <<'PY'; then
-import os
-import re
-import sys
+# Every Go file, go.mod and go.work of the archive, by its path in the repository: GitHub's archive
+# holds the repository under one top directory.
+sources = {}
+try:
+    with tarfile.open(sys.argv[1], "r:gz") as archive:
+        for member in archive:
+            name = member.name.partition("/")[2]
+            if member.isfile() and (name.endswith(".go") or posixpath.basename(name) in ("go.mod", "go.work")):
+                sources[name] = archive.extractfile(member).read()
+except (OSError, EOFError, tarfile.TarError) as error:
+    sys.exit(f"the archive cannot be read: {error}")
+
+
+def go_files(top):
+    return sorted(n for n in sources if n.startswith(top) and n.endswith(".go") and not n.endswith("_test.go"))
+
+
+if not go_files("envoy/"):
+    sys.exit("envoy/ holds no Go file to read the VM hub from")
+
+
+def tokens(line, name):
+    """the tokens of one line of a go.mod or go.work, quoted strings decoded, comments dropped."""
+    out, i = [], 0
+    while i < len(line):
+        if line[i].isspace():
+            i += 1
+        elif line.startswith("//", i):
+            break
+        elif line[i] in "()":
+            out.append(line[i])
+            i += 1
+        elif line[i] == '"':
+            j = i + 1
+            while j < len(line) and line[j] != '"':
+                j += 2 if line[j] == "\\" else 1
+            if j >= len(line):
+                sys.exit(f"{name} has a string with no end")
+            try:
+                out.append(json.loads(line[i : j + 1]))
+            except ValueError:
+                sys.exit(f"{name} has a string this gate cannot decode: {line[i : j + 1]}")
+            i = j + 1
+        elif line[i] == "`":
+            j = line.find("`", i + 1)
+            if j < 0:
+                sys.exit(f"{name} has a raw string with no end")
+            out.append(line[i + 1 : j])
+            i = j + 1
+        else:
+            j = i
+            while j < len(line) and not line[j].isspace() and line[j] not in "()\"`":
+                j += 1
+            out.append(line[i:j])
+            i = j
+    return out
+
+
+def local_paths(name):
+    """each directory a replace or use of the go.mod or go.work at name names on disk."""
+    try:
+        text = sources[name].decode("utf-8")
+    except UnicodeDecodeError:
+        sys.exit(f"{name} is no UTF-8 text")
+    block = None
+    for line in text.splitlines():
+        words = tokens(line, name)
+        if block:
+            if words == [")"]:
+                block = None
+                continue
+            kind, spec = block, words
+        elif words[:1] in (["replace"], ["use"]):
+            if words[1:] == ["("]:
+                block = words[0]
+                continue
+            kind, spec = words[0], words[1:]
+        else:
+            continue
+        if not spec:
+            continue
+        if kind == "replace":
+            if "=>" not in spec or spec.index("=>") == len(spec) - 1:
+                sys.exit(f"{name} has a replace this gate cannot read: {line.strip()}")
+            path = spec[spec.index("=>") + 1]
+        else:
+            path = spec[0]
+        if kind == "use" or path in (".", "..") or path.startswith(("./", "../", "/")) or "\\" in path:
+            yield path
+
+
+if "envoy/go.mod" not in sources:
+    sys.exit("envoy/ holds no go.mod")
+for name in ("envoy/go.mod", "go.work", "envoy/go.work"):
+    for path in local_paths(name) if name in sources else ():
+        joined = posixpath.normpath(posixpath.join(posixpath.dirname(name), path))
+        if path.startswith("/") or "\\" in path or joined == ".." or joined.startswith("../"):
+            sys.exit(f"{name} names {path}, a directory outside this repository")
 
 
 def code(text, name):
@@ -629,19 +684,19 @@ def code(text, name):
         elif text.startswith("/*", i):
             j = text.find("*/", i + 2)
             if j < 0:
-                sys.exit(f"{name} has a /* comment with no end")
+                sys.exit(f"{name} names NewNatsHub and has a /* comment with no end")
             j += 2
         elif text[i] == "`":
             j = text.find("`", i + 1)
             if j < 0:
-                sys.exit(f"{name} has a raw string with no end")
+                sys.exit(f"{name} names NewNatsHub and has a raw string with no end")
             j += 1
         elif text[i] in "\"'":
             j = i + 1
             while j < n and text[j] not in (text[i], "\n"):
                 j += 2 if text[j] == "\\" else 1
             if j >= n or text[j] != text[i]:
-                sys.exit(f"{name} has a string with no end")
+                sys.exit(f"{name} names NewNatsHub and has a string with no end")
             j += 1
         else:
             out.append(text[i])
@@ -666,21 +721,25 @@ def declared_name(before):
     return re.search(r"(?<!\w)func$", before) is not None
 
 
-root = sys.argv[1]
-for directory, _, files in sorted(os.walk(root)):
-    for file in sorted(files):
-        path = os.path.join(directory, file)
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            source = code(handle.read(), os.path.relpath(path, root))
-        if any(not declared_name(source[: use.start()]) for use in re.finditer(r"(?<!\w)NewNatsHub(?!\w)", source)):
-            print("yes")
-            sys.exit(0)
-print("no")
+uses = []
+for name in go_files(""):
+    raw = sources[name]
+    if b"NewNatsHub" not in raw:
+        continue
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        sys.exit(f"{name} names NewNatsHub and is no UTF-8 text")
+    source = code(text, name)
+    for use in re.finditer(r"(?<!\w)NewNatsHub(?!\w)", source):
+        if not declared_name(source[: use.start()]):
+            uses.append(f"{name}:{source.count(chr(10), 0, use.start()) + 1}")
+print(f"yes {uses[0]}" if uses else "no")
 PY
-    printf 'UNKNOWN: envoy: cannot read the Go files of %s envoy/ at %s: %s\n' "$deployment" "$head" "$(last_line "$work/err")"
+    printf 'UNKNOWN: envoy: cannot read the Go files of %s at %s: %s\n' "$deployment" "$head" "$(last_line "$work/err")"
     return 1
   fi
-  hub=$(<"$work/go.hub")
+  read -r hub hub_use <"$work/go.hub"
 }
 
 # in_image <ref> <entrypoint> [<arg>...]: the output of <entrypoint> run in a container of <ref>
@@ -783,35 +842,61 @@ image_claude_envoy() {
   compare_revision "$label" "claude-envoy built at ${BASH_REMATCH[1]}, the commit of the image's legion" "${BASH_REMATCH[1]}" ""
 }
 
-# installed_claude_envoy <installed_plugins.json>: one `<plugin>\t<version>` line per install of a
-# claude-envoy@<marketplace> the Claude Code plugin record holds, in either of its two shapes (a
-# plugin's value an install, or a list of them); a record that cannot be read as one fails, naming
-# why.
+# installed_claude_envoy <installed_plugins.json> [<configuration>]: one `<plugin>\t<version>` line
+# per install of a claude-envoy@<marketplace> the Claude Code plugin record holds, in either of its
+# two shapes (a plugin's value an install, or a list of them). Given the Claude Code configuration
+# the record is its own, each install's installPath must be a directory inside it holding the
+# @sjawhar/claude-envoy manifest, and the version printed is that manifest's, the copy a session
+# loads, not the record's word for it; the record's follows when the two differ. A record or an
+# install that cannot be read as one fails, naming why.
 installed_claude_envoy() {
-  python3 - "$1" <<'PY'
+  python3 - "$@" <<'PY'
 import json
+import os
 import sys
 
+name_of = sys.argv[1]
+config = os.path.realpath(sys.argv[2]) if len(sys.argv) > 2 else None
 try:
-    with open(sys.argv[1]) as handle:
+    with open(name_of) as handle:
         record = json.load(handle)
 except (OSError, ValueError) as error:
-    sys.exit(f"{sys.argv[1]} cannot be read as JSON: {error}")
+    sys.exit(f"{name_of} cannot be read as JSON: {error}")
 if not isinstance(record, dict) or not isinstance(record.get("plugins"), dict):
-    sys.exit(f"{sys.argv[1]} holds no plugins object")
+    sys.exit(f"{name_of} holds no plugins object")
 for name, installs in record["plugins"].items():
     if not name.startswith("claude-envoy@"):
         continue
     installs = [installs] if isinstance(installs, dict) else installs
     if not isinstance(installs, list) or not installs:
-        sys.exit(f"{sys.argv[1]} records {name} as no install")
+        sys.exit(f"{name_of} records {name} as no install")
     for install in installs:
         version = install.get("version") if isinstance(install, dict) else None
         if not isinstance(version, str) or not version.isprintable():
-            sys.exit(f"{sys.argv[1]} records an install of {name} with no version")
-        print(f"{name}\t{version}")
+            sys.exit(f"{name_of} records an install of {name} with no version")
+        if config is None:
+            print(f"{name}\t{version}")
+            continue
+        path = install.get("installPath")
+        if not isinstance(path, str) or not path:
+            sys.exit(f"{name_of} records an install of {name} with no installPath")
+        real = os.path.realpath(path)
+        if not real.startswith(config + os.sep):
+            sys.exit(f"{name_of} records an install of {name} at {path}, outside {config}")
+        try:
+            with open(os.path.join(real, "package.json")) as handle:
+                manifest = json.load(handle)
+        except (OSError, ValueError) as error:
+            sys.exit(f"{name_of} records an install of {name} at {path}, whose package.json cannot be read: {error}")
+        installed = manifest.get("version") if isinstance(manifest, dict) else None
+        if not isinstance(manifest, dict) or manifest.get("name") != "@sjawhar/claude-envoy" or not isinstance(installed, str) or not installed.isprintable():
+            sys.exit(f"{name_of} records an install of {name} at {path}, which holds no @sjawhar/claude-envoy manifest with a version")
+        print(f"{name}\t{installed}" + ("" if installed == version else f"\t{version}"))
 PY
 }
+
+# present <path>: whether anything is at <path>, a link whose target is gone included.
+present() { [ -e "$1" ] || [ -L "$1" ]; }
 
 # dotfiles_clients: the pi-envoy and claude-envoy of this developer box's ~/.dotfiles: the pins,
 # and the copies installed from them.
@@ -829,12 +914,17 @@ dotfiles_clients() {
   # and a tree linked to the dotfiles would carry it inside them.
   home=$(readlink -f "$root" || true)
   own=$(readlink -f "$package" || true)
-  if [ -e "$package" ] && [[ $own != "$home"/* ]]; then
+  if present "$package" && [ ! -e "$package" ]; then
+    outside="$root/omp/plugins, a link to $(readlink "$package"), which does not exist"
+  elif present "$package" && [[ $own != "$home"/* ]]; then
     outside="$root/omp/plugins, a link to ${own:-a path that does not resolve}"
   fi
   for tree in "$HOME/.omp/plugins" "$HOME"/.omp/profiles/*/plugins; do
-    [ -e "$tree/node_modules/@sjawhar/pi-envoy/package.json" ] || continue
-    [ "$(readlink -f "$tree/node_modules/@sjawhar/pi-envoy" || true)" = "$own" ] || outside+="${outside:+, }$tree"
+    present "$tree/node_modules/@sjawhar/pi-envoy" || continue
+    if [ ! -e "$tree/node_modules/@sjawhar/pi-envoy/package.json" ] ||
+      [ "$(readlink -f "$tree/node_modules/@sjawhar/pi-envoy" || true)" != "$own" ]; then
+      outside+="${outside:+, }$tree"
+    fi
   done
   if [ -n "$outside" ]; then
     printf 'UNKNOWN: %s: @sjawhar/pi-envoy is installed outside ~/.dotfiles, in %s\n' "$label" "$outside"
@@ -866,7 +956,7 @@ dotfiles_clients() {
 dotfiles_claude_envoy() {
   local root=$1 label="dotfiles .claude/settings.json" record name version enabled others marketplace repo ref plugin range served
   for record in "$HOME/.claude/plugins/installed_plugins.json" ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"}; do
-    [ -e "$record" ] || continue
+    present "$record" || continue
     [ "$(readlink -f "$record")" != "$(readlink -f "$root/.claude/plugins/installed_plugins.json" || true)" ] || continue
     if ! installed_claude_envoy "$record" >"$work/claude.outside" 2>"$work/err"; then
       printf 'UNKNOWN: %s: %s\n' "$label" "$(last_line "$work/err")"
@@ -890,18 +980,18 @@ dotfiles_claude_envoy() {
     unknown=$((unknown + 1))
     return
   fi
-  if [ -e "$root/.claude/plugins/installed_plugins.json" ]; then
-    if ! installed_claude_envoy "$root/.claude/plugins/installed_plugins.json" >"$work/claude.installed" 2>"$work/err"; then
+  if present "$root/.claude/plugins/installed_plugins.json"; then
+    if ! installed_claude_envoy "$root/.claude/plugins/installed_plugins.json" "$root/.claude" >"$work/claude.installed" 2>"$work/err"; then
       printf 'UNKNOWN: %s: %s\n' "$label" "$(last_line "$work/err")"
       unknown=$((unknown + 1))
       return
     fi
-    while IFS=$'\t' read -r name version; do
+    while IFS=$'\t' read -r name version recorded; do
       if [ "$name" != claude-envoy@legion-plugins ]; then
         printf 'UNKNOWN: %s: %s is installed, from a marketplace this gate does not read\n' "$label" "$name"
         unknown=$((unknown + 1))
       else
-        judge_release "dotfiles .claude/plugins installed claude-envoy" claude-envoy "$version"
+        judge_release "dotfiles .claude/plugins installed claude-envoy" claude-envoy "$version" "${recorded:+; the plugin record says $recorded}"
       fi
     done <"$work/claude.installed"
   fi
@@ -934,12 +1024,33 @@ dotfiles_claude_envoy() {
     unknown=$((unknown + 1))
     return
   fi
-  if ! served=$(jq -er 'if type == "string" then . elif type == "array" and length > 0 and all(.[]; type == "string") then .[] else error("no list of versions") end' <<<"$served" 2>/dev/null); then
+  # npm's own order, semantic-version precedence, picks the version it serves: `sort -V` puts a
+  # pre-release after its release. Each answer must be one whole version, so no answer splits.
+  if ! python3 - "$served" >"$work/served" 2>/dev/null <<'PY'; then
+import json
+import re
+import sys
+
+answer = json.loads(sys.argv[1])
+versions = [answer] if isinstance(answer, str) else answer
+form = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?")
+if not isinstance(versions, list) or not versions or not all(isinstance(v, str) and form.fullmatch(v) for v in versions):
+    sys.exit(1)
+
+
+def precedence(version):
+    major, minor, patch, pre = form.fullmatch(version).groups()
+    parts = [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split(".")] if pre else []
+    return (int(major), int(minor), int(patch), not pre, parts)
+
+
+print(max(versions, key=precedence))
+PY
     printf 'UNKNOWN: %s: npm answers no version of @sjawhar/claude-envoy for %s\n' "$label" "$range"
     unknown=$((unknown + 1))
     return
   fi
-  served=$(sort -V <<<"$served" | tail -n 1)
+  served=$(<"$work/served")
   judge_release "$label" claude-envoy "$served" "; the version legion-plugins serves for $range"
 }
 
@@ -991,6 +1102,7 @@ case "$mode" in
   listeners)
     if vm_hub; then
       if [ "$hub" = yes ]; then
+        printf 'VM HUB: %s at %s uses NewNatsHub\n' "$hub_use" "$head"
         listener envoy envoy "${project_prefix}-envoy:listenerImage"
       else
         printf 'NO VM HUB: envoy/ at %s declares no gcp:NatsHub\n' "$head"

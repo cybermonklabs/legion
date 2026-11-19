@@ -610,18 +610,19 @@ With `--listeners` it reads the listener pins: envoy-cluster's `envoyImage`, dis
 server's, and envoy's `listenerImage` when the deployment declares its VM hub. A dispatch stack that
 sets no `listenerImage` reads `UNKNOWN`, since its deployment requires that key (the deployment's
 `dispatch/main.go`) and the listener runs no other image. Whether the deployment declares the VM hub
-is decided from its `envoy/` program, never from the pin, because removing the hub removes its
-config keys too. The gate reads every Go file a build of `envoy/` compiles from the deployment
-repository: `envoy/` and its subdirectories, and each directory a local `replace` of
-`envoy/go.mod` names, without `_test.go` files and the `testdata/`, `_` and `.` directories that
-`go build` leaves out. The program declares the hub when its code, outside comments and strings,
-uses the identifier `NewNatsHub` anywhere but as the name of the func that defines it, so a call
-spelled with a space before its `(`, a reference called later and a call in a helper package all
-count. Declared, envoy's `listenerImage` is read, and a stack that sets none is `UNKNOWN`. Declared
-by no file, every file read, the gate prints `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub`
-and reads no VM pin. A listing, a read or a `go.mod` that fails, a `replace` that leaves the
-repository, a listing GitHub truncated, a program with no Go file and a file the gate cannot read
-as Go are `UNKNOWN`.
+is decided from its program, never from the pin, because removing the hub removes its config keys
+too. The gate fetches the deployment repository at the one commit as one archive and reads every Go
+file in it that is not a `_test.go`, so no rule of which directories a build compiles can leave a
+use unread. The deployment declares the hub when that code, outside comments and strings, uses the
+identifier `NewNatsHub` anywhere but as the name of the func that defines it, so a call spelled
+with a space before its `(`, a reference called later and a call in a helper package all count; a
+use outside `envoy/` counts too, which only ever reads the VM pin. Declared, the gate prints `VM HUB:
+<file>:<line> at <sha> uses NewNatsHub` and reads envoy's `listenerImage`, and a stack that sets
+none is `UNKNOWN`. Used nowhere, every file read, it prints `NO VM HUB: envoy/ at <sha> declares no
+gcp:NatsHub` and reads no VM pin. An archive it cannot fetch or unpack, an `envoy/` with no Go file
+or no `go.mod`, a local `replace` or `use` of `envoy/go.mod` or a `go.work` that leaves the
+repository, and a file that names `NewNatsHub` and cannot be read as Go are `UNKNOWN`. A module
+fetched from outside the repository is not read.
 
 With `--clients` it reads the clients that deliver to a session. Each must carry `<commit>`, since
 an older client follow filter passes a frame in a form it does not match in silence:
@@ -637,16 +638,19 @@ an older client follow filter passes a frame in a form it does not match in sile
 - On this developer box: the `@sjawhar/pi-envoy` pin of `~/.dotfiles/omp/plugins/package.json`
   and, where it differs from the pin, the version installed beside it, each resolved to its release
   tag; each `claude-envoy@legion-plugins` install the dotfiles' own Claude Code plugin record
-  (`~/.dotfiles/.claude/plugins/installed_plugins.json`) holds; and the claude-envoy version the
+  (`~/.dotfiles/.claude/plugins/installed_plugins.json`) holds, by the version of the manifest at
+  its `installPath`, which must lie inside `~/.dotfiles/.claude`; and the claude-envoy version the
   marketplace `legion-plugins` serves to `~/.dotfiles/.claude/settings.json`. The gate reads the
   marketplace's `.claude-plugin/marketplace.json` from the GitHub repository that settings file
   names for it, takes the one npm package and version range it serves claude-envoy as, and takes
-  the highest version `npm view` matches to the range, whose release tag is
-  `claude-envoy-v<version>`. A settings file that enables no `claude-envoy@legion-plugins` prints
+  the highest version `npm view` matches to the range, by semantic-version precedence as npm
+  orders them, whose release tag is `claude-envoy-v<version>`. A settings file that enables no
+  `claude-envoy@legion-plugins` prints
   `SKIPPED`. A pi-envoy whose copy is not a directory inside the dotfiles (a link `omp plugin link`
-  made to a checkout, or another plugin tree: `~/.omp/plugins` or a profile's), a claude-envoy
-  recorded in `~/.claude` or in another `CLAUDE_CONFIG_DIR`, or installed from another marketplace,
-  and a plugin record the gate cannot read are `UNKNOWN`, since the dotfiles' pins say nothing
+  made to a checkout, or another plugin tree: `~/.omp/plugins` or a profile's), a link at any of
+  those paths that does not resolve, a claude-envoy recorded in `~/.claude` or in another
+  `CLAUDE_CONFIG_DIR`, or installed from another marketplace, and a plugin record or install the
+  gate cannot read are `UNKNOWN`, since the dotfiles' pins say nothing
   about them. The gate reads pins and installs, not processes: a session started before a pin
   moved still runs the plugin it loaded.
 
@@ -666,7 +670,7 @@ and never compared. A revision label that is not a commit id, 7 to 40 lowercase 
 (`main`) would compare as wherever that branch points now. A client's commit is compared the same
 way.
 
-It prints a line per pin or surface (`PASS`, `GATE SHUT`, `UNKNOWN`, `SKIPPED` or `NO VM HUB`) and
+It prints a line per pin or surface (`PASS`, `GATE SHUT`, `UNKNOWN`, `SKIPPED`, `VM HUB` or `NO VM HUB`) and
 the verdict on the last: `GATE OPEN` (exit 0) only when everything it read passed and it read at
 least one pin, `GATE SHUT` (exit 1), or `UNKNOWN` (exit 3) for a pin, file, version or comparison it
 could not read. A usage error exits 2. It needs `gh` with read access to both repositories, docker
