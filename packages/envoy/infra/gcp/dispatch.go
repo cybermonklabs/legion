@@ -138,6 +138,13 @@ var (
 	// Google Cloud region (us-central1) or zone (us-central1-a), where a cluster runs.
 	clusterNameRule     = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,38}[a-z0-9])?$`)
 	clusterLocationRule = regexp.MustCompile(`^[a-z]+-[a-z]+[0-9]+(?:-[a-z])?$`)
+	// connectionNameRule is a Cloud SQL instance's connection name, <project>:<region>:<instance>,
+	// the form the instance's connectionName takes: a project id (a lowercase letter, then 4 to 28
+	// lowercase letters, digits or hyphens, and a lowercase letter or digit), which a domain-scoped
+	// project prefixes with its domain (example.com:example-project, so the whole name then has
+	// four parts); a region (us-central1); and the instance's name (a lowercase letter, then at most
+	// 97 lowercase letters, digits or hyphens, ending in a letter or digit).
+	connectionNameRule = regexp.MustCompile(`^(?:[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)+:)?[a-z][-a-z0-9]{4,28}[a-z0-9]:[a-z]+-[a-z]+[0-9]+:[a-z](?:[-a-z0-9]{0,96}[a-z0-9])?$`)
 )
 
 // DispatchArgs are the inputs of an envoy-infra:gcp:Dispatch. Every field of a plain Go type is a
@@ -265,6 +272,19 @@ type DispatchArgs struct {
 	// child, whenever the kubeconfig is unknown. The lookup refuses a cluster Dispatch cannot run
 	// in (lookupDispatchCluster). Unset, the component makes the Autopilot cluster <hostname>.
 	ExistingCluster *DispatchClusterArgs `pulumi:"existingCluster,optional"`
+	// ExistingDatabaseInstance is the connection name, <project>:<region>:<instance>, of a Cloud
+	// SQL instance the component does not make: the form of the databaseInstance output, so a
+	// consumer can pass its own replica's connectionName. With it the component registers no
+	// DatabaseInstance, Database or User, and the app pod's cloud-sql-proxy sidecar connects to
+	// that instance. It keeps every RandomPassword, under the names and with the arguments it
+	// always had, so the contract is that the instance holds database dispatch and login dispatch,
+	// whose password is the component's generated one: a promoted replica of the component's own
+	// instance does. It is a Pulumi Input because a consumer takes it from another resource or
+	// stack, and it is checked for a seed and for its shape once it resolves
+	// (dispatchDatabaseConnectionName). databaseVersion, databaseTier, databaseAvailabilityType and
+	// databaseWaitsFor configure the instance the component makes, and are refused beside it.
+	// Unset, the component makes the Cloud SQL instance <hostname>.
+	ExistingDatabaseInstance pulumi.StringInput `pulumi:"existingDatabaseInstance,optional"`
 
 	// ClusterOnly builds the cluster alone: the VPC, its subnetwork, the router, Cloud NAT and the
 	// Autopilot cluster, and nothing else. No Cloud SQL instance, database or user, no generated
@@ -578,7 +598,10 @@ type Dispatch struct {
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
 // field here. existingCluster is the cluster existingCluster names, which NewDispatch looks up and
 // runs Dispatch in, and the zero dispatchClusterRef without that input, where the component makes
-// a cluster of its own.
+// a cluster of its own. existingDatabaseInstance is true while the input of that name is set,
+// where the component makes no Cloud SQL instance, database or user and the proxy connects to the
+// instance it names; the connection name itself is a Pulumi Input, judged once it resolves, and so
+// no field here.
 type dispatchSettings struct {
 	clusterOnly                                 bool
 	frontDoor, signInOn                         bool
@@ -607,6 +630,7 @@ type dispatchSettings struct {
 	azure                                       dispatchAzure
 	answerer                                    dispatchAnswerer
 	existingCluster                             dispatchClusterRef
+	existingDatabaseInstance                    bool
 }
 
 // dispatchClusterRef is a GKE cluster by its name and location, as existingCluster names it and the
@@ -894,9 +918,10 @@ func dispatchSignInInputs(args *DispatchArgs) []dispatchInput {
 // dispatchClusterOnlyRefusals is every pulumi-tagged input of DispatchArgs that configures
 // Dispatch rather than the cluster, which clusterOnly refuses by name. Only the four inputs both
 // modes use are absent: clusterOnly itself, region and hostname, which name every cloud resource,
-// and deletionProtection, which guards the cluster as well as the database. existingCluster is
-// among the refused: it names the cluster Dispatch runs in, and clusterOnly runs no Dispatch and
-// always makes its own cluster. The eight inputs of the two groups come from the groups' own
+// and deletionProtection, which guards the cluster as well as the database. existingCluster and
+// existingDatabaseInstance are among the refused: one names the cluster Dispatch runs in and the
+// other the database instance it uses, and clusterOnly runs no Dispatch, always makes its own
+// cluster and uses no database. The eight inputs of the two groups come from the groups' own
 // definitions, so an input either group gains is refused here without being written down a
 // second time.
 func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
@@ -922,6 +947,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"namespace", args.Namespace != nil},
 		{"existingNamespace", args.ExistingNamespace != nil},
 		{"existingCluster", args.ExistingCluster != nil},
+		{"existingDatabaseInstance", args.ExistingDatabaseInstance != nil},
 		{"replicas", args.Replicas != nil},
 		{"frontDoorReplicas", args.FrontDoorReplicas != nil},
 		{"listenerReplicas", args.ListenerReplicas != nil},
@@ -1170,6 +1196,32 @@ func newDispatchClusterRef(args *DispatchArgs) (dispatchClusterRef, error) {
 	return dispatchClusterRef{name: name, location: location}, nil
 }
 
+// newDispatchExistingDatabaseInstance resolves existingDatabaseInstance: false when it is unset,
+// where the component makes a Cloud SQL instance of its own, and otherwise true, with each of the
+// four inputs that configure that instance refused when it is set, in this order, as a
+// core.InputError naming it. The instance existingDatabaseInstance names replaces the component's
+// own, so each of the four would configure nothing, and is refused rather than dropped. The check
+// runs before the resolver judges the four's own values, so one sent beside it is refused for
+// being sent at all, an empty databaseTier as much as a valid one. The connection name is a
+// Pulumi Input, judged once it resolves (dispatchDatabaseConnectionName).
+func newDispatchExistingDatabaseInstance(args *DispatchArgs) (bool, error) {
+	if args.ExistingDatabaseInstance == nil {
+		return false, nil
+	}
+	for _, in := range []dispatchInput{
+		{"databaseVersion", args.DatabaseVersion != nil},
+		{"databaseTier", args.DatabaseTier != nil},
+		{"databaseAvailabilityType", args.DatabaseAvailabilityType != nil},
+		{"databaseWaitsFor", args.DatabaseWaitsFor != nil},
+	} {
+		if in.set {
+			return false, core.InputErrorf(in.input,
+				"%s configures the Cloud SQL instance the component makes, which existingDatabaseInstance replaces: unset it, or unset existingDatabaseInstance", in.input)
+		}
+	}
+	return true, nil
+}
+
 // dispatchDeletionProtection resolves deletionProtection, true when the consumer sets nothing. It
 // guards the cluster as well as the database, so both resolvers default it the same way.
 func dispatchDeletionProtection(value *bool) bool {
@@ -1250,6 +1302,10 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		return dispatchSettings{}, err
 	}
 	existingCluster, err := newDispatchClusterRef(args)
+	if err != nil {
+		return dispatchSettings{}, err
+	}
+	existingDatabaseInstance, err := newDispatchExistingDatabaseInstance(args)
 	if err != nil {
 		return dispatchSettings{}, err
 	}
@@ -1338,6 +1394,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		namespace:       defaultDispatchNamespace,
 		existingCluster: existingCluster,
 	}
+	s.existingDatabaseInstance = existingDatabaseInstance
 	s.images.envoy = args.EnvoyImage
 	s.images.tailscale = args.TailscaleImage
 	s.images.proxy = args.CloudSqlProxyImage
@@ -1859,7 +1916,9 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	if err := newDispatchKubernetes(ctx, comp, name, args, s, cloud, database); err != nil {
 		return nil, err
 	}
-	comp.DatabaseInstance = database.instance.ConnectionName
+	// databaseInstance is the instance the proxy connects to: the component's own instance's
+	// connection name, or existingDatabaseInstance's once it resolves.
+	comp.DatabaseInstance = database.connectionName
 	comp.Principal = database.principal
 	comp.AgentToken = database.agentToken.Result
 	comp.Url = pulumi.String(s.serverURL()).ToStringOutput()

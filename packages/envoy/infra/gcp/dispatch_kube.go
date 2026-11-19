@@ -561,11 +561,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		if err != nil {
 			return err
 		}
-		tailscaleService, err := newDispatchTailscaleService(ctx, comp, s, database.instance)
+		tailscaleService, err := newDispatchTailscaleService(ctx, comp, s, database.waitFor)
 		if err != nil {
 			return err
 		}
-		frontDoorPod, frontDoorOpts, err := newDispatchFrontDoor(ctx, s, tailscaleService, database.instance, authKeyName, metadata, child)
+		frontDoorPod, frontDoorOpts, err := newDispatchFrontDoor(ctx, s, tailscaleService, database.waitFor, authKeyName, metadata, child)
 		if err != nil {
 			return err
 		}
@@ -601,8 +601,10 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// waited only so that it started connected, and that is now outweighed: during the cutover
 	// the front door is deliberately away while the database's availability type changes, and the
 	// server must come back inside that stop rather than behind the front door. Its database
-	// ordering is untouched by this — database.instance.ConnectionName is a cloud-sql-proxy
-	// argument on the app's own pod, so the pod still waits for the instance. With natsInCluster
+	// ordering is untouched by this — database.connectionName, the component's own instance's
+	// ConnectionName, is a cloud-sql-proxy argument on the app's own pod, so the pod still waits
+	// for that instance; an instance existingDatabaseInstance names exists before the component
+	// runs, and the pod waits only for what the consumer's value comes from. With natsInCluster
 	// the listener does not wait either: the proxy was the only reason it did, the port-1055
 	// Service is not registered at all, and waiting would let a front-door outage hold up a
 	// listener rollout that no longer depends on it. Without a front door there is nothing to
@@ -828,7 +830,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		InitContainers: corev1.ContainerArray{
 			corev1.ContainerArgs{
 				Name: pulumi.String("cloud-sql-proxy"), Image: pulumi.String(s.images.proxy), RestartPolicy: pulumi.String("Always"),
-				Args:      pulumi.StringArray{pulumi.String("--private-ip"), pulumi.String("--structured-logs"), pulumi.String("--address=127.0.0.1"), pulumi.String("--port=5432"), pulumi.String("--health-check"), pulumi.String("--http-address=0.0.0.0"), pulumi.String("--http-port=9801"), database.instance.ConnectionName},
+				Args:      pulumi.StringArray{pulumi.String("--private-ip"), pulumi.String("--structured-logs"), pulumi.String("--address=127.0.0.1"), pulumi.String("--port=5432"), pulumi.String("--health-check"), pulumi.String("--http-address=0.0.0.0"), pulumi.String("--http-port=9801"), database.connectionName},
 				Resources: sizedResources(s.appResources.proxyCPU, s.appResources.proxyMemory, s.appResources.proxyEphemeralStorage), SecurityContext: &corev1.SecurityContextArgs{RunAsNonRoot: pulumi.Bool(true)},
 				StartupProbe: proxyStartup, LivenessProbe: proxyLiveness,
 			},

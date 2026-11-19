@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pulumi/pulumi-gcp/sdk/v10/go/gcp/sql"
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
 	metav1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/meta/v1"
 	rbacv1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/rbac/v1"
@@ -503,15 +502,17 @@ gate() {
 // --advertise-tags), which is what auto-approves them as this Service's hosts, and a tailnet
 // policy reaches the Service by its name, svc:<hostname>.
 //
-// It waits for the Cloud SQL instance because the front door waits for it in turn: switching the
-// instance's availability type updates it in place and restarts it, and the name must come back
-// only once that restart is over, not while the database is away.
-func newDispatchTailscaleService(ctx *pulumi.Context, comp *Dispatch, s dispatchSettings, instance *sql.DatabaseInstance) (*tailscale.Service, error) {
+// It waits for waitFor, the Cloud SQL instance the component makes, because the front door waits
+// for it in turn: switching the instance's availability type updates it in place and restarts it,
+// and the name must come back only once that restart is over, not while the database is away.
+// waitFor is empty for an instance existingDatabaseInstance names, which the component never
+// changes, so nothing of the component restarts it.
+func newDispatchTailscaleService(ctx *pulumi.Context, comp *Dispatch, s dispatchSettings, waitFor []pulumi.Resource) (*tailscale.Service, error) {
 	return tailscale.NewService(ctx, s.hostname, &tailscale.ServiceArgs{
 		Name:    pulumi.String(tailnetServiceName(s.hostname)),
 		Comment: pulumi.String("Dispatch, served at " + core.TailnetHostName(s.hostname, s.tailnetDNSName)),
 		Ports:   pulumi.StringArray{pulumi.String("tcp:443")},
-	}, pulumi.Parent(comp), pulumi.Protect(s.deletionProtection), pulumi.DependsOn([]pulumi.Resource{instance}))
+	}, pulumi.Parent(comp), pulumi.Protect(s.deletionProtection), pulumi.DependsOn(waitFor))
 }
 
 // newDispatchFrontDoor registers the front door's own objects and renders its pod, for the
@@ -519,9 +520,9 @@ func newDispatchTailscaleService(ctx *pulumi.Context, comp *Dispatch, s dispatch
 // <hostname>-tailnet, Secret <hostname>-tailnet-tls with the Role that lets that account alone
 // write it, and ConfigMap <hostname>-serve. It returns the pod and the options that Deployment
 // registers with. service is the Tailscale Service newDispatchTailscaleService declared and
-// instance the Cloud SQL instance, both of which that Deployment waits for; authKeySecret names
-// the Secret holding TS_AUTHKEY.
-func newDispatchFrontDoor(ctx *pulumi.Context, s dispatchSettings, service *tailscale.Service, instance *sql.DatabaseInstance, authKeySecret string, metadata func(string) *metav1.ObjectMetaArgs, child []pulumi.ResourceOption) (corev1.PodSpecArgs, []pulumi.ResourceOption, error) {
+// waitFor the Cloud SQL instance the component makes, none for one existingDatabaseInstance names,
+// all of which that Deployment waits for; authKeySecret names the Secret holding TS_AUTHKEY.
+func newDispatchFrontDoor(ctx *pulumi.Context, s dispatchSettings, service *tailscale.Service, waitFor []pulumi.Resource, authKeySecret string, metadata func(string) *metav1.ObjectMetaArgs, child []pulumi.ResourceOption) (corev1.PodSpecArgs, []pulumi.ResourceOption, error) {
 	name := s.hostname + "-tailnet"
 	tlsName := name + "-tls"
 	serveName := s.hostname + "-serve"
@@ -690,8 +691,10 @@ func newDispatchFrontDoor(ctx *pulumi.Context, s dispatchSettings, service *tail
 	// add nothing but, at one replica, where Recreate stops the old pod first, a gap in the name.
 	// The Deployment waits for the Tailscale Service because a node that advertises a Service
 	// before it exists is not approved when it appears (tailnetAdvertiseStuckSeconds), and for the
-	// Cloud SQL instance because an availability-type change updates that instance in place and
-	// restarts it: the name must come back only once the database it fronts is back.
-	opts := []pulumi.ResourceOption{pulumi.DependsOn([]pulumi.Resource{serve, tlsSecret, service, instance})}
+	// Cloud SQL instance the component makes because an availability-type change updates that
+	// instance in place and restarts it: the name must come back only once the database it fronts
+	// is back. An instance existingDatabaseInstance names is one the component never restarts, and
+	// waitFor holds nothing for it.
+	opts := []pulumi.ResourceOption{pulumi.DependsOn(append([]pulumi.Resource{serve, tlsSecret, service}, waitFor...))}
 	return pod, opts, nil
 }

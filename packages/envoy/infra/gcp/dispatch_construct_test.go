@@ -269,10 +269,10 @@ func TestConstructRefusesDispatchDisruptionInputsFromAnotherResource(t *testing.
 	}
 }
 
-// tailnetAuthKey, signInClientSecret and natsSeedSecret are Inputs, which the component reads only
-// once they resolve: a value holding an nkey seed is refused then, naming the input and never the
-// value, so no child is registered with it, plainly or as a secret. Each arrives as another
-// resource's output, as a consumer's does.
+// tailnetAuthKey, signInClientSecret, natsSeedSecret and existingDatabaseInstance are Inputs, which
+// the component reads only once they resolve: a value holding an nkey seed is refused then, naming
+// the input and never the value, so no child is registered with it, plainly or as a secret. Each
+// arrives as another resource's output, as a consumer's does.
 func TestConstructRefusesASeedInADispatchInput(t *testing.T) {
 	seed, _ := testnats.User(t)
 	for _, row := range []struct {
@@ -282,6 +282,7 @@ func TestConstructRefusesASeedInADispatchInput(t *testing.T) {
 		{"a seed inside the tailnet auth key", "tailnetAuthKey", property.New("tskey-auth-" + seed).WithSecret(true)},
 		{"a lowercase seed as the sign-in client secret", "signInClientSecret", property.New(strings.ToLower(seed)).WithSecret(true)},
 		{"a seed inside the NATS seed secret id", "natsSeedSecret", property.New("projects/example-project/secrets/" + seed)},
+		{"a seed inside the existing database instance's name", "existingDatabaseInstance", property.New("example-project:us-central1:" + seed)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			inputs := dispatchConstructInputs()
@@ -303,6 +304,33 @@ func TestConstructRefusesASeedInADispatchInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+// existingDatabaseInstance is a Pulumi Input, typically the connectionName of a replica the
+// consumer's program declares: it reaches the plugin as that resource's output, the component
+// registers no DatabaseInstance and exports it as databaseInstance, and the app's Deployment,
+// whose proxy connects to it, waits for the resource it came from. In a preview it may be
+// unknown, as a replica made in the same update is, and the component previews (AGENTS.md,
+// "Plain or Input").
+func TestConstructTakesAnExistingDatabaseInstanceFromAnotherResource(t *testing.T) {
+	inputs := dispatchConstructBaseInputs()
+	inputs["existingDatabaseInstance"] = property.New(replicaConnectionName).WithDependencies([]resource.URN{upstream})
+	m, response, err := constructDispatch(t, inputs, false)
+	require.NoError(t, err)
+	require.Zero(t, countRegistrations(m, "gcp:sql/databaseInstance:DatabaseInstance"), "no DatabaseInstance registers while one is named")
+	output, ok := response.State.GetOk("databaseInstance")
+	require.True(t, ok, "databaseInstance is in the state")
+	require.True(t, output.IsString(), "databaseInstance is a known string, not %s", output)
+	require.Equal(t, replicaConnectionName, output.AsString())
+	require.Contains(t, m.Named(t, deploymentType, "example-dispatch").RPC.GetDependencies(), string(upstream),
+		"the app's Deployment, whose proxy connects to the instance, waits for the resource its name came from")
+
+	preview := newMocks()
+	preview.Preview = true
+	inputs = dispatchConstructBaseInputs()
+	inputs["existingDatabaseInstance"] = property.New(property.Computed).WithDependencies([]resource.URN{upstream})
+	_, err = constructDispatchOnMocks(t, preview, inputs)
+	require.NoError(t, err)
 }
 
 // dispatchConstructBaseInputs is dispatchConstructInputs with the required Inputs set plainly.

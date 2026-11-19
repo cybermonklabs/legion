@@ -305,6 +305,16 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 		require.Equal(t, "string", cluster.Properties[field].Type, field)
 	}
 	require.ElementsMatch(t, []string{"name", "location"}, cluster.Required)
+	// existingDatabaseInstance, the connection name of a Cloud SQL instance the component does not
+	// make, is an optional string Input, neither plain nor secret: a consumer takes it from another
+	// resource or stack (its replica's connectionName), and the component checks it for a seed
+	// and for its shape once it resolves (gcp's
+	// TestConstructTakesAnExistingDatabaseInstanceFromAnotherResource).
+	existingDatabaseInstance := dispatch.InputProperties["existingDatabaseInstance"]
+	require.Equal(t, "string", existingDatabaseInstance.Type)
+	require.False(t, existingDatabaseInstance.Plain)
+	require.False(t, existingDatabaseInstance.Secret)
+	require.NotContains(t, dispatch.RequiredInputs, "existingDatabaseInstance")
 	// region and hostname, which name every cloud resource, are the only inputs the schema
 	// requires: every other input configures Dispatch itself, which clusterOnly does not build.
 	require.ElementsMatch(t, []string{"region", "hostname"}, dispatch.RequiredInputs)
