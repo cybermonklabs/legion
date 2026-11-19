@@ -146,21 +146,26 @@ function unanswered(node: TreeNode): boolean {
     case "requirement":
       return node.counts !== undefined && node.counts.checks === 0;
     // Nothing else holds an answer of its own for the reader to wait on. A note is what
-    // somebody wrote; a child issue is read and answered on its own page, and is one row of
-    // the outline's group of children (R12); a comment and a message are what somebody
-    // said, and what is unanswered in a conversation is the ask inside it, which puts its turn
-    // on the frontier as that ask's ancestor; a result is a record of what a run saw, and its
-    // check carries the verdict; and the issue itself is the root, which is drawn whatever this
-    // says. A document, an image and a handoff are nodes of the issue and not of its
-    // conversation, so the tree holds none of them (R1, R3).
+    // somebody wrote; a criterion is what a person wants to be able to do, and what is open
+    // under it is a statement nothing proves, which opens its own path through the criterion;
+    // a reading is an agent's reading of a person's answer, inside the ask or the decision it
+    // reads, and asks the reader nothing; a child issue is read and answered on its own page,
+    // and is one row of the outline's group of children (R12); a comment and a message are what
+    // somebody said, and what is unanswered in a conversation is the ask inside it, which puts
+    // its turn on the frontier as that ask's ancestor; a result is a record of what a run saw,
+    // and its check carries the verdict; and the issue itself is the root, which is drawn
+    // whatever this says. A document, an image and a handoff are nodes of the issue and not of
+    // its conversation, so the tree holds none of them (R1, R3).
     case "callout":
     case "child_issue":
     case "comment":
+    case "criterion":
     case "document":
     case "handoff":
     case "image":
     case "issue":
     case "message":
+    case "reading":
     case "result":
       return false;
   }

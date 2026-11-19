@@ -351,6 +351,227 @@ export function stepsBody() {
   };
 }
 
+/** The lens every reasoning write here names, its one finding, and who wrote them: the person a
+ *  personal token proves, as Dispatch's `authored_by` tuple names her. */
+export const LENS = `dispatch://lens/${UUID}`;
+const reasoningAuthor = { kind: "person", id: "person@example.com" };
+
+/** One finding of the lens, as `POST /api/v1/issues/{key}/nodes/{id}/findings` answers it. */
+export function findingBody(text: string) {
+  return {
+    address: `${LENS}#b-${OTHER_UUID}`,
+    id: `lens/${UUID}#${OTHER_UUID}`,
+    block_id: OTHER_UUID,
+    lens: LENS,
+    text,
+    author: reasoningAuthor,
+    created_at: AT,
+    state: "live",
+    visibility: "project",
+  };
+}
+
+/** `POST /api/v1/issues/{key}/lenses`: the lens with the finding its call wrote. */
+export function lensBody() {
+  return {
+    address: LENS,
+    id: UUID,
+    kind: "trade-off",
+    on: `dispatch://${ISSUE}/spec`,
+    verdict: null,
+    triggered_by: null,
+    author: reasoningAuthor,
+    created_at: AT,
+    state: "live",
+    visibility: "project",
+    findings: [findingBody("A second region doubles the write path's cost.")],
+  };
+}
+
+/** `POST /api/v1/issues/{key}/risks`: a risk under the lens, prevented by no check yet. */
+export function riskBody() {
+  return {
+    address: `dispatch://risk/${OTHER_UUID}`,
+    id: OTHER_UUID,
+    lens: LENS,
+    heading: "The migration locks the table for minutes.",
+    early_warning: "Writes queue behind the migration's lock.",
+    prevention: "Build the index concurrently.",
+    prevented_by: [],
+    author: reasoningAuthor,
+    created_at: AT,
+    state: "live",
+    visibility: "project",
+  };
+}
+
+/** One constraint, a standard with its reference, as both constraint routes answer it. */
+export function constraintBody() {
+  return {
+    address: `dispatch://constraint/${OTHER_UUID}`,
+    id: OTHER_UUID,
+    standard: "RFC 9110",
+    reference: "section 9.2.2, idempotent methods",
+    measurement: null,
+    value: null,
+    taken_where: null,
+    author: reasoningAuthor,
+    created_at: AT,
+    state: "live",
+    visibility: "project",
+  };
+}
+
+/** `POST /api/v1/issues/{key}/nodes/{id}/pointers`: the lens's kind moved from trade-off to botec. */
+export function pointerBody() {
+  const kind = (id: string) => ({
+    address: `dispatch://lens_kind/${id}`,
+    kind: "lens_kind",
+    state: "live",
+    visibility: "project",
+  });
+  return {
+    node: { address: LENS, kind: "lens", state: "live", visibility: "project" },
+    kind: "has_kind",
+    action: "retarget",
+    to: kind("botec"),
+    from: kind("trade-off"),
+  };
+}
+
+/** `POST /api/v1/issues/{key}/nodes/{id}/state` and `/settle`: the example's requirement block
+ *  moved from `previous` to `state`. */
+export function nodeStateBody(previous: string, state: string) {
+  return {
+    node: {
+      address: `dispatch://${ISSUE}/spec#b-r-cache`,
+      kind: "block",
+      state,
+      visibility: "project",
+    },
+    previous,
+  };
+}
+
+/** `GET /api/v1/issues/{key}/proposed`: one proposed requirement with its excerpt. */
+export function proposedBody() {
+  return {
+    issue: ISSUE,
+    nodes: [
+      {
+        node: {
+          kind: "block",
+          id: `${ISSUE}/spec#r-cache`,
+          block_id: "r-cache",
+          ref: `dispatch://${ISSUE}/spec#b-r-cache`,
+          made_by: [],
+          made_at: null,
+          changed_by: [],
+          changed_at: null,
+          parent: null,
+          parent_version: null,
+          state: "proposed",
+          visibility: "project",
+        },
+        excerpt: { block_id: "r-cache", text: "The cache holds every read for a minute." },
+      },
+    ],
+  };
+}
+
+/** `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert`: the example's dry run, the lens
+ *  and the two risks it would write, none of them at an address yet. */
+export function premortemReportBody() {
+  const risk = (number: number, heading: string, preventedBy: string[], reason: string) => ({
+    number,
+    address: null,
+    heading,
+    early_warning: "A third issue parked until the graph lands.",
+    prevention: "Every slice ships one visible change.",
+    prevented_by: preventedBy,
+    reason,
+  });
+  return {
+    document: {
+      address: `dispatch://${ISSUE}/artifact/premortem-md`,
+      id: ARTIFACT_ID,
+      version: 1,
+      moved_to: null,
+    },
+    dry_run: true,
+    already_converted: false,
+    lens: { address: null, kind: "pre-mortem", on: `dispatch://${ISSUE}`, verdict: "Ship it." },
+    risks: [
+      risk(
+        0,
+        "Risk 0, the rewrite eats the quarter",
+        [`dispatch://${ISSUE}/artifact/verification-md#b-k1`],
+        "k1 fails a slice that ships nothing a user sees."
+      ),
+      risk(1, "1\\. Two indexers, one truth", [], "No check covers a second indexer yet."),
+    ],
+    summary:
+      `Dry run, nothing written: converting dispatch://${ISSUE}/artifact/premortem-md (version 1) ` +
+      `writes one pre-mortem lens under ${ISSUE} with 2 risks and moves the document's address to that lens.`,
+  };
+}
+
+/** `GET /api/v1/lenses?on=`: the spec's trade-off analysis with its finding, the pre-mortem it
+ *  triggered with one risk no check prevents yet, and the chain the two make. */
+export function lensesBody() {
+  const spec = `dispatch://${ISSUE}/spec`;
+  const premortem = `dispatch://lens/${OTHER_UUID}`;
+  const lens = (address: string, kind: string, words: string) => ({
+    address,
+    kind: { id: kind, words },
+    on: spec,
+    author: reasoningAuthor,
+    created_at: AT,
+    verdict: null,
+    state: "live",
+    visibility: "project",
+    triggered_by: [] as string[],
+    triggered: [] as string[],
+    findings: [] as unknown[],
+    risks: [] as unknown[],
+  });
+  const tradeOff = {
+    ...lens(LENS, "trade-off", "trade-off analysis"),
+    verdict: "Keep one region.",
+    triggered: [premortem],
+    findings: [
+      {
+        address: `${LENS}#b-${OTHER_UUID}`,
+        text: "A second region doubles the write path's cost.",
+        rank: 41,
+        state: "live",
+        visibility: "project",
+      },
+    ],
+  };
+  const preMortem = {
+    ...lens(premortem, "pre-mortem", "the pre-mortem over failure modes"),
+    triggered_by: [LENS],
+    risks: [
+      {
+        address: `dispatch://risk/${UUID}`,
+        heading: "The migration locks the table for minutes.",
+        early_warning: "Writes queue behind the migration's lock.",
+        prevention: "Build the index concurrently.",
+        prevented_by: [],
+        state: "live",
+        visibility: "project",
+      },
+    ],
+  };
+  return {
+    on: { address: spec, kind: "artifact", state: "live", visibility: "project" },
+    lens: null,
+    lenses: [tradeOff, preMortem],
+    chains: [{ lenses: [tradeOff, preMortem], stopped_at: null }],
+  };
+}
+
 /** `GET /api/v1/projects/{key}/plans`: one finished issue Legion ran and rated, so the record
  *  holds the issue's whole line. Its start, its retro's end, its last end and its close are four
  *  times, and the last end is an hour and a half after the start, as `duration_seconds` counts

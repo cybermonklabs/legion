@@ -66,16 +66,17 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
 
 /**
  * A plain name for every kind of node the page draws, which is every kind the model holds: the
- * issue, the documents and images it carries, the five typed blocks of those documents, the
+ * issue, the documents and images it carries, the eight typed blocks of those documents, the
  * decisions and asks, the conversation, the results recorded against a check, and the child
  * issues.
  *
  * A key is the model's own token for the kind, so the page needs no second table to read a
- * node: `callout`, `ask`, `requirement`, `plan_task` and `check` are the block type names in
- * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`, `comment` and
- * `message` are the item kinds of a `dispatch://` reference. A name is lowercase because the
- * page draws it inside its own sentences and rows, where a capital would read as a proper noun;
- * `sentenceCase` supplies the capital where a name opens a sentence or a heading.
+ * node: `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision`, `reading` and
+ * `criterion` are the block type names in
+ * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`,
+ * `comment` and `message` are the item kinds of a `dispatch://` reference. A name is lowercase
+ * because the page draws it inside its own sentences and rows, where a capital would read as a
+ * proper noun; `sentenceCase` supplies the capital where a name opens a sentence or a heading.
  */
 export const NODE_TYPE_NAMES = freeze({
   /** An `ask`: the word the approved pictures draw on its tag, "question" (R34). */
@@ -86,6 +87,9 @@ export const NODE_TYPE_NAMES = freeze({
   check: "check",
   child_issue: "child issue",
   comment: "comment",
+  /** A `criterion` block: what a person wants to be able to do, in their own words, which a
+   *  statement answers. The schema's own word is a plain one, so the page draws it. */
+  criterion: "criterion",
   decision: "decision",
   document: "document",
   handoff: "handoff",
@@ -93,6 +97,9 @@ export const NODE_TYPE_NAMES = freeze({
   issue: "issue",
   message: "message",
   plan_task: "plan task",
+  /** A `reading` block: an agent's reading of a decision, or of a question a person answered,
+   *  written at the end of the block it reads. */
+  reading: "reading",
   /** A `requirement` block, drawn by his word for it (R22, the Design's "The words"): a
    *  sentence that must be true of the software. */
   requirement: "statement",
@@ -1130,20 +1137,41 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   ci_check: "CI check",
   copied_from: "copied from",
   copied_from_document: "copied from document",
+  /** The author of a decision, which the server writes from who wrote the block. */
+  decided_by: "decided by",
+  /** The question an agent's decision settles. An ask is drawn as a question (R34). */
+  from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
+  /** The person who kept the decision as it reads; the server writes it. */
+  kept_by: "kept by",
+  /** The sum of the words that person kept, which the server compares with the words now. */
+  kept_text_sum: "sum of the kept words",
   kind: "kind",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** The question, comment or message a statement, a criterion, a check or a plan task hangs
+   *  under, by the plain word the page's own parent controls use. */
+  parent: "parent",
+  /** Whether a newer decision stands in this one's place. */
+  replaced: "replaced",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
+  /** The spec blocks a decision, or the answer of an ask, shaped. */
+  shaped: "shaped",
+  /** How long a plan task takes, in days, which the plan's chart draws as its bar's length;
+   *  the chart's own word for a task that holds none is `PLAN_WORDS.no_size`. */
+  size: "size",
   state: "state",
   surface: "surface",
   title: "title",
+  /** How unsure the agent was of a decision, and in the next one why. */
+  uncertainty: "uncertainty",
+  uncertainty_reason: "why unsure",
   urgency: "urgency",
   when: "when",
 } as const);
@@ -1297,6 +1325,7 @@ export const GLYPH_TOKENS = freeze({
     check: "check",
     child_issue: "child-issue",
     comment: "comment",
+    criterion: "criterion",
     decision: "decision",
     document: "document",
     handoff: "handoff",
@@ -1304,6 +1333,7 @@ export const GLYPH_TOKENS = freeze({
     issue: "issue",
     message: "message",
     plan_task: "plan-task",
+    reading: "reading",
     requirement: "requirement",
     result: "result",
   },

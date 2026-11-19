@@ -27,6 +27,10 @@ type BlockVersion struct {
 // block-aware build indexed is not Indexed, and its Text is nil. Version numbers are stored as
 // Postgres integer, so a version past math.MaxInt32 is one no document has: BlockTextAt answers
 // it with a zero BlockVersion (Exists false) without querying.
+//
+// A document converted into an issue room keeps its own history (T12a of dispatch://INFRA-1253's
+// plan): its versions and its indexed versions are its own rows, while its blocks' text rows are
+// keyed by the room's tree artifact, at the document's own version numbers (blockTextOwners).
 func BlockTextAt(ctx context.Context, q Queryer, artifactID, blockID string, version int) (BlockVersion, error) {
 	if version > math.MaxInt32 {
 		return BlockVersion{}, nil
@@ -37,9 +41,9 @@ func BlockTextAt(ctx context.Context, q Queryer, artifactID, blockID string, ver
 		select exists (select 1 from artifact_versions where artifact_id = $1 and number = $3),
 		       exists (select 1 from document_indexed_versions where artifact_id = $1 and version = $3),
 		       (select min(version) from document_indexed_versions where artifact_id = $1),
-		       (select text from document_block_texts where artifact_id = $1 and block_id = $2 and version <= $3
+		       (select text from document_block_texts where artifact_id = any(`+blockTextOwners("$1")+`) and block_id = $2 and version <= $3
 		        order by version desc limit 1),
-		       (select max(version) from document_block_texts where artifact_id = $1 and block_id = $2 and text is null)
+		       (select max(version) from document_block_texts where artifact_id = any(`+blockTextOwners("$1")+`) and block_id = $2 and text is null)
 	`, artifactID, blockID, version).Scan(&read.Exists, &read.Indexed, &earliest, &read.Text, &removed); err != nil {
 		return BlockVersion{}, fmt.Errorf("read block %q of %s at version %d: %w", blockID, artifactID, version, err)
 	}
@@ -56,11 +60,12 @@ func BlockTextAt(ctx context.Context, q Queryer, artifactID, blockID string, ver
 }
 
 // CurrentBlockText is the whole text of block blockID of document artifactID as its latest
-// recorded version holds it, or "" when that version deleted it or none recorded it.
+// recorded version holds it, or "" when that version deleted it or none recorded it. A document
+// converted into an issue room is read under its room as well (blockTextOwners).
 func CurrentBlockText(ctx context.Context, q Queryer, artifactID, blockID string) (string, error) {
 	var current *string
 	if err := q.QueryRow(ctx, `
-		select (select text from document_block_texts where artifact_id = $1 and block_id = $2
+		select (select text from document_block_texts where artifact_id = any(`+blockTextOwners("$1")+`) and block_id = $2
 		        order by version desc limit 1)
 	`, artifactID, blockID).Scan(&current); err != nil {
 		return "", fmt.Errorf("read the text of block %q of %s: %w", blockID, artifactID, err)
@@ -69,4 +74,14 @@ func CurrentBlockText(ctx context.Context, q Queryer, artifactID, blockID string
 		return "", nil
 	}
 	return *current, nil
+}
+
+// blockTextOwners is, as an SQL array over the uuid parameter document, the keys
+// document_block_texts holds a document's blocks' text rows under: the document itself, and,
+// for a document converted into an issue room, the room's tree artifact, under which the room's
+// index writes them at the document's own version numbers (IndexBlocks), so one numbering runs
+// across both keys.
+func blockTextOwners(document string) string {
+	return `array[` + document + `::uuid, coalesce((select moved.room from document_rooms moved where moved.artifact_id = ` +
+		document + `::uuid), ` + document + `::uuid)]`
 }

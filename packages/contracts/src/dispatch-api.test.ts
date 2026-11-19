@@ -1437,6 +1437,8 @@ test("models a comment's and a direct message's blocks", () => {
       changed_at: "2026-10-28T00:00:00Z",
       parent: { kind: "issue", id: "CORE-1", ref: "dispatch://CORE-1" },
       parent_version: null,
+      state: "live",
+      visibility: "project",
     },
     revision: 2,
     indexed: true,
@@ -1466,6 +1468,8 @@ test("models a comment's and a direct message's blocks", () => {
       // A direct message belongs to no issue, so its node has no parent.
       parent: null,
       parent_version: null,
+      state: "live",
+      visibility: "project",
     },
     indexed: true,
     blocks: [

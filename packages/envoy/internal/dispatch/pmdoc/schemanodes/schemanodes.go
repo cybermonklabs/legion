@@ -1,0 +1,279 @@
+// Package schemanodes builds the block schema from the nodes of the store, which is where a
+// type lives: one `supertag` node per type and one `attribute` node per attribute it holds, tied
+// to its supertag by an `attribute_of` tuple
+// (store/migrations/20261109051232_graph_supertags.up.sql seeds them from
+// pmdoc/schema/blocks.json). The server installs what this reads at boot and again each time a
+// supertag write announces itself, so adding a type is a row rather than a build.
+//
+// Nothing here is on a write's path. A document write validates against the installed value
+// (pmdoc), never against the store, so a write costs what it cost before a type was data.
+package schemanodes
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sort"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+)
+
+const (
+	// KindSupertag is the node kind of a type: its id is the type's name.
+	KindSupertag = "supertag"
+	// KindAttribute is the node kind of one attribute of one type: its id is
+	// `<supertag>/<store name>` (StoreName), and it carries that store name as `store_name`, so a
+	// reader takes it from the node rather than from the spelling of the id.
+	KindAttribute = "attribute"
+	// TupleAttributeOf is the tuple kind tying an attribute node to the supertag that holds it.
+	// It is the tie a reader follows; an id's spelling is not.
+	TupleAttributeOf = "attribute_of"
+	// Channel is the Postgres channel a write to either kind announces itself on at commit
+	// (the triggers of 20261109051232). Each server's reinstall waits on its wake.
+	Channel = "dispatch_block_schema"
+)
+
+// StoreName is the name the store holds the values of attribute name of block type typeName
+// under: the kind of each tuple that states one of its values (R1), the `store_name` its
+// attribute node carries, and what follows the `/` in that node's id. A document, the editor and
+// the schema Read builds know the attribute by name alone, so a writer or an indexer that stores
+// one of its values maps name to this, and a reader of the store maps it back. It is name itself
+// except where name is a base attribute every node carries (graphstore.IsBaseAttribute), whose
+// value tuple would read as the node's own visibility or state: ask's `state` is stored as
+// `answer_state`, and any other such attribute as its type's name, `_` and its own name.
+//
+// The mapping exists only while a markdown attribute carries a base attribute's name, as ask's
+// `state` does. Once no type declares such an attribute, StoreName goes and every attribute's
+// store name is its name. The seed of the type nodes
+// (store/migrations/20261109051232_graph_supertags.up.sql) writes what this answers, and
+// TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds the two together.
+func StoreName(typeName, name string) string {
+	switch {
+	case !graphstore.IsBaseAttribute(name):
+		return name
+	case typeName == "ask" && name == "state":
+		return "answer_state"
+	default:
+		return typeName + "_" + name
+	}
+}
+
+// supertagAttributes is what a supertag node carries. A node without BlockType is a type the
+// block schema does not declare - a person, a comment, an issue - which this reader skips: the
+// block schema is the part of the store a build can address, and a kind it cannot address is
+// one more row, never a refusal.
+type supertagAttributes struct {
+	BlockType bool                   `json:"block_type"`
+	Content   pmdoc.BlockContentRule `json:"content"`
+	Render    string                 `json:"render"`
+	Version   int                    `json:"version"`
+	// Position is the type's place in the schema, which is the order the server serves the
+	// types in and the order the seed read them from the file.
+	Position int `json:"position"`
+	// Since and CreatableSince are the type's element versions as the manifest gives them: from
+	// which schema version a build reads the type and from which it may create it. A node that
+	// carries neither is a type the manifest gives none, which reads as 1 and 1 (pmdoc's
+	// normalizeVersions), as blocks.json leaves them out.
+	Since          int `json:"since"`
+	CreatableSince int `json:"creatable_since"`
+	// Parents is the typed blocks the type stands in after their own content, and nowhere else
+	// (pmdoc.BlockTypeSchema.Parents); a node that carries none is a type in the block group.
+	Parents []string `json:"parents"`
+}
+
+// attributeAttributes is what an attribute node carries: the name its type declares it under,
+// its place among that type's attributes, and the schema's own fields - the kind, the choices,
+// the default, whether the server owns it, what it may point at, its scope and its element
+// versions. The node carries its store name (StoreName) beside them, which is no field of the
+// block schema and is not read here: a document and the editor know an attribute by its name
+// alone.
+type attributeAttributes struct {
+	Name     string `json:"name"`
+	Position int    `json:"position"`
+	pmdoc.BlockAttributeSchema
+}
+
+// Read builds the block schema from the store's nodes: every supertag node the store holds at
+// any state but gone that declares itself a block type, with the attributes its `attribute_of`
+// tuples name, in the order each node records. The version is the highest its types carry, so a
+// type added at a new version raises the schema's own. Each attribute is declared under the
+// name its node carries, the name a document writes it under, and never under its store name:
+// the node ask/answer_state is ask's `state`, as blocks.json declares it. It names no node and
+// no mark of the Proof schema: the store holds the typed blocks alone, and pmdoc.Install takes
+// the nodes and marks from the build's own manifest.
+//
+// It refuses a store holding no block type, since installing that would leave the server
+// unable to read a single typed block, and a node it cannot decode. Everything else it cannot
+// address it skips.
+//
+// Its reads - the attribute nodes, the supertag nodes and each supertag's tuples - run in one
+// read-only transaction at repeatable read, as docs.PgVersioned's compaction read does, so they
+// all read one snapshot: a migration that commits between two of them is read whole by the next
+// Read and not at all by this one, never half.
+func Read(ctx context.Context, db Beginner) (pmdoc.BlockSchema, error) {
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return pmdoc.BlockSchema{}, fmt.Errorf("begin the block schema read: %w", err)
+	}
+	// The transaction reads only, so its end is a rollback whatever happened.
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	return read(ctx, tx)
+}
+
+// Beginner is what Read opens its transaction on: the store's pool, or a test's stand-in.
+type Beginner interface {
+	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+}
+
+// afterAttributeNodesRead runs, when a test sets it, between read's first read and its second:
+// where a migration that commits would give a read outside one snapshot a mixed value.
+var afterAttributeNodesRead func()
+
+// read is Read inside its transaction, q.
+func read(ctx context.Context, q graphstore.Queryer) (pmdoc.BlockSchema, error) {
+	attributes, err := readAttributeNodes(ctx, q)
+	if err != nil {
+		return pmdoc.BlockSchema{}, err
+	}
+	if afterAttributeNodesRead != nil {
+		afterAttributeNodesRead()
+	}
+	supertags, err := graphstore.NodesOfKind(ctx, q, KindSupertag)
+	if err != nil {
+		return pmdoc.BlockSchema{}, err
+	}
+	type placed struct {
+		position int
+		typ      pmdoc.BlockTypeSchema
+	}
+	var types []placed
+	var value pmdoc.BlockSchema
+	for _, node := range supertags {
+		if node.State == graphstore.StateGone {
+			continue
+		}
+		var carried supertagAttributes
+		if err := decodeNodeAttributes(node, &carried); err != nil {
+			return pmdoc.BlockSchema{}, err
+		}
+		if !carried.BlockType {
+			continue
+		}
+		declared, err := typeAttributes(ctx, q, node.ID, attributes)
+		if err != nil {
+			return pmdoc.BlockSchema{}, err
+		}
+		types = append(types, placed{position: carried.Position, typ: pmdoc.BlockTypeSchema{
+			Name:           node.ID,
+			Content:        carried.Content,
+			Render:         carried.Render,
+			Attributes:     declared,
+			Parents:        carried.Parents,
+			Since:          carried.Since,
+			CreatableSince: carried.CreatableSince,
+		}})
+		if carried.Version > value.Version {
+			value.Version = carried.Version
+		}
+	}
+	if len(types) == 0 {
+		return pmdoc.BlockSchema{}, fmt.Errorf("the store holds no block type: no %s node declares one", KindSupertag)
+	}
+	sort.SliceStable(types, func(left, right int) bool {
+		if types[left].position != types[right].position {
+			return types[left].position < types[right].position
+		}
+		return types[left].typ.Name < types[right].typ.Name
+	})
+	value.Types = make([]pmdoc.BlockTypeSchema, len(types))
+	for index, held := range types {
+		value.Types[index] = held.typ
+	}
+	return value, nil
+}
+
+// readAttributeNodes answers every attribute node the store holds (any state but gone) by its
+// address, so the tuples out of one supertag are resolved without a read per attribute.
+func readAttributeNodes(ctx context.Context, q graphstore.Queryer) (map[string]attributeAttributes, error) {
+	nodes, err := graphstore.NodesOfKind(ctx, q, KindAttribute)
+	if err != nil {
+		return nil, err
+	}
+	return heldAttributes(nodes)
+}
+
+// heldAttributes is what each of nodes, the attribute nodes of the store, carries, by its address,
+// leaving out a node the store holds gone.
+func heldAttributes(nodes []graphstore.Node) (map[string]attributeAttributes, error) {
+	held := make(map[string]attributeAttributes, len(nodes))
+	for _, node := range nodes {
+		if node.State == graphstore.StateGone {
+			continue
+		}
+		var carried attributeAttributes
+		if err := decodeNodeAttributes(node, &carried); err != nil {
+			return nil, err
+		}
+		held[node.ID] = carried
+	}
+	return held, nil
+}
+
+// typeAttributes is one type's attributes, in the order the nodes record, read through the
+// `attribute_of` tuples pointing at its supertag. An attribute node the tuple names and the
+// store holds gone, or no longer holds, is left out, as the current set of a retracted tuple
+// would be.
+func typeAttributes(ctx context.Context, q graphstore.Queryer, name string, held map[string]attributeAttributes) (pmdoc.BlockAttributes, error) {
+	tuples, err := graphstore.CurrentIn(ctx, q, KindSupertag, name, []string{TupleAttributeOf})
+	if err != nil {
+		return nil, err
+	}
+	var tied []string
+	for _, tuple := range tuples {
+		if tuple.FromKind == KindAttribute {
+			tied = append(tied, tuple.FromID)
+		}
+	}
+	ordered := orderedAttributes(tied, held)
+	declared := make(pmdoc.BlockAttributes, len(ordered))
+	for index, attribute := range ordered {
+		declared[index] = pmdoc.BlockAttribute{Name: attribute.Name, BlockAttributeSchema: attribute.BlockAttributeSchema}
+	}
+	return declared, nil
+}
+
+// orderedAttributes is the attribute nodes of one type, the ids its `attribute_of` tuples come
+// from, in the order the nodes record - by position, then by name - leaving out an id held does
+// not hold: the order of a type's attributes in the block schema (typeAttributes) and among the
+// store's own types (StoreTypesIn) alike.
+func orderedAttributes(ids []string, held map[string]attributeAttributes) []attributeAttributes {
+	ordered := make([]attributeAttributes, 0, len(ids))
+	for _, id := range ids {
+		if attribute, present := held[id]; present {
+			ordered = append(ordered, attribute)
+		}
+	}
+	sort.SliceStable(ordered, func(left, right int) bool {
+		if ordered[left].Position != ordered[right].Position {
+			return ordered[left].Position < ordered[right].Position
+		}
+		return ordered[left].Name < ordered[right].Name
+	})
+	return ordered
+}
+
+// decodeNodeAttributes reads a node's attributes column into the shape its kind carries. The
+// column is a map on the way out of the store and a record here, so it goes through JSON once.
+func decodeNodeAttributes(node graphstore.Node, into any) error {
+	encoded, err := json.Marshal(node.Attributes)
+	if err != nil {
+		return fmt.Errorf("encode the attributes of node %s/%s: %w", node.Kind, node.ID, err)
+	}
+	if err := json.Unmarshal(encoded, into); err != nil {
+		return fmt.Errorf("read the attributes of node %s/%s: %w", node.Kind, node.ID, err)
+	}
+	return nil
+}

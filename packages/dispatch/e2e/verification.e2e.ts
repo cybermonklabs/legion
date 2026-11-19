@@ -196,6 +196,7 @@ A result at the head is a pass that stands.
   await recordCheckResult(issue.key, {
     check: "c-past",
     commit: firstHead,
+    negative_control: "Kept the head where it was and the result stood at it.",
     observed: "41 passed",
     role: "tester",
     verdict: "pass",
@@ -215,6 +216,7 @@ A result at the head is a pass that stands.
   await recordCheckResult(issue.key, {
     check: "c-head",
     commit: secondHead,
+    negative_control: "Moved the head again and this result was left behind too.",
     observed: "41 passed",
     role: "tester",
     verdict: "pass",
@@ -276,6 +278,7 @@ A retracted pass stands for nothing.
   await recordCheckResult(issue.key, {
     check: "c-both",
     commit: secondHead,
+    negative_control: "Recorded the fail alone and no pass stood.",
     observed: "41 passed, 0 failed",
     role: "tester",
     verdict: "pass",
@@ -291,6 +294,7 @@ A retracted pass stands for nothing.
   const retract = await recordCheckResult(issue.key, {
     check: "c-retracted",
     commit: secondHead,
+    negative_control: "Left the pass unretracted and it stood.",
     observed: "41 passed",
     role: "tester",
     verdict: "pass",
@@ -526,6 +530,7 @@ End.
   await recordCheckResult(issue.key, {
     check: "c-old",
     commit: secondHead,
+    negative_control: "Broke the list and the run failed.",
     observed: "41 passed",
     role: "tester",
     verdict: "pass",

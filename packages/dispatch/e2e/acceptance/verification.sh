@@ -3,7 +3,8 @@
 # a `plan_task` and a `check` that serve a spec's `requirement`, and the `serves` and `needs` edges
 # `GET /api/v1/references` lists for them; every attribute a `check` carries, read back by
 # `dispatch read --ref`; the refusals a pointer earns — a block no document holds, a block of an
-# issue in another tree, a `needs` naming a block outside its own plan — and a `when` the schema
+# issue in another tree, a `needs` naming a plan task of an issue outside its own issue's tree,
+# beside the `needs` at a task of another document of its own issue it takes — and a `when` the schema
 # does not know; a requirement's id through a move; `dispatch result` and `dispatch results`, with
 # an unknown check and a pass that counts a skipped case refused; a closed issue's result for an
 # `after_merge` check, which it takes beside a comment and a message, and the two it still refuses; the coverage flags
@@ -569,11 +570,26 @@ A task waiting on a requirement.
 :::" '[{op: "insert", after: "end", markdown: $m}]')" \
   "attribute \"needs\" points at $root_spec#b-r1, a \"requirement\" block; it points only at plan_task"
 
+# A needs names a plan task of its own issue or of an issue above it, so one at a task of another
+# document of the same issue is taken (dispatch://INFRA-1253/spec R10), and one at a task of an
+# issue in another tree is refused.
 printf ':::plan_task{#u1}\nA task of another document.\n:::\n\n:::plan_task{#u2 needs="%s#b-t1"}\nA task waiting on another plan'"'"'s task.\n:::\n' \
   "$root_plan" >"$work/outside-needs.md"
-refused_document plan "a needs naming a task of another plan" "$root" outside-needs.md \
-  "$work/outside-needs.md" INVALID_MARKDOWN \
-  "attribute \"needs\" points at $root_plan#b-t1, a block of $root/plan-md; it points only at a block of its own document"
+upload plan "$root" outside-needs.md "$work/outside-needs.md"
+get "/api/v1/references?to=$(q "$root_plan#b-t1")"
+want_status 200 plan "?to=the first task answers after another document of $root waits on it"
+expect plan "?to=the first task lists the needs edge from the task of another document of $root" \
+  "$(jq -cn --arg k "$root" '[["needs", "\($k)/outside-needs-md#u2"], ["needs", "\($k)/plan-md#t2"]] | sort')" \
+  '[.edges[] | select(.kind == "needs") | [.kind, .node.id]] | sort'
+
+printf 'Tasks of another tree.\n\n:::plan_task{#o9}\nA task of another tree.\n:::\n' >"$work/other-tasks.md"
+upload plan "$other" tasks.md "$work/other-tasks.md"
+readonly other_tasks="dispatch://$other/artifact/tasks-md"
+printf ':::plan_task{#v1 needs="%s#b-o9"}\nA task waiting on another tree'"'"'s task.\n:::\n' \
+  "$other_tasks" >"$work/other-tree-needs.md"
+refused_document plan "a needs naming a task of an issue in another tree" "$root" other-tree-needs.md \
+  "$work/other-tree-needs.md" INVALID_MARKDOWN \
+  "attribute \"needs\" points at $other_tasks#b-o9, a block of $other; it points only at a block of $root or of an issue above it"
 
 # --- coverage-task: the missing plan task is named once the plan document exists -----------------
 
@@ -820,13 +836,15 @@ else
   # own results, every one of which the read prints.
   record reading "record a pass at the commit that reads like the head" "$root" --check c1 \
     --role tester --verdict pass --commit "$commit_lookalike" --surface cli \
-    --run "bash e2e/acceptance/verification.sh" --observed "the result at the look-alike"
+    --run "bash e2e/acceptance/verification.sh" --observed "the result at the look-alike" \
+    --negative-control "Deleted the check and the flag came back."
   record reading "record a pass at the pull request's head" "$root" --check c1 --role tester \
     --verdict pass --commit "$commit_two" --surface cli --run "bash e2e/acceptance/verification.sh" \
-    --observed "the first result at the head"
+    --observed "the first result at the head" --negative-control "Deleted the check and the flag came back."
   record reading "record the newest pass at the pull request's head" "$root" --check c1 \
     --role tester --verdict pass --commit "$commit_two" --surface cli \
-    --run "bash e2e/acceptance/verification.sh" --observed "the last of the three results"
+    --run "bash e2e/acceptance/verification.sh" --observed "the last of the three results" \
+    --negative-control "Deleted the check and the flag came back."
   run reading "read the results of $root" results --issue "$root"
   grep -qE "^- c1 \(before_merge\)\. Compared with the head of pull request #7 at ${commit_two}.*\. A pass stands: yes, from tester\.$" \
     "$work/out" ||

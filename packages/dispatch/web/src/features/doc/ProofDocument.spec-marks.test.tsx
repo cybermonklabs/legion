@@ -42,34 +42,66 @@ function version(number: number): Version {
 
 const spec: Artifact = { ...artifact, versions: [1, 2, 3, 4].map(version) };
 
+// One decision whose `shaped` tie to p-plan was written by event 10, and p-plan's text changed in
+// a version event 12 wrote, after the tie.
 const decisions: IssueDecisions = {
-  decisions: [
+  decisions: [],
+  document: null,
+  entries: [
     {
-      asks: [],
-      block_id: "d-1",
+      answer: null,
+      answer_state: null,
+      answered_at: null,
+      answered_by: null,
       changed_at: "2026-10-04T00:00:00Z",
       changed_version: 3,
-      heading: "Ship in two steps",
+      decided_by: { id: "session-1", kind: "session" },
+      declined: false,
+      declined_note: null,
+      document: {
+        artifact_id: "choices-id",
+        block: "CORE-1/choices-md#d-1",
+        block_id: "d-1",
+        ref: "dispatch://CORE-1/artifact/choices-md",
+      },
       kept: null,
+      kept_by: null,
+      kept_text_sum: null,
       kind: "agent",
-      links: [
+      multiple: null,
+      node: { id: "CORE-1/choices-md#d-1", kind: "block" },
+      options: null,
+      question: null,
+      readings: [],
+      ref: "dispatch://CORE-1/artifact/choices-md#b-d-1",
+      replaced: false,
+      resolution: null,
+      selected: null,
+      shaped: [
         {
           created_at: "2026-10-01T00:00:00Z",
           created_version: 1,
-          from_block: "d-1-para",
+          event: 10,
+          from_block: "d-1",
           stale: true,
-          to: graphNode({ block_id: "p-plan", id: "CORE-1/spec#p-plan", kind: "block" }),
+          text_changed_event: 12,
+          // A block of the issue room: the room's node, the spec named as the document holding it.
+          to: graphNode({
+            block_id: "p-plan",
+            document: "dispatch://CORE-1/spec",
+            id: "CORE-1/tree#p-plan",
+            kind: "block",
+          }),
         },
       ],
-      ref: "dispatch://CORE-1/artifact/decisions-md#b-d-1",
-      replaced: false,
-      text: "Ship it in two steps.",
+      text: ":::decision{#d-1}\nShip it in two steps.\n:::\n",
       text_sha256: "sum-d-1",
-      unsure: false,
+      uncertainty: null,
+      uncertainty_reason: null,
+      urgency: null,
       waiting_review: true,
     },
   ],
-  document: "dispatch://CORE-1/artifact/decisions-md",
   open_questions: [],
 };
 

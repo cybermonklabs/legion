@@ -32,12 +32,12 @@ the architect claims it, so the issue shows it as claimed by Legion's session.
 
 ## 3. Decisions and the spec approval
 
-The architect grows the spec into a design and writes each open question as a decision block, which
+The architect grows the spec into a design and writes each open question as an ask block, which
 reaches the assignee's Inbox. Once every block is answered, it asks for approval with a summary.
 The Inbox opens the request in its reading column: the spec as the version to approve, with
 **Approve** and **Request changes** above it.
 
-![The spec's design with an open decision block: the architect's question, its recommendation, and two options to answer.](/legion/media/legion/decision-block.png)
+![The spec's design with an open ask block: the architect's question, its recommendation, and two options to answer.](/legion/media/legion/decision-block.png)
 
 ![The architect's request to approve the spec, selected in the Inbox's reading column: Approve and Request changes at the head of the column, and the version it asks about below them.](/legion/media/legion/spec-approval.png)
 

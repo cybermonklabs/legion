@@ -2420,4 +2420,30 @@ package api
 // #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
-const DaemonAPIVersion = 168
+//
+// 176: the `decisions` design-gate step is gone, since a person's
+// decisions are nodes of the spec, which the `spec` step's approval covers. `gates.design` refuses
+// that step by name (config's readDesignSteps), so the step of `POST /legion/v1/gates/register` is
+// `criteria` or `spec`, and a call naming `decisions` is refused as a step the deployment does not
+// gate (`GATE_STEP_NOT_CONFIGURED`); each `gatedSteps[].step` of `GET /legion/v1/state` and each
+// entry of `designGateSteps` on `POST /legion/v1/controller/secret` is one of the same two. The
+// plugin narrows with it: `legionDesignStep` (`packages/contracts/src/legion-api.ts`) takes the two
+// names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
+// and the kept approvals an earlier release wrote of the step stay in the store, which no reader
+// of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
+// A plugin of 168 reads that state as before, since it parses the three names, and the boot gate
+// and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
+// refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
+// file before it pins an image of this release.
+// (This change took 161 at the forward merge of 2026-11-18, which brought main in at 0b2769e553
+// and 152, and 170 at the forward merge of 2026-11-19 that brought main in at e5e4900fe7 and 160.
+// At the forward merge of 2026-11-19 that brings main in at 5f3d552e37, main declares 168 (the
+// entry above), and 170 is declared by #2230, #4030, #4180 and #4193 beside this change, so it
+// takes 176, the lowest number above main's 168 that no open pull request declares, in a reading
+// of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 241 open pull requests, made
+// between 2026-11-19T17:59:02Z and 18:04:40Z: 169 #3831 and #4065, 170 #2230, #4030, #4173 (this
+// change, before this merge), #4180 and #4193, 171 #4115, 172 #3659, 173 #4493, 174 #3993 and
+// #4273, 175 #3712, #4392, #4485 and #4495, and nothing above 175. That is a reading and never the
+// rule: read main's own number and every open head again at the next forward merge rather than
+// from this line.)
+const DaemonAPIVersion = 176

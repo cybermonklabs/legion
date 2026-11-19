@@ -111,7 +111,7 @@ func TestEveryDocumentWriteRefusesACICheckThatBreaksARule(t *testing.T) {
 			expectRefusal(t, "a retype setting its attributes", applyOp(t, handler, id, map[string]any{
 				"op": "retype", "block": "c1", "type": "check", "attributes": test.attributes,
 			}), http.StatusBadRequest, "INVALID_CI_CHECK", ciCheckRefusal("c1", test.rule))
-			broken.failNextLoad(id)
+			broken.failNextLoad(t, id)
 			expectRefusal(t, "a rebuild from markdown", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+id+"/rebuild",
 				map[string]any{"markdown": added}, "alice"), http.StatusBadRequest, "INVALID_CI_CHECK", want)
 			if after := documentMarkdown(t, handler, id); after != before {
@@ -151,7 +151,7 @@ func TestACICheckOnACheckHoldingAResultIsRefused(t *testing.T) {
 		"op": "retype", "block": "c1", "type": "check",
 		"attributes": map[string]any{"negative_control": ciCheckNegativeControl, "ci_check": ciCheckRun},
 	}), http.StatusBadRequest, "INVALID_CI_CHECK", want)
-	broken.failNextLoad(id)
+	broken.failNextLoad(t, id)
 	expectRefusal(t, "a rebuild giving it a ci_check", dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+id+"/rebuild",
 		map[string]any{"markdown": ciCheckBlock("c1", ciCheckKept)}, "alice"), http.StatusBadRequest, "INVALID_CI_CHECK", want)
 	if after := documentMarkdown(t, handler, id); after != before {
@@ -183,7 +183,7 @@ func TestAnEditBesideABrokenCICheckIsNotRefused(t *testing.T) {
 	issue := createInteractionIssue(t, handler, "CIB", "CI checks", "A spec\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "Intro.\n\n"+ciCheckBlock("c1", ciCheckOrdinary))
 	id := verification.Artifact.ID
-	writeBrowserDocument(t, documents, id, "Intro.\n\n"+ciCheckBlock("c1", ciCheckBreaks[0].markdown))
+	writeBrowserDocument(t, handler, documents, id, "Intro.\n\n"+ciCheckBlock("c1", ciCheckBreaks[0].markdown))
 
 	if response := applyOp(t, handler, id, map[string]any{"op": "replace", "find": "Intro.", "with": "Introduction."}); response.Code != http.StatusOK {
 		t.Fatalf("an edit beside the broken check: status=%d body=%s, want 200", response.Code, response.Body.String())
@@ -273,7 +273,7 @@ func TestSettlementRefusesEachBrokenCICheckABrowserPeerWrites(t *testing.T) {
 		want = append(want, ciCheckRefusalEvent{BlockID: blockID, Reason: test.rule, BlockType: "check"})
 	}
 	written = append(written, ciCheckBlock("c5", ciCheckKept))
-	writeBrowserDocument(t, documents, id, strings.Join(written, "\n"))
+	writeBrowserDocument(t, handler, documents, id, strings.Join(written, "\n"))
 
 	assertSettled := func(stage string) {
 		t.Helper()
@@ -298,6 +298,6 @@ func TestSettlementRefusesEachBrokenCICheckABrowserPeerWrites(t *testing.T) {
 	}
 	assertSettled("the browser's write settled")
 
-	writeBrowserDocument(t, documents, id, documentMarkdown(t, handler, id)+"\nLater.\n")
+	writeBrowserDocument(t, handler, documents, id, documentMarkdown(t, handler, id)+"\nLater.\n")
 	assertSettled("an edit elsewhere settled")
 }

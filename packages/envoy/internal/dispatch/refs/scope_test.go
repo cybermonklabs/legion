@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -86,8 +87,24 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 	spec := insertScopeDocument(t, tx, "ACME-1", "spec", true)
 	notes := insertScopeDocument(t, tx, "ACME-1", "notes", false)
 	project, _ := createReferenceArtifact(t, tx, "", "ACME", "handbook")
+	// An issue room: the plan is edited in it, and its block q2 is a fragment block of the plan,
+	// whose ask the room's settlement keys by the room's tree artifact (AskBlockDocumentSQL).
+	plan := insertScopeDocument(t, tx, "ACME-1", "plan", false)
+	room := insertScopeRow(t, tx, "the issue's tree", `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('ACME-1', 'ACME', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
+		returning id::text
+	`)
+	if _, err := tx.Exec(ctx, `insert into document_rooms (artifact_id, room) values ($1, $2)`, plan, room); err != nil {
+		t.Fatalf("put the plan in the issue's room: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `insert into issue_room_blocks (tree_artifact_id, block_id, document_id) values ($1, 'q2', $2)`,
+		room, plan); err != nil {
+		t.Fatalf("place the plan's block in the room: %v", err)
+	}
 
 	blockAsk := insertScopeBlockAsk(t, tx, "ACME-1", notes, "q1")
+	roomBlockAsk := insertScopeBlockAsk(t, tx, "ACME-1", room, "q2")
 	anchoredAsk := insertScopeAsk(t, tx, "ACME-1", "anchor", notes)
 	issueAsk := insertScopeAsk(t, tx, "ACME-1", "", nil)
 	projectAsk := insertScopeAsk(t, tx, nil, "artifact_id", project)
@@ -143,7 +160,10 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 		{"the spec's version", Target{"artifact", spec}, spec},
 		{"another document's version", Target{"artifact", notes}, notes},
 		{"a project document's version", Target{"artifact", project}, project},
+		{"a version of a document edited in an issue room", Target{"artifact", plan}, plan},
+		{"the issue room's tree's version", Target{"artifact", room}, room},
 		{"a block ask", Target{"ask", blockAsk}, notes},
+		{"a block ask of an issue room's fragment", Target{"ask", roomBlockAsk}, plan},
 		{"an anchored ask", Target{"ask", anchoredAsk}, notes},
 		{"an issue ask", Target{"ask", issueAsk}, spec},
 		{"a project document's ask", Target{"ask", projectAsk}, project},
@@ -159,9 +179,9 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 		{"an issue message", Target{"message", issueMessage}, spec},
 		{"a direct message", Target{"message", directMessage}, ""},
 	}
-	want := map[string][]Target{spec: {}, notes: {}, project: {}}
+	want := map[string][]Target{spec: {}, notes: {}, project: {}, plan: {}, room: {}}
 	for _, shape := range shapes {
-		got, err := ScopeOf(ctx, tx, shape.Kind, shape.ID)
+		got, err := ScopeOf(ctx, tx, model.Actor{}, shape.Kind, shape.ID)
 		if err != nil {
 			t.Fatalf("scope of %s: %v", shape.name, err)
 		}
@@ -184,7 +204,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 			t.Errorf("scope sources of %s = %v; want %v", doc, got, sources)
 		}
 	}
-	if got, err := ScopeOf(ctx, tx, "comment", "c1"); err != nil || got != "" {
+	if got, err := ScopeOf(ctx, tx, model.Actor{}, "comment", "c1"); err != nil || got != "" {
 		t.Fatalf("scope of a source that is not a uuid = %q, %v; want none", got, err)
 	}
 }
@@ -278,7 +298,7 @@ func TestPendingScopeAgreesWithScopeOf(t *testing.T) {
 		if err != nil {
 			t.Fatalf("pending scope of %s: %v", shape.name, err)
 		}
-		stored, err := ScopeOf(ctx, tx, shape.kind, shape.stored)
+		stored, err := ScopeOf(ctx, tx, model.Actor{}, shape.kind, shape.stored)
 		if err != nil {
 			t.Fatalf("scope of the stored %s: %v", shape.name, err)
 		}
@@ -391,7 +411,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 		record:   nil,
 		handbook: {"rule": text.Extract("dispatch://ACME/artifact/handbook/ask/"+projectQuestion, "")[0]},
 	} {
-		got, err := QuestionMap(ctx, tx, doc)
+		got, err := QuestionMap(ctx, tx, model.Actor{}, doc)
 		if err != nil {
 			t.Fatalf("question map of %s: %v", doc, err)
 		}
@@ -421,7 +441,7 @@ func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
 	insertScopeVersion(t, tx, spec, 1, ":::ask{#q1}\nWhich?\n:::\n\n"+
 		`:::ask{id="q 2" state="open"}`+"\nWhich?\n:::\n")
 
-	got, err := QuestionMap(ctx, tx, spec)
+	got, err := QuestionMap(ctx, tx, model.Actor{}, spec)
 	if err != nil {
 		t.Fatalf("question map of the spec: %v", err)
 	}

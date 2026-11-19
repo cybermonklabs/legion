@@ -1,7 +1,8 @@
 // Package docstest speaks the Hocuspocus websocket sync that docs.Service.ServeHTTP serves,
-// writes the deep trees a crafted client sends, and builds the load harness's spec, for Dispatch
+// writes the deep trees a crafted client sends, builds the load harness's spec, and holds the
+// whole-view backlink count refs.BacklinkCounts is held to (ViewBacklinkCountSQL), for Dispatch
 // tests in more than one package. It is an ordinary package rather than a _test.go file because
-// api, docs and pmdoc cannot import one another's test helpers, and it imports none of them.
+// api, docs, pmdoc and refs cannot import one another's test helpers, and it imports none of them.
 package docstest
 
 import (
@@ -59,6 +60,11 @@ type Peer struct {
 	Ended <-chan struct{}
 	// UpgradeHeader is the header of the room's answer to the websocket upgrade.
 	UpgradeHeader http.Header
+	// Fragment is the fragment of the room's Yjs document the peer's editor binds, which its caller
+	// sets as a page binds the one the artifact read answers (model.Artifact.Fragment): a converted
+	// document's own fragment of its issue's room. Dial leaves it empty, which names the room's own
+	// fragment, and nothing here reads it: the room sends the peer the whole room either way.
+	Fragment string
 
 	artifactID string
 	connection *gws.Conn
@@ -329,7 +335,9 @@ func (p *Peer) CloseCode() int {
 
 // read applies every sync frame the room sends and answers its sync step 1, keeps every awareness
 // update and hands on every auth answer, until the connection closes, handing answers the content
-// of each sync step 2 once it is applied and awareness each awareness update once it is kept.
+// of each sync step 2 once it is applied and awareness each awareness update once it is kept. A
+// frame naming another document than the one the peer asked for is passed over, as a browser's
+// provider routes every frame by its document's name and drops one no provider of its asked for.
 func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 	for {
 		_, message, err := p.connection.ReadMessage()
@@ -340,8 +348,12 @@ func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 			return
 		}
 		decoder := encoding.NewDecoder(message)
-		if _, err := decoder.ReadVarString(); err != nil {
+		name, err := decoder.ReadVarString()
+		if err != nil {
 			return
+		}
+		if name != p.artifactID {
+			continue
 		}
 		kind, err := decoder.ReadVarUint()
 		if err != nil {
@@ -516,7 +528,7 @@ func WriteDeepChain(txn *crdt.Transaction, fragment *crdt.YXmlFragment, textLeve
 // sends to mark the first text of doc with a link whose "nested" attribute is nested.
 func NestedLinkUpdate(t testing.TB, doc *crdt.Doc, nested any) []byte {
 	t.Helper()
-	update, err := crafted.NestedLinkUpdate(doc, nested)
+	update, err := crafted.NestedLinkUpdate(doc, "prosemirror", nested)
 	if err != nil {
 		t.Fatal(err)
 	}

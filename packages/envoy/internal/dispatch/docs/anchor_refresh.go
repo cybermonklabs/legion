@@ -9,8 +9,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -141,7 +143,8 @@ type refreshedAnchors struct {
 
 // refreshAnchors updates each open anchor from its current tree mark. Each persisted change
 // appends the affected row's own full refresh event in this transaction; callers publish the
-// collected committed events afterward.
+// collected committed events afterward. A comment whose anchor it orphans or finds again has its
+// anchored_in retracted or stated under that event (stateRefreshedAnchoredIn).
 //
 // Every changed anchor is found, and every event it owes read, before anything is written, and
 // then all of them are written together: one update of each table and one append per event, put
@@ -238,6 +241,10 @@ func (s *Service) refreshAnchors(ctx context.Context, tx pgx.Tx, artifactID stri
 			ledger.RegisterPendingAnchor(row)
 		}
 	}
+	anchoredIn, err := refreshedAnchoredIn(ctx, tx, changed, actor)
+	if err != nil {
+		return err
+	}
 	sink := eventSink(ctx)
 	return write(ctx, tx, func(b *store.WriteBatch) error {
 		for _, update := range []refreshedAnchors{changedAsks, changedComments} {
@@ -256,13 +263,18 @@ func (s *Service) refreshAnchors(ctx context.Context, tx pgx.Tx, artifactID stri
 				where target.id = refreshed.id
 			`, update.table), update.ids, update.quotes, update.orphaned)
 		}
-		for _, anchor := range changed {
+		for index, anchor := range changed {
 			event, err := anchor.event()
 			if err != nil {
 				return err
 			}
 			if err := s.events.QueueAppend(b, event, sink); err != nil {
 				return fmt.Errorf("append anchor refresh event: %w", err)
+			}
+			if tuple, held := anchoredIn[index]; held {
+				if err := stateRefreshedAnchoredIn(ctx, b, tuple); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -316,6 +328,70 @@ func (s *Service) anchorRefreshEvent(
 	return func() (model.Event, error) { return event, nil }, nil
 }
 
+// refreshedAnchoredIn is, by index into changed, the anchored_in that keeps each comment whose
+// anchor the refresh orphans or finds again level with that anchor (graphstore.AnchoredIn): a
+// retraction of the block an anchor it orphans stood in, and the block an anchor it finds again
+// stands in, each caused by that comment's own comment.anchor_refreshed, which the write phase
+// appends right before it (graphstore.LatestEvent, stateRefreshedAnchoredIn). The block is read
+// off the comment's row in the read phase: the refresh's update writes only the anchor's quote and
+// orphan flag, which the block's address does not read, and the one writer of its block id, the
+// backfill, takes the row's owner lock, which the refresh's version write holds
+// (BackfillAnchorBlocks), so the row read here is the row the update leaves. A comment the store
+// holds no node of, one this transaction has only queued, which the table does not hold yet, and a
+// block past the store's bound, which is no node, state nothing; a change of the quote alone moves
+// no block.
+func refreshedAnchoredIn(ctx context.Context, tx pgx.Tx, changed []changedAnchor, actor model.Actor) (map[int]graphstore.Tuple, error) {
+	ids := make([]string, 0, len(changed))
+	positions := make(map[string]int, len(changed))
+	for index, anchor := range changed {
+		if !anchor.comment || anchor.refreshed.Orphaned == anchor.mark.anchor.Orphaned {
+			continue
+		}
+		ids = append(ids, anchor.mark.id)
+		positions[anchor.mark.id] = index
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `
+		select c.id::text, `+graphstore.AnchorBlockAddressSQL("c")+`
+		from comments c
+		where c.id = any($1::uuid[]) and c.node_kind is not null
+		order by c.id
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the blocks of the refreshed comment anchors: %w", err)
+	}
+	defer rows.Close()
+	now := time.Now().UTC()
+	tuples := make(map[int]graphstore.Tuple, len(ids))
+	for rows.Next() {
+		var id string
+		var block *string
+		if err := rows.Scan(&id, &block); err != nil {
+			return nil, fmt.Errorf("read the block of a refreshed comment anchor: %w", err)
+		}
+		if block != nil && graphstore.AddressFits(*block) {
+			index := positions[id]
+			tuples[index] = graphstore.AnchoredIn(id, *block, !changed[index].refreshed.Orphaned, actor, now, graphstore.LatestEvent)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the blocks of the refreshed comment anchors: %w", err)
+	}
+	return tuples, nil
+}
+
+// stateRefreshedAnchoredIn queues on b the anchored_in refreshedAnchoredIn read of one refreshed
+// comment, right after that comment's comment.anchor_refreshed, whose id it carries
+// (graphstore.LatestEvent): nothing is appended between the two.
+func stateRefreshedAnchoredIn(ctx context.Context, b *store.WriteBatch, tuple graphstore.Tuple) error {
+	if err := graphstore.QueueWrite(ctx, b, nil, []graphstore.Tuple{tuple}); err != nil {
+		return fmt.Errorf("state the anchored_in of a refreshed comment anchor: %w", err)
+	}
+	return nil
+}
+
 // loadAnchorRefreshedAsks reads each ask of ids as its refresh event carries it, by id, in one
 // read of the rows and one of their opened events. Every id must name an ask.
 func loadAnchorRefreshedAsks(ctx context.Context, tx pgx.Tx, ids []string) (map[string]model.Ask, error) {
@@ -327,7 +403,7 @@ func loadAnchorRefreshedAsks(ctx context.Context, tx pgx.Tx, ids []string) (map[
 		select `+AskColumns+`, ba.id::text, ba.slug, ba.is_primary,
 			aa.project_key, aa.slug, aa.name, aa.is_primary
 		from asks a
-		left join artifacts ba on ba.id = a.block_artifact_id
+		left join artifacts ba on ba.id = `+refs.AskBlockDocumentSQL("a")+`
 		left join artifacts aa on aa.id = `+store.CastableUUID(`a.anchor->>'artifact_id'`)+`
 		where a.id = any($1::uuid[])
 	`, ids)

@@ -55,11 +55,12 @@ var documentRouteXidWindows = []routeXidWindowCase{
 	},
 	{
 		name: "the document removal route", route: "DELETE /api/v1/artifacts/{id} (removeArtifact)",
-		ready: readyArtifactRemoval, window: storetest.XidWindowOf(15,
+		ready: readyArtifactRemoval, window: storetest.XidWindowOf(16,
 			"the eleven deletes of the document's rows in other tables - its versions, updates, snapshots, "+
 				"checkpoints, search row, compaction debt, search-term queue, threads, "+
-				"references, grammar debt and excerpt backoff - the delete of its own row, the "+
-				"dispatch_doc_removed notify, the batch appending artifact.removed and the COMMIT ending them"),
+				"references, grammar debt and excerpt backoff - the node write stating the document's node gone, "+
+				"the delete of its own row, the dispatch_doc_removed notify, the batch appending artifact.removed "+
+				"and the gone statement it causes, and the COMMIT ending them"),
 	},
 	{
 		name: "the project file upload route", route: "POST /api/v1/projects/{key}/artifacts on a file it has (storeArtifact)",

@@ -157,7 +157,11 @@ func TestIssueAskEventsKeepDeletedAnchorDocumentReadable(t *testing.T) {
 	ask := decodeBody[struct {
 		ID string `json:"id"`
 	}](t, created)
-	for _, table := range []string{"doc_snapshots", "doc_updates", "doc_checkpoints", "artifact_versions", "events"} {
+	// The document plays no role, so it is a room of its own and no document_rooms or
+	// issue_room_blocks row names it: only the issue's spec, Verification document and plan join
+	// the issue's room. The deletes of those two tables below take nothing here; they stand for a
+	// document of the room, whose keys to artifacts carry no cascade either.
+	for _, table := range []string{"doc_snapshots", "doc_updates", "doc_checkpoints", "artifact_versions", "events", "document_rooms"} {
 		if _, err := database.Pool.Exec(
 			context.Background(),
 			"delete from "+table+" where artifact_id = $1",
@@ -165,6 +169,11 @@ func TestIssueAskEventsKeepDeletedAnchorDocumentReadable(t *testing.T) {
 		); err != nil {
 			t.Fatalf("delete %s for anchor document: %v", table, err)
 		}
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		delete from issue_room_blocks where document_id = $1
+	`, artifact.Artifact.ID); err != nil {
+		t.Fatalf("delete the room blocks of the anchor document: %v", err)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		delete from artifacts where id = $1

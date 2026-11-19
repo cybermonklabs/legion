@@ -76,7 +76,15 @@ func readSchemaFleet(ctx context.Context, db processes.Querier) (schemaFleet, er
 // page creates what another drops: after a rollback, a page of the newer build is read-only, and
 // the re-check closes its socket once no live process creates what it creates.
 func (f schemaFleet) admits(page schemaPage, documentSince int) bool {
-	return page.valid && page.creatable <= min(f.minVersion, f.maxCreatable) && page.version >= max(f.maxCreatable, documentSince)
+	return page.valid && page.creatable <= f.creatable() && page.version >= max(f.maxCreatable, documentSince)
+}
+
+// creatable is the highest since a writer may create while fleet serves the database: every
+// process reads it and some process creates it. A page is writable only where its R is at most
+// this (admits), and a server's own write introduces a pointer at an item of a kind a later version
+// adds only where that kind's creatable_since is at most this (refuseBlockPointers).
+func (f schemaFleet) creatable() int {
+	return min(f.minVersion, f.maxCreatable)
 }
 
 // schemaAdmissionKey is the room a document socket joined and the token its page presented, which

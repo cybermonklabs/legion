@@ -1872,7 +1872,7 @@ async function withEnvoyTimings<T>(
 }
 
 const UNASKED_WAIT_NUDGE =
-  "You just said you are waiting on a human for something no open ask in Dispatch covers. Open it now: a decision block in the document it concerns (dispatch doc-edit with an ask block), or dispatch ask for a to-do only a human can do, naming exactly what you need and from whom.";
+  "You just said you are waiting on a human for something no open ask in Dispatch covers. Open it now: an ask block in the document it concerns (dispatch doc-edit), or dispatch ask for a to-do only a human can do, naming exactly what you need and from whom.";
 
 /** Custom-message type of the nudge itself, which a session hears amid other deliveries. */
 const ASK_REMINDER_TYPE = "dispatch-ask-reminder";
@@ -3600,7 +3600,7 @@ describe("envoy OMP extension", () => {
   // Whether a document edit opened an ask is the server's reading of the document it wrote
   // (`advice.decision_blocks_added`), never a reading of the operations' markdown here: whether an
   // opener is a block depends on where it lands, as code or inside a blockquote or a list item.
-  test("a dispatch doc-edit spends the check exactly when the server reports a decision block it added", async () => {
+  test("a dispatch doc-edit spends the check exactly when the server reports an ask block it added", async () => {
     // The query creates a fresh extension module with isolated module-level awareness state.
     const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-document-block");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_document_block", () => ({}));
@@ -3710,7 +3710,7 @@ describe("envoy OMP extension", () => {
     }
   });
 
-  test("a document written through dispatch issue or dispatch artifact spends the check only when it holds a decision block", async () => {
+  test("a document written through dispatch issue or dispatch artifact spends the check only when it holds an ask block", async () => {
     // The query creates a fresh extension module with isolated module-level awareness state.
     const { default: envoyExtension } = await import("./envoy.ts?ask-nudge-document-upload");
     const session = await bootAskNudge(envoyExtension, "ses_nudge_document_upload", () => ({}));

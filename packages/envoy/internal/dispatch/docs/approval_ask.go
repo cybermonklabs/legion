@@ -110,7 +110,7 @@ func openApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.
 // closed, which a settlement or a comment anchor's snapshot wrote, and which no stored version
 // tells apart (FollowClosedIssueVersions). Only then, when the document waits on the human (its
 // requested_version is the version the request names) and markdown is byte for byte the stored
-// text of that version (restoresVersionText), does its requested_version move with its version,
+// text of that version (restoresApprovedText), does its requested_version move with its version,
 // quietly: a settlement saves what the room already holds, such as the blocks a close and a reopen
 // wrote back, so the text the person was asked about did not change and the request keeps its
 // turn as if it had not moved, waking nobody. A version a route writes - a named version, an
@@ -167,7 +167,7 @@ func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 	}
 	keepsTurn := false
 	if bySettlement && moved.RequestedVersion == moved.Version {
-		if keepsTurn, err = restoresVersionText(ctx, tx, artifactID, moved.Version, markdown); err != nil {
+		if keepsTurn, err = restoresApprovedText(ctx, tx, artifactID, moved.Version, markdown); err != nil {
 			return err
 		}
 	}

@@ -16,9 +16,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -58,10 +60,19 @@ const checkResultColumns = `id::text, issue_key, check_issue_key, check_artifact
 // checkBlockRef is where one `check` block a result names lives: the issue whose Verification
 // document holds it, that document, and the block within it. The resolve settles it and nothing
 // moves it: a result is recorded against this block or against none.
+//
+// ArtifactID is the artifact the check's document_blocks row is keyed by, which keys its results'
+// rows too (check_results.check_artifact_id): the Verification document itself where it is its own
+// room, and the issue's tree artifact for a document of an issue room (T11 of this branch's plan).
+// DocumentID is the Verification document, whose live blocks hold the check's attributes, and
+// NodeAddress the address of the check block's node, `<ref_key of ArtifactID>#<block id>`, which a
+// result's result_of and part_of name.
 type checkBlockRef struct {
-	IssueKey   string
-	ArtifactID string
-	BlockID    string
+	IssueKey    string
+	ArtifactID  string
+	DocumentID  string
+	NodeAddress string
+	BlockID     string
 }
 
 // indexedCheck is what document_blocks holds for one check block: the document version its
@@ -291,7 +302,7 @@ func (s *server) recordResultWithFreshWords(
 				resolved = true
 				return check.checkResolution, nil
 			}
-			attributes, err := s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID)
+			attributes, err := s.checkBlockAttributes(ctx, check.DocumentID, check.BlockID)
 			if err != nil {
 				return checkResolution{}, err
 			}
@@ -364,10 +375,25 @@ func (s *server) recordResultUnderOwnerLocks(
 		return recordedCheckResult{}, indexedCheck{}, errorf(http.StatusConflict, "ISSUE_CLOSED",
 			"issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, resolved.Attributes.When)
 	}
-	if err := s.refuseResultScreenshots(ctx, tx, issueKey, check.IssueKey, input.Screenshots); err != nil {
+	// A passing before_merge result states the negative control that would have caught its
+	// failure: the deliberately broken input and the refusal seen. A pass of an after_merge or
+	// default_branch check and any fail may leave it empty, and a row stored with an empty one
+	// before this rule reads back as it was stored. It is judged after the closed-issue refusal,
+	// so a closed issue answers ISSUE_CLOSED whatever the result states.
+	if input.Verdict == "pass" && resolved.Attributes.When == docs.CheckWhenBeforeMerge && strings.TrimSpace(input.NegativeControl) == "" {
+		return recordedCheckResult{}, indexedCheck{}, errorf(http.StatusBadRequest, codeNegativeControlRequired,
+			"negative_control is required: a pass of %s, a before_merge check, states the negative control that would have caught its failure (the deliberately broken input and the refusal seen)", check.BlockID)
+	}
+	screenshots, err := s.refuseResultScreenshots(ctx, tx, issueKey, check.IssueKey, input.Screenshots)
+	if err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
-
+	// What the result's node takes beside the result, read here in the read phase: the project of
+	// the check's issue and the transaction's now(), which dates the row and the node alike.
+	project, createdAt, err := resultScope(ctx, tx, check.IssueKey)
+	if err != nil {
+		return recordedCheckResult{}, indexedCheck{}, err
+	}
 	result := model.CheckResult{
 		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,
 		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
@@ -376,7 +402,7 @@ func (s *server) recordResultUnderOwnerLocks(
 		CommitSHA: input.Commit, NegativeControl: input.NegativeControl,
 		Failed: input.Failed, Skipped: input.Skipped, Excluded: input.Excluded,
 		Verdict: input.Verdict, Screenshots: nonNilStrings(input.Screenshots),
-		Session: sessionOf(actor), Actor: actor,
+		Session: sessionOf(actor), Actor: actor, CreatedAt: createdAt,
 	}
 	event, err := s.appendEvent(ctx, tx, issueOwner(check.IssueKey).event("result.recorded", actor, model.CheckResultEventPayload{
 		ResultID: result.ID, Issue: issueKey, CheckIssue: check.IssueKey,
@@ -388,7 +414,7 @@ func (s *server) recordResultUnderOwnerLocks(
 	}
 	seq := int64(event.Seq)
 	result.EventSeq = &seq
-	if err := insertCheckResult(ctx, tx, &result); err != nil {
+	if err := writeRecordedResult(ctx, tx, &result, project, check.NodeAddress, screenshots, event.ID); err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -583,12 +609,12 @@ func (s *server) requireIssueExists(ctx context.Context, key string) error {
 
 // verificationDocument is one issue's Verification document and whether it has one. slug, when
 // it is not "", holds the answer to the document filed under it, which is how a canonical block
-// reference names one. A row whose role is null answers to its slug alone: a document the
-// release before this one created during the rolling deploy carries no role until the next
-// version written under its row repairs it (documentRole), and the slug is meanwhile the only
-// thing that says what the document is. Every reader of an issue's Verification document in
-// this package goes through here — the results routes, the check resolver and the approval
-// request's second document.
+// reference names one. A markdown document whose role is null answers to its slug alone: a
+// document the release before this one created during the rolling deploy carries no role until
+// the next version written under its row repairs it (documentRole), and the slug is meanwhile the
+// only thing that says what the document is. A file or an image never does (documentPlays). Every
+// reader of an issue's Verification document in this package goes through here — the results
+// routes, the check resolver and the approval request's second document.
 func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, slug string) (model.Artifact, bool, error) {
 	artifact, err := scanArtifact(q.QueryRow(ctx, `
 		select `+artifactColumns+` from artifacts
@@ -609,7 +635,8 @@ func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, 
 // (`dispatch://KEY/artifact/verification-md#b-<id>`) that names one document when a block id is
 // not unique in that set: an id two documents share is 409 CHECK_AMBIGUOUS, and an id no
 // Verification document of the set holds — or one that is not a `check` block — is 400
-// UNKNOWN_CHECK.
+// UNKNOWN_CHECK. A Verification document's check rows are read where its block index keeps them,
+// in the room it is edited in (refs.DocumentRoomBlocksSQL), and a check is named by its document.
 func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value string) (resolvedCheck, error) {
 	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
 	if err != nil {
@@ -635,13 +662,18 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 		artifactFilter = document.ID
 	}
 
+	// The check is answered with the artifact its row is keyed by, the tree artifact of an issue
+	// room, beside the Verification document that holds it, and its node's address under that key,
+	// as the block index writes it (refs.IndexBlocks).
 	rows, err := q.Query(ctx, `
-		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256
-		from document_blocks d
-		join artifacts a on a.id = d.artifact_id
+		select a.issue_key, a.slug, a.id::text, d.artifact_id::text, keyed.ref_key || '#' || d.block_id,
+		       d.changed_version, d.text_sha256
+		from artifacts a
+		join document_blocks d on `+refs.DocumentRoomBlocksSQL("d", "a.id")+`
+		join artifacts keyed on keyed.id = d.artifact_id
 		where `+aliasedVerificationRole+`
 		  and a.issue_key = any($1) and d.type = 'check' and d.block_id = $2
-		  and ($3 = '' or d.artifact_id = $3::uuid)
+		  and ($3 = '' or a.id = $3::uuid)
 		order by a.issue_key
 	`, scope, blockID, artifactFilter)
 	if err != nil {
@@ -653,7 +685,8 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 	for rows.Next() {
 		check := resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}
 		var slug string
-		if err := rows.Scan(&check.IssueKey, &slug, &check.ArtifactID, &check.Version, &check.SHA256); err != nil {
+		if err := rows.Scan(&check.IssueKey, &slug, &check.DocumentID, &check.ArtifactID, &check.NodeAddress,
+			&check.Version, &check.SHA256); err != nil {
 			return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
 		}
 		found = append(found, check)
@@ -679,7 +712,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
 	check := found[0]
-	if check.Attributes, err = s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID); err != nil {
+	if check.Attributes, err = s.checkBlockAttributes(ctx, check.DocumentID, check.BlockID); err != nil {
 		return resolvedCheck{}, err
 	}
 	return check, nil
@@ -694,7 +727,10 @@ func unknownCheck(value string) error {
 // one check block: the version its words last changed in and their digest. A block the index no
 // longer holds is no check any more. It reads and returns what it found; whether that still
 // agrees with the resolution in hand is the locked half's judgement
-// (recordResultUnderOwnerLocks), which compares the pair.
+// (recordResultUnderOwnerLocks), which compares the pair. The row is read by its own key, the
+// artifact resolveCheck read it under and the block id, and held to the Verification document
+// that holds it (refs.BlockDocumentSQL), so a check moved to another document of its room is no
+// check of this one.
 //
 // The digest is document_blocks.text_sha256, the sha256 of the block's whole markdown as the
 // index writes it (refs.BlockTextSum over markdown[From:To]), its opening line and that line's
@@ -717,14 +753,14 @@ func unknownCheck(value string) error {
 func indexedCheckBlock(ctx context.Context, q queryer, check checkBlockRef, named string) (indexedCheck, error) {
 	var indexed indexedCheck
 	err := q.QueryRow(ctx, `
-		select changed_version, text_sha256 from document_blocks
-		where artifact_id = $1::uuid and block_id = $2 and type = 'check'
-	`, check.ArtifactID, check.BlockID).Scan(&indexed.Version, &indexed.SHA256)
+		select d.changed_version, d.text_sha256 from document_blocks d
+		where d.artifact_id = $1::uuid and d.block_id = $2 and d.type = 'check' and `+refs.BlockDocumentSQL("d")+` = $3::uuid
+	`, check.ArtifactID, check.BlockID, check.DocumentID).Scan(&indexed.Version, &indexed.SHA256)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return indexedCheck{}, unknownCheck(named)
 	}
 	if err != nil {
-		return indexedCheck{}, fmt.Errorf("read the check %s of document %s: %w", check.BlockID, check.ArtifactID, err)
+		return indexedCheck{}, fmt.Errorf("read the check %s of document %s: %w", check.BlockID, check.DocumentID, err)
 	}
 	return indexed, nil
 }
@@ -765,7 +801,7 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 	if !docs.CarriesCICheck(check.Attributes) {
 		return nil
 	}
-	rule, err := docs.CICheckRuleIn(ctx, q, check.ArtifactID, check.BlockID, check.Attributes)
+	rule, err := docs.CICheckRuleIn(ctx, q, check.DocumentID, check.BlockID, check.Attributes)
 	if err != nil || rule != "" {
 		return err
 	}
@@ -858,6 +894,15 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 	return markdown, nil, err
 }
 
+// sliceMarkdown is markdown[from:to] held to the string's own bounds: a block range the document
+// read gives lies inside it, and a range that does not answers "" rather than panicking.
+func sliceMarkdown(markdown string, from, to int) string {
+	if from < 0 || to > len(markdown) || from > to {
+		return ""
+	}
+	return markdown[from:to]
+}
+
 // checkBlocksIn is every `check` block of one document, in document order, with its attributes
 // and its words (typedBlocksIn). trees is the request's own reader, nil for a caller that asked
 // for no tree: each check registers with it, as its text_tree, the markdown typedBlocksIn reads
@@ -883,10 +928,14 @@ func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *di
 	return checks, nil
 }
 
-// checkBlocksOf is checkBlocksIn with each block's reference, issue and indexed version and
-// digest filled in. The reference is built from the document's own slug, which is a property of
-// the artifacts row and not of a block row, so a Verification document whose blocks the index
-// does not hold yet still answers a reference every check can be addressed by.
+// checkBlocksOf is checkBlocksIn with each block's reference, issue, indexed version and digest,
+// and the room the document is edited in (RowArtifactID), filled in. The reference is built from
+// the document's own slug, which is a property of the artifacts row and not of a block row, so a
+// Verification document whose blocks the index does not hold yet still answers a reference every
+// check can be addressed by. The room (refs.DocumentRoomSQL) keys every check's row and every
+// result recorded on one, so each check takes it whether the index holds its row yet or not: one
+// query answers it beside the indexed rows, read in that room (refs.DocumentRoomBlocksSQL), and
+// answers it on a row of its own where no check is indexed.
 func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	checks, err := s.checkBlocksIn(ctx, artifact.ID, trees)
 	if err != nil {
@@ -899,10 +948,12 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	if artifact.IssueKey != nil {
 		issueKey = *artifact.IssueKey
 	}
+	var room string
 	indexed := make(map[string]model.CheckBlock, len(checks))
 	rows, err := q.Query(ctx, `
-		select block_id, changed_version, text_sha256
-		from document_blocks where artifact_id = $1 and type = 'check'
+		select room.id::text, coalesce(d.block_id, ''), coalesce(d.changed_version, 0), coalesce(d.text_sha256, '')
+		from (select `+refs.DocumentRoomSQL("$1::uuid")+` as id) room
+		left join document_blocks d on `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.type = 'check'
 	`, artifact.ID)
 	if err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
@@ -910,16 +961,18 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	defer rows.Close()
 	for rows.Next() {
 		var block model.CheckBlock
-		if err := rows.Scan(&block.BlockID, &block.Version, &block.SHA256); err != nil {
+		if err := rows.Scan(&room, &block.BlockID, &block.Version, &block.SHA256); err != nil {
 			return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
 		}
-		indexed[block.BlockID] = block
+		if block.BlockID != "" {
+			indexed[block.BlockID] = block
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
 	}
 	for index := range checks {
-		checks[index].IssueKey = issueKey
+		checks[index].IssueKey, checks[index].RowArtifactID = issueKey, room
 		checks[index].Ref, _ = text.FormatBlockRef(text.Ref{
 			Kind: "block", IssueKey: issueKey, ID: artifact.Slug, Block: checks[index].BlockID,
 		})
@@ -1026,62 +1079,109 @@ func nonNilStrings(values []string) []string {
 }
 
 // refuseResultScreenshots holds a result's screenshots to image documents of the recording
-// issue or of the check's issue, named by their dispatch:// reference.
-func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKey, checkIssueKey string, screenshots []string) error {
+// issue or of the check's issue, named by their dispatch:// reference, and answers the ref_key of
+// each, in the order named: the address of the image's node, which the result's screenshot tuple
+// names.
+func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKey, checkIssueKey string, screenshots []string) ([]string, error) {
+	refKeys := make([]string, 0, len(screenshots))
 	for _, screenshot := range screenshots {
 		ref, ok := text.ParseRef(screenshot, "")
 		if !ok || ref.Kind != "artifact" || ref.IssueKey == "" ||
 			(ref.IssueKey != issueKey && ref.IssueKey != checkIssueKey) {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT",
+			return nil, errorf(http.StatusBadRequest, "RESULT_INPUT",
 				"screenshot %q names no image document of %s or %s", screenshot, issueKey, checkIssueKey)
 		}
-		var found bool
+		var refKey string
 		err := q.QueryRow(ctx, `
-			select true from artifacts where issue_key = $1 and slug = $2 and kind = 'image'
-		`, ref.IssueKey, ref.ID).Scan(&found)
+			select ref_key from artifacts where issue_key = $1 and slug = $2 and kind = 'image'
+		`, ref.IssueKey, ref.ID).Scan(&refKey)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT",
+			return nil, errorf(http.StatusBadRequest, "RESULT_INPUT",
 				"screenshot %q names no image document of %s or %s", screenshot, issueKey, checkIssueKey)
 		}
 		if err != nil {
-			return fmt.Errorf("read screenshot %q: %w", screenshot, err)
+			return nil, fmt.Errorf("read screenshot %q: %w", screenshot, err)
 		}
+		refKeys = append(refKeys, refKey)
 	}
-	return nil
+	return refKeys, nil
 }
 
-// insertCheckResult writes one result's row and fills in the created_at the row takes, which
-// the record route answers with: the pointer is the caller's own value, not a copy of it.
-func insertCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult) error {
+// resultScope reads, in the record route's read phase and under its owner locks, what a result's
+// node takes beside the result itself, in one statement: the project of the check's issue, which
+// the node is in, and the transaction's now(), the created_at the row's column default would give
+// it, which dates the row and the node alike.
+func resultScope(ctx context.Context, tx pgx.Tx, checkIssueKey string) (string, time.Time, error) {
+	var project *string
+	var at time.Time
+	if err := tx.QueryRow(ctx, `select (select project_key from issues where key = $1), now()`, checkIssueKey).Scan(&project, &at); err != nil {
+		return "", time.Time{}, fmt.Errorf("read the project of check issue %s: %w", checkIssueKey, err)
+	}
+	if project == nil {
+		return "", at, nil
+	}
+	return *project, at, nil
+}
+
+// writeRecordedResult writes one recorded result in tx, the record route's transaction, after the
+// result.recorded event whose id is event, in one batch (store.RunWrite), its write phase's last:
+// its check_results row, dated at the result's created_at, then the result's node, its values and
+// its tuples (graphstore.ResultFacts), caused by that event and dated at that same time. project
+// is the project of the check's issue, which the node is in, and the time the transaction's now(),
+// both read in the read phase (resultScope). check is the address of the check block's node, under
+// the artifact the row is keyed by, and screenshots the ref_key of each image the result names
+// (refuseResultScreenshots). A result whose check's address is past the store's bound keeps its
+// row and states nothing, which the census counts as a class of its own.
+//
+// It takes no lock of its own. The route holds the owner locks of the recording issue and the
+// check's issue (lockIssueOwners) and appended the event on the check's, so this follows the
+// store's lock order: the owner's lock, the event, the row, then the node and its tuples. The row
+// carries no foreign key into graph_nodes, so it may precede its node, and it does.
+func writeRecordedResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult, project, check string, screenshots []string, event int64) error {
 	actorJSON, err := encodeJSON(result.Actor)
 	if err != nil {
 		return err
 	}
-	return tx.QueryRow(ctx, `
-		insert into check_results (
-			id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
-			check_sha256, role, surface, run, observed, commit_sha, negative_control,
-			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq
+	nodes, tuples, ok := graphstore.ResultFacts(graphstore.Result{
+		ID: result.ID, Project: project, Check: check,
+		Verdict: result.Verdict, Surface: result.Surface, Run: result.Run, Observed: result.Observed,
+		Commit: result.CommitSHA, Role: result.Role, Control: result.NegativeControl,
+		Failed: result.Failed, Skipped: result.Skipped, Excluded: result.Excluded,
+		CheckVersion: result.CheckVersion, CheckSHA256: result.CheckSHA256,
+		Session: result.Session, Screenshots: screenshots,
+		Recorder: result.Actor, At: result.CreatedAt, Event: event,
+	})
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("record the result", `
+			insert into check_results (
+				id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
+				check_sha256, role, surface, run, observed, commit_sha, negative_control,
+				failed, skipped, excluded, verdict, screenshots, session, actor, event_seq, created_at
+			)
+			values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		`,
+			result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
+			result.CheckVersion, result.CheckSHA256, result.Role, result.Surface, result.Run, result.Observed,
+			result.CommitSHA, result.NegativeControl, result.Failed, result.Skipped, result.Excluded,
+			result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq, result.CreatedAt,
 		)
-		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
-		returning created_at
-	`,
-		result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
-		result.CheckVersion, result.CheckSHA256, result.Role, result.Surface, result.Run, result.Observed,
-		result.CommitSHA, result.NegativeControl, result.Failed, result.Skipped, result.Excluded,
-		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq,
-	).Scan(&result.CreatedAt)
+		if !ok {
+			return nil
+		}
+		return graphstore.QueueWrite(ctx, b, nodes, tuples)
+	})
 }
 
 // loadCheckResults is every result recorded against the checks of one Verification document,
 // from any issue, by the block id of the check each names, newest first within each. One query
 // serves the whole document: a Verification document holding twenty checks is one round trip,
-// not twenty.
+// not twenty. A document of an issue room keys its results by the room's tree artifact, so the
+// rows are read through its room (refs.CheckResultsOfDocumentSQL).
 func loadCheckResults(ctx context.Context, q queryer, artifactID string) (map[string][]model.CheckResult, error) {
 	rows, err := q.Query(ctx, `
 		select `+checkResultColumns+`
 		from check_results
-		where check_artifact_id = $1::uuid
+		where `+refs.CheckResultsOfDocumentSQL("check_results", "$1::uuid")+`
 		order by check_block_id, created_at desc, id desc
 	`, artifactID)
 	if err != nil {

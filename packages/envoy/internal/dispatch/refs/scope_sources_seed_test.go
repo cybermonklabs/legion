@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -24,21 +25,14 @@ import (
 // scopeSourcesOneSeedQuery is scopeSourcesQuery as it read before the arms, and this file's
 // control: one seed term whose four predicates are `or`-ed, the whole of them `and`-ed with the
 // scope test, which is the shape no index serves. Everything outside the seed is the statement's
-// own text, and the pieces the two share (askScope, commentOwnScope and their joins) are the
-// definition of a scope rather than a shape of a read, so a difference between the two is a
-// difference the arms made.
-const scopeSourcesOneSeedQuery = `
+// own text, and the pieces the two share (askScope, commentOwnScope and their joins, and the
+// scoped_asks term) are the definition of a scope rather than a shape of a read, so a difference
+// between the two is a difference the arms made.
+var scopeSourcesOneSeedQuery = `
 	with recursive
 	spec as (
 		select issue_key from artifacts where id = $1 and is_primary
-	),
-	scoped_asks as (
-		select k.id from asks k ` + askScopeJoin + `
-		where (coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid) = $1
-		       or k.artifact_id = $1
-		       or k.issue_key in (select issue_key from spec))
-		  and ` + askScope + ` = $1
-	),
+	),` + scopedAsksTerm + `
 	scoped_comments(id) as (
 		select c.id from comments c ` + commentOwnScopeJoin + `
 		left join artifacts cs on cs.issue_key = c.issue_key and cs.is_primary
@@ -294,7 +288,7 @@ func TestScopeSourcesSeedArmsAnswerTheOneSeed(t *testing.T) {
 			if source.Kind != "comment" {
 				continue
 			}
-			scope, err := ScopeOf(ctx, tx, source.Kind, source.ID)
+			scope, err := ScopeOf(ctx, tx, model.Actor{}, source.Kind, source.ID)
 			if err != nil {
 				t.Fatalf("the scope of comment %s: %v", source.ID, err)
 			}

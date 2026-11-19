@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -101,11 +103,11 @@ func normalizeAt(t *testing.T, what string, at **time.Time, want *time.Time) {
 	*at = want
 }
 
-// requireFactKeys fails unless the node JSON node carries all six facts, made_by and changed_by
-// as arrays even when empty.
+// requireFactKeys fails unless the node JSON node carries all eight facts, made_by and changed_by
+// as arrays even when empty, and state and visibility as one of the values the store holds.
 func requireFactKeys(t *testing.T, what string, node map[string]json.RawMessage) {
 	t.Helper()
-	for _, key := range []string{"made_by", "made_at", "changed_by", "changed_at", "parent", "parent_version"} {
+	for _, key := range []string{"made_by", "made_at", "changed_by", "changed_at", "parent", "parent_version", "state", "visibility"} {
 		value, present := node[key]
 		if !present {
 			t.Fatalf("%s node has no %s: %v", what, key, node)
@@ -113,11 +115,22 @@ func requireFactKeys(t *testing.T, what string, node map[string]json.RawMessage)
 		if (key == "made_by" || key == "changed_by") && !strings.HasPrefix(string(value), "[") {
 			t.Fatalf("%s node's %s = %s, want an array", what, key, value)
 		}
+		var stored string
+		switch key {
+		case "state":
+			if err := json.Unmarshal(value, &stored); err != nil || !slices.Contains(graphstore.NodeStates(), stored) {
+				t.Fatalf("%s node's state = %s, want one of %v", what, value, graphstore.NodeStates())
+			}
+		case "visibility":
+			if err := json.Unmarshal(value, &stored); err != nil || (stored != graphstore.VisibilityProject && stored != graphstore.VisibilityAuthor) {
+				t.Fatalf("%s node's visibility = %s, want %s or %s", what, value, graphstore.VisibilityProject, graphstore.VisibilityAuthor)
+			}
+		}
 	}
 }
 
 // readGraph is GET /api/v1/references?query, failing unless its node and every edge's node and
-// block carry all six facts on the wire.
+// block carry all eight facts on the wire.
 func readGraph(t *testing.T, handler http.Handler, query url.Values) model.GraphReferences {
 	t.Helper()
 	response := graphRequest(t, handler, query)
@@ -371,7 +384,10 @@ func TestEveryNodeKindCarriesItsFacts(t *testing.T) {
 	if len(followers) != 1 || followers[0].Node.Kind != "session" || followers[0].Node.ID != sessionID {
 		t.Fatalf("the ask's followers = %#v, want session %s", followers, sessionID)
 	}
-	requireFacts(t, "the session following the ask", followers[0].Node, nodeFacts{MadeBy: nobody, ChangedBy: nobody})
+	// The asking session is a node of the store from the ask it opened, which follows it
+	// (asks.Follow): made by itself at the ask's own time.
+	requireFacts(t, "the session following the ask", followers[0].Node,
+		unchanged(session, ask.CreatedAt, nil, nil))
 }
 
 // A11: the other end of an edge, a document read's block at an edge, and every node of a
@@ -419,9 +435,9 @@ func TestTheFactsOfAnEdgesOtherEndAreTheNodesOwn(t *testing.T) {
 	}
 	requireSameNode(t, "the spec read's edges[].block", *atBlock, readNode(t, handler, blockRef))
 
-	decisions := uploadIssueDocument(t, handler, child.Key, "decisions.md", "Ship per "+blockRef+".\n")
-	decisionsRef := "dispatch://" + child.Key + "/artifact/" + decisions.Slug
-	response := blockLinksRequest(t, handler, url.Values{"from": {decisionsRef}, "to": {specRef}})
+	rollout := uploadIssueDocument(t, handler, child.Key, "rollout.md", "Ship per "+blockRef+".\n")
+	rolloutRef := "dispatch://" + child.Key + "/artifact/" + rollout.Slug
+	response := blockLinksRequest(t, handler, url.Values{"from": {rolloutRef}, "to": {specRef}})
 	succeeded(t, "GET /api/v1/block-links", response)
 	var raw struct {
 		From  map[string]json.RawMessage `json:"from"`
@@ -441,10 +457,10 @@ func TestTheFactsOfAnEdgesOtherEndAreTheNodesOwn(t *testing.T) {
 		requireFactKeys(t, "block-links links[].to", link.To)
 	}
 	links := decodeBody[model.BlockLinks](t, response)
-	requireSameNode(t, "block-links from", links.From, readNode(t, handler, decisionsRef))
+	requireSameNode(t, "block-links from", links.From, readNode(t, handler, rolloutRef))
 	requireSameNode(t, "block-links to", links.To, readNode(t, handler, specRef))
 	if len(links.Links) != 1 {
-		t.Fatalf("links from decisions.md to the spec = %#v, want one", links.Links)
+		t.Fatalf("links from rollout.md to the spec = %#v, want one", links.Links)
 	}
 	for _, link := range links.Links {
 		requireSameNode(t, "block-links links[].from", link.From, readNode(t, handler, link.From.Ref))
@@ -540,20 +556,29 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 }
 
 // R12: a block Dispatch first saw when it indexed its document, as the owed pass indexes a
-// document written before blocks shipped, has no maker on record: version 3, where it first
-// appears, need not be where it was made. Its last change is that version. A block a later
-// version adds names that version's author as its maker.
+// document written before blocks shipped, has no maker on record: the version its text first
+// appears in need not be where it was made. Its last change is the version its text last changed
+// in (R5's text-change time, refs.textSince), read off the versions no pass indexed: version 2
+// rewrote the first paragraph and version 3 the second, so one pass indexing version 3 dates the
+// first to version 2, by alice, and the second to version 3, by bob. A block a later version adds
+// names that version's author as its maker.
+//
+// Its subject is the unconverted path itself: a document written before blocks shipped is no
+// fragment of an issue room, since every room is this branch's and each block of one records its
+// authors from its first write (refs.RecordsAuthorsSQL), so no room block is ever first seen
+// without its maker. The issue is held unconverted (holdIssuesUnconverted).
 func TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	holdIssuesUnconverted(t, database)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "First paragraph.\n\nSecond paragraph.\n")
 	spec := issue.PrimaryArtifactID
 	specRef := "dispatch://" + issue.Key + "/spec"
-	editSpec(t, handler, issue.Key, []map[string]any{{"op": "replace", "find": "First paragraph.", "with": "First paragraph, revised."}})
+	v2 := editSpec(t, handler, issue.Key, []map[string]any{{"op": "replace", "find": "First paragraph.", "with": "First paragraph, revised."}})
 	v3 := editIssueDocumentAs(t, handler, issue.Key, "spec", "bob", []map[string]any{{"op": "replace", "find": "Second paragraph.", "with": "Second paragraph, revised."}})
-	if v3.Number != 3 {
-		t.Fatalf("the third write is version %d, want 3", v3.Number)
+	if v2.Number != 2 || v3.Number != 3 {
+		t.Fatalf("the second and third writes are versions %d and %d, want 2 and 3", v2.Number, v3.Number)
 	}
 
 	// The state 0121 left every older document in: no block on record, owed an index.
@@ -573,15 +598,23 @@ func TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker(t *testing.T) {
 	}
 	requireIndexedAt(t, database, spec, 3)
 
-	v3At := versionOf(t, database, spec, 3).CreatedAt
+	v2At, v3At := versionOf(t, database, spec, 2).CreatedAt, versionOf(t, database, spec, 3).CreatedAt
 	ofSpec := &model.NodeParent{Kind: "artifact", ID: spec, Ref: specRef}
 	ids := blockIDsByText(t, handler, spec)
-	for _, paragraph := range []string{"First paragraph, revised.", "Second paragraph, revised."} {
-		node := readNode(t, handler, specRef+"#b-"+ids[paragraph])
-		if node.ChangedVersion != 3 {
-			t.Fatalf("%q changed_version = %d, want 3", paragraph, node.ChangedVersion)
+	for _, test := range []struct {
+		paragraph string
+		version   int
+		by        string
+		at        *time.Time
+	}{
+		{paragraph: "First paragraph, revised.", version: 2, by: "user:alice", at: &v2At},
+		{paragraph: "Second paragraph, revised.", version: 3, by: "user:bob", at: &v3At},
+	} {
+		node := readNode(t, handler, specRef+"#b-"+ids[test.paragraph])
+		if node.ChangedVersion != test.version {
+			t.Fatalf("%q changed_version = %d, want %d", test.paragraph, node.ChangedVersion, test.version)
 		}
-		requireFacts(t, paragraph, node, nodeFacts{MadeBy: []string{}, ChangedBy: []string{"user:bob"}, ChangedAt: &v3At, Parent: ofSpec, ParentVersion: new(3)})
+		requireFacts(t, test.paragraph, node, nodeFacts{MadeBy: []string{}, ChangedBy: []string{test.by}, ChangedAt: test.at, Parent: ofSpec, ParentVersion: new(test.version)})
 	}
 
 	v4 := editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end", "markdown": "Third paragraph."}})
@@ -637,8 +670,9 @@ func TestAPinnedBlockCarriesItsFacts(t *testing.T) {
 }
 
 // R12: a block ask belongs to its document at the version that added its block, the version
-// current when it was written. A later edit of the document and the ask's answer, which each move
-// the block's changed version, leave it there.
+// current when it was written. A later edit of the document leaves it there, and so does the
+// ask's answer, which is held on the ask's node and changes no byte of the document, so it
+// leaves the block's changed version where it was too.
 func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
@@ -652,11 +686,16 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	}})
 	awaitIndexedAskBlock(t, handler, spec, "decide", "Ship the decision?")
 	var askID string
-	if err := database.Pool.QueryRow(ctx, `select id::text from asks where block_artifact_id = $1 and block_id = 'decide'`, spec).Scan(&askID); err != nil {
+	// The ask is keyed by the room the spec is edited in, under the block of the spec's fragment
+	// (refs.AsksOfDocumentSQL).
+	if err := database.Pool.QueryRow(ctx, `select id::text from asks k where `+refs.AsksOfDocumentSQL("k", "$1::uuid")+` and k.block_id = 'decide'`, spec).Scan(&askID); err != nil {
 		t.Fatalf("read the block ask: %v", err)
 	}
 	askRef := "dispatch://" + issue.Key + "/ask/" + askID
-	blockRef := specRef + "#b-decide"
+	// The block is a node of the issue's room, keyed under its tree artifact, which the spec's own
+	// reference reaches (T17 of this branch's plan: an address resolves through its document's
+	// room).
+	blockRef := "dispatch://" + issue.Key + "/spec#b-decide"
 	want := func(what string) {
 		t.Helper()
 		node := readNode(t, handler, askRef)
@@ -666,21 +705,19 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	}
 	want("as written")
 
-	before := readNode(t, handler, blockRef).ChangedVersion
 	editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end", "markdown": "Closing paragraph."}})
 	want("after a later edit")
+	awaitSettled(t, database, spec)
+	before := readNode(t, handler, blockRef).ChangedVersion
 	ask := decodeBody[struct {
 		Ask model.Ask `json:"ask"`
 	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/"+askID, nil, "alice")).Ask
 	succeeded(t, "answer the block ask", dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
 		"selected": []string{"Ship"}, "expected_edited_at": ask.EditedAt,
 	}, "alice"))
-	deadline := time.Now().Add(10 * time.Second)
-	for readNode(t, handler, blockRef).ChangedVersion <= before {
-		if time.Now().After(deadline) {
-			t.Fatalf("the answer never moved the block's changed version past %d", before)
-		}
-		time.Sleep(20 * time.Millisecond)
+	awaitSettled(t, database, spec)
+	if changed := readNode(t, handler, blockRef).ChangedVersion; changed != before {
+		t.Fatalf("the answer moved the block's changed version from %d to %d, want it left: an answer changes no byte of the document", before, changed)
 	}
 	want("after its answer")
 }

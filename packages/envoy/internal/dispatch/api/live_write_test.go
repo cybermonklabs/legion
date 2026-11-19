@@ -337,7 +337,9 @@ func (f *heldWriteFixture) connectPlainSocket(t *testing.T) {
 
 func (f *heldWriteFixture) connectPeer(t *testing.T) *syncedPeer {
 	t.Helper()
-	peer := &syncedPeer{wsURL: f.wsURL, sockets: f.sockets, headers: f.headers, artifactID: f.issue.PrimaryArtifactID, doc: crdt.New()}
+	_, fragment := documentRoomOf(t, f.database.Pool, f.issue.PrimaryArtifactID)
+	peer := &syncedPeer{wsURL: f.wsURL, sockets: f.sockets, headers: f.headers, artifactID: f.issue.PrimaryArtifactID,
+		fragment: fragment, doc: crdt.New()}
 	peer.connect(t)
 	t.Cleanup(peer.close)
 	drainDocumentUpdates(f.persistence)
@@ -512,9 +514,10 @@ func (f *heldWriteFixture) assertDurableText(t *testing.T, want string) {
 
 func (f *heldWriteFixture) durableText(t *testing.T) string {
 	t.Helper()
+	room, fragment := documentRoomOf(t, f.probe, f.issue.PrimaryArtifactID)
 	rows, err := f.probe.Query(context.Background(), `
 		select update from doc_updates where artifact_id = $1 order by version
-	`, f.issue.PrimaryArtifactID)
+	`, room)
 	if err != nil {
 		t.Fatalf("read durable document updates: %v", err)
 	}
@@ -532,7 +535,7 @@ func (f *heldWriteFixture) durableText(t *testing.T) string {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read durable document updates: %v", err)
 	}
-	return renderDocument(t, document)
+	return renderFragment(t, document, fragment)
 }
 
 // waitForLockWaiter returns once a session of this database waits on a lock: a request queued
@@ -573,9 +576,11 @@ func (f *heldWriteFixture) assertArtifactKeyShareLockAvailable(t *testing.T) {
 	}
 }
 
-func renderDocument(t *testing.T, document *crdt.Doc) string {
+// renderFragment renders the fragment named fragment of document, a document's own fragment of
+// the room it is edited in (documentRoomOf).
+func renderFragment(t *testing.T, document *crdt.Doc, fragment string) string {
 	t.Helper()
-	tree, err := pmdoc.Read(document.GetXmlFragment("prosemirror"))
+	tree, err := pmdoc.Read(document.GetXmlFragment(fragment))
 	if err != nil {
 		t.Fatalf("read document tree: %v", err)
 	}

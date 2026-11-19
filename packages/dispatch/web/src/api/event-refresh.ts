@@ -196,6 +196,35 @@ const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
     rowsOf<Ask>(data).some(openAndNotHandedOn),
 };
 
+/** Every document's live text (`["artifact", id, "text"]`) that holds a copy of an ask on another
+ *  document: an entry of its `asks` naming the source (`copied_from`), or, from a Dispatch of the
+ *  release before, which sends no `asks`, a `copied_from` on an ask block's opening line. A
+ *  project document's page reads a copy's source from that text (`liveAskOf`), since no route
+ *  lists a project's asks, and an answer, a resolution or a reopening of the source changes no
+ *  byte of the copy's document, so no event of that document refreshes it. Of any document, since
+ *  the key names the document by id alone; a text that holds no copy is not read again. */
+const LIVE_TEXTS_RENDERING_COPIES: RefreshTarget = {
+  queryKey: ["artifact"],
+  when: (data, query) => {
+    if (query.queryKey.length !== 3 || query.queryKey[2] !== "text") return false;
+    if (typeof data !== "object" || data === null) return false;
+    if ("asks" in data && Array.isArray(data.asks)) {
+      return data.asks.some(
+        (entry: unknown) =>
+          typeof entry === "object" &&
+          entry !== null &&
+          "copied_from" in entry &&
+          typeof entry.copied_from === "string"
+      );
+    }
+    return (
+      "markdown" in data &&
+      typeof data.markdown === "string" &&
+      data.markdown.includes("copied_from=")
+    );
+  },
+};
+
 /** The project the ask of a cached thread names, or undefined when it names none: its issue's
  *  (`issueProject`), else the project of the document an anchored ask or an approval request sits
  *  on. A block ask on a project document names its document by id alone (`block_artifact`). */
@@ -628,7 +657,9 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
       const changes = issueChanges(event);
       return (
         changes === undefined ||
-        ["parent", "blocked_by", "components", "title"].some((field) => changes.has(field))
+        ["parent", "needs", "blocked_by", "duplicate_of", "filed_from", "components", "title"].some(
+          (field) => changes.has(field)
+        )
       );
     }
     default:
@@ -747,29 +778,51 @@ function issueWriteTargets(
     targets.push({ queryKey: ["priorities"] }, { queryKey: ["issues", "advances"] });
   }
 
-  // A `child_of` edge into the parent and a `blocked_by` edge into each blocker are rows of their
-  // backlink panels: the new parent and blockers are the payload's, the old ones are the panels
-  // that still list an edge from this issue.
-  if (moved("parent") || moved("blocked_by")) {
+  // A `child_of` edge into the parent, a `needs` edge into each issue it waits on, a
+  // `duplicate_of` edge into the issue it repeats and a `filed_from` edge into the item it was
+  // filed out of are rows of their backlink panels: the new far ends are the payload's, the old
+  // ones are the panels that still list an edge from this issue. A Dispatch of the release before
+  // writes `blocked_by` alone, which is read where the payload holds no `needs`, and names the
+  // edge blocked_by.
+  if (
+    moved("parent") ||
+    moved("needs") ||
+    moved("blocked_by") ||
+    moved("duplicate_of") ||
+    moved("filed_from")
+  ) {
     const parent = payloadString(event, "parent");
-    const blockers = payloadStrings(event, "blocked_by") ?? [];
+    const waits = payloadStrings(event, "needs") ?? payloadStrings(event, "blocked_by") ?? [];
+    const duplicate = payloadString(event, "duplicate_of");
+    const filed = payloadString(event, "filed_from")?.split("/").pop();
     targets.push(
       referencePanels(
         ({ edges, node }) =>
-          node.kind === "issue" &&
-          (node.id === parent ||
-            blockers.includes(node.id) ||
-            (edges ?? []).some(
-              (edge) =>
-                edge.node.kind === "issue" &&
-                edge.node.id === key &&
-                (edge.kind === "child_of" || edge.kind === "blocked_by")
-            ))
+          (node.kind === "issue" &&
+            (node.id === parent || node.id === duplicate || waits.includes(node.id))) ||
+          (filed !== undefined && node.id === filed) ||
+          (edges ?? []).some(
+            (edge) =>
+              edge.node.kind === "issue" &&
+              edge.node.id === key &&
+              ISSUE_RELATION_KINDS[edge.kind] === true
+          )
       )
     );
   }
   return targets;
 }
+
+/** The kinds of edge an issue states out of its own node: its parent, its waits under both the
+ *  spelling this Dispatch answers and the one a Dispatch of the release before answers, the
+ *  issue it repeats and the item it was filed out of. */
+const ISSUE_RELATION_KINDS: Partial<Record<string, true>> = {
+  child_of: true,
+  needs: true,
+  blocked_by: true,
+  duplicate_of: true,
+  filed_from: true,
+};
 
 /**
  * What one write of priority `id` changes, by which of the three writes it was. Every one moves
@@ -936,6 +989,15 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   }
   if (isAskEvent(event)) {
     appendAskReads(targets, event);
+    // A copy of the ask on another of the project's documents reads its source's state from that
+    // document's live text.
+    if (
+      event.type === "ask.answered" ||
+      event.type === "ask.resolved" ||
+      event.type === "ask.opened"
+    ) {
+      targets.push(LIVE_TEXTS_RENDERING_COPIES);
+    }
   }
   if (isCommentLikeEvent(event)) {
     appendCommentReads(targets, event);
@@ -1167,10 +1229,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     );
     if (event.type === "artifact.version") {
       targets.push({ queryKey: ["artifact", event.payload.artifact_id] });
-      // The Decisions view reads two of the issue's documents - its decisions.md for the
-      // decisions and its spec for each link's target - and the event names its document by
-      // name alone, which does not say which the spec is, so every version of the issue
-      // refreshes it. The query exists only while that tab is open.
+      // The Decisions view reads every document of the issue - each one's decision blocks and
+      // the spec nodes they shaped - and the event names its document by name alone, so every
+      // version of the issue refreshes it. The query exists only while that tab is open.
       targets.push({ exact: true, queryKey: ["decisions", key] });
     } else {
       // An uploaded document is an `attached_to` edge into its issue.

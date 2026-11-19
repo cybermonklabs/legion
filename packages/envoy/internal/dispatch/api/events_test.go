@@ -33,7 +33,7 @@ func TestReadEventsKeepsNonAskPayloadRaw(t *testing.T) {
 		}
 	}
 
-	events, err := directServer(deps).readEvents(context.Background(), issueOwner(issue.Key), eventListOptions{limit: 200})
+	events, err := directServer(deps).readEvents(context.Background(), model.Actor{}, issueOwner(issue.Key), eventListOptions{limit: 200})
 	if err != nil {
 		t.Fatalf("read events: %v", err)
 	}
@@ -376,8 +376,11 @@ func TestIssueEventsNameTheBlockersTheyMove(t *testing.T) {
 		}
 		return newestEventPayload[issueEventFields](t, database, "issue.updated", dependent.Key)
 	}
-	if updated := patch(map[string]any{"blocked_by": []string{kept.Key, added.Key}}); !slices.Equal(updated.Changed, []string{"blocked_by"}) {
-		t.Fatalf("a blocked_by-only PATCH's changed = %v, want [blocked_by]", updated.Changed)
+	// An issue's waits are one relation the issue read answers under both spellings, blocked_by
+	// and needs (model.Issue.Needs, this branch's plan), so a PATCH of either moves both fields,
+	// and changed names each field whose value differs: both, and no other.
+	if updated := patch(map[string]any{"blocked_by": []string{kept.Key, added.Key}}); !slices.Equal(updated.Changed, []string{"blocked_by", "needs"}) {
+		t.Fatalf("a blocked_by-only PATCH's changed = %v, want [blocked_by needs]", updated.Changed)
 	}
 	if got, want := named("issue.updated", dependent.Key), sorted(dropped.Key, added.Key); !slices.Equal(got, want) {
 		t.Errorf("a blocked_by-only PATCH names %v, want the removed and the added blocker %v", got, want)

@@ -34,6 +34,12 @@ type BlockTypeSchema struct {
 	// object holds no order of its own, so the decoder keeps the keys in the order the source text
 	// carries them and the encoder writes them back in that order.
 	Attributes BlockAttributes `json:"attributes"`
+	// Parents is the typed blocks a block of this type stands in, and nowhere else: each of them
+	// admits any number of this type's blocks after its own content, so its content rule reads as its
+	// own with `<name>*` appended, and a type that names parents is in no node group, so no other
+	// content admits it. Absent or empty, the type is in the block group and stands wherever a block
+	// does.
+	Parents []string `json:"parents,omitempty"`
 	// Since is the schema version from which a build reads the typed block; 1 when the manifest names
 	// none.
 	Since int `json:"since,omitempty"`
@@ -53,15 +59,32 @@ type BlockAttributeSchema struct {
 	// Server marks an attribute the server owns: a client never writes it, and an agent's markdown
 	// never carries it.
 	Server bool `json:"server,omitempty"`
-	// Targets limits a `block[]` attribute to blocks of the named types (a typed block the schema
-	// declares, or a built-in block the link graph holds); absent or empty, it points at any block. No
-	// other kind carries it.
-	Targets []string            `json:"targets,omitempty"`
-	Scope   BlockAttributeScope `json:"scope,omitempty"`
+	// Markdown is whether a typed block's markdown carries the attribute, true when the manifest names
+	// none. An attribute it is false for is never written into markdown, and markdown that names it is
+	// read as if it did not: the value lives on the block's node, where the server writes it.
+	Markdown *bool `json:"markdown,omitempty"`
+	// Targets limits a `block[]` attribute's pointers at blocks of documents to blocks of the named
+	// types (a typed block the schema declares, or a built-in block the link graph holds); absent or
+	// empty, it points at any block of a document. It limits no item its `items` admit. No other kind
+	// carries it.
+	Targets []string `json:"targets,omitempty"`
+	// Items is the kinds of item a `block[]` attribute may point at beside the blocks of documents: an
+	// issue's ask, comment or message, or a block of one, written
+	// `dispatch://<ISSUE>/<ask|comment|message>/<full lower-case uuid>`, with `#b-<id>` after it for a
+	// block, and never pinned; and an issue, written `dispatch://<ISSUE>`. Absent or empty, the
+	// attribute points at blocks of documents alone. No other kind carries it.
+	Items []BlockItemKind     `json:"items,omitempty"`
+	Scope BlockAttributeScope `json:"scope,omitempty"`
 	// ChoiceVersions is the versions of each choice that has some, by choice: an enum's choices stay
 	// plain strings, since the editors of earlier builds compare a value against them. A choice the
 	// manifest gives no versions is read and created from version 1.
 	ChoiceVersions map[string]BlockElementVersions `json:"choice_versions,omitempty"`
+	// ItemVersions is the versions of each item kind of `items` that has some, by kind: an attribute
+	// every build has read may take a kind of item a later version adds, which an earlier build
+	// refuses as no reference at all. An item kind the manifest gives no versions is read and created
+	// from version 1. A write introduces a pointer at an item of such a kind only while every process
+	// serving the database reads its version.
+	ItemVersions map[string]BlockElementVersions `json:"item_versions,omitempty"`
 	// Since is the schema version from which a build reads the attribute; 1 when the manifest names
 	// none.
 	Since int `json:"since,omitempty"`
@@ -96,16 +119,31 @@ type BlockElementVersions struct {
 }
 
 // BlockAttributeScope limits where a `block[]` attribute may point. `document` points only at a
-// block of the document holding it: a plan task's `needs` orders the tasks of one plan, so it names
-// a task of its own document and never another plan's. An attribute declaring no scope points at a
-// block of its document's own issue or of any issue above it, which every pointer is held to
-// anyway. It is a server rule, which the server checks on a write it accepts (pmdoc's
-// CheckBlockPointers), not something an editor draws, so declaring it leaves the schema version
-// alone.
+// block of the document holding it, never at a block of another document of its issue. An attribute
+// declaring no scope points at a block of its document's own issue or of any issue above it, which
+// every pointer is held to anyway. It is a server rule, which the server checks on a write it
+// accepts (pmdoc's CheckBlockPointers), not something an editor draws, so declaring it leaves the
+// schema version alone.
 type BlockAttributeScope string
 
 const (
 	BlockAttributeScopeDocument BlockAttributeScope = "document"
+)
+
+// BlockItemKind is a kind of item a `block[]` attribute's `items` admit. `ask`, `comment` and
+// `message` admit an issue's item of that kind or a block of one (a part of an ask, a block of a
+// comment or of an issue message), written with the item's whole lower-case uuid and never pinned
+// (`dispatch://<ISSUE>/<kind>/<uuid>`, with `#b-<id>` for a block); `issue` admits an issue itself
+// (`dispatch://<ISSUE>`). Where a write may point is the server's rule (pmdoc's
+// CheckBlockPointers): at an item of the writing issue or of an issue above it that is a
+// conversation node, or a block of one, and at an issue under the writing issue.
+type BlockItemKind string
+
+const (
+	BlockItemAsk     BlockItemKind = "ask"
+	BlockItemComment BlockItemKind = "comment"
+	BlockItemMessage BlockItemKind = "message"
+	BlockItemIssue   BlockItemKind = "issue"
 )
 
 // BlockContentRule describes the block children a typed node may contain.
@@ -119,7 +157,11 @@ const (
 
 // BlockAttributeKind is the kind of value a typed block attribute holds. A `block[]` attribute
 // points at blocks: canonical block references (parseBlockPointerValue in @legion/contracts'
-// dispatch-block-ref.ts), each making an edge of the attribute's name.
+// dispatch-block-ref.ts), each making an edge of the attribute's name. An `ask` attribute names one
+// ask of the block's own issue, as `dispatch://<ISSUE>/ask/<id>`, never a part of one. A `days`
+// attribute holds a duration in days: a positive decimal number with at most two digits after its
+// point (`0.25`, `1`, `2.5`), with no sign, no exponent and no leading zero but the one before a
+// point.
 type BlockAttributeKind string
 
 const (
@@ -130,4 +172,6 @@ const (
 	BlockAttributeBlockList  BlockAttributeKind = "block[]"
 	BlockAttributeActor      BlockAttributeKind = "actor"
 	BlockAttributeTimestamp  BlockAttributeKind = "timestamp"
+	BlockAttributeAsk        BlockAttributeKind = "ask"
+	BlockAttributeDays       BlockAttributeKind = "days"
 )

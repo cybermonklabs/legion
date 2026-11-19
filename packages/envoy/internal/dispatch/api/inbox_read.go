@@ -479,6 +479,88 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // wants, whichever order the writer itself reaches the project in: a block ask's answer appends
 // an anchor refresh, and so takes the project, before its own update moves those rows, and it
 // is ordered all the same.
+//
+// The node and tuple store (internal/dispatch/graphstore) adds five invariants rather than a
+// sequence of its own. Its writers do not all run their steps in one order - one learns its
+// event id before it has a node to write, another writes the node first and moves source_event
+// later - so a numbered step would be false for some of them, while each of these holds for
+// every writer:
+//
+//  1. the owner's lock comes first, through store.LockOwner (store/ownerlock.go) or
+//     lockArtifactOwner (docs/service.go), as it does for every other writer above: the advisory
+//     lock, taken before the read phase reads what the write phase writes, and so before any
+//     row of the store is taken. The owner's row is taken later, in the write phase, where an
+//     event the writer appends takes it; while an earlier build, which serialises on the row,
+//     is in the fleet, the row is taken right after the advisory lock (store.LockOwners);
+//  2. a node's graph_nodes row is written before any projection row whose foreign key names it
+//     (document_blocks, block_refs and comments, migration 20261109022248), so the write that
+//     makes a node and the write that points at it never meet in the opposite order;
+//  3. the event is appended before the tuples whose cause it is, so a tuple's source_event
+//     names a row the log already holds;
+//  4. a graph_nodes write touching several nodes takes them in ascending (kind, id)
+//     (graphstore.writeNodes), so two such writes cannot each hold what the other waits for;
+//  5. a writer under the revision fence (R23 of this change: the version write, the
+//     block index reconciliation tick and the backfill) takes the document's owner lock, through
+//     lockArtifactOwner or events.LockOwnerRows, then the document's document_block_versions row
+//     `for no key update` (indexOwedDocument, refs.standsAtVersion, graphcensus's
+//     lockBlockDocuments, and a document settlement's lockSettlementFence, which takes it before
+//     the asks the settlement opens are followed), before it writes a node, a tuple or a
+//     projection row, so two passes over one document queue at the fence and the one that loses
+//     it has written nothing.
+//
+// Appending a tuple locks no row of another table: graph_tuples has no foreign key and nothing
+// updates or deletes a tuple, so where the append falls in a writer's sequence moves no lock,
+// and invariant 3 is about which rows exist, not about which are held. The one exception is the
+// erase (`envoy-dispatch erase`, R1 and R5 of this change), which deletes a node's
+// tuples and its node row, and takes this same order to do it: the lock of every owner it writes
+// under, then the node row, then the rest (grapherase's lockInStoreOrder). A writer owning no
+// issue and no document - an operator's own write, a session-addressed event - takes no owner
+// lock at all, and invariant 1 says nothing about it. graphstore's
+// TestEveryStoreWriteTakesOneLockOrder reads this list and fails if these five are not in it.
+//
+// The pointer type rules (graphstore's pointerRules) add one row lock to a write's node step. A
+// write that asserts or retracts a lens's has_kind tuple without writing that lens's node itself
+// takes the lens's graph_nodes row `for no key update`, after the node rows it wrote and before
+// it appends a tuple (graphstore's checkPointers), so two writes asserting a kind of one lens
+// queue at that row and the second reads the first's tuple; graphstore.Retarget takes the row of
+// the node whose pointer it moves before the rest of its write. The reasoning write
+// (writeReasoningNodes) takes its issue's owner lock first, as invariant 1 says, and writes its
+// nodes in one graphstore.Write.
+//
+// A run of the command bar (api/going.go) owns no issue and no document, so none of its writes
+// takes an owner lock. Its record (recordGoingRequest) writes the run's interaction node, its
+// author's node and their tuples in one graphstore.Write, and only then the going_requests row
+// that projects the node. A frame of a run takes the run's interaction graph_nodes row
+// `for no key update` first, in a transaction of its own (appendGoingEvent, which the answer, a
+// reader at the deadline and the sweep all write through), so two frames of one run queue at that
+// row and the second reads the sequence the first took. A run a pod of the release before
+// recorded with no node gets its node there first: graphcensus.WriteRun takes the run's
+// going_requests row `for no key update`, writes the node and its tuples in one graphstore.Write,
+// and the frame then takes the node's row, which is its own and no other transaction's. Where
+// another write committed the node in between and another transaction holds it - an erase of the
+// run, which takes the node's row and then the run's (grapherase's lockProjectionRows) - the frame
+// takes that row without waiting, finds it held, lets its transaction go and begins again once,
+// taking the node's row first (lockGoingRun, errGoingRunNodeHeld), so no frame waits on a node's
+// row while it holds the run's. Then the frame takes the run's going_requests row `for key share`,
+// the lock the going_events foreign key takes, appends the frame value tuple and writes the
+// going_events row. No frame takes the revision fence.
+//
+// A write made for a run (graphstore.WithRun, which withinGoingRun puts on a request that names
+// its run) adds one read and no lock: graphstore.Write, after its node step, and
+// graphstore.QueueCaused read which of the nodes the write marks changed already hold that run's
+// changed_by_run tuple, and append the tuples still owed with the write's own. The read takes no
+// row, so it moves no step of the order, and two writes of one node for one run are ordered by
+// what each holds before it reads - the node's row, or the owner lock a pointer's write takes
+// first - so the second reads the tuple the first committed and appends none.
+//
+// Three writers write a node only because a run asked them to name what they changed: an issue's
+// own field write made for a run (patchIssue), and an edit of an ask's or a comment's words made
+// for one (editAsk, editComment). Each takes its owner lock first - the issue's for the PATCH
+// (lockPatchOwners), the owner of the ask or the comment for an edit - queues the write of its row
+// (the issue's, or the ask's or the comment's), and then, after every row and document it writes,
+// the node (graphstore.PlanUncaused, graphstore.QueueNodes), the last node row its transaction
+// takes; it queues its own event, and then what that node states with its changed_by_run under
+// that event (graphstore.QueueCaused).
 func (s *server) markInboxReadThreads(
 	ctx context.Context, actor model.Actor, readThrough string, scope inboxReadScope,
 ) (int, []model.Event, error) {

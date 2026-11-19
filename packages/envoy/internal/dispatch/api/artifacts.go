@@ -19,13 +19,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -52,9 +53,17 @@ const (
 	maxNewArtifactKeyBytes = 2692
 )
 
-// artifactColumns is the canonical artifact column list scanArtifact reads. role is read through
-// coalesce because model.Artifact carries it as "" when the document plays no role.
-const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at`
+// artifactColumns is the canonical artifact column list scanArtifact reads, over the artifacts
+// table unaliased. role is read beside its node's query value (graphstore.ArtifactQueryRoleSQL),
+// and scanArtifact takes the row's own where it holds one: model.Artifact carries it as "" when
+// the document plays no role, and a document of an issue born converted carries none in its row
+// but plays its node's query (decision 2 of this branch's plan; R8 keeps the read's role), the
+// issue's decisions query among them (model.Artifact.DecisionsQuery); retired_at as whether it is
+// set (model.Artifact.Retired); and last the room the document is edited in, its document_rooms
+// row's room or its own id (model.Artifact.Room, refs.DocumentRoomSQL).
+var artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, role, ` +
+	graphstore.ArtifactQueryRoleSQL + `, created_by, created_at, retired_at is not null, ` +
+	`(` + refs.DocumentRoomSQL("artifacts.id") + `)::text`
 
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
@@ -153,9 +162,16 @@ const issueUploadRoute = http.MethodPost + " /api/v1/issues/{key}/artifacts"
 // stored answer, a first upload still running, one that committed and lost its answer - goes on to
 // that layer whatever the issue's state now: an upload that landed before the issue closed is
 // replayed its 201, and one still running is told KEY_IN_FLIGHT, unspooled, until the first
-// answers.
+// answers. A request whose run withinGoingRun refused and left to its key (goingRunRefused) goes on
+// to that layer before anything here is looked at, so the layer answers it from the key alone, and
+// a key that stops answering between the two looks is answered the run's refusal here as on every
+// other route.
 func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if _, refused := r.Context().Value(goingRunRefusedKey{}).(goingRunRefused); refused {
+			handler(w, r)
+			return
+		}
 		requestKey, keyed, err := requestKeyHeader(r)
 		if keyed && err != nil {
 			handler(w, r)
@@ -177,12 +193,8 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 		// failed is answered as it always was.
 		var ownerRefusal *apiError
 		if keyed && errors.As(refusal, &ownerRefusal) && ownerRefusal.status < http.StatusInternalServerError {
-			answers, err := s.requestKeyAnswersItself(r.Context(), requestKeyLogin(actor, human), requestKey)
-			if err != nil {
-				// As the keyed layer answers its own failed lookup: under the key, which nothing has
-				// claimed, so the client asks again under it.
-				w.Header().Set(contracts.IdempotencyKeyHeader, requestKey)
-				s.writeHandlerError(w, err)
+			answers, failed := s.lookUpRequestKeyAnswers(r.Context(), w, requestKeyLogin(actor, human), requestKey)
+			if failed {
 				return
 			}
 			if answers {
@@ -400,15 +412,39 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 	}, true
 }
 
-// queueNewArtifact queues the insert of the artifact an upload creates and returns the row as the
-// insert will leave it. Its id, which the document's own writes name before the row is written, is
-// taken here (gen_random_uuid, which assigns no transaction id), in the statement that reads its
-// created_at, the column's default, the transaction's now(), which the insert writes explicitly;
-// its ref_key is the one the 0071 trigger fills in, the target's owner key and the slug
+// queueNewArtifact queues the insert of the artifact an upload creates, and before it the write of
+// its node, and returns the row as the insert will leave it and the node's write, which waits for
+// the event the upload appends (graphstore.QueueCaused). Its id, which the document's own writes
+// name before the row is written, is taken here (gen_random_uuid, which assigns no transaction
+// id); its ref_key is the one the 0071 trigger fills in, the target's owner key and the slug
 // (artifactTarget.refPrefix). role is the part the new document plays, which its slug decided
 // (documentRole), read once by the caller, which refuses a blank create that takes one: the row
 // the insert leaves carries it, so the reads this transaction makes of the artifact it just
-// created see it as every later reader will.
+// created see it as every later reader will. query is the query value of a role document of a
+// converted issue, which joins the issue's room and writes no role (decision 2 of this branch's
+// plan): its node is a query node of that name, which the read projects as its role, and "" for
+// every other document.
+//
+// The create's one time is read here, in the read phase, under the owner lock the caller holds: its
+// row's created_at and its node's statements are both dated with it (graphstore.StatementTime),
+// past every statement about the address, so a read as of a time reads them in the order the
+// store appends them. Which row the node's live statement names is read from its cause, this
+// upload's artifact.created (graphcensus's ownLiveStatement), not from this time.
+//
+// The node is written in the project of the issue or the project that owns the document, or
+// between the parties of the conversation that does, and it is the node this create makes
+// (graphstore.Created). It states beside it the facts the row projects: its part_of the issue that
+// owns it, and an image's or a file's bytes, input's under sha (R16 of this branch's spec); a
+// project's document and a conversation's file hang under no issue. The row names the node
+// (node_kind, node_address). A ref_key past the store's address bound is no node of it
+// (graphstore.AddressFits), as every writer of the store leaves such an address out, and the write
+// is then the zero Uncaused and the row names none. No row stands at the address, since the slug is
+// free under the owner lock this transaction holds, so a node there that is not gone stands behind
+// no row: a document a build before this one removed, stating nothing, live or at a state a later
+// release marked it with (graphstore.Node's Restates). The write states it gone and then live,
+// both under this upload's event, so the new document's node carries no statement of the removed
+// one's as its own; it states the two itself, so the node write states no state of its own
+// beside them.
 func (s *server) queueNewArtifact(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -417,36 +453,89 @@ func (s *server) queueNewArtifact(
 	project, session *string,
 	slug, name, kind string,
 	role *string,
+	query string,
+	input artifactUploadInput,
+	sha string,
 	actor model.Actor,
-) (model.Artifact, error) {
+) (model.Artifact, graphstore.Uncaused, error) {
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, graphstore.Uncaused{}, err
 	}
 	artifact := model.Artifact{
 		IssueKey: target.IssueKey, Project: deref(project), SessionID: session,
-		RefKey: target.refPrefix() + "/" + slug, Slug: slug, Name: name, Kind: kind, Role: deref(role),
+		RefKey: target.refPrefix() + "/" + slug, Slug: slug, Name: name, Kind: kind,
 	}
 	if err := json.Unmarshal(actorJSON, &artifact.CreatedBy); err != nil {
-		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
+		return model.Artifact{}, graphstore.Uncaused{}, fmt.Errorf("decode artifact author: %w", err)
 	}
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&artifact.ID, &artifact.CreatedAt); err != nil {
-		return model.Artifact{}, err
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&artifact.ID); err != nil {
+		return model.Artifact{}, graphstore.Uncaused{}, err
+	}
+	// A new document is its own room until the caller joins it to its issue's (queueIssueRoomJoin).
+	artifact.Room = artifact.ID
+	var queryRole *string
+	if query != "" {
+		queryRole = &query
+	}
+	placeArtifact(&artifact, role, queryRole)
+	if artifact.CreatedAt, err = graphstore.StatementTime(ctx, tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
+		return model.Artifact{}, graphstore.Uncaused{}, err
+	}
+	var documentNode graphstore.Uncaused
+	var nodeKind, nodeAddress *string
+	if graphstore.AddressFits(artifact.RefKey) {
+		at := artifact.CreatedAt
+		var facts []graphstore.Tuple
+		if target.IssueKey != nil {
+			facts = append(facts, graphstore.ArtifactPartOf(artifact.RefKey, *target.IssueKey, actor, at))
+		}
+		if kind != "doc" {
+			facts = graphstore.ArtifactBytes(facts, artifact.RefKey, input.contentType, int64(len(input.content)), sha, actor, at)
+		}
+		node := graphstore.Created(graphstore.ArtifactNode(artifact.RefKey, deref(project), deref(session), actor, at))
+		if query != "" {
+			node = graphstore.Created(graphstore.QueryNode(artifact.RefKey, deref(project), query, actor, at))
+			facts = graphstore.AttributeFacts(facts, node)
+		}
+		held, found, err := graphstore.ReadNode(ctx, tx, graphstore.KindArtifact, artifact.RefKey)
+		if err != nil {
+			return model.Artifact{}, graphstore.Uncaused{}, err
+		}
+		var stated []graphstore.Tuple
+		if found && held.State != graphstore.StateGone {
+			for _, state := range []string{graphstore.StateGone, graphstore.StateLive} {
+				stated = append(stated, graphstore.Tuple{
+					FromKind: graphstore.KindArtifact, FromID: artifact.RefKey,
+					Kind: graphstore.AttributeState, ToKind: graphstore.KindValue, ToID: state,
+					At: at, Who: actor, Asserted: true,
+				})
+			}
+		}
+		documentNode = graphstore.PlanUncaused([]graphstore.Node{node}, append(stated, facts...))
+		if err := ledger.Queue(func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, documentNode) }); err != nil {
+			return model.Artifact{}, graphstore.Uncaused{}, err
+		}
+		storeKind := graphstore.KindArtifact
+		nodeKind, nodeAddress = &storeKind, &artifact.RefKey
 	}
 	// The document work that follows runs before the insert below, so the address that insert
 	// gives the row - its key, the issue holding it, none for a project's or a session's
-	// document, and its own dispatch:// address - is recorded for the reads of this
-	// transaction that need it: a block pointer of a new document is held to the document's key
-	// and its issue (docs.addressOfDocument), and text this transaction indexes that cites the
-	// new document resolves to that row (refs.Pending). The issue already has its row, so the
-	// address names no pending parent (refs.DocumentAddress).
+	// document, its own dispatch:// address, and the band its blocks rank in - is recorded for
+	// the reads of this transaction that need it: a block pointer of a new document is held to the
+	// document's key and its issue (docs.addressOfDocument), and text this transaction indexes
+	// that cites the new document resolves to that row (refs.Pending). The issue already has its
+	// row, so the address names no pending parent (refs.DocumentAddress).
 	ledger.RegisterPendingArtifact(artifact.ID, refs.DocumentAddress{
-		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey), Ref: artifactReference(artifact),
+		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey),
+		Ref:     refs.ArtifactRef(artifact.IssueKey, artifact.Project, artifact.SessionID, artifact.Slug, artifact.Kind, artifact.Primary),
+		Project: deref(project), Session: deref(session),
+		Band: refs.DocumentBand(target.IssueKey, kind, false, role, slug),
 	})
-	return artifact, queueExec(ledger, `
-		insert into artifacts (id, issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, false, $8, $9, $10)
-	`, artifact.ID, target.IssueKey, project, session, slug, name, kind, role, actorJSON, artifact.CreatedAt)
+	return artifact, documentNode, queueExec(ledger, `
+		insert into artifacts (id, issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, created_at, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, $7, false, $8, $9, $10, $11, $12)
+	`, artifact.ID, target.IssueKey, project, session, slug, name, kind, role, actorJSON, artifact.CreatedAt, nodeKind, nodeAddress)
 }
 
 // queueFileVersion queues the insert of an uploaded file's or image's version and returns the row
@@ -507,6 +596,47 @@ func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID strin
 	return docs.RecordTaskProgressMarkdown(ctx, tx, artifactID, markdown)
 }
 
+// statedVersionBytes plans, on the node an image's or a file's row names, the facts of the bytes a
+// later version of it holds (graphstore.ArtifactBytes), dated at, the version's own time, and held
+// for the event the upload queues (graphstore.QueueCaused appends them), so the node's current
+// values are its newest version's (R16 of this branch's spec). It writes no node, so nothing
+// is queued before the event. A row an older build wrote names no node and states nothing here:
+// the backfill gives it its node and its newest version's bytes in the transaction that names the
+// node on the row (graphcensus' writeObjectBatch), which holds the document's owner lock to its
+// commit (the issue's, or for a document no issue owns its own: events.LockOwnerRows). The read
+// takes that same lock first, in the statement before it (store.LockOwnerAndRead), so the two
+// cannot both miss this version: either the backfill named the node first and this read waits for
+// it, sees the node and states these bytes after the backfill's, or this upload holds the lock
+// first, the backfill waits for it to commit, and then reads this version as the row's newest. The
+// lock is advisory, so the read, like every other of the upload's read phase, gives the
+// transaction no id: its write phase's batch does (storeArtifact). An issue's upload holds its
+// issue's lock already, and takes it again for nothing.
+func statedVersionBytes(ctx context.Context, tx pgx.Tx, artifact model.Artifact, mime string, size int, digest string, who model.Actor, at time.Time) (graphstore.Uncaused, error) {
+	owner := store.ArtifactOwner(artifact.ID)
+	if artifact.IssueKey != nil {
+		owner = store.IssueOwner(*artifact.IssueKey)
+	}
+	var address *string
+	if err := store.LockOwnerAndRead(ctx, tx, owner, `select node_address from artifacts where id = $1`, []any{artifact.ID}, &address); err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("read the node artifact %s names: %w", artifact.ID, err)
+	}
+	if address == nil {
+		return graphstore.Uncaused{}, nil
+	}
+	return graphstore.PlanUncaused(nil, graphstore.ArtifactBytes(nil, *address, mime, int64(size), digest, who, at)), nil
+}
+
+// personScoped reports whether a bearer's document write is the person's own, its credential
+// holding the person scope, so the write's context is marked as theirs (docs.WithPersonScope): an
+// agent's write may not drop or retype an answered ask's block (docs.ErrAnsweredAskKept), and a
+// person's may. A browser's actor is the person already, so only a bearer's credential is read,
+// whose recorded actor, the session it names, cannot say. It is read before the write's
+// transaction opens: resolving a personal token reads the pool, which a request holding the
+// transaction's connection may not (store.Pool's guard).
+func (s *server) personScoped(r *http.Request, actor model.Actor) bool {
+	return actor.Kind != "user" && s.callerHoldsScope(r, model.ScopePerson)
+}
+
 func (s *server) storeArtifact(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -522,6 +652,7 @@ func (s *server) storeArtifact(
 	if !s.putUploadedFile(w, r, kind, sha, input, target) {
 		return
 	}
+	personScoped := kind == "doc" && s.personScoped(r, actor)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -533,7 +664,13 @@ func (s *server) storeArtifact(
 	// the event - is queued at the point it is made, for Commit to run back to back.
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	if personScoped {
+		documentCtx = docs.WithPersonScope(documentCtx)
+	}
 	var issueStatus *string
+	// issueRoom is the tree artifact of the issue the upload names where the issue is converted
+	// (issueTreeOf), "" otherwise.
+	var issueRoom string
 	var project, session *string
 	switch {
 	case target.Session != "":
@@ -552,6 +689,12 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The room of an issue that is converted (born so, or by the conversion): every document
+		// the issue gets from here on is a fragment of it from its first write (R5).
+		if issueRoom, err = issueTreeOf(r.Context(), tx, *target.IssueKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	default:
 		loaded, err := s.loadProject(r.Context(), tx, target.Project)
 		if err != nil {
@@ -566,10 +709,29 @@ func (s *server) storeArtifact(
 	}
 	var artifact model.Artifact
 	var created bool
+	// The node of a document this upload creates: written before its row, in the project of the
+	// issue or the project that owns it, or between the parties of the conversation that does,
+	// and stated under the event the upload appends, or at the sentinel where its owner records
+	// none (agentArtifactTarget.ownsEvents). It states beside it the facts the row projects: its
+	// part_of the issue that owns it, and an image's or a file's bytes (R16 of
+	// dispatch://INFRA-1253); a project's document and a conversation's file hang under no issue.
+	// The row names the node in the same transaction. A ref_key past the store's address bound is
+	// no node of it (graphstore.AddressFits), as every writer of the store leaves such an address
+	// out, and its row names none. An image's or a file's later version states its bytes on the
+	// node its row names (statedVersionBytes).
+	var documentNode graphstore.Uncaused
+	// What the node of the version this upload writes takes of its document (docs.WriteVersionNode):
+	// for a document it creates, the row the insert will leave, whose node is a query node where
+	// it joins its issue's room; for one that exists, read in the read phase (docs.ReadVersionOwner).
+	var versionOwner graphstore.VersionOwner
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = true
 		if refusal := newArtifactNameRefusal(input.name); refusal != nil {
+			s.writeHandlerError(w, refusal)
+			return
+		}
+		if refusal := decisionsAreNodes(target, input.name); refusal != nil {
 			s.writeHandlerError(w, refusal)
 			return
 		}
@@ -590,13 +752,47 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, createRoleNameRefusal(input.name, slug, *role))
 			return
 		}
-		artifact, err = s.queueNewArtifact(r.Context(), tx, ledger, target, project, session, slug, input.name, kind, role, actor)
+		// A role document of a converted issue - its Verification document or its plan - joins the
+		// issue's room (queueIssueRoomJoin below) and writes no role: the part it plays is the query
+		// value of its node, a query node of that name (decision 2 of this branch's plan), which the
+		// read projects as its role. Every other document keeps a room of its own
+		// (documentJoinsIssueRoom).
+		joining := kind == "doc" && issueRoom != "" && documentJoinsIssueRoom(slug)
+		query := ""
+		if joining && role != nil {
+			query, role = *role, nil
+		}
+		artifact, documentNode, err = s.queueNewArtifact(r.Context(), tx, ledger, target, project, session, slug, input.name, kind, role, query, input, sha, actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		versionOwner = graphstore.VersionOwner{
+			RefKey: artifact.RefKey, Project: artifact.Project, Session: deref(artifact.SessionID), Query: query != "",
+		}
+		// Its document_rooms row, queued after its own row's insert, which the row's key names, and
+		// recorded on the ledger before its first write, so the seed below writes its fragment of the
+		// issue's room and its block index indexes the room (T12b).
+		if joining {
+			if err := queueIssueRoomJoin(r.Context(), tx, ledger, issueRoom, artifact.ID); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			artifact.Room, artifact.Fragment = issueRoom, artifact.ID
+		}
 	} else if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	} else if artifact.Retired {
+		// A retired decisions document is refused as a new one is: decisions are nodes now.
+		refusal := decisionsAreNodes(target, input.name)
+		if refusal == nil {
+			refusal = documentRetiredRefusal(artifact)
+		}
+		s.writeHandlerError(w, refusal)
+		return
+	} else if artifact.DecisionsQuery {
+		s.writeHandlerError(w, decisionsQueryRefusal(artifact))
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
@@ -651,6 +847,10 @@ func (s *server) storeArtifact(
 	// the same markdown again (recordDocumentTaskProgress, documentBlocksFor).
 	var documentReadBack *pmdoc.Node
 	var documentChanges model.ReferenceChanges
+	// indexedBlocks is what the block index stated in the node and tuple store, which waits for
+	// the event this upload queues below: that event is the cause every node and tuple of the
+	// pass carries, and no tuple may be updated once appended.
+	var indexedBlocks graphstore.Uncaused
 	if kind == "doc" {
 		if created {
 			documentMarkdown, err = s.deps.Docs.SeedText(documentCtx, artifact.ID, string(input.content), actor)
@@ -677,17 +877,52 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		documentChanges, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
+		documentChanges, indexedBlocks, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The version's node, queued after its block index's block nodes and held for the event
+		// below with the document's own node (docs.WriteVersionNode).
+		if !created {
+			if versionOwner, err = docs.ReadVersionOwner(documentCtx, tx, artifact.ID); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
+		versionNode, err := docs.WriteVersionNode(documentCtx, tx, versionOwner, version.Number, actor, version.CreatedAt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		documentNode = graphstore.Joined(documentNode, versionNode)
 	} else {
 		version, err = s.queueFileVersion(r.Context(), tx, ledger, artifact.ID, input, sha, documentSummary, actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// A later version moves the node's bytes to its own, held for the event this upload
+		// appends below; a version this upload creates the document with was stated with the node.
+		if !created {
+			documentNode, err = statedVersionBytes(r.Context(), tx, artifact, input.contentType, len(input.content), sha, actor, version.CreatedAt)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if versionOwner, err = docs.ReadVersionOwner(documentCtx, tx, artifact.ID); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
+		// The version's node, held for the event below with the facts its bytes stated
+		// (docs.WriteVersionNode).
+		versionNode, err := docs.WriteVersionNode(documentCtx, tx, versionOwner, version.Number, actor, version.CreatedAt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		documentNode = graphstore.Joined(documentNode, versionNode)
 	}
 	var diff *string
 	if !created && kind == "doc" {
@@ -702,13 +937,14 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		// It carries the document's newest approval when its text is the approved text again and
-		// its decision blocks are as their rows have them, as every version the document service
-		// writes does (docs.carryApproval): an exact undo uploaded is the approved document. It
-		// runs where the route's other document work runs, so the open approval request and the
-		// ask rows it reads are as this transaction's own queued writes leave them, its own
-		// writes join the queue, and its events reach the ledger beside the move's.
-		if err := docs.CarryRestoredApproval(
+		// It carries the document's newest approval as every version the document service writes
+		// does (docs.carryApproval): when its text is the approved text again, or when every
+		// difference from it is a carry case - the readings of its decisions and answered asks, and
+		// the server-owned ask attributes an upload drops - and its ask blocks agree with
+		// their nodes. It runs where the route's other document work runs, so the open approval
+		// request and the ask rows it reads are as this transaction's own queued writes leave
+		// them, its own writes join the queue, and its events reach the ledger beside the move's.
+		if err := docs.CarryUploadedApproval(
 			documentCtx, tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		); err != nil {
 			s.writeHandlerError(w, err)
@@ -730,6 +966,10 @@ func (s *server) storeArtifact(
 		payload = artifactCreatedEventPayload(artifact, documentChanges)
 	}
 	var published []*model.Event
+	// The cause the block index's facts carry: the event this upload queues, named as the id
+	// sequence left it right after its insert, or the sentinel where its owner records none of
+	// its own (an agent's workspace document).
+	blockCause := graphstore.NoEvent
 	if target.ownsEvents() {
 		stampKind := ""
 		if kind == "doc" {
@@ -740,7 +980,33 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		// A document of an issue room is indexed by the room's pass, whose references and block
+		// mentions are keyed by the room's tree artifact (docs.IndexDocumentReferences), so the
+		// room's edges are stamped with this event too, right after the document's.
+		if kind == "doc" && artifact.Room != artifact.ID {
+			room := artifact.Room
+			if err := ledger.Queue(func(b *store.WriteBatch) error {
+				refs.QueueStamp(b, "artifact", room)
+				return nil
+			}); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
+		blockCause = graphstore.LatestEvent
 		published = append(published, event)
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		return graphstore.QueueCaused(r.Context(), b, indexedBlocks, blockCause)
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		return graphstore.QueueCaused(r.Context(), b, documentNode, blockCause)
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	// The approval this upload's own version superseded, read in its read phase as the edit route
 	// reads it: an upload to an existing document always writes a version, so a replacement of an
@@ -832,10 +1098,17 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 
 // artifactText is the body GET /api/v1/artifacts/{id}/text,
 // GET /api/v1/issues/{key}/artifacts/{slug}/text and
-// GET /api/v1/projects/{key}/artifacts/{slug}/text answer. Blocks is absent unless the request
-// asked for it with ?blocks=true.
+// GET /api/v1/projects/{key}/artifacts/{slug}/text answer. Markdown holds no server-owned attribute
+// on any ask block (docs.TextWithAsks), and Asks answers each ask block of it, in document order:
+// its state and answer, read from the ask. Blocks is absent unless the request asked for it with
+// ?blocks=true.
 type artifactText struct {
-	Markdown string `json:"markdown"`
+	// Asks comes first so the fields stand in the sorted order of their keys, as the map the
+	// handler wrote before the body was named did (TestResponseShapes). This server always sends
+	// it, [] for a document with no ask block; the document marks it optional to a reader
+	// (omitzero), since a server of the release before sends none.
+	Asks     []model.TextAsk `json:"asks,omitzero"`
+	Markdown string          `json:"markdown"`
 	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
 	// sent `Dispatch-Trees: 1`.
 	MarkdownTree model.DisplayTree      `json:"markdown_tree,omitempty"`
@@ -853,11 +1126,11 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if artifact.Kind != "doc" {
+	if !readsAsDocument(artifact) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
-	markdown, token, blocks, err := s.artifactTextBody(r, artifact.ID)
+	text, blocks, err := s.artifactTextBody(r, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -871,7 +1144,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	answer := artifactText{Markdown: markdown, Token: token, Version: version, Blocks: blocks}
+	answer := artifactText{Markdown: text.Markdown, Token: text.Token, Version: version, Blocks: blocks, Asks: text.Asks}
 	// The tree is built only for a caller that asked for one: the command line and the agent
 	// clients read this route for its markdown, and a tree they discard would cost them the
 	// read and evict from the cache what a browser is reading.
@@ -881,35 +1154,34 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	// this process has not served since it started copies those bytes.
 	if wantsDisplayTrees(r) {
 		reader := s.readDisplayTrees(r.Context(), true)
-		reader.text(&answer.MarkdownTree, markdown)
+		reader.text(&answer.MarkdownTree, text.Markdown)
 		reader.resolve()
 	}
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// artifactTextBody is the markdown and the token the three text routes answer, with the blocks
-// beside them for a request that asked for them with ?blocks=true. The three come from one
-// rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session cannot leave
-// a listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
-// that asked for none, which pays for none of that rendering.
-func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
-	if r.URL.Query().Get("blocks") != "true" {
-		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifactID)
-		return markdown, token, nil, err
+// artifactTextBody is the document the three text routes answer (docs.TextWithAsks): its markdown,
+// with no server-owned attribute on any ask block, its token and its asks, with the blocks beside
+// them for a request that asked for them with ?blocks=true. The markdown, the token and the blocks
+// come from one rendering of one tree, so a write by another session cannot leave a listing's byte
+// ranges indexing markdown they were not computed over; nil blocks for a request that asked for
+// none, which pays for none of that rendering.
+func (s *server) artifactTextBody(r *http.Request, artifactID string) (docs.AskedText, *[]model.ArtifactBlock, error) {
+	withBlocks := r.URL.Query().Get("blocks") == "true"
+	text, err := s.deps.Docs.TextWithAsks(r.Context(), artifactID, withBlocks)
+	if err != nil || !withBlocks {
+		return text, nil, err
 	}
-	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(r.Context(), artifactID)
-	if err != nil {
-		return "", "", nil, err
-	}
-	if err := s.describeBlocks(r.Context(), artifactID, blocks); err != nil {
-		return "", "", nil, err
+	if err := s.describeBlocks(r.Context(), artifactID, text.Blocks); err != nil {
+		return docs.AskedText{}, nil, err
 	}
 	// A document with no blocks answers the empty list, never a missing key: the key is absent
 	// only where the request asked for no blocks.
+	blocks := text.Blocks
 	if blocks == nil {
 		blocks = []model.ArtifactBlock{}
 	}
-	return markdown, token, &blocks, nil
+	return text, &blocks, nil
 }
 
 func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
@@ -1125,8 +1397,15 @@ func deref(value *string) string {
 // commitArtifactVersionEvent queues the artifact.version event of a version the transaction wrote
 // and the stamp of the document's new mention edges with it (refs.QueueStamp), after the append so
 // stamping never touches sequence allocation. The event is filled in once Commit has run the write
-// phase (queueStampedEvent).
+// phase (queueStampedEvent). A document of an issue room is indexed by the room's pass, whose
+// references and block mentions are keyed by the room's tree artifact (docs' indexDocumentInRoom),
+// so the room is read here, in tx's read phase, and its edges are stamped with the same event
+// right after the document's. Right after it, it queues what that version's block index stated in
+// the node and tuple store (written.Blocks), which waited for this event: the pass ran before the
+// event existed, and no tuple may be updated once it is appended.
 func (s *server) commitArtifactVersionEvent(
+	ctx context.Context,
+	tx pgx.Tx,
 	ledger *docs.Ledger,
 	eventOwner owner,
 	actor model.Actor,
@@ -1134,11 +1413,27 @@ func (s *server) commitArtifactVersionEvent(
 	written docs.VersionResult,
 	diff *string,
 ) (*model.Event, error) {
-	return s.queueStampedEvent(ledger, eventOwner.event(
+	var room string
+	if err := tx.QueryRow(ctx, docs.DocumentRoomOfStatement, artifactID).Scan(&room); err != nil {
+		return nil, fmt.Errorf("read the document's room: %w", err)
+	}
+	event, err := s.queueStampedEvent(ledger, eventOwner.event(
 		"artifact.version",
 		actor,
 		docs.ArtifactVersionEventPayload(artifactID, name, written.Version, diff, written.Changes),
 	), "artifact", artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		if room != artifactID {
+			refs.QueueStamp(b, "artifact", room)
+		}
+		return graphstore.QueueCaused(ctx, b, written.Blocks, graphstore.LatestEvent)
+	}); err != nil {
+		return nil, err
+	}
+	return event, nil
 }
 
 // createVersionInput is the body of POST /api/v1/artifacts/{id}/versions and its issue and
@@ -1203,7 +1498,7 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.commitArtifactVersionEvent(ledger, eventOwner, actor, artifact.ID, artifact.Name, named, diff)
+	event, err := s.commitArtifactVersionEvent(r.Context(), tx, ledger, eventOwner, actor, artifact.ID, artifact.Name, named, diff)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1259,17 +1554,30 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	personScoped := s.personScoped(r, actor)
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if artifact.Kind != "doc" {
+	if !readsAsDocument(artifact) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
+	if artifact.Retired {
+		s.writeHandlerError(w, documentRetiredRefusal(artifact))
+		return
+	}
+	if artifact.DecisionsQuery {
+		s.writeHandlerError(w, decisionsQueryRefusal(artifact))
+		return
+	}
+	if err := refuseNodesOfOtherIssues(r.Context(), s.deps.Store.Pool, artifact, input.Ops); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// release ends the conditional edit gate once: right after the commit, which is all a later
-	// conditional edit of this document waits on, so the checks of this edit's new decision blocks
+	// conditional edit of this document waits on, so the checks of this edit's new ask blocks
 	// never hold it; on every earlier return, here.
 	release := func() {}
 	if input.Precondition != nil {
@@ -1295,6 +1603,9 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	if personScoped {
+		documentCtx = docs.WithPersonScope(documentCtx)
+	}
 	edit, err := s.deps.Docs.ApplyOps(documentCtx, artifact.ID, input.Ops, actor, input.Precondition)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1332,7 +1643,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			event, err := s.commitArtifactVersionEvent(ledger, eventOwner, actor, artifact.ID, artifact.Name, *written, diff)
+			event, err := s.commitArtifactVersionEvent(r.Context(), tx, ledger, eventOwner, actor, artifact.ID, artifact.Name, *written, diff)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
@@ -1441,13 +1752,27 @@ func participantsOrEmpty(participants []model.Actor) []model.Actor {
 	return participants
 }
 
+// readsAsDocument reports whether an artifact is read and edited as a document: a markdown
+// document, or an issue's tree artifact, whose own fragment of the issue's room holds the nodes
+// written into the issue rather than into a document, and which the text read and the edit route
+// take as they take a document (dispatch://INFRA-1253 R8).
+func readsAsDocument(artifact model.Artifact) bool {
+	return artifact.Kind == "doc" || artifact.Kind == "tree"
+}
+
 // issueArtifactsStatement lists an issue's artifacts, $1 the issue key, in the order every
 // reader of the issue shows them; collectArtifacts reads its rows. The issue read queues it in
 // a batch with its other reads (getIssue), so the statement and the scan live apart from the
-// sequential loader that every other route calls.
-const issueArtifactsStatement = `
+// sequential loader that every other route calls. A retired document is in no list of its
+// issue's documents (docs.RetireDocument), and its own address and id still read it. Neither is
+// the issue's tree artifact (createIssueTree): it is the issue's room, whose own fragment holds the
+// nodes written into the issue rather than into a document, and the tree read names it. Nor is
+// the issue's decisions query (refs.DecisionsQuerySQL): Decisions is a view over decision nodes
+// and not a document (R6 and R8 of this branch's spec), which its own address and id still read.
+var issueArtifactsStatement = `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 order by created_at, id
+		from artifacts where issue_key = $1 and retired_at is null and kind <> 'tree' and not ` + refs.DecisionsQuerySQL("artifacts") + `
+		order by created_at, id
 	`
 
 func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) ([]model.Artifact, error) {
@@ -1623,17 +1948,23 @@ func isArtifactNotFound(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.code == "ARTIFACT_NOT_FOUND"
 }
 
+// loadDocumentReferences lists the documents of target, an issue or a project, in the order
+// their owner's reads show them: the list a document reference by filename is matched in, and the
+// one its refusal hints from. A retired document is in no such list, though its slug still reads
+// it (resolveDocumentReference), and neither is an issue's decisions query, which is no document
+// (issueArtifactsStatement).
 func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target artifactTarget) ([]model.Artifact, error) {
 	query := `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 and kind = 'doc' order by created_at, id`
+		from artifacts where issue_key = $1 and kind = 'doc' and retired_at is null and not ` + refs.DecisionsQuerySQL("artifacts") + `
+		order by created_at, id`
 	value := target.Project
 	if target.IssueKey != nil {
 		value = *target.IssueKey
 	} else {
 		query = `
 			select ` + artifactColumns + `
-			from artifacts where project_key = $1 and issue_key is null and kind = 'doc' order by created_at, id`
+			from artifacts where project_key = $1 and issue_key is null and kind = 'doc' and retired_at is null order by created_at, id`
 	}
 	rows, err := q.Query(ctx, query, value)
 	if err != nil {
@@ -1873,14 +2204,20 @@ func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artif
 	`, parsed))
 }
 
-// scanArtifact reads artifactColumns. A session-owned artifact's project is "".
+// scanArtifact reads artifactColumns. A session-owned artifact's project is "". The fragment of
+// the room that holds the document is its own id where its room is another (an issue room's
+// tree), and the room's own fragment otherwise, as docs' fragmentOf names it. The issue's
+// decisions query - a document whose node is a query node of query `decisions` and which no
+// document_rooms row joins to a room, as refs.DecisionsQuerySQL reads it - is held by no fragment
+// and answers none.
 func scanArtifact(row pgx.Row) (model.Artifact, error) {
 	var artifact model.Artifact
-	var project *string
+	var project, role, queryRole *string
 	var createdBy []byte
 	if err := row.Scan(
 		&artifact.ID, &artifact.IssueKey, &project, &artifact.SessionID, &artifact.RefKey, &artifact.Slug,
-		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt,
+		&artifact.Name, &artifact.Kind, &artifact.Primary, &role, &queryRole, &createdBy, &artifact.CreatedAt, &artifact.Retired,
+		&artifact.Room,
 	); err != nil {
 		return model.Artifact{}, err
 	}
@@ -1888,7 +2225,29 @@ func scanArtifact(row pgx.Row) (model.Artifact, error) {
 	if err := json.Unmarshal(createdBy, &artifact.CreatedBy); err != nil {
 		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
 	}
+	placeArtifact(&artifact, role, queryRole)
 	return artifact, nil
+}
+
+// placeArtifact sets what an artifact row's role columns and its room (artifactColumns) say past
+// the columns themselves: the role it plays, its row's own, else the query its node is of
+// (graphstore.ArtifactQueryRoleSQL); whether it is its issue's decisions query; and the fragment of
+// its room that holds it - its own id's in an issue room, the room's own fragment where the
+// document is its own room, none for the decisions query. Every reader of an artifact row sets
+// these here (scanArtifact, loadArtifactsByRefKey).
+func placeArtifact(artifact *model.Artifact, role, queryRole *string) {
+	artifact.Role = deref(queryRole)
+	if role != nil {
+		artifact.Role = *role
+	}
+	artifact.DecisionsQuery = artifact.Kind == "doc" && deref(queryRole) == graphstore.QueryDecisions && artifact.Room == artifact.ID
+	switch {
+	case artifact.DecisionsQuery:
+	case artifact.Room != artifact.ID:
+		artifact.Fragment = artifact.ID
+	default:
+		artifact.Fragment = model.ArtifactFragmentOwn
+	}
 }
 
 // artifactOwnerKey is the owner part of ref_key (artifactTarget.refPrefix), which the 0071
@@ -1905,7 +2264,7 @@ const artifactOwnerKey = `coalesce(issue_key, project_key, 'agent/' || session_i
 // the same reference would also name. An owner that already holds two such artifacts (one whose
 // slug and another whose name it is, which uploads stored before this lookup read slugs) gets the
 // one whose slug it is, the one a read by that reference resolves to (resolveDocumentReference).
-const (
+var (
 	artifactByNameOrSlugSQL = `select ` + artifactColumns + ` from artifacts where ` + artifactOwnerKey +
 		` = $1 and $2 in (name, slug) order by slug = $2 desc limit 1`
 	artifactSlugTakenSQL = `select exists(select 1 from artifacts where ` + artifactOwnerKey + ` = $1 and slug = $2)`
@@ -2078,13 +2437,12 @@ func artifactSlug(name string) string {
 // spellings are written. Everything that asks what part a document plays is built from it —
 // documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
 // (documentRolePredicate), documentPlays, which asks the same of a row already read, and
-// documentRoleOf, which names the part one row plays.
+// documentRoleOf, which names the part one row plays. The `decisions` role is gone from every
+// write: a decisions document is found through decisions_documents(),
+// and a new one is refused (decisionsAreNodes).
 var roleSlugs = map[string]string{
-	model.ArtifactRoleVerification: "verification-md",
-	model.ArtifactRolePlan:         "plan-md",
-	// The Decisions view already spells the decisions document's slug, which a reference to it
-	// names, so the role takes that constant rather than a second copy of the same word.
-	model.ArtifactRoleDecisions: decisionsDocumentSlug,
+	model.ArtifactRoleVerification: model.ArtifactSlugVerification,
+	model.ArtifactRolePlan:         model.ArtifactSlugPlan,
 }
 
 // documentRole is the role a document takes when its row is created: an issue's markdown
@@ -2108,25 +2466,29 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 }
 
 // documentPlays reports whether an artifact already read plays role: it carries that role, or it
-// is an issue's document that carries none and its slug is the role's, for a row a rolling deploy
-// left with no role because the build that created it did not know the column. A role belongs to
-// an issue's documents alone - documentRole gives none to any other, and the constraint
-// artifacts_role_is_an_issue_document (migration 20261102110000_artifact_document_roles) holds the
-// column to them - so a project document whose slug is a role's, a project's plan.md, plays no
-// role and is a plain document. It is documentRolePredicate's answer about one row, so every
-// reader — the queries that find a document by its role and the routes that judge the document in
-// hand — agrees about the same row.
+// is an issue's markdown document that carries none and its slug is the role's, for a row a rolling
+// deploy left with no role because the build that created it did not know the column. A role
+// belongs to an issue's markdown documents alone - documentRole gives none to any other, and the
+// constraint artifacts_role_is_an_issue_document (migration 20261102110000_artifact_document_roles)
+// holds the column to them - so a project document whose slug is a role's, a project's plan.md,
+// plays no role and is a plain document, and neither does a file or a picture uploaded under a
+// role's name, a file plan.md whose bytes are not markdown. A retired document plays none either:
+// its retirement cleared its role (docs.RetireDocument), and its slug, which stays, gives it none
+// back. It is documentRolePredicate's answer about one row, so every reader — the queries that find
+// a document by its role and the routes that judge the document in hand — agrees about the same
+// row.
 func documentPlays(artifact model.Artifact, role string) bool {
-	return artifact.Role == role || (artifact.Role == "" && artifact.IssueKey != nil && artifact.Slug == roleSlugs[role])
+	return artifact.Role == role ||
+		(artifact.Role == "" && !artifact.Retired && artifact.IssueKey != nil && artifact.Kind == "doc" && artifact.Slug == roleSlugs[role])
 }
 
 // documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
 // true for, asked of the row as every other reader asks it. A row plays at most one of them - a
-// row that carries a role carries one of them, and an issue's row that carries none falls back to
-// its slug, which the map pairs with a single role - so the order this walks the map in cannot
-// change the answer. Asking documentPlays rather than reading artifacts.role is what gives a row
-// whose role column is still null the role its slug decides, which is the state a rolling deploy
-// leaves behind. A document that plays none of them answers "", which omits the field of a
+// row that carries a role carries one of them, and an issue's doc row that carries none falls
+// back to its slug, which the map pairs with a single role - so the order this walks the map in
+// cannot change the answer. Asking documentPlays rather than reading artifacts.role is what gives
+// a row whose role column is still null the role its slug decides, which is the state a rolling
+// deploy leaves behind. A document that plays none of them answers "", which omits the field of a
 // report that carries it (movedApprovalDocument).
 func documentRoleOf(artifact model.Artifact) string {
 	for role := range roleSlugs {
@@ -2147,27 +2509,64 @@ func isSpecDocument(artifact model.Artifact) bool {
 }
 
 // documentRolePredicate holds the artifacts row of the table aliased `alias` to the issue's
-// document of one role: the role itself, or, for an issue's row a rolling deploy left with no
-// role, the slug a document of that name carries. A project document never plays a role
-// (documentPlays), whatever its slug. `alias` is empty where the query names no alias.
+// document of one role: the role itself, or, for an issue's markdown document a rolling deploy left
+// with no role, the slug a document of that name carries, unless the document is retired, whose
+// slug plays no role. A project document, a file and a picture never play a role (documentPlays),
+// whatever their slug. `alias` is empty where the query names no alias.
 func documentRolePredicate(alias, role string) string {
 	if alias != "" {
 		alias += "."
 	}
-	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `issue_key is not null and ` +
-		alias + `slug = '` + roleSlugs[role] + `'))`
+	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `retired_at is null and ` +
+		alias + `issue_key is not null and ` + alias + `kind = 'doc' and ` + alias + `slug = '` + roleSlugs[role] + `'))`
 }
 
 // verificationRolePredicate is documentRolePredicate for the Verification document of a query
 // that names no alias, since the queries that hold a row to it are written as string literals.
 var verificationRolePredicate = documentRolePredicate("", model.ArtifactRoleVerification)
 
-// aliasedVerificationRole, aliasedPlanRole and aliasedDecisionsRole are the same predicate for a
-// query whose artifacts table is aliased `a`: the issue read, the coverage read and the check
-// resolver all join it that way.
+// aliasedVerificationRole and aliasedPlanRole are the same predicate for a query whose artifacts
+// table is aliased `a`: the issue read, the coverage read and the check resolver all join it that
+// way.
 var aliasedVerificationRole = documentRolePredicate("a", model.ArtifactRoleVerification)
 var aliasedPlanRole = documentRolePredicate("a", model.ArtifactRolePlan)
-var aliasedDecisionsRole = documentRolePredicate("a", model.ArtifactRoleDecisions)
+
+// decisionsAreNodes is the 409 refusing an upload or a create named name, on an issue, whose slug
+// is the slug of a decisions document: a decision is a
+// `decision` block of the spec, and a document of that name would be stored where nothing reads
+// it. The refusal stays: a route keeps a thing it stops taking declared and refuses it by name.
+// It reads the name and not the issue, so a document of any other name is taken. An upload that
+// finds an issue's decisions document that still stands is that document's next version, which
+// the decisions step converts, and is never refused.
+func decisionsAreNodes(target artifactTarget, name string) error {
+	if target.IssueKey == nil || artifactSlug(name) != refs.RetiredDecisionsSlug {
+		return nil
+	}
+	return errorf(http.StatusConflict, codeDecisionsAreNodes,
+		"%q names a decisions document, and decisions are nodes now: write each decision as a `decision` block in the `## Decisions` part of the issue's spec (dispatch://%s/spec), with shaped, from_ask and uncertainty as it needs",
+		name, *target.IssueKey)
+}
+
+// decisionsQueryRefusal is the 409 refusing a write of new text to artifact, its issue's decisions
+// query node (model.Artifact.DecisionsQuery): an upload under its name or slug, and an edit by its
+// id or its slug. Its versions render the issue's decisions, which are nodes of the issue's
+// documents, and no fragment of any room holds it, so text written into it would be read by
+// nobody; a socket on it is refused with the same code (refs.DecisionsQuerySQL).
+func decisionsQueryRefusal(artifact model.Artifact) error {
+	return errorf(http.StatusConflict, codeDecisionsQuery,
+		"%s (%s, %s) is the issue's decisions query: it renders the issue's decisions and takes no text; write each decision as a `decision` block in the `## Decisions` part of the issue's spec",
+		artifact.Name, artifact.Slug, artifact.ID)
+}
+
+// documentRetiredRefusal is the 409 refusing a write of new text to artifact, a retired document
+// (docs.RetireDocument): an upload or a create under its name or slug, and an edit by its id or
+// its slug. The document is in no list of its issue's or its project's documents, so text written
+// into it would be stored where no reader looks for it. Its versions stay readable.
+func documentRetiredRefusal(artifact model.Artifact) error {
+	return errorf(http.StatusConflict, "DOCUMENT_RETIRED",
+		"%s (%s, %s) was retired: it takes no new text and is in no list of its documents, though its versions stay readable at /api/v1/artifacts/%s/versions; write a document of another name",
+		artifact.Name, artifact.Slug, artifact.ID, artifact.ID)
+}
 
 // artifactKindMismatch is the 400 refusing an upload under name, of kind, as the next version of
 // artifact, the one the name or slug finds, whose kind is another.
@@ -2325,6 +2724,54 @@ func (s *server) nextArtifactSlug(ctx context.Context, q queryer, target artifac
 	}
 }
 
+// issueTreeName is the name an issue's tree artifact is created under, from which its slug is
+// taken (nextArtifactSlug): `tree`, or `tree-2` and so on where a document of the issue holds it.
+const issueTreeName = "tree"
+
+// createIssueTree creates, in tx, the tree artifact id of the issue key in project
+// (dispatch://INFRA-1253 R5, D3 and D14 of its plan): an artifacts row of kind tree, whose Yjs
+// document is the issue's room, under slug, a slug of its own among the issue's documents
+// (nextArtifactSlug, read with the id in the create's read phase, planConvertedIssueRoom); its
+// node (graphstore.ArtifactNode) with its part_of to the issue (graphstore.ArtifactPartOf),
+// written before the row that names it; and the issue's issue_trees row, which holds the issue to
+// one tree. Its version 1, empty, with its version node, as an empty document's create writes its
+// version 1, so a settlement of the room always finds the tree's latest version, is queued in the
+// read phase (planConvertedIssueRoom) and runs at the commit, after this row. It queues all of it
+// on b, the create's write phase (createConvertedIssueRoom), with the node write written plans
+// (issueTreeWrite), whose statements the caller causes under the event it appends
+// (graphstore.QueueCaused). The caller holds the issue's owner lock and creates the tree once: an
+// issue_trees row standing for the issue already is refused by that row's key, and the
+// transaction with it. Each document_rooms row naming the tree - the spec's, a document's joining
+// the room later - is written under that same owner lock, held to the writing transaction's
+// commit, and announced in it (docs.AnnounceDocumentRooms says why a room's settlement depends on
+// that).
+func (s *server) createIssueTree(b *store.WriteBatch, written graphstore.Uncaused, id, slug, key, project string, actor model.Actor) error {
+	actorJSON, err := encodeJSON(actor)
+	if err != nil {
+		return err
+	}
+	if err := graphstore.QueueNodes(b, written); err != nil {
+		return fmt.Errorf("write the issue tree's node: %w", err)
+	}
+	b.Queue("create the issue tree", `
+		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, 'tree', false, $6, $7, $8)
+	`, id, key, project, slug, issueTreeName, actorJSON, graphstore.KindArtifact, graphstore.ArtifactRefKey(key, project, "", slug))
+	b.Queue("record the issue's tree", `insert into issue_trees (issue_key, artifact_id) values ($1, $2)`, key, id)
+	return nil
+}
+
+// issueTreeWrite is the node write of the tree artifact of the issue key in project under slug,
+// planned (graphstore.PlanUncaused) for createIssueTree to queue: the tree's node
+// (graphstore.ArtifactNode), made by actor at at and marked changed, with its part_of the issue
+// (graphstore.ArtifactPartOf).
+func issueTreeWrite(slug, key, project string, actor model.Actor, at time.Time) graphstore.Uncaused {
+	refKey := graphstore.ArtifactRefKey(key, project, "", slug)
+	node := graphstore.ArtifactNode(refKey, project, "", actor, at)
+	node.Changed = true
+	return graphstore.PlanUncaused([]graphstore.Node{node}, []graphstore.Tuple{graphstore.ArtifactPartOf(refKey, key, actor, at)})
+}
+
 // quiesceDocuments closes every live document on every process, flushing each through the store,
 // and waits for the settlements in flight. Test-only: mounted by routes() only when
 // Deps.TestHooksEnabled is set, so a browser-test harness can truncate its database between
@@ -2336,4 +2783,77 @@ func (s *server) quiesceDocuments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.runTestHookEverywhere(w, r, testHookCall{Hook: hookQuiesceDocuments})
+}
+
+// issueTreeOf is the tree artifact of the issue issueKey, whose Yjs document is the issue's room,
+// where the issue is converted - born so (createIssue) or by the conversion - and "" where it holds
+// none (issue_trees, D14 of dispatch://INFRA-1253's plan).
+func issueTreeOf(ctx context.Context, q queryer, issueKey string) (string, error) {
+	var tree string
+	err := q.QueryRow(ctx, `select artifact_id::text from issue_trees where issue_key = $1`, issueKey).Scan(&tree)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the issue's tree: %w", err)
+	}
+	return tree, nil
+}
+
+// nodesOfOtherIssuesStatement reads, of the node addresses $1, each that is a block node
+// (refs.BlockNodeKind) of a document - its ref_key, the address before `#` - of another issue than
+// $2, with that issue, in the order given.
+var nodesOfOtherIssuesStatement = `
+	select named.address, a.issue_key
+	from unnest($1::text[]) with ordinality as named(address, position)
+	join graph_nodes n on n.kind = '` + refs.BlockNodeKind + `' and n.id = named.address
+	join artifacts a on a.ref_key = split_part(named.address, '#', 1)
+	where a.issue_key is not null and a.issue_key is distinct from $2
+	order by named.position
+	limit 1`
+
+// refuseNodesOfOtherIssues is the 409 NODE_IN_OTHER_ISSUE refusing an edit of artifact whose
+// operations name, in block or as an anchor's `block:<id>`, a node of another issue by its store
+// address, `<ref_key>#<block id>`, the address the issue's tree read names each node by: a node
+// whose parent is a node of an issue above lives in its own issue's room, and the issue above
+// answers it read-only (D3 of dispatch://INFRA-1253's plan), so a write addressed through that
+// issue is sent to the node's own, which the refusal names. An operation that names its block by
+// its bare id, as every edit does, is the document's own to answer.
+func refuseNodesOfOtherIssues(ctx context.Context, q queryer, artifact model.Artifact, ops []model.EditOp) error {
+	var addresses []string
+	for _, op := range ops {
+		for _, named := range []string{op.Block, blockAnchor(op.After), blockAnchor(op.Before)} {
+			if strings.Contains(named, "#") {
+				addresses = append(addresses, named)
+			}
+		}
+	}
+	if len(addresses) == 0 {
+		return nil
+	}
+	var address string
+	var other string
+	err := q.QueryRow(ctx, nodesOfOtherIssuesStatement, addresses, artifact.IssueKey).Scan(&address, &other)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the issues of the nodes an edit names: %w", err)
+	}
+	owner := "this document"
+	if artifact.IssueKey != nil {
+		owner = "issue " + *artifact.IssueKey
+	}
+	return errorf(http.StatusConflict, codeNodeInOtherIssue,
+		"%s is a node of issue %s, not of %s: write it through %s's own documents (dispatch://%s)", address, other, owner, other, other)
+}
+
+// blockAnchor is the block id an insert's or a move's anchor names in its `block:<id>` form, "" for
+// an anchor written as a quote.
+func blockAnchor(anchor string) string {
+	id, _ := strings.CutPrefix(anchor, "block:")
+	if id == anchor {
+		return ""
+	}
+	return id
 }

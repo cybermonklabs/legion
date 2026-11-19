@@ -144,6 +144,26 @@ function advancesRevisionToSend(issue: IssueDetails, named: number | undefined):
   return named ?? issue.advances_revision;
 }
 
+/** The two members a create or an update names the issue's waits by: needs, which a Dispatch of
+ *  the issue tree reads, and blocked_by with the same targets, which a Dispatch of the release
+ *  before reads alone, so a CLI of this release is served by either (dispatch://INFRA-1253 R10).
+ *  A call naming no waits sends neither. */
+function waitsBody(blockedBy: readonly string[] | undefined): {
+  readonly needs?: string[];
+  readonly blocked_by?: string[];
+} {
+  return blockedBy === undefined ? {} : { needs: [...blockedBy], blocked_by: [...blockedBy] };
+}
+
+/** The issues an issue answer says the issue waits on: its needs, where the answer holds it, and
+ *  else its blocked_by, which a Dispatch of the release before answers alone. */
+export function waitsOf(issue: {
+  readonly needs?: readonly string[] | null;
+  readonly blocked_by?: readonly string[] | null;
+}): readonly string[] {
+  return issue.needs ?? issue.blocked_by ?? [];
+}
+
 /** `dispatch issue`: open an issue, or report the one an external reference already holds. */
 export async function issueCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, linkBase } = context;
@@ -158,14 +178,18 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   const components = optionalComponents(args, "components");
   const repo = optionalString(args, "repo");
   const labels = args.labels;
-  const blockedBy = args.blocked_by;
+  const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
+  const duplicateOf = optionalString(args, "duplicate_of");
+  const filedFrom = optionalString(args, "filed_from");
   const advances = optionalStringArray(args, "advances");
   try {
     const created = await client.issue({
       project,
       title,
       ...(parent === undefined ? {} : { parent }),
-      ...(Array.isArray(blockedBy) ? { blocked_by: blockedBy as string[] } : {}),
+      ...waitsBody(blockedBy),
+      ...(duplicateOf === undefined ? {} : { duplicate_of: duplicateOf }),
+      ...(filedFrom === undefined ? {} : { filed_from: filedFrom }),
       ...(advances === undefined ? {} : { advances }),
       ...(external === undefined ? {} : { external }),
       ...(force === undefined ? {} : { force }),
@@ -262,6 +286,8 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const assignee = optionalNullableString(args, "assignee");
   const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
   const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
+  const duplicateOf = optionalString(args, "duplicate_of");
+  const filedFrom = optionalString(args, "filed_from");
   const advances = optionalStringArray(args, "advances");
   const advancesRevision = optionalNumber(args, "advances_revision");
   const requestedLinks = Array.isArray(args.external_links)
@@ -349,7 +375,11 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ...(assignee === undefined ? {} : { assignee }),
       ...(route === undefined ? {} : { route }),
       ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
-      ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
+      ...waitsBody(blockedBy),
+      ...(duplicateOf === undefined
+        ? {}
+        : { duplicate_of: duplicateOf === "" ? null : duplicateOf }),
+      ...(filedFrom === undefined ? {} : { filed_from: filedFrom === "" ? null : filedFrom }),
       ...advancesWrite,
       ...(components === undefined ? {} : { components }),
       ...(repo === undefined ? {} : { repo: repo === "" ? null : repo }),
@@ -444,9 +474,23 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     ...(blockedBy === undefined
       ? []
       : [
-          (after.blocked_by ?? []).length === 0
+          waitsOf(after).length === 0
             ? "blocked_by cleared"
-            : `blocked by ${(after.blocked_by ?? []).join(", ")}`,
+            : `blocked by ${waitsOf(after).join(", ")}`,
+        ]),
+    ...(duplicateOf === undefined
+      ? []
+      : [
+          (after.duplicate_of ?? null) === null
+            ? "duplicate_of cleared"
+            : `duplicate of ${after.duplicate_of}`,
+        ]),
+    ...(filedFrom === undefined
+      ? []
+      : [
+          (after.filed_from ?? null) === null
+            ? "filed_from cleared"
+            : `filed from ${after.filed_from}`,
         ]),
     ...(advances === undefined
       ? []

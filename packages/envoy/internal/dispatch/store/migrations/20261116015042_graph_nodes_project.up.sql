@@ -1,0 +1,20 @@
+-- 20261116015042_graph_nodes_project.up.sql
+--
+-- Every node of a project-owned kind names its project, and a node no project owns (an agent
+-- conversation's document, a message outside any issue) names the parties it is between. Both are
+-- base attributes of the store (graphstore.Node.Project and Parties): each is a value tuple the
+-- write that stores the node appends, `project` and `parties`, and these two columns are their
+-- projection, as `visibility` and `state` project theirs. `parties` is the attribute's value split
+-- on its spaces: the attribute holds the parties sorted and joined by one space
+-- (`person:<login>`, `session:<id>`), and the column holds the same list as an array a read can
+-- test membership of.
+--
+-- Both are null on every node no write has stated them for: the people and agent nodes, the block
+-- schema's own nodes, and every comment and block node a build before this one wrote, which the
+-- backfill (envoy-dispatch backfill-graph-store) gives its project. A node's project never moves
+-- once stated (graphstore.ErrProjectMoved).
+--
+-- A nullable column with no default is a catalog change: no stored row is rewritten, and the
+-- statement holds its lock for the length of a catalog write. The index that reads a project's
+-- nodes is built concurrently by the migration after this one.
+alter table graph_nodes add column project_key text, add column parties text[];

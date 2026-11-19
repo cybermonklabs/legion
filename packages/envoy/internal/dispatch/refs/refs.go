@@ -11,6 +11,7 @@ package refs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -20,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -160,6 +162,103 @@ func (r Replacement) Held() []Target {
 	return r.held
 }
 
+// ArtifactMentions is what r, one reconcile of a document's references, states of them in the node
+// and tuple store, for its caller to append under the cause the write's event gives it
+// (graphstore.Caused, graphstore.QueueCaused), in the transaction that queues r: the mentions tuple
+// out of the document's node (graphstore.ArtifactMentions) to each target whose row r inserts, and
+// its retraction to each target whose row r deletes, both dated at the time r writes the
+// document's references at (its insertedAt, else the transaction's now(), which the insert dates a
+// new row at too). A row that survives states nothing: its tuple stands from the write that
+// inserted it. It reads, in the plan's read phase, only the document row's node columns and the
+// time, so it may be called before r is queued or after.
+//
+// An assertion's legacy_source_seq is its row's source_seq. The insert writes none, and the event
+// that records the version stamps the row with its own id in the same transaction (QueueStamp,
+// Stamp, docs' stampVersionEvent), which is the cause the caller appends the tuple under, so the
+// tuple takes that cause (graphstore.UncausedTuple's LegacyFromCause). A reconcile no event
+// records - rebuild-refs - appends at the sentinel (graphstore.Caused with NoEvent), where the
+// tuple keeps none, as its row does. A retraction's row is gone and it takes none.
+//
+// record is what the version's own row and its document's say of the document (ReadIndexedVersion,
+// or the writer's own record of a version or a document whose row is only queued): its ref_key,
+// which every tuple runs out of, and the first author of its newest version, who signs each fact,
+// or the document's own author where that version names none, as the backfill signs the facts of a
+// document's bytes (graphcensus' nameArtifactNodes). A document whose row names no node, which a
+// process of the release before wrote, states nothing, nor does a far end past
+// graphstore.MaxAddressBytes: each such row is the view's arm over refs to answer
+// (store.ArtifactReferenceRowUnmarked). A document row the transaction has queued and not written
+// is this build's, which names its node. A source of any other kind - a comment, a message, an ask
+// - states nothing here.
+func (r Replacement) ArtifactMentions(ctx context.Context, q Queryer, record IndexedVersion) ([]graphstore.UncausedTuple, error) {
+	id, ok := canonicalUUID(r.fromID)
+	if r.fromKind != graphstore.KindArtifact || !ok || len(r.changed) == 0 || !graphstore.AddressFits(record.RefKey) {
+		return nil, nil
+	}
+	var marked bool
+	var at time.Time
+	var author []byte
+	if err := q.QueryRow(ctx, `
+		select coalesce((select a.node_kind is not null from artifacts a where a.id = $1::uuid), true),
+		       coalesce($2::timestamptz, now()),
+		       (select a.created_by from artifacts a where a.id = $1::uuid)
+	`, id, r.insertedAt).Scan(&marked, &at, &author); err != nil {
+		return nil, fmt.Errorf("read the node of document %s: %w", r.fromID, err)
+	}
+	if !marked {
+		return nil, nil
+	}
+	who := record.Writer
+	if who.ID == "" && author != nil {
+		if err := json.Unmarshal(author, &who); err != nil {
+			return nil, fmt.Errorf("decode the author of document %s: %w", r.fromID, err)
+		}
+	}
+	cited := make(map[Target]struct{}, len(r.held))
+	for _, target := range r.held {
+		cited[target] = struct{}{}
+	}
+	// changed lists the targets r deletes first, then those it inserts (PlanReplaceFrom), so the
+	// retractions come before the assertions, as the two statements run.
+	mentions := make([]graphstore.UncausedTuple, 0, len(r.changed))
+	for _, target := range r.changed {
+		if !graphstore.AddressFits(target.ID) {
+			continue
+		}
+		_, inserted := cited[target]
+		mentions = append(mentions, graphstore.UncausedTuple{
+			Tuple:           graphstore.ArtifactMentions(record.RefKey, target.Kind, target.ID, inserted, who, at),
+			LegacyFromCause: inserted,
+		})
+	}
+	return mentions, nil
+}
+
+// DocumentMentioning is the record a reconcile of document artifactID's references that writes no
+// version of it signs its facts with (Replacement.ArtifactMentions): the document's ref_key and the
+// first author of its newest version, read through q. found is false for a document no row holds.
+func DocumentMentioning(ctx context.Context, q Queryer, artifactID string) (record IndexedVersion, found bool, err error) {
+	id, ok := canonicalUUID(artifactID)
+	if !ok {
+		return IndexedVersion{}, false, nil
+	}
+	var writer []byte
+	switch err := q.QueryRow(ctx, `
+		select a.ref_key, (select v.authors->0 from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1)
+		from artifacts a where a.id = $1::uuid
+	`, id).Scan(&record.RefKey, &writer); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return IndexedVersion{}, false, nil
+	case err != nil:
+		return IndexedVersion{}, false, fmt.Errorf("read the writer of document %s: %w", artifactID, err)
+	}
+	if writer != nil {
+		if err := json.Unmarshal(writer, &record.Writer); err != nil {
+			return IndexedVersion{}, false, fmt.Errorf("decode the writer of document %s: %w", artifactID, err)
+		}
+	}
+	return record, true, nil
+}
+
 // Queue queues the replacement's writes on a write phase's batch: the delete of the edges found no
 // longer names, the insert of the new ones, and the settlement of what the source owes the
 // re-index queue (queueSettleRefsGrammarOwed). A surviving edge keeps its created_at and
@@ -198,6 +297,22 @@ func (r Replacement) queueSettleRefsGrammarOwed(b *store.WriteBatch) {
 	}
 	b.Queue(fmt.Sprintf("settle the index owed by %s %s", r.fromKind, r.fromID),
 		`delete from refs_grammar_owed where kind = $1 and id = $2::uuid`, r.fromKind, r.owed)
+}
+
+// SettleOwedDocuments queues, on a write phase's batch, what queueSettleRefsGrammarOwed queues for
+// one source, for the documents of an issue room whose text one pass over the room read at their
+// latest versions (docs' indexRenderedVersion and indexDeferredVersion): the room's references are
+// written under its tree artifact (Replacement.Queue), whose own row that write settles, and each
+// document whose fragment the pass read owes the queue nothing either. Left owed, its row would be
+// drained after the pass by owing the document its block index again, which costs the room a
+// second pass for every version of it. documents is in ascending id, the order every writer of the
+// queue's rows of several documents takes.
+func SettleOwedDocuments(b *store.WriteBatch, documents []string) {
+	if len(documents) == 0 {
+		return
+	}
+	b.Queue(fmt.Sprintf("settle the index owed by the documents %v", documents),
+		`delete from refs_grammar_owed where kind = 'artifact' and id = any($1::uuid[])`, documents)
 }
 
 func scanTargets(rows pgx.Rows, err error) ([]Target, error) {
@@ -334,10 +449,15 @@ var countedKinds = [...]string{"issue", "ask", "artifact", "block"}
 // targets do not allow, a block no document holds, or a block outside the issues and documents
 // the attribute may point into (pmdoc.CheckBlockPointers). A browser's edit is never refused, so
 // a pointer it leaves at a block no document holds stays unresolved.
+//
+// A block is named as the read of its reference answers it (resolveBlockTargets): by the node its
+// far end names, which for a block of a document converted into its issue's room is the room's
+// node however the citation spells it, and by the document holding it, never the room's tree.
+// Two far ends that name one node name it once.
 func CountedChanges(ctx context.Context, q Queryer, changed []Target) (model.ReferenceChanges, error) {
 	issueKeys := []string{}
 	askIDs := []string{}
-	artifactKeys := []string{}
+	artifactKeys, blockAddresses := []string{}, []string{}
 	ordered := make([]Target, 0, len(changed))
 	seen := make(map[[2]string]struct{}, len(changed))
 	for _, target := range changed {
@@ -363,9 +483,7 @@ func CountedChanges(ctx context.Context, q Queryer, changed []Target) (model.Ref
 			artifactKeys = append(artifactKeys, target.ID)
 			ordered = append(ordered, target)
 		case "block":
-			// A block is resolved through its document, the ref_key before the first '#'.
-			document, _, _ := strings.Cut(target.ID, "#")
-			artifactKeys = append(artifactKeys, document)
+			blockAddresses = append(blockAddresses, target.ID)
 			ordered = append(ordered, target)
 		}
 	}
@@ -381,6 +499,11 @@ func CountedChanges(ctx context.Context, q Queryer, changed []Target) (model.Ref
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
+	blocks, err := resolveBlockTargets(ctx, q, blockAddresses)
+	if err != nil {
+		return model.ReferenceChanges{}, err
+	}
+	namedBlocks := make(map[string]struct{}, len(blocks))
 	references := make([]model.ChangedReference, 0, len(ordered))
 	for _, target := range ordered {
 		switch target.Kind {
@@ -397,15 +520,12 @@ func CountedChanges(ctx context.Context, q Queryer, changed []Target) (model.Ref
 				references = append(references, reference)
 			}
 		case "block":
-			document, blockID, _ := strings.Cut(target.ID, "#")
-			if reference, found := artifacts[document]; found {
-				references = append(references, model.ChangedReference{
-					Kind:       "block",
-					ID:         target.ID,
-					ArtifactID: &reference.ID,
-					Ref:        BlockRef(reference.Ref, blockID),
-				})
+			reference, found := blocks[target.ID]
+			if _, named := namedBlocks[reference.ID]; !found || named {
+				continue
 			}
+			namedBlocks[reference.ID] = struct{}{}
+			references = append(references, reference)
 		}
 	}
 	named := make(map[string]int, len(countedKinds))
@@ -611,13 +731,60 @@ func mergePending[Key comparable, Target any](
 	}
 }
 
+// resolveBlockTargets resolves cited blocks, by the far ends `refs` and `block_refs` store for
+// them, into the entry a block's own read and its document's panel are matched by, keyed by the
+// far end: the node the far end names (NamedBlockSQL), which the block's read answers for its
+// reference; the uuid of the document holding the block, read off the block's row
+// (BlockDocumentSQL) while one stands, else, for a block a version deleted from an issue room, the
+// document that room last held it in (RoomBlockDocumentSQL), else the document the far end names
+// before its '#'; and the block's reference at that document's address (BlockRef). A far end whose
+// document no row holds is absent.
+func resolveBlockTargets(ctx context.Context, q Queryer, addresses []string) (map[string]model.ChangedReference, error) {
+	found := map[string]model.ChangedReference{}
+	if len(addresses) == 0 {
+		return found, nil
+	}
+	rows, err := q.Query(ctx, `
+		select p.address, named.node_id, document.id::text, document.issue_key, coalesce(document.project_key, ''),
+		       document.session_id, document.slug, document.kind, document.is_primary
+		from unnest($1::text[]) as p (address)
+		cross join lateral (select `+NamedBlockSQL("p.address")+` as node_id) named
+		left join artifacts keyed on keyed.ref_key = split_part(named.node_id, '#', 1)
+		join artifacts document on document.id = coalesce(
+			(select `+BlockDocumentSQL("held")+` from document_blocks held where held.node_id = named.node_id limit 1),
+			`+RoomBlockDocumentSQL("keyed.id", "substr(named.node_id, strpos(named.node_id, '#') + 1)")+`,
+			(select written.id from artifacts written where written.ref_key = split_part(p.address, '#', 1)))
+	`, addresses)
+	if err != nil {
+		return nil, fmt.Errorf("resolve changed block references: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var address, node, id, project, slug, kind string
+		var issueKey, session *string
+		var primary bool
+		if err := rows.Scan(&address, &node, &id, &issueKey, &project, &session, &slug, &kind, &primary); err != nil {
+			return nil, fmt.Errorf("scan changed block reference: %w", err)
+		}
+		_, blockID, _ := strings.Cut(node, "#")
+		found[address] = model.ChangedReference{
+			Kind:       "block",
+			ID:         node,
+			ArtifactID: &id,
+			Ref:        BlockRef(ArtifactRef(issueKey, project, session, slug, kind, primary), blockID),
+		}
+	}
+	return found, rows.Err()
+}
+
 // ReferencedBy lists Dispatch items and artifacts that mention an artifact reference key or one
 // of its current blocks, once per source, in the shape the document surfaces read (kind, id
 // order). A citing document, comment, message or ask is listed itself, not by the block holding
 // its link: an ask that cites the document from one of its parts alone — an option, or the
-// answer it was given — is listed as that ask, once.
-func ReferencedBy(ctx context.Context, q Queryer, refKey string) ([]model.ReferencedBy, error) {
-	edges, err := resolveEdges(ctx, q, Query{Direction: "in", Kind: "artifact", ID: refKey, Kinds: []string{"mentions"}, WholeDocuments: true})
+// answer it was given — is listed as that ask, once. A source who may not see is listed to
+// nobody but its author.
+func ReferencedBy(ctx context.Context, q Queryer, who model.Actor, refKey string) ([]model.ReferencedBy, error) {
+	edges, err := resolveEdges(ctx, q, who, Query{Direction: "in", Kind: "artifact", ID: refKey, Kinds: []string{"mentions"}, WholeDocuments: true})
 	if err != nil {
 		return nil, err
 	}
@@ -652,26 +819,58 @@ func ReferencedBy(ctx context.Context, q Queryer, refKey string) ([]model.Refere
 	return references, nil
 }
 
-// Outgoing lists Dispatch mentions written by an artifact, resolving artifact targets. A block
-// target keeps its own kind and id and carries its document as the artifact, while a current
-// version holds the block; a block none holds is omitted, as is a target of a node kind this
-// build does not know. A block of an ask, a comment or a message, which this shape has no field
-// for, is listed by the graph read (Edges) alone. Any other unresolved target is listed.
-func Outgoing(ctx context.Context, q Queryer, artifactID string) ([]model.OutgoingReference, error) {
+// Outgoing lists Dispatch mentions written by an artifact, resolving artifact targets. A
+// document's mentions are its own references; the references of an issue room's text are its
+// tree's (docs' indexRenderedVersion writes them under the room), which belong to no one document
+// of the room, so a document converted into its issue's room writes those of them a block of its
+// own holds, read where the block index keeps its blocks (DocumentRoomBlocksSQL), each at the
+// address it was written at, a block's link at the target or at the node the target resolves to,
+// as heldByABlock reads a mention held by a block. A block target keeps its own kind and id and
+// carries its document as the artifact, while a current version holds the block; a block none
+// holds is omitted, as is a target of a node kind this build does not know. A block of an ask, a
+// comment or a message, which this shape has no field for, is listed by the graph read (Edges)
+// alone. Any other unresolved target is listed. A block target is the
+// node its address resolves to (ResolvedBlockSQL), so a mention of a block of a document
+// converted into its issue's room, written at the document's own address, reaches the room's row
+// of the block, and the document it carries is the one holding the block (BlockDocumentSQL),
+// never the room's tree.
+//
+// It answers for who. A document who may not see writes no mention here, so its mentions say
+// nothing of it, and a target who may not see is no mention at all - for a block, neither the
+// block nor the document it carries (VisibleKind, VisibleEnd), the block read at the node its
+// address resolves to. The document is read by its uuid through artifacts' primary key, since
+// the store keys it by ref_key and the registry's own rewrite compares the uuid as text, which no
+// index serves.
+func Outgoing(ctx context.Context, q Queryer, who model.Actor, artifactID string) ([]model.OutgoingReference, error) {
 	rows, err := q.Query(ctx, `
 		select e.to_kind, e.to_id,
 		       a.id::text, a.issue_key, coalesce(a.project_key, ''), a.session_id, coalesce(a.ref_key, ''), coalesce(a.slug, ''), coalesce(a.name, ''), coalesce(a.kind, ''), coalesce(a.is_primary, false),
 		       coalesce(a.created_by, '{}'::jsonb), coalesce(a.created_at, timestamptz 'epoch'),
 		       coalesce(v.number, 0), coalesce(v.named, false), v.summary, coalesce(v.authors, '[]'::jsonb), coalesce(v.created_at, timestamptz 'epoch'), `+model.VersionSize+`, v.mime, v.sha256
-		from graph_edges e
-		left join document_blocks d on e.to_kind = 'block' and d.node_id = e.to_id
-		left join artifacts a on a.ref_key = case e.to_kind when 'artifact' then e.to_id when 'block' then split_part(d.node_id, '#', 1) end
+		from (
+			select g.to_kind, g.to_id from graph_edges g
+			where g.from_kind = 'artifact' and g.from_id = $1 and g.kind = 'mentions'
+			union
+			select g.to_kind, g.to_id from graph_edges g
+			cross join (select `+DocumentRoomSQL("$1::text::uuid")+` as id) room
+			where room.id <> $1::text::uuid and g.from_kind = 'artifact' and g.from_id = room.id::text and g.kind = 'mentions'
+			  and exists (select 1 from block_refs b
+			              where `+DocumentRoomBlocksSQL("b", "$1::text::uuid")+` and b.to_kind = g.to_kind
+			                and (b.to_id = g.to_id or (g.to_kind = '`+BlockNodeKind+`' and b.to_id = `+ResolvedBlockSQL("g.to_id")+`)))
+		) e
+		left join lateral (select `+ResolvedBlockSQL("e.to_id")+` as node_id) resolved on e.to_kind = 'block'
+		left join document_blocks d on d.node_id = resolved.node_id
+		left join artifacts a on a.ref_key = case e.to_kind when 'artifact' then e.to_id
+		  when 'block' then (select owner.ref_key from artifacts owner where owner.id = `+BlockDocumentSQL("d")+`) end
 		left join artifact_versions v on v.artifact_id = a.id
-		where e.from_kind = 'artifact' and e.from_id = $1 and e.kind = 'mentions' and e.to_kind = any($2)
+		where e.to_kind = any($2)
 		  and e.to_kind not in `+itemBlockKinds+`
 		  and (e.to_kind <> 'block' or d.node_id is not null)
+		  and `+VisibleKind("artifact", `(select s.ref_key from artifacts s where s.id = $1::text::uuid)`, "$3")+`
+		  and `+VisibleEnd("e.to_kind", "e.to_id", true, "$3")+`
+		  and (e.to_kind <> 'block' or (`+VisibleKind("block", "d.node_id", "$3")+` and `+VisibleKind("artifact", "a.ref_key", "$3")+`))
 		order by e.to_kind, e.to_id, v.number
-	`, artifactID, nodeKinds)
+	`, artifactID, nodeKinds, VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}

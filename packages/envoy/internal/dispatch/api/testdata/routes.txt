@@ -88,6 +88,7 @@ POST /api/v1/issues/{key}/artifacts any
 GET /api/v1/issues/{key}/artifacts/{slug} any
 GET /api/v1/issues/{key}/artifacts/{slug}/blocks any
 POST /api/v1/issues/{key}/artifacts/{slug}/edits any
+POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert any
 GET /api/v1/issues/{key}/artifacts/{slug}/text any
 POST /api/v1/issues/{key}/artifacts/{slug}/versions any
 GET /api/v1/issues/{key}/artifacts/{slug}/versions/{number} any
@@ -98,6 +99,8 @@ POST /api/v1/issues/{key}/claim any
 GET /api/v1/issues/{key}/collaborators any
 GET /api/v1/issues/{key}/comments any
 POST /api/v1/issues/{key}/comments any
+GET /api/v1/issues/{key}/constraints any
+POST /api/v1/issues/{key}/constraints any
 GET /api/v1/issues/{key}/coverage any
 GET /api/v1/issues/{key}/decisions any
 PUT /api/v1/issues/{key}/design-gates any
@@ -105,13 +108,20 @@ GET /api/v1/issues/{key}/events any
 GET /api/v1/issues/{key}/handoffs any
 POST /api/v1/issues/{key}/handoffs/{phase} bearer
 GET /api/v1/issues/{key}/handoffs/{phase}/latest any
+POST /api/v1/issues/{key}/lenses any
 GET /api/v1/issues/{key}/messages any
 POST /api/v1/issues/{key}/messages any
 GET /api/v1/issues/{key}/messages/{id} any
+POST /api/v1/issues/{key}/nodes/{id}/findings any
+POST /api/v1/issues/{key}/nodes/{id}/pointers any
+POST /api/v1/issues/{key}/nodes/{id}/settle any
+POST /api/v1/issues/{key}/nodes/{id}/state any
 PUT /api/v1/issues/{key}/plans/{id} any
+GET /api/v1/issues/{key}/proposed any
 GET /api/v1/issues/{key}/references any
 GET /api/v1/issues/{key}/results any
 POST /api/v1/issues/{key}/results any
+POST /api/v1/issues/{key}/risks any
 GET /api/v1/issues/{key}/role-holders any
 PUT /api/v1/issues/{key}/role-holders any
 GET /api/v1/issues/{key}/steps any
@@ -120,6 +130,7 @@ PUT /api/v1/issues/{key}/steps/{id}/rating any
 GET /api/v1/issues/{key}/subscribers any
 DELETE /api/v1/issues/{key}/subscribers/{session_id} any
 GET /api/v1/issues/{key}/summary any
+GET /api/v1/lenses any
 GET /api/v1/limits any
 GET /api/v1/machine-logins any
 POST /api/v1/machine-logins/{id}/revoke any
@@ -148,6 +159,7 @@ POST /api/v1/messages/{id}/deliveries/{attempt}/accept bearer
 POST /api/v1/messages/{id}/reply bearer
 GET /api/v1/near-copy-checks any
 GET /api/v1/near-copy-checks/{id} any
+GET /api/v1/people/{login}/nodes any
 GET /api/v1/priorities any
 POST /api/v1/priorities any
 DELETE /api/v1/priorities/{id} any

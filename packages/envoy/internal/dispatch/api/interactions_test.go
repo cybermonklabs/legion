@@ -25,13 +25,21 @@ import (
 
 func newInteractionHandler(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database, _ := newInteractionDeps(t, makeDocs)
+	handler, database, _, _ := newInteractionServer(t, makeDocs)
 	return handler, database
 }
 
 // newInteractionDeps is newInteractionHandler, answering also the Deps it registered, for a test
 // that must run one request on a connection of its own (oneConnectionHandler).
 func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store, Deps) {
+	t.Helper()
+	handler, database, deps, _ := newInteractionServer(t, makeDocs)
+	return handler, database, deps
+}
+
+// newInteractionServer is newInteractionDeps, answering also the server it registered, for a test
+// that waits for the work that server starts in the background (awaitBackgroundWrites).
+func newInteractionServer(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store, Deps, *server) {
 	t.Helper()
 	database := storetest.Open(t)
 	var docsAPI docs.API
@@ -50,8 +58,9 @@ func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API) (htt
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	return mux, database, deps
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(served.waitBackground)
+	return mux, database, deps, served
 }
 
 // replaceDocumentText replaces a document's text as an upload of a new version does: inside a
@@ -1351,7 +1360,7 @@ func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Upload timing", "First.\n\nSecond.\n")
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
 
 	ctx := context.Background()
@@ -1431,7 +1440,7 @@ func TestAnUploadClearsPendingCreditOnlyWhenItChangesTheDocument(t *testing.T) {
 			if notes.ID == "" {
 				t.Fatal("uploaded document is missing")
 			}
-			browser := connectBrowserPeer(t, documentService, notes.ID)
+			browser := connectBrowserPeer(t, handler, documentService, notes.ID)
 			t.Cleanup(browser.close)
 			browser.appendParagraph(t, "Alice wrote this.")
 			browser.barrier(t)
@@ -1482,7 +1491,7 @@ func TestUploadClearsItsUploaderBeforeNextVersion(t *testing.T) {
 		t.Fatalf("uploaded document missing from %s", listed.Body.String())
 	}
 	// alice types in her browser before she uploads again: the room credits her with it.
-	browser := connectBrowserPeer(t, documentService, notes.ID)
+	browser := connectBrowserPeer(t, handler, documentService, notes.ID)
 	t.Cleanup(browser.close)
 	browser.appendParagraph(t, "Typed in the browser.")
 	browser.barrier(t)
@@ -2427,9 +2436,12 @@ func awaitMarkProjection(t *testing.T, database *store.Store, artifactID, markID
 	}
 }
 
+// findMarkProjection reads markID's record in the stored history of the room artifactID's
+// document is edited in (documentRoomOf), whose margin holds every fragment's records.
 func findMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) (map[string]any, bool) {
 	t.Helper()
-	loaded, err := docs.NewPgVersioned(database).Load(context.Background(), artifactID)
+	room, _ := documentRoomOf(t, database.Pool, artifactID)
+	loaded, err := docs.NewPgVersioned(database).Load(context.Background(), room)
 	if err != nil {
 		t.Fatalf("load persisted document: %v", err)
 	}

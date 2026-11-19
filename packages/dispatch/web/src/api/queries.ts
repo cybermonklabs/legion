@@ -549,6 +549,19 @@ export const deliverySettingsQuery = () =>
     queryFn: () => api.getDeliverySettings(),
   });
 
+/** Where the next page of an offset-paged list starts, for an infinite query's
+ *  `getNextPageParam`: after the rows this page answered, and nowhere once those reach the
+ *  total the answer carries. `GET /api/v1/me/answers` and `GET /api/v1/people/{login}/nodes`
+ *  both answer that shape (api.myAnswersQuery), so both pages read their next page from here. */
+export const nextOffsetPage = (last: {
+  offset: number;
+  rows?: readonly unknown[] | null;
+  total: number;
+}): number | undefined => {
+  const read = last.offset + (last.rows ?? []).length;
+  return read < last.total ? read : undefined;
+};
+
 /** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
  *  project is its own entry: the Settings page's Legion section reads one entry per project
  *  (`useLegionDaemons`), since no route lists them. */

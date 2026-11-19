@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -47,8 +48,8 @@ import (
 // state, its answer and its cosine score.
 var relatedOtherProjectsSQL = `with candidates as (
   select k.id, k.issue_key, k.state, k.answer,
-         case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) end as owner_artifact_id,
-         coalesce(k.artifact_id, k.block_artifact_id, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `) as artifact_id,
+         case when k.issue_key is null then coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `) end as owner_artifact_id,
+         coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `) as artifact_id,
          ` + askBlockNodeSQL + ` as block_id,
          i.title as issue_title, i.status as issue_status,
          coalesce(i.project_key, a.project_key) as project,
@@ -58,7 +59,7 @@ var relatedOtherProjectsSQL = `with candidates as (
     from embeddings e
     join asks k on k.id = ` + windowItemUUID + `
     left join issues i on i.key = k.issue_key
-    left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+    left join artifacts a on a.id = coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `)
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $3
      and k.kind = 'question' and k.state = 'answered'
      and btrim(coalesce(k.answer->>'text', '')) <> ''
@@ -169,7 +170,7 @@ func (s *server) relatedOtherProjects(
 			// The answer carries the shape a read gives it, with the display tree of its text
 			// where the request asked for the trees and without one where it did not. Which of
 			// them it is does not follow from the path. This leg runs for a write that asks a
-			// person a question - an ask create, a new decision block - and for the POST form
+			// person a question - an ask create, a new ask block - and for the POST form
 			// of the related route, which writes nothing and is the read `dispatch related`
 			// makes; the GET form of that route, which the dashboard reads under
 			// `Dispatch-Trees: 1`, runs the one-project leg of the same check. So the header

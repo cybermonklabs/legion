@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -86,11 +88,20 @@ func parseIssueComponents(raw json.RawMessage) (*componentsInput, bool, error) {
 // writeIssueComponents replaces the issue's own attachment row inside tx. For mode explicit
 // every id must be a component of the issue's project that is not external; the 400 names each
 // id that is unknown (never imported, or retired by a re-import) and each that is external.
-func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, input componentsInput) error {
+//
+// Each component the issue holds as its own is an affects tuple from the issue's node to the
+// component's (dispatch://INFRA-1253 R9), which its issue_component_members row projects, naming
+// the issue's node. It answers the affects tuples the write appends and retracts, which it reads
+// against the ones the issue's node states now so it states only what moved, dated at the time its
+// issue_components row records, at for a write that leaves the issue inheriting, held for the
+// issue's own event to cause (stateIssueRelations). A component past the store's bound
+// (graphstore.MaxAddressBytes) is no node of the store, so its row names no node and no tuple is
+// stated of it.
+func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, input componentsInput, at time.Time) ([]graphstore.Tuple, error) {
 	if input.Mode == "explicit" {
 		rows, err := tx.Query(ctx, `select id, external from components where project_key = $1 and id = any($2)`, project, input.IDs)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer rows.Close()
 		present := make(map[string]bool, len(input.IDs))
@@ -98,12 +109,12 @@ func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, i
 			var id string
 			var external bool
 			if err := rows.Scan(&id, &external); err != nil {
-				return err
+				return nil, err
 			}
 			present[id] = external
 		}
 		if err := rows.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		var unknown, external []string
 		for _, id := range input.IDs {
@@ -116,34 +127,50 @@ func writeIssueComponents(ctx context.Context, tx pgx.Tx, key, project string, i
 			}
 		}
 		if len(unknown) > 0 {
-			return errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "%s has no component %s in its current architecture model", project, strings.Join(unknown, ", "))
+			return nil, errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "%s has no component %s in its current architecture model", project, strings.Join(unknown, ", "))
 		}
 		if len(external) > 0 {
-			return errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "external components cannot be attached: %s", strings.Join(external, ", "))
+			return nil, errorf(http.StatusBadRequest, "COMPONENTS_INPUT", "external components cannot be attached: %s", strings.Join(external, ", "))
 		}
+	}
+	held, err := graphstore.CurrentOut(ctx, tx, graphstore.KindIssue, key, []string{graphstore.TupleAffects})
+	if err != nil {
+		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `delete from issue_components where issue_key = $1`, key); err != nil {
-		return err
+		return nil, err
 	}
-	if input.Mode == "inherit" {
-		return nil
-	}
-	var reason any
-	if input.Mode == "none" {
-		reason = input.Reason
-	}
-	if _, err := tx.Exec(ctx, `insert into issue_components (issue_key, mode, reason) values ($1, $2, $3)`, key, input.Mode, reason); err != nil {
-		return err
-	}
-	if input.Mode == "explicit" {
-		if _, err := tx.Exec(ctx, `
-			insert into issue_component_members (issue_key, project_key, component_id)
-			select $1, $2, unnest($3::text[])
-		`, key, project, input.IDs); err != nil {
-			return err
+	var affects []string
+	if input.Mode != "inherit" {
+		var reason any
+		if input.Mode == "none" {
+			reason = input.Reason
+		}
+		if err := tx.QueryRow(ctx, `
+			insert into issue_components (issue_key, mode, reason) values ($1, $2, $3) returning updated_at
+		`, key, input.Mode, reason).Scan(&at); err != nil {
+			return nil, err
 		}
 	}
-	return nil
+	if input.Mode == "explicit" {
+		marked := make([]string, 0, len(input.IDs))
+		for _, id := range input.IDs {
+			if address := graphstore.ComponentAddress(project, id); graphstore.AddressFits(address) {
+				marked = append(marked, id)
+				affects = append(affects, address)
+			}
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into issue_component_members (issue_key, project_key, component_id, node_kind, node_address)
+			select $1, $2, id, case when id = any($4::text[]) then $5::text end, case when id = any($4::text[]) then $1::text end
+			from unnest($3::text[]) as id
+		`, key, project, input.IDs, marked, graphstore.KindIssue); err != nil {
+			return nil, err
+		}
+	}
+	return graphstore.SetChanges(held, graphstore.TupleAffects, affects, func(to string, asserted bool) graphstore.Tuple {
+		return graphstore.ComponentRelation(graphstore.KindIssue, key, graphstore.TupleAffects, to, asserted, model.Actor{}, at)
+	}), nil
 }
 
 // issueComponentsTerms resolve the effective attachment of every issue of `subjects`, the

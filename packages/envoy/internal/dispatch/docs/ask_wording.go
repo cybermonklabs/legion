@@ -69,7 +69,7 @@ func AskWordingUnits(question string, options []model.AskOption) int {
 }
 
 // askWordingTooLong is why block's wording passes contracts.DispatchEventBodyMax, nil where it
-// stands inside it. A decision block opens an ask like any other, and its ask.answered event
+// stands inside it. An ask block opens an ask like any other, and its ask.answered event
 // carries the same wording, so a document writes none a route would refuse.
 func askWordingTooLong(block askBlock) error {
 	units := AskWordingUnits(block.question, block.options)

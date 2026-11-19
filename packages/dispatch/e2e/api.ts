@@ -651,6 +651,13 @@ export function listIssueAsks(issue: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/asks", { params: { key: issue } }, options);
 }
 
+/** `GET /api/v1/issues/{key}/decisions`: the issue's Decisions read, whose `entries` are its
+ *  decision nodes - each `decision` block, and each ask of the issue with its answer state - as
+ *  the Decisions tab reads them. */
+export function getIssueDecisions(issue: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/decisions", { params: { key: issue } }, options);
+}
+
 export function createProjectDocument(
   project: string,
   input: Body<"/api/v1/projects/{key}/artifacts", "post">,

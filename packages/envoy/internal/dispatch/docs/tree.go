@@ -13,6 +13,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
+// fragmentName is the fragment of a room's Yjs document that holds the document of a room that is
+// its own document, and, in an issue room, the nodes written into the issue rather than into a
+// document: the tree artifact's own fragment (D3 of dispatch://INFRA-1253's plan). A document
+// converted into an issue room holds a fragment of that room named by its own artifact id
+// (fragmentOf), so a read of a room names the fragments it reads (treeOfFragments).
 const fragmentName = "prosemirror"
 const marksMapName = "marks"
 
@@ -239,8 +244,8 @@ func uploadedInput(tree *pmdoc.Node, err error) (*pmdoc.Node, error) {
 	return asUploaded(tree), nil
 }
 
-// asUploaded is a copy of tree as an upload is taken: without anchor marks, and with every
-// server-owned typed-block attribute at its default, since the server owns those.
+// asUploaded is a copy of tree as an upload is taken: without anchor marks, and without any
+// server-owned typed-block attribute, since the server owns those (pmdoc.StripServerOwnedAttrs).
 func asUploaded(tree *pmdoc.Node) *pmdoc.Node {
 	out := pmdoc.StripAnchorMarks(tree)
 	pmdoc.StripServerOwnedAttrs(out)
@@ -258,11 +263,18 @@ func encodeDocumentTree(tree *pmdoc.Node) ([]byte, error) {
 // that version holds, an element this build may not create yet among it. held nil is
 // encodeDocumentTree.
 func encodeDocumentTreeHolding(tree, held *pmdoc.Node) ([]byte, error) {
+	return encodeFragmentTree(tree, held, fragmentName)
+}
+
+// encodeFragmentTree is encodeDocumentTreeHolding into the fragment named fragment of the fresh
+// document: a room's own (fragmentName), or a document's first text in its fragment of its issue
+// room (SeedText), which the room's state takes beside its other fragments.
+func encodeFragmentTree(tree, held *pmdoc.Node, fragment string) ([]byte, error) {
 	doc := crdt.New()
-	fragment := doc.GetXmlFragment(fragmentName)
+	written := doc.GetXmlFragment(fragment)
 	doc.GetMap(marksMapName)
 	if err := doc.TransactE(func(transaction *crdt.Transaction) error {
-		return pmdoc.UpdateHolding(transaction, fragment, tree, held)
+		return pmdoc.UpdateHolding(transaction, written, tree, held)
 	}); err != nil {
 		return nil, err
 	}
@@ -276,10 +288,16 @@ var errDocUnloaded = errors.New("document is not loaded")
 // treeOf reads the tree doc holds. A tree outside the Proof schema is an OutsideSchemaError: an
 // operation that reads a tree it has just written takes that back with producedSchemaError.
 func treeOf(doc *crdt.Doc) (*pmdoc.Node, error) {
+	return treeOfFragment(doc, fragmentName)
+}
+
+// treeOfFragment is treeOf of doc's fragment named fragment: a room's own (fragmentName), or a
+// document's fragment of its issue room (fragmentOf).
+func treeOfFragment(doc *crdt.Doc, fragment string) (*pmdoc.Node, error) {
 	if doc == nil {
 		return nil, errDocUnloaded
 	}
-	tree, err := pmdoc.Read(doc.GetXmlFragment(fragmentName))
+	tree, err := pmdoc.Read(doc.GetXmlFragment(fragment))
 	if err != nil {
 		return nil, documentSchemaError(err)
 	}
@@ -293,10 +311,15 @@ func treeOf(doc *crdt.Doc) (*pmdoc.Node, error) {
 // back validated once (pmdoc.ValidDocument), so the renders and reads that follow do not validate
 // it again.
 func treeOfUnshared(doc *crdt.Doc) (pmdoc.ValidDocument, error) {
+	return treeOfFragmentUnshared(doc, fragmentName)
+}
+
+// treeOfFragmentUnshared is treeOfUnshared of doc's fragment named fragment (treeOfFragment).
+func treeOfFragmentUnshared(doc *crdt.Doc, fragment string) (pmdoc.ValidDocument, error) {
 	if doc == nil {
 		return pmdoc.ValidDocument{}, errDocUnloaded
 	}
-	valid, err := pmdoc.ReadUnshared(doc.GetXmlFragment(fragmentName))
+	valid, err := pmdoc.ReadUnshared(doc.GetXmlFragment(fragment))
 	if err != nil {
 		return pmdoc.ValidDocument{}, documentSchemaError(err)
 	}
@@ -321,7 +344,12 @@ func treeOfTransaction(txn *crdt.Transaction, fragment *crdt.YXmlFragment) (*pmd
 // (LEGION-479). It returns the tree as the transaction left it; whether the transaction changed the
 // document is the update ygo emits for it, or its absence.
 func rewriteLive(doc *crdt.Doc, origin any, edit func(live *pmdoc.Node) bool) (*pmdoc.Node, error) {
-	fragment := doc.GetXmlFragment(fragmentName)
+	return rewriteFragment(doc, fragmentName, origin, edit)
+}
+
+// rewriteFragment is rewriteLive of doc's fragment named fragment (treeOfFragment).
+func rewriteFragment(doc *crdt.Doc, name string, origin any, edit func(live *pmdoc.Node) bool) (*pmdoc.Node, error) {
+	fragment := doc.GetXmlFragment(name)
 	var live *pmdoc.Node
 	err := doc.TransactE(func(transaction *crdt.Transaction) error {
 		var readErr error
@@ -337,6 +365,298 @@ func rewriteLive(doc *crdt.Doc, origin any, edit func(live *pmdoc.Node) bool) (*
 		return nil, err
 	}
 	return live, nil
+}
+
+// fragmentOf is the fragment of room's Yjs document that artifactID's document is held in: the
+// room's own fragment (fragmentName) where artifactID is the room itself, and the fragment named by
+// artifactID where it is a document an issue room holds.
+func fragmentOf(room, artifactID string) string {
+	if artifactID == room {
+		return fragmentName
+	}
+	return artifactID
+}
+
+// roomLayout is the documents an issue room holds a fragment of, by artifact id, in the order the
+// room renders them after the tree artifact's own fragment: verification-md, plan-md, the spec,
+// then every other document in the order it was created (issueOpen reads it), which is the order
+// a conversion writes them in, so the tuples the room's index pass writes rise in that order. A
+// room that is its own document, and an issue room no document has joined, renders its own
+// fragment alone, and its layout is empty.
+type roomLayout []string
+
+// fragments is every fragment of the room's Yjs document the room's rendering reads, in order.
+func (l roomLayout) fragments() []string {
+	return append([]string{fragmentName}, l...)
+}
+
+// documents is the document each fragment of the room holds, beside fragments: room itself for
+// its own fragment, then each document the layout names.
+func (l roomLayout) documents(room string) []string {
+	return append([]string{room}, l...)
+}
+
+// blockDocuments is the document that holds each block of tree, a tree of room read over the
+// layout's fragments (treeOfFragments), whose top-level blocks counts parts out fragment by
+// fragment: every block of a fragment's top-level block, by id, with the artifact id of the
+// document whose fragment holds it, where that document is not the room itself. A room that is its
+// own document answers nil, and so does a tree whose counts do not part its blocks, which is no
+// tree of this room.
+func (l roomLayout) blockDocuments(room string, tree *pmdoc.Node, counts []int) map[string]string {
+	if len(l) == 0 || tree == nil || len(counts) != len(l)+1 {
+		return nil
+	}
+	total := 0
+	for _, count := range counts {
+		total += count
+	}
+	if total != len(tree.Children) {
+		return nil
+	}
+	documents := map[string]string{}
+	next := 0
+	for fragment, count := range counts {
+		blocks := tree.Children[next : next+count]
+		next += count
+		if fragment == 0 {
+			continue
+		}
+		for _, block := range blocks {
+			pmdoc.Walk(block, func(node *pmdoc.Node) bool {
+				if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); id != "" {
+					if _, held := documents[id]; !held {
+						documents[id] = l[fragment-1]
+					}
+				}
+				return true
+			})
+		}
+	}
+	return documents
+}
+
+// parts is tree, a tree of the room read over the layout's fragments, parted into each fragment's
+// own document, beside documents(room): the top-level blocks counts gives each
+// fragment, under tree's own type and attributes. It answers nil for a tree whose counts do not
+// part its blocks, which is no tree of this room, and for a room that is its own document.
+func (l roomLayout) parts(tree *pmdoc.Node, counts []int) []*pmdoc.Node {
+	if len(l) == 0 || tree == nil || len(counts) != len(l)+1 {
+		return nil
+	}
+	parts := make([]*pmdoc.Node, len(counts))
+	next := 0
+	for index, count := range counts {
+		if next+count > len(tree.Children) {
+			return nil
+		}
+		parts[index] = &pmdoc.Node{Type: tree.Type, Attrs: tree.Attrs, Children: tree.Children[next : next+count : next+count]}
+		next += count
+	}
+	if next != len(tree.Children) {
+		return nil
+	}
+	return parts
+}
+
+// renderFragment is the rendering of one fragment's part of an issue room (roomLayout.parts):
+// the markdown a version of that fragment's document holds and each block's range in it. A
+// fragment that holds no block renders as no text, as a document created empty is stored.
+func renderFragment(part *pmdoc.Node) (string, []pmdoc.BlockOffset, error) {
+	if len(part.Children) == 0 {
+		return "", nil, nil
+	}
+	return renderTreeWithOffsets(part)
+}
+
+// withoutSilentFragments is offsets, the block ranges of a rendering of an issue room's tree over
+// its fragments, without the blocks of each of parts, those fragments, that silent says renders as
+// no text (renderFragment): a document created empty, whose version holds no text, or the tree
+// artifact's own fragment before anything is written into the issue. Such a fragment holds the
+// empty paragraph an editor bound to it needs, which its own rendering gives no range, and which
+// the room's joined rendering, where other blocks stand beside it, would: a document that renders
+// as no text holds no block, in an issue room as in a room of its own. Every pass that indexes an
+// issue room takes its blocks through here (indexDocumentInRoom, indexOwedRoom,
+// settlement.commitRoomVersions), so no pass indexes a block another drops.
+func withoutSilentFragments(offsets []pmdoc.BlockOffset, parts []*pmdoc.Node, silent func(index int) bool) []pmdoc.BlockOffset {
+	var dropped map[string]struct{}
+	for index, part := range parts {
+		if part == nil || len(part.Children) == 0 || !silent(index) {
+			continue
+		}
+		if dropped == nil {
+			dropped = make(map[string]struct{})
+		}
+		pmdoc.Walk(part, func(node *pmdoc.Node) bool {
+			if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); id != "" {
+				dropped[id] = struct{}{}
+			}
+			return true
+		})
+	}
+	if len(dropped) == 0 {
+		return offsets
+	}
+	kept := make([]pmdoc.BlockOffset, 0, len(offsets))
+	for _, offset := range offsets {
+		if _, drop := dropped[offset.ID]; !drop {
+			kept = append(kept, offset)
+		}
+	}
+	return kept
+}
+
+// joinFragments is the one document the trees of a room's fragments render as, in order: a
+// document holding every fragment's top-level blocks after the fragment before's, and how many
+// each fragment holds. Every tree is a document of the fragment it was read from.
+func joinFragments(trees []*pmdoc.Node) (*pmdoc.Node, []int) {
+	counts := make([]int, len(trees))
+	total := 0
+	for index, tree := range trees {
+		counts[index] = len(tree.Children)
+		total += counts[index]
+	}
+	children := make([]*pmdoc.Node, 0, total)
+	for _, tree := range trees {
+		children = append(children, tree.Children...)
+	}
+	return &pmdoc.Node{Type: trees[0].Type, Attrs: trees[0].Attrs, Children: children}, counts
+}
+
+// readFragments reads each fragment of doc that fragments names through read and joins them
+// (joinFragments). One fragment is read as it stands, with no counts. Of an issue room's
+// fragments, one that holds nothing - the tree artifact's own fragment before anything is written
+// into the issue, a converted document with no text - holds no block and is not read, since the
+// schema reads a document with no block as none.
+func readFragments(doc *crdt.Doc, fragments []string, read func(*crdt.YXmlFragment) (*pmdoc.Node, error)) (*pmdoc.Node, []int, error) {
+	if doc == nil {
+		return nil, nil, errDocUnloaded
+	}
+	if len(fragments) == 1 {
+		fragment := doc.GetXmlFragment(fragments[0])
+		// A converted document whose fragment of its issue room holds nothing has no tree, as a
+		// document with no stored state has none.
+		if fragments[0] != fragmentName && fragment.Len() == 0 {
+			return nil, nil, nil
+		}
+		tree, err := read(fragment)
+		return tree, nil, err
+	}
+	trees := make([]*pmdoc.Node, len(fragments))
+	for index, name := range fragments {
+		fragment := doc.GetXmlFragment(name)
+		if fragment.Len() == 0 {
+			trees[index] = &pmdoc.Node{Type: "doc"}
+			continue
+		}
+		tree, err := read(fragment)
+		if err != nil {
+			return nil, nil, err
+		}
+		trees[index] = tree
+	}
+	tree, counts := joinFragments(trees)
+	return tree, counts, nil
+}
+
+// treeOfFragments is treeOf over the fragments fragments names, joined into one document as a
+// room's rendering reads them (joinFragments), with how many top-level blocks each holds: one
+// fragment for a read of one document, a room's layout for a read of the room. A fragment outside
+// the Proof schema is the document's OutsideSchemaError, as treeOf makes it.
+func treeOfFragments(doc *crdt.Doc, fragments []string) (*pmdoc.Node, []int, error) {
+	return readFragments(doc, fragments, func(fragment *crdt.YXmlFragment) (*pmdoc.Node, error) {
+		tree, err := pmdoc.Read(fragment)
+		if err != nil {
+			return nil, documentSchemaError(err)
+		}
+		return tree, nil
+	})
+}
+
+// treeOfFragmentsUnshared is treeOfFragments for a document only its caller reads or writes while
+// the call runs (treeOfUnshared), each fragment read through pmdoc.ReadUnshared.
+func treeOfFragmentsUnshared(doc *crdt.Doc, fragments []string) (*pmdoc.Node, []int, error) {
+	return readFragments(doc, fragments, func(fragment *crdt.YXmlFragment) (*pmdoc.Node, error) {
+		valid, err := pmdoc.ReadUnshared(fragment)
+		if err != nil {
+			return nil, documentSchemaError(err)
+		}
+		return valid.Node(), nil
+	})
+}
+
+// rewriteRoom is rewriteLive over every fragment of a room's layout: edit is handed the room's
+// tree as it stands, read inside one transaction that holds the document's lock, joined as the
+// room renders it (joinFragments), and each fragment takes back its own top-level blocks of the
+// tree the edit left. An edit that changed how many top-level blocks the room holds cannot be
+// parted back into its fragments, and is refused, writing nothing. A room that is its own document
+// is rewriteLive's. It returns the tree as the transaction left it, with each fragment's count.
+func rewriteRoom(doc *crdt.Doc, layout roomLayout, origin any, edit func(live *pmdoc.Node) bool) (*pmdoc.Node, []int, error) {
+	if len(layout) == 0 {
+		tree, err := rewriteLive(doc, origin, edit)
+		return tree, nil, err
+	}
+	names := layout.fragments()
+	fragments := make([]*crdt.YXmlFragment, len(names))
+	for index, name := range names {
+		fragments[index] = doc.GetXmlFragment(name)
+	}
+	var live *pmdoc.Node
+	var counts []int
+	err := doc.TransactE(func(transaction *crdt.Transaction) error {
+		trees := make([]*pmdoc.Node, len(fragments))
+		for index, fragment := range fragments {
+			if fragment.Len() == 0 {
+				trees[index] = &pmdoc.Node{Type: "doc"}
+				continue
+			}
+			tree, readErr := treeOfTransaction(transaction, fragment)
+			if readErr != nil {
+				return readErr
+			}
+			trees[index] = tree
+		}
+		live, counts = joinFragments(trees)
+		if !edit(live) {
+			return nil
+		}
+		total := 0
+		for _, count := range counts {
+			total += count
+		}
+		if total != len(live.Children) {
+			return fmt.Errorf("%w: a repair of an issue room changed how many top-level blocks it holds, from %d to %d, which no fragment of the room takes back", ErrDocSchema, total, len(live.Children))
+		}
+		next := 0
+		for index, fragment := range fragments {
+			part := &pmdoc.Node{Type: live.Type, Attrs: live.Attrs, Children: live.Children[next : next+counts[index] : next+counts[index]]}
+			next += counts[index]
+			// A fragment that held nothing holds nothing still, and is left as it is.
+			if counts[index] == 0 {
+				continue
+			}
+			if err := pmdoc.Update(transaction, fragment, part); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, origin)
+	if err != nil {
+		return nil, nil, err
+	}
+	return live, counts, nil
+}
+
+// renderRoomForUpdate is renderDocumentForUpdate over every fragment of a room's layout, joined as
+// the room renders them (joinFragments), each read without pmdoc.Read's deep copy
+// (readFragmentForRendering): the update observer's render of an issue room, whose replica it
+// reads under the replica's lock.
+func renderRoomForUpdate(doc *crdt.Doc, layout roomLayout) (string, *pmdoc.Node, *pmdoc.Layout, error) {
+	tree, _, err := readFragments(doc, layout.fragments(), readFragmentForRendering)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	markdown, _, rendered, err := documentRenderingWithLayout(tree)
+	return markdown, tree, rendered, err
 }
 
 func renderTree(tree *pmdoc.Node) (string, error) {

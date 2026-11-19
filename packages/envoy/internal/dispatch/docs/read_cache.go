@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // DocumentStamp names one stored state of a document: Version is the head Load folds the stored
@@ -41,22 +42,45 @@ type DocumentStamp struct {
 	Row     string
 }
 
-// documentStampSQL selects the room $1's DocumentStamp, its version and then its row, in one
-// statement, so the version and the xmin of the row standing there are of one snapshot: the head as
-// head reads it (headVersion), then the row at it by its primary key. A load reads it as a subquery
-// of its own statement (readStoredLog), so its stamp is this one.
-const documentStampSQL = `
+// documentStampOf selects the DocumentStamp of the room the uuid SQL expression room names, its
+// version and then its row, in one statement, so the version and the xmin of the row standing
+// there are of one snapshot: the head as head reads it (headVersionOf), then the row at it by its
+// primary key.
+func documentStampOf(room string) string {
+	return `
 		select h.version, coalesce(u.xmin::text, '') as row_xmin
-		from (select ` + headVersion + ` as version) h
-		left join doc_updates u on u.artifact_id = $1 and u.version = h.version`
+		from (select ` + headVersionOf(room) + ` as version) h
+		left join doc_updates u on u.artifact_id = ` + room + ` and u.version = h.version`
+}
 
-// readDocumentStamp is the room's DocumentStamp, read through q (documentStampSQL).
-func readDocumentStamp(ctx context.Context, q Queryer, room string) (DocumentStamp, error) {
+// documentStampSQL is the DocumentStamp of the room $1 names (documentStampOf). A load reads it as
+// a subquery of its own statement (readStoredLog), so its stamp is this one.
+var documentStampSQL = documentStampOf("$1")
+
+// documentRoomStampSQL selects, for the document $1, the room it is edited in where that is not
+// the document itself - its document_rooms row's room (refs.DocumentRoomSQL, the resolution
+// DocumentRoomOfStatement reads), null for a document that is its own room - beside the
+// DocumentStamp of that room's stored history (documentStampOf), in one statement, so a cold read
+// of any document learns its room and the stamp it reads at in one round trip (documentReadRoom).
+var documentRoomStampSQL = `
+		select nullif(room.id, $1::uuid)::text, s.version, s.row_xmin
+		from (select ` + refs.DocumentRoomSQL("$1::uuid") + ` as id) room
+		cross join lateral (` + documentStampOf("room.id") + `
+		) s`
+
+// readDocumentStamp is, read through q (documentRoomStampSQL), the room artifactID's document is
+// edited in - its document_rooms row's room, else artifactID itself, spelled as the caller spelled
+// it, as roomOf answers it - and the DocumentStamp of that room's stored history.
+func readDocumentStamp(ctx context.Context, q Queryer, artifactID string) (string, DocumentStamp, error) {
+	var moved *string
 	var stamp DocumentStamp
-	if err := q.QueryRow(ctx, documentStampSQL, room).Scan(&stamp.Version, &stamp.Row); err != nil {
-		return DocumentStamp{}, fmt.Errorf("read document stamp: %w", err)
+	if err := q.QueryRow(ctx, documentRoomStampSQL, artifactID).Scan(&moved, &stamp.Version, &stamp.Row); err != nil {
+		return "", DocumentStamp{}, fmt.Errorf("read document stamp: %w", err)
 	}
-	return stamp, nil
+	if moved != nil {
+		return *moved, stamp, nil
+	}
+	return artifactID, stamp, nil
 }
 
 // documentReadBudget is the most weight (documentRead.weight) the cold reads' cache holds in a
@@ -87,6 +111,13 @@ var coldReadTimeout = 60 * time.Second
 // are handed out as they are, shared with every later read of the same stored head, so no caller
 // may write through them; none does, and copying them would cost every hit an allocation for a
 // table's size.
+//
+// tree is the tree it was rendered from, kept only for a document holding an ask block: the text
+// an agent reads takes the server-owned attributes off each ask block of it and reads each ask
+// block's answer from the store (TextWithAsks), which a read taking the cached rendering would
+// otherwise have to decode the stored history again for. It is shared with every read of the
+// stored head as the rest is, so no reader writes into it; the attributes are taken off a copy of
+// the path to each block that holds one (withoutAskServerAttributes).
 type documentRead struct {
 	artifactID string
 	stamp      DocumentStamp
@@ -94,6 +125,7 @@ type documentRead struct {
 	token      string
 	blocks     []model.ArtifactBlock
 	paths      map[string]pmdoc.BlockPath
+	tree       *pmdoc.Node
 	weight     int64
 }
 
@@ -184,7 +216,7 @@ const (
 // is counted where each part of the rendering holds it - a block, a path's key, a table's list of
 // the blocks it holds - but not again on the path entries that name it. Storage that paths share
 // is counted once however many share it (tablePositionsWeight), and so is a table block's rows
-// (blockTableWeight).
+// (blockTableWeight). A kept tree is counted whole (treeWeight).
 func (read *documentRead) measure() int64 {
 	weight := readEntryOverhead + int64(len(read.artifactID)+len(read.stamp.Row)+len(read.markdown)+len(read.token))
 	weight += int64(cap(read.blocks)) * int64(unsafe.Sizeof(model.ArtifactBlock{}))
@@ -208,7 +240,81 @@ func (read *documentRead) measure() int64 {
 			positions[path.Table] = struct{}{}
 		}
 	}
-	return weight + tablePositionsWeight(positions)
+	return weight + tablePositionsWeight(positions) + treeWeight(read.tree)
+}
+
+// Overheads treeWeight counts: a node's struct; a mark's slot; a child's slot; an attribute map's
+// header, and each group of eight slots its table holds, each slot a string key and an interface
+// value, beside the group's control word; and the header of a string or a list an interface value
+// boxes.
+const (
+	treeNodeOverhead  = int64(unsafe.Sizeof(pmdoc.Node{}))
+	treeMarkOverhead  = int64(unsafe.Sizeof(pmdoc.Mark{}))
+	treeChildOverhead = int64(unsafe.Sizeof((*pmdoc.Node)(nil)))
+	treeMapOverhead   = 48
+	treeGroupOverhead = 8 + 8*int64(unsafe.Sizeof("")+unsafe.Sizeof(any(nil)))
+	treeStringBoxed   = int64(unsafe.Sizeof(""))
+	treeListBoxed     = int64(unsafe.Sizeof([]any(nil)))
+)
+
+// treeWeight is the heap a kept tree holds (documentRead.tree): each node's struct, its type and
+// its text, its marks and its children's slots, and its attributes and its marks' attributes
+// (attrsWeight). A nil tree holds none.
+func treeWeight(node *pmdoc.Node) int64 {
+	if node == nil {
+		return 0
+	}
+	weight := treeNodeOverhead + int64(len(node.Type)+len(node.Text)) + attrsWeight(node.Attrs)
+	weight += int64(cap(node.Marks)) * treeMarkOverhead
+	for _, mark := range node.Marks {
+		weight += int64(len(mark.Type)) + attrsWeight(mark.Attrs)
+	}
+	weight += int64(cap(node.Children)) * treeChildOverhead
+	for _, child := range node.Children {
+		weight += treeWeight(child)
+	}
+	return weight
+}
+
+// attrsWeight is the heap an attribute map holds: its header and groups - one for up to eight
+// attributes, and past that a table of a power of two slots at most 7/8 full - each key's bytes,
+// and what each value boxes (boxedWeight).
+func attrsWeight(attrs pmdoc.Attrs) int64 {
+	if attrs == nil {
+		return 0
+	}
+	slots := int64(8)
+	for slots*7 < int64(len(attrs))*8 && len(attrs) > 8 {
+		slots *= 2
+	}
+	weight := treeMapOverhead + slots/8*treeGroupOverhead
+	for name, value := range attrs {
+		weight += int64(len(name)) + boxedWeight(value)
+	}
+	return weight
+}
+
+// boxedWeight is what value, an attribute's, boxes beside its interface slot: a string's header
+// and bytes, and a list's header, its slots and what each holds. A bool, a number or a nil boxes
+// nothing Go allocates for a value that small.
+func boxedWeight(value any) int64 {
+	switch value := value.(type) {
+	case string:
+		return treeStringBoxed + int64(len(value))
+	case []string:
+		weight := treeListBoxed + int64(cap(value))*treeStringBoxed
+		for _, item := range value {
+			weight += int64(len(item))
+		}
+		return weight
+	case []any:
+		weight := treeListBoxed + int64(cap(value))*int64(unsafe.Sizeof(any(nil)))
+		for _, item := range value {
+			weight += boxedWeight(item)
+		}
+		return weight
+	}
+	return 0
 }
 
 // blockTableWeight is the bytes a table block's rows hold beside the strings they name: a cell's
@@ -284,6 +390,9 @@ func buildDocumentRead(artifactID string, stamp DocumentStamp, tree pmdoc.ValidD
 		return nil, rendered.tokenErr
 	}
 	read := &documentRead{artifactID: artifactID, stamp: stamp, markdown: rendered.markdown, token: rendered.token, blocks: rendered.blocks, paths: paths}
+	if pmdoc.HoldsAskBlock(tree.Node()) {
+		read.tree = tree.Node()
+	}
 	read.weight = read.measure()
 	return read, nil
 }
@@ -302,22 +411,37 @@ type coldFold struct {
 // it: the rendering of the stored state the store's stamp names now, from the cache, or else from
 // one fold of the history (foldDocument) that every read missing that state at once shares. It
 // returns the rendering, or a nil rendering and the tree when the tree is outside what the
-// rendering takes, or neither for a document with no stored state.
+// rendering takes, or neither for a document with no stored state. room is the room artifactID's
+// document is edited in (roomOf), whose stored history is folded, and fragment the fragment of it
+// the document is held in (fragmentOf): the entry is the document's, at its room's stamp.
 //
 // The fold is the document's: it runs on a context no request's end cancels, bounded by the
 // cache's timeout, so a read whose request ends gets its own context's error at once and leaves
 // the fold to the others. Only the read's own context decides that it ended. A fold that fails
 // fails the room, as a failed room load does, and reaches each read as ErrServiceUnavailable,
 // unless the history does not decode, which is ErrDocumentUnloadable, the state a rebuild repairs.
-func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRead, *pmdoc.Node, error) {
-	stamp, err := s.persistence.DocumentStamp(ctx, artifactID)
+func (s *Service) coldRead(ctx context.Context, artifactID, room, fragment string) (*documentRead, *pmdoc.Node, error) {
+	_, stamp, err := s.persistence.DocumentStamp(ctx, room)
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, nil, ctxErr
-		}
-		s.failRoom(artifactID, err)
-		return nil, nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+		return nil, nil, s.stampUnread(ctx, room, err)
 	}
+	return s.coldReadAt(ctx, artifactID, room, fragment, stamp)
+}
+
+// stampUnread is what a read answers for a stamp of room the store did not give it: the read's own
+// context's error where that context ended, else the store's as ErrServiceUnavailable, after
+// failing room, as a failed load does.
+func (s *Service) stampUnread(ctx context.Context, room string, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	s.failRoom(room, err)
+	return fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+}
+
+// coldReadAt is coldRead at stamp, the stamp of room its caller has just read, after finding that
+// no room of this process holds the document (heldTree, documentReadRoom).
+func (s *Service) coldReadAt(ctx context.Context, artifactID, room, fragment string, stamp DocumentStamp) (*documentRead, *pmdoc.Node, error) {
 	if stamp.Version == 0 {
 		return nil, nil, nil
 	}
@@ -326,9 +450,9 @@ func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRea
 	}
 	key := artifactID + "@" + strconv.FormatInt(stamp.Version, 10) + "/" + stamp.Row
 	flight := s.reads.flights.DoChan(key, func() (any, error) {
-		fold, err := s.foldDocument(ctx, artifactID)
+		fold, err := s.foldDocument(ctx, artifactID, room, fragment)
 		if err != nil {
-			s.failRoom(artifactID, err)
+			s.failRoom(room, err)
 		}
 		return fold, err
 	})
@@ -347,23 +471,23 @@ func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRea
 	}
 }
 
-// foldDocument loads artifactID's stored history decoded once (LoadDocument), reads its tree and
-// renders it (foldLoaded), storing the rendering under the stamp the load read in its own
-// transaction, never the one read before the miss, so a write between the two cannot store old
-// content under a new stamp.
+// foldDocument loads room's stored history decoded once (LoadDocument), reads the tree of
+// fragment, artifactID's fragment of it, and renders it (foldLoaded), storing the rendering under
+// the stamp the load read in its own transaction, never the one read before the miss, so a write
+// between the two cannot store old content under a new stamp.
 // Its error is the load's, or a panic recovered from any of it: singleflight re-panics an
 // unrecovered panic of a call it has waiters for in a goroutine nothing can recover, where a read
 // panicking on the request's own goroutine would fail that one request.
-func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold coldFold, err error) {
+func (s *Service) foldDocument(ctx context.Context, artifactID, room, fragment string) (fold coldFold, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf("cold document read panicked: %v\n%s", recovered, debug.Stack())
-			slog.Error("dispatch: cold document read panicked", "room", artifactID, "error", err)
+			slog.Error("dispatch: cold document read panicked", "room", room, "error", err)
 		}
 	}()
 	foldCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coldReadTimeout)
 	defer cancel()
-	loaded, err := s.persistence.LoadDocument(foldCtx, artifactID)
+	loaded, err := s.persistence.LoadDocument(foldCtx, room)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && errors.Is(foldCtx.Err(), context.DeadlineExceeded) {
 			return coldFold{}, fmt.Errorf("cold document read timed out after %s", coldReadTimeout)
@@ -372,24 +496,29 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 	}
 	// A rendering refused leaves the fold its tree, from which each read computes its own answer
 	// and refusal, as it would without the cache.
-	fold, _ = foldLoaded(artifactID, loaded)
+	fold, _ = foldLoaded(artifactID, fragment, loaded)
 	if fold.read != nil {
 		s.reads.put(fold.read)
 	}
 	return fold, nil
 }
 
-// foldLoaded is the fold of loaded, a document its caller has just decoded and holds alone: its
-// tree read once and validated once (pmdoc.ReadUnshared) and rendered without validating it again
-// (buildDocumentRead). A tree the read refuses is the fold's treeErr, the read's error through
-// documentSchemaError as treeOf gives it; a tree the rendering refuses is the fold's tree without
-// a read, and renderErr is the rendering's refusal. A loaded state without a document is the
-// empty fold.
-func foldLoaded(artifactID string, loaded LoadedDocument) (fold coldFold, renderErr error) {
+// foldLoaded is the fold of fragment of loaded, a document its caller has just decoded and holds
+// alone: its tree read once and validated once (pmdoc.ReadUnshared) and rendered without
+// validating it again (buildDocumentRead), as artifactID's. A tree the read refuses is the fold's
+// treeErr, the read's error through documentSchemaError as treeOf gives it; a tree the rendering
+// refuses is the fold's tree without a read, and renderErr is the rendering's refusal. A loaded
+// state without a document is the empty fold.
+func foldLoaded(artifactID, fragment string, loaded LoadedDocument) (fold coldFold, renderErr error) {
 	if loaded.Doc == nil {
 		return coldFold{}, nil
 	}
-	valid, err := pmdoc.ReadUnshared(loaded.Doc.GetXmlFragment(fragmentName))
+	held := loaded.Doc.GetXmlFragment(fragment)
+	if fragment != fragmentName && held.Len() == 0 {
+		// A converted document whose fragment of its issue room holds nothing has no tree.
+		return coldFold{}, nil
+	}
+	valid, err := pmdoc.ReadUnshared(held)
 	if err != nil {
 		return coldFold{treeErr: documentSchemaError(err)}, nil
 	}
