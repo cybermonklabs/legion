@@ -313,7 +313,7 @@ export async function claimRoleAgainOnBusy(
  * throws it from its own copy of envoy-client, behind the role-claim bridge, and pi-legion runs
  * this boot from another copy.
  */
-function listenerAskedToClaimAgain(error: unknown): boolean {
+export function listenerAskedToClaimAgain(error: unknown): boolean {
   if (!(error instanceof Error) || error.name !== "EnvoyApiError" || !("details" in error)) {
     return false;
   }

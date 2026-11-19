@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The compose auto-deployer (`deploy/scripts/autodeploy.sh`) refuses a deploy when `compose/.env` sets neither `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` nor `ENVOY_ACCOUNT_TOKEN_FILE`, before its backup, logging one line that names both settings, and the Dispatch that serves keeps serving. The Dispatch container refuses its start without one of them and restart-loops under `restart: unless-stopped`, and a rollback under the same compose file would meet the same refusal. `deploy/scripts/up-dispatch.sh` refuses to run in the same case.'
+time: 2026-11-19T22:06:14.000000000Z
+custom:
+    Issue: pr4387

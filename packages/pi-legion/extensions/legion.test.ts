@@ -5611,6 +5611,114 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.exits).toEqual([]);
   });
 
+  // The bound follows who started the claim, not which controller runs it: `/legion-claim-controller`
+  // typed in the daemon-launched controller's pane, whose claim the listener keeps answering 503,
+  // shows each wait and fails as the command's error after its counted tries, and the process does
+  // not exit. The daemon's own claim at session_start, answered as it is, waits on (the row above).
+  test("/legion-claim-controller typed in a daemon-launched controller whose claim the listener keeps answering 503 fails on screen after its counted tries, and the process stays", async () => {
+    let busy = false;
+    let claims = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_typed_busy",
+      stateFixture: "state-controller-claim.json",
+      roleClaim: () => {
+        if (!busy) return undefined;
+        claims += 1;
+        return Response.json(
+          { error: "envoy: the takeover record of the claim did not store" },
+          { status: 503 }
+        );
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    const notices: CommandNotice[] = [];
+    let failure: unknown;
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_typed_busy")
+      );
+      busy = true;
+      const claimCommand = controller.commands.find(
+        (command) => command.name === "legion-claim-controller"
+      );
+      if (claimCommand === undefined) {
+        throw new Error("controller claim command was not registered");
+      }
+      const typed: SessionContext = {
+        ...controller.context("ses_controller_typed_busy"),
+        ui: {
+          notify: (message, level) => notices.push({ message, level }),
+          setWidget: recordWidget,
+        },
+      };
+      await loggedWarnings(async () => {
+        failure = await claimCommand.handler("", commandContext(typed)).then(
+          () => undefined,
+          (error: unknown) => error
+        );
+      });
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).name).toBe("EnvoyApiError");
+    expect(claims).toBe(5 * LISTENER_CALL_ATTEMPTS);
+    const waits = notices.filter((notice) => notice.message.includes("was answered 503"));
+    expect(waits.map((notice) => notice.message.match(/at attempt (\d+)/)?.[1])).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+    ]);
+    expect(controller.exits).toEqual([]);
+    // The waiting line was up while the command claimed again, and came down once it gave up.
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.some((call) => call.lines?.[0]?.includes("at attempt 4") === true)).toBe(true);
+    expect(shown.at(-1)?.lines).toBeUndefined();
+  }, 45_000);
+
+  // A session change's re-claim in a controller the daemon did not launch holds its notices until
+  // it settles; once its claim landed after a 503, none of its waits is shown, and the widget holds
+  // no waiting line.
+  test("an operator controller's re-claim that lands after a 503 shows none of its waits once it landed", async () => {
+    let busy = false;
+    let claims = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_reclaim_lands",
+      roleClaim: () => {
+        if (!busy || ++claims > LISTENER_CALL_ATTEMPTS) return undefined;
+        return Response.json(
+          { error: "envoy: the takeover record of the claim did not store" },
+          { status: 503 }
+        );
+      },
+    });
+    await startOperatorController(controller, controller.context("ses_controller_reclaim_lands"));
+    busy = true;
+    const notices: CommandNotice[] = [];
+    const fresh: SessionContext = {
+      ...controller.context("ses_controller_reclaim_lands_new", "/tmp/reclaim-lands-new.jsonl"),
+      ui: { notify: (message, level) => notices.push({ message, level }), setWidget: recordWidget },
+    };
+    await loggedWarnings(async () => {
+      await controller.handlers.get("session_switch")?.({ reason: "new" }, fresh);
+    });
+    expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
+    expect(controller.holder()).toBe("ses_controller_reclaim_lands_new");
+    expect(notices.filter((notice) => notice.message.includes("was answered 503"))).toEqual([]);
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.some((call) => call.lines?.[0]?.includes("at attempt 1") === true)).toBe(true);
+    expect((shown.at(-1)?.lines ?? []).filter((line) => line.includes("was answered 503"))).toEqual(
+      []
+    );
+  });
+
   test("claims with the capability LEGION_CONTROLLER_SECRET_FILE names over LEGION_CONTROLLER_SECRET, and /legion-claim-controller moves the role to a hand-started session", async () => {
     const controller = await launchedController({ sessionId: "ses_controller_pane" });
     process.env.LEGION_CONTROLLER_SECRET = "decoy";

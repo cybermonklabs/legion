@@ -8,7 +8,10 @@ import { scrub } from "@legion/contracts/held-secrets";
 import type { LegionGrant } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import { LegionDaemonApiError, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
-import { claimRoleAgainOnBusy } from "@legion/pi-shared/legion-claim-core";
+import {
+  claimRoleAgainOnBusy,
+  listenerAskedToClaimAgain,
+} from "@legion/pi-shared/legion-claim-core";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
 import {
@@ -36,6 +39,10 @@ interface ClaimProgress {
   /** The daemon holds this claim's registration, and the session's grants mint with its secret. */
   registered: boolean;
 }
+
+/** Who started a claim: the controller's own claim at `session_start` or after a session change
+ * (`daemon`), or a command a person typed (`typed`). It decides how long a `503` is waited out. */
+type ClaimStarter = "daemon" | "typed";
 
 export interface ControllerSession {
   readonly claim: (context: CommandContext | SessionContext) => Promise<void>;
@@ -107,6 +114,9 @@ export function createControllerSession(deps: {
   // which may begin before or after the re-claim that sent it shows its widget, so it takes no
   // widget down.
   let startTurnSession: string | undefined;
+  // The wait notices of the claim running now (`claimWith`): a session change's re-claim holds its
+  // notices until it settles, and drops these once its claim landed, so no wait is shown after it.
+  const waitNotices = new Set<string>();
 
   const serialised = (task: () => Promise<void>): Promise<void> => {
     claimsQueued += 1;
@@ -201,7 +211,7 @@ export function createControllerSession(deps: {
    * daemon client sets no request timeout and a hung claim would otherwise hold it silently.
    */
   const claim = (context: CommandContext | SessionContext): Promise<void> =>
-    queueClaim(context, { registered: false });
+    queueClaim(context, { registered: false }, "typed");
 
   // Says so when the claim or command about to queue has to wait for one already running: the
   // daemon client sets no request timeout, so a hung claim would otherwise hold it silently.
@@ -216,21 +226,27 @@ export function createControllerSession(deps: {
 
   const queueClaim = (
     context: CommandContext | SessionContext,
-    progress: ClaimProgress
+    progress: ClaimProgress,
+    startedBy: ClaimStarter
   ): Promise<void> => {
     noteWait(context);
-    return serialised(() => claimOnce(context, progress));
+    return serialised(() => claimOnce(context, progress, startedBy));
   };
 
+  // A claim of the daemon-launched controller that fails exits Oh My Pi, so the daemon launches it
+  // again, except a command a person typed there whose claim the listener kept answering 503: that
+  // command fails where the person reads it, after its counted tries (`claimWith`).
   const claimOnce = async (
     context: CommandContext | SessionContext,
-    progress: ClaimProgress
+    progress: ClaimProgress,
+    startedBy: ClaimStarter
   ): Promise<void> => {
     const supervised = daemonLaunchedController(process.env);
-    if (!supervised) return claimWith(context, false, progress);
+    if (!supervised) return claimWith(context, false, progress, startedBy);
     try {
-      await claimWith(context, true, progress);
+      await claimWith(context, true, progress, startedBy);
     } catch (error) {
+      if (startedBy === "typed" && listenerAskedToClaimAgain(error)) throw error;
       logger.error(
         `[legion] the daemon-launched controller's claim failed; exiting so the daemon launches it again: ${messageFor(error)}`
       );
@@ -241,7 +257,8 @@ export function createControllerSession(deps: {
   const claimWith = async (
     context: CommandContext | SessionContext,
     supervised: boolean,
-    progress: ClaimProgress
+    progress: ClaimProgress,
+    startedBy: ClaimStarter
   ): Promise<void> => {
     const sessionID = context.sessionManager.getSessionId();
     const capability =
@@ -345,14 +362,17 @@ export function createControllerSession(deps: {
     // (claimRoleAgainOnBusy), each wait logged with its attempt and the listener's answer, and the
     // claim widget shows that the controller holds no Envoy role yet until the claim lands (taken
     // down below), a session change's re-claim included, whose notices wait for the change's reset
-    // but whose widget does not. In the daemon-launched controller every claim, a command typed
-    // there included, claims again until it lands, as the claim boot does, rather than exiting for a
-    // relaunch that would meet the same 503: the daemon supervises it, and the widget shows a broken
-    // listener on its pane, not only in its log. In any other controller session (one `legion
-    // controller start` launched, or a hand-started takeover) the claim also shows each wait as a
-    // notice and gives up after CONTROLLER_CLAIM_BUSY_ATTEMPTS tries, so the command fails where
-    // the person sees it, with the listener's answer.
+    // but whose widget does not. The bound follows who started the claim. The daemon-launched
+    // controller's own claims (at `session_start`, and its re-claim after a session change) claim
+    // again until they land, as the claim boot does, rather than exiting for a relaunch that would
+    // meet the same 503: the daemon supervises them, and the widget shows a broken listener on the
+    // pane, not only in its log. A command a person typed (`/legion-claim-controller`,
+    // `/legion-controller-start`), wherever it runs, the daemon-launched controller's pane
+    // included, and any claim of a controller the daemon did not launch, also shows each wait as a
+    // notice and gives up after CONTROLLER_CLAIM_BUSY_ATTEMPTS tries, so it fails where the person
+    // sees it, with the listener's answer.
     const ui: SessionContext["ui"] = context.ui;
+    let waitShown = false;
     const showWaiting = (line: string): void => {
       const shown = `legion: this controller holds no Envoy role yet: ${line}`;
       if (ui.setWidget === undefined) {
@@ -361,26 +381,39 @@ export function createControllerSession(deps: {
       }
       ui.setWidget(CLAIM_WIDGET, [shown]);
       claimWidget = { session: sessionID, clear: () => ui.setWidget?.(CLAIM_WIDGET, undefined) };
+      waitShown = true;
     };
-    await claimRoleAgainOnBusy(
-      () => claimEnvoyRole(sessionID, registration.claimToken, envoyContext),
-      registration.claimToken,
-      supervised
-        ? {
-            log: (line) => {
-              logger.warn(`[legion] ${line}`);
-              showWaiting(line);
-            },
-          }
-        : {
-            log: (line) => {
-              logger.warn(`[legion] ${line}`);
-              ui.notify(`legion: ${line}`, "info");
-              if (ui.setWidget !== undefined) showWaiting(line);
-            },
-            maxAttempts: CONTROLLER_CLAIM_BUSY_ATTEMPTS,
-          }
-    );
+    try {
+      await claimRoleAgainOnBusy(
+        () => claimEnvoyRole(sessionID, registration.claimToken, envoyContext),
+        registration.claimToken,
+        supervised && startedBy === "daemon"
+          ? {
+              log: (line) => {
+                logger.warn(`[legion] ${line}`);
+                showWaiting(line);
+              },
+            }
+          : {
+              log: (line) => {
+                logger.warn(`[legion] ${line}`);
+                const notice = `legion: ${line}`;
+                waitNotices.add(notice);
+                ui.notify(notice, "info");
+                if (ui.setWidget !== undefined) showWaiting(line);
+              },
+              maxAttempts: CONTROLLER_CLAIM_BUSY_ATTEMPTS,
+            }
+      );
+    } catch (error) {
+      // A claim that gave up, or met any other refusal, takes its waiting line down: the claim no
+      // longer claims again, and its failure is what the person reads now.
+      if (waitShown && claimWidget?.session === sessionID) {
+        claimWidget.clear();
+        claimWidget = undefined;
+      }
+      throw error;
+    }
     await subscribeLegionNotice(
       sessionID,
       legionControllerNoticeSubject(project),
@@ -443,7 +476,7 @@ export function createControllerSession(deps: {
     }
     const sessionID = context.sessionManager.getSessionId();
     if (controllerSessionID === undefined || controllerSessionID === sessionID) {
-      await claim(context);
+      await queueClaim(context, { registered: false }, "daemon");
     }
   };
 
@@ -489,7 +522,7 @@ export function createControllerSession(deps: {
       // The session the claim reads first, which a refusal before the send leaves unmarked.
       const claimed = context.sessionManager.getSessionId();
       try {
-        await claimOnce(context, { registered: false });
+        await claimOnce(context, { registered: false }, "typed");
       } catch (error) {
         const message = messageFor(error);
         logger.error(`[legion] the controller claim failed: ${message}`);
@@ -574,9 +607,12 @@ export function createControllerSession(deps: {
     // Whether this claim reached its registration: one refused after it left this session
     // registered, so its grants mint; one refused before it registered nothing for it.
     const progress: ClaimProgress = { registered: false };
+    // Whether the re-claim's claim landed: its wait notices are then dropped from those it shows.
+    let landed = false;
     try {
       noteWait(context);
       await serialised(async () => {
+        waitNotices.clear();
         if (startHandedOver) {
           startHandedOver = false;
           notify(
@@ -584,7 +620,8 @@ export function createControllerSession(deps: {
             "info"
           );
         }
-        await claimOnce(deferred, progress);
+        await claimOnce(deferred, progress, "daemon");
+        landed = true;
       });
     } catch (error) {
       notify(
@@ -595,6 +632,10 @@ export function createControllerSession(deps: {
       );
     } finally {
       const { ui } = context;
+      if (landed) {
+        const kept = notices.filter(({ message }) => !waitNotices.has(message));
+        notices.splice(0, notices.length, ...kept);
+      }
       if (ui.setWidget === undefined) {
         context.setTimeout(() => {
           shown = true;

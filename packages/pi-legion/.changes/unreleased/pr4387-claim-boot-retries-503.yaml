@@ -6,11 +6,12 @@ body: |-
     one second and doubles up to thirty, with one log line per wait naming the attempt and the
     listener's answer, until the claim lands or is refused. Any other refusal still stops the
     session so the daemon launches it again. Every controller claim shows that the controller holds
-    no Envoy role yet on its pane while it waits, a session change's re-claim included. A controller
-    the daemon launched claims again the same way until the claim lands, a command typed there
-    included. In any other controller session (one `legion controller start` launched, or a
-    hand-started takeover) the claim also shows each wait as a notice and fails on screen with the
-    listener's answer after five tries.
+    no Envoy role yet on its pane while it waits, a session change's re-claim included. The daemon-
+    launched controller's own claims (at start, and after a session change) claim again the same way
+    until they land. A command a person types (`/legion-controller-start`,
+    `/legion-claim-controller`), wherever it runs, and any claim of a controller the daemon did not
+    launch, also shows each wait as a notice and fails on screen with the listener's answer after
+    five tries; the daemon-launched controller's process stays up.
 time: 2026-11-19T16:31:04.000000000Z
 custom:
     Issue: pr4387

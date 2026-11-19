@@ -29,6 +29,7 @@ fresh_env() {
 ENVOY_IMAGE_TAG=old-image
 DATABASE_URL=${1:-postgres://dispatch:s%40cret-canary@db.test:5432/dispatch?sslmode=require}
 DISPATCH_SERVER_URL=http://browser.test:8766
+ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener
 EOF
   # The versions schema_migrations holds, one per line, as the deployer reads them: a set, not a
   # level. A migration applied below the highest one changes the set and leaves max(version) where
@@ -356,6 +357,23 @@ schema_value() {
   printf '%s-%s-%s\n' "$(printf '%s\n' "$versions" | tail -n1)" "$(printf '%s\n' "$versions" | wc -l)" \
     "$(printf '%s\n' "$versions" | sha256sum | cut -d' ' -f1)"
 }
+
+# A .env with neither of Dispatch's identity settings is refused before anything of the deploy
+# runs: Dispatch's container refuses to start without one and restart-loops, and so would the
+# rollback's, under the same compose file. No backup is taken, compose is not run, and the previous
+# image still serves.
+fresh_env
+sed -i '/^ENVOY_ACCOUNT_GOOGLE_AUDIENCE=/d' "$compose/.env"
+if output=$(deploy_once); then
+  fail 'deployer deployed with no identity for Dispatch in .env'
+fi
+if [[ "$output" != *"neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE"*"not deploying new-image"* ]]; then
+  fail 'deployer did not name both identity settings when it refused'
+fi
+if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv" ||
+  [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
+  fail 'deployer backed up or ran compose with no identity for Dispatch in .env'
+fi
 
 # A deploy that fails its origin check with the schema where it was stops the candidate, confirms
 # it stopped, reads the schema, and rolls back. Every database client gets the URL without its

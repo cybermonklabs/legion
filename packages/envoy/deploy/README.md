@@ -304,10 +304,14 @@ own agent sessions, which reach an open loopback listener with none, stop workin
 present the listener's shared token. Set `ENVOY_API_TOKEN` with the verifier, and give each host
 session that token: `ENVOY_TOKEN` in its environment, or `envoy.token` in its `envoy.json`.
 
-With the compose files, the Dispatch container exits at start, naming both of Dispatch's two
-settings, until one is set in `compose/.env`; `listener.compose.yml` (or `single-node.compose.yml`)
-passes the listener's verifier, principal and shared token from the same file. On a Google Cloud
-VM, whose service account is Dispatch's identity:
+With the compose files, the Dispatch container's start is refused (exit 78), naming both of
+Dispatch's two settings, until one is set in `compose/.env`; under `restart: unless-stopped` the
+container then restart-loops rather than stays down, while `docker compose up -d` itself exits 0.
+So `scripts/up-dispatch.sh` refuses to run, and the auto-deployer refuses a deploy before its
+backup and leaves the image that serves in place, when neither setting is set; started by hand,
+the refusal shows only in `docker compose ps` and `logs`. `listener.compose.yml` (or
+`single-node.compose.yml`) passes the listener's verifier, principal and shared token from the
+same file. On a Google Cloud VM, whose service account is Dispatch's identity:
 
 ```bash
 cd packages/envoy/deploy

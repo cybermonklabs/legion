@@ -389,6 +389,14 @@ deploy() {
     log "DISPATCH_SERVER_URL is missing from $COMPOSE_ENV; not deploying $sha"
     return 1
   fi
+  # Dispatch starts only with its identity at the Envoy listener (dispatch.compose.yml's entrypoint),
+  # and a container that refuses restart-loops under `restart: unless-stopped`, as the previous
+  # image's rollback under the same file would: a .env with neither setting is refused here, before
+  # the backup, and the image that serves keeps serving.
+  if [[ -z "$(env_value ENVOY_ACCOUNT_GOOGLE_AUDIENCE)$(env_value ENVOY_ACCOUNT_TOKEN_FILE)" ]]; then
+    log "neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE is set in $COMPOSE_ENV, and Dispatch refuses to start without its identity at the Envoy listener (see packages/envoy/deploy/README.md, \"Dispatch's identity at the Envoy listener\"); not deploying $sha"
+    return 1
+  fi
   databaseUrl=$(env_value DATABASE_URL)
   if [[ -z "$databaseUrl" ]]; then
     log "DATABASE_URL is missing from $COMPOSE_ENV; not deploying $sha"
