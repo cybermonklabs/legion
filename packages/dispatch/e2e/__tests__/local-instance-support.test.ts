@@ -23,8 +23,6 @@ import {
 } from "../local-instance-support";
 import { bounds, eventually, rowLimit, runBounded, watch } from "./bounded-subprocess";
 
-const makeDirectory = temporaryDirectories("local-instance-support");
-
 /** True while any process of group `pgid` is alive: signal 0 to the group reaches every member. */
 function groupAlive(pgid: number): boolean {
   try {
@@ -205,9 +203,14 @@ function supervisor(): Supervisor {
   supervisors.push(made);
   return made;
 }
+// Registered before `temporaryDirectories` below, whose removal is an `afterEach` too: bun runs a
+// scope's after-hooks in the order they were registered, and the processes a supervisor started
+// work in a row's directories, so they must be gone before that removal. Twenty seconds, past
+// bun's 5 s, for a stop on a loaded box.
 afterEach(async () => {
   await Promise.all(supervisors.splice(0).map((made) => made.stop(100)));
-});
+}, 20_000);
+const makeDirectory = temporaryDirectories("local-instance-support");
 
 describe("Supervisor.stop", () => {
   // Each of the two rows holds one leader past the SIGTERM until the row lets it go, so the row,

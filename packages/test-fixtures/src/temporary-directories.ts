@@ -47,6 +47,14 @@ export type TemporaryDirectoryMaker = (suffix?: string) => string;
  * a hook from the point of the call. The call itself makes nothing, so a scope whose hooks never
  * run leaves nothing behind.
  *
+ * Bun runs the after-hooks of a scope in the order they were registered (measured on bun 1.4.4),
+ * so this removal runs before every `afterEach` registered below the call. A file whose rows start
+ * a process that works in these directories (its working directory, its `HOME`, a file it holds)
+ * registers the hook that stops that process, and waits for its exit, above this call, and a row
+ * that stops one itself waits for the exit, not only the signal. Otherwise the removal runs while
+ * the process still works there: it can outrun the hook's bound on a loaded box, and a process
+ * still writing leaves files behind.
+ *
  * **Call the maker itself from a test body or from a `beforeEach`, never from a `beforeAll` and
  * never at module scope or in a `describe` body.** The maker's only removal is the `afterEach`
  * registered at the call, so a directory made in a `beforeAll` is removed after the first row of
@@ -105,6 +113,10 @@ export function temporaryDirectories(
  * Nothing exists at the path until that `beforeAll` has run. A caller writes into the directory
  * from a test body, or from a hook of its own registered below this call: Bun runs the hooks of a
  * scope in the order they were registered.
+ *
+ * Its removal is an `afterAll`, and Bun runs the after-hooks of a scope in the order they were
+ * registered, so a process the file starts that works in the directory (as its working directory
+ * or its `HOME`) is stopped, and its exit waited for, by an `afterAll` registered above this call.
  *
  * `real` resolves `tmpdir()` once, at the call, and joins the reserved name onto the resolved
  * parent: `realpathSync` needs a path that exists, and the directory itself does not yet. This

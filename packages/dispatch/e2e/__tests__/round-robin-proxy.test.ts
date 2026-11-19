@@ -143,6 +143,15 @@ const b = startUpstream("b");
 const proxyPort = freePort();
 const origin = `http://127.0.0.1:${proxyPort}`;
 let proxy: Subprocess<"ignore", "pipe", "inherit">;
+// Registered before `childHome`, whose removal is an `afterAll` too: bun runs a scope's after-hooks
+// in the order they were registered, and the proxy runs with its HOME there, so it must be gone
+// before that removal. Twenty seconds, past bun's 5 s, for its exit on a loaded box.
+afterAll(async () => {
+  proxy.kill();
+  await proxy.exited;
+  a.server.stop(true);
+  b.server.stop(true);
+}, 20_000);
 /** A home for every child this file starts, so none of them reads the caller's. */
 const childHome = temporaryDirectory("round-robin-proxy-home");
 
@@ -169,13 +178,6 @@ beforeAll(async () => {
     logged += new TextDecoder().decode(value);
   }
   reader.releaseLock();
-});
-
-afterAll(async () => {
-  proxy.kill();
-  await proxy.exited;
-  a.server.stop(true);
-  b.server.stop(true);
 });
 
 beforeEach(async () => {

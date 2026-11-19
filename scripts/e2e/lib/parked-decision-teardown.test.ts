@@ -1,5 +1,13 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -29,13 +37,15 @@ if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`
 // Read once, at module scope: a call inside the test body would print the warning per row.
 const skip = skipWithout("tmux");
 
-const dir = temporaryDirectory("parked-decision-teardown-test");
 const started: number[] = [];
 // What the test started that no pid of its own names: a tmux server to kill, a session a process
 // writes its own pid file for. Each is registered the moment the test starts it, before the waits
 // that can time out, so an unfinished test body still leaves nothing of the run alive.
 const teardowns: (() => void)[] = [];
-afterAll(() => {
+// Registered before `dir` below, whose removal is an `afterAll` too: bun runs a scope's after-hooks
+// in the order they were registered, and what the test started works in `dir`, so it must have
+// ended before that removal, not only been sent its SIGKILL. Twenty seconds, past bun's 5 s.
+afterAll(async () => {
   for (const teardown of teardowns.reverse()) {
     try {
       teardown();
@@ -46,7 +56,12 @@ afterAll(() => {
       process.kill(pid, "SIGKILL");
     } catch {}
   }
-});
+  await until(
+    "every process the test started to leave its directory",
+    () => workingIn(dir).length === 0
+  );
+}, 20_000);
+const dir = temporaryDirectory("parked-decision-teardown-test", { real: true });
 
 const alive = (pid: number) => {
   try {
@@ -83,6 +98,19 @@ const namingPids = (text: string) =>
     .filter((pid) => {
       try {
         return readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(text) && alive(pid);
+      } catch {
+        return false;
+      }
+    });
+// Every live pid whose working directory is PATH or one under it: what still works in the test's
+// directory, which its removal waits on.
+const workingIn = (path: string) =>
+  [...new Bun.Glob("[0-9]*").scanSync({ cwd: "/proc", onlyFiles: false })]
+    .map(Number)
+    .filter((pid) => {
+      try {
+        const cwd = readlinkSync(`/proc/${pid}/cwd`);
+        return (cwd === path || cwd.startsWith(`${path}/`)) && alive(pid);
       } catch {
         return false;
       }
@@ -137,8 +165,7 @@ test.skipIf(skip)(
     const home = join(work, "home");
     const runtime = join(home, ".local/state/omp/profiles/p/run/daemons/0123456789abcdef");
     const stale = join(work, "state/omp/profiles/p/run/daemons/fedcba9876543210");
-    for (const d of [ws, home, runtime, stale, join(work, "tmux")])
-      mkdirSync(d, { recursive: true });
+    for (const d of [ws, home, runtime, stale]) mkdirSync(d, { recursive: true });
     // The stand-in broker lives outside $work, so only its working directory ties it to the run.
     const broker = join(dir, "fake-broker.sh");
     writeFileSync(
@@ -175,7 +202,13 @@ wait
       [bystander.pid, stranger.pid].every((pid) => alive(pid) && sessionOf(pid) === pid)
     );
 
-    const env = { PATH: process.env.PATH ?? "", HOME: home, TMUX_TMPDIR: join(work, "tmux") };
+    // tmux's socket is `$TMUX_TMPDIR/tmux-<uid>/<name>`, and a socket's path has 107 bytes: under a
+    // dev box's deep TMPDIR, `$work/tmux` leaves too few ("File name too long"), so the socket goes
+    // under /tmp, whatever TMPDIR is. Its removal is registered before the kill-server below, so the
+    // reversed teardowns remove it after the server is gone.
+    const tmuxDir = mkdtempSync("/tmp/parked-decision-tmux-");
+    teardowns.push(() => rmSync(tmuxDir, { recursive: true, force: true }));
+    const env = { PATH: process.env.PATH ?? "", HOME: home, TMUX_TMPDIR: tmuxDir };
     const pidFile = join(runtime, "broker.pid");
     // The stand-in broker the pane starts leads a session of its own and names it in broker.pid.
     // Ending that session is registered before the pane that starts it, so a wait below that times
