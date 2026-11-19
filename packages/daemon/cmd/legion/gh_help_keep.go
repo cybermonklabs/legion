@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -38,7 +39,8 @@ import (
 // no XDG_STATE_HOME, no GH_CONFIG_DIR, or a gh path that is not absolute or whose links end at a
 // file not named gh, nothing is kept and every help is read from gh.
 type ghHelpKeep struct {
-	// fresh is gh's own answer for a path: readGhHelp of the gh the keep is for.
+	// fresh is gh's own answer for a path: readGhHelp of the gh the keep is for, under the context
+	// the keep was made with.
 	fresh func(path []string) (string, error)
 	// dir is where the copies are, "" where nothing is kept.
 	dir string
@@ -86,19 +88,23 @@ type ghHelpEntry struct {
 }
 
 // ghPrintingVariables are the variables outside gh's own GH_* that change what gh prints as help:
-// with CLICOLOR_FORCE, or GH_FORCE_TTY, gh 2.98.0 prints its help in colour, which CLICOLOR and
-// NO_COLOR turn off again; TERM and COLORTERM name the colours a terminal takes.
+// with CLICOLOR_FORCE gh 2.98.0 prints its help in colour, which CLICOLOR and NO_COLOR turn off
+// again; TERM and COLORTERM name the colours a terminal takes.
 var ghPrintingVariables = map[string]bool{"CLICOLOR": true, "CLICOLOR_FORCE": true, "NO_COLOR": true, "TERM": true, "COLORTERM": true}
 
-// newGhHelpKeep is the keep of the gh at the path gh for a call run under env.
+// newGhHelpKeep is the keep of the gh at the path gh for a call run under env, whose reads of gh
+// run under ctx: runGh's signal context (beforeGh), so a SIGINT, SIGTERM or SIGHUP stops a read in
+// progress and its process group (readGhHelp). A read a signal or its bound stopped is an error,
+// even where gh printed part of its help or exited 0 on the stop (exec answers a command whose
+// Cancel ran with the context's error), so it is never kept, and no later call is answered with it.
 //
 // The gh binary is the file gh's links end at, and only a file named gh is taken for one. A
 // compiled multiplexer, such as mise's shim, is a link to the multiplexer itself, which picks the
 // gh it runs on each run (from the working directory's mise.toml), so its own file says nothing
 // of the gh that prints the help, and nothing is kept for it. A multiplexer copied or hard-linked
 // under the name gh is not told apart.
-func newGhHelpKeep(gh string, env map[string]string) *ghHelpKeep {
-	keep := &ghHelpKeep{fresh: func(path []string) (string, error) { return readGhHelp(gh, path) }, uid: os.Getuid()}
+func newGhHelpKeep(ctx context.Context, gh string, env map[string]string, helpEnv []string) *ghHelpKeep {
+	keep := &ghHelpKeep{fresh: func(path []string) (string, error) { return readGhHelp(ctx, gh, helpEnv, path) }, uid: os.Getuid()}
 	state, config := env["XDG_STATE_HOME"], env["GH_CONFIG_DIR"]
 	if state == "" || config == "" || !filepath.IsAbs(gh) {
 		return keep
@@ -124,7 +130,7 @@ func newGhHelpKeep(gh string, env map[string]string) *ghHelpKeep {
 	if inputs.Extensions, err = ghFileStateOf(filepath.Join(data, "extensions")); err != nil {
 		return keep
 	}
-	inputs.Env = ghHelpEnvDigest(env)
+	inputs.Env = ghHelpEnvDigest(helpEnv)
 	keep.dir, keep.inputs = filepath.Join(state, "legion-gh", "help"), inputs
 	return keep
 }
@@ -151,12 +157,20 @@ func ghFileStateOf(path string) (ghFileState, error) {
 	}, nil
 }
 
-// ghHelpEnvDigest is the sha256 of every GH_* variable of env and every one ghPrintingVariables
-// names, as NAME=VALUE in sorted order: gh reads its settings from GH_* variables, and a later gh
-// may print its help differently under one of them.
-func ghHelpEnvDigest(env map[string]string) string {
+// ghHelpEnvDigest is the sha256 of every GH_* variable of helpEnv, the environment gh reads its
+// help under (runGh's ghChildEnviron), and every one ghPrintingVariables names, as NAME=VALUE in
+// sorted order: gh reads its settings from GH_* variables, and a later gh may print its help
+// differently under one of them. A variable of the caller's that the allowlist keeps from gh
+// (GH_PAGER, GH_FORCE_TTY, GH_DEBUG) changes no help, so it keys no copy of its own.
+func ghHelpEnvDigest(helpEnv []string) string {
+	values := map[string]string{}
+	for _, pair := range helpEnv {
+		if name, value, ok := strings.Cut(pair, "="); ok {
+			values[name] = value
+		}
+	}
 	var pairs []string
-	for name, value := range env {
+	for name, value := range values {
 		if strings.HasPrefix(name, "GH_") || ghPrintingVariables[name] {
 			pairs = append(pairs, name+"="+value)
 		}
@@ -167,7 +181,8 @@ func ghHelpEnvDigest(env map[string]string) string {
 }
 
 // read is gh's help of path: the kept copy where one answers, and otherwise gh's own answer
-// (fresh), which is kept when gh printed it.
+// (fresh), which is kept when gh printed it. A copy runs no gh, so it needs no
+// leakguard.RunByRealGhVar; every read that runs gh is readGhHelp's, which carries it.
 func (k *ghHelpKeep) read(path []string) (string, error) {
 	if k.dir == "" {
 		return k.fresh(path)
@@ -185,7 +200,7 @@ func (k *ghHelpKeep) read(path []string) (string, error) {
 
 // fileName is the name of path's copy: the sha256 of the places its inputs are read from, the
 // variables' digest and the path. A new gh at the same place writes over the copy the old one
-// left. Each set of the variables the digest reads (another GH_REPO, another GH_PAGER) has copies
+// left. Each set of the variables the digest reads (another GH_REPO, another NO_COLOR) has copies
 // of its own, which nothing removes.
 func (k *ghHelpKeep) fileName(path []string) string {
 	named, err := json.Marshal([]any{k.inputs.Gh.Path, k.inputs.Config.Path, k.inputs.Extensions.Path, k.inputs.Env, append([]string{}, path...)})

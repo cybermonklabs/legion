@@ -321,7 +321,7 @@ func TestSweeperEndsLapsedEnrollments(t *testing.T) {
 	if got, err := m.Get(ctx, liveSession.pendingID); err != nil || got.State != "pending" {
 		t.Fatalf("the live enrollment's pending request = %+v, %v; want still pending", got, err)
 	}
-	pendingList, err := m.PendingForApprover(ctx, approver)
+	pendingList, err := m.PendingForApprover(ctx, approver, PendingStates{})
 	if err != nil || len(pendingList) != 1 || pendingList[0].RecordID != liveSession.recordID {
 		t.Fatalf("PendingForApprover = %+v, %v; want only the live enrollment's record %s", pendingList, err, liveSession.recordID)
 	}

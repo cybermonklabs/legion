@@ -140,7 +140,7 @@ func TestCarriedAnswersADaemonsOwnPodEnrollments(t *testing.T) {
 		svc, enrol, acme, _ := carriedDaemons(t)
 		row := enrol(acme, session, "acme-pod-1")
 		// No route writes this spelling any more: an older replica does while the broker rolls
-		// (adopt, migration 0035), so the row is rewritten to it here.
+		// (adopt, migration 0037), so the row is rewritten to it here.
 		spellAccountAlone(t, svc, row.ID)
 		wantCarried(t, "a legacy row of the daemon's own login", askCarried(t, svc, acme, session),
 			CarriedEnrollment{SessionID: session, EnrollmentID: row.ID, State: "live", EndsAt: leaseEnd(t, svc, row.ID)})
@@ -358,7 +358,7 @@ func TestTheInvalidSessionIDsTextNamesItsBounds(t *testing.T) {
 // TestAReplacedDaemonPodsNextEnrolmentTakesOnlyWhatCarriedAnswered.
 //
 // The control (the pull request records the run): adopt's legacy clause taking a row whatever
-// login's credential enrolled it (`c.subject=$5::text` widened to any subject) moves GLOBEX's
+// login's credential enrolled it (`c.subject=$6::text` widened to any subject) moves GLOBEX's
 // legacy row's grant to ACME's enrolment, which Carried did not answer, and the test fails naming
 // it.
 func TestAnEmptyCarriedAnswerHandsTheNextEnrolmentNothing(t *testing.T) {

@@ -150,11 +150,6 @@ func (s *selectors) dir(dirFor func(owner, name string) (string, error)) (string
 	return "", fmt.Errorf("the command routes to the gh directories of more than one owner, %s, so it sends no token; name one repository", strings.Join(listed, " and "))
 }
 
-// ghRepositoryNumber is an issue or pull request named OWNER/REPO#N, which gh reads in a number's
-// place as that repository's only for a leaf whose quirk says so; a pr leaf reads it as the name
-// of a branch of its own repository.
-var ghRepositoryNumber = regexp.MustCompile(`^([^/\s#]+/[^/\s#]+)#[0-9]+$`)
-
 // ghPullRequestPath is the path of the one URL gh's pr finder reads as naming its pull request,
 // and so its repository, `/OWNER/REPO/pull/N`; it reads any other URL as the name of a branch of
 // the command's own repository.
@@ -162,7 +157,7 @@ var ghPullRequestPath = regexp.MustCompile(`^/[^/]+/[^/]+/pull/[0-9]+`)
 
 // fromCommand collects the owners the leaf's arguments and options name, and whether one names
 // the command's own repository: -R, a repository, owner or URL argument (through gh's pr finder,
-// only a pull request's), OWNER/REPO#N where the leaf reads it, or its quirk's target option.
+// only a pull request's), or its quirk's target option.
 func (s *selectors) fromCommand(cmd *ghCommand, parsed ghArgs) error {
 	leaf, quirk := cmd.quoted(), quirkOf(cmd.path)
 	s.targeted = len(parsed.values["repo"]) > 0 && cmd.readsGHRepo()
@@ -183,13 +178,6 @@ func (s *selectors) fromCommand(cmd *ghCommand, parsed ghArgs) error {
 			kind, unknown := placed[i].kind()
 			if unknown != "" {
 				return cannotPlace(arg, fmt.Sprintf("fills <%s> of %s's usage, an argument this does not know", unknown, leaf), false)
-			}
-			if placed[i].takes("number") && quirk.readsRepositoryNumber && ghRepositoryNumber.MatchString(arg) {
-				if err := s.repository(ghRepositoryNumber.FindStringSubmatch(arg)[1], "the issue or pull request "+arg); err != nil {
-					return err
-				}
-				s.targeted = true
-				continue
 			}
 			switch kind {
 			case "repository":
@@ -682,7 +670,9 @@ func readGitRemotes() ([]ghRemote, error) {
 
 // gitLines runs git with args in the working directory and answers the lines it prints: none for
 // a directory that is no git repository, where no git runs, or, for `git config --get-regexp`,
-// where nothing matches.
+// where nothing matches. It runs with the environment gh runs with (ghChildEnviron), so it reads
+// the repository, the remotes and the configuration gh's own git reads, and no GIT_DIR, global
+// file or url.<base>.insteadOf of the caller's that gh's git never sees.
 //
 // It takes no lock: `git remote -v` and `git config --get-regexp` read configuration and write
 // nothing, so neither can leave a lock file behind for the next reader of the repository. R8 of
@@ -693,7 +683,7 @@ func gitLines(args ...string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.Env = append(ghChildEnviron(os.Environ(), nil), "LC_ALL=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

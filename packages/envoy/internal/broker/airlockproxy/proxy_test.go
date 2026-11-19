@@ -26,12 +26,14 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -440,6 +442,268 @@ func TestDialAllowOpensTheAddressesItNamesAndNoOthers(t *testing.T) {
 		body := bodyOf(t, answer)
 		if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, "a loopback IPv4 address") {
 			t.Errorf("CONNECT %s = %d %q; want 403 naming the loopback address, which the list does not name", target, answer.StatusCode, body)
+		}
+		if after := r.dials.Load(); after != before {
+			t.Errorf("the proxy dialled %s %d time(s); want none", target, after-before)
+		}
+	}
+}
+
+// serviceRange is GKE's default Service range, which a cluster's ClusterIPs are drawn from. It is
+// global unicast, so none of localRule's fixed rules refuses an address in it: only
+// Options.ClusterRanges does.
+var serviceRange = netip.MustParsePrefix("34.118.224.0/20")
+
+// clusterRangeRule is the words every refusal of an address inside Options.ClusterRanges carries.
+const clusterRangeRule = "inside BROKER_AIRLOCK_CLUSTER_RANGES, the broker cluster's own addresses"
+
+// clusterIPs are three ClusterIPs of Services in a cluster whose Service range is serviceRange.
+var clusterIPs = []string{"34.118.237.200", "34.118.227.252", "34.118.234.195"}
+
+// TestTheProxyRefusesTheBrokerClustersOwnRanges: without Options.ClusterRanges the proxy is a way
+// into the broker's own cluster through every Service it has, because a Service range such as
+// serviceRange is global unicast and passes every fixed rule. Each refused row's address is wired
+// to a service, so a proxy that admits it opens the tunnel and answers 200 rather than failing for
+// want of a route; each admitted row is the control that the refusal is about the range and not
+// about the address's neighbourhood.
+func TestTheProxyRefusesTheBrokerClustersOwnRanges(t *testing.T) {
+	ranges := []netip.Prefix{serviceRange, netip.MustParsePrefix("2001:db8:5::/48")}
+	newRangeRig := func(t *testing.T, ranges []netip.Prefix) *rig {
+		r := newRig(t, Options{ClusterRanges: ranges})
+		r.addresses["service.example.net"] = []netip.Addr{netip.MustParseAddr(clusterIPs[0])}
+		r.addresses["mixed-service.example.net"] = []netip.Addr{netip.MustParseAddr("93.184.216.40"), netip.MustParseAddr(clusterIPs[1])}
+		echo := r.dialTo[net.JoinHostPort(echoHost, "443")]
+		// Each address a refused row names is wired to the echo service, the zoned forms as the
+		// proxy would dial them, so a proxy that let one through opens a tunnel and answers 200.
+		for _, addr := range []string{clusterIPs[0], clusterIPs[1], clusterIPs[2], "34.118.224.0", "34.118.239.255", "2001:db8:5::10",
+			"2001:db8:5::10%eth0", "2001:db8:5::10%0", "2001:db8:5::10%x", "::%x",
+			"34.118.240.0", "34.118.223.255", "2001:db8:6::10", "93.184.216.40"} {
+			r.dialTo[net.JoinHostPort(addr, "443")] = echo
+		}
+		return r
+	}
+	refusedWith := func(t *testing.T, r *rig, host, want, why string) {
+		t.Helper()
+		before := r.dials.Load()
+		answer, _, _ := r.connectRaw(net.JoinHostPort(host, "443"), basic(workerPlaceholder))
+		// The status first: a CONNECT answered 200 is an open tunnel, whose body never ends.
+		if answer.StatusCode != http.StatusForbidden {
+			t.Fatalf("CONNECT %s = %d after %d dial(s); want 403 and none: %s",
+				host, answer.StatusCode, r.dials.Load()-before, why)
+		}
+		body := bodyOf(t, answer)
+		if !strings.Contains(body, want) {
+			t.Errorf("the refusal of %s reads %q; want it to name %q", host, body, want)
+		}
+		if after := r.dials.Load(); after != before {
+			t.Fatalf("the proxy dialled %s %d time(s); want none: the refusal comes before any dial", host, after-before)
+		}
+	}
+	refused := func(t *testing.T, r *rig, host, family string) {
+		t.Helper()
+		refusedWith(t, r, host, "an "+family+" address "+clusterRangeRule, "it is inside BROKER_AIRLOCK_CLUSTER_RANGES")
+	}
+	admitted := func(t *testing.T, r *rig, host string) {
+		t.Helper()
+		before := r.dials.Load()
+		answer, _, _ := r.connectRaw(net.JoinHostPort(host, "443"), basic(workerPlaceholder))
+		if answer.StatusCode != http.StatusOK {
+			t.Fatalf("CONNECT %s = %d %q; want 200: it is inside no range", host, answer.StatusCode, bodyOf(t, answer))
+		}
+		if after := r.dials.Load(); after != before+1 {
+			t.Fatalf("the proxy dialled %s %d time(s); want one", host, after-before)
+		}
+	}
+
+	r := newRangeRig(t, ranges)
+	for _, row := range []struct{ name, host, family string }{
+		{"a ClusterIP in the cluster's Service range (" + clusterIPs[0] + ")", clusterIPs[0], "IPv4"},
+		{"a ClusterIP in the cluster's Service range (" + clusterIPs[1] + ")", clusterIPs[1], "IPv4"},
+		{"a ClusterIP in the cluster's Service range (" + clusterIPs[2] + ")", clusterIPs[2], "IPv4"},
+		{"the first address of the range", "34.118.224.0", "IPv4"},
+		{"the last address of the range", "34.118.239.255", "IPv4"},
+		{"an address in an IPv6 range", "2001:db8:5::10", "IPv6"},
+		{"a name that resolves to a ClusterIP", "service.example.net", "IPv4"},
+		{"a name whose answer holds a ClusterIP beside a public address", "mixed-service.example.net", "IPv4"},
+		// A zone on a global IPv6 address names nothing a socket to it needs, and netip's
+		// Contains is false for any zoned address, so each of these is read without its zone.
+		{"a zoned IPv6 literal in a range (%25eth0)", "2001:db8:5::10%25eth0", "IPv6"},
+		{"a zoned IPv6 literal in a range (%250)", "2001:db8:5::10%250", "IPv6"},
+		{"a zoned IPv6 literal in a range (%25x)", "2001:db8:5::10%25x", "IPv6"},
+	} {
+		t.Run("refuses "+row.name, func(t *testing.T) { refused(t, r, row.host, row.family) })
+	}
+	// The unspecified address with a zone. netip's IsGlobalUnicast compares an address with ::
+	// whole, zone included, so ::%x was global unicast to a check that kept the zone, and Linux
+	// connects a socket to the unspecified address on the loopback: a tunnel to [::%x] reached the
+	// broker's own pod. Read without its zone it is ::, which the fixed rules refuse.
+	t.Run("refuses the unspecified address with a zone (::%25x), which a socket connects on the loopback", func(t *testing.T) {
+		refusedWith(t, r, "::%25x", "not a global unicast IPv6 address", "a socket to it connects on the pod's own loopback")
+	})
+	for _, row := range []struct{ name, host string }{
+		{"the address after the range", "34.118.240.0"},
+		{"the address before the range", "34.118.223.255"},
+		{"an IPv6 address outside its range", "2001:db8:6::10"},
+		{"a public address", "93.184.216.40"},
+	} {
+		t.Run("dials "+row.name, func(t *testing.T) { admitted(t, r, row.host) })
+	}
+	// And the same ClusterIPs through a proxy given no ranges, which is a broker outside a
+	// cluster: dialled, so what refuses them above is the setting.
+	open := newRangeRig(t, nil)
+	for _, addr := range clusterIPs {
+		t.Run("with no ranges dials "+addr, func(t *testing.T) { admitted(t, open, addr) })
+	}
+}
+
+// TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials: a CONNECT is one of three ways a
+// command reaches an address through the proxy. A bound host is decrypted and its requests are
+// dialled by the proxy's own transport, and a plain-HTTP request is forwarded; both must refuse a
+// ClusterIP as a tunnel does, and the controls show each path still carries a public address.
+func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
+	clusterIP := netip.MustParseAddr(clusterIPs[0])
+	options := Options{ClusterRanges: []netip.Prefix{serviceRange, netip.MustParsePrefix("2001:db8:5::/48")}}
+
+	t.Run("a bound host whose name resolves to a ClusterIP is refused at its CONNECT", func(t *testing.T) {
+		r := newRig(t, options)
+		r.addresses[boundHost] = []netip.Addr{clusterIP}
+		r.dialTo[net.JoinHostPort(clusterIP.String(), "443")] = r.service.Addr()
+		answer, _, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
+		if answer.StatusCode != http.StatusForbidden {
+			t.Fatalf("CONNECT %s at %s = %d; want 403: the ClusterIP is inside BROKER_AIRLOCK_CLUSTER_RANGES", boundHost, clusterIP, answer.StatusCode)
+		}
+		if body := bodyOf(t, answer); !strings.Contains(body, clusterRangeRule) {
+			t.Fatalf("the refusal of %s at %s reads %q; want it to name %q", boundHost, clusterIP, body, clusterRangeRule)
+		}
+		if seen := r.requests(); len(seen) != 0 {
+			t.Fatalf("the service at the ClusterIP was sent %d requests; want none", len(seen))
+		}
+	})
+
+	t.Run("a bound host's request is refused when its name resolves to a ClusterIP at the dial", func(t *testing.T) {
+		r := newRig(t, options)
+		// The CONNECT's check reads a public address, and the dial of the request behind it
+		// reads the ClusterIP, which is wired to the service: a transport that did not check the
+		// range would carry the swapped value to it.
+		r.answers[boundHost] = [][]netip.Addr{{netip.MustParseAddr("93.184.216.34")}, {clusterIP}}
+		r.dialTo[net.JoinHostPort(clusterIP.String(), "443")] = r.service.Addr()
+		answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder)
+		if answer.StatusCode == http.StatusOK || !strings.Contains(body, clusterRangeRule) {
+			t.Fatalf("the request answered %d %q; want it refused naming %q", answer.StatusCode, body, clusterRangeRule)
+		}
+		if seen := r.requests(); len(seen) != 0 {
+			t.Fatalf("the service at the ClusterIP was sent %d requests; want none", len(seen))
+		}
+		for _, addr := range r.dialedAddresses() {
+			if strings.HasPrefix(addr, clusterIP.String()+":") {
+				t.Fatalf("the proxy dialled the ClusterIP at %s", addr)
+			}
+		}
+	})
+
+	t.Run("control: a bound host at a public address is carried", func(t *testing.T) {
+		r := newRig(t, options)
+		answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder)
+		if answer.StatusCode != http.StatusOK {
+			t.Fatalf("the request answered %d %q; want 200", answer.StatusCode, body)
+		}
+		if seen := r.requests(); len(seen) != 1 {
+			t.Fatalf("the service was sent %d requests; want one", len(seen))
+		}
+	})
+
+	// The plain-HTTP rows: a service that answers plain HTTP, wired to the ClusterIP and to a
+	// public address alike, so a forward of either answers 200 with its words.
+	plainRig := func(t *testing.T) (*rig, *atomic.Int64) {
+		r := newRig(t, options)
+		var served atomic.Int64
+		plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			served.Add(1)
+			io.WriteString(w, "the plain service answered")
+		}))
+		t.Cleanup(plain.Close)
+		r.addresses["service.example.net"] = []netip.Addr{clusterIP}
+		for _, addr := range []string{clusterIP.String(), "93.184.216.40", "2001:db8:5::10%eth0", "2001:db8:5::10%0", "2001:db8:5::10%x", "2001:db8:6::10"} {
+			r.dialTo[net.JoinHostPort(addr, "80")] = plain.Listener.Addr().String()
+		}
+		return r, &served
+	}
+	for _, host := range []string{clusterIP.String(), "service.example.net"} {
+		t.Run("a plain-HTTP request to "+host+" is refused", func(t *testing.T) {
+			r, served := plainRig(t)
+			answer, body := r.get(r.client(workerPlaceholder), "http://"+host+"/status")
+			if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, clusterRangeRule) {
+				t.Fatalf("plain http to %s answered %d %q; want 403 naming %q", host, answer.StatusCode, body, clusterRangeRule)
+			}
+			if r.dials.Load() != 0 || served.Load() != 0 {
+				t.Fatalf("the proxy dialled %d time(s) and the service answered %d request(s); want none", r.dials.Load(), served.Load())
+			}
+		})
+	}
+	// The zoned literals are written on a socket of the row's own (plainRaw), as the bytes a
+	// command's client may send: net/http's client drops the zone from the URL it writes to a
+	// proxy, so through it each row would be the unzoned literal and prove nothing about a zone.
+	for _, host := range []string{"[2001:db8:5::10%25eth0]", "[2001:db8:5::10%250]", "[2001:db8:5::10%25x]"} {
+		t.Run("a plain-HTTP request to the zoned literal "+host+" is refused", func(t *testing.T) {
+			r, served := plainRig(t)
+			answer, body := r.plainRaw(host, "/status", basic(workerPlaceholder))
+			if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, clusterRangeRule) {
+				t.Fatalf("plain http to %s answered %d %q after the dials %v; want 403 naming %q", host, answer.StatusCode, body, r.dialedAddresses(), clusterRangeRule)
+			}
+			if r.dials.Load() != 0 || served.Load() != 0 {
+				t.Fatalf("the proxy dialled %v and the service answered %d request(s); want none", r.dialedAddresses(), served.Load())
+			}
+		})
+	}
+	t.Run("control: a plain-HTTP request to a zoned literal outside the ranges is forwarded to the address it was checked as", func(t *testing.T) {
+		r, served := plainRig(t)
+		answer, body := r.plainRaw("[2001:db8:6::10%25eth0]", "/status", basic(workerPlaceholder))
+		if answer.StatusCode != http.StatusOK || body != "the plain service answered" || served.Load() != 1 {
+			t.Fatalf("plain http to [2001:db8:6::10%%25eth0] answered %d %q with %d request(s) served after the dials %v; want 200 from the service", answer.StatusCode, body, served.Load(), r.dialedAddresses())
+		}
+		if dialed := r.dialedAddresses(); !slices.Equal(dialed, []string{"[2001:db8:6::10]:80"}) {
+			t.Fatalf("the proxy dialled %v; want [[2001:db8:6::10]:80], the address without its zone", dialed)
+		}
+	})
+	t.Run("control: a plain-HTTP request to a public address is forwarded", func(t *testing.T) {
+		r, served := plainRig(t)
+		answer, body := r.get(r.client(workerPlaceholder), "http://93.184.216.40/status")
+		if answer.StatusCode != http.StatusOK || body != "the plain service answered" || served.Load() != 1 {
+			t.Fatalf("plain http to a public address answered %d %q with %d request(s) served; want 200 from the service", answer.StatusCode, body, served.Load())
+		}
+	})
+}
+
+// TestDialAllowStillOpensAnAddressInsideTheClusterRanges: Options.DialAllow is a test's way to a
+// stand-in service, and it opens the address it names whatever rule would refuse it, the cluster
+// ranges among them. The same address under any other host:port stays refused.
+func TestDialAllowStillOpensAnAddressInsideTheClusterRanges(t *testing.T) {
+	const standIn = "stand-in.example.net"
+	allowed := net.JoinHostPort(standIn, "443")
+	r := newRig(t, Options{ClusterRanges: []netip.Prefix{serviceRange}, DialAllow: []string{allowed}})
+	r.addresses[standIn] = []netip.Addr{netip.MustParseAddr(clusterIPs[0])}
+	echo := r.dialTo[net.JoinHostPort(echoHost, "443")]
+	r.dialTo[allowed] = echo
+	r.dialTo[net.JoinHostPort(clusterIPs[0], "443")] = echo
+	r.dialTo[net.JoinHostPort(clusterIPs[0], "8443")] = echo
+
+	before := r.dials.Load()
+	answer, _, _ := r.connectRaw(allowed, basic(workerPlaceholder))
+	if answer.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT %s = %d %q; want 200: DialAllow names it", allowed, answer.StatusCode, bodyOf(t, answer))
+	}
+	if after := r.dials.Load(); after != before+1 {
+		t.Fatalf("the proxy dialled %d time(s) for an allowed address; want one", after-before)
+	}
+	for _, target := range []string{net.JoinHostPort(standIn, "8443"), net.JoinHostPort(clusterIPs[0], "443")} {
+		before := r.dials.Load()
+		answer, _, _ := r.connectRaw(target, basic(workerPlaceholder))
+		if answer.StatusCode != http.StatusForbidden {
+			t.Errorf("CONNECT %s = %d after %d dial(s); want 403 and none, since DialAllow does not name it", target, answer.StatusCode, r.dials.Load()-before)
+			continue
+		}
+		if body := bodyOf(t, answer); !strings.Contains(body, clusterRangeRule) {
+			t.Errorf("the refusal of %s reads %q; want it to name %q", target, body, clusterRangeRule)
 		}
 		if after := r.dials.Load(); after != before {
 			t.Errorf("the proxy dialled %s %d time(s); want none", target, after-before)

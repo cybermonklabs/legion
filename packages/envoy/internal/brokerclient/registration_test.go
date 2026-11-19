@@ -217,7 +217,7 @@ func TestEveryOtherRefusalStaysPermanent(t *testing.T) {
 		{"a refused subject token", 400, "invalid_request", "The subject token was refused: its audience is not this broker's.", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			refused := newRefusedError(tc.status, tc.code, tc.description)
+			refused := newRefusedError("a pod's projected token", tc.status, tc.code, tc.description)
 			if got := refused.Permanent(); got != tc.permanent {
 				t.Errorf("HTTP %d %s %q reads permanent=%t, want %t", tc.status, tc.code, tc.description, got, tc.permanent)
 			}

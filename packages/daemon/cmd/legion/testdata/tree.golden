@@ -39,7 +39,6 @@ legion probe-image	hidden	--claude-code-pin string	--claude-root string	--daemon
 legion restart
 legion sessions
 legion sessions import	--claims string	--dsn-file string	--tree string	--tree-volume string
-legion skills-check	hidden	--dir string	--omp string
 legion start	--config string
 legion state	--config string	--json bool	--operator-token-file string	--port int
 legion status
@@ -50,4 +49,3 @@ legion workspace-init	hidden
 legion workspace-init cache	hidden	--listen string	--refresh duration	--repo string	--root string
 legion workspace-init fetch	hidden	--cache-url string	--feed string	--repo string
 legion workspace-init provision	hidden	--credential-helper string	--default-branch string	--feed string	--issue string	--repo string	--root string
-legion workspace-init skills	hidden	--dir string	--repo string

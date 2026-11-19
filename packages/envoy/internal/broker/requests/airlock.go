@@ -474,7 +474,7 @@ func (m *Machine) airlockRelease(ctx context.Context, grantID string, expires *t
 		if err != nil {
 			return nil, fmt.Errorf("release %s behind the airlock: %w", name, err)
 		}
-		released.Names[name] = AirlockName{Value: value, Slots: slots, Hosts: m.Airlock.Lookup(name).Hosts}
+		released.Names[name] = AirlockName{Value: value, Slots: slots, Hosts: m.Airlock.Bound(name).Hosts}
 	}
 	released.ProxyPassword = proxyPassword(released.Names)
 	// Which names went out as a placeholder rather than as their value, recorded where the
@@ -509,9 +509,15 @@ func proxyPassword(names map[string]AirlockName) string {
 // the full release checks run once per grant per pod, in AirlockValues.
 type AirlockConnection struct {
 	GrantID, EnrollmentID, RequestID string
-	Issue                            string // the first Dispatch issue key in the request's own signed reason, "" when it names none
-	Expires                          *time.Time
-	Names                            map[string]AirlockGrantName
+	// SessionID and RuntimeID are the enrollment's: the session the grant belongs to, empty for
+	// an enrollment that names none, and the runtime it runs as, the enrollment's runtime id (a
+	// pod's uid for a pod enrollment). They are read for the lines the proxy writes about where
+	// it dialled (airlockproxy's tunnel and failed-dial lines), which must name the caller, and
+	// they cost nothing: the read below already joins the enrollment row.
+	SessionID, RuntimeID string
+	Issue                string // the first Dispatch issue key in the request's own signed reason, "" when it names none
+	Expires              *time.Time
+	Names                map[string]AirlockGrantName
 }
 
 // AirlockGrantName is one name a connection may carry: the placeholder of each of its slots, and
@@ -538,13 +544,15 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 	var reason string
 	var live bool
 	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason,
+		e.runtime_id, coalesce(e.session_id, ''),
 		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)
 		from airlock_placeholders p
 		join grants g on g.id = p.grant_id
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
 		where p.placeholder_sha256 = $1`, placeholderHash(placeholder)).
-		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &live)
+		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason,
+			&conn.RuntimeID, &conn.SessionID, &live)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AirlockConnection{}, ErrGrantNotLive
 	}

@@ -142,11 +142,14 @@ type LoginState struct {
 // PodEnrollment is one pod generation's identity as the daemon knows it: the pod UID the runtime
 // recorded at spawn, the thumbprint and projected token the shim's hello carried, and the
 // agent's session id — "" before the agent registered, which the broker records as null. The
-// broker picks a request's approver at request time; the enrollment carries no issue.
+// broker picks a request's approver at request time, so the enrollment names none.
 // Slot names one of several pod enrollments when an issue pod holds role processes side by side
-// (`<role>-g<generation>`); empty is the pod's one identity.
+// (`<role>-g<generation>`); empty is the pod's one identity. Claim is the role claim token the
+// process runs for, which every later generation and replacement pod of the role states again, so
+// the broker files the pod's requests under that claim rather than under this one enrollment;
+// empty states none.
 type PodEnrollment struct {
-	PodUID, Slot, Thumbprint, PodToken, Session string
+	PodUID, Slot, Thumbprint, PodToken, Session, Claim string
 }
 
 // Enrollment is what the broker answered: the id every later call names, and the lease the pod's
@@ -425,6 +428,8 @@ func (c *Client) log() *slog.Logger {
 	return slog.Default()
 }
 
+// enrollmentBody is POST /v1/enrollments's body as the daemon sends it. Claim is newer than the
+// rest, so a broker from before it refuses a body that carries it (withoutNewFields).
 type enrollmentBody struct {
 	Kind       string  `json:"kind"`
 	RuntimeID  string  `json:"runtime_id"`
@@ -433,6 +438,23 @@ type enrollmentBody struct {
 	Thumbprint string  `json:"thumbprint"`
 	SessionID  *string `json:"session_id"`
 	PodToken   string  `json:"pod_token"`
+	Claim      string  `json:"claim,omitempty"`
+}
+
+// withoutNewFields is b with every field a broker from before the claim does not declare left
+// empty, which omitempty then leaves out of the JSON: the body such a broker enrols.
+func (b enrollmentBody) withoutNewFields() enrollmentBody {
+	b.Claim = ""
+	return b
+}
+
+// refusesAnUnknownField reports whether a broker answered status and raw the way a broker from
+// before a field refuses a body carrying it: 400 INVALID_ENROLLMENT naming an unknown field, since
+// its readJSON decodes the body with DisallowUnknownFields.
+func refusesAnUnknownField(status int, raw []byte) bool {
+	var api *APIError
+	return status == http.StatusBadRequest && errors.As(refusal(status, raw), &api) &&
+		api.Code == "INVALID_ENROLLMENT" && strings.Contains(api.Message, "unknown field")
 }
 
 type enrollmentAnswer struct {
@@ -446,10 +468,17 @@ type enrollmentAnswer struct {
 // won, or just refused — it returns a non-permanent *APIError{Code: "NO_MACHINE_CREDENTIAL"}, so
 // the caller retries after the next token login. Any other broker answer is an *APIError, a
 // transport failure a plain error.
+//
+// A broker from before the claim refuses the field as unknown, and a 4xx is permanent to the
+// caller, which would drop the pod's identity and enrol it never (supervise.PermanentError). So
+// that one refusal, met by a body that carries a new field, is asked once more without the new
+// fields (withoutNewFields), and what that answers is the enrollment: the pod enrols, and its
+// requests stay its own enrollment's, as every pod's were before the claim. Any other refusal,
+// and the second answer whatever it is, is returned as it came.
 func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error) {
 	body := enrollmentBody{
 		Kind: "pod", RuntimeID: e.PodUID, Slot: e.Slot, Operator: nil,
-		Thumbprint: e.Thumbprint, PodToken: e.PodToken,
+		Thumbprint: e.Thumbprint, PodToken: e.PodToken, Claim: e.Claim,
 	}
 	if e.Session != "" {
 		session := e.Session
@@ -458,6 +487,14 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 	status, raw, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments", body, answerBytes)
 	if err != nil {
 		return Enrollment{}, err
+	}
+	if older := body.withoutNewFields(); older != body && refusesAnUnknownField(status, raw) {
+		c.log().Warn("agent-secrets: the broker does not read an enrollment's claim; enrolling the pod without it, so its requests stay this enrollment's alone",
+			"pod_uid", e.PodUID, "slot", e.Slot)
+		status, raw, err = c.doProof(ctx, http.MethodPost, "/v1/enrollments", older, answerBytes)
+		if err != nil {
+			return Enrollment{}, err
+		}
 	}
 	if status != http.StatusCreated && status != http.StatusOK {
 		return Enrollment{}, refusal(status, raw)

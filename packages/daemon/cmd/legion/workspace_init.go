@@ -46,25 +46,21 @@ func secretFileFromEnv(name string) (string, error) {
 
 // newWorkspaceInitCommand is `legion workspace-init`, the Kubernetes runtime's init containers,
 // which prepare a pod's disk before the main container's worker-shim starts, and the repository
-// cache's process. An issue pod runs two of them, three where the deployment names a skills
-// repository, which prepare the issue's clone and jj workspace on the pod's own disk and the
-// skills its roles install from: `fetch` is the first, one of the two processes of the pod that
-// hold the provisioning token, in a container that mounts nothing an agent of the issue can
-// write; `skills` is the other such process, which clones the deployment's skills marketplace
-// into the pod's skills volume (`runtime.kubernetes.skills_repository`), read-only in every other
-// container, so no role's launch clones anything; `provision` is the last, all the disk's work, in
-// a container the provisioning Secret is not mounted in. The controller's pod (`controller:
-// daemon`) runs none. A repository cache's pod runs `cache` as its one container, on its own
-// volume, until it is stopped. Each one's log lines go to stdout and its refusals and failures to
-// stderr — together the init log the runtime quotes — with exit 1.
+// cache's process. An issue pod runs two of them, which prepare the issue's clone and jj workspace
+// on the pod's own disk: `fetch` is the first, the one process of the pod that holds the
+// provisioning token, in a container that mounts nothing an agent of the issue can write;
+// `provision` is the last, all the disk's work, in a container the provisioning Secret is not
+// mounted in. The controller's pod (`controller: daemon`) runs none. A repository cache's pod runs
+// `cache` as its one container, on its own volume, until it is stopped. Each one's log lines go to
+// stdout and its refusals and failures to stderr — together the init log the runtime quotes — with
+// exit 1.
 func newWorkspaceInitCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{
 		Use:    "workspace-init",
-		Short:  "an issue pod's init containers: fetch the repository, clone the skills marketplace, provision the issue's workspace; and a repository cache pod's process",
+		Short:  "an issue pod's init containers: fetch the repository, provision the issue's workspace; and a repository cache pod's process",
 		Hidden: true,
 	},
 		newWorkspaceFetchCommand(stdout, stderr),
-		newWorkspaceSkillsCommand(stdout, stderr),
 		newWorkspaceProvisionCommand(stdout, stderr),
 		newWorkspaceCacheCommand(stdout, stderr),
 	)
@@ -77,16 +73,6 @@ func newWorkspaceFetchCommand(stdout, stderr io.Writer) *cobra.Command {
 	cacheURL := cmd.Flags().String("cache-url", os.Getenv(cacheURLEnv), "the repository cache to fill the feed from before GitHub (default $"+cacheURLEnv+", set by the runtime while the cache is ready)")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		return workspaceInitExit(cmd, workspaceFetch(ctx, *repo, *feed, *cacheURL, stdout), stderr)
-	})
-	return cmd
-}
-
-func newWorkspaceSkillsCommand(stdout, stderr io.Writer) *cobra.Command {
-	cmd := &cobra.Command{Use: "skills --repo <owner>/<repo> --dir <dir>", Short: "clone the deployment's skills marketplace into the pod's skills volume", Hidden: true, Args: noArguments}
-	repo := cmd.Flags().String("repo", "", "the skills marketplace repository as <owner>/<name> (required)")
-	dir := cmd.Flags().String("dir", "", "the pod's skills volume root, the container's own (required)")
-	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
-		return workspaceInitExit(cmd, workspaceSkills(ctx, *repo, *dir, stdout), stderr)
 	})
 	return cmd
 }
