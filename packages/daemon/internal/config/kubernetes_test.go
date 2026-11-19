@@ -592,6 +592,15 @@ func brokerAudienceRefusal(member string) string {
 		" (both " + testWriterAudience + "): the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone"
 }
 
+// brokerHTTPSAudienceRefusal is the loader's answer to a writer_audience whose https: form is the
+// broker's audience member: a provider whose allowed audiences are empty takes a token of that
+// form as one of the writer audience itself.
+func brokerHTTPSAudienceRefusal(member string) string {
+	return "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets." + member +
+		" (https:" + testWriterAudience + "), which a provider whose allowed audiences are empty takes as the same audience, its full resource name with the https: prefix:" +
+		" the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone"
+}
+
 // `legion config check` (LoadForValidation) and the daemon's boot (Load) refuse the same
 // writer_audience files with the same words, so no file the check passes fails the boot and no
 // file the boot would refuse passes the check. Refused are: the member without
@@ -599,10 +608,12 @@ func brokerAudienceRefusal(member string) string {
 // account; a value that is not a provider's full resource name, a pool id that starts with
 // Google's reserved `gcp-` among them; a blank value; the member under `postgres`, where
 // `session_database` as a whole is inert and refused; a value that is the broker's `audience` or
-// `exchange_audience`, whose tokens every role of a pod reads; and a value that an operator's
-// projected pod token carries, which every role of a pod reads too, its refusal naming the volume
-// and the source that carry it. The App keys are commands that fail, so a boot load that got past
-// the session store would fail on them instead.
+// `exchange_audience`, whose tokens every role of a pod reads; a value that an operator's
+// projected pod token carries, which every pod carries and a volume_mounts entry shows to every
+// role of the pod, its refusal naming the volume and the source that carry it; and a value whose
+// https: form is the audience of any of those tokens, which a provider whose allowed audiences are
+// empty takes as the writer audience itself. The App keys are commands that fail, so a boot load
+// that got past the session store would fail on them instead.
 func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnotherForm(t *testing.T) {
 	const database = "{instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam"
 	const account = ", impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com"
@@ -684,6 +695,33 @@ func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnot
 			want: brokerAudienceRefusal("exchange_audience"),
 		},
 		{
+			name: "the https: form on the broker's audience",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      audience: \"https:" + testWriterAudience + "\"\n"),
+			want: brokerHTTPSAudienceRefusal("audience"),
+		},
+		{
+			name: "the https: form on the broker's exchange audience",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      exchange_audience: \"https:" + testWriterAudience + "\"\n"),
+			want: brokerHTTPSAudienceRefusal("exchange_audience"),
+		},
+		{
+			name: "an operator's pod token in a projected volume's first source",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    pod:\n      volumes:\n        - name: operator-token\n" +
+				"          projected: {sources: [{service_account_token: {audience: \"" + testWriterAudience + "\", expiration_seconds: 3600, path: token}}]}\n" +
+				"      volume_mounts:\n        - {volume: operator-token, mount_path: /var/run/operator}\n"),
+			want: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.audience" +
+				" (both " + testWriterAudience + "): every pod carries the operator's pod volumes, and a volume_mounts entry shows one to every role of the pod," +
+				" and the writer token is the launcher's alone",
+		},
+		{
 			name: "an operator's pod token in a projected volume's second source",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
@@ -692,7 +730,31 @@ func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnot
 				" {service_account_token: {audience: \"" + testWriterAudience + "\", path: writer}}]}\n" +
 				"      volume_mounts:\n        - {volume: operator-tokens, mount_path: /var/run/operator}\n"),
 			want: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.pod.volumes[0].projected.sources[1].service_account_token.audience" +
-				" (both " + testWriterAudience + "): the operator's pod volumes are mounted where every role of a pod reads them, and the writer token is the launcher's alone",
+				" (both " + testWriterAudience + "): every pod carries the operator's pod volumes, and a volume_mounts entry shows one to every role of the pod," +
+				" and the writer token is the launcher's alone",
+		},
+		{
+			// A volume no volume_mounts entry names is refused all the same: every pod carries it,
+			// and one later mount would show it to every role.
+			name: "an operator's pod token in a volume no mount names",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    pod:\n      volumes:\n        - name: operator-token\n" +
+				"          projected: {sources: [{service_account_token: {audience: \"" + testWriterAudience + "\", expiration_seconds: 3600, path: token}}]}\n"),
+			want: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.audience" +
+				" (both " + testWriterAudience + "): every pod carries the operator's pod volumes, and a volume_mounts entry shows one to every role of the pod," +
+				" and the writer token is the launcher's alone",
+		},
+		{
+			name: "the https: form on an operator's pod token",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    pod:\n      volumes:\n        - name: operator-token\n" +
+				"          projected: {sources: [{service_account_token: {audience: \"https:" + testWriterAudience + "\", expiration_seconds: 3600, path: token}}]}\n" +
+				"      volume_mounts:\n        - {volume: operator-token, mount_path: /var/run/operator}\n"),
+			want: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.audience" +
+				" (https:" + testWriterAudience + "), which a provider whose allowed audiences are empty takes as the same audience, its full resource name with the https: prefix:" +
+				" every pod carries the operator's pod volumes, and a volume_mounts entry shows one to every role of the pod, and the writer token is the launcher's alone",
 		},
 	} {
 		for _, loader := range []struct {
@@ -709,85 +771,22 @@ func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnot
 	}
 }
 
-// An operator's own projected ServiceAccount token (pod.volumes[].projected.sources[]
-// .service_account_token) is mounted into the roles container, where every role of the pod reads
-// it, and carries the pod's ServiceAccount as its subject, as the broker's tokens do. So a
-// writer_audience that such a token also carries hands every role the writer token, past the
-// socket's peer check, exactly as one equal to agent_secrets.audience would: `legion config check`
-// and the daemon's boot refuse it, naming the writer audience and the operator's volume. The same
-// file with the operator's token of another audience passes the check, so the refusal is the
-// audience's alone.
-func TestTheLoadersRefuseAWriterAudienceThatAnOperatorsPodTokenAlsoCarries(t *testing.T) {
-	file := func(audience string) string {
-		return withSessionStore("    session_store: cloudsql-iam\n"+
-			"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions,"+
-			" user: legion-sessions@example-project.iam, impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com,"+
-			" writer_audience: \""+testWriterAudience+"\"}\n") +
-			"    pod:\n" +
-			"      volumes:\n" +
-			"        - name: operator-token\n" +
-			"          projected: {sources: [{service_account_token: {audience: \"" + audience + "\", expiration_seconds: 3600, path: token}}]}\n" +
-			"      volume_mounts:\n" +
-			"        - {volume: operator-token, mount_path: /var/run/operator}\n"
-	}
-	if _, err := LoadForValidation(writeConfigFile(t, file("model-gateway.example.com")), noEnv); err != nil {
-		t.Fatalf("LoadForValidation of the file with the operator's token of another audience: %v", err)
-	}
-	for _, loader := range []struct {
-		name string
-		load func(string, func(string) string) (Config, error)
-	}{{"LoadForValidation", LoadForValidation}, {"Load", Load}} {
-		t.Run(loader.name, func(t *testing.T) {
-			_, err := loader.load(writeConfigFile(t, file(testWriterAudience)), noEnv)
-			if err == nil || !strings.Contains(err.Error(), "runtime.kubernetes.session_database.writer_audience") ||
-				!strings.Contains(err.Error(), "runtime.kubernetes.pod.volumes[0]") {
-				t.Fatalf("%s error = %v; want a refusal that names the writer audience and runtime.kubernetes.pod.volumes[0], whose token every role reads",
-					loader.name, err)
-			}
-		})
-	}
-}
-
-// Google takes a token for a workload identity provider whose allowed audiences are left empty when
-// the token's audience is the provider's full resource name "with or without the HTTPS prefix"
-// (gcloud iam workload-identity-pools providers create-oidc, --allowed-audiences). So a token of
-// the audience https:<writer_audience> that every role reads, the broker's or an operator's, is a
-// writer token there too, and the loaders refuse it as they refuse the writer audience itself,
-// naming the writer audience and the member that carries the other token.
-func TestTheLoadersRefuseTheHTTPSFormOfTheWriterAudienceOnARoleReadableToken(t *testing.T) {
-	const https = "https:" + testWriterAudience
-	database := withSessionStore("    session_store: cloudsql-iam\n" +
+// A writer_audience that neither the broker's tokens nor an operator's pod token carries, in its
+// own form or its https: form, passes `legion config check`: here the broker's audience is its own
+// URL and the operator's projected token is a model gateway's. So each refusal of a role-readable
+// token in TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnotherForm is
+// the audience's alone, not the broker's block's or the operator's volume's.
+func TestConfigCheckTakesAWriterAudienceThatNoRoleReadableTokenCarries(t *testing.T) {
+	body := withSessionStore("    session_store: cloudsql-iam\n" +
 		"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions," +
 		" user: legion-sessions@example-project.iam, impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com," +
-		" writer_audience: \"" + testWriterAudience + "\"}\n")
-	broker := "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile
-	operator := func(audience string) string {
-		return "    pod:\n" +
-			"      volumes:\n" +
-			"        - name: operator-token\n" +
-			"          projected: {sources: [{service_account_token: {audience: \"" + audience + "\", expiration_seconds: 3600, path: token}}]}\n" +
-			"      volume_mounts:\n" +
-			"        - {volume: operator-token, mount_path: /var/run/operator}\n"
-	}
-	for _, tc := range []struct{ name, body, member string }{
-		{"the broker's audience", database + broker + "      audience: \"" + https + "\"\n", "runtime.kubernetes.agent_secrets.audience"},
-		{"the broker's exchange audience", database + broker + "      exchange_audience: \"" + https + "\"\n", "runtime.kubernetes.agent_secrets.exchange_audience"},
-		{"an operator's pod token", database + operator(https), "runtime.kubernetes.pod.volumes[0]"},
-	} {
-		for _, loader := range []struct {
-			name string
-			load func(string, func(string) string) (Config, error)
-		}{{"LoadForValidation", LoadForValidation}, {"Load", Load}} {
-			t.Run(tc.name+"/"+loader.name, func(t *testing.T) {
-				_, err := loader.load(writeConfigFile(t, tc.body), noEnv)
-				if err == nil || !strings.Contains(err.Error(), "runtime.kubernetes.session_database.writer_audience") ||
-					!strings.Contains(err.Error(), tc.member) {
-					t.Fatalf("%s error = %v; want a refusal that names the writer audience and %s", loader.name, err, tc.member)
-				}
-			})
-		}
-	}
-	if _, err := LoadForValidation(writeConfigFile(t, database+broker+"      audience: \"https://secrets.internal.example\"\n"+operator("model-gateway.example.com")), noEnv); err != nil {
+		" writer_audience: \"" + testWriterAudience + "\"}\n" +
+		"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+		"      audience: \"https://secrets.internal.example\"\n" +
+		"    pod:\n      volumes:\n        - name: operator-token\n" +
+		"          projected: {sources: [{service_account_token: {audience: model-gateway.example.com, expiration_seconds: 3600, path: token}}]}\n" +
+		"      volume_mounts:\n        - {volume: operator-token, mount_path: /var/run/operator}\n")
+	if _, err := LoadForValidation(writeConfigFile(t, body), noEnv); err != nil {
 		t.Fatalf("LoadForValidation of the file with the broker's and the operator's tokens of other audiences: %v", err)
 	}
 }

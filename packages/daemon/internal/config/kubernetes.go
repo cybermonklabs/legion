@@ -1067,19 +1067,20 @@ func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 }
 
 // checkWriterAudienceAgainstRoleTokens refuses a session database writer audience
-// (session_database.writer_audience) that a token every role of a pod reads also carries: the
+// (session_database.writer_audience) that a token a pod carries for its roles also carries: the
 // broker's two (agent_secrets.audience and exchange_audience), which a pod that enrolls with the
 // broker mounts where every role of the pod reads them (podTokenMounts in
 // internal/runtime/sandbox), and each projected service_account_token of the operator's
-// pod.volumes, which every pod carries where every role of the pod reads it. All these tokens and
-// the writer token have one subject, the pod's ServiceAccount. So with a shared audience a role's
-// process could read such a token, exchange it as the writer token and sign in as the session
-// database's service account, past the socket's peer check, and the writer token must be the
-// launcher's alone. A token of the writer audience's https: form is refused too: a provider whose
-// allowed audiences are left empty takes a token whose audience is its full resource name "with
-// or without the HTTPS prefix" (gcloud iam workload-identity-pools providers create-oidc,
-// --allowed-audiences). The broker's tokens are checked first, then the volumes in order, and each
-// refusal names both keys and the audience.
+// pod.volumes, mounted or not: every pod carries the operator's pod volumes, and a volume_mounts
+// entry shows one to every role of the pod. All these tokens and the writer token have one
+// subject, the pod's ServiceAccount. So with a shared audience a role's process could read such a
+// token, exchange it as the writer token and sign in as the session database's service account,
+// past the socket's peer check, and the writer token must be the launcher's alone. A token of the
+// writer audience's https: form is refused too: a provider whose allowed audiences are left empty
+// takes a token whose audience is its full resource name "with or without the HTTPS prefix"
+// (gcloud iam workload-identity-pools providers create-oidc, --allowed-audiences). The broker's
+// tokens are checked first, then the volumes in order, and each refusal names both keys and the
+// audience.
 func checkWriterAudienceAgainstRoleTokens(block *Kubernetes) error {
 	writer := block.SessionStore.Database.WriterAudience
 	if writer == "" {
@@ -1113,7 +1114,7 @@ func checkWriterAudienceAgainstRoleTokens(block *Kubernetes) error {
 		for j := range projected.Sources {
 			if token := projected.Sources[j].ServiceAccountToken; token != nil && carries(token.Audience) {
 				return refusal(fmt.Sprintf("%s.volumes[%d].projected.sources[%d].service_account_token.audience", podKey, i, j),
-					token.Audience, "the operator's pod volumes are mounted where every role of a pod reads them")
+					token.Audience, "every pod carries the operator's pod volumes, and a volume_mounts entry shows one to every role of the pod")
 			}
 		}
 	}

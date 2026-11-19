@@ -1092,9 +1092,10 @@ The pool and the provider are each 4 to 32 characters of `a-z`, `0-9` and `-`, a
 
 - a value that is also the audience of a token every role of a pod reads: `agent_secrets.audience`, `agent_secrets.exchange_audience`, or the `audience` of a projected `service_account_token` source of a `pod.volumes` entry:
   `runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets.audience (both <value>): the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone`, and likewise `runtime.kubernetes.agent_secrets.exchange_audience`.
-  For a pod volume, the refusal names the source, such as `runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.audience`, and says `the operator's pod volumes are mounted where every role of a pod reads them`.
+  For a pod volume, the refusal names the source, such as `runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.audience`, and says `every pod carries the operator's pod volumes, and a volume_mounts entry shows one to every role of the pod`.
+  The loader refuses such a volume whether or not a `volume_mounts` entry names it.
   All these tokens have the pod's ServiceAccount as their subject.
-  Every role of a pod that enrolls with the broker reads the broker's two tokens (`podTokenMounts`, `manifest.go`), and every role reads the operator's mounted pod volumes.
+  Every role of a pod that enrolls with the broker reads the broker's two tokens (`podTokenMounts`, `manifest.go`), and every role reads a pod volume that a `volume_mounts` entry mounts.
   With equal values, a role's process could exchange such a token as the writer token and sign in as the account.
 
 - a value whose `https:` form, `https://iam.googleapis.com/projects/<number>/…`, is the audience of such a token:
@@ -1135,7 +1136,17 @@ A daemon before the release that adds `writer_audience` refuses the member by na
 The worker image moves with the daemon at that release's daemon API contract, so a rollback takes back the file, the daemon and the image together.
 A pod created under the member keeps `--session-writer-audience` in its launcher's command for its whole life.
 A daemon before that release sends no `agentExecutable` in a start command, so the launcher of such a pod refuses every Oh My Pi start into it until the pod is replaced (`newSessionPeer`, `internal/launcher/sessionpeer.go`).
-So replace those pods as part of the rollback.
+So such a rollback replaces those pods, and each kind of pod is replaced in its own way:
+
+- The older daemon reads each issue pod on the newer image as drift and opens its update round ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+  The round replaces the pod once every role it asks has answered and no turn runs, or at its bound, `pod_update_grace_minutes` after it opened (30 by default).
+  A role whose start was refused cannot answer, so a round that asks such a role runs to its bound, and every Oh My Pi start into that pod is refused until the pod is replaced.
+  To end that wait sooner, delete the issue's Sandbox (`kubectl -n legion delete sandbox <name>`).
+  That takes the pod and the pod's disk, and with the disk the issue's unpushed work, and the issue's next launch makes a Sandbox of the older release.
+
+- The controller's pod has no update round, and the next launch into it replaces it, since its launcher's flags differ from the ones the older daemon renders.
+  A launch that replaces the pod starts Oh My Pi in the new pod, so no start into the old one is refused.
+
 Once the account's grant to the pod's own principal is gone, a release without `writer_audience` cannot sign in: its proxy impersonates the account with the pod's own credentials, and Google refuses them.
 So restore that grant before such a rollback.
 
@@ -3519,7 +3530,7 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
 - a `session_store` that keeps sessions as files (`pvc`), and an omitted `session_store`, which settles to it and is the same refusal rather than a default;
   a `session_store` other than `pvc`, `postgres` or `cloudsql-iam`;
   `postgres` without `session_dsn_secret`, or with one that is empty or not a Secret data key (`[-._a-zA-Z0-9]+`);
-  `cloudsql-iam` without `session_database`, or with one that is not a mapping, names a member but `instance`, `name`, `user`, `impersonate_service_account` and `writer_audience`, leaves one of the three required members empty or `impersonate_service_account` or `writer_audience` blank, or whose `instance` is not a connection name the Cloud SQL connector uses whole (`project:region:instance`, or `domain:project:region:instance` for a domain-scoped project, with no whitespace), whose `impersonate_service_account` is not a Google service account's email, whose `user` is not that account's IAM login (its email without `.gserviceaccount.com`), whose `writer_audience` is not a workload identity provider's full resource name (`//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`), or that names `writer_audience` without `impersonate_service_account`, or with a value that, as it is or with an `https:` prefix, is `agent_secrets.audience`, `agent_secrets.exchange_audience` or the audience of a projected `service_account_token` of `pod.volumes`, whose tokens every role of a pod reads;
+  `cloudsql-iam` without `session_database`, or with one that is not a mapping, names a member but `instance`, `name`, `user`, `impersonate_service_account` and `writer_audience`, leaves one of the three required members empty or `impersonate_service_account` or `writer_audience` blank, or whose `instance` is not a connection name the Cloud SQL connector uses whole (`project:region:instance`, or `domain:project:region:instance` for a domain-scoped project, with no whitespace), whose `impersonate_service_account` is not a Google service account's email, whose `user` is not that account's IAM login (its email without `.gserviceaccount.com`), whose `writer_audience` is not a workload identity provider's full resource name (`//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`), or that names `writer_audience` without `impersonate_service_account`, or with a value that, as it is or with an `https:` prefix, is `agent_secrets.audience`, `agent_secrets.exchange_audience` or the audience of a projected `service_account_token` of `pod.volumes`: the broker's two tokens are mounted where every role of a pod reads them, and every pod carries the operator's pod volumes, which a `volume_mounts` entry shows to every role;
   a `session_dsn_secret` under `cloudsql-iam`; and a `session_database` under `postgres` (an inert key is refused, never ignored).
   At boot the daemon also refuses, under `postgres`, a `session_dsn_secret` that is the providers Secret's `NATS_NKEY_SEED` and a `provider_keys` entry that reads the same key (the shim would export the URL into Oh My Pi's environment)
   — neither can arise under `cloudsql-iam`, where no pod mounts a session key

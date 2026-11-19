@@ -386,18 +386,24 @@ func mustRate(t *testing.T, h *harness, unrated, rated string, score int, reason
 
 // A plugin at PlanRatingContract or later must rate: its retro's completion with no rating is
 // refused PLAN_RATING_REQUIRED, which says how to rate, with nothing recorded, and the same
-// completion with a rating is taken (mustRate). The claim is the one the harness registers, at
-// this daemon's own contract, which is PlanRatingContract or a later one.
+// completion with a rating is taken (mustRate). The claim is at exactly PlanRatingContract, the
+// boundary of the rule: a fresh claim where this daemon declares that contract, and a stale one
+// served in its turn (staleClaim) where the daemon declares a later one, its grants minted first,
+// as TestAPluginAboveTheRatingContractMustRateToo mints its own.
 func TestANewPluginMustRate(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-	if got := pluginContractOf(t, h, implementer.token); got != DaemonAPIVersion || got < PlanRatingContract {
-		t.Fatalf("the implementer's plugin declared contract %d, want this daemon's own %d, at or above PlanRatingContract %d: this case proves nothing",
-			got, DaemonAPIVersion, PlanRatingContract)
+	grants := []string{implementer.grant(t), implementer.grant(t)}
+	if DaemonAPIVersion != PlanRatingContract {
+		h.makeStale(t, implementer.token, implementer.session, implementer.secret, PlanRatingContract)
+	}
+	if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.UpdateRound != "" || c.PluginContract != PlanRatingContract {
+		t.Fatalf("the claim is %s in round %q at contract %d, want working in no round at PlanRatingContract %d: this case proves nothing",
+			c.State, c.UpdateRound, c.PluginContract, PlanRatingContract)
 	}
 
-	message := mustRate(t, h, implementer.grant(t), implementer.grant(t), 5, "The plan fit the work.")
+	message := mustRate(t, h, grants[0], grants[1], 5, "The plan fit the work.")
 	for _, want := range []string{"this completion of phase retro of LEGION-208 carries no rating of the plan", "planRating", "planReason", "1 (the plan cost the work) to 5 (the plan fit the work)", "nothing was recorded"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("the refusal = %q, want it to say %q", message, want)
@@ -405,13 +411,13 @@ func TestANewPluginMustRate(t *testing.T) {
 	}
 }
 
-// "PlanRatingContract or later" holds above this daemon's own contract too, where
-// TestANewPluginMustRate's claim cannot reach: every claim the harness registers declares this
-// daemon's own contract, DaemonAPIVersion. The claim here records a later one and the daemon still
-// serves it, a claim in its turn (staleClaim), as after a later release rolled back to this daemon
-// while its worker was in the retro's turn. Its retro's completion with no rating is refused
-// PLAN_RATING_REQUIRED with nothing recorded, and the same completion with a rating is taken
-// (mustRate).
+// "PlanRatingContract or later" holds above that contract too, and above this daemon's own:
+// TestANewPluginMustRate's claim is at exactly PlanRatingContract, and every claim the harness
+// registers declares this daemon's own contract, DaemonAPIVersion. The claim here records a later
+// one and the daemon still serves it, a claim in its turn (staleClaim), as after a later release
+// rolled back to this daemon while its worker was in the retro's turn. Its retro's completion with
+// no rating is refused PLAN_RATING_REQUIRED with nothing recorded, and the same completion with a
+// rating is taken (mustRate).
 func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)

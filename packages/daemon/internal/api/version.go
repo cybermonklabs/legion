@@ -2447,9 +2447,14 @@ package api
 // `agentExecutable`. A pod created under the member keeps `--session-writer-audience` in its
 // launcher's command for its life, and an older daemon sends no `agentExecutable`, so after a
 // rollback that launcher refuses every Oh My Pi start into the pod (`internal/launcher`'s
-// newSessionPeer) until the pod is replaced. So replace those pods as part of the rollback. A
-// deployment that sets no writer audience renders no fifth flag, and its launcher reads no
-// `agentExecutable`, so its pods carry the command they carried before. (The
+// newSessionPeer) until the pod is replaced. The older daemon reads an issue pod on the newer
+// image as drift and its update round replaces the pod, at the latest at the round's bound,
+// `pod_update_grace_minutes` after it opened, since a role whose start was refused cannot answer;
+// `kubectl -n legion delete sandbox <name>` ends that wait sooner and takes the pod's disk, and
+// the issue's unpushed work with it. The controller's pod has no round: the next launch into it
+// replaces it, since its flags differ, and starts Oh My Pi in the new pod. A deployment that sets
+// no writer audience renders no fifth flag, and its launcher reads no `agentExecutable`, so its
+// pods carry the command they carried before. (The
 // number was first read at 2026-11-19T10:30Z-10:34Z as 170, the lowest above main's 160 (46795520,
 // #3519's INFRA-2009) that no open pull request of cybermonklabs/legion declared, with the `take`
 // of .github/scripts/check-daemon-api-contract.sh, while this branch's base, 4eec2cc2, still
