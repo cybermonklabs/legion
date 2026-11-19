@@ -4,8 +4,13 @@ import type { EditorView } from "@milkdown/kit/prose/view";
 import { DOMSerializer, Schema } from "prosemirror-model";
 
 import type { BlockTypeSchema } from "../../api/types";
-import { askBlockEditingPlugin, editingAskBlockPos } from "./ask-block";
-import { renderTypedBlock } from "./typed-block-drawing";
+import {
+  askBlockEditingPlugin,
+  editingAskBlockPos,
+  readingsInOpenAsks,
+  readingsInOpenAsksPlugin,
+} from "./ask-block";
+import { askBlockFacts, recordsAnswerState, renderTypedBlock } from "./typed-block-drawing";
 
 const schema = new Schema({
   nodes: {
@@ -245,4 +250,187 @@ test("a block[] attribute pointing at no block is not drawn at all", () => {
   expect(drawn.querySelector('dd[data-proof-block-attribute="run"]')?.textContent).toBe(
     "bun test web/src"
   );
+});
+
+// The version-5 typed blocks: a decision, which a reading closes, as an ask is closed by one.
+// Both are drawn as host blocks by their attributes, as a requirement and a check are.
+const decisionSchema = new Schema({
+  nodes: {
+    doc: { content: "block+" },
+    paragraph: { content: "inline*", group: "block" },
+    text: { group: "inline" },
+    bullet_list: { content: "list_item+", group: "block" },
+    list_item: { content: "paragraph+" },
+    reading: {
+      attrs: { blockId: { default: null } },
+      content: "paragraph+",
+      parents: ["decision", "ask"],
+    },
+    decision: {
+      attrs: {
+        blockId: { default: null },
+        decided_by: { default: null },
+        uncertainty: { default: null },
+        uncertainty_reason: { default: null },
+      },
+      content: "block+ reading*",
+      group: "block",
+    },
+    ask: {
+      attrs: { blockId: { default: null } },
+      content: "paragraph+ bullet_list? reading*",
+      group: "block",
+    },
+  },
+});
+
+const decisionType: BlockTypeSchema = {
+  attributes: {
+    decided_by: { kind: "actor", markdown: false, server: true },
+    uncertainty: { choices: ["low", "medium", "high"], kind: "enum" },
+    uncertainty_reason: { kind: "string" },
+  },
+  content: "block+",
+  name: "decision",
+  render: "host",
+};
+
+const readingType: BlockTypeSchema = {
+  attributes: {},
+  content: "paragraph+",
+  name: "reading",
+  parents: ["decision", "ask"],
+  render: "host",
+};
+
+function decisionParagraph(text: string) {
+  return decisionSchema.node("paragraph", undefined, [decisionSchema.text(text)]);
+}
+
+test("a decision and its reading are drawn as host blocks, the decision's own attributes as text", () => {
+  const reading = decisionSchema.node("reading", { blockId: "r1" }, [
+    decisionParagraph("The agent reads it as Friday."),
+  ]);
+  const node = decisionSchema.node(
+    "decision",
+    {
+      blockId: "d1",
+      decided_by: "user:alice",
+      uncertainty: "low",
+      uncertainty_reason: "A holiday moves it.",
+    },
+    [decisionParagraph("We ship on Friday."), reading]
+  );
+
+  const text = renderedText(renderTypedBlock(node, decisionType));
+  expect(text).toContain("decision");
+  expect(text).toContain("low");
+  expect(text).toContain("A holiday moves it.");
+  expect(text).not.toContain("user:alice");
+  expect(text).not.toContain("decided_by");
+  expect(renderedText(renderTypedBlock(reading, readingType))).toContain("reading");
+});
+
+test("an ask card reads its question and options past the reading it closes with", () => {
+  const node = decisionSchema.node("ask", { blockId: "a1" }, [
+    decisionParagraph("Which day?"),
+    decisionSchema.node(
+      "bullet_list",
+      undefined,
+      ["Friday: Before the holiday", "Monday"].map((option) =>
+        decisionSchema.node("list_item", undefined, [decisionParagraph(option)])
+      )
+    ),
+    decisionSchema.node("reading", { blockId: "r1" }, [
+      decisionParagraph("The agent reads it so."),
+    ]),
+  ]);
+
+  const facts = askBlockFacts(node);
+  expect(facts.question).toBe("Which day?");
+  expect(facts.options).toEqual([
+    { description: "Before the holiday", label: "Friday" },
+    { label: "Monday" },
+  ]);
+  expect(facts.malformedReason).toBeUndefined();
+});
+
+// The schema the refusal of a reading reads: an ask closing with readings, as the block schema
+// gives the editor.
+const readingSchema = new Schema({
+  nodes: {
+    doc: { content: "block+" },
+    paragraph: { content: "inline*", group: "block" },
+    text: { group: "inline" },
+    ask: { attrs: { blockId: { default: null } }, content: "paragraph+ reading*", group: "block" },
+    reading: { attrs: { blockId: { default: null } }, content: "paragraph+", parents: ["ask"] },
+  },
+});
+
+function askWithReading(blockId: string, withReading: boolean) {
+  return readingSchema.node("ask", { blockId }, [
+    readingSchema.node("paragraph", undefined, [readingSchema.text("Ship it?")]),
+    ...(withReading
+      ? [
+          readingSchema.node("reading", { blockId: `${blockId}-r1` }, [
+            readingSchema.node("paragraph", undefined, [readingSchema.text("Read as now.")]),
+          ]),
+        ]
+      : []),
+  ]);
+}
+
+test("the editor refuses a reading in an ask the server reads open, and takes one in an answered ask", () => {
+  const served: Record<string, string> = { "answered-ask": "answered", "open-ask": "open" };
+  const stateOf = (blockId: string) => served[blockId];
+  const state = EditorState.create({
+    doc: readingSchema.node("doc", undefined, [
+      askWithReading("open-ask", false),
+      askWithReading("answered-ask", false),
+    ]),
+    plugins: [readingsInOpenAsksPlugin(stateOf)],
+  });
+  const withReadingIn = (index: number) => {
+    let position = 0;
+    for (let child = 0; child < index; child++) {
+      position += state.doc.child(child).nodeSize;
+    }
+    const ask = state.doc.child(index);
+    return state.tr.replaceWith(
+      position,
+      position + ask.nodeSize,
+      askWithReading(String(ask.attrs.blockId), true)
+    );
+  };
+  // A refused transaction leaves the state as it was.
+  expect(state.applyTransaction(withReadingIn(0)).state.doc.eq(state.doc)).toBe(true);
+  const answered = state.applyTransaction(withReadingIn(1)).state;
+  expect(readingsInOpenAsks(answered.doc, stateOf)).toEqual(new Set());
+  expect(answered.doc.child(1).childCount).toBe(2);
+  // A remote update, the server's own sync of another writer's edit, is never refused.
+  const synced = state.applyTransaction(
+    withReadingIn(0).setMeta("y-sync$", { isChangeOrigin: true })
+  );
+  expect(synced.state.doc.child(0).childCount).toBe(2);
+});
+
+test("a version records an ask block's answer state on its opening line, whichever way it writes the id", () => {
+  // `q1` fits the `#id` shortcut; `q 1` does not, so its opener writes `id="q 1"`, as the renderer
+  // writes such an id (`typedBlockIdAttribute`).
+  const version = [
+    ':::ask{#q1 state="answered"}',
+    "Ship it?",
+    ":::",
+    "",
+    ':::ask{id="q 1" state="answered"}',
+    "Ship it now?",
+    ":::",
+    "",
+    ":::ask{#q2}",
+    "Ship it later?",
+    ":::",
+  ].join("\n");
+  expect(recordsAnswerState(version, "q1")).toBe(true);
+  expect(recordsAnswerState(version, "q 1")).toBe(true);
+  expect(recordsAnswerState(version, "q2")).toBe(false);
 });

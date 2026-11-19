@@ -360,10 +360,24 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${key}`);
     await expect(iconRail(page), "the phone draws the rail").toHaveCount(0);
+    // The header's own "Open navigation" is the frame's; one outside the header is
+    // today's compact bar's.
+    const openNavigation = { exact: true, name: "Open navigation" };
     await expect(
-      page.getByRole("button", { exact: true, name: "Open navigation" }),
-      "the frame draws today's compact bar at 390 px"
-    ).toHaveCount(0);
+      page.locator("[data-issue-header]").getByRole("button", openNavigation),
+      "the header draws no navigation control at 390 px"
+    ).toHaveCount(1);
+    await expect
+      .poll(
+        () =>
+          page
+            .getByRole("button", openNavigation)
+            .evaluateAll(
+              (all) => all.filter((one) => one.closest("[data-issue-header]") === null).length
+            ),
+        { message: "the frame draws today's compact bar at 390 px" }
+      )
+      .toBe(0);
     await focusNothing(page);
     await page.keyboard.press("Shift+M");
     const phoneDetails = page.getByRole("dialog", { exact: true, name: "Details" });
@@ -536,6 +550,10 @@ test("the five controls are toggles with an address each, one line at every widt
     }
     // Conversation turns every view off from an address of the issue that is no view's.
     await gotoIssue(page, `/issues/${key}/collaborators`);
+    // `/collaborators` opens Details (part M's R4, decision 147), which then stands over the
+    // page until the reader closes it.
+    await expect(marginShell(page)).toBeVisible();
+    await closeDetails(page);
     await presetToggle(page, "conversation").click();
     await expect(page).toHaveURL(addressOf(key, "conversation"));
 
@@ -625,6 +643,8 @@ test("the five controls are toggles with an address each, one line at every widt
       await expect(presetChooser(page), "a chosen item left the focus nowhere").toBeFocused();
       // Conversation, chosen from an address of the issue that is no view's, goes to the issue's.
       await gotoIssue(page, `/issues/${key}/collaborators`);
+      await expect(marginShell(page)).toBeVisible();
+      await closeDetails(page);
       await presetChooser(page).click();
       await presetMenuItem(page, "conversation").click();
       await expect(page).toHaveURL(addressOf(key, "conversation"));
@@ -970,19 +990,29 @@ test("adding one row to a page of many rows recalculates the style of that row a
 // Verification's count moves to each view's address, one history entry each, and leaves the
 // focus where it was (decision 93 of the parts). There, a press whose mousedown took the
 // focus out of the outline closed the body of the outline's row, the page grew shorter under the
-// pointer, and the press ended elsewhere and did nothing. The outline is a later part's; here the
-// page's `main`, which takes the focus on a page change, holds it in the row's place. A count is
-// its button's `<label>`, whose own activation focuses the button at the click: with it, this
-// row fails on "a press on Verification's count took the focus".
+// pointer, and the press ended elsewhere and did nothing. The outline is a later part's; here a
+// control outside the outline and every view, the icon rail's project link, holds the focus in
+// the row's place: the page's `main` holds the stage, so a view drawn there takes a focus left
+// on `main` as nobody's. A count is its button's `<label>`, whose own activation focuses the
+// button at the click: with it, this row fails on "a press on Verification's count took the
+// focus".
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on the
+// address's row, then three presses each waited on until the view's address moves.
 test("from an address that names a node, a press on Spec, on Decisions and on Verification's count moves to each view's address, one history entry each, and leaves the focus where it was", async ({
   browser,
 }) => {
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}#b-r1`);
     await expect(page).toHaveURL(new RegExp(`/issues/${key}#b-r1$`));
-    const holder = page.getByRole("main");
+    // With the outline the page opens with the focus on the row the address names, and takes it
+    // back from what holds the outline until the reader acts, so the opening is
+    // waited out and the reader acts first - a Shift, which no key of the page binds - or the
+    // page would take the focus from the project link below.
+    await expect(page.locator("[data-node-row]:focus"), "the page focused no row").toHaveCount(1);
+    await page.keyboard.press("Shift");
+    const holder = iconRail(page).getByRole("link", { exact: true, name: key.split("-")[0] });
     await holder.focus();
-    await expect(holder, "the page's main took no focus").toBeFocused();
+    await expect(holder, "the icon rail's project link took no focus").toBeFocused();
     const entries = () => page.evaluate(() => window.history.length);
     const before = await entries();
     await presetToggle(page, "spec").click();

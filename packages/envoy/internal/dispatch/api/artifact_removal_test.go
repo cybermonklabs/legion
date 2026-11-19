@@ -545,7 +545,9 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		// document's lock, taken here as the transaction-level form of the session lock that
 		// batch's opening pipeline takes (docs/room_appends.go), and the doc_updates row it has
 		// written and not committed. Such a writer takes no owner lock, so the issue's owner lock the
-		// removal holds does not order it: the room's lock is what does.
+		// removal holds does not order it: the room's lock is what does. The document plays no
+		// role of its converted issue, so it is a room of its own (requireOwnRoom).
+		requireOwnRoom(t, document)
 		appending, err := database.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin the append in flight: %v", err)
@@ -644,7 +646,9 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 			t.Fatalf("the settlement pass over the untouched document wrote %#v (%v); want nothing written", version, err)
 		}
 		// The room is read live before the removal, so what is said of it after is said of a room
-		// that existed.
+		// that existed. The document plays no role of its converted issue, so it is a room of its
+		// own (requireOwnRoom).
+		requireOwnRoom(t, document)
 		if rooms := documents.ResidentRooms(); !slices.Contains(rooms, document.ID) {
 			t.Fatalf("this process holds the rooms %v, and not %s, whose room the removal must close", rooms, document.ID)
 		}
@@ -703,6 +707,9 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		awaitLockWaits(t, ctx, queueDatabase, "the removal never queued for the issue's owner lock", func(waiting func(string) int) bool {
 			return waiting(store.OwnerLockStatement) == 1
 		})
+		// The document plays no role of its converted issue, so the settlement that versions it is
+		// its own room's (requireOwnRoom).
+		requireOwnRoom(t, document)
 		documents.SettleNow(document.ID)
 		awaitLockWaits(t, ctx, queueDatabase, "the settlement never queued for the issue's owner lock behind the removal", func(waiting func(string) int) bool {
 			return waiting(store.OwnerLockStatement) == 2
@@ -808,7 +815,9 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 
 	// Each process is read holding a room of the document, so what is said of the two rooms
 	// after the removal is said of rooms that existed. The removing process loaded its own when
-	// the document was made.
+	// the document was made. The document plays no role of its converted issue, so it is a room of
+	// its own (requireOwnRoom).
+	requireOwnRoom(t, document)
 	for _, process := range []struct {
 		what    string
 		service *docs.Service
@@ -900,6 +909,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	if text, err := third.Text(ctx, untouched.ID); err != nil || text != "" {
 		t.Fatalf("the third process reads the live document as %q, %v; want the empty document it was made as", text, err)
 	}
+	requireOwnRoom(t, untouched)
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
 		return slices.Contains(third.ResidentRooms(), untouched.ID)
 	}) {
@@ -925,6 +935,17 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 			untouched.ID, third.ResidentRooms())
 	}
 	assertNoRowNamesTheDocument(t, database, untouched.ID)
+}
+
+// requireOwnRoom fails unless the document's read names it a room of its own: its own id as its
+// room and that room's own fragment, as every document of an issue is but the issue's spec,
+// Verification document and plan, which join a converted issue's room (R5 of this branch's spec).
+func requireOwnRoom(t *testing.T, document model.Artifact) {
+	t.Helper()
+	if document.Room != document.ID || document.Fragment != model.ArtifactFragmentOwn {
+		t.Fatalf("%s (%s) reads room %q fragment %q, want a room of its own: room %s and fragment %s",
+			document.Name, document.ID, document.Room, document.Fragment, document.ID, model.ArtifactFragmentOwn)
+	}
 }
 
 // documentAppendCount is how many stored appends the database holds of a document's room. After

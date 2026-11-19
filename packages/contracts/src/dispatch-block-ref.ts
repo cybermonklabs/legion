@@ -1,3 +1,4 @@
+import type { BlockItemKind } from "./block-schema.generated";
 import { hasControlCharacter } from "./dispatch-href";
 import { referenceTargetFits, utf8Bytes } from "./dispatch-text-rules";
 import { PROJECT_KEY_PATTERN } from "./dispatch-tools";
@@ -217,56 +218,213 @@ export function parseCanonicalBlockReference(value: string): DispatchBlockRefere
 }
 
 /**
- * The pointers a typed block's `block[]` attribute holds, as markdown writes it: the empty string
- * for none, else canonical block references (`parseCanonicalBlockReference`) joined by exactly one
- * space, with none leading or trailing and none repeated. Undefined for any other value, which is
- * refused, never normalised, so the editor and the server never disagree on one
- * (`blockPointerValueProblem` says why). Go's twin is `pmdoc.ParseBlockPointerValue`; both are
- * tested against DISPATCH_BLOCK_POINTER_VALUES, whose JSON copy is
- * `packages/envoy/internal/dispatch/pmdoc/testdata/block-pointer-values.json`.
+ * The attribute that places a typed block in its issue's tree where its rendering cannot: a
+ * `block[]` attribute holding at most one reference, because a node has one parent, and the one
+ * attribute whose `items` name the conversation's kinds. Go's twin is `pmdoc.ParentAttribute`.
  */
-export function parseBlockPointerValue(value: string): string[] | undefined {
-  if (blockPointerValueProblem(value) !== undefined) {
+export const PARENT_ATTRIBUTE = "parent";
+
+/**
+ * An issue's ask, comment or message, or a block of one, as an item reference names it: the
+ * issue, the item's kind, its whole lower-case uuid and, for a block, the block id, decoded.
+ */
+export interface DispatchItemBlockReference {
+  readonly issue: string;
+  readonly item: "ask" | "comment" | "message";
+  readonly id: string;
+  readonly block?: string;
+}
+
+const CANONICAL_ITEM_REFERENCE = new RegExp(
+  `^dispatch://(${ISSUE_KEY})/(ask|comment|message)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:#b-(.*))?$`,
+  "s"
+);
+// An ask, a comment or a message itself, in the shapes Go's `text.parseDispatch` reads with no
+// fragment: `<ISSUE>/<kind>/<id>`, and a project document's `<PROJECT>/artifact/<slug>/ask/<id>`
+// or `…/comment/<id>`. The id is checked by wholeItemKind.
+const WHOLE_ITEM_REFERENCE = new RegExp(
+  `^dispatch://(?:${ISSUE_KEY}/(ask|comment|message)|${PROJECT_KEY}/artifact/${DOCUMENT_SLUG}/(ask|comment))/([^/?#]+)$`
+);
+const CANONICAL_ISSUE_REFERENCE = new RegExp(`^dispatch://${ISSUE_KEY}$`);
+const NO_ITEM_KINDS: readonly BlockItemKind[] = [];
+
+/**
+ * An issue's item, or a block of one, as every writer of a placement writes it:
+ * `dispatch://<ISSUE>/<ask|comment|message>/<uuid>`, then for a block `#b-` and the id as
+ * `encodeBlockId` writes it, never pinned. Go's twin is `text.FormatItemBlockRef`.
+ */
+export function formatItemBlockReference(reference: DispatchItemBlockReference): string {
+  const item = `dispatch://${reference.issue}/${reference.item}/${reference.id}`;
+  return reference.block === undefined ? item : `${item}#b-${encodeBlockId(reference.block)}`;
+}
+
+/**
+ * The item of an issue, or the block of one, `value` names when it is one item reference written
+ * exactly as `formatItemBlockReference` writes it, or undefined: an item of an issue, with its
+ * whole lower-case uuid, and for a block a fragment `parseBlockFragment` reads with no pin, its id
+ * at most MAX_BLOCK_ID_BYTES and its target id at most MAX_REFERENCE_TARGET_BYTES, as text cites
+ * a block. Go's twin is `text.CanonicalItemBlockRef`.
+ */
+export function parseCanonicalItemBlockReference(
+  value: string
+): DispatchItemBlockReference | undefined {
+  const match = CANONICAL_ITEM_REFERENCE.exec(value);
+  if (match === null) {
+    return undefined;
+  }
+  const [, issue = "", kind, id = "", fragment] = match;
+  const item = kind as DispatchItemBlockReference["item"];
+  if (fragment === undefined) {
+    return { issue, item, id };
+  }
+  const parsed = parseBlockFragment(fragment);
+  if (
+    parsed === undefined ||
+    parsed.pin !== undefined ||
+    utf8Bytes(parsed.block) > MAX_BLOCK_ID_BYTES ||
+    !referenceTargetFits(`${item}/${id}#${parsed.block}`)
+  ) {
+    return undefined;
+  }
+  const reference: DispatchItemBlockReference = { issue, item, id, block: parsed.block };
+  return formatItemBlockReference(reference) === value ? reference : undefined;
+}
+
+/**
+ * The kind of item (`ask`, `comment` or `message`) `value` names when it names one itself, as Go's
+ * `text.ParseRef` reads an item with no fragment - its id written with no whitespace and decoding
+ * to no control character - or undefined.
+ */
+function wholeItemKind(value: string): "ask" | "comment" | "message" | undefined {
+  const match = WHOLE_ITEM_REFERENCE.exec(value);
+  const id = match?.[3] ?? "";
+  if (match === null || /\s/.test(id)) {
+    return undefined;
+  }
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(id);
+  } catch {
+    return undefined;
+  }
+  if (decoded === "" || hasControlCharacter(decoded)) {
+    return undefined;
+  }
+  return (match[1] ?? match[2]) as "ask" | "comment" | "message";
+}
+
+/**
+ * The pointers a typed block's `block[]` attribute declaring `items` holds, as markdown writes
+ * it: the empty string for none, else references joined by exactly one space, with none leading
+ * or trailing and none repeated, each a canonical block of a document
+ * (`parseCanonicalBlockReference`) or an item `items` declares - a canonical block of an issue's
+ * ask, comment or message (`parseCanonicalItemBlockReference`), or an issue written
+ * `dispatch://<ISSUE>`. Undefined for any other value, which is refused, never normalised, so the
+ * editor and the server never disagree on one (`blockPointerValueProblem` says why). Go's twin is
+ * `pmdoc.ParseBlockPointerValue`; both are tested against DISPATCH_BLOCK_POINTER_VALUES, whose
+ * JSON copy is `packages/envoy/internal/dispatch/pmdoc/testdata/block-pointer-values.json`.
+ */
+export function parseBlockPointerValue(
+  value: string,
+  items: readonly BlockItemKind[] = NO_ITEM_KINDS
+): string[] | undefined {
+  if (blockPointerValueProblem(value, items) !== undefined) {
     return undefined;
   }
   return value === "" ? [] : value.split(" ");
 }
 
 /**
- * Why `value` is not a `block[]` attribute as markdown writes it (`parseBlockPointerValue`),
- * following the wording of Go's `pmdoc.ParseBlockPointerValue` (the value quoted with
- * `JSON.stringify` where Go uses `%q`, which escapes a control or non-printing character
- * differently), or undefined when it is one.
+ * Why `value` is not a `block[]` attribute declaring `items` as markdown writes it
+ * (`parseBlockPointerValue`), following the wording of Go's `pmdoc.ParseBlockPointerValue` (the
+ * value quoted with `JSON.stringify` where Go uses `%q`, which escapes a control or non-printing
+ * character differently), or undefined when it is one.
  */
-export function blockPointerValueProblem(value: string): string | undefined {
+export function blockPointerValueProblem(
+  value: string,
+  items: readonly BlockItemKind[] = NO_ITEM_KINDS
+): string | undefined {
   if (value === "") {
     return undefined;
   }
   if (value.startsWith(" ") || value.endsWith(" ") || value.includes("  ")) {
     return `${JSON.stringify(value)} must be block references separated by exactly one space, with none leading or trailing`;
   }
-  return blockPointersProblem(value.split(" "));
+  return blockPointersProblem(value.split(" "), items);
+}
+
+/** Whether `value` is a reference a `block[]` attribute declaring `items` holds. */
+function acceptedPointer(value: string, items: readonly BlockItemKind[]): boolean {
+  if (parseCanonicalBlockReference(value) !== undefined) {
+    return true;
+  }
+  const item = parseCanonicalItemBlockReference(value);
+  if (item !== undefined && items.includes(item.item)) {
+    return true;
+  }
+  return items.includes("issue") && CANONICAL_ISSUE_REFERENCE.test(value);
+}
+
+/** How a reference to an item of kind `item` is written where a `block[]` attribute declares it. */
+function itemForm(item: BlockItemKind): string {
+  return item === "issue" ? "dispatch://<ISSUE>" : `dispatch://<ISSUE>/${item}/<id>[#b-<block id>]`;
+}
+
+/** What a refusal adds for an attribute declaring `items`: the form of each, or nothing. */
+function declaredItems(items: readonly BlockItemKind[]): string {
+  return items.length === 0 ? "" : `, or an item it declares: ${items.map(itemForm).join(", ")}`;
 }
 
 /**
- * Why `values` are not the pointers of a `block[]` attribute - one is a part of an ask or a block
- * of a comment or a message, which a pointer never names (a `block[]` attribute points at blocks
- * of documents, whose types its targets limit, and an item's block has no type), one is otherwise
- * not a canonical block reference (`parseCanonicalBlockReference`), or one is named twice -
+ * The item kind `value`, one pointer a `block[]` attribute declaring `items` holds, names: `ask`,
+ * `comment` or `message` for one of those or a block of one, `issue` for an issue, and undefined
+ * for a block of a document or a value the attribute does not hold. It is what decides whether an
+ * editor may create the pointer (an attribute's `item_versions`). Go's twin is `pmdoc.pointerItem`.
+ */
+export function pointerItemKind(
+  value: string,
+  items: readonly BlockItemKind[] = NO_ITEM_KINDS
+): BlockItemKind | undefined {
+  if (parseCanonicalBlockReference(value) !== undefined) {
+    return undefined;
+  }
+  const item = parseCanonicalItemBlockReference(value);
+  if (item !== undefined) {
+    return items.includes(item.item) ? item.item : undefined;
+  }
+  return items.includes("issue") && CANONICAL_ISSUE_REFERENCE.test(value) ? "issue" : undefined;
+}
+
+/**
+ * Why `values` are not the pointers of a `block[]` attribute declaring `items` - one is a part of
+ * an ask or a block of a comment or a message of a kind the attribute does not declare, or one
+ * written otherwise than `formatItemBlockReference` writes it, one is an ask, a comment or a
+ * message of a kind it declares written otherwise, one is otherwise none the attribute holds (a
+ * canonical block of a document, or an issue where `items` declares one), or one is named twice -
  * following the wording of Go's `pmdoc.validateBlockPointerValues`, quoted as above, or undefined
  * when they are.
  */
-export function blockPointersProblem(values: readonly string[]): string | undefined {
+export function blockPointersProblem(
+  values: readonly string[],
+  items: readonly BlockItemKind[] = NO_ITEM_KINDS
+): string | undefined {
   const seen = new Set<string>();
   for (const value of values) {
-    const item = itemBlockKind(value);
-    if (item !== undefined) {
+    if (!acceptedPointer(value, items)) {
+      const block = itemBlockKind(value);
+      const whole = wholeItemKind(value);
       // The kind takes the article its noun does: an ask, a comment, a message.
-      const article = item === "ask" ? "an" : "a";
-      return `${JSON.stringify(value)} is a block of ${article} ${item}: a block[] attribute points only at a block of a document`;
-    }
-    if (parseCanonicalBlockReference(value) === undefined) {
-      return `${JSON.stringify(value)} is not a block reference as Dispatch writes one: dispatch://<ISSUE>/spec#b-<id>, or dispatch://<ISSUE or PROJECT>/artifact/<slug>#b-<id>, the id percent-encoded in upper-case hex except ASCII letters, digits and -, optionally pinned @v<N>`;
+      const article = (block ?? whole) === "ask" ? "an" : "a";
+      if (block !== undefined && !items.includes(block)) {
+        return `${JSON.stringify(value)} is a block of ${article} ${block}: a block[] attribute points only at a block of a document${declaredItems(items)}`;
+      }
+      if (block !== undefined) {
+        return `${JSON.stringify(value)} is not a block of ${article} ${block} as Dispatch writes one: ${itemForm(block)}, the item's whole lower-case uuid, the block id percent-encoded in upper-case hex except ASCII letters, digits and -, and no pin`;
+      }
+      if (whole !== undefined && items.includes(whole)) {
+        return `${JSON.stringify(value)} is not ${article} ${whole} as Dispatch writes one: ${itemForm(whole)}, the item's whole lower-case uuid, and no pin`;
+      }
+      return `${JSON.stringify(value)} is not a block reference as Dispatch writes one: dispatch://<ISSUE>/spec#b-<id>, or dispatch://<ISSUE or PROJECT>/artifact/<slug>#b-<id>, the id percent-encoded in upper-case hex except ASCII letters, digits and -, optionally pinned @v<N>${declaredItems(items)}`;
     }
     if (seen.has(value)) {
       return `names ${JSON.stringify(value)} twice`;
@@ -280,10 +438,13 @@ const atIdBound = `dispatch://CORE-1/spec#b-${"x".repeat(MAX_BLOCK_ID_BYTES)}`;
 
 /**
  * Every value a `block[]` attribute may hold (`ok`) or not, and why; `problem`, where a row has
- * one, is a part of the reason both parsers must give for refusing it.
+ * one, is a part of the reason both parsers must give for refusing it. `items`, where a row has
+ * them, are the item kinds the attribute declares; a row naming none is read under an attribute
+ * that declares none.
  */
 export const DISPATCH_BLOCK_POINTER_VALUES: readonly {
   value: string;
+  items?: readonly BlockItemKind[];
   ok: boolean;
   why: string;
   problem?: string;
@@ -453,6 +614,195 @@ export const DISPATCH_BLOCK_POINTER_VALUES: readonly {
     ok: false,
     why: "a document's block, then an issue message's",
     problem: "is a block of a message: a block[] attribute points only at a block of a document",
+  },
+  {
+    value: "dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111#b-b2",
+    items: ["ask", "comment", "message"],
+    ok: true,
+    why: "a block of an issue's comment, where a parent is written",
+  },
+  {
+    value: "dispatch://CORE-1/message/33333333-3333-4333-8333-333333333333#b-b2",
+    items: ["ask", "comment", "message"],
+    ok: true,
+    why: "a block of an issue message, where a parent is written",
+  },
+  {
+    value: "dispatch://CORE-1/ask/22222222-2222-4222-8222-222222222222#b-b2",
+    items: ["ask", "comment", "message"],
+    ok: true,
+    why: "a part of an issue's ask, where a parent is written",
+  },
+  {
+    value: "dispatch://CORE-1/comment/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f#b-d%C3%A9cision%3A1",
+    items: ["comment"],
+    ok: true,
+    why: "a comment's block with a Unicode id, under an attribute declaring comments",
+  },
+  {
+    value: "dispatch://CORE-1/spec#b-x",
+    items: ["ask", "comment", "message"],
+    ok: true,
+    why: "a block of a document, where a parent is written",
+  },
+  {
+    value: "dispatch://CORE-1/message/33333333-3333-4333-8333-333333333333#b-b2",
+    items: ["comment"],
+    ok: false,
+    why: "a kind of item the attribute does not declare",
+    problem:
+      "is a block of a message: a block[] attribute points only at a block of a document, or an item it declares: dispatch://<ISSUE>/comment/<id>[#b-<block id>]",
+  },
+  {
+    value: "dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111#b-b2@v1",
+    items: ["ask", "comment", "message"],
+    ok: false,
+    why: "a block of a revision of an issue's comment: a parent is a place, not a quotation",
+    problem: "is not a block of a comment as Dispatch writes one",
+  },
+  {
+    value: "dispatch://CORE-1/ask/22222222-2222-4222-8222-222222222222#b-b2@v1",
+    items: ["ask", "comment", "message"],
+    ok: false,
+    why: "a part of a revision of an issue's ask",
+    problem: "is not a block of an ask as Dispatch writes one",
+  },
+  {
+    value: "dispatch://CORE-1/comment/4F1C2D3E-5A6B-4C7D-8E9F-0A1B2C3D4E5F#b-b2",
+    items: ["ask", "comment", "message"],
+    ok: false,
+    why: "an upper-case uuid",
+    problem: "is not a block of a comment as Dispatch writes one",
+  },
+  {
+    value: "dispatch://CORE-1/comment/11111111#b-b2",
+    items: ["ask", "comment", "message"],
+    ok: false,
+    why: "a prefix of a uuid",
+    problem: "is not a block of a comment as Dispatch writes one",
+  },
+  {
+    value: "dispatch://CORE/artifact/handbook-md/comment/88888888-8888-4888-8888-888888888888#b-b2",
+    items: ["ask", "comment", "message"],
+    ok: false,
+    why: "a block of a project document's comment, which holds no conversation of an issue",
+    problem: "is not a block of a comment as Dispatch writes one",
+  },
+  {
+    value: "dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111#b-%62",
+    items: ["ask", "comment", "message"],
+    ok: false,
+    why: "an over-encoded block id of a comment",
+    problem: "is not a block of a comment as Dispatch writes one",
+  },
+  {
+    value: "dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111",
+    items: ["ask", "comment", "message"],
+    ok: true,
+    why: "an issue's comment itself, where a parent is written",
+  },
+  {
+    value: "dispatch://CORE-1/ask/22222222-2222-4222-8222-222222222222",
+    items: ["ask", "comment", "message"],
+    ok: true,
+    why: "an issue's ask itself, where a parent is written",
+  },
+  {
+    value: "dispatch://CORE-1/message/33333333-3333-4333-8333-333333333333",
+    items: ["ask", "comment", "message"],
+    ok: true,
+    why: "an issue message itself, where a parent is written",
+  },
+  {
+    value: "dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111@v2",
+    items: ["ask", "comment", "message"],
+    ok: false,
+    why: "a pinned comment: a parent is a place, not a quotation",
+    problem:
+      "is not a comment as Dispatch writes one: dispatch://<ISSUE>/comment/<id>[#b-<block id>]",
+  },
+  {
+    value: "dispatch://CORE-1/ask/22222222",
+    items: ["ask", "comment", "message"],
+    ok: false,
+    why: "an ask named by a prefix of its uuid",
+    problem: "is not an ask as Dispatch writes one",
+  },
+  {
+    value: "dispatch://CORE-1/message/4F1C2D3E-5A6B-4C7D-8E9F-0A1B2C3D4E5F",
+    items: ["ask", "comment", "message"],
+    ok: false,
+    why: "a message named by an upper-case uuid",
+    problem: "is not a message as Dispatch writes one",
+  },
+  {
+    value: "dispatch://CORE/artifact/handbook-md/comment/88888888-8888-4888-8888-888888888888",
+    items: ["ask", "comment", "message"],
+    ok: false,
+    why: "a project document's comment, which is no conversation of an issue",
+    problem: "is not a comment as Dispatch writes one",
+  },
+  {
+    value: "dispatch://CORE-1/message/33333333-3333-4333-8333-333333333333",
+    items: ["comment"],
+    ok: false,
+    why: "an issue message, where an attribute declares comments alone",
+    problem:
+      "is not a block reference as Dispatch writes one: dispatch://<ISSUE>/spec#b-<id>, or dispatch://<ISSUE or PROJECT>/artifact/<slug>#b-<id>, the id percent-encoded in upper-case hex except ASCII letters, digits and -, optionally pinned @v<N>, or an item it declares: dispatch://<ISSUE>/comment/<id>[#b-<block id>]",
+  },
+  {
+    value: "dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111",
+    ok: false,
+    why: "an issue's comment, where an attribute declares no item",
+    problem: "is not a block reference as Dispatch writes one",
+  },
+  {
+    value:
+      "dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111#b-b2 dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111#b-b2",
+    items: ["ask", "comment", "message"],
+    ok: false,
+    why: "a repeated block of a comment",
+    problem: "twice",
+  },
+  {
+    value: "dispatch://CORE-2",
+    items: ["issue"],
+    ok: true,
+    why: "an issue, where a needs names one",
+  },
+  {
+    value: "dispatch://CORE-1/spec#b-x dispatch://CORE-2",
+    items: ["issue"],
+    ok: true,
+    why: "a plan task and an issue, where a needs names both",
+  },
+  {
+    value: "dispatch://CORE-2",
+    ok: false,
+    why: "an issue, where an attribute declares none",
+    problem: "is not a block reference as Dispatch writes one",
+  },
+  {
+    value: "dispatch://CORE-2/",
+    items: ["issue"],
+    ok: false,
+    why: "an issue with a trailing slash",
+    problem: "is not a block reference as Dispatch writes one",
+  },
+  {
+    value: "dispatch://CORE",
+    items: ["issue"],
+    ok: false,
+    why: "a project, not an issue",
+    problem: "or an item it declares: dispatch://<ISSUE>",
+  },
+  {
+    value: "dispatch://CORE-1/comment/11111111-1111-4111-8111-111111111111#b-b2",
+    items: ["issue"],
+    ok: false,
+    why: "a needs never names a conversation",
+    problem:
+      "is a block of a comment: a block[] attribute points only at a block of a document, or an item it declares: dispatch://<ISSUE>",
   },
 ];
 

@@ -214,13 +214,13 @@ func browserDocumentService(t *testing.T) (*docs.Service, http.Handler, *store.S
 // markdown's tree. A browser's update is not held to the checks the server's own writes run, which
 // is how a document comes to hold what no route writes, such as a malformed ask. The peer stays
 // connected for the rest of the test, as an open editor does, so the room stays resident.
-func writeBrowserDocument(t *testing.T, documentService *docs.Service, artifactID, markdown string) {
+func writeBrowserDocument(t *testing.T, handler http.Handler, documentService *docs.Service, artifactID, markdown string) {
 	t.Helper()
 	written, err := pmdoc.Parse(markdown)
 	if err != nil {
 		t.Fatalf("parse the browser's document: %v", err)
 	}
-	peer := connectBrowserPeer(t, documentService, artifactID)
+	peer := connectBrowserPeer(t, handler, documentService, artifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children = written.Children
@@ -257,7 +257,7 @@ func TestSuggestionActionsAreRefusedOnlyForAnAskAnAcceptBroke(t *testing.T) {
 			documentService, handler, database := browserDocumentService(t)
 			issue := createInteractionIssue(t, handler, "TEST", "Beside a malformed ask", test.seed)
 			if test.browser != "" {
-				writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, test.browser)
+				writeBrowserDocument(t, handler, documentService, issue.PrimaryArtifactID, test.browser)
 			}
 			anchor := map[string]any{"artifact": "spec", "quote": test.quote}
 			if test.browserInsert {
@@ -443,7 +443,7 @@ func TestSuggestionAcceptRewritesATypedBlockInPlaceBesideOtherBlocks(t *testing.
 		newAsk  = ":::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nReworded?\n:::\n"
 		newNote = ":::callout{#c1 kind=\"warning\" title=\"\"}\nReworded?\n:::\n"
 	)
-	answeredAt := regexp.MustCompile(`answered_at="[^"]*"`)
+	answeredA1 := regexp.MustCompile(`#a1 state="answered" answered_by="alice" answered_at="[^"]*" selected=\[\] answer="Go\."`)
 	inList := func(block string) string {
 		return "- Lead.\n\n  " + strings.ReplaceAll(strings.TrimSuffix(block, "\n"), "\n", "\n  ") + "\n"
 	}
@@ -454,26 +454,26 @@ func TestSuggestionAcceptRewritesATypedBlockInPlaceBesideOtherBlocks(t *testing.
 		name, spec, replaceWith, want string
 		answered                      bool
 	}{
-		{name: "an ask and a paragraph after it", spec: "Intro.\n\n" + ask, replaceWith: newAsk + "\nTail.\n", want: "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nReworded?\n:::\n\nTail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
-		{name: "an ask in a list item and a paragraph after it", spec: inList(ask), replaceWith: newAsk + "\nTail.\n", want: "- Lead.\n\n  :::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\n  Reworded?\n  :::\n\n  Tail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
-		{name: "an ask in a quote and a paragraph after it", spec: inQuote(ask), replaceWith: newAsk + "\nTail.\n", want: "> :::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\n> Reworded?\n> :::\n>\n> Tail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
-		{name: "an answered ask and a paragraph after it", spec: "Intro.\n\n" + ask, replaceWith: newAsk + "\nTail.\n", answered: true, want: "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"<t>\" selected=\"[]\" answer=\"Go.\"}\nWhich one?\n:::\n\nTail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
-		{name: "an answered ask in a list item and a paragraph after it", spec: inList(ask), replaceWith: newAsk + "\nTail.\n", answered: true, want: "- Lead.\n\n  :::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"<t>\" selected=\"[]\" answer=\"Go.\"}\n  Which one?\n  :::\n\n  Tail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
-		{name: "an answered ask in a quote and a paragraph after it", spec: inQuote(ask), replaceWith: newAsk + "\nTail.\n", answered: true, want: "> :::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"<t>\" selected=\"[]\" answer=\"Go.\"}\n> Which one?\n> :::\n>\n> Tail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
-		{name: "a callout and a paragraph after it", spec: "Intro.\n\n" + callout, replaceWith: newNote + "\nTail.\n", want: "Intro.\n\n:::callout{#c1 kind=\"warning\" title=\"\"}\nReworded?\n:::\n\nTail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
-		{name: "a callout in a list item and a paragraph after it", spec: inList(callout), replaceWith: newNote + "\nTail.\n", want: "- Lead.\n\n  :::callout{#c1 kind=\"warning\" title=\"\"}\n  Reworded?\n  :::\n\n  Tail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
-		{name: "a callout in a quote and a paragraph after it", spec: inQuote(callout), replaceWith: newNote + "\nTail.\n", want: "> :::callout{#c1 kind=\"warning\" title=\"\"}\n> Reworded?\n> :::\n>\n> Tail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
-		{name: "an ask and a paragraph before it", spec: "Intro.\n\n" + ask, replaceWith: "Lead.\n\n" + newAsk, want: "Intro.\n\nLead.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nReworded?\n:::\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
-		{name: "an ask and a list after it", spec: "Intro.\n\n" + ask, replaceWith: newAsk + "\n- x\n- y\n", want: "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nReworded?\n:::\n\n- x\n- y\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
-		{name: "an ask and a heading after it", spec: "Intro.\n\n" + ask, replaceWith: newAsk + "\n# Heading\n", want: "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nReworded?\n:::\n\n# Heading\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
+		{name: "an ask and a paragraph after it", spec: "Intro.\n\n" + ask, replaceWith: newAsk + "\nTail.\n", want: "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\"}\nReworded?\n:::\n\nTail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
+		{name: "an ask in a list item and a paragraph after it", spec: inList(ask), replaceWith: newAsk + "\nTail.\n", want: "- Lead.\n\n  :::ask{#a1 urgency=\"med\" multiple=\"false\"}\n  Reworded?\n  :::\n\n  Tail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
+		{name: "an ask in a quote and a paragraph after it", spec: inQuote(ask), replaceWith: newAsk + "\nTail.\n", want: "> :::ask{#a1 urgency=\"med\" multiple=\"false\"}\n> Reworded?\n> :::\n>\n> Tail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
+		{name: "an answered ask and a paragraph after it", spec: "Intro.\n\n" + ask, replaceWith: newAsk + "\nTail.\n", answered: true, want: "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich one?\n:::\n\nTail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
+		{name: "an answered ask in a list item and a paragraph after it", spec: inList(ask), replaceWith: newAsk + "\nTail.\n", answered: true, want: "- Lead.\n\n  :::ask{#a1 urgency=\"med\" multiple=\"false\"}\n  Which one?\n  :::\n\n  Tail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
+		{name: "an answered ask in a quote and a paragraph after it", spec: inQuote(ask), replaceWith: newAsk + "\nTail.\n", answered: true, want: "> :::ask{#a1 urgency=\"med\" multiple=\"false\"}\n> Which one?\n> :::\n>\n> Tail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
+		{name: "a callout and a paragraph after it", spec: "Intro.\n\n" + callout, replaceWith: newNote + "\nTail.\n", want: "Intro.\n\n:::callout{#c1 kind=\"warning\" title=\"\"}\nReworded?\n:::\n\nTail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
+		{name: "a callout in a list item and a paragraph after it", spec: inList(callout), replaceWith: newNote + "\nTail.\n", want: "- Lead.\n\n  :::callout{#c1 kind=\"warning\" title=\"\"}\n  Reworded?\n  :::\n\n  Tail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
+		{name: "a callout in a quote and a paragraph after it", spec: inQuote(callout), replaceWith: newNote + "\nTail.\n", want: "> :::callout{#c1 kind=\"warning\" title=\"\"}\n> Reworded?\n> :::\n>\n> Tail.\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
+		{name: "an ask and a paragraph before it", spec: "Intro.\n\n" + ask, replaceWith: "Lead.\n\n" + newAsk, want: "Intro.\n\nLead.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\"}\nReworded?\n:::\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
+		{name: "an ask and a list after it", spec: "Intro.\n\n" + ask, replaceWith: newAsk + "\n- x\n- y\n", want: "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\"}\nReworded?\n:::\n\n- x\n- y\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
+		{name: "an ask and a heading after it", spec: "Intro.\n\n" + ask, replaceWith: newAsk + "\n# Heading\n", want: "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\"}\nReworded?\n:::\n\n# Heading\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
 		{name: "an ask and another ask after it", spec: "Intro.\n\n" + ask,
-			replaceWith: newAsk + "\n:::ask{#a2 urgency=\"med\" multiple=\"false\" state=\"open\"}\nOther?\n:::\n", want: "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nReworded?\n:::\n\n:::ask{#a2 urgency=\"med\" multiple=\"false\" state=\"open\"}\nOther?\n:::\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
+			replaceWith: newAsk + "\n:::ask{#a2 urgency=\"med\" multiple=\"false\" state=\"open\"}\nOther?\n:::\n", want: "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\"}\nReworded?\n:::\n\n:::ask{#a2 urgency=\"med\" multiple=\"false\"}\nOther?\n:::\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
 		{name: "a callout rewritten inside a blockquote", spec: "Intro.\n\n" + callout,
-			replaceWith: "> " + strings.ReplaceAll(strings.TrimSuffix(newNote, "\n"), "\n", "\n> ") + "\n", want: "Intro.\n\n> :::callout{#c1 kind=\"warning\" title=\"\"}\n> Reworded?\n> :::\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
+			replaceWith: "> " + strings.ReplaceAll(strings.TrimSuffix(newNote, "\n"), "\n", "\n> ") + "\n", want: "Intro.\n\n> :::callout{#c1 kind=\"warning\" title=\"\"}\n> Reworded?\n> :::\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
 		{name: "an ask rewritten inside a list item", spec: "Intro.\n\n" + ask,
-			replaceWith: "- item\n\n  " + strings.ReplaceAll(strings.TrimSuffix(newAsk, "\n"), "\n", "\n  ") + "\n", want: "Intro.\n\n- item\n\n  :::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\n  Reworded?\n  :::\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
+			replaceWith: "- item\n\n  " + strings.ReplaceAll(strings.TrimSuffix(newAsk, "\n"), "\n", "\n  ") + "\n", want: "Intro.\n\n- item\n\n  :::ask{#a1 urgency=\"med\" multiple=\"false\"}\n  Reworded?\n  :::\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
 		{name: "an ask rewritten inside a callout under another id", spec: "Intro.\n\n" + ask,
-			replaceWith: ":::callout{#c9 kind=\"note\" title=\"\"}\n" + newAsk, want: "Intro.\n\n::::callout{#c9 kind=\"note\" title=\"\"}\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nReworded?\n:::\n::::\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\" state=\"open\"}\nMarker after-accept?\n:::\n"},
+			replaceWith: ":::callout{#c9 kind=\"note\" title=\"\"}\n" + newAsk, want: "Intro.\n\n::::callout{#c9 kind=\"note\" title=\"\"}\n:::ask{#a1 urgency=\"med\" multiple=\"false\"}\nReworded?\n:::\n::::\n\n:::ask{#after-accept urgency=\"low\" multiple=\"false\"}\nMarker after-accept?\n:::\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			handler, _ := blockAskHandler(t)
@@ -508,9 +508,11 @@ func TestSuggestionAcceptRewritesATypedBlockInPlaceBesideOtherBlocks(t *testing.
 				t.Fatalf("accept: status=%d body=%s", accepted.Code, accepted.Body.String())
 			}
 			settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-accept")
-			got := answeredAt.ReplaceAllString(documentMarkdown(t, handler, issue.PrimaryArtifactID), `answered_at="<t>"`)
-			if got != test.want {
+			if got := documentMarkdown(t, handler, issue.PrimaryArtifactID); got != test.want {
 				t.Fatalf("document after the accept = %q, want %q", got, test.want)
+			}
+			if shown := agentText(t, handler, issue.PrimaryArtifactID); test.answered && !answeredA1.MatchString(shown) {
+				t.Fatalf("the answered ask after the accept reads in the text's asks:\n%s\nwant it answered by alice with Go.", shown)
 			}
 			wantQuestion := "Reworded?"
 			if test.answered {
@@ -617,7 +619,7 @@ func TestSuggestionAcceptRefusals(t *testing.T) {
 			documentService, handler, _ := browserDocumentService(t)
 			issue := createInteractionIssue(t, handler, "TEST", "A refused accept", test.spec)
 			if test.browser != "" {
-				writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, test.browser)
+				writeBrowserDocument(t, handler, documentService, issue.PrimaryArtifactID, test.browser)
 			}
 			before, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
 			if err != nil {

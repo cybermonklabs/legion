@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The four rules a `check` block carrying `ci_check` keeps, in the order CICheckRuleIn reads them.
@@ -85,14 +86,22 @@ func CICheckRule(check CheckAttributes) string {
 // (the pool, or the transaction of the write that asks) only when the other three leave that to
 // decide. Every reader of the rules that has no results loaded comes here: a document write's
 // refusal (refuseCICheckBlocks), settlement's repair of what a browser leaves
-// (reconcileCICheckBlocks) and the refusal of a result against a check CI proves.
+// (reconcileCICheckBlocks) and the refusal of a result against a check CI proves. artifactID is
+// the document that holds the check, or the issue room a settlement reads, whose documents'
+// results are the room's: block ids are unique across a room. A result's row is keyed by the
+// artifact its check's block row is keyed by, the room's tree artifact for a document of an issue
+// room and the document itself otherwise (check_results.check_artifact_id), and a row an earlier
+// release wrote is keyed by the document; so a document's results are read through its room
+// (refs.CheckResultsOfDocumentSQL), and a room's are its own rows and its documents'.
 func CICheckRuleIn(ctx context.Context, q Queryer, artifactID, blockID string, check CheckAttributes) (string, error) {
 	if rule := CICheckRule(check); rule != "" {
 		return rule, nil
 	}
 	var recorded bool
 	if err := q.QueryRow(ctx, `
-		select exists(select 1 from check_results where check_artifact_id = $1::uuid and check_block_id = $2)
+		select exists(select 1 from check_results result
+			where result.check_block_id = $2 and (`+refs.CheckResultsOfDocumentSQL("result", "$1::uuid")+`
+				or result.check_artifact_id in (select moved.artifact_id from document_rooms moved where moved.room = $1::uuid)))
 	`, artifactID, blockID).Scan(&recorded); err != nil {
 		return "", fmt.Errorf("read whether check %s of document %s holds a result: %w", blockID, artifactID, err)
 	}

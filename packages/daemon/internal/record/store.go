@@ -1038,6 +1038,11 @@ func (s *Postgres) UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, KeptApproval{}, fmt.Errorf("read the approval kept for %s: %w", tree, err)
 	}
+	// A pair an earlier release kept of its `decisions` step names a document no step of this
+	// release records, so no task names it; the row stays as GatesOf leaves that step's rows.
+	if err == nil && !approval.Step.Valid() {
+		approval = KeptApproval{} // kept for one release: design-gate-rows
+	}
 	return decisions, approval, nil
 }
 
@@ -1700,6 +1705,12 @@ func scanGate(row scanner) (DesignGate, error) {
 }
 
 // GatesOf is every gate issue holds, by step. An issue with no gate gives an empty map.
+//
+// A row of a step that is not one of DesignSteps is left out here, and in Gates and
+// GatesForArtifact: the `decisions` rows an earlier release wrote stay in the table, which still
+// admits that step, and no reader of this release is handed one, so none acts on it, writes it
+// again or publishes it to Dispatch (GateDocuments). Nothing of this release deletes such a row
+// either, but for the clear of a re-admitted tree's whole generation (clearGates).
 func (s *Postgres) GatesOf(ctx context.Context, tx pgx.Tx, issue string) (map[DesignStep]DesignGate, error) {
 	rows, err := tx.Query(ctx, `select `+gateColumns+` from design_gates where issue = $1 order by step`, issue)
 	if err != nil {
@@ -1711,6 +1722,9 @@ func (s *Postgres) GatesOf(ctx context.Context, tx pgx.Tx, issue string) (map[De
 		gate, err := scanGate(rows)
 		if err != nil {
 			return nil, fmt.Errorf("read design gates for %s: %w", issue, err)
+		}
+		if !gate.Step.Valid() {
+			continue // kept for one release: design-gate-rows
 		}
 		gates[gate.Step] = gate
 	}
@@ -1736,6 +1750,9 @@ func (s *Postgres) Gates(ctx context.Context, tx pgx.Tx, issues []string) (map[s
 		gate, err := scanGate(rows)
 		if err != nil {
 			return nil, fmt.Errorf("read the design gates of %d issues: %w", len(issues), err)
+		}
+		if !gate.Step.Valid() {
+			continue // kept for one release: design-gate-rows
 		}
 		if gates[gate.Issue] == nil {
 			gates[gate.Issue] = map[DesignStep]DesignGate{}
@@ -1785,6 +1802,9 @@ func (s *Postgres) GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID s
 		gate, err := scanGate(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan design gate for artifact %s: %w", artifactID, err)
+		}
+		if !gate.Step.Valid() {
+			continue // kept for one release: design-gate-rows
 		}
 		gates = append(gates, gate)
 	}

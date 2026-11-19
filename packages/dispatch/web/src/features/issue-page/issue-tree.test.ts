@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { parseBlockPointerValue } from "@legion/contracts";
 
 import type {
   Artifact,
@@ -22,26 +23,33 @@ import type {
   ReferenceTarget,
   RequirementCoverage,
 } from "../../api/types";
+import { compareTimestamps } from "../../lib/timestamps";
 import { askResolutionBadge } from "../refs/actor";
+import { parseNodeReference } from "../refs/routes";
+import { agentsOnlyIds } from "./agents-only";
 import { agentsOnlyItem } from "./issue-address";
 import {
   buildIssueTree,
+  type DocumentBlocks,
   drawnLine,
   FIRST_LINE_LIMIT,
   firstBlockWordsRaw,
   firstLineOf,
+  type IssueTreeReads,
   lineWords,
   lineWordsRaw,
   nodeWords,
+  type TreeAsk,
   type TreeNode,
   targetNaming,
 } from "./issue-tree";
-import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
+import { NODE_TYPE_NAMES, NODE_TYPES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "./row-references";
 import {
   addressesAsShortForms,
   blockNodeId,
+  blockWords,
   checkStanding,
   nodeIdOf,
   plainWords,
@@ -50,6 +58,7 @@ import {
 } from "./tree-drafts";
 import { treeRows } from "./tree-fold";
 import { nodesInOrder } from "./tree-keys";
+import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read/tree-read";
 import {
   statementCounts,
   statementStandings,
@@ -60,10 +69,10 @@ import {
  * The tree model, read as the page reads it: one call with the page's reads in and the issue's
  * root node out.
  *
- * The `from` edge the placements are read from is not in today's block schema - a `requirement`
- * declares no attributes at all - so the tests that prove the placement hand the model a block
- * carrying one, which is exactly the shape the chain read will answer: the day it lands the reads
- * change and this module does not.
+ * The outline is drawn from the tree read, so each case writes its issue as the reads the
+ * outline was drawn from before it - the documents' blocks, the asks, the comments, the
+ * messages, the children - and `answered` writes the answer the tree read gives for that issue,
+ * which is what the model is handed.
  */
 
 const KEY = "CORE-1";
@@ -294,12 +303,16 @@ function decisions(made: readonly Decision[]): IssueDecisions {
   return {
     decisions: [...made],
     document: `dispatch://${KEY}/artifact/decisions-md`,
+    entries: [],
     open_questions: [],
   };
 }
 
 /** A link of decision `d1`'s to `ref`, which is a chip of the decision's and places nothing. */
-function linkTo(ref: string, kind: string): NonNullable<Decision["links"]>[number] {
+function linkTo(
+  ref: string,
+  kind: NonNullable<Decision["links"]>[number]["to"]["kind"]
+): NonNullable<Decision["links"]>[number] {
   return {
     created_at: "2026-11-05T00:00:00Z",
     created_version: 1,
@@ -413,12 +426,319 @@ function thread(id: string, createdAt: string): MessageRead {
   return { message, replies: [] };
 }
 
+/** A case's issue as the earlier reads hold it, with what the tree read answers beside them. */
+interface Fixture extends IssueTreeReads {
+  /** The blocks of each document of the issue, whose typed blocks the tree read answers. */
+  readonly documents?: readonly DocumentBlocks[];
+  /** The issue's messages with their replies, each of which the tree read answers as a node. */
+  readonly messages?: readonly MessageRead[];
+  /** Nodes the case adds to the answer as they stand, a decision node among them. */
+  readonly nodes?: readonly TreeAnswerNode[];
+  /** The parent the read answers for a typed block, by its id, where the case gives it one. */
+  readonly parents?: Readonly<Record<string, string>>;
+}
+
+/** One node of the answer, with no words, author or attribute unless the case gives one. */
+function answerNode(
+  id: string,
+  supertag: string,
+  parent: string | null,
+  extra: Partial<TreeAnswerNode> = {}
+): TreeAnswerNode {
+  return {
+    attributes: {},
+    author: [],
+    id,
+    made_at: "2026-11-05T00:00:00Z",
+    parent,
+    rank: null,
+    state: "live",
+    supertag,
+    text: "",
+    visibility: "project",
+    ...extra,
+  };
+}
+
+/** A node of the answer being written, with its place among its siblings: the place the outline
+ *  drew it in, for a node the read ranks, and none for an ask, a comment or a message, which the
+ *  read orders after its ranked siblings by when it was made and then by id. */
+interface Written {
+  readonly node: TreeAnswerNode;
+  readonly place?: number;
+}
+
+/** The read's order of two siblings: ranked ones by their place, then by id; a ranked one before
+ *  one with no rank; and two with none by when each was made, then by id. */
+function siblingOrder(one: Written, other: Written): number {
+  if (one.place !== undefined && other.place !== undefined) {
+    return one.place - other.place || one.node.id.localeCompare(other.node.id);
+  }
+  if (one.place !== undefined) return -1;
+  if (other.place !== undefined) return 1;
+  return (
+    compareTimestamps(one.node.made_at, other.node.made_at) ||
+    one.node.id.localeCompare(other.node.id)
+  );
+}
+
+/**
+ * The case's reads with the answer the tree read gives for its issue: each typed block of its
+ * documents once, with its `document` and the attributes its block carries, under the parent the
+ * read answers it - a check or a plan task under the first
+ * requirement its `serves` names, every other block under the issue unless the case gives it
+ * another (`Fixture.parents`) - and a requirement the coverage read holds and a check the results
+ * read holds with their words, each result under its check, the children, the asks, a reply
+ * under its head, an ask's thread under the ask, a comment anchored inside a typed block under
+ * that block, and every thread a person wrote in, a thread only agents wrote in being no node
+ * (`agents-only.ts`). A decision of the decisions read is no node of it: a section of
+ * `decisions.md`. Each block pointer is a tuple, to the node it names where the answer holds it,
+ * and to its address where not or where it pins a version of that node, which is no node of the
+ * answer. Ranks are the read's, which a case does not state, so ranked siblings stand in the
+ * order the outline drew them - each document's blocks in turn, the spec's first, then the
+ * statements the coverage read holds, then the children - and the rest after them by time, then
+ * id, as the read orders them.
+ */
+function answered(fixture: Fixture): IssueTreeReads {
+  const { documents, messages, nodes: added, parents: given, ...reads } = fixture;
+  const issue = reads.issue;
+  const key = issue.key;
+  const { nodeIdOf, slugOf, specSlug } = treeContext({ issue }, () => "");
+  const spec = (issue.artifacts ?? []).find((one) => one.slug === specSlug);
+  const ranks = new Map(
+    (issue.artifacts ?? []).map((one, index) => [one.id, one.id === spec?.id ? 0 : index + 1])
+  );
+  const targets = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
+  const statements = reads.coverage?.requirements ?? [];
+  const results = reads.results?.checks ?? [];
+  const asks = new Map<string, TreeAsk>();
+  for (const ask of [...(issue.open_asks ?? []), ...(reads.asks ?? [])]) asks.set(ask.id, ask);
+  const askSlug = (ask: TreeAsk): string | undefined =>
+    ask.block_artifact?.slug ?? slugOf(ask.artifact_id ?? "");
+  const written: Written[] = [];
+  /** The read id of each node a pointer can name, by the outline's id for it. */
+  const byId = new Map<string, string>();
+  const pointers: { from: string; name: string; refs: readonly string[] }[] = [];
+  const types: readonly string[] = NODE_TYPES;
+  const asBlock = new Map<string, string>();
+  for (const document of documents ?? []) {
+    const slug = slugOf(document.artifactId);
+    if (slug === undefined) continue;
+    const rank = ranks.get(document.artifactId) ?? 0;
+    document.blocks.forEach((block, position) => {
+      if (!types.includes(block.type) || block.type === "decision") return;
+      const target = targets.get(`dispatch://${key}/artifact/${slug}#b-${block.id}`);
+      const stored = target === undefined || target.gone ? "" : blockWords(target.name);
+      const at = statements.findIndex((one) => slug === specSlug && one.block_id === block.id);
+      const statement = block.type === "requirement" ? statements[at] : undefined;
+      const check = results.find(
+        (one) => one.artifact_id === document.artifactId && one.block_id === block.id
+      );
+      const ask = [...asks.values()].find(
+        (one) => block.type === "ask" && one.block_id === block.id && askSlug(one) === slug
+      );
+      if (ask !== undefined) asBlock.set(ask.id, block.id);
+      const words =
+        ask !== undefined
+          ? { text: ask.question, tree: ask.question_tree }
+          : {
+              text: statement?.text ?? (block.type === "check" ? check?.text : undefined) ?? stored,
+              tree:
+                statement?.text_tree ??
+                (block.type === "check" ? check?.text_tree : undefined) ??
+                target?.text_tree,
+            };
+      const attributes: Record<string, string> = {};
+      for (const attribute of block.attributes ?? []) {
+        attributes[attribute.name] = attribute.value;
+        if (attribute.kind === "block[]") {
+          pointers.push({
+            from: block.id,
+            name: attribute.name,
+            refs: parseBlockPointerValue(attribute.value) ?? [],
+          });
+        }
+      }
+      written.push({
+        node: answerNode(block.id, block.type, given?.[block.id] ?? key, {
+          attributes,
+          document: { artifact_id: document.artifactId, position, slug },
+          text: words.text,
+          ...(words.tree === undefined ? {} : { text_tree: words.tree }),
+          ...(ask === undefined ? {} : { author: [ask.author], made_at: ask.created_at }),
+        }),
+        place: statement === undefined ? rank + position / document.blocks.length : 2000 + at,
+      });
+      byId.set(blockNodeId(slug, block.id), block.id);
+    });
+  }
+  // A statement or a check whose block the case gave no document for is a node all the same.
+  statements.forEach((statement, at) => {
+    if (spec === undefined || byId.has(blockNodeId(specSlug, statement.block_id))) return;
+    written.push({
+      node: answerNode(statement.block_id, "requirement", key, {
+        document: { artifact_id: spec.id, position: at, slug: specSlug },
+        text: statement.text,
+        ...(statement.text_tree === undefined ? {} : { text_tree: statement.text_tree }),
+      }),
+      place: 2000 + at,
+    });
+    byId.set(blockNodeId(specSlug, statement.block_id), statement.block_id);
+  });
+  for (const check of results) {
+    const slug = slugOf(check.artifact_id);
+    if (slug === undefined || byId.has(blockNodeId(slug, check.block_id))) continue;
+    written.push({
+      node: answerNode(check.block_id, "check", key, {
+        document: { artifact_id: check.artifact_id, position: 0, slug },
+        text: check.text,
+        ...(check.text_tree === undefined ? {} : { text_tree: check.text_tree }),
+      }),
+      place: 0,
+    });
+    byId.set(blockNodeId(slug, check.block_id), check.block_id);
+  }
+  for (const check of results) {
+    (check.results ?? []).forEach((result, at) => {
+      written.push({
+        node: answerNode(result.id, "result", check.block_id, {
+          author: [result.actor],
+          made_at: result.created_at,
+          text: result.observed,
+        }),
+        place: at,
+      });
+    });
+  }
+  const children = issue.children ?? [];
+  children.forEach((child, at) => {
+    written.push({
+      node: answerNode(child.key, "issue", key, { text: child.title }),
+      place: 3000 + at / children.length,
+    });
+  });
+  for (const ask of asks.values()) {
+    if (asBlock.has(ask.id)) continue;
+    written.push({
+      node: answerNode(ask.id, "ask", key, {
+        author: [ask.author],
+        made_at: ask.created_at,
+        text: ask.question,
+        ...(ask.question_tree === undefined ? {} : { text_tree: ask.question_tree }),
+      }),
+    });
+  }
+  for (const node of added ?? []) written.push({ node });
+  const history = agentsOnlyIds(reads.comments, messages, [...asks.values()]);
+  const blocks = new Map(
+    written.flatMap(({ node }) => (node.document === undefined ? [] : [[node.id, node]]))
+  );
+  for (const comment of reads.comments ?? []) {
+    if (history.has(comment.id)) continue;
+    const anchored = comment.anchor?.block_id ? blocks.get(comment.anchor.block_id) : undefined;
+    const parent =
+      comment.answers ??
+      comment.reply_to ??
+      (comment.ask_id === null ? undefined : (asBlock.get(comment.ask_id) ?? comment.ask_id)) ??
+      (anchored?.document?.artifact_id === comment.anchor?.artifact_id ? anchored?.id : undefined);
+    written.push({
+      node: answerNode(comment.id, "comment", parent ?? key, {
+        author: [comment.author],
+        made_at: comment.created_at,
+        text: comment.body,
+        ...(comment.body_tree === undefined ? {} : { text_tree: comment.body_tree }),
+      }),
+    });
+  }
+  for (const message of (messages ?? []).flatMap((one) => [one.message, ...(one.replies ?? [])])) {
+    if (history.has(message.id)) continue;
+    written.push({
+      node: answerNode(message.id, "message", message.in_reply_to ?? key, {
+        author: [message.author],
+        made_at: message.created_at,
+        text: message.body,
+        ...(message.body_tree === undefined ? {} : { text_tree: message.body_tree }),
+      }),
+    });
+  }
+  // The read answers each node once, by its own id, so a case whose ids meet is no answer.
+  const held = new Map(written.map((one) => [one.node.id, one]));
+  if (held.size !== written.length) throw new Error("the answer holds two nodes of one id");
+  // A check or a plan task stands under the first requirement its `serves` names.
+  const placed = written.map((one): Written => {
+    const node = one.node;
+    if (node.supertag !== "check" && node.supertag !== "plan_task") return one;
+    if (given?.[node.id] !== undefined) return one;
+    const served = pointers
+      .filter((pointer) => pointer.from === node.id && pointer.name === "serves")
+      .flatMap((pointer) => pointer.refs)
+      .map((ref) => byId.get(nodeIdOf(ref) ?? ""))
+      .find((id) => {
+        const target = id === undefined ? undefined : held.get(id)?.node;
+        return target?.supertag === "requirement" && target.document?.slug === specSlug;
+      });
+    return served === undefined ? one : { ...one, node: { ...node, parent: served } };
+  });
+  // A parent the answer does not hold is no parent: the read answers the issue at worst.
+  const ids = new Set([key, ...placed.map((one) => one.node.id)]);
+  const below = new Map<string, Written[]>();
+  for (const one of placed) {
+    const parent = one.node.parent !== null && ids.has(one.node.parent) ? one.node.parent : key;
+    below.set(parent, [...(below.get(parent) ?? []), { ...one, node: { ...one.node, parent } }]);
+  }
+  const walk: TreeAnswerNode[] = [answerNode(key, "issue", null, { text: issue.title })];
+  const visit = (id: string): void => {
+    const siblings = [...(below.get(id) ?? [])].sort(siblingOrder);
+    siblings.forEach((one, at) => {
+      walk.push({
+        ...one.node,
+        rank: one.place === undefined ? null : String(at).padStart(4, "0"),
+      });
+      visit(one.node.id);
+    });
+  };
+  visit(key);
+  const pinned = (ref: string): boolean => {
+    const route = parseNodeReference(ref);
+    return (
+      route !== undefined &&
+      (("block" in route && route.block?.pin !== undefined) ||
+        ("version" in route && route.version !== undefined))
+    );
+  };
+  const tuples: TreeTuple[] = pointers.flatMap((pointer) =>
+    pointer.refs.map((ref) => ({
+      from: pointer.from,
+      kind: pointer.name,
+      to: (pinned(ref) ? undefined : byId.get(nodeIdOf(ref) ?? "")) ?? ref,
+    }))
+  );
+  const tree: TreeAnswer = {
+    converted: false,
+    cursor: null,
+    nodes: walk,
+    tree: null,
+    tuples,
+    view_of: null,
+  };
+  return { ...reads, tree };
+}
+
+/** The issue's tree as `buildIssueTree` draws it from the case's reads and the tree read's
+ *  answer for them (`answered`). */
+function treeOf(fixture: Fixture): TreeNode {
+  return buildIssueTree(answered(fixture));
+}
+
+/** `treeOf`, for a case whose own names hide it. */
+const treeFrom = treeOf;
+
 // R4: a check serves every requirement its `serves` names, edited under the first and
 // transcluded under the rest, and each placement names the other requirement it sits under.
 test("a check that serves two requirements is drawn under both", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
-  const root = buildIssueTree({
+  const root = treeOf({
     coverage: coverage([requirement("r1", "The first."), requirement("r2", "The second.")]),
     documents: [
       { artifactId: spec.id, blocks: [block("r1", "requirement"), block("r2", "requirement")] },
@@ -464,7 +784,7 @@ test("a check that serves two requirements is drawn under both", () => {
 test("a requirement no decision shaped sits under the issue as a node nothing explains", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
-  const root = buildIssueTree({
+  const root = treeOf({
     coverage: coverage([requirement("r1", "Nothing explains this.", ["r1 has no check"])]),
     decisions: decisions([decision("d1", "Shapes nothing.", [])]),
     documents: [{ artifactId: spec.id, blocks: [block("r1", "requirement")] }],
@@ -482,7 +802,7 @@ test("a requirement no decision shaped sits under the issue as a node nothing ex
 test("a decision the model marks unsure is marked so, and one it does not is not", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
-  const root = buildIssueTree({
+  const root = treeOf({
     decisions: decisions([
       { ...decision("d1", "Fold to the frontier.", []), unsure: true },
       decision("d2", "Name every state.", []),
@@ -494,79 +814,13 @@ test("a decision the model marks unsure is marked so, and one it does not is not
   expect(nodeOf(root, blockNodeId("decisions-md", "d2"))?.unsure).toBeUndefined();
 });
 
-// R4: where a requirement's `from` and a decision's `shaped` disagree, the page places the
-// requirement by its `from` and draws the disagreement as a gap, never under the decision.
-test("a `from` and a `shaped` that disagree place by `from` and draw the gap", () => {
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
-  const root = buildIssueTree({
-    coverage: coverage([
-      requirement("r-origin", "The requirement the other one came from."),
-      requirement("r-shaped", "The requirement the decision claims."),
-    ]),
-    decisions: decisions([decision("d1", "Shapes the second.", ["r-shaped"])]),
-    documents: [
-      {
-        artifactId: spec.id,
-        blocks: [
-          block("r-origin", "requirement"),
-          block("r-shaped", "requirement", { from: `dispatch://${KEY}/spec#b-r-origin` }),
-        ],
-      },
-      { artifactId: made.id, blocks: [block("d1", "decision")] },
-    ],
-    issue: issueDetails([spec, made]),
-  });
-
-  expect(placementsOf(root, blockNodeId(SPEC, "r-shaped")).map((one) => one.parent)).toEqual([
-    blockNodeId(SPEC, "r-origin"),
-  ]);
-  expect(nodeOf(root, blockNodeId(SPEC, "r-shaped"))?.gaps).toEqual(["shaped_disagreement"]);
-  // The decision names what it says it shaped, as a chip, and places nothing by it.
-  expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.chips.map((chip) => chip.ref)).toEqual([
-    `dispatch://${KEY}/spec#b-r-shaped`,
-  ]);
-});
-
-// R4: the gap is the two edges disagreeing, and today a decision's links stand for its `shaped`
-// edge. The page drew the gap wherever a requirement had a `from` and any decision linked to it,
-// so a requirement that came from a decision and is linked by that decision drew "Sources
-// disagree" over two edges that agree. It draws the gap only where another decision links to it.
-test("a requirement linked by the decision its `from` names draws no gap; another decision does", () => {
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
-  const treeOf = (shapers: readonly Decision[]): TreeNode =>
-    buildIssueTree({
-      coverage: coverage([requirement("r1", "The requirement the first decision made.")]),
-      decisions: decisions(shapers),
-      documents: [
-        {
-          artifactId: spec.id,
-          blocks: [
-            block("r1", "requirement", { from: `dispatch://${KEY}/artifact/decisions-md#b-d1` }),
-          ],
-        },
-        { artifactId: made.id, blocks: [block("d1", "decision"), block("d2", "decision")] },
-      ],
-      issue: issueDetails([spec, made]),
-    });
-  const origin = decision("d1", "Makes the requirement.", ["r1"]);
-  const statement = blockNodeId(SPEC, "r1");
-
-  expect(nodeOf(treeOf([origin]), statement)?.gaps).toEqual([]);
-  const other = decision("d2", "Says it shaped the requirement too.", ["r1"]);
-  expect(nodeOf(treeOf([origin, other]), statement)?.gaps).toEqual(["shaped_disagreement"]);
-  // A decision is never a requirement's parent: the `from` naming one places nothing.
-  expect(placementsOf(treeOf([origin]), statement).map((one) => one.parent)).toEqual([KEY]);
-});
-
 // R4: every edge that is not the spine is a chip naming its target; a target nothing answers to
 // now is drawn as gone, with no name, rather than dropped.
 test("a pointer whose target is gone is drawn as a chip that says so", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
   const gone = `dispatch://${KEY}/artifact/plan-md#b-t0`;
-  const root = buildIssueTree({
+  const root = treeOf({
     coverage: coverage([requirement("r1", "The first.")]),
     documents: [
       { artifactId: spec.id, blocks: [block("r1", "requirement")] },
@@ -603,7 +857,7 @@ test("a chip of an ambiguous short reference says so, and a gone target's chip d
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
   const ambiguous = `dispatch://${KEY}/artifact/plan-md#b-abcd1234`;
   const gone = `dispatch://${KEY}/artifact/plan-md#b-t0`;
-  const root = buildIssueTree({
+  const root = treeOf({
     documents: [
       {
         artifactId: plan.id,
@@ -649,7 +903,7 @@ test("the page publishes an ambiguous short reference as ambiguous, and a gone t
     ] satisfies ReferenceTarget[],
   };
 
-  const naming = targetNaming(reads);
+  const naming = targetNaming(answered(reads));
   expect([...naming.ambiguous]).toEqual([ambiguous]);
   expect([...naming.names]).toEqual([[named, title]]);
 });
@@ -664,7 +918,7 @@ test("a typed block's row and a chip naming it carry its words, not its directiv
   const verification = artifact("artifact-verification", VERIFICATION, "verification.md");
   const serves = `dispatch://${KEY}/spec#b-r1`;
   const needs = `dispatch://${KEY}/artifact/plan-md#b-t0`;
-  const root = buildIssueTree({
+  const root = treeOf({
     coverage: coverage([requirement("r1", "The first.")]),
     documents: [
       { artifactId: spec.id, blocks: [block("r1", "requirement")] },
@@ -764,7 +1018,7 @@ test("a chip of a block draws the first line of its reading, and a document's ch
     ],
   };
   const build = (member: ReferenceTarget) =>
-    buildIssueTree({
+    treeOf({
       coverage: coverage([
         requirement("r1", "The first statement."),
         requirement("r2", "The second statement."),
@@ -810,7 +1064,7 @@ test("a needs chip of a block the read sent no words for is named by its kind's 
   const ruled = `dispatch://${KEY}/artifact/plan-md#b-t2`;
   const unread = `dispatch://${KEY}/artifact/plan-md#b-t3`;
   const foreign = "dispatch://CORE-2/artifact/plan-md#b-t9";
-  const root = buildIssueTree({
+  const root = treeOf({
     documents: [
       {
         artifactId: plan.id,
@@ -859,7 +1113,7 @@ test("a task needed by a pinned and an unpinned pointer is one needs chip", () =
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
   const task = (id: string): string => `dispatch://${KEY}/artifact/plan-md#b-${id}`;
-  const root = buildIssueTree({
+  const root = treeOf({
     documents: [
       {
         artifactId: plan.id,
@@ -935,7 +1189,7 @@ test("a chip naming an ask, a comment or a message draws its plain words, an iss
         { gone: false, kind: "issue", name: title, ref: issueRef },
       ],
     };
-    const chips = nodeOf(buildIssueTree(reads), blockNodeId("decisions-md", "d1"))?.chips;
+    const chips = nodeOf(treeOf(reads), blockNodeId("decisions-md", "d1"))?.chips;
     expect(
       chips?.map(({ name, ref }) => ({ name, ref })),
       kind
@@ -943,15 +1197,15 @@ test("a chip naming an ask, a comment or a message draws its plain words, an iss
       { name: "Hold the deploy until the plan lands", ref },
       { name: title, ref: issueRef },
     ]);
-    expect([...targetNaming(reads).names], kind).toEqual([
+    expect([...targetNaming(answered(reads)).names], kind).toEqual([
       [ref, "Hold the deploy until the plan lands"],
       [issueRef, title],
     ]);
   }
 });
 
-// R4, R20: the model takes any depth. Today's data reaches two levels below the issue, because
-// `document_blocks` holds no parent; a chain of `from` edges is drawn however long it is.
+// R4, R20: the model takes any depth: a chain of parents the read answers is drawn however long
+// it is.
 test("a tree of one level and a tree of six are both drawn", () => {
   const alone = buildIssueTree({ issue: issueDetails([]) });
   expect(depthOf(alone)).toBe(1);
@@ -960,19 +1214,11 @@ test("a tree of one level and a tree of six are both drawn", () => {
 
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const deep = [1, 2, 3, 4, 5];
-  const root = buildIssueTree({
+  const root = treeOf({
     coverage: coverage(deep.map((at) => requirement(`r${at}`, `Requirement ${at}.`))),
-    documents: [
-      {
-        artifactId: spec.id,
-        blocks: deep.map((at) =>
-          at === 1
-            ? block("r1", "requirement")
-            : block(`r${at}`, "requirement", { from: `dispatch://${KEY}/spec#b-r${at - 1}` })
-        ),
-      },
-    ],
+    documents: [{ artifactId: spec.id, blocks: deep.map((at) => block(`r${at}`, "requirement")) }],
     issue: issueDetails([spec]),
+    parents: Object.fromEntries(deep.slice(1).map((at) => [`r${at}`, `r${at - 1}`])),
   });
 
   expect(depthOf(root)).toBe(6);
@@ -1209,7 +1455,7 @@ test("a node's one line is cut from its first block, so a heading is never run i
     type: "doc",
   };
   const needs = `dispatch://${KEY}/artifact/plan-md#b-t0`;
-  const root = buildIssueTree({
+  const root = treeOf({
     decisions: decisions([
       { ...decision("d1", text, []), text_tree: reading },
       decision("d2", text, []),
@@ -1253,7 +1499,7 @@ test("a node's one line is cut from its first block, so a heading is never run i
 test("a node's line from a stored heading leaves out its marker once", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
-  const root = buildIssueTree({
+  const root = treeOf({
     decisions: decisions([decision("d1", "## # 1 rule\n\nbody", [])]),
     issue: issueDetails([spec, made]),
   });
@@ -1299,7 +1545,7 @@ test("an address in code stays as written in a node's line, from a reading and f
     type: "doc",
   };
   const sent = structuredClone([inline, fenced]);
-  const root = buildIssueTree({
+  const root = treeOf({
     decisions: decisions([
       { ...decision("d1", stored, []), text_tree: inline },
       {
@@ -1357,7 +1603,7 @@ test("a node's one line is cut from its first block that holds words, past a rul
     type: "doc",
   };
   const needs = `dispatch://${KEY}/artifact/plan-md#b-t0`;
-  const root = buildIssueTree({
+  const root = treeOf({
     decisions: decisions([
       { ...decision("d1", "---\n\nKeep the model pure.", []), text_tree: ruled },
       { ...decision("d2", "![diagram](shot.png)\n\nDraw it once.", []), text_tree: pictured },
@@ -1425,7 +1671,7 @@ test("a plan task written `**1\\. …**` keeps its label in its line, from its r
     ["a reading", { gone: false, kind: "block", name, ref, text_tree: reading }],
     ["no reading", { gone: false, kind: "block", name, ref }],
   ] as const) {
-    const root = buildIssueTree({
+    const root = treeOf({
       documents: [{ artifactId: plan.id, blocks: [block("t1", "plan_task")] }],
       issue: issueDetails([plan]),
       targets: [member],
@@ -1477,7 +1723,7 @@ function childIssue(key: string, title: string): IssueChild {
 // line with every address as written (`lineWordsRaw`).
 test("the line of the issue and of a child issue is its title as written, its addresses short", () => {
   for (const [title, words, raw = words] of TITLES) {
-    const root = buildIssueTree({
+    const root = treeOf({
       issue: { ...issueDetails([]), children: [childIssue("CORE-2", title)], title },
     });
     expect(lineWords(root), title).toBe(`${KEY} ${words}`);
@@ -1522,7 +1768,7 @@ test("a chip, a published name and a row's link name a child issue by the line i
         { gone: false, kind: "issue", name: head, ref: cited },
       ] satisfies ReferenceTarget[],
     };
-    const root = buildIssueTree(reads);
+    const root = treeOf(reads);
     const child = nodeOf(root, "CORE-2");
     const line = child === undefined ? "" : lineWords(child);
     expect(line, title).toBe(words);
@@ -1535,7 +1781,7 @@ test("a chip, a published name and a row's link name a child issue by the line i
       { name: line, ref: own },
       { name: line, ref: cited },
     ]);
-    const { names } = targetNaming(reads);
+    const { names } = targetNaming(answered(reads));
     expect([...names], title).toEqual([
       [own, line],
       [cited, line],
@@ -1548,17 +1794,17 @@ test("a chip, a published name and a row's link name a child issue by the line i
   }
 });
 
-// R1, R3, R4, R12: a document is a node of the issue and not of its conversation, so the tree
-// draws none; every typed block of an issue the conversion has not reached sits under the
-// issue, the spec's blocks first and each document's in its own order, and a block the model
-// places - a plan task by its `serves` - still sits where it says. A child issue is a node
-// under the issue, where the model places every child today.
-test("no document is a node, and each typed block and child sits under the issue", () => {
+// R1, R3, R4, R12: each node stands under the parent the read answers: a typed block under the
+// issue unless the read gives it another - here the notes' callout under the spec's question -
+// a plan task under the first requirement its `serves` names, and a child issue under the
+// issue. A document is a node of the issue and not of its conversation, so the tree draws none,
+// and the issue's own children stand in the read's order.
+test("each node stands under the parent the read answers", () => {
   const notes = artifact("artifact-notes", "notes-md", "notes.md");
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
   const image: Artifact = { ...artifact("artifact-image", "shot-png", "shot.png"), kind: "image" };
-  const root = buildIssueTree({
+  const root = treeOf({
     coverage: coverage([requirement("r1", "The first.")]),
     documents: [
       { artifactId: notes.id, blocks: [block("n1", "callout")] },
@@ -1590,6 +1836,7 @@ test("no document is a node, and each typed block and child sits under the issue
         },
       ],
     },
+    parents: { n1: "q1" },
   });
 
   const kinds = new Set<string>();
@@ -1607,10 +1854,12 @@ test("no document is a node, and each typed block and child sits under the issue
   expect(root.children.map((child) => child.id)).toEqual([
     blockNodeId(SPEC, "summary"),
     blockNodeId(SPEC, "q1"),
-    blockNodeId("notes-md", "n1"),
     blockNodeId("plan-md", "t2"),
     blockNodeId(SPEC, "r1"),
     "CORE-2",
+  ]);
+  expect(placementsOf(root, blockNodeId("notes-md", "n1")).map((one) => one.parent)).toEqual([
+    blockNodeId(SPEC, "q1"),
   ]);
   // Each child is a node of its own, carrying the child the issue read answered, whose row
   // draws its status, what blocks it, who holds it and its key.
@@ -1630,7 +1879,7 @@ test("the spec is the document the issue names by its id, not the one flagged pr
   const flagged = artifact("artifact-old-spec", "old-spec-md", "old-spec.md", true);
   const named = artifact("artifact-spec", SPEC, "spec.md");
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
-  const root = buildIssueTree({
+  const root = treeOf({
     coverage: coverage([requirement("r1", "The first.")]),
     documents: [
       { artifactId: flagged.id, blocks: [block("o1", "callout")] },
@@ -1667,7 +1916,7 @@ test("a requirement whose source cites a document carries its chip, whatever wor
   const notes = artifact("artifact-notes", "notes-md", "notes.md");
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const cites = `dispatch://${KEY}/artifact/notes-md`;
-  const root = buildIssueTree({
+  const root = treeOf({
     coverage: coverage([requirement("r-cites", "The measurements behind it are in")]),
     documents: [{ artifactId: spec.id, blocks: [block("r-cites", "requirement")] }],
     issue: issueDetails([notes, spec]),
@@ -1694,7 +1943,7 @@ test("a requirement whose source cites a document carries its chip, whatever wor
 test("a block whose text cites a document carries a chip that opens it", () => {
   const notes = artifact("artifact-notes", "notes-md", "notes.md");
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const root = buildIssueTree({
+  const root = treeOf({
     coverage: coverage([
       requirement("r1", `The measurements are in dispatch://${KEY}/artifact/notes-md.`),
       requirement("r2", `Read dispatch://${KEY}/spec and dispatch://${KEY}/artifact/notes-md#b-x.`),
@@ -1741,7 +1990,7 @@ test("a document chip names a part only where the issue read names that document
   const cited = ["old-spec-md", "decisions-md", "plan-md"].map(
     (slug) => `dispatch://${KEY}/artifact/${slug}`
   );
-  const root = buildIssueTree({
+  const root = treeFrom({
     comments: [
       { ...comment("c1", "2026-11-04T09:00:00Z"), body: `Read ${cited.join(", ")} first.` },
     ],
@@ -1772,7 +2021,7 @@ test("a decision sits under the ask it answers, and one that answers none under 
     block_artifact: { id: spec.id, primary: true, slug: SPEC },
     block_id: "q1",
   });
-  const root = buildIssueTree({
+  const root = treeOf({
     asks: [own, inSpec],
     decisions: decisions([
       { ...decision("d1", "Answers the issue's own question.", []), asks: ["ask-own"] },
@@ -1809,7 +2058,7 @@ test("a decision naming one question and one statement twice is drawn once, with
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
   const twice = decision("d1", "Answers one question in two paragraphs.", ["r1", "r1"]);
-  const root = buildIssueTree({
+  const root = treeOf({
     asks: [question("ask-1")],
     decisions: decisions([
       {
@@ -1829,28 +2078,6 @@ test("a decision naming one question and one statement twice is drawn once, with
   ]);
 });
 
-// R4: a decision is never a requirement's parent, whatever the requirement's own `from` names:
-// the requirement sits under the issue instead.
-test("a requirement whose `from` names a decision sits under the issue", () => {
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
-  const root = buildIssueTree({
-    coverage: coverage([requirement("r1", "The first.")]),
-    decisions: decisions([decision("d1", "Shapes nothing.", [])]),
-    documents: [
-      {
-        artifactId: spec.id,
-        blocks: [
-          block("r1", "requirement", { from: `dispatch://${KEY}/artifact/decisions-md#b-d1` }),
-        ],
-      },
-    ],
-    issue: issueDetails([spec, made]),
-  });
-
-  expect(placementsOf(root, blockNodeId(SPEC, "r1")).map((one) => one.parent)).toEqual([KEY]);
-});
-
 // A person's answer is part of the ask and no node of its own. The ask's
 // node carries it as the store holds it, who answered, what they chose and what they wrote, and
 // the ask holds no child for it.
@@ -1864,7 +2091,7 @@ test("an ask's answer is part of the ask's node and no node of its own", () => {
     },
     state: "answered",
   });
-  const root = buildIssueTree({ asks: [answered], issue: issueDetails([]) });
+  const root = treeOf({ asks: [answered], issue: issueDetails([]) });
 
   const node = nodeOf(root, "ask-1");
   expect(node?.answer).toEqual({
@@ -1888,7 +2115,7 @@ test("the issue's own node carries who opened it", () => {
 // counting from zero, so a message sent today drawn among yesterday's comments would be the
 // reader reading the conversation out of order.
 test("the conversation's turns are drawn by the time each was made", () => {
-  const root = buildIssueTree({
+  const root = treeOf({
     comments: [
       comment("c0", "2026-11-04T09:00:00Z"),
       comment("c1", "2026-11-04T10:00:00Z"),
@@ -1907,7 +2134,7 @@ test("the conversation's turns are drawn by the time each was made", () => {
 // of either kind is the outline's last row. Two questions were drawn in the order of their ids
 // before, and every question before every comment.
 test("a question of the issue is drawn among the turns, by the time it was asked", () => {
-  const root = buildIssueTree({
+  const root = treeOf({
     asks: [
       // Ids that sort against the time each was asked.
       question("z-first", { created_at: "2026-11-04T09:30:00Z" }),
@@ -1956,7 +2183,7 @@ test("an issue with more than a thousand children draws them in order, the conve
       title: `Child ${index + 1}.`,
     })
   );
-  const root = buildIssueTree({
+  const root = treeOf({
     asks: [question("a-question", { created_at: "2026-11-04T09:30:00Z" })],
     comments: [comment("c0", "2026-11-04T09:00:00Z")],
     issue: { ...issueDetails([]), children },
@@ -1979,7 +2206,7 @@ test("an open question waits on the reader only where its turn is theirs", () =>
     question("agents", { waiting_on: "agent", waiting_on_person: "alice" }),
   ];
   const waiting = (viewer: string | undefined): string[] => {
-    const root = buildIssueTree({
+    const root = treeOf({
       asks,
       issue: issueDetails([]),
       ...(viewer === undefined ? {} : { viewer }),
@@ -2264,7 +2491,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
     project: "LAY",
   };
   const treeWith = (createdAt: string): TreeNode =>
-    buildIssueTree({
+    treeOf({
       comments: [{ ...change, created_at: createdAt }],
       coverage: {
         gaps: [],
@@ -2276,6 +2503,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
       decisions: {
         decisions: [reviewed],
         document: "dispatch://LAY-2/artifact/decisions-md",
+        entries: [],
         open_questions: [],
       },
       documents: [{ artifactId: spec.id, blocks }],
@@ -2317,7 +2545,7 @@ test("every Change newer than a decision's words is drawn under it", () => {
       version: 1,
     },
   });
-  const root = buildIssueTree({
+  const root = treeOf({
     comments: [
       change("c-older", "2026-11-04T00:00:00Z"),
       change("c-first", "2026-11-06T00:00:00Z"),
@@ -2337,12 +2565,12 @@ test("every Change newer than a decision's words is drawn under it", () => {
   expect(nodeOf(root, id)).toMatchObject({ state: "change_requested", waiting: false });
 });
 
-// R3 and R7: a Change sits under the decision it was written in. The anchor names the block the
-// person wrote it in (`Anchor.block_id`), here the second decision's paragraph, and its quote is
-// words that decision holds; the first decision holds the same words too. So the quote alone
-// cannot say which decision was changed, and the Change must not land on the first decision
-// that holds them: that decision would read Change requested and leave the review list, while
-// the one the person changed would still wait on them.
+// R3: a decision node's Change is the comment the read hangs under it - a comment anchored inside
+// a decision's words hangs under that decision's node - here the second decision's, though the
+// first decision holds the same words too. So the Change lands on
+// the decision the person changed, which reads Change requested and leaves the review list,
+// and not on the first that holds its words, which still waits on them. The decisions read holds
+// both, as it holds every decision node, and draws neither a second time.
 test("a Change anchored in one decision is drawn under it, though another decision holds its words", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
@@ -2362,37 +2590,33 @@ test("a Change anchored in one decision is drawn under it, though another decisi
     ...comment("c-change", "2026-11-06T00:00:00Z"),
     anchor: {
       artifact_id: made.id,
-      block_id: "d2-words",
+      block_id: "d2",
       mark_id: "c-change",
       orphaned: false,
       quote: "Draw it once.",
       version: 1,
     },
   };
-  // The decisions document's blocks in their order, as the blocks read answers them: each
-  // decision's heading, then its paragraph.
-  const placed = (id: string, type: string, from: number, to: number): ArtifactBlock => ({
-    ...block(id, type),
-    from,
-    to,
-  });
-  const root = buildIssueTree({
+  // Each decision as the tree read answers its node: a block of the decisions document, with
+  // the members the decisions read answers for it.
+  const answeredAs = (row: Decision, position: number): TreeAnswerNode =>
+    answerNode(row.block_id, "decision", KEY, {
+      changed_at: row.changed_at,
+      document: { artifact_id: made.id, position, slug: "decisions-md" },
+      kept: row.kept,
+      links: row.links,
+      replaced: row.replaced,
+      text: row.text,
+      unsure: row.unsure,
+      waiting_review: row.waiting_review,
+    });
+  const root = treeOf({
     comments: [change],
     coverage: coverage([requirement("r1", "The first.")]),
     decisions: decisions([first, second]),
-    documents: [
-      { artifactId: spec.id, blocks: [block("r1", "requirement")] },
-      {
-        artifactId: made.id,
-        blocks: [
-          placed("d1", "heading", 0, 24),
-          placed("d1-words", "paragraph", 26, 62),
-          placed("d2", "heading", 64, 80),
-          placed("d2-words", "paragraph", 82, 96),
-        ],
-      },
-    ],
+    documents: [{ artifactId: spec.id, blocks: [block("r1", "requirement")] }],
     issue: issueDetails([spec, made]),
+    nodes: [answeredAs(first, 0), answeredAs(second, 1)],
     viewer: "alice",
   });
   const changed = blockNodeId("decisions-md", "d2");
@@ -2411,7 +2635,7 @@ test("a reply is drawn under the entry it answers", () => {
   const head = comment("c0", "2026-11-04T09:00:00Z");
   const first = { ...comment("c1", "2026-11-04T10:00:00Z"), answers: "c0", reply_to: "c0" };
   const second = { ...comment("c2", "2026-11-04T11:00:00Z"), answers: "c1", reply_to: "c0" };
-  const root = buildIssueTree({ comments: [head, first, second], issue: issueDetails([]) });
+  const root = treeOf({ comments: [head, first, second], issue: issueDetails([]) });
 
   expect(placementsOf(root, "c2").map((one) => one.parent)).toEqual(["c1"]);
   // The rest of a turn's placement is unchanged: the head sits under the issue and the first
@@ -2425,7 +2649,7 @@ test("a reply is drawn under the entry it answers", () => {
 test("a reply carrying no answered entry is drawn under its thread's head", () => {
   const head = comment("c0", "2026-11-04T09:00:00Z");
   const older = { ...comment("c1", "2026-11-04T10:00:00Z"), reply_to: "c0" };
-  const root = buildIssueTree({ comments: [head, older], issue: issueDetails([]) });
+  const root = treeOf({ comments: [head, older], issue: issueDetails([]) });
 
   expect(placementsOf(root, "c1").map((one) => one.parent)).toEqual(["c0"]);
   expect(placementsOf(root, "c0").map((one) => one.parent)).toEqual([KEY]);
@@ -2457,7 +2681,7 @@ test("a reply to an ask is drawn under the ask, whatever state it is in", () => 
     ...comment(`under-${ask.id}`, `2026-11-07T0${index}:00:00Z`),
     ask_id: ask.id,
   }));
-  const root = buildIssueTree({
+  const root = treeOf({
     asks,
     comments: replies,
     documents: [{ artifactId: spec.id, blocks: [block("q1", "ask")] }],
@@ -2500,7 +2724,7 @@ test("a thread no person wrote in is no node, and one a person replied in is dra
     author: agent,
   };
   const daemon = thread("daemon", "2026-11-04T15:00:00Z");
-  const root = buildIssueTree({
+  const root = treeOf({
     asks: [question("ask-1")],
     comments: [status, among, answer, joined, person, underAsk],
     issue: issueDetails([]),
@@ -2531,7 +2755,7 @@ test("an agent's reply under an approval request is no node until a person repli
     { ...comment("asked", "2026-11-04T10:00:00Z"), ask_id: "approval-joined", author: agent },
     { ...comment("answered", "2026-11-04T11:00:00Z"), ask_id: "approval-joined" },
   ];
-  const root = buildIssueTree({ asks, comments, issue: issueDetails([]) });
+  const root = treeOf({ asks, comments, issue: issueDetails([]) });
 
   expect(nodeOf(root, "approval-quiet")).toBeUndefined();
   expect(nodeOf(root, "quiet"), "the agents' reply is drawn in the outline").toBeUndefined();
@@ -2540,42 +2764,6 @@ test("an agent's reply under an approval request is no node until a person repli
   const landing = (id: string) => agentsOnlyItem({ id, kind: "item" }, comments, undefined, asks);
   expect(landing("quiet")).toBe("quiet");
   expect(landing("asked")).toBeUndefined();
-});
-
-// R4: the ring is opened at a member of the ring and never at a node hanging off one. A plan
-// task serving a requirement of the ring cannot be reached from the issue either, and its
-// order - a block's place in its own document - sorts before every requirement's, so the
-// lowest order among the drafts the issue cannot reach is the task. Re-rooting it would draw
-// the task under the issue, torn off the requirement it serves, and leave the ring to be
-// opened all the same.
-test("a ring of requirements is opened at a requirement, and what serves one keeps its place", () => {
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const plan = artifact("artifact-plan", "plan-md", "plan.md");
-  const root = buildIssueTree({
-    coverage: coverage([requirement("r1", "The first."), requirement("r2", "The second.")]),
-    documents: [
-      {
-        artifactId: spec.id,
-        blocks: [
-          block("r1", "requirement", { from: `dispatch://${KEY}/spec#b-r2` }),
-          block("r2", "requirement", { from: `dispatch://${KEY}/spec#b-r1` }),
-        ],
-      },
-      {
-        artifactId: plan.id,
-        blocks: [block("t1", "plan_task", { serves: `dispatch://${KEY}/spec#b-r1` })],
-      },
-    ],
-    issue: issueDetails([spec, plan]),
-  });
-
-  expect(placementsOf(root, blockNodeId("plan-md", "t1")).map((one) => one.parent)).toEqual([
-    blockNodeId(SPEC, "r1"),
-  ]);
-  expect(placementsOf(root, blockNodeId(SPEC, "r1")).map((one) => one.parent)).toEqual([KEY]);
-  expect(placementsOf(root, blockNodeId(SPEC, "r2")).map((one) => one.parent)).toEqual([
-    blockNodeId(SPEC, "r1"),
-  ]);
 });
 
 // R21: an ask the server writes `resolved` stands in the state its resolution names, so the
@@ -2612,7 +2800,7 @@ test("a declined ask is drawn Declined, as the card beside it is", () => {
     state: "resolved",
     urgency: "med",
   };
-  const root = buildIssueTree({
+  const root = treeOf({
     asks: [declined],
     documents: [{ artifactId: spec.id, blocks: [block("q1", "ask")] }],
     issue: issueDetails([spec]),
@@ -2630,7 +2818,7 @@ test("a plan task that names no requirement and no declaration draws the gap", (
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
-  const root = buildIssueTree({
+  const root = treeOf({
     coverage: coverage([requirement("r1", "The first.")]),
     documents: [
       { artifactId: spec.id, blocks: [block("r1", "requirement")] },
@@ -2662,7 +2850,7 @@ test("a plan task that names no requirement and no declaration draws the gap", (
 test("a check whose citation names no requirement draws the gap, and keeps its place", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
-  const root = buildIssueTree({
+  const root = treeOf({
     coverage: coverage([requirement("r1", "The first.")]),
     documents: [
       {
@@ -2697,7 +2885,7 @@ test("a check whose citation names no requirement draws the gap, and keeps its p
 test("a check whose latest result records no negative control draws no gap", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
-  const root = buildIssueTree({
+  const root = treeOf({
     documents: [{ artifactId: checks.id, blocks: [block("c1", "check")] }],
     issue: issueDetails([spec, checks]),
     results: checkedResults([{ blockId: "c1", results: [recorded("result-latest", "")] }]),
@@ -2724,7 +2912,7 @@ test("a requirement block outside the spec is no statement, and the spec's are, 
   const statement = blockNodeId(SPEC, "r1");
   const planned = blockNodeId("plan-md", "r9");
   const treeOf = (covered: boolean): TreeNode =>
-    buildIssueTree({
+    treeFrom({
       ...(covered ? { coverage: coverage([requirement("r1", "The spec's own.")]) } : {}),
       documents: [
         { artifactId: spec.id, blocks: [block("r1", "requirement")] },
@@ -2799,7 +2987,7 @@ test("a check block outside the Verification document draws no state and is coun
     { blockId: "c1", results: [recorded("result-pass", "Break it and it fails.")] },
   ]);
   const treeOf = (answered: boolean): TreeNode =>
-    buildIssueTree({
+    treeFrom({
       coverage: coverage([{ ...requirement("r1", "The spec's own."), checks: 1 }]),
       documents: [
         { artifactId: spec.id, blocks: [block("r1", "requirement")] },
@@ -2854,7 +3042,7 @@ function stateOfOneCheck(
 ): string | undefined {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
-  const root = buildIssueTree({
+  const root = treeOf({
     documents: [{ artifactId: checks.id, blocks: [block("c1", "check")] }],
     issue: issueDetails([spec, checks]),
     results: checkedResults([{ blockId: "c1", payload, results }]),
@@ -3046,9 +3234,12 @@ test("a node holds the server's reading of its text where its read sends one", (
     urgency: "med",
   };
   const message = thread("m1", "2026-11-05T10:00:00Z");
-  const root = buildIssueTree({
+  const root = treeOf({
     asks: [{ ...question, question_tree: readingOf("ask") }],
-    comments: [{ ...comment("c1", "2026-11-05T09:00:00Z"), body_tree: readingOf("comment") }],
+    // The tree read answers every node by its own id, so the comment's is not the check's.
+    comments: [
+      { ...comment("comment-1", "2026-11-05T09:00:00Z"), body_tree: readingOf("comment") },
+    ],
     coverage: coverage([requirement("r1", "The **first**.")]),
     decisions: decisions([
       { ...decision("d1", "## Keep it", []), text_tree: readingOf("decision") },
@@ -3067,8 +3258,8 @@ test("a node holds the server's reading of its text where its read sends one", (
     tree: readingOf("decision"),
   });
   expect(held("ask-1")).toEqual({ source: { id: "ask-1", kind: "ask" }, tree: readingOf("ask") });
-  expect(held("c1")).toEqual({
-    source: { id: "c1", kind: "comment" },
+  expect(held("comment-1")).toEqual({
+    source: { id: "comment-1", kind: "comment" },
     tree: readingOf("comment"),
   });
   expect(held("m1")).toEqual({
@@ -3090,7 +3281,7 @@ test("the words of a statement, a check and a block keep the references of their
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
   const cited = "dispatch://CORE-7";
   const reading = readingOf(`Read ${cited} first.`);
-  const root = buildIssueTree({
+  const root = treeOf({
     coverage: coverage([{ ...requirement("r1", "Read first."), text_tree: reading }]),
     documents: [
       { artifactId: spec.id, blocks: [block("r1", "requirement")] },
@@ -3131,7 +3322,7 @@ test("the words of a statement, a check and a block keep the references of their
 function planTasks(words: readonly string[], read: boolean): TreeNode {
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
   const refOf = (id: string): string => `dispatch://${KEY}/artifact/plan-md#b-${id}`;
-  return buildIssueTree({
+  return treeOf({
     documents: [
       {
         artifactId: plan.id,
@@ -3206,9 +3397,9 @@ test("a chip naming a comment whose body holds a bare address names it by the sh
     targets: [{ gone: false, kind: "comment", name: body, ref }],
   };
 
-  const chips = nodeOf(buildIssueTree(reads), blockNodeId("decisions-md", "d1"))?.chips;
+  const chips = nodeOf(treeOf(reads), blockNodeId("decisions-md", "d1"))?.chips;
   expect(chips?.map(({ name, ref }) => ({ name, ref }))).toEqual([{ name, ref }]);
-  expect([...targetNaming(reads).names]).toEqual([[ref, name]]);
+  expect([...targetNaming(answered(reads)).names]).toEqual([[ref, name]]);
 });
 
 // R1 and R21: a stored text read to plain words holds the words the server's reading of the
@@ -3255,9 +3446,9 @@ test("a stored text read to plain words holds the words of the server's reading 
       },
     ],
   };
-  const chips = nodeOf(buildIssueTree(reads), blockNodeId("decisions-md", "d1"))?.chips;
+  const chips = nodeOf(treeOf(reads), blockNodeId("decisions-md", "d1"))?.chips;
   expect(chips?.map(({ name }) => name)).toEqual(["Hold the deploy."]);
-  expect([...targetNaming(reads).names]).toEqual([[ref, "Hold the deploy."]]);
+  expect([...targetNaming(answered(reads)).names]).toEqual([[ref, "Hold the deploy."]]);
 });
 
 // The body draws a node's whole words, the words filter matches them and the batched reference
@@ -3332,7 +3523,7 @@ test("a node's raw line keeps each bare address as written, from a reading and f
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
   const ruled = decision("d1", "---\n\nDo it as **dispatch://CORE-2** says.", []);
   const headed = decision("d2", "## Title\n\nDo it as **dispatch://CORE-2** says.", []);
-  const root = buildIssueTree({
+  const root = treeOf({
     decisions: decisions([ruled, headed]),
     issue: issueDetails([spec, made]),
   });
@@ -3387,11 +3578,12 @@ test("an issue addresses a node as its tree does, from the issue alone", () => {
 // that reading to the result's node, so its line is the reading's first block and the page parses
 // no result's stored text; the node names no source, since a result is no record the reference
 // graph indexes. A result whose read sends none - a server of the build before - keeps its stored
-// text's line.
+// text's line. Under the tree read the reading reaches the node as its `text_tree`, which the
+// model's tree route is to send for a result; until it does, this test fails.
 test("a result node holds the server's reading of its observed text where the read sends one", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
-  const root = buildIssueTree({
+  const root = treeOf({
     issue: issueDetails([spec, checks]),
     results: checkedResults([
       {

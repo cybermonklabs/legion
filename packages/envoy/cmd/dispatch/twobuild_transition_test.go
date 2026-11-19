@@ -64,8 +64,10 @@ const (
 // (shutdown_test.go) for a page whose numbers are not the answering process's own.
 func openPageEditor(t *testing.T, server *dispatchProcess, artifactID string, page pageParameters, want string) *docstest.Peer {
 	t.Helper()
+	fragment := server.artifactFragment(t, artifactID)
 	address := "ws://127.0.0.1:" + strconv.Itoa(server.port) + "/ws/doc/" + artifactID + "?" + page.query.Encode()
 	editor := docstest.Dial(t, address, http.Header{"X-Dispatch-User": {dispatchTestLogin}}, artifactID, crdt.New())
+	editor.Fragment = fragment
 	deadline := time.After(10 * time.Second)
 	for markdown(editor) != want {
 		if err := editor.AskForDocument(); err != nil {

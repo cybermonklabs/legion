@@ -66,16 +66,17 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
 
 /**
  * A plain name for every kind of node the page draws, which is every kind the model holds: the
- * issue, the documents and images it carries, the five typed blocks of those documents, the
+ * issue, the documents and images it carries, the eight typed blocks of those documents, the
  * decisions and asks, the conversation, the results recorded against a check, and the child
  * issues.
  *
  * A key is the model's own token for the kind, so the page needs no second table to read a
- * node: `callout`, `ask`, `requirement`, `plan_task` and `check` are the block type names in
- * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`, `comment` and
- * `message` are the item kinds of a `dispatch://` reference. A name is lowercase because the
- * page draws it inside its own sentences and rows, where a capital would read as a proper noun;
- * `sentenceCase` supplies the capital where a name opens a sentence or a heading.
+ * node: `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision`, `reading` and
+ * `criterion` are the block type names in
+ * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`,
+ * `comment` and `message` are the item kinds of a `dispatch://` reference. A name is lowercase
+ * because the page draws it inside its own sentences and rows, where a capital would read as a
+ * proper noun; `sentenceCase` supplies the capital where a name opens a sentence or a heading.
  */
 export const NODE_TYPE_NAMES = freeze({
   /** An `ask`: the word the approved pictures draw on its tag, "question" (R34). */
@@ -86,6 +87,9 @@ export const NODE_TYPE_NAMES = freeze({
   check: "check",
   child_issue: "child issue",
   comment: "comment",
+  /** A `criterion` block: what a person wants to be able to do, in their own words, which a
+   *  statement answers. The schema's own word is a plain one, so the page draws it. */
+  criterion: "criterion",
   decision: "decision",
   document: "document",
   handoff: "handoff",
@@ -93,6 +97,9 @@ export const NODE_TYPE_NAMES = freeze({
   issue: "issue",
   message: "message",
   plan_task: "plan task",
+  /** A `reading` block: an agent's reading of a decision, or of a question a person answered,
+   *  written at the end of the block it reads. */
+  reading: "reading",
   /** A `requirement` block, drawn by his word for it (R22, the Design's "The words"): a
    *  sentence that must be true of the software. */
   requirement: "statement",
@@ -101,6 +108,17 @@ export const NODE_TYPE_NAMES = freeze({
 
 /** One kind of node the page draws, by the model's own token for it. */
 export type NodeType = keyof typeof NODE_TYPE_NAMES;
+
+/**
+ * The name a typed block draws in a document that does not play its type's part, in place of
+ * its type's name, lowercase as every name above: a `requirement` block of any document but the
+ * issue's spec is no statement (`isStatement`), so its row's tag says its type's own word and
+ * never "statement" (decision 246), as a `check` block outside the Verification document draws
+ * no state word (decision 152).
+ */
+export const BLOCK_TYPE_NAMES = freeze({
+  requirement: "requirement",
+} as const);
 
 /**
  * The state words of each type whose state the model holds, and no entry at all for a type it
@@ -380,6 +398,10 @@ export const VERIFICATION_WORDS = freeze({
   /** After the count of a check's other results, which the line opens in place (ruling 6). */
   earlier_many: "earlier results",
   earlier_one: "earlier result",
+  /** After the count of the checks the coverage read counts for a statement beyond those the
+   *  view draws with it, which serve it from an issue under this one. */
+  elsewhere_many: "more checks elsewhere",
+  elsewhere_one: "more check elsewhere",
   /** The heading over each check's latest result. */
   latest_result: "Latest result",
   /** Between the two numbers of the covered count. */
@@ -437,6 +459,9 @@ export const NODE_REFERENCES_WORDS = freeze({
     answers: "answer",
     attached_to: "attached document",
     blocked_by: "blocked issue",
+    /** The edge from a node a command bar run changed to that run, which
+     *  `run-references/run-references.ts` draws on the run's row in Details' Referenced by. */
+    changed_by_run: "changed this issue",
     child_of: "child issue",
     followed_by: "follower",
     needs: "needed by",
@@ -453,6 +478,9 @@ export const NODE_REFERENCES_WORDS = freeze({
     block: "document",
     comment: "comment",
     component: "component",
+    /** A run of the command bar, which only its asker reads. It is lowercase, as this table
+     *  holds its words, and the row draws it with `sentenceCase`. */
+    interaction: "command bar run",
     issue: "issue",
     message: "message",
     session: "agent",
@@ -461,6 +489,17 @@ export const NODE_REFERENCES_WORDS = freeze({
    *  It names the row, because Details' References section holds the issue's own Referenced by
    *  beside it and two lists cannot share one name. */
   what_references: "What references this row",
+} as const);
+
+/**
+ * The headings of a command bar run's own page (`run-page/RunPage.tsx`): the asker's whole
+ * question, and the nodes the run changed. The page's heading is the run's kind word,
+ * `NODE_REFERENCES_WORDS.kinds.interaction`, and what each frame of its answer says is in
+ * `STATE_LINES`, `EMPTY_STATE_LINES` and `ANSWER_LINES`.
+ */
+export const RUN_PAGE_WORDS = freeze({
+  question: "Question",
+  what_changed: "What it changed",
 } as const);
 
 /**
@@ -481,9 +520,8 @@ export function issueStatusWord(token: string): string {
 
 /**
  * Every line the page draws where a place holds nothing, one per situation: a preset whose
- * query matches nothing, and a spec with no summary or none the head can draw whole. Each is
- * one sentence, in the simple present, saying what is absent rather than what the reader should
- * do about it.
+ * query matches nothing, and a spec with no summary. Each is one sentence, in the simple
+ * present, saying what is absent rather than what the reader should do about it.
  */
 export const EMPTY_STATE_LINES = freeze({
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
@@ -491,22 +529,22 @@ export const EMPTY_STATE_LINES = freeze({
   decisions: "This issue has no decisions yet.",
   /** What the node menu says where its filter leaves none of the issue's files (R3). */
   files_filtered: "No file or document matches this filter.",
+  /** What the list of who worked the issue, in Details' People section, says where nobody has
+   *  (`IssueCollaboratorList.tsx`, dispatch://INFRA-3948 R5): the Collaborators tab's words. */
+  no_collaborators: "No one has worked this issue yet.",
   /** What a view says where the filter by words (`?q=`) leaves nothing of what it draws: the
    *  issue holds such nodes, and none of them holds those words. */
   no_match: "Nothing here holds these words.",
   plan: "This issue has no plan tasks yet.",
+  /** What a command bar run's page says for its `none` frame, where the model produced no
+   *  answer text at all (`run-page/RunPage.tsx`). */
+  run_none: "The model gave no answer.",
   spec: "This issue has no statements yet.",
   /** What the Spec filter's Decided by column says beside a run of statements no decision
    *  shaped (R35): one statement, and several. */
   spec_no_decision_many: "No decision shaped these statements.",
   spec_no_decision_one: "No decision shaped this statement.",
   spec_summary: "This spec has no summary.",
-  /** A summary whose stored excerpt stops inside its first sentence (`BlockExcerptRunes`, 480
-   *  runes): the spec has a summary, and the head has no whole sentence of it to draw. */
-  spec_summary_cut: "The summary is too long to show here.",
-  /** A summary whose whole text ends in no sentence end, so it holds no sentence the head
-   *  draws. */
-  spec_summary_unended: "The summary has no complete sentence.",
   verification: "This issue has no checks yet.",
   /** What the Verification filter's table says where the state its chip narrows to holds no
    *  statement. */
@@ -602,6 +640,31 @@ export const STATE_LINES = freeze({
    *  internal words (`INTERNAL_WORD` in `page-words.test.ts`); the link's own address, drawn
    *  before it, already says where the link points. */
   github_unreadable: "Details are unavailable for this repository.",
+  /** What the list of who worked the issue says where Legion's record of its agents could not
+   *  be read, above the agents it lists without it (`IssueCollaboratorList.tsx`,
+   *  dispatch://INFRA-3948 R5): the Collaborators tab's words. */
+  legion_record_unreadable: "Legion's record of this issue's agents could not be read.",
+  /** What a command bar run's page says for its `changed` frame, where pieces of the answer
+   *  are shown as plain text or removed (`run-page/RunPage.tsx`). The frame's `dropped` count
+   *  is drawn between `before` and `after`, as `BLOCKED_BY_REFUSALS` cuts its sentences. */
+  run_changed: { after: ".", before: "Pieces of the answer shown as plain text or removed: " },
+  /** What a command bar run's page says for its `cut` frame, where the answer was cut short
+   *  (`run-page/RunPage.tsx`). The frame's `words` count is drawn between `before` and `after`,
+   *  as `BLOCKED_BY_REFUSALS` cuts its sentences. */
+  run_cut: { after: " words.", before: "The answer was cut short after " },
+  /** What a command bar run's page says for the error code `ANSWER_DID_NOT_ARRIVE`
+   *  (`run-page/RunPage.tsx`). */
+  run_did_not_arrive: "The answer did not arrive in time.",
+  /** What a command bar run's page says for the error code `ANSWER_FAILED`, and for any code
+   *  the page does not know (`run-page/RunPage.tsx`). */
+  run_failed: "The question could not be answered.",
+  /** What a command bar run's page says for the error code `NO_MODEL_CONFIGURED`
+   *  (`run-page/RunPage.tsx`). */
+  run_no_model: "No model is set up to answer questions.",
+  /** What Details' People section says where the issue's subscribed agents could not be read,
+   *  which it reads on every load for their count (`details-more.tsx`, dispatch://INFRA-3948
+   *  R5): today's issue header's words, with Retry beside them. */
+  subscribers_unreadable: "Subscribed agents unavailable — Envoy listener unreachable.",
   /** How a subscribed agent stands whose subscription is wider than this issue, which Details
    *  draws where today's pages draw "via" and its topic with the reason as a tooltip
    *  (`features/issue/SubscribedAgents.tsx`). */
@@ -634,13 +697,53 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
+  /** What the history in Details says while the issue's log is read, which Details opening
+   *  asks for, and when it could not be; and what its Load older says while the next page is
+   *  out (`IssueHistory.tsx`, dispatch://INFRA-3948 R2): the Activity tab's words. */
+  loading_history: "Loading activity…",
+  history_unreadable: "Could not load the activity.",
+  loading_older: "Loading…",
+  /** What the Verification view says when its Verification document's blocks could not be
+   *  read, so it cannot say which statement each check serves. */
+  checks_unreadable: "Could not load the checks.",
   /** What the Spec filter says over its columns when the decisions could not be read, so the
    *  column beside each statement cannot say what shaped it. */
   decisions_unreadable: "Could not load the decisions.",
+  /** What the Spec view says when the spec's blocks or their coverage could not be read. */
+  statements_unreadable: "Could not load the statements.",
+  /** What the Spec view says when the results could not be read, so it marks no statement. */
+  results_unreadable: "Could not load the results.",
+  /** What the outline says when the issue's tree could not be read before it first answered,
+   *  so it holds no row to draw. */
+  outline_unreadable: "Could not load the outline.",
+  /** What the Decisions view says over its list when the asks could not be read, so it cannot
+   *  say which questions there are; of the decisions read it says `decisions_unreadable`. */
+  questions_unreadable: "Could not load the questions.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
   references_unreadable: "Could not load the references.",
+  /** What a command bar run's page says when its one read failed with anything but 400 or
+   *  404, with Retry beside it (`run-page/RunPage.tsx`). */
+  run_unreadable: "Could not load this run.",
+  /** What the list of who worked the issue says while its read, which the reader opened, is
+   *  out, and when it failed (`IssueCollaboratorList.tsx`, dispatch://INFRA-3948 R5): the
+   *  Collaborators tab's words. */
+  loading_collaborators: "Loading collaborators…",
+  collaborators_unreadable: "Couldn't load who worked this issue.",
+  /** What Details' People section says when Dispatch refused the reader's Unsubscribe
+   *  (`details-more.tsx`, dispatch://INFRA-3948 R5): today's issue header's words, with Retry
+   *  beside them. */
+  unsubscribe_failed: "Could not unsubscribe this agent.",
+  /** What the Plan view says when the plan's blocks could not be read, so it holds no task to
+   *  draw. */
+  plan_unreadable: "Could not load the plan.",
+  /** What the Spec view says over its columns when the issue's questions and their answers could
+   *  not be read, so it draws no decision a person made. */
+  answers_unreadable: "Could not load the answers.",
+  /** What a decision's Change form says when Dispatch refused its send, whatever the server
+   *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
+  change_not_sent: "Could not send the change.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
@@ -837,6 +940,31 @@ export const CONTROL_LABELS = freeze({
   close_document: "Back to the conversation",
   /** Closes the issue, from the identity block's one actions control (R11). */
   close_issue: "Close issue",
+  /** The words of the list of who worked the issue, in Details' People section
+   *  (`IssueCollaboratorList.tsx`, dispatch://INFRA-3948 R5): its three lists, of Legion's
+   *  agents, of every other agent and of people, as the Collaborators tab drew them; how a
+   *  person or an agent worked the issue, a reader's words for each of the server's `reasons`
+   *  tokens, which that tab drew as they came; each Legion role's list, by the role's token; and
+   *  what a Legion agent says of when it started and of the agent that replaced it. */
+  collaborator_reasons: {
+    answered: "answered",
+    assignee: "assigned",
+    claimed: "claimed it",
+    posted: "wrote here",
+  },
+  collaborator_replaced_by: "replaced by",
+  collaborator_roles: {
+    architect: "architect",
+    implementer: "implementer",
+    merger: "merger",
+    planner: "planner",
+    reviewer: "reviewer",
+    tester: "tester",
+  },
+  collaborator_started: "started",
+  collaborators_legion: "Legion agents",
+  collaborators_others: "Other agents",
+  collaborators_people: "People",
   /** What the components line says of an issue whose components come from an ancestor. */
   components_inherited_from: "inherited from",
   /** What it says of an issue the project's component tree reaches no component for, before
@@ -861,6 +989,9 @@ export const CONTROL_LABELS = freeze({
   copy_command: "Copy the command",
   /** Copies the address of the block the caret is in, in the open document's toolbar (R16). */
   copy_link: "Copy link",
+  /** Copies the focused node's `dispatch://` address, among the focused row's acts, as today's
+   *  page offers it on the same node (part G's R6, root R19). */
+  copy_reference: "Copy reference",
   /** Draws a pinned version of the open document against the document as it stands (R16). */
   diff_vs_current: "Diff vs current",
   /** The one panel of the issue's properties, which opens over the right of the page, and the
@@ -876,6 +1007,18 @@ export const CONTROL_LABELS = freeze({
    *  Legion daemon's messages, what agents wrote outside every thread a person wrote in, and
    *  every other event that is no row of the outline, newest first. `/activity` opens it. */
   history: "History",
+  /** The history's list as a reader hears it named, the Activity tab's name for the same list;
+   *  the line it draws where the reader's read mark stood as it first drew in this visit; and
+   *  what one author's uploads within a minute say before the files they open
+   *  (`IssueHistory.tsx`, dispatch://INFRA-3948 R2). */
+  history_list: "Issue activity",
+  history_unread: "New since you last read",
+  history_uploaded: "uploaded",
+  /** What the history heads today's entries and yesterday's with (`history-model.ts`,
+   *  dispatch://INFRA-3948 R2), the Activity tab's words: an older day is headed by its date,
+   *  written out in the reader's locale (`dayLabel`). */
+  history_today: "Today",
+  history_yesterday: "Yesterday",
   /** A file's latest version as a download, in the node menu, before that version's number:
    *  the link the Artifacts list drew on each row (R3, c-nothing-lost). */
   download_version: "Download version",
@@ -930,6 +1073,9 @@ export const CONTROL_LABELS = freeze({
   keys: "Keys",
   /** Lets a node kept open close again (R2). */
   let_close: "Let it close",
+  /** Adds the next page of the issue's log under the history, until none is left
+   *  (`IssueHistory.tsx`, dispatch://INFRA-3948 R2). */
+  load_older: "Load older",
   /** Says what the reader may do with their pins, which the panel lists (R14). */
   pin: "Pin",
   /** The panel's list of what the reader pinned, each a link to the pinned row (R14). */
@@ -962,6 +1108,11 @@ export const CONTROL_LABELS = freeze({
   no_repository: "No repository",
   /** What the claim says of a holder the agent registry no longer lists (R11, row four). */
   not_running: "not running",
+  /** What the list of keys says of `t v` and `t o`, which open Details at the history and at
+   *  the collaborators (`details-more.tsx`, dispatch://INFRA-3948 R4): each a whole phrase, so
+   *  the list reads it as written. */
+  open_history: "Open the issue's history in Details",
+  open_collaborators: "Open the issue's collaborators in Details",
   /** The node menu beside the presets, holding every document and artifact of the issue and
    *  the upload (R3). */
   other_nodes: "Files and documents",
@@ -1004,6 +1155,9 @@ export const CONTROL_LABELS = freeze({
   /** Sends a mention's delivery to its agent again, in the facts of the focused comment, while
    *  that is safe (the old conversation's delivery line). */
   retry: "Retry",
+  /** What the shell's indicator calls that Retry's write: the delivery sent to its agent again
+   *  (`FocusedNodeFacts.tsx`). */
+  retry_delivery: "Delivery to an agent again",
   /** Why the repository shown may not be the issue's own, said beside the control rather than
    *  in a tooltip (R11, R21). */
   repository_inherited: "inherited or the project's default",
@@ -1013,6 +1167,13 @@ export const CONTROL_LABELS = freeze({
   save_blocked_by: "Save what it waits on",
   save_parent: "Save parent",
   save_route: "Save route",
+  /** The names a focused row's scrollers carry while each keeps its tab stop, so a reader on the
+   *  keyboard can reach it and scroll it sideways (decision 317): a code block, a drawn diagram,
+   *  a table, and content of any other kind. */
+  scrolls_code: "Code, scrolls sideways",
+  scrolls_content: "Content, scrolls sideways",
+  scrolls_diagram: "Diagram, scrolls sideways",
+  scrolls_table: "Table, scrolls sideways",
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
    *  own Send so a page drawing both offers two controls a reader can tell apart (R7). */
   send_change: "Send change",
@@ -1036,6 +1197,18 @@ export const CONTROL_LABELS = freeze({
    *  them again (the old conversation's handoff card, R19). */
   show_fields: "Show fields",
   hide_fields: "Hide fields",
+  /** What a handoff's opened fields call the fields every Legion handoff record carries: the
+   *  four `legion handoff write` stamps, the commit a file-backed role's work was done against
+   *  (`head`), and each entry of its `proof`, counted from 1 (`HistoryHandoff.tsx`). Any other
+   *  field is called by the words its key spells. */
+  handoff_fields: {
+    completed: "Completed",
+    head: "Commit",
+    issue: "Issue",
+    phase: "Phase",
+    proof: "Proof",
+    schemaVersion: "Format version",
+  },
   /** What the claim says of the moment another agent may take an unresponsive holder's issue,
    *  which is its last heartbeat plus the grace the server refuses a take until (R11, row
    *  four). The moment itself follows this word, drawn as a date and a time and never as an
@@ -1090,6 +1263,14 @@ export const CONTROL_LABELS = freeze({
    *  identifier (R9, R22), so the page says what it is rather than which one
    *  (`AgentText.author`, `features/refs/AgentName.tsx`). */
   unnamed_author: "An agent",
+  /** Who a delivery of a mention or a message went to, where the delivery names no session: a
+   *  role no session held, or no target at all. An address is no name (R22), so the history's
+   *  line and the focused row's delivery say what it is rather than where it was sent. */
+  unnamed_recipient: "an agent",
+  /** What the shell's indicator calls an Unsubscribe of Details' People section while its write
+   *  is out, between the agent's name and the issue's key (`useIssueSubscribers.ts`): today's
+   *  issue header's words. */
+  unsubscribed_from: "unsubscribed from",
   /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task,
    *  a note and a decision, whose reads carry none. It is the page's own word, drawn with a
    *  shape of its own (`AuthorKind`), so no reader takes it for somebody's name. */
@@ -1130,20 +1311,41 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   ci_check: "CI check",
   copied_from: "copied from",
   copied_from_document: "copied from document",
+  /** The author of a decision, which the server writes from who wrote the block. */
+  decided_by: "decided by",
+  /** The question an agent's decision settles. An ask is drawn as a question (R34). */
+  from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
+  /** The person who kept the decision as it reads; the server writes it. */
+  kept_by: "kept by",
+  /** The sum of the words that person kept, which the server compares with the words now. */
+  kept_text_sum: "sum of the kept words",
   kind: "kind",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** The question, comment or message a statement, a criterion, a check or a plan task hangs
+   *  under, by the plain word the page's own parent controls use. */
+  parent: "parent",
+  /** Whether a newer decision stands in this one's place. */
+  replaced: "replaced",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
+  /** The spec blocks a decision, or the answer of an ask, shaped. */
+  shaped: "shaped",
+  /** How long a plan task takes, in days, which the plan's chart draws as its bar's length;
+   *  the chart's own word for a task that holds none is `PLAN_WORDS.no_size`. */
+  size: "size",
   state: "state",
   surface: "surface",
   title: "title",
+  /** How unsure the agent was of a decision, and in the next one why. */
+  uncertainty: "uncertainty",
+  uncertainty_reason: "why unsure",
   urgency: "urgency",
   when: "when",
 } as const);
@@ -1297,6 +1499,7 @@ export const GLYPH_TOKENS = freeze({
     check: "check",
     child_issue: "child-issue",
     comment: "comment",
+    criterion: "criterion",
     decision: "decision",
     document: "document",
     handoff: "handoff",
@@ -1304,6 +1507,7 @@ export const GLYPH_TOKENS = freeze({
     issue: "issue",
     message: "message",
     plan_task: "plan-task",
+    reading: "reading",
     requirement: "requirement",
     result: "result",
   },
@@ -1400,6 +1604,7 @@ function phrasesIn(value: unknown): readonly string[] {
  */
 export const UNASKED_SOURCES: readonly unknown[] = freeze([
   NODE_TYPE_NAMES,
+  BLOCK_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
   FILTER_SIGNAL_WORDS,
@@ -1427,6 +1632,7 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
   VERIFICATION_WORDS,
   PLAN_WORDS,
   NODE_REFERENCES_WORDS,
+  RUN_PAGE_WORDS,
 ]);
 
 /** What the page says only in answer to the reader's own act, and never on load

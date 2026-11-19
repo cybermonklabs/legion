@@ -31,8 +31,8 @@ func settlementTreeReads(t *testing.T, at corpusRoom) error {
 	if err != nil {
 		t.Fatalf("%s: read the room's point: %v", at.stage, err)
 	}
-	want, wantErr := stateTree(state)
-	got, gotPoint, _, gotErr := at.service.treePoint(at.room, at.live)
+	want, _, wantErr := stateTree(state, []string{fragmentName})
+	got, _, gotPoint, _, gotErr := at.service.treePoint(at.room, at.live, at.service.layoutOf(at.live))
 	if describeError(gotErr) != describeError(wantErr) {
 		t.Fatalf("%s: the tree read answered %s, want the read point's %s", at.stage, describeError(gotErr), describeError(wantErr))
 	}
@@ -80,7 +80,7 @@ func TestTheSettlementTreeReadOfARoomOutsideTheSchemaRefusesItAsTheReadPointDoes
 	}
 	log := live.OpenUpdateLog()
 	defer log.Close()
-	replica := service.keepReplica(live, log, nil)
+	replica := service.keepReplica(live, log, nil, nil)
 	// The log records its base as of just before this commit, so the replica starts from the
 	// room and takes the crafted element: the tree read walks a replica, not a copy of the room.
 	// The fragment is taken before the transaction, which holds the document's lock.
@@ -176,8 +176,8 @@ func TestTheSettlementTreeReadOfAResidentRoomMatchesTheReadPointsTree(t *testing
 	if copied != nil {
 		encoded = copied
 	}
-	want, wantErr := stateTree(encoded)
-	got, gotPoint, _, gotErr := service.treePoint(artifactID, live)
+	want, _, wantErr := stateTree(encoded, []string{fragmentName})
+	got, _, gotPoint, _, gotErr := service.treePoint(artifactID, live, service.layoutOf(live))
 	if describeError(gotErr) != describeError(wantErr) {
 		t.Fatalf("the tree read answered %s, want the read point's %s", describeError(gotErr), describeError(wantErr))
 	}

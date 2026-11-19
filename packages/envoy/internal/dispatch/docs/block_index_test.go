@@ -37,13 +37,22 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 	`); err != nil {
 		t.Fatalf("seed project CORE: %v", err)
 	}
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	return database, blockIndexProcess(t, database, "")
+}
+
+// blockIndexProcess is one process's document service on database, serving the build of commit
+// (the empty string: an unstamped build's), whose settle delay is an hour, so no timer settles a
+// document during a test. A test that builds a second one on the same database has a second
+// process of that build start beside the first, or after it.
+func blockIndexProcess(t *testing.T, database *store.Store, commit string) *Service {
+	t.Helper()
+	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, BuildCommit: commit})
 	t.Cleanup(func() {
 		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
-	return database, service
+	return service
 }
 
 // createOwedDocument creates document slug of issue (CORE-1 or CORE-2), id its uuid (empty: one
@@ -515,7 +524,10 @@ func TestBlockIndexDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
 	if service.srv.GetDoc(opened) == nil || !settlementMark(opened).Equal(mark) {
 		t.Fatalf("opening the room of %s left none resident or moved its settlement mark", opened)
 	}
-	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = 1 where artifact_id = $1`, indexedElsewhere); err != nil {
+	// Another process of this build indexes the fourth document, which settles both marks a
+	// debt of this build carries: the version, and this build's own mark, which the tick's
+	// grammar arm set beside it when it owed the document a re-index (oweDocumentIndex).
+	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = 1, store_owed_at = null where artifact_id = $1`, indexedElsewhere); err != nil {
 		t.Fatalf("index %s elsewhere: %v", indexedElsewhere, err)
 	}
 
@@ -653,7 +665,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 	holder := holderOf(t, service, spec, "dispatch://CORE-2")
 
 	before := eventID - 1
-	edges, err := refs.Edges(ctx, database.Pool, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
+	edges, err := refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
 	if err != nil {
 		t.Fatalf("read the references to CORE-2 since %d: %v", before, err)
 	}
@@ -661,7 +673,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 		edges[0].SourceSeq == nil || *edges[0].SourceSeq != eventID {
 		t.Fatalf("references to CORE-2 since %d = %#v, want the block %s's mention from event %d", before, edges, holder, eventID)
 	}
-	edges, err = refs.Edges(ctx, database.Pool, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
+	edges, err = refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1262,6 +1274,113 @@ func TestWindowArmWindowsTheStoredVersionOfADocumentWhoseLiveTextIsAhead(t *test
 		t.Fatalf("list the documents owed their windows: %v", err)
 	} else if slices.Contains(owed, document) {
 		t.Fatalf("the windowed document %s is still owed its windows: %v", document, owed)
+	}
+}
+
+// The two paragraphs of the spec of issueRoomAheadOfItsVersion's room: its version holds both,
+// and its live text, after an edit no settlement has written a version for, the first alone.
+const (
+	roomKeptParagraph = "The kept paragraph."
+	roomGoneParagraph = "The gone paragraph."
+)
+
+// issueRoomAheadOfItsVersion is a converted issue (createIssueRoom) whose spec's settled version
+// holds roomKeptParagraph and roomGoneParagraph, indexed by the room's settlement under the
+// room's tree artifact, and whose live text is ahead of that version: an edit no settlement has
+// written a version for deleted roomGoneParagraph. The spec is owed its windows since the
+// settlement's index, and nothing has windowed it yet.
+func issueRoomAheadOfItsVersion(t *testing.T) (*store.Store, *Service, issueRoom) {
+	t.Helper()
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, _ := newTestServiceInstance(t, database)
+	room := createIssueRoom(t, database, 1)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if _, err := joinedReplaceText(service, room.spec, roomKeptParagraph+"\n\n"+roomGoneParagraph+"\n", alice); err != nil {
+		t.Fatalf("write the spec's two paragraphs: %v", err)
+	}
+	if err := service.waitForDurableAppends(ctx, room.tree); err != nil {
+		t.Fatalf("wait for the room's appends: %v", err)
+	}
+	if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
+		t.Fatalf("settle the issue's room: %v", err)
+	}
+	var stored string
+	var keyedByTheRoom, keyedByTheSpec bool
+	if err := database.Pool.QueryRow(ctx, `
+		select (select v.markdown from artifact_versions v where v.artifact_id = $2 order by v.number desc limit 1),
+		       exists (select 1 from document_blocks d
+		               join issue_room_blocks r on r.tree_artifact_id = d.artifact_id and r.block_id = d.block_id
+		               where d.artifact_id = $1 and r.document_id = $2 and d.excerpt = $3),
+		       exists (select 1 from document_blocks d where d.artifact_id = $2)
+	`, room.tree, room.spec, roomGoneParagraph).Scan(&stored, &keyedByTheRoom, &keyedByTheSpec); err != nil {
+		t.Fatalf("read the spec's settled version and its blocks: %v", err)
+	}
+	if !strings.Contains(stored, roomGoneParagraph) || !keyedByTheRoom || keyedByTheSpec {
+		t.Fatalf("the spec's version holds %q, its gone paragraph keyed by the room %t and blocks keyed by the spec %t, "+
+			"want both paragraphs versioned and indexed under the room's tree alone", stored, keyedByTheRoom, keyedByTheSpec)
+	}
+	if _, err := joinedReplaceText(service, room.spec, roomKeptParagraph+"\n", alice); err != nil {
+		t.Fatalf("delete the spec's second paragraph: %v", err)
+	}
+	live, _, err := service.TextWithBlocks(ctx, room.spec)
+	if err != nil {
+		t.Fatalf("read the spec's live text: %v", err)
+	}
+	if strings.Contains(live, roomGoneParagraph) || !strings.Contains(live, roomKeptParagraph) {
+		t.Fatalf("the spec's live text is %q, want its first paragraph alone", live)
+	}
+	return database, service, room
+}
+
+// The window arm windows the stored version of a document of an issue room whose live text is
+// ahead of it with every block that version holds and the room's index keeps (heldVersionBlocks):
+// the block an unsettled edit deleted is matched by its row of the index, which the room keys
+// under its tree artifact (indexedBlocks, refs.DocumentRoomBlocksSQL), so its text stands in a
+// window, as the version holds it.
+//
+// The control is the read of the index by the spec's own id, which finds no row: the deleted
+// paragraph matches neither a row nor a live block, and no window holds its text.
+func TestWindowArmKeepsTheBlockAnUnsettledEditOfAnIssueRoomDeleted(t *testing.T) {
+	database, service, room := issueRoomAheadOfItsVersion(t)
+	if tick := reconcileBlockIndex(t, service, ""); tick.Windows == 0 {
+		t.Fatalf("the window arm gave windows to no owner (%#v), want the spec", tick)
+	}
+	windows := windowTextsOf(t, database, refs.DocumentWindowKind, room.spec)
+	held := false
+	for _, text := range windows {
+		held = held || strings.Contains(text, roomGoneParagraph)
+	}
+	if !held {
+		t.Fatalf("no window of the spec holds %q, which its stored version holds: %v", roomGoneParagraph, windows)
+	}
+}
+
+// A document of an issue room that is owed its block index while it holds the blocks of an
+// earlier version is the window arm's, as one that is its own room is (refs.DocumentsOwedWindows):
+// its blocks are the room's rows its fragment holds, which the room keys under its tree artifact,
+// and the arm windows its stored version while the owed arm leaves the room, whose live text is
+// ahead, owed.
+//
+// The control is the read of the blocks by the spec's own id, which finds none: the spec is
+// listed owed nothing, and it holds no window.
+func TestWindowArmWindowsADocumentOfAnIssueRoomOwedItsBlockIndex(t *testing.T) {
+	database, service, room := issueRoomAheadOfItsVersion(t)
+	if _, err := database.Pool.Exec(context.Background(),
+		`update document_block_versions set version = null where artifact_id = $1`, room.spec); err != nil {
+		t.Fatalf("owe the spec its block index: %v", err)
+	}
+	tick := reconcileBlockIndex(t, service, "")
+	if tick.LiveAhead == 0 {
+		t.Fatalf("the tick found no document live ahead (%#v), want the room left owed", tick)
+	}
+	windows := windowTextsOf(t, database, refs.DocumentWindowKind, room.spec)
+	held := false
+	for _, text := range windows {
+		held = held || strings.Contains(text, roomKeptParagraph)
+	}
+	if !held {
+		t.Fatalf("no window of the spec holds %q after the tick (%#v): %v", roomKeptParagraph, tick, windows)
 	}
 }
 

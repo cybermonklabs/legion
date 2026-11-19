@@ -36,6 +36,8 @@ function actionFailure(id: string, error: Error): CommentActionFailure {
 }
 
 interface CommentActionQueueOptions<TContext> {
+  /** The issue whose comments these are, which the actions' requests do not name. */
+  issue?: string;
   onError?(error: Error, input: CommentActionInput, context: TContext | undefined): void;
   onMutate?(input: CommentActionInput): TContext | Promise<TContext>;
   /** The server took `input`; the next queued action starts after this. */
@@ -63,6 +65,7 @@ function submitCommentAction({ id, kind }: CommentActionInput, bounds: WriteBoun
  * clears that pending work so the reader can correct or retry the failed action explicitly.
  */
 export function useCommentActionQueue<TContext = undefined>({
+  issue,
   onError,
   onMutate,
   onSuccess,
@@ -75,6 +78,7 @@ export function useCommentActionQueue<TContext = undefined>({
   const action = useKeyedWrite<unknown, CommentActionInput, TContext>({
     // The card that offered the action shows its refusal (`CommentActionFailure`).
     inline: true,
+    issue,
     label: ({ kind }) => ACTION_LABELS[kind],
     write: submitCommentAction,
     onError,

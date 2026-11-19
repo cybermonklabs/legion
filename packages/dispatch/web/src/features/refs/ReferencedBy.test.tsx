@@ -461,3 +461,85 @@ test("a serves edge reads as served by and a needs edge as needed by", async () 
   expect(within(panel).getByRole("link", { name: "served by · CORE-1" })).toBeTruthy();
   expect(within(panel).getByRole("link", { name: "needed by · CORE-1" })).toBeTruthy();
 });
+
+/** `renderPanel`, with rows the host adds after the list's own. */
+function renderPanelWithExtraRows(
+  read: GraphReferences,
+  extraRows: Parameters<typeof ReferencedBy>[0]["extraRows"]
+) {
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(read);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ReferencedBy extraRows={extraRows} reference="dispatch://CORE-1" />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { client, getReferences, view };
+}
+
+test("extra rows are drawn after the list's own, and the list says nothing references it only when neither has a row", async () => {
+  const node = {
+    ...graphNodeFields(),
+    id: "CORE-1",
+    issue_key: "CORE-1",
+    kind: "issue",
+    ref: "dispatch://CORE-1",
+  } satisfies GraphReferences["node"];
+  const extraRow = {
+    at: "2026-10-21T10:00:00Z",
+    edge: "extra edge",
+    excerpt: "extra words",
+    href: "/somewhere/r1",
+    key: "r1",
+    kind: "Extra kind",
+  };
+  const comment = "11111111-1111-4111-8111-111111111111";
+
+  // One edge and one extra row: the extra row is drawn whole, in its own list after the edge's,
+  // and the heading counts only the list's own edge.
+  let rendered = renderPanelWithExtraRows(
+    { edges: [itemBlockEdge("comment", comment, "b1", "Alpha cites dispatch://CORE-1.")], node },
+    [extraRow]
+  );
+  const close = () => {
+    rendered.getReferences.mockRestore();
+    rendered.view.unmount();
+  };
+  restore = close;
+  let panel = await screen.findByRole("region", { name: "Referenced by" });
+  await within(panel).findByText("Alpha cites dispatch://CORE-1.");
+  expect(within(panel).getByRole("heading").textContent).toBe("Referenced by (1)");
+  const extraList = panel.querySelector<HTMLElement>("[data-extra-references]");
+  expect(extraList).not.toBeNull();
+  const extra = within(extraList as HTMLElement);
+  expect(extra.getByRole("link", { name: "Extra kind" })).toHaveAttribute("href", "/somewhere/r1");
+  expect(extra.getByText("extra edge")).toBeTruthy();
+  expect(extra.getByText("extra words")).toBeTruthy();
+  expect(extraList?.querySelector('time[datetime="2026-10-21T10:00:00Z"]')).not.toBeNull();
+  const rows = panel.querySelectorAll<HTMLElement>(":scope > ul > li");
+  expect(rows).toHaveLength(2);
+  expect(
+    within(rows[0] as HTMLElement).getByRole("link", { name: "Comment · OPS-1" })
+  ).toBeTruthy();
+  expect(rows[1]?.closest("[data-extra-references]")).toBe(extraList);
+  close();
+
+  // No edge and one extra row: the list does not say that nothing references the node.
+  rendered = renderPanelWithExtraRows({ edges: [], node }, [extraRow]);
+  panel = await screen.findByRole("region", { name: "Referenced by" });
+  await within(panel).findByRole("heading", { name: "Referenced by (0)" });
+  expect(within(panel).queryByText("Nothing references this yet.")).toBeNull();
+  expect(within(panel).getByRole("link", { name: "Extra kind" })).toHaveAttribute(
+    "href",
+    "/somewhere/r1"
+  );
+  close();
+
+  // No edge and no extra row: the list says so, and draws no extra list.
+  rendered = renderPanel({ edges: [], node });
+  panel = await screen.findByRole("region", { name: "Referenced by" });
+  expect(await within(panel).findByText("Nothing references this yet.")).toBeTruthy();
+  expect(panel.querySelector("[data-extra-references]")).toBeNull();
+});

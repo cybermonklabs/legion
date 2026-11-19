@@ -26,10 +26,12 @@ const maintenanceLease = "suggestion-outcomes"
 
 // RunMaintenanceSweep deletes every Idempotency-Key past its window (sweepRequestKeys) and every
 // spent DPoP proof past its acceptance window (store.DPoPProofs.Sweep), ends every answer run
-// past its window that stored no terminal event and deletes every run past its TTL
-// (sweepGoingRequests), and then sends every delivery a process that died left owed
-// (resumeDeliveries, the server's resumeOwedDeliveries). resumeDeliveries is nil where nothing
-// delivers. It stops when ctx is done.
+// whose ends_at passed within the last day (goingSweepWindow) with no terminal event stored,
+// keeping every run (sweepGoingRequests; an older run is ended by the boot pass, which
+// cmd/dispatch runs once before this loop's first tick, EndGoingRunsOverdueAtBoot, or by its
+// reader, streamGoingAnswer, if one reads it first), and then sends every delivery a process that
+// died left owed (resumeDeliveries, the server's resumeOwedDeliveries). resumeDeliveries is nil
+// where nothing delivers. It stops when ctx is done.
 //
 // It is a timer and not a woken loop (duty.RunWoken), the shape every other sweep of this server
 // took, because no commit announces any of its work: a key and a proof record pass their windows

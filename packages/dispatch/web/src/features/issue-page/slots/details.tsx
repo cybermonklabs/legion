@@ -1,8 +1,141 @@
-import type { ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { type ReactNode, type RefCallback, useCallback, useState } from "react";
+import { createPortal } from "react-dom";
 
+import { primarySpec } from "../../../api/issue-cache";
+import { userStateQuery } from "../../../api/queries";
+import { labelsControlName } from "../../issue/IssueLabels";
+import { stateForIssue } from "../../issue/pins";
+import { useMargin } from "../../margin/margin-context";
+import { useKeymap } from "../../shell/keymap";
+import { DETAILS_ROW_ATTRIBUTE, useOpenDetailsAt } from "../details-rows";
+import type { IssueField } from "../IssueFieldForms";
+import { IssueMarginCards, IssueMarginPanel } from "../IssueMargin";
+import { DETAILS_ATTRIBUTE, useFillMarginSlot } from "../margin-slot";
+import { NoTooltips } from "../NoTooltips";
+import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { SlotProps } from "../slot-props";
+import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
 
-/** Filled by INFRA-1196 part H, "Details: properties", then part M adds to it. */
-export function DetailsSlot(_props: SlotProps): ReactNode {
+/** The key `l`'s name in the list of keys (dispatch://INFRA-3945 R4). */
+const LABELS_CONTROL_NAME = "Edit labels";
+
+/**
+ * Details' properties (dispatch://INFRA-1196 R13, R14): the one panel `IssueMarginPanel` draws,
+ * filled into the shell's Details drawer.
+ *
+ * The panel is drawn once for the life of the page into its own stage, an element this slot
+ * holds, and the stage is appended to the host the drawer draws (`IssueMarginCards`). So the
+ * panel keeps one React parent while Details closes and opens, and nothing in it - an open
+ * editor, a list the reader opened - is thrown away. The drawer's own cards, the threads of an
+ * open document and its composer, stand above the sections only while a document's editor is
+ * on the page (`useMargin().documentBridge`, which `ProofDocument.tsx` sets): the panel holds no
+ * list of the conversation, which is the outline.
+ *
+ * Slots share no state, so this slot keeps which of the two editors of its rows is open and
+ * makes its own set of the issue's writes; the header's writes reach the same keyed line of the
+ * issue (`useIssueHeaderWrites.ts`). It binds `l`, which opens Details at the Labels row with
+ * the labels' control pressed.
+ */
+export function DetailsSlot({ issue }: SlotProps): ReactNode {
+  const state = useQuery(userStateQuery()).data;
+  const writes = useIssueHeaderWrites(issue, stateForIssue(state, issue.key));
+  // The one editor open in a row of Details - the parent's or the route's - which the rows'
+  // own controls and the add menu open.
+  const [editingField, setEditingField] = useState<IssueField | null>(null);
+  // The panel's stage, one for the life of the page (above): state and not a memo, since React
+  // may throw a memo's value away, and a second stage would draw the panel again and close an
+  // open editor.
+  const [stage] = useState(() => {
+    const element = document.createElement("div");
+    // No box of its own: the panel is a child of the host that holds it.
+    element.className = "contents";
+    return element;
+  });
+  // The drawer's `aside` the stage sits in, where a control elsewhere on the page asks for a row
+  // of the panel (`IssueMarginPanel`): read as the host takes the stage, since the panel is drawn
+  // before any host holds it.
+  const [drawerBox, setDrawerBox] = useState<HTMLElement | null>(null);
+  // The host takes the stage as it is drawn, and lets go of it only while it still holds it.
+  const holdPanel = useCallback(
+    (host: HTMLElement | null) => {
+      if (host === null) return;
+      host.append(stage);
+      setDrawerBox(host.closest<HTMLElement>(`aside[${DETAILS_ATTRIBUTE}]`));
+      return () => {
+        if (stage.parentElement !== host) return;
+        stage.remove();
+        setDrawerBox(null);
+      };
+    },
+    [stage]
+  );
+  const openDetailsAt = useOpenDetailsAt();
+  useKeymap("issue", [
+    {
+      // The labels' control is in Details' Labels row (dispatch://INFRA-1196 R13): the key
+      // opens Details there and presses it, as a reader does.
+      id: "labels",
+      keys: "l",
+      label: LABELS_CONTROL_NAME,
+      run: () => openDetailsAt("labels", true),
+      when: () => {
+        // The control, by the name it has for the issue as it is now (`labelsControlName`):
+        // "Add a label to CORE-1" while it has no label, "Edit labels" once it has one, and
+        // "Saving labels of CORE-1" while a save of them is out, which the panel's labels read
+        // from these same writes (decision 145 of the parts). Without the save's words the key
+        // found no control for the length of the save.
+        const name = labelsControlName(issue.key, {
+          labels: issue.labels ?? [],
+          saving: writes.labels.isPending,
+          words: { ANSWER_LINES, CONTROL_LABELS },
+        });
+        const control = document.querySelector(
+          `[${DETAILS_ROW_ATTRIBUTE}="labels"] button[aria-label="${CSS.escape(name)}"]`
+        );
+        return control instanceof HTMLButtonElement && !control.disabled;
+      },
+    },
+  ]);
+  return (
+    <>
+      {createPortal(
+        <NoTooltips>
+          <IssueMarginPanel
+            documentArtifact={primarySpec(issue)}
+            drawerBox={drawerBox}
+            editingField={editingField}
+            isClosed={issue.closed_at !== null}
+            issue={issue}
+            onEditingField={setEditingField}
+            state={state}
+            writes={writes}
+          />
+        </NoTooltips>,
+        stage
+      )}
+      <DetailsFill holdPanel={holdPanel} />
+    </>
+  );
+}
+
+/**
+ * Details' fill of the shell's margin slot: the host that holds the panel's stage, with the
+ * margin's own cards above it while a document's editor is on the page. It reads the margin's
+ * context, which changes with every hover, selection and placement of the margin, so it is a
+ * component of its own and those changes draw it alone, not the panel.
+ */
+function DetailsFill({ holdPanel }: { holdPanel: RefCallback<HTMLElement> }): null {
+  const documentUp = useMargin().documentBridge !== undefined;
+  const fill = useCallback(
+    (conversation: ReactNode) => (
+      <IssueMarginCards
+        conversation={documentUp ? conversation : undefined}
+        panelHost={holdPanel}
+      />
+    ),
+    [documentUp, holdPanel]
+  );
+  useFillMarginSlot(fill);
   return null;
 }

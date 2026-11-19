@@ -13,9 +13,12 @@ import { createElement, type ReactNode } from "react";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
+import { eventRefreshTargets } from "../../api/event-refresh";
+import { refreshQueries } from "../../api/query-refresh";
 import type { GraphReferences, IssueReferenceSummary } from "../../api/types";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import {
+  agentArtifactQuery,
   blockQuery,
   documentSummaryQuery,
   issueSummaryQuery,
@@ -185,6 +188,78 @@ test("a summary or block read that failed is fetched again when the window regai
     blockQuery("dispatch://CORE-1/spec#intro"),
     reads.getReferences
   );
+});
+
+// A link to an agent's document reads the artifact, which no event of its own announces: an
+// upload into the conversation appends none, and the message that carries the file is the
+// conversation's record of it. So a healthy read waits for that message's event, as a summary
+// waits for its own, and focus fetches it again only after it failed.
+test("a window focus sends no read of a loaded agent artifact, and the conversation's message event does", async () => {
+  // An image sent in the conversation, owned by its session rather than an issue or a project.
+  const getAgentArtifact = spyOn(api, "getAgentArtifact").mockResolvedValue({
+    created_at: "2026-11-17T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    id: "artifact-shot",
+    issue_key: null,
+    kind: "image",
+    name: "shot.png",
+    primary: false,
+    project: "",
+    ref_key: "agent/planner-session/shot-png",
+    session_id: "planner-session",
+    slug: "shot-png",
+    versions: [
+      {
+        authors: [{ id: "alice", kind: "user" }],
+        created_at: "2026-11-17T00:00:00Z",
+        mime: "image/png",
+        named: false,
+        number: 1,
+        sha256: "first-sha",
+        size: 10,
+        summary: null,
+      },
+    ],
+  });
+  restore = () => getAgentArtifact.mockRestore();
+  // A direct message to the session, issue-less as every message of an Agents page conversation
+  // is. The feed's event union is wider than this test needs; this is the shape its reader reads.
+  const message = {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-11-17T00:00:01Z",
+    id: 2,
+    issue_key: null,
+    notify: true,
+    payload: { id: "message-2", target: "session:planner-session" },
+    seq: 2,
+    type: "message.created",
+  } as unknown as Parameters<typeof eventRefreshTargets>[0];
+  const options = agentArtifactQuery("planner-session", "shot-png");
+  // A link mounted again reads by event, not by age.
+  expect(agentArtifactQuery("planner-session", "shot-png").staleTime).toBe(
+    Number.POSITIVE_INFINITY
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.mount();
+  const observer = new QueryObserver(queryClient, options);
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await waitFor(() => expect(observer.getCurrentResult().status).toBe("success"));
+    expect(getAgentArtifact).toHaveBeenCalledTimes(1);
+
+    await refocus(queryClient);
+    expect(getAgentArtifact).toHaveBeenCalledTimes(1);
+
+    refreshQueries(queryClient, eventRefreshTargets(message));
+    await waitFor(() => expect(getAgentArtifact).toHaveBeenCalledTimes(2));
+  } finally {
+    unsubscribe();
+    queryClient.unmount();
+  }
+
+  // A read in error is fetched again on focus, as a summary or block read is.
+  getAgentArtifact.mockClear();
+  await expectFocusRecoversFailedRead(options, getAgentArtifact);
 });
 
 test("a message reference's read sits outside the issue details' key", () => {

@@ -61,12 +61,11 @@ live, is no notice either: it is that person's handover, and the daemon sets the
 itself, whoever parked it (`admission: queued a person's handover`, `source=approval`). Two
 approvals of a root's spec are not that handover and still come as notices: a carried approval,
 which Dispatch writes in the person's name with a reason that begins
-`Carried forward from the approval of version`, when their answer to a decision block was the
-whole change since the version they approved, when a later version's text is the text of the
-version they approved, or when a later version's text is that text with the questions a reopen
-opened again, and an approval on a root that keeps a Dispatch parent, as a child a linger handed
-to Legion does. The other spec notices are a request for changes and an approval of a document
-that is not the root's primary one.
+`Carried forward from the approval of version`, when a later version's text is the text of the
+version they approved or differs from it only in what Dispatch carries an approval over, and an
+approval on a root that keeps a Dispatch parent, as a child a linger handed to Legion does. The
+other spec notices are a request for changes and an approval of a document that is not the root's
+primary one.
 
 ## Deciding
 

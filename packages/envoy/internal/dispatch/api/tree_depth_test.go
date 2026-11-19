@@ -35,7 +35,7 @@ func TestEveryReadServesATreeAtTheDepthBound(t *testing.T) {
 			documentService, handler, database := browserDocumentService(t)
 			issue := createInteractionIssue(t, handler, "TEST", "Deep document", "before\n")
 			artifactID := issue.PrimaryArtifactID
-			peer := connectBrowserPeer(t, documentService, artifactID)
+			peer := connectBrowserPeer(t, handler, documentService, artifactID)
 			peer.transact(t, func(txn *crdt.Transaction, fragment *crdt.YXmlFragment) error {
 				fragment.Delete(txn, 0, len(fragment.Children()))
 				docstest.WriteDeepChain(txn, fragment, test.depth, "deepest")

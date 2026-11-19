@@ -244,6 +244,12 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		run = s.slowedByTestHook(handler)
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		if refused, ok := r.Context().Value(goingRunRefusedKey{}).(goingRunRefused); ok {
+			// A request whose run withinGoingRun refused, left to its key: answered from the key
+			// or refused, and never run.
+			s.answerRefusedRun(w, r, method, pattern, wildcards, refused.login, refused.key, replay)
+			return
+		}
 		key, present, err := requestKeyHeader(r)
 		if !present {
 			slog.Debug("dispatch: a write without an Idempotency-Key runs unkeyed", "method", method, "route", pattern)
@@ -511,14 +517,28 @@ func patternWildcards(pattern string) []string {
 }
 
 // writeRequestFields writes to digest everything a keyed request is judged by but its body: the
-// method, the route pattern, its path values, the query, and the media type with its parameters,
-// less a multipart boundary. Each is length-prefixed, so no two requests' fields run together into
-// one digest.
+// run of the command bar it is made for, where it names one, the method, the route pattern, its
+// path values, the query, and the media type with its parameters, less a multipart boundary. Each
+// is length-prefixed, so no two requests' fields run together into one digest.
 func writeRequestFields(digest hash.Hash, r *http.Request, method, pattern string, wildcards []string) {
 	field := func(value string) {
 		var length [binary.MaxVarintLen64]byte
 		digest.Write(length[:binary.PutUvarint(length[:], uint64(len(value)))])
 		io.WriteString(digest, value)
+	}
+	// The run (contracts.GoingRunHeader), so a repeat under the key that names another run, or
+	// none, is the key reused (spec R4), spelled as withinGoingRun admits it (goingRunNamed) where
+	// it names one, and as sent, its values joined, where it names none withinGoingRun admits. It
+	// comes first, and only where the request names a run: a request that names none is judged by
+	// exactly the fields it always was, so a key a build before this one claimed still answers its
+	// repeat; and a request naming a run cannot run into one naming none, since that would take a
+	// method equal to a route pattern.
+	if runs := r.Header.Values(contracts.GoingRunHeader); len(runs) > 0 {
+		run, ok := goingRunNamed(runs)
+		if !ok {
+			run = strings.Join(runs, ", ")
+		}
+		field(run)
 	}
 	field(method)
 	field(pattern)
@@ -773,7 +793,8 @@ func (s *server) requestKeyInFlight(ctx context.Context, login, key string) (boo
 // (KEY_COMMITTED, or its recovery point). A key no row holds, one past its window and one whose
 // holder died with nothing committed report false: a repeat of the first request runs the handler
 // there. It judges no digest, since it runs before the body is spooled. It is how a check ahead of
-// this layer (refuseUploadToAClosedIssue) leaves a repeat to be answered as its first request was.
+// this layer (withinGoingRun, refuseUploadToAClosedIssue) leaves a repeat to be answered as its
+// first request was, through lookUpRequestKeyAnswers.
 func (s *server) requestKeyAnswersItself(ctx context.Context, login, key string) (bool, error) {
 	var answers bool
 	err := s.deps.Store.Pool.QueryRow(ctx, `
@@ -789,6 +810,20 @@ func (s *server) requestKeyAnswersItself(ctx context.Context, login, key string)
 		return false, fmt.Errorf("look up an idempotency key: %w", err)
 	}
 	return answers, nil
+}
+
+// lookUpRequestKeyAnswers is requestKeyAnswersItself for a check ahead of this layer, which
+// answers a lookup that fails as this layer answers its own: under the key, which nothing has
+// claimed, so the client asks again under it. failed reports that it answered so, and that the
+// check must answer nothing more.
+func (s *server) lookUpRequestKeyAnswers(ctx context.Context, w http.ResponseWriter, login, key string) (answers, failed bool) {
+	answers, err := s.requestKeyAnswersItself(ctx, login, key)
+	if err != nil {
+		w.Header().Set(contracts.IdempotencyKeyHeader, key)
+		s.writeHandlerError(w, err)
+		return false, true
+	}
+	return answers, false
 }
 
 // claimRequestKey takes login's key for r, whose digest is digest, and answers whatever the key
@@ -911,25 +946,18 @@ func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held held
 }
 
 // answerDrainedRepeat answers a repeat whose key a first request still running held when it
-// arrived (requestKeyInFlight). Its body is read off the connection and discarded, never spooled,
-// and written on the way into the digest any keyed request is judged by; then the key is read again
-// and the repeat judged by that digest as claimRequestKey judges one (answerHeldKey), since a body
-// that takes a while to arrive outlives what the key held when it began: a first request that
-// answered meanwhile is replayed, a request whose body differs is 422 KEY_REUSED whether the first
-// has answered or not, and a first still running is 409 KEY_IN_FLIGHT. A key its first request
-// gave up meanwhile - released after a 5xx, its holder dead with nothing committed, its window past
-// - would run the request, which this one cannot, its body gone: it is told to ask again
-// (writeKeyFreed), and that ask runs it.
+// arrived (requestKeyInFlight), from that key alone (answerFromKeyAlone), since a body that takes a
+// while to arrive outlives what the key held when it began: a first request that answered
+// meanwhile is replayed, a request whose body differs is 422 KEY_REUSED whether the first has
+// answered or not, and a first still running is 409 KEY_IN_FLIGHT. A key its first request gave up
+// meanwhile - released after a 5xx, its holder dead with nothing committed, its window past - would
+// run the request, which this one cannot, its body gone: it is told to ask again (writeKeyFreed),
+// and that ask runs it. A body that stops arriving is answered 409 KEY_IN_FLIGHT, which is what
+// the key said.
 //
 // A client that asked to be told to continue before it sends its body (Expect: 100-continue) is
 // answered 409 KEY_IN_FLIGHT at once, with nothing read: it has sent nothing, so the answer is as
 // fresh as the key, and a read would ask it for its whole body only to judge it.
-//
-// The body is read for at most drainTime (readFor): one that stops arriving is answered 409
-// KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. A body past the
-// route's limit is answered the route's 413 (routeBody), as a first request's body past it is.
-// Either keeps the read's deadline for net/http's own reads after the answer; only a body read to
-// its end lifts it.
 func (s *server) answerDrainedRepeat(
 	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, replay keyedReplay,
 ) {
@@ -938,6 +966,48 @@ func (s *server) answerDrainedRepeat(
 		writeKeyInFlight(w, key)
 		return
 	}
+	s.answerFromKeyAlone(w, r, method, pattern, wildcards, login, key, replay, func(w http.ResponseWriter, stopped bool) {
+		if stopped {
+			writeKeyInFlight(w, key)
+			return
+		}
+		writeKeyFreed(w, key)
+	})
+}
+
+// answerRefusedRun answers a keyed request whose run withinGoingRun refused and left to this
+// layer, login's key holding an answer when it looked (requestKeyAnswersItself): from that key
+// alone (answerFromKeyAlone) and never by its handler, so no write is made for a run withinGoingRun
+// refused. A repeat of a write already answered is answered what the key holds - its stored
+// answer, or its route's keyedReplay of what it made - so a retry after its run ended reads the
+// write it made (spec R4); one that names another run, or none, is 422 KEY_REUSED, since the run
+// is part of the digest (writeRequestFields); and a first still running is 409 KEY_IN_FLIGHT,
+// whose retry is judged again. A key that no longer holds an answer - released after a 5xx since
+// withinGoingRun looked, its holder dead with nothing committed, its window past - and a body that
+// stops arriving are answered the run's refusal, as withinGoingRun answers a refused run whose key
+// holds nothing, and the key is not claimed.
+func (s *server) answerRefusedRun(
+	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, replay keyedReplay,
+) {
+	s.answerFromKeyAlone(w, r, method, pattern, wildcards, login, key, replay, func(w http.ResponseWriter, _ bool) {
+		writeGoingRequestNotFound(w)
+	})
+}
+
+// answerFromKeyAlone answers a keyed request from what login's key holds, and neither runs its
+// handler nor claims the key. Its body is read off the connection and discarded, never spooled,
+// and written on the way into the digest any keyed request is judged by; then the key is read
+// again and the request judged by that digest as claimRequestKey judges a repeat (answerHeldKey).
+// Where the key holds nothing that answers it, unanswered answers instead.
+//
+// The body is read for at most drainTime (readFor): one that stops arriving is answered by
+// unanswered with stopped set, and the connection closes after it. A body past the route's limit
+// is answered the route's 413 (routeBody), as a first request's body past it is. Either keeps the
+// read's deadline for net/http's own reads after the answer; only a body read to its end lifts it.
+func (s *server) answerFromKeyAlone(
+	w http.ResponseWriter, r *http.Request, method, pattern string, wildcards []string, login, key string, replay keyedReplay,
+	unanswered func(w http.ResponseWriter, stopped bool),
+) {
 	limit, tooLarge := routeBody(method, pattern)
 	digest := sha256.New()
 	writeRequestFields(digest, r, method, pattern, wildcards)
@@ -947,7 +1017,7 @@ func (s *server) answerDrainedRepeat(
 	case err != nil:
 		w.Header().Set("Connection", "close")
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
-		writeKeyInFlight(w, key)
+		unanswered(w, true)
 		return
 	case size > limit:
 		writeError(w, tooLarge.code, tooLarge.status, tooLarge.message)
@@ -965,7 +1035,7 @@ func (s *server) answerDrainedRepeat(
 	if found && answerHeldKey(w, r, key, held, held.state(hex.EncodeToString(digest.Sum(nil)), replay != nil), replay) {
 		return
 	}
-	writeKeyFreed(w, key)
+	unanswered(w, false)
 }
 
 // writeKeyFreed answers a repeat whose body was read and not kept while its first request gave the

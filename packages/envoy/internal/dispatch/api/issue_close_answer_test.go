@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
@@ -17,9 +18,13 @@ import (
 // asks' document write queues an event of its own - the refresh of a comment whose stored quote is
 // stale - before the status event. The patch's response, the status event's stored payload and a
 // later read of the issue must all name the sequence that event took, which a count of the events
-// the route itself queued answers short. The reopen moves the issue the close left done, so the
-// two moves run in order against the one issue, not as subtests a reader could run alone, and
-// each failure names the move it came from.
+// the route itself queued answers short. Each move runs while the release before serves
+// (whileTheReleaseBeforeServes): on a fleet of one build no block holds an ask's state, so the
+// close and the reopen write nothing into the asks' documents (docs.WriteIssueAskStates), and only
+// while a build that reads an ask's state from its block serves do they write each ask's state into
+// its blocks, the write that refreshes the stale anchor. The reopen moves the issue the close left
+// done, so the two moves run in order against the one issue, not as subtests a reader could run
+// alone, and each failure names the move it came from.
 func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T) {
 	f := newCloseAsksFixture(t)
 	anchored := createThreadComment(t, f.handler, f.issue, map[string]any{
@@ -36,9 +41,12 @@ func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T
 	} {
 		staleAnchorQuote(t, f.database, anchored.ID)
 		before := readIssueDetail(t, f.handler, f.issue)
-		patched := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]any{
-			"status": move.status,
-		}, "alice")
+		var patched *httptest.ResponseRecorder
+		whileTheReleaseBeforeServes(t, f.database, func() {
+			patched = dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]any{
+				"status": move.status,
+			}, "alice")
+		})
 		if patched.Code != http.StatusOK {
 			t.Fatalf("%s: status=%d body=%s", move.name, patched.Code, patched.Body.String())
 		}

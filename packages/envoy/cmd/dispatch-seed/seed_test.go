@@ -14,6 +14,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -47,6 +50,9 @@ func TestSeedAtASmallScale(t *testing.T) {
 	})
 	t.Run("every arm of graph_edges holds rows", func(t *testing.T) {
 		assertEveryGraphArmHoldsRows(t, first)
+	})
+	t.Run("the store census reads no difference and every comment its author", func(t *testing.T) {
+		assertStoreCensusAgrees(t, first)
 	})
 	t.Run("the rare word finds exactly the documents holding it", func(t *testing.T) {
 		assertRareWordFindsItsDocuments(t, first, firstRun)
@@ -156,6 +162,85 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 	}
 	if replies == 0 {
 		t.Fatal("the old schema holds no comment replies")
+	}
+}
+
+// The seed writes issues, documents and versions as the server of the schema it fills writes them
+// (dispatch://INFRA-1253): on this release's, each issue's and document's row names its node, each
+// document an issue owns hangs under that issue through its part_of, and each version is the
+// projection of a version node hanging under its document. On the schema before the marker
+// migration (20261116092210), the release before this one's, which the measurement protocol seeds
+// with --no-migrate, the rows are written without the columns that schema lacks and nothing of the
+// tree is written, as that release's server writes none, so the backfill this release runs over the
+// data set is what writes it. On that schema graph_edges is as dispatch://INFRA-1950's one
+// statement of it states it (20261117020856, which the release before this one carries and which
+// re-states the arms the migrations before the markers gave the view), and it reads neither
+// column. The view of this release reads issues' and artifacts' node_kind, so the test states the
+// older view again before it drops them, and the seed's report reads graph_edges through it.
+func TestSeedWritesTheIssueTreeMarkersWhereTheSchemaCarriesThem(t *testing.T) {
+	ctx := context.Background()
+	for _, schema := range []struct {
+		name   string
+		before bool
+	}{{"the schema of this release", false}, {"the schema before the markers", true}} {
+		t.Run(schema.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			if schema.before {
+				view, err := os.ReadFile("../../internal/dispatch/store/migrations/20261117020856_graph_edges_asks_and_store_class.up.sql")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := database.Pool.Exec(ctx, string(view)+`
+					alter table issues drop column node_kind, drop column node_address;
+					alter table artifacts drop column node_kind, drop column node_address;
+				`); err != nil {
+					t.Fatalf("restore the schema before the markers: %v", err)
+				}
+			}
+			if _, err := seed(ctx, database, testScale, io.Discard); err != nil {
+				t.Fatalf("seed on %s: %v", schema.name, err)
+			}
+			var documents, issueDocuments, hanging, unhung, versions, versionNodes int
+			if err := database.Pool.QueryRow(ctx, `
+				select count(*), count(*) filter (where a.issue_key is not null),
+				       count(*) filter (where exists (
+				         select 1 from graph_tuples t where t.from_kind = 'artifact' and t.from_id = a.ref_key
+				           and t.kind = 'part_of' and t.to_kind = 'issue' and t.to_id = a.issue_key and t.asserted)),
+				       count(*) filter (where a.issue_key is null and exists (
+				         select 1 from graph_tuples t where t.from_kind = 'artifact' and t.from_id = a.ref_key and t.kind = 'part_of')),
+				       (select count(*) from artifact_versions),
+				       (select count(*) from artifact_versions v join artifacts owner on owner.id = v.artifact_id
+				        join graph_nodes n on n.kind = 'version' and n.id = owner.ref_key || '@v' || v.number
+				        where n.made_at = v.created_at and exists (
+				          select 1 from graph_tuples t where t.from_kind = 'version' and t.from_id = n.id
+				            and t.kind = 'part_of' and t.to_kind = 'artifact' and t.to_id = owner.ref_key and t.asserted))
+				from artifacts a
+			`).Scan(&documents, &issueDocuments, &hanging, &unhung, &versions, &versionNodes); err != nil {
+				t.Fatalf("read the seeded documents' and versions' tree: %v", err)
+			}
+			wantHanging, wantVersionNodes := issueDocuments, versions
+			if schema.before {
+				wantHanging, wantVersionNodes = 0, 0
+			}
+			if issueDocuments == 0 || versions == 0 || hanging != wantHanging || unhung != 0 || versionNodes != wantVersionNodes {
+				t.Errorf("on %s, %d of the %d documents of an issue hang under it, %d documents of no issue hang under one, and %d of the %d versions are the projection of a version node; want %d, none and %d",
+					schema.name, hanging, issueDocuments, unhung, versionNodes, versions, wantHanging, wantVersionNodes)
+			}
+			if schema.before {
+				return
+			}
+			var issues, issuesNamed, documentsNamed int
+			if err := database.Pool.QueryRow(ctx, `
+				select (select count(*) from issues),
+				       (select count(*) from issues where node_kind = 'issue' and node_address = key),
+				       (select count(*) from artifacts where node_kind = 'artifact' and node_address = ref_key)
+			`).Scan(&issues, &issuesNamed, &documentsNamed); err != nil {
+				t.Fatalf("read the seeded rows' markers: %v", err)
+			}
+			if issues == 0 || issuesNamed != issues || documentsNamed != documents {
+				t.Errorf("%d of %d issues and %d of %d documents name their node, want every one", issuesNamed, issues, documentsNamed, documents)
+			}
+		})
 	}
 }
 
@@ -554,19 +639,191 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 	}
 }
 
-// graphArmCount guards that the census reads every arm, including the comment answers arm.
-const graphArmCount = 27
+// assertStoreCensusAgrees runs `census --store` over the seeded database as the subcommand runs
+// it (graphcensus.StoreCensus, on a connection of its own) and holds it to zero differences over
+// a census that read comment rows. The census holds each comment row to the authored_by tuple
+// graphstore.AuthorOf reads off the row's author, so a comment the seed wrote with an author and
+// no authored_by is one difference of the comment kind, which the printed report names.
+//
+// Each comment is then read through the store's own current read (graphstore.CurrentOut): one
+// that names an author holds exactly one current authored_by, ending at the node AuthorOf names,
+// and that node is live and states its two base attributes. A comment that names nobody holds
+// none.
+//
+// The seed states its author through its batch write and not through graphstore.Authored, so
+// Authored is run again over one seeded comment, in a transaction rolled back, and held to
+// adding nothing but that comment's authored_by: no node, since the seed already made the
+// author's, and no alias the seed left out.
+func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	report, err := graphcensus.StoreCensus(ctx, databaseURLOf(t, database), false)
+	if err != nil {
+		t.Fatalf("take the store census: %v", err)
+	}
+	var printed strings.Builder
+	report.Write(&printed)
+	// The seed routes no issue to a role, so the census as a whole refuses on the kinds it
+	// checked no row of (graphcensus.StoreReport.Refused); what this holds it to is the comment
+	// kind, which must have checked rows and read no difference in either direction.
+	var commentKind graphcensus.KindReport
+	for _, kind := range report.Kinds {
+		if kind.Kind == graphstore.KindComment {
+			commentKind = kind
+		}
+	}
+	if commentKind.Rows == 0 {
+		t.Fatalf("the store census read no comment row, so it proves nothing about them:\n%s", printed.String())
+	}
+	if report.Differences() != 0 || commentKind.RowDifferences != 0 || commentKind.NodeDifferences != 0 {
+		t.Errorf("the store census reads %d difference(s) over the seeded database, %d and %d of them of comments:\n%s",
+			report.Differences(), commentKind.RowDifferences, commentKind.NodeDifferences, printed.String())
+	}
+
+	type commentAuthor struct {
+		id        string
+		author    model.Actor
+		createdAt time.Time
+	}
+	rows, err := database.Pool.Query(ctx, `select id::text, author, created_at from comments order by id`)
+	if err != nil {
+		t.Fatalf("list the comments: %v", err)
+	}
+	comments, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (commentAuthor, error) {
+		var comment commentAuthor
+		err := row.Scan(&comment.id, &comment.author, &comment.createdAt)
+		return comment, err
+	})
+	if err != nil {
+		t.Fatalf("list the comments: %v", err)
+	}
+	var sample commentAuthor
+	authored := 0
+	authors := map[[2]string]struct{}{}
+	wrong := []string{}
+	for _, comment := range comments {
+		held, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindComment, comment.id,
+			[]string{graphstore.TupleAuthoredBy})
+		if err != nil {
+			t.Fatalf("read who wrote comment %s: %v", comment.id, err)
+		}
+		kind, id, ok := graphstore.AuthorOf(comment.author)
+		if !ok {
+			if len(held) != 0 {
+				wrong = append(wrong, fmt.Sprintf("%s names nobody and holds %d authored_by", comment.id, len(held)))
+			}
+			continue
+		}
+		if authored == 0 {
+			sample = comment
+		}
+		authored++
+		if len(held) != 1 || held[0].ToKind != kind || held[0].ToID != id {
+			wrong = append(wrong, fmt.Sprintf("%s holds %d current authored_by, want one to %s:%s",
+				comment.id, len(held), kind, id))
+			continue
+		}
+		authors[[2]string{kind, id}] = struct{}{}
+	}
+	if authored == 0 {
+		t.Fatalf("none of the %d seeded comments names an author, so this check proves nothing", len(comments))
+	}
+	if len(wrong) > 0 {
+		t.Errorf("%d of %d seeded comments do not hold their author, the first few: %v",
+			len(wrong), len(comments), wrong[:min(5, len(wrong))])
+	}
+	for author := range authors {
+		node, found, err := graphstore.ReadNode(ctx, database.Pool, author[0], author[1])
+		if err != nil {
+			t.Fatalf("read the node of %s:%s: %v", author[0], author[1], err)
+		}
+		if !found || node.State != graphstore.StateLive {
+			t.Errorf("the authored_by tuples end at %s:%s, which the store holds as %+v (found %t), not live",
+				author[0], author[1], node, found)
+		}
+		for attribute, want := range map[string]string{
+			"visibility": graphstore.VisibilityProject, "state": graphstore.StateLive,
+		} {
+			value, held, err := graphstore.CurrentValue(ctx, database.Pool, author[0], author[1], attribute)
+			if err != nil {
+				t.Fatalf("read the %s of %s:%s: %v", attribute, author[0], author[1], err)
+			}
+			if !held || value != want {
+				t.Errorf("%s:%s states %s %q (held %t), want %q", author[0], author[1], attribute, value, held, want)
+			}
+		}
+	}
+
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the transaction Authored runs in: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var lastSeq, nodesBefore, nodesAfter int64
+	if err := tx.QueryRow(ctx, `select coalesce(max(seq), 0), (select count(*) from graph_nodes) from graph_tuples`).
+		Scan(&lastSeq, &nodesBefore); err != nil {
+		t.Fatalf("read the store before Authored: %v", err)
+	}
+	if err := graphstore.Authored(ctx, tx, graphstore.KindComment, sample.id, sample.author, sample.createdAt,
+		graphstore.NoEvent); err != nil {
+		t.Fatalf("state the author of comment %s through Authored: %v", sample.id, err)
+	}
+	if err := tx.QueryRow(ctx, `select count(*) from graph_nodes`).Scan(&nodesAfter); err != nil {
+		t.Fatalf("count the nodes after Authored: %v", err)
+	}
+	rows, err = tx.Query(ctx, `
+		select from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id
+		from graph_tuples where seq > $1 order by seq`, lastSeq)
+	if err != nil {
+		t.Fatalf("read what Authored appended: %v", err)
+	}
+	appended, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read what Authored appended: %v", err)
+	}
+	kind, id, _ := graphstore.AuthorOf(sample.author)
+	want := []string{graphstore.KindComment + ":" + sample.id + " " + graphstore.TupleAuthoredBy + " " + kind + ":" + id}
+	if nodesAfter != nodesBefore || !slices.Equal(appended, want) {
+		t.Errorf("Authored over comment %s made %d node(s) and appended %v, want no node and %v: the seed"+
+			" states less of its author than Authored does", sample.id, nodesAfter-nodesBefore, appended, want)
+	}
+}
+
+// graphArmCount guards that the census reads every arm. It is the arm list of
+// 20261109215947_graph_edges_tuples: the 27 arms 20261105014808 restated it with, the comment
+// answers arm among them, and the one arm over the store's current tuples that migration adds.
+// 20261116094101_graph_edges_asks keeps that list arm for arm and adds its tests on the asks and
+// ask_followers arms; 20261116184707_issue_tree_graph_edges_both_arms and
+// 20261117020856_graph_edges_asks_and_store_class each keep that list, widen what the tuple arm
+// answers and add one arm over the same tuples, answering the relations out of a finding of a lens
+// as a lens_block (armOfAFinding); and 20261117140000_issue_tree_relations, the last migration to
+// restate graph_edges, adds one arm over the artifacts that carry their node, answering each one's
+// attached_to from its part_of tuple. Each of the arms over a kind the store now writes answers
+// only the rows of its table that name no node, and the seed names the node of every row it
+// writes, so those arms answer nothing here (armGatedPerRow).
+const graphArmCount = 30
 
 var (
 	armKindLiteral   = regexp.MustCompile(`'([a-z_]+)'::text AS kind`)
 	armToKindLiteral = regexp.MustCompile(`'([a-z_]+)'::text AS to_kind`)
 )
 
+// armGatedPerRow matches one of the four arms over a kind the node and tuple store writes: the
+// test that keeps it to the rows of its own table that name no node.
+var armGatedPerRow = regexp.MustCompile(`node_kind IS NULL`)
+
+// armOfAFinding matches the arm that answers the relations out of a finding of a lens, which it
+// names by the literal from_kind lens_block. The seed writes no lens and so no finding, the work
+// of a person or an agent reasoning about an issue, so that arm holds no row here.
+var armOfAFinding = regexp.MustCompile(`'lens_block'::text AS from_kind`)
+
 // assertEveryGraphArmHoldsRows runs each arm of graph_edges as its own query and holds it to at
 // least one row, and holds each (kind, to_kind) pair the view's literals define to a non-zero
 // count in the view itself. The arms come from pg_get_viewdef, the view's own text, not from a
 // list in this test and not from the seed's fixture: an arm a later migration adds is covered the
-// day it lands.
+// day it lands. One of the four arms the store answers for may hold no row of its own, since
+// every row the seed writes names its node; its pair is still held to a count in the view,
+// which is where the store's arm answers those rows.
 func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -576,7 +833,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	}
 	arms := strings.Split(definition, "UNION ALL")
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migration 20261105014808 restates it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d migrations 20261109215947 to 20261117140000 restate it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}
@@ -586,7 +843,15 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 		if err := database.Pool.QueryRow(ctx, `select count(*) from (`+arm+`) arm`).Scan(&rows); err != nil {
 			t.Fatalf("count arm %d of graph_edges: %v\n%s", index+1, err, arm)
 		}
-		if rows == 0 {
+		switch {
+		case rows > 0:
+		case armGatedPerRow.MatchString(arm):
+			t.Logf("arm %d of graph_edges answers no row: it answers the rows of its table that name no node, and every row the seed writes names one, so the store's own arm answers them:\n%s",
+				index+1, arm)
+		case armOfAFinding.MatchString(arm):
+			t.Logf("arm %d of graph_edges answers no row: it answers the relations out of a finding of a lens, and the seed writes no lens:\n%s",
+				index+1, arm)
+		default:
 			t.Errorf("arm %d of graph_edges holds no row:\n%s", index+1, arm)
 		}
 		kind := armKindLiteral.FindStringSubmatch(arm)

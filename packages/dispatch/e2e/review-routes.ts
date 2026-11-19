@@ -21,6 +21,9 @@ export interface ReviewSeed {
   readonly project: string;
   /** A machine of the seeded registry, which `/machines/:machine` is opened on. */
   readonly machine: string;
+  /** The login whose `/people/:login` page is opened: the person every human write of the
+   *  corpus is made as, so their page lists what they wrote rather than its empty state. */
+  readonly person: string;
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
@@ -277,17 +280,26 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-decisions",
     path: (seed) => `/issues/${seed.issue}/decisions`,
     pattern: "/issues/:key/*",
-    // The panel's region, and the link to the spec block the decision shaped once the
+    // The panel's region, and the links to the spec block the decision shaped once the
     // reference graph has answered. Until it does, `DecisionsPanel.tsx` draws that link as
     // `Block <uuid>`, and a uuid is fresh in every seeded corpus - so a page read on the
     // region alone was captured sometimes with the words and sometimes with the id. Masking
     // the id does not settle it either: a uuid is a fixed count of characters and not a fixed
     // width, so the painted rectangle moves with the glyphs. Waiting for the words settles it
-    // and needs no mask, because the words are the spec block `e2e/review-seed.ts` names.
-    ready: (page) => [
-      page.getByRole("region", { name: "Waiting for your review" }),
-      page.getByRole("link", { name: "One command, a seeded corpus, a signed-in browser." }),
-    ],
+    // and needs no mask, because the words are the spec block `e2e/review-seed.ts` names. Two
+    // links carry them: the one under "Shaped in the spec:", and the decision's own words,
+    // which cite that block (`dispatch://…/spec#b-<id>`, a `data-dispatch-ref` link titled by
+    // the block's words once the reference resolves), so each is waited for by which it is.
+    ready: (page) => {
+      const shaped = page.getByRole("link", {
+        name: "One command, a seeded corpus, a signed-in browser.",
+      });
+      return [
+        page.getByRole("region", { name: "Waiting for your review" }),
+        shaped.and(page.locator(":not([data-dispatch-ref])")),
+        shaped.and(page.locator("[data-dispatch-ref]")),
+      ];
+    },
   },
   {
     kind: "reviewed",
@@ -414,6 +426,31 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
+    // Shot in light and dark as well as scanned, which is what `c-person-page` requires of the
+    // page this child adds: a scan reads the DOM, so a page drawn wrongly passes it. The two
+    // baselines under `e2e/__screenshots__/visual/` were written by the `visual` job's own
+    // container, the only renderer whose pixels this comparison is ever against
+    // (`packages/dispatch/AGENTS.md`, the four steps for a route this layer gains).
+    layers: bothLayers,
+    name: "person",
+    path: (seed) => `/people/${encodeURIComponent(seed.person)}`,
+    pattern: "/people/:login",
+    // The page's own region, exact because the empty state draws
+    // `<section aria-label="Person empty state">` inside it and a substring match would then
+    // find two (the agents row reads its region for the same reason). And one row's own words,
+    // which is what says the store answered: until it does, `PersonPage.tsx` draws a loading
+    // skeleton, and an answer holding nothing draws that empty state - both of which a page
+    // read on the region alone would accept. The words are the comment `e2e/workspace.ts`
+    // writes as this person, so a change to that corpus fails this row rather than a scan.
+    ready: (page) => [
+      page.getByRole("region", { exact: true, name: "Person" }),
+      page
+        .getByRole("list", { name: "Person nodes" })
+        .getByText("Thanks - the order the sender ticked is the whole point."),
+    ],
+  },
+  {
+    kind: "reviewed",
     layers: bothLayers,
     name: "not-found",
     path: () => "/no-such-page",
@@ -483,6 +520,15 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "credentials",
     pattern: "/credentials/*",
     reason: "It draws InboxPage, the same component as / (web/src/app.tsx).",
+  },
+  {
+    kind: "excluded",
+    name: "run",
+    pattern: "/runs/:id",
+    reason:
+      "A command bar run's own page draws only for the reader who asked the run, with the new " +
+      "issue page turned on, and the review seed asks no run; every other reader gets " +
+      "NotFoundPage, which the not-found entry already reviews (e2e/issue-page-z.e2e.ts).",
   },
   {
     kind: "reviewed",

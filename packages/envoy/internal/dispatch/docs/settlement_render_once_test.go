@@ -17,20 +17,28 @@ import (
 
 // A settlement renders the tree it read once, and its version reuses that rendering only while the
 // tree is unchanged. A settlement that repairs an ask block's server attributes changes that tree
-// in place, and a peer can have written the same attributes into the room first, so the repair
-// writes nothing into the room. The version still holds the repaired block, with the answered
-// state, and its indexed blocks are the room's: reusing the rendering made before the repair would
-// version the block as still open and index the open block's text. An answer that selects
-// nothing is versioned as the room holds it, an empty list.
+// in place - once the fleet is one build it takes off what a peer forged on the block - and a peer
+// can have taken the same attributes off in the room first, so the repair writes nothing into the
+// room. The version still holds the repaired block, with none of the forged attributes, and its
+// indexed blocks are the room's: reusing the rendering made before the repair would version the
+// block as the forger left it and index that block's text.
 func TestSettlementVersionsARepairTheRoomAlreadyHolds(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n\n- Yes: Monday.\n- No: Later.\n:::\n\nContext before.\n")
+	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Monday.\n- No: Later.\n:::\n\nContext before.\n")
 	service.settleRoom(artifactID, 0)
-	answer := answerBlockAsk(t, service, artifactID)
-	ask := blockAskOn(t, service, artifactID, "ask-block")
-	// A content edit, so the settlement has something to version.
-	editAsPeer(t, service, artifactID, replaceRun("Context before.", "Context after."))
+	// A peer forges an answer onto the block, and makes a content edit, so the settlement has a
+	// repair to make and something to version.
+	editAsPeer(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+		pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+			if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); id == "ask-block" {
+				node.Attrs["state"], node.Attrs["answered_by"] = "answered", "mallory"
+				return false
+			}
+			return true
+		})
+		return replaceRun("Context before.", "Context after.")(tree)
+	})
 	if repairs := pmdoc.BlockIDRepairCount(liveTree(t, service, artifactID)); repairs != 0 {
 		t.Fatalf("the room has %d blocks to stamp, want none: the settlement must reconcile the tree it read", repairs)
 	}
@@ -41,15 +49,15 @@ func TestSettlementVersionsARepairTheRoomAlreadyHolds(t *testing.T) {
 		if room != artifactID || release != nil {
 			return
 		}
-		// A peer writes the answered ask's server attributes into the block first, so the
-		// settlement's own repair finds nothing to write and holds no slot. The peer's observer is
-		// held once it has classified and credited the edit and before it arms a settlement, so
-		// the room's generation stays where the settlement read it, and the superseded
-		// settlement would write no version at all.
+		// A peer takes the forged attributes off the block first, so the settlement's own repair
+		// finds nothing to write and holds no slot. The peer's observer is held once it has
+		// classified and credited the edit and before it arms a settlement, so the room's
+		// generation stays where the settlement read it, and the superseded settlement would
+		// write no version at all.
 		release = holdPeerEdit(t, service, artifactID, &service.afterCreditUpdate, func(tree *pmdoc.Node) *pmdoc.Node {
 			pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
 				if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); id == "ask-block" {
-					setAskServerAttributes(node, ask, "", false)
+					withoutStoredAskAttributes(node)
 					return false
 				}
 				return true
@@ -71,8 +79,7 @@ func TestSettlementVersionsARepairTheRoomAlreadyHolds(t *testing.T) {
 	if versions := latestVersionNumber(t, service, artifactID); versions != versionsBefore+1 {
 		t.Fatalf("latest version = %d, want %d: the settlement wrote no version of the edited document", versions, versionsBefore+1)
 	}
-	want := ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"" +
-		answer.At.Format(time.RFC3339Nano) + "\" selected=\"[]\"}\nShip it?\n\n- Yes: Monday.\n- No: Later.\n:::\n\nContext after.\n"
+	want := ":::ask{#ask-block urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Monday.\n- No: Later.\n:::\n\nContext after.\n"
 	markdown, offsets := roomRendering(t, service, artifactID)
 	if markdown != want {
 		t.Fatalf("the room renders %q, want %q", markdown, want)

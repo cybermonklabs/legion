@@ -15,6 +15,7 @@ export interface WalkRoute {
 export const walkRoutes = [
   { page: "InboxPage", path: "/" },
   { page: "AnswersPage", path: "/answers" },
+  { page: "RunRoute", path: "/runs/:id" },
   { page: "AgentsPage", path: "/agents" },
   { page: "BroadcastsPage", path: "/agents/broadcasts" },
   { page: "BroadcastPage", path: "/agents/broadcasts/:id" },
@@ -37,6 +38,7 @@ export const walkRoutes = [
   { page: "SettingsPage", path: "/settings" },
   { page: "DeliveryPage", path: "/delivery" },
   { page: "PipelinePage", path: "/pipeline" },
+  { page: "PersonPage", path: "/people/:login" },
   { page: "NotFoundPage", path: "*" },
 ] as const satisfies readonly WalkRoute[];
 

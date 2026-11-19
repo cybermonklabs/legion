@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 // does not carry test hooks.
 type documentTestHooks interface {
 	ResidentRooms() []string
+	AskBlockAttributes(ctx context.Context, artifactID string) (map[string]map[string]any, error)
 	RoomCounters(artifactID string) (docs.RoomCounters, error)
 	HoldRoomPersistence(artifactID string, duration time.Duration) error
 	ArmLiveWritePause(artifactID string, point docs.LiveWritePausePoint) error
@@ -43,6 +45,19 @@ func (s *server) requireDocumentTestHooks(w http.ResponseWriter, r *http.Request
 	return hooks, true
 }
 
+// hookRoom is the room the document {id} is edited in (docs.DocumentRoomOfStatement): its issue's
+// room for a role document of a converted issue, the document itself otherwise. The room hooks
+// below act on this process's rooms, which are keyed by their room's name, and a document's id is
+// that name only where the document is its own room.
+func (s *server) hookRoom(w http.ResponseWriter, r *http.Request) (string, bool) {
+	var room string
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), docs.DocumentRoomOfStatement, r.PathValue("id")).Scan(&room); err != nil {
+		writeDocumentTestHookError(w, fmt.Errorf("read the room of document %s: %w", r.PathValue("id"), err))
+		return "", false
+	}
+	return room, true
+}
+
 func writeDocumentTestHookError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, docs.ErrTestHooksOff):
@@ -63,6 +78,12 @@ type residentRooms struct {
 	Rooms []string `json:"rooms"`
 }
 
+// liveAskAttributes is the body GET /api/v1/artifacts/{id}/_test/ask-attributes answers: each ask
+// block of the live document, by block id, with every attribute but its id.
+type liveAskAttributes struct {
+	Blocks map[string]map[string]any `json:"blocks"`
+}
+
 // liveWritePauseState is the body the GET and the DELETE of
 // /api/v1/artifacts/{id}/_test/live-write-pauses/{point} answer.
 type liveWritePauseState struct {
@@ -79,16 +100,36 @@ func (s *server) listResidentRooms(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, residentRooms{Rooms: hooks.ResidentRooms()})
 }
 
+// getLiveAskAttributes answers {"blocks": {block id: {attribute: value, ...}}}: the attributes
+// each ask block holds in this process's live tree of the document
+// (docs.Service.AskBlockAttributes).
+func (s *server) getLiveAskAttributes(w http.ResponseWriter, r *http.Request) {
+	hooks, ok := s.requireDocumentTestHooks(w, r)
+	if !ok {
+		return
+	}
+	blocks, err := hooks.AskBlockAttributes(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeDocumentTestHookError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, liveAskAttributes{Blocks: blocks})
+}
+
 // getRoomCounters answers {"room_failures": n, "lock_waiting_compactions": n, "room_closes": n,
 // "settlement_resumptions": [time, ...], "awareness_clients": n}: what this process did with the
-// document's rooms and owed settlement since it started, and how many awareness client entries
-// its room of the document holds now.
+// rooms of the room the document is edited in (hookRoom) and its owed settlement since it started,
+// and how many awareness client entries its room holds now.
 func (s *server) getRoomCounters(w http.ResponseWriter, r *http.Request) {
 	hooks, ok := s.requireDocumentTestHooks(w, r)
 	if !ok {
 		return
 	}
-	counters, err := hooks.RoomCounters(r.PathValue("id"))
+	room, ok := s.hookRoom(w, r)
+	if !ok {
+		return
+	}
+	counters, err := hooks.RoomCounters(room)
 	if err != nil {
 		writeDocumentTestHookError(w, err)
 		return
@@ -102,7 +143,8 @@ type holdPersistenceInput struct {
 }
 
 // holdRoomPersistence takes {"duration": "<Go duration>"} and holds, for that long from now, every
-// append of a browser update this process's rooms of the document make. 204 once the hold is set.
+// append of a browser update this process's rooms of the room the document is edited in (hookRoom)
+// make. 204 once the hold is set.
 func (s *server) holdRoomPersistence(w http.ResponseWriter, r *http.Request) {
 	hooks, ok := s.requireDocumentTestHooks(w, r)
 	if !ok {
@@ -118,21 +160,30 @@ func (s *server) holdRoomPersistence(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "DURATION_INPUT", http.StatusBadRequest, `duration must be a positive Go duration, such as "300ms"`)
 		return
 	}
-	if err := hooks.HoldRoomPersistence(r.PathValue("id"), duration); err != nil {
+	room, ok := s.hookRoom(w, r)
+	if !ok {
+		return
+	}
+	if err := hooks.HoldRoomPersistence(room, duration); err != nil {
 		writeDocumentTestHookError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// armLiveWritePause arms a pause of the document's next live write at {point}
-// (after-first-append or after-commit). 204 once armed; 409 PAUSE_ARMED when one already is.
+// armLiveWritePause arms a pause of the next live write of the room the document is edited in
+// (hookRoom) at {point} (after-first-append or after-commit). 204 once armed; 409 PAUSE_ARMED when
+// one already is.
 func (s *server) armLiveWritePause(w http.ResponseWriter, r *http.Request) {
 	hooks, ok := s.requireDocumentTestHooks(w, r)
 	if !ok {
 		return
 	}
-	if err := hooks.ArmLiveWritePause(r.PathValue("id"), docs.LiveWritePausePoint(r.PathValue("point"))); err != nil {
+	room, ok := s.hookRoom(w, r)
+	if !ok {
+		return
+	}
+	if err := hooks.ArmLiveWritePause(room, docs.LiveWritePausePoint(r.PathValue("point"))); err != nil {
 		writeDocumentTestHookError(w, err)
 		return
 	}
@@ -147,6 +198,10 @@ func (s *server) awaitLiveWriteParked(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	room, ok := s.hookRoom(w, r)
+	if !ok {
+		return
+	}
 	wait := liveWriteParkedWait
 	if raw := r.URL.Query().Get("wait"); raw != "" {
 		parsed, err := time.ParseDuration(raw)
@@ -158,7 +213,7 @@ func (s *server) awaitLiveWriteParked(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()
-	err := hooks.AwaitLiveWriteParked(ctx, r.PathValue("id"), docs.LiveWritePausePoint(r.PathValue("point")))
+	err := hooks.AwaitLiveWriteParked(ctx, room, docs.LiveWritePausePoint(r.PathValue("point")))
 	switch {
 	case err == nil:
 		WriteJSON(w, http.StatusOK, liveWritePauseState{Parked: true})
@@ -176,7 +231,11 @@ func (s *server) releaseLiveWritePause(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	parked, err := hooks.ReleaseLiveWritePause(r.PathValue("id"), docs.LiveWritePausePoint(r.PathValue("point")))
+	room, ok := s.hookRoom(w, r)
+	if !ok {
+		return
+	}
+	parked, err := hooks.ReleaseLiveWritePause(room, docs.LiveWritePausePoint(r.PathValue("point")))
 	if err != nil {
 		writeDocumentTestHookError(w, err)
 		return

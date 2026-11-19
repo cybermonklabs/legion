@@ -162,15 +162,16 @@ type rawField struct {
 	Nullable bool
 }
 
-// rawFieldSchemas names the Go type a json.RawMessage field carries, for the fields whose three
-// states (absent, null, a value) are why the handler holds the bytes unparsed.
+// rawFieldSchemas names the Go type a json.RawMessage field carries, for the fields the handler
+// holds unparsed: most for their three states (absent, null, a value), and the pre-mortem
+// conversion's prevented_by to read its entries one by one.
 //
 // A field named here is left out of its object's `required` by its json tag alone: absent is one
 // of the three states the handler reads, so a document that required every such field would deny
-// a write the server takes. The one whose handler does refuse an absent field, answerAskInput's
-// expected_edited_at, says so with `required:"true"`, the tag jsonschema-go reads, as every other
-// request field does. An entry whose key names no field of any emitted type fails the emit, so
-// the table cannot rot.
+// a write the server takes. The ones whose handler does refuse an absent field, answerAskInput's
+// expected_edited_at and premortemConvertInput's prevented_by, say so with `required:"true"`, the
+// tag jsonschema-go reads, as every other request field does. An entry whose key names no field of
+// any emitted type fails the emit, so the table cannot rot.
 var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// parseAnswerPrecondition (ask_transitions.go): absent is no precondition, null the
 	// precondition that the value is unset, a string the value it must hold.
@@ -185,6 +186,14 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// inheriting, an object the mode and what it needs.
 	{reflect.TypeOf(createIssueInput{}), "components"}: rawField{GoType: issueComponentsInput{}, Nullable: true},
 	{reflect.TypeOf(updateIssueInput{}), "components"}: rawField{GoType: issueComponentsInput{}, Nullable: true},
+	// resolveDuplicateOf (issue_relations.go) reads create and update alike: null is no
+	// duplicate_of, a string the key of an issue of the issue's own project.
+	{reflect.TypeOf(createIssueInput{}), "duplicate_of"}: rawField{Fragment: openAPIIssueKey, Nullable: true},
+	{reflect.TypeOf(updateIssueInput{}), "duplicate_of"}: rawField{Fragment: openAPIIssueKey, Nullable: true},
+	// resolveFiledFrom (issue_relations.go) reads create and update alike: null is no filed_from,
+	// a string the canonical reference of a public ask, comment or message of the issue's project.
+	{reflect.TypeOf(createIssueInput{}), "filed_from"}: rawField{Fragment: openAPIConversationItemRef, Nullable: true},
+	{reflect.TypeOf(updateIssueInput{}), "filed_from"}: rawField{Fragment: openAPIConversationItemRef, Nullable: true},
 	// parseIssueParent (issue_parent.go): null is no parent, a string the parent's issue key.
 	{reflect.TypeOf(updateIssueInput{}), "parent"}: rawField{Fragment: openAPIIssueKey, Nullable: true},
 	// parseIssuePriority (issue_create.go), read by create and update alike.
@@ -209,6 +218,10 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 		"description": "refused whenever present (400 INVALID_JSON): a broadcast's idempotency " +
 			"key is the Idempotency-Key header and never a body member",
 	}},
+	// decodePremortemEntries (premortem_convert.go) reads prevented_by entry by entry, so an entry
+	// of the wrong shape or type is refused naming its position rather than failing the whole body
+	// as INVALID_JSON; the bytes are the list of entries, and an absent list is refused.
+	{reflect.TypeOf(premortemConvertInput{}), "prevented_by"}: rawField{GoType: []PremortemEntry{}},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
@@ -224,6 +237,11 @@ var (
 	openAPIIssueKey = map[string]any{
 		"type":        "string",
 		"description": "an issue key, such as CORE-123",
+	}
+	openAPIConversationItemRef = map[string]any{
+		"type": "string",
+		"description": "the canonical reference of an ask, a comment or a message, dispatch://<KEY>/<ask|comment|message>/<uuid> " +
+			"or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>",
 	}
 	openAPIIssuePriority = map[string]any{
 		"type": "integer", "minimum": 0, "maximum": 3,

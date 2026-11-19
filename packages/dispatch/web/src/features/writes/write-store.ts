@@ -60,6 +60,13 @@ export interface WriteBase<D = unknown> {
    *  go: a form the reader is still in front of, holding their draft. */
   readonly inline: boolean;
   readonly target: string | undefined;
+  /** The issue the write changes, where it names one: its press's (`WriteSpec.issue`), or the
+   *  issue of a request under `/api/v1/issues/{key}`, known from the press for a write made from
+   *  its request and from its first attempt's request for one made by an attempt. It is kept with
+   *  the write, so one resumed after a reload names it again, and one kept before the issue was
+   *  kept names the issue of its kept request's path. A write of an issue is told to that issue's
+   *  listeners from going out to settling (`onIssueWrite`). */
+  readonly issue: string | undefined;
   readonly pressedAt: number;
   /** Its place in its target's line, in the order writes joined it; a Retry joins at the back. */
   readonly joined: number;
@@ -91,12 +98,13 @@ export function isLive(write: Write): boolean {
 
 /** `write` apart from where it stands, for a new state to be put on. */
 function baseOf<D>(write: Write<D>): WriteBase<D> {
-  const { detail, id, inline, joined, key, kind, label, login, presentation, pressedAt } = write;
-  const { retried, sent, signingOutElsewhere, target, uploaded } = write;
+  const { detail, id, inline, issue, joined, key, kind, label, login, presentation } = write;
+  const { pressedAt, retried, sent, signingOutElsewhere, target, uploaded } = write;
   return {
     detail,
     id,
     inline,
+    issue,
     joined,
     key,
     kind,
@@ -223,6 +231,9 @@ interface WriteSpecBase<D, K> {
    *  being tried. A write of a kind that is made again from its request (no `resume`) is made
    *  from its `request` alone when it names a target. */
   readonly target?: string;
+  /** The issue the write changes, for a write whose request does not name it in its path (a
+   *  comment's resolve, a Keep): the issue page's tree read is held while it is out. */
+  readonly issue?: string;
   /** The key of a write the surface makes again after it ended without Dispatch's verdict (the
    *  reader stopped it): that write's own, so Dispatch answers it with what the first did. Left
    *  out, the press gets a key of its own. */
@@ -241,6 +252,28 @@ export type WriteOutcome =
   | { readonly kind: "landed"; readonly write: Write; readonly answer: unknown }
   | { readonly kind: "refused"; readonly write: Write; readonly refusal: Error }
   | { readonly kind: "discarded"; readonly write: Write };
+
+/** Where a write of an issue stands for that issue's listeners (`onIssueWrite`): gone out - from
+ *  its press, or from its first attempt where only that names the issue - or settled: landed,
+ *  refused, or discarded, a write let go wherever it stood: discarded while queued, or dropped by a
+ *  sign-out, another person's sign-in, a quiet write's expiry or a `409 LOGIN_CHANGED`. A
+ *  discarded write may have been made. A Retry of a refused one goes out again. */
+export type IssueWritePhase = "out" | "landed" | "refused" | "discarded";
+
+/** How a write of an issue stands, as `onIssueWrite` tells it: its phase, the write, and, for a
+ *  landing, whether the store refreshed every query the app holds as it landed (`#landed`: a
+ *  landing with no answer, or one nothing awaited), so a listener need not ask for those again. */
+export type IssueWriteListener = (
+  phase: IssueWritePhase,
+  write: Write,
+  refreshedAll: boolean
+) => void;
+
+/** The issue a request names in its path (`/api/v1/issues/{key}`), or none. */
+function issueOfPath(path: string | undefined): string | undefined {
+  const match = path === undefined ? null : /^\/api\/v1\/issues\/([^/?]+)/u.exec(path);
+  return match === null ? undefined : decodeURIComponent(match[1] ?? "");
+}
 
 /** How a joined write starts once its turn comes: within its deadline, past it, or past it and
  *  stopped. */
@@ -296,6 +329,8 @@ interface Entry {
    *  land on this page, as it does in a browser with no IndexedDB. */
   unkept: boolean;
   readonly endsWithSession: boolean;
+  /** Whether the write's issue was told it went out and not yet that it settled. */
+  out: boolean;
 }
 
 const NO_WRITES: readonly Write[] = Object.freeze([]);
@@ -348,6 +383,7 @@ export class Writes {
   #rows: readonly Write[] = NO_WRITES;
   readonly #listeners = new Set<() => void>();
   readonly #outcomes = new Set<(outcome: WriteOutcome) => void>();
+  readonly #issueWrites = new Map<string, Set<IssueWriteListener>>();
   #ids = 0;
   #joins = 0;
   #resumed = false;
@@ -406,6 +442,30 @@ export class Writes {
     return () => this.#outcomes.delete(listener);
   };
 
+  /** Tells `listener` each time a write of issue `issue` goes out or settles (`IssueWritePhase`),
+   *  from now on. */
+  readonly onIssueWrite = (issue: string, listener: IssueWriteListener): (() => void) => {
+    let listeners = this.#issueWrites.get(issue);
+    if (listeners === undefined) {
+      listeners = new Set();
+      this.#issueWrites.set(issue, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.#issueWrites.delete(issue);
+    };
+  };
+
+  /** The writes of issue `issue` gone out and not settled yet. */
+  writesOutOf(issue: string): readonly Write[] {
+    const out: Write[] = [];
+    for (const entry of this.#entries.values()) {
+      if (entry.out && entry.write.issue === issue) out.push(entry.write);
+    }
+    return out;
+  }
+
   /** Makes `spec`'s write, stamped with the person signed in now, and answers with Dispatch's 2xx,
    *  `null` for a write that landed with no answer to give, or rejects with its refusal - or
    *  `SendStoppedError` once the reader stops it. A write that names its request is made from it
@@ -438,6 +498,7 @@ export class Writes {
       file: spec.file,
       held: false,
       keeping: undefined,
+      out: false,
       press,
       request: request ?? null,
       stop: new AbortController(),
@@ -447,6 +508,7 @@ export class Writes {
         detail: spec.detail,
         id: this.#nextId(),
         inline: spec.inline ?? false,
+        issue: spec.issue ?? issueOfPath(request?.path),
         joined: this.#nextJoin(),
         key,
         kind: spec.kind.name,
@@ -583,6 +645,7 @@ export class Writes {
     this.#remove(entry);
     kinds.get(entry.write.kind)?.undone?.(this.#client, entry.write);
     this.#emit({ kind: "discarded", write: entry.write });
+    this.#settleOut(entry, "discarded");
     this.#advance(entry.write.target);
     return true;
   }
@@ -817,6 +880,7 @@ export class Writes {
       file,
       held: false,
       keeping: undefined,
+      out: false,
       press: undefined,
       request,
       stop: new AbortController(),
@@ -826,6 +890,7 @@ export class Writes {
         detail,
         id: this.#nextId(),
         inline: false,
+        issue: kept.issue ?? issueOfPath(request?.path),
         joined: this.#nextJoin(),
         key: kept.key,
         kind: kept.kind,
@@ -864,6 +929,7 @@ export class Writes {
    *  it the reader has stopped (`stopping`), which makes one attempt and no other. */
   #join(entry: Entry, from: From): void {
     this.#entries.set(entry.write.id, entry);
+    this.#goOut(entry);
     const settled = Promise.withResolvers<unknown>();
     // The press settles its own surface; this one only tells the kind (`started`).
     settled.promise.catch(() => {});
@@ -969,8 +1035,14 @@ export class Writes {
         this.#carried.set(entry.write.key, request.method);
         if (!current()) return;
         entry.request = request;
-        if (entry.write.sent) this.#keep(entry);
-        else this.#update(entry, { ...entry.write, sent: true });
+        const issue = entry.write.issue ?? issueOfPath(request.path);
+        if (entry.write.sent) {
+          if (issue !== entry.write.issue) entry.write = { ...entry.write, issue };
+          this.#keep(entry);
+        } else {
+          this.#update(entry, { ...entry.write, issue, sent: true });
+        }
+        this.#goOut(entry);
       },
       uploading: (loaded, total) => {
         if (!current() || total <= 0) return;
@@ -1034,6 +1106,7 @@ export class Writes {
       press?.resolve(null);
       turn?.settled.resolve(null);
       this.#emit({ answer: null, kind: "landed", write: entry.write });
+      this.#settleOut(entry, "landed");
       return;
     }
     const { write } = entry;
@@ -1069,11 +1142,11 @@ export class Writes {
     } else {
       this.#remove(entry);
     }
+    const refreshedAll = kind?.landed === undefined && (!awaited || answer === null);
     if (kind?.landed !== undefined) kind.landed(this.#client, entry.write, answer, awaited);
     this.#emit({ answer, kind: "landed", write: entry.write });
-    if (kind?.landed === undefined && (!awaited || answer === null)) {
-      void this.#client.invalidateQueries();
-    }
+    if (refreshedAll) void this.#client.invalidateQueries();
+    this.#settleOut(entry, "landed", refreshedAll);
     this.#advance(entry.write.target);
   }
 
@@ -1100,6 +1173,7 @@ export class Writes {
     else this.#update(entry, write);
     kinds.get(write.kind)?.undone?.(this.#client, write);
     this.#emit({ kind: "refused", refusal, write });
+    this.#settleOut(entry, "refused");
     this.#advance(write.target);
     if (
       entry.endsWithSession &&
@@ -1132,6 +1206,7 @@ export class Writes {
       entry.turn = undefined;
       this.#forget(entry);
       kinds.get(entry.write.kind)?.undone?.(this.#client, entry.write);
+      this.#settleOut(entry, "discarded");
     }
     if (taken.length > 0) this.#publish();
     return new Set(taken.map((entry) => entry.write.target));
@@ -1185,6 +1260,7 @@ export class Writes {
     this.#kept.keep({
       carried: this.#carried.get(write.key) ?? null,
       detail: kind?.keep === undefined ? write.detail : kind.keep(write.detail),
+      issue: write.issue ?? null,
       key: write.key,
       kind: write.kind,
       label: write.label,
@@ -1215,6 +1291,26 @@ export class Writes {
 
   #emit(outcome: WriteOutcome): void {
     for (const listener of this.#outcomes) listener(outcome);
+  }
+
+  /** Tells the issue of `entry`'s write that it went out, once until it settles: from its join
+   *  where the write names its issue then, else from its first attempt's request. */
+  #goOut(entry: Entry): void {
+    const { issue } = entry.write;
+    if (entry.out || issue === undefined) return;
+    entry.out = true;
+    for (const listener of this.#issueWrites.get(issue) ?? []) listener("out", entry.write, false);
+  }
+
+  /** Tells the issue of `entry`'s write, where it was told the write went out, how it settled:
+   *  with `refreshedAll` where the store refreshed every query as it landed. */
+  #settleOut(entry: Entry, phase: Exclude<IssueWritePhase, "out">, refreshedAll = false): void {
+    const { issue } = entry.write;
+    if (!entry.out || issue === undefined) return;
+    entry.out = false;
+    for (const listener of this.#issueWrites.get(issue) ?? []) {
+      listener(phase, entry.write, refreshedAll);
+    }
   }
 
   #nextId(): number {

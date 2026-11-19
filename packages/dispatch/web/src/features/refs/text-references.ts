@@ -7,6 +7,7 @@ import {
   type DispatchReferenceRoute,
   referenceRouteFromHref,
 } from "./routes";
+import { storeAddressReference } from "./store-address";
 import { type ReferenceTargetKind, referenceTargetKind, routeInBound } from "./target-id";
 
 /**
@@ -482,10 +483,11 @@ export function routeWithWholeIds(
 
 /** One address as read: the reference the reader stores for it, the route behind that
  *  reference, and `written`, the reference its short ids are asked about under (undefined where
- *  the address writes every id whole). */
+ *  the address writes every id whole). A node addressed by its store id alone
+ *  (`storeAddressReference`) has no route: the dashboard has no page for it. */
 interface AddressReading {
   readonly reference: string;
-  readonly route: DispatchReferenceRoute;
+  readonly route: DispatchReferenceRoute | undefined;
   readonly unresolved: boolean;
   readonly written: string | undefined;
 }
@@ -495,7 +497,8 @@ interface AddressReading {
  *  from the result. The reader runs it twice over a span - as the author wrote it and without
  *  the trailing `_` or `-` - and compares the two references, which is only an answer while
  *  both come from the same chain. `items` is called only where the address writes a short id,
- *  since naming the kind of every resolved item costs a pass over them.
+ *  since naming the kind of every resolved item costs a pass over them. An address of a node the
+ *  store addresses by its own id is read whole, with no route and no id to resolve.
  *  Undefined where the value is no address. */
 function readAddress(
   value: string,
@@ -504,7 +507,10 @@ function readAddress(
 ): AddressReading | undefined {
   const route = referenceRouteFromHref(value, origin);
   if (route === undefined) {
-    return undefined;
+    const stored = storeAddressReference(value);
+    return stored === undefined
+      ? undefined
+      : { reference: stored, route: undefined, unresolved: false, written: undefined };
   }
   const written = prefixReference(route);
   const resolved =

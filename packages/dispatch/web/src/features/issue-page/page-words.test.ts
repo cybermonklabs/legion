@@ -18,6 +18,7 @@ import {
   APPROVAL_STATE_WORDS,
   AUTHOR_KIND_WORDS,
   BLOCK_ATTRIBUTE_LABELS,
+  BLOCK_TYPE_NAMES,
   BLOCKED_BY_REFUSALS,
   blockAttributeLabel,
   CHECK_WHEN_WORDS,
@@ -93,6 +94,7 @@ function phrasesOf(value: unknown): readonly string[] {
 
 const UNASKED: readonly unknown[] = [
   NODE_TYPE_NAMES,
+  BLOCK_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
   FILTER_SIGNAL_WORDS,
@@ -120,6 +122,7 @@ const UNASKED: readonly unknown[] = [
   VERIFICATION_WORDS,
   PLAN_WORDS,
   NODE_REFERENCES_WORDS,
+  pageWords.RUN_PAGE_WORDS,
 ];
 
 const ANSWERS: readonly unknown[] = [ANSWER_LINES, BLOCKED_BY_REFUSALS, HELP_LINES, KEY_REPORTS];
@@ -322,13 +325,37 @@ test("the five controls are named in the order the row draws them, and none is c
   for (const preset of PRESET_ORDER) {
     expect(EMPTY_STATE_LINES[preset]).toMatch(/^[A-Z].*\.$/);
   }
-  // The page draws Statement, never Requirement (R22): the kind's own name is the word, and no
-  // word the page declares anywhere says requirement.
+  // The page draws Statement, never Requirement (R22): a requirement of the issue's spec is a
+  // statement, and no word the page declares says requirement. One entry is let through by name,
+  // `BLOCK_TYPE_NAMES.requirement`: the tag of a requirement block in another document, such as
+  // the plan. That block is not a statement, so its tag calls it what it is (decision 246).
   expect(NODE_TYPE_NAMES.requirement).toBe("statement");
+  expect(BLOCK_TYPE_NAMES.requirement).toBe("requirement");
   for (const word of [...Object.values(PRESET_NAMES), ...Object.values(FILTER_SIGNAL_WORDS)]) {
     expect(word).not.toMatch(/tree|requirement|proven/iu);
   }
-  expect(DECLARED_WORDS.filter((word) => /requirement/iu.test(word))).toEqual([]);
+  const { requirement: _letThrough, ...otherBlockNames } = BLOCK_TYPE_NAMES;
+  expect(
+    WORD_SOURCES.map((table) => (table === BLOCK_TYPE_NAMES ? otherBlockNames : table))
+      .flatMap(phrasesOf)
+      .filter((phrase) => /requirement/iu.test(phrase)),
+    "a declared phrase other than BLOCK_TYPE_NAMES.requirement says requirement"
+  ).toEqual([]);
+});
+
+// R22: the Spec view draws Statement, never Requirement (R7), so no word of the list is
+// the model's name for a statement. The list is lowercase, so its words cannot tell where a
+// word came from: they are read from every declaration but one entry, let through by name,
+// `BLOCK_TYPE_NAMES.requirement`, the tag of a requirement block in a document other than the
+// spec, which is no statement.
+test("no word of the list is requirement", () => {
+  const { requirement: _letThrough, ...otherBlockNames } = BLOCK_TYPE_NAMES;
+  expect(
+    WORD_SOURCES.map((table) => (table === BLOCK_TYPE_NAMES ? otherBlockNames : table))
+      .flatMap(phrasesOf)
+      .flatMap(wordsIn)
+      .filter((word) => /^requirements?$/iu.test(word))
+  ).toEqual([]);
 });
 
 test("every empty-state line is one sentence a person reads", () => {

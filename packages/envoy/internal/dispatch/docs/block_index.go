@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +14,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -25,9 +30,9 @@ import (
 // blockIndexStep is the wait before the next tick while any batch was full,
 // BlockIndexReconcileInterval the wait
 // once none is. The owed reads go through partial indexes (document_block_versions_owed,
-// block_grammar_owed_enqueued, comment_block_state_owed, message_block_state_owed,
-// ask_block_state_owed), and the window arm's reads through the markers' own
-// (document_block_versions_windows_owed, comment_block_state_windows_owed,
+// document_block_versions_store_owed, block_grammar_owed_enqueued, comment_block_state_owed,
+// message_block_state_owed, ask_block_state_owed), and the window arm's reads through the
+// markers' own (document_block_versions_windows_owed, comment_block_state_windows_owed,
 // message_block_state_windows_owed, ask_block_state_windows_owed), so a tick that finds
 // nothing owed reads nothing else.
 const (
@@ -81,19 +86,61 @@ type BlockIndexTick struct {
 	Retired int
 	// LiveAhead is how many owed documents it skipped because their live text is ahead of their
 	// latest version and differs from it, whatever their issue's status: owed a settlement that
-	// has not run.
+	// has not run. An owed issue room counts once, where any of its fragments is.
 	LiveAhead int
+	// Unreadable is how many owed issue rooms it left owed because a fragment of the room did not
+	// read back (indexOwedRoom): nothing of such a room is indexed until a write moves it.
+	Unreadable int
+	// Events is how many events of the log after this build's cursor the tick read, which every
+	// tick reads, Marked how many documents an artifact.version, artifact.created or issue.created
+	// event among them named that it marked owed a block index, Comments how many comments a
+	// comment.created or comment.answered event among them named whose rows it gave their nodes,
+	// and AnotherBuild whether a live server process of another build served, which decides
+	// nothing of which events the tick reads and makes it owe the object pass
+	// (readEventsAfterCursor).
+	Events       int
+	Marked       int
+	Comments     int
+	AnotherBuild bool
+	// ObjectNodes is how many issues, documents, asks and messages whose row named no node the
+	// tick wrote the node of, and OrphansGone how many document nodes whose row another build
+	// removed it stated gone, while this build owed the object pass
+	// (writeObjectNodesAnotherBuildWrote).
+	ObjectNodes int
+	OrphansGone int
 	// OwedDocuments, OwedTexts, OwedItems and OwedItemBlocks are what is still owed after the tick.
 	OwedDocuments  int
 	OwedTexts      int
 	OwedItems      int
 	OwedItemBlocks int
+	// OldestOwedDocumentAt dates the oldest of the documents still owed a block index: the
+	// created_at of the latest markdown version it holds, which is the write that owed it one
+	// (migration 0122's trigger) and the version this tick would have indexed, or its own
+	// artifact's created_at where it holds no markdown version at all. Zero where none is owed.
+	//
+	// Nothing dates the debt itself. document_block_versions is (artifact_id, version) and no
+	// more (migration 0121), and neither the trigger nor rebuild-refs writes a time when it
+	// sets the version back to null, so the age is measured from the write that owed the index
+	// rather than from the mark. The two differ only where a rebuild marks a document long
+	// after its last version, and then the debt reads older than it is, which is the safe
+	// direction for a backlog nobody is watching. The smallest change that would date the mark
+	// itself: an `owed_at timestamptz not null default now()` column on
+	// document_block_versions, written wherever the version goes back to null, with a partial
+	// index on it where version is null, which would also make the oldest debt one index
+	// lookup instead of a probe for each owed row. That needs a migration and its census file
+	// (store/README.md), which this change does not.
+	//
+	// A document that holds no markdown version is owed an index for ever: indexOwedDocument
+	// passes over it, so nothing settles its mark. Its age is therefore true and keeps
+	// growing, which is what an operator needs to see about a row that will never drain.
+	OldestOwedDocumentAt time.Time
 	// Cursor is where the next tick's batches start: the last owner each batch listed while that
 	// batch was full, and the start again once a batch lists fewer.
 	Cursor BlockIndexCursors
 	// Full reports a batch of documents, of texts, of items, of item blocks or of owners with
-	// no window that was full, or a retirement pass that deleted a row, so more may be
-	// waiting. The retirement term counts rows deleted rather than a full batch because that
+	// no window that was full, a page of events after this build's cursor that was full, or a
+	// retirement pass that deleted a row, so more may be waiting. The retirement term counts
+	// rows deleted rather than a full batch because that
 	// arm reads window owners and retires only the few that still hold a whole-text row: a
 	// pass that read its whole slice and deleted twenty rows is not full by any count of its
 	// own, and the walk would then advance one slice every BlockIndexReconcileInterval instead
@@ -101,10 +148,25 @@ type BlockIndexTick struct {
 	Full bool
 }
 
+// OldestOwedDocumentAge is how long the oldest document owed a block index has been owed one,
+// at now, measured from the write that owed it (OldestOwedDocumentAt). Zero where none is
+// owed. A loop that drains faster than work arrives holds this at about one tick; one that
+// falls behind grows it, and that growth is the backlog an operator reads.
+func (tick BlockIndexTick) OldestOwedDocumentAge(now time.Time) time.Duration {
+	if tick.OldestOwedDocumentAt.IsZero() || !now.After(tick.OldestOwedDocumentAt) {
+		return 0
+	}
+	return now.Sub(tick.OldestOwedDocumentAt)
+}
+
 // RunBlockIndexReconciliation indexes what no block-aware version write indexed: every document
 // owed a block index (document_block_versions.version null) - each one at migration 0121, each
 // version any build writes (migration 0122's trigger) that its own writer did not index, and each
-// rebuild-refs marks - every comment, ask and issue message whose text holds `#b-`, owed an
+// rebuild-refs marks - every document holding this build's own mark (store_owed_at, migration
+// 20261116221539), which the backfill and every debt this build owes beside the null version set,
+// whose blocks' nodes, part_of tuples and parent_block_id are this release's to state and which
+// the release before this one never clears - every comment, ask and issue message whose text
+// holds `#b-`, owed an
 // index with the block grammar (block_grammar_owed, migrations 0123-0126), which a build older
 // than the block grammar indexes without, every source owed an index with this build's whole
 // grammar (refs_grammar_owed, migrations 20261103205037-20261103205042), which a build older than
@@ -147,14 +209,32 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		slog.Error("dispatch: block index reconciliation", "error", err)
 	}
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
-		tick.Windows > 0 || tick.Retired > 0 || tick.LiveAhead != logged.LiveAhead ||
+		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.Comments > 0 ||
+		tick.ObjectNodes > 0 || tick.OrphansGone > 0 ||
+		tick.AnotherBuild != logged.AnotherBuild || tick.LiveAhead != logged.LiveAhead || tick.Unreadable != logged.Unreadable ||
 		tick.OwedDocuments != logged.OwedDocuments || tick.OwedItems != logged.OwedItems ||
-		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts {
+		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts ||
+		!tick.OldestOwedDocumentAt.Equal(logged.OldestOwedDocumentAt) {
+		// The backlog goes in the line that says what the tick did, so an operator reading the
+		// log sees a growing one: the count, the oldest debt's own timestamp and its age now.
+		// The age moves every tick while a document stays owed, and logging on that alone would
+		// write a line every interval for ever, so the line is written when the oldest debt
+		// changes - the drain reaching it, or a new backlog starting - and not as it ages.
+		// events= is how many events the tick read after its build's event cursor, marked= and
+		// comments= the documents it marked owed and the comments it gave their nodes from those
+		// events, object_nodes= and orphans_gone= the rows the object pass gave their nodes and the
+		// orphaned document nodes it stated gone, and another_build= whether a live server process
+		// of another build served, which decides nothing of which events the tick reads and makes
+		// it owe the object pass (readEventsAfterCursor).
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
-			"retired", tick.Retired, "owed_documents", tick.OwedDocuments,
+			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
+			"comments", tick.Comments, "object_nodes", tick.ObjectNodes, "orphans_gone", tick.OrphansGone,
+			"another_build", tick.AnotherBuild, "owed_documents", tick.OwedDocuments,
 			"owed_items", tick.OwedItems, "owed_item_blocks", tick.OwedItemBlocks,
-			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead)
+			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead, "unreadable_rooms", tick.Unreadable,
+			"oldest_owed_at", refs.OwedTimeText(tick.OldestOwedDocumentAt),
+			"oldest_owed_age_seconds", tick.OldestOwedDocumentAge(time.Now()).Seconds())
 		*logged = tick
 	}
 	if tick.Full {
@@ -164,11 +244,36 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 }
 
 // owedDocument is a document owed a block index as it was listed: its latest version and the
-// marked_at of its pending settlement, zero when it owes none.
+// marked_at of its pending settlement, zero when it owes none. A document of an issue room - one
+// whose document_rooms row names the room, or the room's tree artifact itself - is listed with
+// room, the tree artifact, and with the room's: version is then the sum of the latest version
+// numbers of every artifact of the room, which any version written of any of them moves, and
+// markedAt the room's pending settlement's (keyed by the tree artifact), which every append to the
+// room moves. unreadable is set on a room liveAhead remembers because a fragment of it did not
+// read back (indexOwedRoom).
 type owedDocument struct {
-	id       string
-	version  int
-	markedAt time.Time
+	id         string
+	version    int
+	markedAt   time.Time
+	room       string
+	unreadable bool
+}
+
+// resident is the room a server holds document in: its issue room, or the document itself.
+func (document owedDocument) resident() string {
+	if document.room != "" {
+		return document.room
+	}
+	return document.id
+}
+
+// owedOutcome is what one owed document's index did (indexOwed): indexed, left owed with its
+// live text ahead of its stored versions, left owed because a fragment of its issue room did not
+// read back, or none of those for the reason err gives or for no reason of its own (another
+// writer indexed it, or it holds no version).
+type owedOutcome struct {
+	indexed, ahead, unreadable bool
+	err                        error
 }
 
 // liveAheadDocuments is, by id, each owed document a tick found live ahead (indexOwedDocument), as
@@ -180,10 +285,20 @@ type owedDocument struct {
 // an open one's is, so a close or a reopen that moves neither changes nothing remembered here.
 // Only the store's text is remembered: a room this server holds can be ahead of the store (an
 // edit not yet appended) or behind it (another process's append it has not yet been evicted
-// for), so a document is neither remembered nor taken from here while one is resident.
+// for), so a document is neither remembered nor taken from here while one is resident. An
+// artifact of an issue room is remembered by the room's version and settlement mark, and so is
+// one whose room a fragment of did not read back (owedDocument.unreadable), whatever its
+// settlement mark: it is read again once a write moves either.
 type liveAheadDocuments map[string]owedDocument
 
-// ReconcileBlockIndex runs one tick: one batch of the documents owed a block index past
+// ReconcileBlockIndex runs one tick: first the read of the events after its build's cursor, which
+// marks owed every document they name that this build's store has not stated at its version and
+// gives every comment they name whose row names no node its node (readEventsAfterCursor), then,
+// while this build owes it, the object pass: the nodes of the issues, documents, asks and messages
+// whose rows another build wrote with none, and the gone statement of each document node another
+// build left behind no row (writeObjectNodesAnotherBuildWrote), which reads those four tables whole
+// where every other read of the tick reads only what is owed; then one batch of the documents owed
+// a block index past
 // cursors.Documents (a document id; empty is the start), one batch of the items owed an index
 // with the block grammar, oldest first (refs.ReindexOwed), one batch of the comments, messages
 // and asks owed a block index of their own blocks, oldest owed_at first
@@ -218,22 +333,67 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	}
 	after := cursors.Documents
 	tick := BlockIndexTick{Cursor: BlockIndexCursors{Documents: after}}
+	// The read of the events runs first, so a document it marks is listed by this tick's batch
+	// below and drained by it when the batch has room. A read that fails is logged and holds back
+	// nothing else of the tick: the cursor stays where it was, and the next tick reads the same
+	// events again. The object pass runs after it, so the node of a document the read marks is
+	// there before the documents batch states its blocks; one that fails, or stops with work left,
+	// is logged and leaves this build's debt, so the next tick runs it again.
+	eventsFull, owedPass, err := s.readEventsAfterCursor(ctx, &tick)
+	switch {
+	case ctx.Err() != nil:
+		return tick, ctx.Err()
+	case err != nil:
+		slog.Error("dispatch: block index could not read the events after its build's cursor", "error", err)
+	}
+	objectsLeft, err := s.writeObjectNodesAnotherBuildWrote(ctx, &tick, owedPass)
+	switch {
+	case ctx.Err() != nil:
+		return tick, ctx.Err()
+	case err != nil:
+		slog.Error("dispatch: block index could not write the nodes of the rows another build wrote", "error", err)
+	}
+	eventsFull = eventsFull || objectsLeft
 	owed, err := s.owedDocuments(ctx, after)
 	if err != nil {
 		return tick, err
 	}
 	documentsFull := len(owed) == blockIndexDocumentBatch
 	liveAhead.forgetUnlisted(after, owed, documentsFull)
+	// An issue room is reconciled whole, once a tick, whichever of its artifacts the batch lists
+	// (indexOwedRoom): rooms holds how each room this tick read fared, and a room is counted once.
+	rooms := map[string]owedOutcome{}
+	counted := map[string]struct{}{}
+	counts := func(document owedDocument) bool {
+		if document.room == "" {
+			return true
+		}
+		_, done := counted[document.room]
+		counted[document.room] = struct{}{}
+		return !done
+	}
 	for _, document := range owed {
-		if s.stillLiveAhead(liveAhead, document) {
-			tick.LiveAhead++
-			tick.Cursor.Documents = document.id
+		tick.Cursor.Documents = document.id
+		if remembered, still := s.stillLiveAhead(liveAhead, document); still {
+			switch {
+			case !counts(document):
+			case remembered.unreadable:
+				tick.Unreadable++
+			default:
+				tick.LiveAhead++
+			}
 			continue
 		}
 		delete(liveAhead, document.id)
-		cold := s.srv.GetDoc(document.id) == nil
-		indexed, ahead, err := s.indexOwedDocument(ctx, document)
-		switch {
+		cold := s.srv.GetDoc(document.resident()) == nil
+		outcome, read := rooms[document.room]
+		if !read || document.room == "" {
+			outcome = s.indexOwed(ctx, document)
+			if document.room != "" {
+				rooms[document.room] = outcome
+			}
+		}
+		switch err := outcome.err; {
 		case ctx.Err() != nil:
 			return tick, ctx.Err()
 		case errors.Is(err, ErrDocNewerContent):
@@ -244,15 +404,26 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		case err != nil:
 			slog.Error("dispatch: block index skipped a document it could not index",
 				"artifact", document.id, "error", err)
-		case ahead:
-			tick.LiveAhead++
-			if cold && !document.markedAt.IsZero() && s.srv.GetDoc(document.id) == nil {
+		case outcome.ahead:
+			if counts(document) {
+				tick.LiveAhead++
+			}
+			if cold && !document.markedAt.IsZero() && s.srv.GetDoc(document.resident()) == nil {
 				liveAhead[document.id] = document
 			}
-		case indexed:
-			tick.Documents++
+		case outcome.unreadable:
+			if counts(document) {
+				tick.Unreadable++
+			}
+			if cold && s.srv.GetDoc(document.resident()) == nil {
+				document.unreadable = true
+				liveAhead[document.id] = document
+			}
+		case outcome.indexed:
+			if counts(document) {
+				tick.Documents++
+			}
 		}
-		tick.Cursor.Documents = document.id
 	}
 	if !documentsFull {
 		tick.Cursor.Documents = ""
@@ -324,17 +495,33 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	}
 	tick.Full = documentsFull || len(items) == blockIndexItemBatch ||
 		len(itemBlocks) == blockIndexItemBatch || len(texts) == blockIndexItemBatch ||
-		windowsFull || tick.Retired > 0
+		windowsFull || tick.Retired > 0 || eventsFull
 
+	// What is owed after the tick, and how old the oldest document's debt is, in the one
+	// statement: a tick pays one round trip for the whole backlog. The owed documents come
+	// through the two partial indexes owedDocuments lists them by, each row counted once as the
+	// listing lists it, and each costs one probe into its own versions by
+	// (artifact_id, number), the same read the owed listing makes for the version it indexes.
+	// `envoy-dispatch census --store --sizing` reads the same two figures from the database
+	// alone (graphcensus's blockIndexBacklogQuery), so an operator who cannot read the server's
+	// log can still read the backlog; both derive the debts from one text
+	// (refs.OwedBlockIndexDebts).
+	var oldestOwed *time.Time
 	if err := s.store.Pool.QueryRow(ctx, `
-		select (select count(*) from document_block_versions where version is null),
+		select (select count(*) from document_block_versions where version is null) +
+		       (select count(*) from document_block_versions where store_owed_at is not null and version is not null),
+		       (select min(owed.owed_at) from (`+refs.OwedBlockIndexDebts+`
+		       ) owed),
 		       (select count(*) from block_grammar_owed),
 		       (select count(*) from refs_grammar_owed),
 		       (select count(*) from comment_block_state where owed_at is not null) +
 		       (select count(*) from message_block_state where owed_at is not null) +
 		       (select count(*) from ask_block_state where owed_at is not null)
-	`).Scan(&tick.OwedDocuments, &tick.OwedItems, &tick.OwedTexts, &tick.OwedItemBlocks); err != nil {
+	`).Scan(&tick.OwedDocuments, &oldestOwed, &tick.OwedItems, &tick.OwedTexts, &tick.OwedItemBlocks); err != nil {
 		return tick, fmt.Errorf("count what is owed a block index: %w", err)
+	}
+	if oldestOwed != nil {
+		tick.OldestOwedDocumentAt = *oldestOwed
 	}
 	return tick, nil
 }
@@ -709,14 +896,16 @@ func (s *Service) retireWholeText(ctx context.Context, cursors map[string]string
 	return nil
 }
 
-// stillLiveAhead reports whether document, as listed now, is one liveAhead holds at the same
-// version and settlement mark, with no room of this server resident for it. Whatever its issue's
-// status, such a document still holds the stored live text a tick found ahead of its version,
-// which leaves it owed (indexOwedDocument).
-func (s *Service) stillLiveAhead(liveAhead liveAheadDocuments, document owedDocument) bool {
+// stillLiveAhead answers what liveAhead holds of document, and reports whether, as listed now, it
+// holds document at the same version, room and settlement mark, with no room of this server
+// resident for it. Whatever its issue's status, such a document still holds the stored live text
+// a tick found ahead of its version, which leaves it owed (indexOwedDocument), and such an artifact
+// of an issue room still holds the room a tick found ahead or a fragment of which did not read
+// back (indexOwedRoom).
+func (s *Service) stillLiveAhead(liveAhead liveAheadDocuments, document owedDocument) (owedDocument, bool) {
 	found, ok := liveAhead[document.id]
-	return ok && found.version == document.version &&
-		found.markedAt.Equal(document.markedAt) && s.srv.GetDoc(document.id) == nil
+	return found, ok && found.version == document.version && found.room == document.room &&
+		found.markedAt.Equal(document.markedAt) && s.srv.GetDoc(document.resident()) == nil
 }
 
 // forgetUnlisted drops each document past after, up to the last of owed while the batch is full,
@@ -738,19 +927,50 @@ func (liveAhead liveAheadDocuments) forgetUnlisted(after string, owed []owedDocu
 // past after, each with its latest markdown version and its pending settlement's marked_at. It
 // reads no issue: whether a document is indexed or left owed does not depend on its issue's
 // status (indexOwedDocument). A document with no markdown version has nothing to index and is
-// listed with version 0, which indexOwedDocument passes over.
+// listed with version 0, which indexOwedDocument passes over. An artifact of an issue room - a
+// document whose document_rooms row names the room, or the room's tree artifact, which its
+// issue_trees row names - is listed with its room, the room's revision (roomRevisionSQL) for its
+// version and the room's pending settlement's marked_at, since its mark reconciles the room whole
+// (indexOwedRoom).
+//
+// A document is owed in either of two ways, and each is read through its own partial index in key
+// order before the two are merged: its version is null (document_block_versions_owed), which every
+// release reads and sets; or it holds this build's own mark, store_owed_at
+// (document_block_versions_store_owed, migration 20261116221539), which the backfill sets and every
+// debt this build owes beside the null version (oweDocumentIndex, refs.RebuildAll), and which each
+// tick sets on a document an event after its build's cursor names whose blocks this build's store
+// has not stated at its version (readEventsAfterCursor).
+// The second is the one the release before this one cannot clear: it neither reads nor writes that
+// column, so a document it indexes after either was set stays listed here until a pass of this
+// release states its blocks and clears the mark (refs.IndexBlocks). A document holding both is
+// listed by the first alone.
 func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocument, error) {
 	var cursor any
 	if after != "" {
 		cursor = after
 	}
 	rows, err := s.store.Pool.Query(ctx, `
-		select b.artifact_id::text,
-		       coalesce((select max(v.number) from artifact_versions v
-		                 where v.artifact_id = b.artifact_id and v.markdown is not null), 0),
-		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = b.artifact_id)
-		from document_block_versions b
-		where b.version is null and ($1::uuid is null or b.artifact_id > $1::uuid)
+		select b.artifact_id::text, coalesce(room.id::text, ''),
+		       case when room.id is null
+		            then coalesce((select max(v.number) from artifact_versions v
+		                           where v.artifact_id = b.artifact_id and v.markdown is not null), 0)
+		            else `+roomRevisionSQL("room.id")+` end,
+		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = coalesce(room.id, b.artifact_id))
+		from (
+			(select artifact_id from document_block_versions
+			 where version is null and ($1::uuid is null or artifact_id > $1::uuid)
+			 order by artifact_id limit $2)
+			union all
+			(select artifact_id from document_block_versions
+			 where store_owed_at is not null and version is not null
+			   and ($1::uuid is null or artifact_id > $1::uuid)
+			 order by artifact_id limit $2)
+		) b
+		cross join lateral (
+			select coalesce(
+				(select moved.room from document_rooms moved where moved.artifact_id = b.artifact_id),
+				(select tree.artifact_id from issue_trees tree where tree.artifact_id = b.artifact_id)) as id
+		) room
 		order by b.artifact_id
 		limit $2
 	`, cursor, blockIndexDocumentBatch)
@@ -762,7 +982,7 @@ func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocume
 	for rows.Next() {
 		var document owedDocument
 		var markedAt *time.Time
-		if err := rows.Scan(&document.id, &document.version, &markedAt); err != nil {
+		if err := rows.Scan(&document.id, &document.room, &document.version, &markedAt); err != nil {
 			return nil, fmt.Errorf("scan a document owed a block index: %w", err)
 		}
 		if markedAt != nil {
@@ -774,6 +994,20 @@ func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocume
 		return nil, fmt.Errorf("list the documents owed a block index: %w", err)
 	}
 	return owed, nil
+}
+
+// roomRevisionSQL is, as SQL over the uuid expression room, an issue room's tree artifact, the
+// sum of the latest markdown version numbers of every artifact of the room: the tree and each
+// document its document_rooms rows hold. A version written of any of them moves it, so the
+// reconciliation tells a room it found live ahead or unreadable from one written since
+// (liveAheadDocuments), and its pass from one another writer's version overtook (indexOwedRoom).
+func roomRevisionSQL(room string) string {
+	return `(select coalesce(sum(latest.number), 0) from (
+			select (select max(v.number) from artifact_versions v
+			        where v.artifact_id = held.id and v.markdown is not null) as number
+			from (select ` + room + ` as id
+			      union all select joined.artifact_id from document_rooms joined where joined.room = ` + room + `) held
+		) latest)`
 }
 
 // reindexOwedText drains one row of the re-index queue (refs.RefsGrammarOwed), the text an older
@@ -800,29 +1034,50 @@ func (s *Service) reindexOwedText(ctx context.Context, source refs.Owed) (bool, 
 	return false, fmt.Errorf("re-index %s %s: not a kind the queue holds", source.Kind, source.ID)
 }
 
-// oweDocumentIndex owes a document a block index (document_block_versions.version null), which is
-// what a document's re-index with the whole grammar is: the batch of owed documents indexes its
-// latest version whole (indexOwedDocument, indexRenderedVersion), so its own mentions, the
-// mentions its blocks hold and the excerpt each shows are all read with this build's grammar. The
-// drain owes the work there rather than indexing the document itself because that batch is the one
-// writer of a document's index and holds the rules a document needs - its keyset cursor, the owner
-// row it indexes under, and the live text it must not date to the version that text is ahead of -
-// and because a document an older build's version write left owed is indexed by that batch in this
-// same tick.
+// oweDocumentIndex owes a document a block index, which is what a document's re-index with the
+// whole grammar is: the batch of owed documents indexes its latest version whole
+// (indexOwedDocument, indexRenderedVersion), so its own mentions, the mentions its blocks hold and
+// the excerpt each shows are all read with this build's grammar. The drain owes the work there
+// rather than indexing the document itself because that batch is the one writer of a document's
+// index and holds the rules a document needs - its keyset cursor, the owner row it indexes under,
+// and the live text it must not date to the version that text is ahead of - and because a
+// document an older build's version write left owed is indexed by that batch in this same tick.
+// A version write that leaves its blocks to that batch owes it the same way (indexDocument).
+//
+// It sets both marks a debt of this build carries: document_block_versions.version null, which
+// every release reads and drains, and store_owed_at, this build's own (migration 20261116221539),
+// which the release before this one neither reads nor clears. That release may take the
+// block-index lease first and index the document, writing every row it adds with no node and
+// stating nothing in the store, and only the second mark brings this build's pass to the document
+// after it, to name those rows' nodes and state what they project (refs.PlanBlocks). A mark the
+// document already holds keeps its time, so the debt stays dated from the write that first owed
+// it.
 //
 // A document that is gone owes no index: the row is written from the artifacts table, so nothing
 // is inserted for one. exec is the pool for a caller that owes the index on its own
 // (reindexScope), and the transaction that settles a queue row for the drain
-// (drainOwedDocument), which must owe the index and settle the row together or do neither.
+// (drainOwedDocument), which must owe the index with that write or do neither. A version write
+// queues the same statement in its write phase (queueDocumentIndexOwed).
 func oweDocumentIndex(ctx context.Context, exec refs.Execer, artifactID string) error {
-	if _, err := exec.Exec(ctx, `
-		insert into document_block_versions (artifact_id) select id from artifacts where id = $1::uuid
-		on conflict (artifact_id) do update set version = null
-	`, artifactID); err != nil {
+	if _, err := exec.Exec(ctx, oweDocumentIndexStatement, artifactID); err != nil {
 		return fmt.Errorf("owe document %s a block index: %w", artifactID, err)
 	}
 	return nil
 }
+
+// queueDocumentIndexOwed is oweDocumentIndex for a version write, which owes the index with its
+// own writes (indexDocument): queued in its write phase (write), after the version's insert,
+// whose artifacts row the statement reads where the transaction creates the document.
+func queueDocumentIndexOwed(ctx context.Context, tx pgx.Tx, artifactID string) error {
+	return writeExec(ctx, tx, fmt.Sprintf("owe document %s a block index", artifactID), oweDocumentIndexStatement, artifactID)
+}
+
+// oweDocumentIndexStatement sets both marks of a debt (oweDocumentIndex) on document $1.
+const oweDocumentIndexStatement = `
+	insert into document_block_versions (artifact_id, store_owed_at) select id, now() from artifacts where id = $1::uuid
+	on conflict (artifact_id) do update set version = null,
+		store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at)
+`
 
 // drainOwedDocument drains one `artifact` row of the re-index queue by owing its document a block
 // index (oweDocumentIndex), which is the whole of that document's re-index, and reports whether it
@@ -887,8 +1142,8 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 // (indexRenderedVersion): references, excerpts, blocks, block texts and the indexed version. It
 // reads the document the server serves (TextWithBlocks) with no transaction held, then, under the
 // document owner's lock, which every version write holds first, re-checks that the latest version
-// is still the one listed and the document still owed; otherwise another writer has indexed it or
-// will, and it does nothing.
+// is still the one listed and the document still owed, by either mark owedDocuments lists it by;
+// otherwise another writer has indexed it or will, and it does nothing.
 //
 // The live text is indexed only where it is the latest version's text: when the document owes no
 // settlement, or owes one but its live markdown equals the version's stored markdown byte for
@@ -904,7 +1159,13 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 // stored state has no block to show, so its latest version's markdown is indexed with no blocks.
 //
 // A pair the index inserts takes the version's created_at, and the source_seq of the event that
-// recorded the version (stampVersionEvent).
+// recorded the version (stampVersionEvent), queued in the step that appends the pass's facts.
+//
+// The pass is the reconciliation's (indexRenderedVersion's tick): it runs only on a document owed
+// by either mark, and wherever it wins it also writes the node of each version of the document
+// that holds none, with no version of its own left out, since this tick writes none. So a version
+// the release before wrote during a roll stands at this tick rather than at the next run of the
+// backfill, whichever mark it left.
 //
 // The transaction reads, extracts and plans the whole index before its first write (queueWrites),
 // so it holds a transaction id only for the index's statements and the commit. Its re-read of the
@@ -946,7 +1207,8 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	var owed bool
 	var markedAt *time.Time
 	err = tx.QueryRow(queued, `
-		select v.number, v.markdown, v.created_at, b.version is null,
+		select v.number, v.markdown, v.created_at,
+		       b.version is null or b.store_owed_at is not null,
 		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = b.artifact_id)
 		from document_block_versions b
 		join lateral (
@@ -971,14 +1233,38 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	case markedAt != nil && markdown != stored:
 		return false, true, nil
 	}
-	if _, err := s.indexRenderedVersion(queued, tx, document.id, version, versionAt, markdown, blocks, nil); err != nil {
+	// The event that recorded this version is read before the index pass: it is the cause every
+	// node and tuple of the pass carries, and on this path it already exists, while on the
+	// request path it does not and the pass's facts travel to the caller instead
+	// (graphstore.Uncaused). A version no event recorded leaves the sentinel, and the rows the
+	// pass writes keep no source_seq either.
+	eventID, err := versionEventID(queued, tx, owner, document.id, version)
+	if err != nil {
 		return false, false, err
 	}
-	if err := stampVersionEvent(queued, tx, owner, document.id, version, versionAt); err != nil {
+	_, stated, err := s.indexRenderedVersion(queued, tx, document.id, refs.OneVersion(document.id, version, versionAt), nil, true, markdown, blocks, nil, nil)
+	if err != nil {
+		return false, false, err
+	}
+	// The stamp goes in the step that appends the pass's facts under the same event: a block_refs
+	// row's source_seq is the legacy_source_seq of the tuple it projects (graphstore.UncausedTuple's
+	// LegacyFromCause), so the row learns it beside the store write that states it.
+	if err := write(queued, tx, func(b *store.WriteBatch) error {
+		if err := graphstore.QueueCaused(queued, b, stated, eventID); err != nil {
+			return err
+		}
+		stampVersionEvent(b, document.id, document.id, version, versionAt, eventID)
+		return nil
+	}); err != nil {
 		return false, false, err
 	}
 	if err := ledger.runQueue(ctx, nil); err != nil {
 		return false, false, err
+	}
+	if s.afterBlockIndexWrite != nil {
+		if err := s.afterBlockIndexWrite(document.id); err != nil {
+			return false, false, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, false, err
@@ -986,15 +1272,16 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	return true, false, nil
 }
 
-// stampVersionEvent gives the edges a re-index of version inserted the source_seq of the event
-// that recorded that version: its artifact.version, or for version 1 the document's
-// artifact.created, or the issue.created of the issue whose spec it seeded. A version write stamps
-// its own edges once it appends its event (refs.Stamp);
-// this is that stamp for a version a build without the block index wrote. It stamps only what the
-// re-index inserted - the block pairs it created at this version, and the document's references
-// it dated versionAt - so an edge rebuild-refs inserted keeps no source_seq. With no such event
-// the edges keep none. The event is read where it is called; the stamps go through write.
-func stampVersionEvent(ctx context.Context, tx pgx.Tx, owner artifactOwner, artifactID string, version int, versionAt time.Time) error {
+// versionEventID is the id of the event that recorded version: its artifact.version, or for
+// version 1 the document's artifact.created, or the issue.created of the issue whose spec it
+// seeded. graphstore.NoEvent, the sentinel, where no event recorded it - a version a build
+// without the block index wrote and nothing else named.
+//
+// It is read before the index pass rather than after it, because what that pass states in the
+// node and tuple store carries this event as its cause and no tuple may be updated once it is
+// appended. The stamp it feeds still runs after the pass: it fills the source_seq of the rows
+// the pass writes.
+func versionEventID(ctx context.Context, tx pgx.Tx, owner artifactOwner, artifactID string, version int) (int64, error) {
 	var eventID int64
 	err := tx.QueryRow(ctx, `
 		select id from events
@@ -1007,20 +1294,386 @@ func stampVersionEvent(ctx context.Context, tx pgx.Tx, owner artifactOwner, arti
 		limit 1
 	`, owner.IssueKey, artifactID, artifactID, strconv.Itoa(version), version == 1).Scan(&eventID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return graphstore.NoEvent, nil
 	}
 	if err != nil {
-		return fmt.Errorf("read the event that recorded version %d of %s: %w", version, artifactID, err)
+		return graphstore.NoEvent, fmt.Errorf("read the event that recorded version %d of %s: %w", version, artifactID, err)
 	}
+	return eventID, nil
+}
+
+// stampVersionEvent queues on b the stamp that gives the edges a re-index of version of document
+// inserted the source_seq of eventID, the event that recorded that version (versionEventID). A
+// version write stamps its own edges once it appends its event (refs.QueueStamp); this is that
+// stamp for a version a build without the block index wrote, and for each version an issue room's
+// pass covers. It stamps only what the re-index inserted - the block pairs it created at this
+// version, of the blocks of document (refs.BlockDocumentSQL: an issue room's rows are keyed by its
+// tree artifact, artifactID, and carry each document's own version numbers), and the references of
+// artifactID it dated versionAt - so an edge rebuild-refs inserted keeps no source_seq. With no
+// such event the edges keep none and nothing is queued. A document that is its own room is its
+// own artifactID. The event is read where it is called, or it is graphstore.LatestEvent, the event
+// the write phase appends right before these stamps (store.LatestEventID): an issue room's
+// settlement queues each document's stamp right after that document's version event
+// (commitRoomVersions). b is the step that appends the pass's facts under the event
+// (indexOwedDocument), or a write step of the caller's beside them (indexOwedRoom,
+// commitRoomVersions).
+func stampVersionEvent(b *store.WriteBatch, artifactID, document string, version int, versionAt time.Time, eventID int64) {
+	if eventID == graphstore.NoEvent {
+		return
+	}
+	source := strconv.FormatInt(eventID, 10)
+	if eventID == graphstore.LatestEvent {
+		source = store.LatestEventID
+	}
+	b.Queue(fmt.Sprintf("stamp the block mentions of version %d of %s", version, document), `
+		update block_refs r set source_seq = `+source+`
+		where r.artifact_id = $1 and r.created_version = $2 and r.source_seq is null
+		  and ($1 = $3 or `+refs.BlockDocumentSQL("r")+` = $3::uuid)
+	`, artifactID, version, document)
+	b.Queue(fmt.Sprintf("stamp the references of version %d of %s", version, document), `
+		update refs set source_seq = `+source+`
+		where from_kind = 'artifact' and from_id = $1 and source_seq is null and created_at = $2
+	`, artifactID, versionAt)
+}
+
+// indexOwed indexes one owed document (indexOwedDocument), or the issue room it is an artifact
+// of, whole (indexOwedRoom).
+func (s *Service) indexOwed(ctx context.Context, document owedDocument) owedOutcome {
+	if document.room != "" {
+		indexed, ahead, unreadable, err := s.indexOwedRoom(ctx, document)
+		return owedOutcome{indexed: indexed, ahead: ahead, unreadable: unreadable, err: err}
+	}
+	indexed, ahead, err := s.indexOwedDocument(ctx, document)
+	return owedOutcome{indexed: indexed, ahead: ahead, err: err}
+}
+
+// indexOwedRoom reconciles the issue room document.room whole, on an owed mark of any of its
+// artifacts - a document its document_rooms rows hold, or its tree artifact (T12a of
+// dispatch://INFRA-1253's plan): never one artifact alone, so no pass writes a document_blocks row
+// keyed by a converted document, and the pass that decides which blocks are gone reads every
+// fragment. It reads the room the server serves over every fragment of its layout (roomTree), with
+// no transaction held, then, under the tree artifact's owner lock, which every version write of
+// the room's documents holds first, re-checks that the room still holds the documents it read,
+// at the revision listed (roomRevisionSQL), with an artifact still owed; otherwise another writer
+// has indexed it or will, and it does nothing.
+//
+// Each fragment is read as today's path reads one document: its live text, here the room's tree
+// parted into its fragments (roomLayout.parts), against the newest version stored of that
+// fragment's document, each document keeping its own history, and a document holding no version
+// yet - the tree artifact before its first, say - read as an empty fragment. The rule that keeps a
+// later edit from being dated to an older version reads the room's pending settlement, keyed by
+// the tree artifact: where the room owes one and any fragment's text differs from its document's
+// version, the room is live ahead and stays owed, for the settlement that writes those versions.
+// Where a fragment does not read back (ErrDocumentUnloadable, ErrDocOutsideSchema), the room is
+// unreadable: it stays owed and nothing of it is indexed, rather than a fragment being indexed as
+// holding no blocks, so no pass removes a block it could not read.
+//
+// Otherwise it runs, in the transaction, the one pass under the tree artifact a settlement of the
+// room runs (indexRoom, over the fragments joined in the room's order), at the newest version of
+// each fragment's document, each document's facts caused by the event that recorded its version
+// (causeRoomFacts), stamps each document's links with that event, and clears the owed mark of every
+// artifact of the room, the tree's own included: the pass's fence (refs.PlanBlocks) clears the
+// marks of the documents it indexes, and a document holding no version is cleared here.
+//
+// The transaction reads, extracts and plans the whole pass before its first write (queueWrites),
+// as indexOwedDocument's does, so it holds a transaction id only for the pass's statements and the
+// commit. Its re-read of the owed rows takes no row lock: every writer of document_block_versions
+// holds the owner's lock of the room's issue, taken above.
+//
+// The pass is the reconciliation's, as for one document: wherever it wins it also writes the node
+// of each version of every document of the room it covers that holds none (indexRenderedVersion's
+// tick, with no version of its own left out).
+//
+// A room no document has joined yet is the tree artifact alone, one fragment, a room that is its
+// own document: its tree is indexed as one, through indexOwedDocument, at its newest version,
+// which the room's revision then is (roomRevisionSQL).
+func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (indexed, liveAhead, unreadable bool, err error) {
+	room := document.room
+	read, err := readDocumentRoom(ctx, s.store.Pool, room)
+	if err != nil {
+		return false, false, false, err
+	}
+	if len(read.layout) == 0 {
+		indexed, liveAhead, err := s.indexOwedDocument(ctx, owedDocument{id: room, version: document.version, markedAt: document.markedAt})
+		return indexed, liveAhead, false, err
+	}
+	documents := read.layout.documents(room)
+	tree, counts, err := s.roomTree(ctx, room, read.layout)
+	switch {
+	case ctx.Err() != nil:
+		return false, false, false, ctx.Err()
+	case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):
+		slog.Warn("dispatch: block index cannot read a fragment of an issue room; the room stays owed and nothing of it is indexed",
+			"room", room, "artifact", document.id, "error", err)
+		return false, false, true, nil
+	case err != nil:
+		return false, false, false, err
+	}
+	parts := read.layout.parts(tree, counts)
+	if parts == nil {
+		return false, false, false, fmt.Errorf("the tree of room %s does not part into its %d fragments", room, len(documents))
+	}
+
+	tx, err := s.store.Pool.Begin(ctx)
+	if err != nil {
+		return false, false, false, err
+	}
+	defer tx.Rollback(ctx)
+	queued, ledger := queueWrites(ctx, tx)
+	owner, _, err := lockArtifactOwner(queued, tx, room)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, false, nil
+	}
+	if err != nil {
+		return false, false, false, err
+	}
+	var revision int
+	var held []string
+	var owed bool
+	var markedAt *time.Time
+	if err := tx.QueryRow(queued, `
+		with marked as (
+			select b.version is null or b.store_owed_at is not null as owed
+			from document_block_versions b
+			where b.artifact_id = $1::uuid
+			   or b.artifact_id in (select d.artifact_id from document_rooms d where d.room = $1::uuid)
+		)
+		select `+roomRevisionSQL("$1::uuid")+`,
+		       array(select d.artifact_id::text from document_rooms d where d.room = $1::uuid order by 1),
+		       coalesce((select bool_or(marked.owed) from marked), false),
+		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = $1::uuid)
+	`, room).Scan(&revision, &held, &owed, &markedAt); err != nil {
+		return false, false, false, fmt.Errorf("re-read the block index owed by room %s: %w", room, err)
+	}
+	if revision != document.version || !owed || !slices.Equal(held, slices.Sorted(slices.Values(documents[1:]))) {
+		return false, false, false, nil
+	}
+	latest, err := readRoomVersions(queued, tx, documents)
+	if err != nil {
+		return false, false, false, err
+	}
+	versions := refs.Versions{}
+	// markdowns is each fragment's own rendering: one that renders as no text holds no block
+	// (withoutSilentFragments).
+	markdowns := make([]string, len(documents))
+	for index, fragment := range documents {
+		if latest[index].number == 0 {
+			parts[index] = &pmdoc.Node{Type: parts[index].Type, Attrs: parts[index].Attrs}
+			continue
+		}
+		versions[fragment] = refs.Version{Number: latest[index].number, At: latest[index].at}
+		markdown, _, err := renderFragment(parts[index])
+		if err != nil {
+			slog.Warn("dispatch: block index cannot render a fragment of an issue room; the room stays owed and nothing of it is indexed",
+				"room", room, "artifact", fragment, "error", err)
+			return false, false, true, nil
+		}
+		if markedAt != nil && markdown != latest[index].markdown {
+			return false, true, false, nil
+		}
+		markdowns[index] = markdown
+	}
+	if len(versions) > 0 {
+		joined, joinedCounts := joinFragments(parts)
+		markdown, offsets, err := renderFragment(joined)
+		if err != nil {
+			return false, false, false, err
+		}
+		offsets = withoutSilentFragments(offsets, parts, func(index int) bool { return markdowns[index] == "" })
+		blocks := offsetBlocks(offsets, read.layout.blockDocuments(room, joined, joinedCounts))
+		// The events that recorded each version are read before the pass, as for one document:
+		// each document's is the cause of the facts the pass states of its blocks.
+		events := make(map[string]int64, len(versions))
+		for indexed, version := range versions {
+			if events[indexed], err = versionEventID(queued, tx, owner, indexed, version.Number); err != nil {
+				return false, false, false, err
+			}
+		}
+		index, err := s.indexRoom(queued, tx, room, versions, nil, true, markdown, blocks, joined, nil)
+		if err != nil {
+			return false, false, false, err
+		}
+		// Each document's part under its own stored event, in id order, the room's references with
+		// the part of the document whose event the stamps below give their rows.
+		facts := roomFactsByDocument(index, roomReferencesDocument(room, versions, events, slices.Sorted(maps.Keys(versions))))
+		if err := causeRoomFacts(queued, tx, room, facts, events, slices.Sorted(maps.Keys(facts))); err != nil {
+			return false, false, false, err
+		}
+		if err := write(queued, tx, func(b *store.WriteBatch) error {
+			for _, indexed := range slices.Sorted(maps.Keys(versions)) {
+				stampVersionEvent(b, room, indexed, versions[indexed].Number, versions[indexed].At, events[indexed])
+			}
+			return nil
+		}); err != nil {
+			return false, false, false, err
+		}
+	}
+	// A document of the room holding no version is no part of the pass's fence, which cleared the
+	// marks of every document it indexed: its own mark goes here, so no mark of the room is left.
+	if err := writeExec(queued, tx, fmt.Sprintf("clear the marks of room %s", room), `
+		update document_block_versions set version = coalesce(version, 0), store_owed_at = null
+		where artifact_id = any($1::uuid[]) and (version is null or store_owed_at is not null)
+	`, documents); err != nil {
+		return false, false, false, err
+	}
+	if err := ledger.runQueue(ctx, nil); err != nil {
+		return false, false, false, err
+	}
+	if s.afterBlockIndexWrite != nil {
+		if err := s.afterBlockIndexWrite(document.id); err != nil {
+			return false, false, false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, false, false, err
+	}
+	return true, false, false, nil
+}
+
+// roomTree is the tree of the issue room room over every fragment of layout, joined as the room
+// renders them, with how many top-level blocks each fragment holds (treeOfFragments): the tree
+// this server holds (heldTree), else the stored room decoded (storedWithUpdates), an empty
+// document where it stores none. A history that does not decode is ErrDocumentUnloadable and a
+// fragment outside the schema ErrDocOutsideSchema, neither failing the room: the block-index
+// reconciliation reads a room through here, and leaves such a room owed (indexOwedRoom).
+func (s *Service) roomTree(ctx context.Context, room string, layout roomLayout) (*pmdoc.Node, []int, error) {
+	fragments := layout.fragments()
+	tree, counts, held, err := s.heldTree(ctx, room, fragments)
+	if err != nil || held {
+		return tree, counts, err
+	}
+	return s.storedWithUpdates(ctx, room, nil, fragments)
+}
+
+// indexRoom is indexRenderedVersion over an issue room, under its tree artifact room, at the
+// version of each fragment's document (versions): the room's own pass, which a settlement of the
+// room and its reconciliation run alike. written is the versions of those this transaction wrote,
+// whose nodes its caller writes after the pass, and tick is set by the reconciliation alone
+// (indexRenderedVersion). It answers what the pass stated, parted by the document each fact is of
+// (roomFacts), and the reference changes the pass moved.
+func (s *Service) indexRoom(ctx context.Context, tx pgx.Tx, room string, versions, written refs.Versions, tick bool, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (roomIndex, error) {
+	var refKey string
+	var heldBlocks, heldDocuments []string
+	if address, created := pendingArtifact(ctx, room); created {
+		// A tree artifact this transaction creates (an issue born converted's) has no row yet,
+		// and so no issue_room_blocks row names it: its key is its registered address's.
+		refKey = address.RefKey
+	} else if err := tx.QueryRow(ctx, `
+		select a.ref_key,
+		       array(select r.block_id from issue_room_blocks r where r.tree_artifact_id = a.id order by r.block_id),
+		       array(select r.document_id::text from issue_room_blocks r where r.tree_artifact_id = a.id order by r.block_id)
+		from artifacts a where a.id = $1`, room).Scan(&refKey, &heldBlocks, &heldDocuments); err != nil {
+		return roomIndex{}, fmt.Errorf("read the documents of the blocks of room %s: %w", room, err)
+	}
+	documents := make(map[string]string, len(heldBlocks)+len(blocks))
+	for index, block := range heldBlocks {
+		documents[block] = heldDocuments[index]
+	}
+	for _, block := range blocks {
+		documents[block.ID] = room
+		if block.Document != "" {
+			documents[block.ID] = block.Document
+		}
+	}
+	changes, write, err := s.indexRenderedVersion(ctx, tx, room, versions, written, tick, markdown, blocks, tree, settled)
+	if err != nil {
+		return roomIndex{}, err
+	}
+	facts, references := roomFacts(write, room, refKey, documents)
+	return roomIndex{changes: changes, facts: facts, references: references}, nil
+}
+
+// roomIndex is what one pass over an issue room did (indexRoom): the reference changes it moved,
+// what it stated, by the document each fact is of, and apart from those the facts of the edges
+// the room's own references moved (Replacement.ArtifactMentions), which no one document's version
+// is the cause of (causeRoomFacts).
+type roomIndex struct {
+	changes    model.ReferenceChanges
+	facts      map[string]graphstore.Uncaused
+	references graphstore.Uncaused
+}
+
+// roomReferencesPart is the key roomFacts parts the facts of the room's own references under: no
+// document id is empty.
+const roomReferencesPart = ""
+
+// roomFacts parts write, what one pass over the issue room room stated, by the document each fact
+// is of (graphstore.Parted, which keeps each part's node write for its cause), so each is caused
+// by its own document's version event (causeRoomFacts): a node of a block of the room (refKey's),
+// and a tuple out of one, is of the document documents names for that block - the one whose
+// fragment holds it, or, for a block the pass stated gone, the one its row held - and every other,
+// an author's node, say, is of the tree artifact, room, whose own fragment belongs to no other
+// document. The tree artifact's own node and a tuple out of it are the room's references, written
+// under the tree artifact, and are answered apart.
+func roomFacts(write graphstore.Uncaused, room, refKey string, documents map[string]string) (map[string]graphstore.Uncaused, graphstore.Uncaused) {
+	parts := graphstore.Parted(write, func(kind, id string) string {
+		switch {
+		case kind == graphstore.KindArtifact && id == refKey:
+			return roomReferencesPart
+		case kind == refs.BlockNodeKind:
+			if block, ok := strings.CutPrefix(id, refKey+"#"); ok {
+				if document, held := documents[block]; held {
+					return document
+				}
+			}
+		}
+		return room
+	})
+	references := parts[roomReferencesPart]
+	delete(parts, roomReferencesPart)
+	return parts, references
+}
+
+// roomFactsByDocument is what causeRoomFacts causes of each document of an issue room's pass:
+// index.facts, with the facts of the room's own references joined into the part of the document
+// whose event stamps their rows (reference, roomReferencesDocument), so each assertion takes its
+// row's source_seq.
+func roomFactsByDocument(index roomIndex, reference string) map[string]graphstore.Uncaused {
+	facts := maps.Clone(index.facts)
+	if facts == nil {
+		facts = map[string]graphstore.Uncaused{}
+	}
+	if len(index.references.Nodes) > 0 || len(index.references.Tuples) > 0 {
+		facts[reference] = graphstore.Joined(facts[reference], index.references)
+	}
+	return facts
+}
+
+// causeRoomFacts queues, as one step through write, what an issue room's pass stated of each of
+// documents, in that order (facts, roomFactsByDocument), each document's part under that
+// document's event (events, by document id: an event the store already holds, or
+// graphstore.LatestEvent for one the write phase appends right before the step,
+// commitRoomVersions); a part of a document no event is given for is appended at the sentinel, as
+// a version no event recorded is. indexOwedRoom causes every document's part at once, in id order;
+// an issue room's settlement causes each written document's right after its own version event.
+func causeRoomFacts(ctx context.Context, tx pgx.Tx, room string, facts map[string]graphstore.Uncaused, events map[string]int64, documents []string) error {
 	return write(ctx, tx, func(b *store.WriteBatch) error {
-		b.Queue(fmt.Sprintf("stamp the block mentions of version %d of %s", version, artifactID), `
-			update block_refs set source_seq = $3
-			where artifact_id = $1 and created_version = $2 and source_seq is null
-		`, artifactID, version, eventID)
-		b.Queue(fmt.Sprintf("stamp the references of version %d of %s", version, artifactID), `
-			update refs set source_seq = $3
-			where from_kind = 'artifact' and from_id = $1 and source_seq is null and created_at = $2
-		`, artifactID, versionAt, eventID)
+		for _, document := range documents {
+			event, held := events[document]
+			if !held {
+				event = graphstore.NoEvent
+			}
+			if err := graphstore.QueueCaused(ctx, b, facts[document], event); err != nil {
+				return fmt.Errorf("append what the pass over room %s stated of %s: %w", room, document, err)
+			}
+		}
 		return nil
 	})
+}
+
+// roomReferencesDocument is the document whose event stampVersionEvent stamps the references a
+// pass over the issue room room wrote with: the room's references are dated at the time of the
+// tree artifact's own version, or of the newest version the pass covers where the tree holds none
+// (indexRenderedVersion, ownVersion), and the stamps, queued in order, give them the event of the
+// first document of order written at that time that an event recorded. A room with no such
+// document is room itself, whose part no event is given for where it holds no version, as its
+// references' rows keep no source_seq.
+func roomReferencesDocument(room string, versions refs.Versions, events map[string]int64, order []string) string {
+	own := ownVersion(room, versions)
+	for _, document := range order {
+		if version, covered := versions[document]; covered && version.At.Equal(own.At) && events[document] != graphstore.NoEvent {
+			return document
+		}
+	}
+	return room
 }

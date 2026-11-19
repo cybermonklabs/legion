@@ -25,11 +25,12 @@ function referenceLines(read: GraphReferences | string): string[] {
   return edges.map(edgeLine);
 }
 
-/** Whether `kind`, a graph node's, is one of the items whose blocks are its own (`ITEM_KINDS`):
- *  the parents a block node naming no document has. One set serves every read of such a node
- *  (`edgeLine`, `nodeLine`), so a part of an ask reads as its ask, as a block of a comment reads
- *  as its comment. */
-function isItemKind(kind: GraphNode["kind"] | undefined): kind is ItemKind {
+/** Whether `kind`, a graph node's parent's, is one of the items whose blocks are its own
+ *  (`ITEM_KINDS`): the parents a block node naming no document has. A parent's kind is an open
+ *  string, where a node's own is one of the read registry's kinds. One set serves every read of
+ *  such a node (`edgeLine`, `nodeLine`), so a part of an ask reads as its ask, as a block of a
+ *  comment reads as its comment. */
+function isItemKind(kind: string | undefined): kind is ItemKind {
   return ITEM_KINDS.some((item) => item === kind);
 }
 

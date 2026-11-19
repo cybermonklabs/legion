@@ -147,6 +147,10 @@ type roomState struct {
 	// A zero closedRead is no record, and closed then says nothing.
 	closed     bool
 	closedRead time.Time
+	// layout is the room's layout (roomLayout) as the newest read of its document recorded it
+	// (recordIssueLocked): the fragments a cold socket's admission rendered the room over, which
+	// the load that admission holds takes rather than reading them again (admittedIssueRead).
+	layout roomLayout
 	// admitting counts the document sockets whose admission holds this record (holdForAdmission):
 	// from the moment it records its read of the issue here until the socket ends. A cold room's
 	// load takes that read instead of reading the issue again (admittedIssueRead), and a close of
@@ -160,8 +164,11 @@ type roomState struct {
 	// (closeReservedRoom). reservedFor is the instance that close checked: a reservation outlasts
 	// that instance when it is retired and a load replaces it on this state before the close
 	// returns, and the replacement is not the reserving close's to answer for (closeRoomBehindHead).
+	// reserved is closed when that close returns, for a caller that waits the reservation out
+	// (awaitReservedClose); nil while no close is reserved.
 	reloading   bool
 	reservedFor *crdt.Doc
+	reserved    chan struct{}
 	// released marks a state the service has forgotten (forgetLocked), so a lookup that found it
 	// before it went takes the document's current state instead.
 	released bool
@@ -695,19 +702,23 @@ func (s *Service) roomClosed(room string) bool {
 }
 
 // issueRead is one read of a document's issue: whether the issue was open, and when the read
-// began. A read sees the issue as of some moment after it began, so a read that began later is at
-// least as fresh as one that began earlier. The zero issueRead is no read at all.
+// began, with the room the document is edited in and that room's layout, which the same statement
+// reads (readDocumentRoom). A read sees the issue as of some moment after it began, so a read that
+// began later is at least as fresh as one that began earlier. The zero issueRead is no read at all.
 type issueRead struct {
-	open bool
-	at   time.Time
+	open   bool
+	at     time.Time
+	room   string
+	layout roomLayout
 }
 
-// readIssue reads whether room's issue is open (issueOpen) on q, stamped with when the read began:
-// the stamp is taken before the query, so the read is never taken for fresher than it is.
-func (s *Service) readIssue(ctx context.Context, q Queryer, room string) (issueRead, error) {
+// readIssue reads whether artifactID's issue is open, the room it is edited in and that room's
+// layout (readDocumentRoom) on q, stamped with when the read began: the stamp is taken before the
+// query, so the read is never taken for fresher than it is.
+func (s *Service) readIssue(ctx context.Context, q Queryer, artifactID string) (issueRead, error) {
 	read := issueRead{at: time.Now()}
-	var err error
-	read.open, err = s.issueOpen(ctx, q, room)
+	room, err := readDocumentRoom(ctx, q, artifactID)
+	read.open, read.room, read.layout = room.open, room.room, room.layout
 	return read, err
 }
 
@@ -719,6 +730,11 @@ func (state *roomState) recordIssueLocked(read issueRead) {
 		return
 	}
 	state.closed, state.closedRead = !read.open, read.at
+	// A close or a reopen the record takes reads no room, and leaves the layout a read of the
+	// document recorded.
+	if read.room != "" {
+		state.layout = read.layout
+	}
 }
 
 // admittedIssueRead is what room's state records of its issue while a document socket's
@@ -735,7 +751,7 @@ func (s *Service) admittedIssueRead(room string) (issueRead, bool) {
 	if state.admitting == 0 || state.closedRead.IsZero() {
 		return issueRead{}, false
 	}
-	return issueRead{open: !state.closed, at: state.closedRead}, true
+	return issueRead{open: !state.closed, at: state.closedRead, room: room, layout: state.layout}, true
 }
 
 // holdForAdmission holds room's state for a document socket's admission, from its read of the

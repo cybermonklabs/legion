@@ -15,7 +15,11 @@ type graphEdgeRow struct {
 
 // graph_edges is one typed relation over refs and every structural column: each seeded relation
 // appears exactly once with its kind, anchors that are JSON null or absent produce nothing, and
-// the guard in 0032 leaves well-formed uuid anchors alone.
+// the guard in 0032 leaves well-formed uuid anchors alone. Beside the fixture's relations stands
+// the one constrained_by tuple from each kind of the lens catalogue to its source, which every
+// migrated store holds (migrations 20261116123354 and 20261116123355) and the view's tuple arm
+// answers: they are read from the store as the seed wrote them, so a kind the seed adds or drops
+// moves this expectation with it.
 func TestGraphEdgesUnionsMentionsWithEveryStructuralRelation(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
@@ -84,6 +88,28 @@ func TestGraphEdgesUnionsMentionsWithEveryStructuralRelation(t *testing.T) {
 		{"message", ids.MessageReply, "replies_to", "message", ids.Message, false},
 		{"ask", ids.PlainAsk, "followed_by", "session", "s1", false},
 		{"issue", "CORE-2", "affects", "component", "CORE/web", false},
+	}
+	seeded, err := store.Pool.Query(ctx, `
+		select from_id, to_id from graph_tuples
+		where from_kind = 'lens_kind' and kind = 'constrained_by' and to_kind = 'constraint' and asserted`)
+	if err != nil {
+		t.Fatalf("read the lens catalogue's seeded sources: %v", err)
+	}
+	defer seeded.Close()
+	catalogue := 0
+	for seeded.Next() {
+		row := graphEdgeRow{FromKind: "lens_kind", Kind: "constrained_by", ToKind: "constraint"}
+		if err := seeded.Scan(&row.FromID, &row.ToID); err != nil {
+			t.Fatalf("read a seeded source of the lens catalogue: %v", err)
+		}
+		want = append(want, row)
+		catalogue++
+	}
+	if err := seeded.Err(); err != nil {
+		t.Fatalf("read the lens catalogue's seeded sources: %v", err)
+	}
+	if catalogue == 0 {
+		t.Fatal("the migrated store holds no constrained_by tuple of the lens catalogue, which its migrations seed")
 	}
 	sortGraphEdges(got)
 	sortGraphEdges(want)

@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -90,14 +91,17 @@ func (h *memoryHarness) waitForSettlement(t *testing.T, upload uploadResult) {
 }
 
 // waitForSettled waits until a document has settled every write it has had: the settlement that
-// has read every update deletes the document's doc_settlements_pending row as it commits.
+// has read every update deletes the doc_settlements_pending row as it commits, which is keyed by
+// the room the document is edited in (documentRoom) - its issue's room for a role document of a
+// converted issue, the document itself otherwise - as the settlement that clears it is.
 func (h *memoryHarness) waitForSettled(t *testing.T, artifactID string) {
 	t.Helper()
+	room := documentRoom(t, h.database, artifactID)
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
 		var owed bool
 		if err := h.database.Pool.QueryRow(context.Background(),
-			`select exists(select 1 from doc_settlements_pending where artifact_id = $1)`, artifactID,
+			`select exists(select 1 from doc_settlements_pending where artifact_id = $1)`, room,
 		).Scan(&owed); err != nil {
 			t.Fatalf("read the document's pending settlement: %v", err)
 		}
@@ -445,14 +449,15 @@ func (h *memoryHarness) writeOwedBlockIndex(t *testing.T, service *docs.Service)
 	}
 }
 
-// owedDocumentNames names each document still owed a block index, with the marked_at of its
-// pending settlement where it has one: a document live ahead owes one.
+// owedDocumentNames names each document still owed a block index, with the marked_at of the
+// pending settlement of the room it is edited in where it has one (refs.DocumentRoomSQL, the key
+// that row takes): a document live ahead owes one.
 func (h *memoryHarness) owedDocumentNames(t *testing.T) []string {
 	t.Helper()
 	rows, err := h.database.Pool.Query(context.Background(), `
 		select owed.artifact_id::text, pending.marked_at
 		from document_block_versions owed
-		left join doc_settlements_pending pending on pending.artifact_id = owed.artifact_id
+		left join doc_settlements_pending pending on pending.artifact_id = `+refs.DocumentRoomSQL("owed.artifact_id")+`
 		where owed.version is null
 		order by owed.artifact_id
 	`)

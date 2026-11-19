@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -59,11 +60,21 @@ with q as (select $1::tsquery as tsq, $4::text as term, '{}'::text[] as own_keys
                   ''::text as status_filter, ''::text as author_filter, null::timestamptz as updated_since),
 `
 
+// searchTermDocument is true of the artifacts row aliased alias while it is a document the counts
+// hold the words of: a doc, and no issue's decisions query (refs.DecisionsQuerySQL), whose versions
+// render a view over decision nodes and whose row is in no list of its issue's documents. An
+// issue's tree artifact is no doc. Both write versions, so both have document_search rows
+// (migration 20261101182454 puts no kind filter on it), and neither is an item: the issue holds
+// its spec and its other documents.
+func searchTermDocument(alias string) string {
+	return `(` + alias + `.kind = 'doc' and not ` + refs.DecisionsQuerySQL(alias) + `)`
+}
+
 // searchTermItemsSQL selects the search vector of every searchable item of the project
 // {project} stands for, one row per item, each kind scoped exactly as searchKeywordLegsSQL scopes
-// it: an issue, each doc artifact's row in document_search (the vector of the version search
-// reads), a comment or an ask by its issue's project or else its document's, a message by its
-// issue's.
+// it: an issue, each document's row in document_search (the vector of the version search reads;
+// searchTermDocument), a comment or an ask by its issue's project or else its document's, a
+// message by its issue's.
 //
 // The document arm reads document_search (migration 20261101182447) where it read each
 // artifact's latest version through a lateral join over artifact_versions, for two reasons.
@@ -73,12 +84,12 @@ with q as (select $1::tsquery as tsq, $4::text as term, '{}'::text[] as own_keys
 // definition of a document's words. The two readings differ only for a document whose latest
 // version carries no markdown, which document_search does not hold and the lateral read as a
 // null vector.
-const searchTermItemsSQL = `
+var searchTermItemsSQL = `
 select i.search from issues i where i.project_key = {project}
 union all
 select d.search from document_search d
   join artifacts a on a.id = d.artifact_id
- where a.kind = 'doc' and a.project_key = {project}
+ where ` + searchTermDocument("a") + ` and a.project_key = {project}
 union all
 select c.search from comments c
   left join issues i on i.key = c.issue_key
@@ -120,10 +131,10 @@ from search_term_totals where project_key = $1 for update`
 
 // searchTermQueueProjectSQL is the project the item of a queue row q belongs to, read exactly as
 // searchTermItemsSQL reads an item's: an issue's and a message's from its issue, a comment's and
-// an ask's from its issue else its document, a document's from its artifact, which must be a doc
-// as that statement's arm requires. Each owner is a scalar subquery on a primary key, so the
-// rows the queue holds bound what a pass reads: a pass with an empty queue reads no item at all,
-// which is R1.
+// an ask's from its issue else its document, a document's from its artifact, which must be a
+// document the counts hold (searchTermDocument) as that statement's arm requires. Each owner is a
+// scalar subquery on a primary key, so the rows the queue holds bound what a pass reads: a pass
+// with an empty queue reads no item at all, which is R1.
 //
 // A row whose owner is gone names no project. No pass can tell whose counts held that item, so
 // searchTermQueueSweep drops the row, and the counts it was to correct stay as they are: a
@@ -132,9 +143,9 @@ from search_term_totals where project_key = $1 for update`
 // project's snapshot is what asks for one - `update search_term_totals set snapshot = null where
 // project_key = $1`, after which the next pass counts every item of that project again. No
 // production code path deletes an issue or an artifact, so no row reaches this sweep today.
-const searchTermQueueProjectSQL = `coalesce(
+var searchTermQueueProjectSQL = `coalesce(
            (select i.project_key from issues i where i.key = q.issue_key),
-           (select a.project_key from artifacts a where a.id = q.artifact_id and (q.kind <> 'document' or a.kind = 'doc')))`
+           (select a.project_key from artifacts a where a.id = q.artifact_id and (q.kind <> 'document' or ` + searchTermDocument("a") + `)))`
 
 // searchTermQueueItemKeySQL names the item a queue row is about, which is what a pass groups its
 // rows by: a comment, an ask and a message are their own id, an issue is its key, and a document
@@ -149,13 +160,13 @@ const searchTermQueueItemKeySQL = `coalesce(item_id::text, issue_key, artifact_i
 // subtract that item's words and count one item fewer.
 //
 // Parameters: $1 the project key.
-const searchTermQueuedItemSQL = `
+var searchTermQueuedItemSQL = `
     select i.search, true as present from issues i
      where it.kind = 'issue' and i.key = it.issue_key and i.project_key = $1
     union all
     select d.search, true from document_search d
       join artifacts a on a.id = d.artifact_id
-     where it.kind = 'document' and d.artifact_id = it.artifact_id and a.kind = 'doc' and a.project_key = $1
+     where it.kind = 'document' and d.artifact_id = it.artifact_id and ` + searchTermDocument("a") + ` and a.project_key = $1
     union all
     select c.search, true from comments c
       left join issues i on i.key = c.issue_key
@@ -194,7 +205,7 @@ const searchTermQueuedItemSQL = `
 // behind are the writes of the moment the pass ran.
 //
 // Parameters: $1 the project key.
-const searchTermStatsStep = `
+var searchTermStatsStep = `
 with snapshot as materialized (
   select pg_current_snapshot() as taken, statement_timestamp() as at
 ),
@@ -283,12 +294,13 @@ returning t.items`
 
 // searchTermQueueSweep drops the queued changes no pass can apply: a row whose owner names no
 // project, which is an item whose issue or artifact has been deleted, and a document row for an
-// artifact that is no doc, which no project's counts ever held - migration 20261101182454 puts
-// no kind filter on document_search, deliberately, because every reader of it joins artifacts.
+// artifact the counts hold no words of (searchTermDocument) - an issue's tree, which is no doc, and
+// its decisions query - which no project's counts ever held: migration 20261101182454 puts no kind
+// filter on document_search, deliberately, because every reader of it joins artifacts.
 // A row is read only once its writer's transaction has committed, and that writer could not
 // have written an item whose owner it could not see, so a row naming no project here names none
 // later either.
-const searchTermQueueSweep = `delete from search_term_queue q where ` + searchTermQueueProjectSQL + ` is null`
+var searchTermQueueSweep = `delete from search_term_queue q where ` + searchTermQueueProjectSQL + ` is null`
 
 // searchTermRefresh is what one project's refresh did: the project's item count (the picker's N),
 // the mode it ran in, and how many items it applied - the queued items for a step, every item of
@@ -333,13 +345,73 @@ func refreshSearchTermStats(ctx context.Context, pool *store.Pool, project strin
 		}
 		return searchTermRefresh{Items: items, Mode: searchTermModeStep, Changes: changes}, tx.Commit(ctx)
 	}
-	if _, err := tx.Exec(ctx, searchTermStatsClear, project); err != nil {
-		return searchTermRefresh{}, err
-	}
-	if err := tx.QueryRow(ctx, searchTermStatsRebuild, project, searchTermItemsTSStat).Scan(&items); err != nil {
+	items, err = rebuildSearchTermStats(ctx, tx, project)
+	if err != nil {
 		return searchTermRefresh{}, err
 	}
 	return searchTermRefresh{Items: items, Mode: searchTermModeFull, Changes: items}, tx.Commit(ctx)
+}
+
+// rebuildSearchTermStats counts every item of project again inside tx, which holds the project's
+// totals row (searchTermTotalsMode), and answers the project's item count: the project's rows go
+// and searchTermStatsRebuild writes them again.
+func rebuildSearchTermStats(ctx context.Context, tx pgx.Tx, project string) (int, error) {
+	if _, err := tx.Exec(ctx, searchTermStatsClear, project); err != nil {
+		return 0, err
+	}
+	var items int
+	if err := tx.QueryRow(ctx, searchTermStatsRebuild, project, searchTermItemsTSStat).Scan(&items); err != nil {
+		return 0, err
+	}
+	return items, nil
+}
+
+// RecountSearchTermStatsTx counts again, inside tx, the term statistics of projects and of every
+// project a search_term_queue row tx itself wrote names, and answers the projects it counted, in
+// key order, and how many of those queue rows it deleted. It is the erase's
+// (`envoy-dispatch erase`, grapherase.Erase), whose deletes and rewrites of items queue each
+// item's old vector, which holds the erased words, while the statistics may count those words
+// already: projects names the projects whose documents' search rows the erase moved, which a
+// document_search row deleted queues nothing for.
+//
+// Each project is counted as a full pass counts one (rebuildSearchTermStats), under its totals
+// row's lock (searchTermTotalsMode) and reading the items as tx sees them, so the counts are the
+// erase's own result and hold no word the erase removed. The queue rows tx wrote go first: the
+// count already holds what they say, and the drain inside it cannot be relied on for them, since
+// pg_visible_in_snapshot answers for the xid of the transaction taking the snapshot by where that
+// xid falls against the snapshot's xmax.
+func RecountSearchTermStatsTx(ctx context.Context, tx pgx.Tx, projects []string) ([]string, int64, error) {
+	rows, err := tx.Query(ctx, `delete from search_term_queue q where q.xid = pg_current_xact_id()
+returning `+searchTermQueueProjectSQL)
+	if err != nil {
+		return nil, 0, err
+	}
+	named, err := pgx.CollectRows(rows, pgx.RowTo[*string])
+	if err != nil {
+		return nil, 0, err
+	}
+	counted := slices.Clone(projects)
+	for _, project := range named {
+		if project != nil {
+			counted = append(counted, *project)
+		}
+	}
+	slices.Sort(counted)
+	counted = slices.Compact(counted)
+	for _, project := range counted {
+		if _, err := tx.Exec(ctx, searchTermTotalsClaim, project); err != nil {
+			return nil, 0, err
+		}
+		var items int
+		var step bool
+		if err := tx.QueryRow(ctx, searchTermTotalsMode, project).Scan(&items, &step); err != nil {
+			return nil, 0, err
+		}
+		if _, err := rebuildSearchTermStats(ctx, tx, project); err != nil {
+			return nil, 0, err
+		}
+	}
+	return counted, int64(len(named)), nil
 }
 
 // RefreshEverySearchTermStats is one pass of RunSearchTermStatsRefresh: every project, each in its
@@ -514,7 +586,7 @@ type relatedTerms struct {
 //
 // Parameters: $1 project, $2 text, $3 excluded issue key (empty for none), $4 excluded document
 // artifact id (null for none), $5 the title.
-const relatedTermsSQL = `
+var relatedTermsSQL = `
 with body as (
   select regexp_replace(search_text($2::text), '(?s):::ask\{.*?:::', '', 'g') as text
 ),
@@ -533,7 +605,7 @@ own_items as (
     join lateral (select v.search from artifact_versions v
                   where v.artifact_id = a.id and v.created_at <= t.refreshed_at
                   order by v.number desc limit 1) v on true
-   where a.kind = 'doc' and a.project_key = $1 and (a.issue_key = $3 or a.id = $4::uuid)
+   where ` + searchTermDocument("a") + ` and a.project_key = $1 and (a.issue_key = $3 or a.id = $4::uuid)
   union all
   select c.search from comments c cross join totals t
     left join issues i on i.key = c.issue_key

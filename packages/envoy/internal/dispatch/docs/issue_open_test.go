@@ -617,15 +617,17 @@ func TestAJoinedFlushTheCloseCutsFailsAndMarksNothing(t *testing.T) {
 }
 
 // A writer of a closed issue's documents flushes the room before its own write, and the close can
-// cut that run: WriteIssueAskStates writes each withdrawn ask's state into the document, on the
-// issue's row and owner-verified, through a live write whose Ledger.flushThrough stores the room's
-// queued keystrokes first. The gate admits the keystroke the room took in time and refuses the one
-// it took after the margin, and the write must fail there rather than carry on: its own update is
-// derived from a room that holds the refused keystroke, so stored on top of the admitted prefix it
-// would store a document the store refused the makings of. Nothing of the run is stored, no ask
-// state with it, and both keystrokes are left to the room's own call.
+// cut that run: while another build serves (serveTwoBuilds), WriteIssueAskStates writes each
+// withdrawn ask's state into the document, on the issue's row and owner-verified, through a live
+// write whose Ledger.flushThrough stores the room's queued keystrokes first. The gate admits the
+// keystroke the room took in time and refuses the one it took after the margin, and the write
+// must fail there rather than carry on: its own update is derived from a room that holds the
+// refused keystroke, so stored on top of the admitted prefix it would store a document the store
+// refused the makings of. Nothing of the run is stored, no ask state with it, and both keystrokes
+// are left to the room's own call.
 func TestWritingIssueAskStatesOnARunTheCloseCutsStoresNothing(t *testing.T) {
 	database := storetest.Open(t)
+	serveTwoBuilds(t, database)
 	artifactID := createDocument(t, database, "before")
 	service, server := newHeldAppendsService(t, database)
 	seedServiceText(t, service, artifactID, "Context\n\n"+regionBlock)

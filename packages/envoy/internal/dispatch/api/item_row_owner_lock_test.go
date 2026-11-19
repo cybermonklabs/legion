@@ -164,9 +164,11 @@ var itemRowLockTable = []itemRowLockCase{
 		ready:    readyAskEdit,
 	},
 	{
+		// The answer route writes the ask's row through the one writer of an ask's answer state
+		// (asks.Settled.Queue), which its ledger queues under the owner lock the route took.
 		name:     "the ask answer route",
-		file:     "internal/dispatch/api/ask_transitions.go",
-		function: "answerTransition",
+		file:     "internal/dispatch/asks/settle.go",
+		function: "Queue",
 		ready:    readyAskAnswer,
 	},
 	{

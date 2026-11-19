@@ -77,6 +77,45 @@ func TouchedTables(sql string) []string {
 	return touchedNames(readMigration(sql).code)
 }
 
+// Statements are the statements a migration runs, in order, read as TouchedTables reads them
+// (readMigration): its comments are gone, each string literal and the body of each function it
+// defines reads as an empty literal, and a DO block's body is read as statements of its own, so
+// a DO block reads as "do begin <its first statement>", then each of its other statements, then
+// "end". Each is the text between two semicolons that stand outside a literal and a quoted name,
+// its words one space apart. A caller that holds a migration to more than the tables it locks -
+// every name a statement gives, the kind of statement that gives it - reads what the census
+// reads, so a name inside a function's body or a comment is no statement's.
+func Statements(sql string) []string {
+	code := readMigration(sql).code
+	var statements []string
+	var statement strings.Builder
+	spaced := false
+	_ = scanSQL(code, func(token sqlToken) error {
+		text := code[token.start:token.end]
+		switch {
+		case token.kind == sqlSpace:
+			spaced = statement.Len() > 0
+		case text == ";":
+			if statement.Len() > 0 {
+				statements = append(statements, statement.String())
+				statement.Reset()
+			}
+			spaced = false
+		default:
+			if spaced {
+				statement.WriteByte(' ')
+			}
+			spaced = false
+			statement.WriteString(text)
+		}
+		return nil
+	})
+	if statement.Len() > 0 {
+		statements = append(statements, statement.String())
+	}
+	return statements
+}
+
 // touchedNames names, sorted and once each, the tables a migration's code names (touches).
 func touchedNames(code string) []string {
 	var names []string

@@ -26,10 +26,9 @@ const redactedArgument = "[redacted]"
 // minRedactedBytes is the shortest handed-out value, and the shortest string of a stored JSON
 // value, that a release redacts wherever it occurs. A shorter one is left as written: marking
 // every place a few bytes occur would replace every short common word, a user name or `true`,
-// and show the value by where the marks land, and a credential that short is not one
-// (dispatch://INFRA-3801/artifact/decisions-md, "What a release log redacts"). The rule at the cut
-// has no minimum: an argument the cut ended loses any end, down to one byte, that starts a value
-// of this length or more.
+// and show the value by where the marks land, and a credential that short is not one.
+// The rule at the cut has no minimum: an argument the cut ended loses any end, down to one byte,
+// that starts a value of this length or more.
 const minRedactedBytes = 8
 
 // credentialToken is one token shape a release redacts wherever it came from: the prefix that

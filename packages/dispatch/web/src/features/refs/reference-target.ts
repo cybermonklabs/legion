@@ -60,6 +60,7 @@ import { prefixReference, routeWithWholeIds, type TextSource } from "./text-refe
  * failed (a 503 past its retries) recovers on the open page while a healthy one stays quiet. It
  * is fetched even over the data it holds, which an event's refetch that failed leaves fresh by
  * age (`staleTime: Infinity`).
+ * An agent conversation's artifact read (`agentArtifactQuery`) takes the same rule.
  */
 const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
   query.state.status === "error" ? "always" : false;
@@ -119,6 +120,11 @@ export const agentArtifactQuery = (session: string | undefined, slug: string | u
   queryOptions({
     queryKey: ["agent-artifacts", session, slug],
     queryFn: () => api.getAgentArtifact(session ?? "", slug ?? ""),
+    // Fetched again only by an event that can change it - an issue-less message of the agent's
+    // conversation, since an upload there appends no event of its own - or on focus after it
+    // failed (`refetchFailedOnFocus`).
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchOnWindowFocus: refetchFailedOnFocus,
   });
 
 /** A document's live text, or one immutable version of it when the reference pins a version. */

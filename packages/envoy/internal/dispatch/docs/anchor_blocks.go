@@ -4,14 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+// AnchorBlockBackfillActor is who an anchor block backfill records as the writer of each
+// anchored_in it states: the command is nobody's act.
+var AnchorBlockBackfillActor = model.Actor{Kind: "system", ID: "dispatch-anchor-block-backfill"}
 
 // AnchorBlockBackfill reports how many legacy anchor rows gained their stable block identity.
 type AnchorBlockBackfill struct {
@@ -22,7 +28,8 @@ type AnchorBlockBackfill struct {
 
 // BackfillAnchorBlocks resolves legacy quote anchors that still have one matching passage.
 // Rows with a missing or ambiguous quote stay unchanged, so the command is idempotent and never
-// guesses a block for an old row.
+// guesses a block for an old row. A comment's anchor it gives a block states its anchored_in to
+// that block in the transaction that writes the block id (pinCommentAnchorBlock).
 //
 // It writes comment and ask rows while the server serves them, so it takes each row's owner
 // lock before it writes that row, as every other serving writer of an item row does
@@ -119,7 +126,9 @@ func (s *Service) anchorBlockCandidates(ctx context.Context, table string) ([]st
 //   - the quote's block, which is document work: it reads the document through this transaction,
 //     as a write route's document work reads through its own (Service.Join), and the reads it
 //     runs are reads, so the transaction still holds no transaction id when they are done;
-//   - the update, the first and only statement that gives this transaction a transaction id;
+//   - the update, the first statement that gives this transaction a transaction id, and for a
+//     comment whose row names a node, the anchored_in its pinned block states, a write after it
+//     and the only other statement of the window (pinCommentAnchorBlock);
 //   - the commit.
 //
 // The guard the update carries,
@@ -182,16 +191,64 @@ func (s *Service) backfillAnchorBlock(ctx context.Context, table string, kind re
 		return false, true, nil
 	}
 
+	pinned, err := s.pinAnchorBlock(ctx, tx, table, id, blockID)
+	if err != nil {
+		return false, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, false, fmt.Errorf("commit the %s anchor %s backfill: %w", table, id, err)
+	}
+	return pinned, false, nil
+}
+
+// pinAnchorBlock writes blockID into the anchor of row id of table in tx where that anchor still
+// names no block, and answers whether it did. An ask's anchor is written on its own; a comment's
+// with its anchored_in (pinCommentAnchorBlock).
+func (s *Service) pinAnchorBlock(ctx context.Context, tx pgx.Tx, table, id, blockID string) (bool, error) {
+	if table == "comments" {
+		return s.pinCommentAnchorBlock(ctx, tx, id, blockID)
+	}
 	command, err := tx.Exec(ctx, fmt.Sprintf(`
 		update %s
 		set anchor = jsonb_set(anchor, '{block_id}', to_jsonb($2::text), true)
 		where id = $1 and nullif(anchor->>'block_id', '') is null
 	`, table), id, blockID)
 	if err != nil {
-		return false, false, fmt.Errorf("update %s anchor %s: %w", table, id, err)
+		return false, fmt.Errorf("update %s anchor %s: %w", table, id, err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, false, fmt.Errorf("commit the %s anchor %s backfill: %w", table, id, err)
+	return command.RowsAffected() > 0, nil
+}
+
+// pinCommentAnchorBlock writes blockID into the anchor of comment id in tx where that anchor still
+// names no block, and states the anchored_in the anchor now names (graphstore.AnchoredIn), in the
+// same transaction: the comment's row, which the update locks, then the tuple, dated now by
+// AnchorBlockBackfillActor at the sentinel, since the backfill appends no event. The tuple's far
+// end is read off the row the update leaves (graphstore.CommentAnchoredInSQL), so an anchor the
+// refresh orphaned, or a comment the store holds no node of, states none. tx holds the comment's
+// owner lock (backfillAnchorBlock), as a settlement that refreshes the anchors holds its
+// document owner's, and it takes no owner row: the refresh writes only the anchor's quote and
+// orphan flag, never its block, and the two meet at the lock and the row alone.
+func (s *Service) pinCommentAnchorBlock(ctx context.Context, tx pgx.Tx, id, blockID string) (bool, error) {
+	var block *string
+	err := tx.QueryRow(ctx, `
+		update comments c
+		set anchor = jsonb_set(c.anchor, '{block_id}', to_jsonb($2::text), true)
+		where c.id = $1 and nullif(c.anchor->>'block_id', '') is null
+		returning case when c.node_kind is not null then `+graphstore.CommentAnchoredInSQL("c")+` end
+	`, id, blockID).Scan(&block)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
 	}
-	return command.RowsAffected() > 0, false, nil
+	if err != nil {
+		return false, fmt.Errorf("update comments anchor %s: %w", id, err)
+	}
+	if block == nil || !graphstore.AddressFits(*block) {
+		return true, nil
+	}
+	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{
+		graphstore.AnchoredIn(id, *block, true, AnchorBlockBackfillActor, time.Now().UTC(), graphstore.NoEvent),
+	}); err != nil {
+		return false, fmt.Errorf("state comment %s's anchored_in: %w", id, err)
+	}
+	return true, nil
 }

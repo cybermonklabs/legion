@@ -204,17 +204,24 @@ func (f *fakeGitHubApp) handler(t *testing.T) http.Handler {
 
 func newArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp) (http.Handler, *store.Store) {
 	t.Helper()
+	handler, database, _ := newTestServer(t, architectureAppOptions(t, fake))
+	return handler, database
+}
+
+// architectureAppOptions are the options of a test server whose GitHub App reads fake, which a
+// caller sets the rest of its options on.
+func architectureAppOptions(t *testing.T, fake *fakeGitHubApp) testServerOptions {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	github := githubtest.Server(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP})
-	handler, database, _ := newTestServer(t, testServerOptions{
+	return testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: github,
-	})
-	return handler, database
+	}
 }
 
 // archFiles and infraFiles are the models of two sources with no component id in common:

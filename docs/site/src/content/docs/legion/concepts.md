@@ -115,7 +115,7 @@ Every issue Legion admits becomes the root of a **tree**, and an **architect** o
 admission to close. The architect:
 
 1. claims the issue in Dispatch, so no other session works it alongside Legion;
-2. extends your issue's spec in place, writing each open question as a decision block for you to
+2. extends your issue's spec in place, writing each open question as an ask block for you to
    answer;
 3. asks you to approve the spec (the [design gate](#the-design-gate));
 4. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
@@ -278,7 +278,7 @@ Its tree stays live for its children, and `waitingOn` in `legion state` names th
 wait began. Your act on any ask of the root answers it, whichever ask the wait names: your answer,
 resolution, or reply that hands an open ask back to the agent; so does your approval or changes
 request of the root's spec, and so does the spec's design gate standing open. The wait also ends
-when nothing is asked of you any more: Dispatch retracts the question because its decision block
+when nothing is asked of you any more: Dispatch retracts the question because its ask block
 left the spec, a session closes it, or a session hands it back to the agent's turn. The answered
 root goes into the waiting line's first part, among the issues whose work came back, oldest first,
 and so behind every issue of that part whose work came back before it, a root's own first phase
@@ -325,7 +325,7 @@ no new run of the tree. A root you parked, by contrast, starts a new run when yo
 ## The design gate
 
 By default (`gates.design: [spec]`), no phase starts until a person approves the root issue's
-spec. The architect settles the spec's decision blocks with you first, then asks for approval with a
+spec. The architect settles the spec's ask blocks with you first, then asks for approval with a
 summary of what the tree will do. Where the tree builds a page you open, or changes one a lot, the
 architect shows you that page first — pictures, or a page you can click — and gets your answer
 before it asks you to approve the spec; a small change, such as a label or a style fix, usually
@@ -334,21 +334,19 @@ header or from the approval question in your Dispatch Inbox; **Request changes**
 your reason.
 
 Approval is pinned to a version: a later edit to the spec closes the gate again until someone
-approves the new version. Your own answer to a decision block in the approved spec is the one
-exception: when that answer is the whole change since the version you approved, Dispatch records
-your approval at the new version and the gate reopens, so the architect asks you for nothing; when
-the answer means the spec's text changes too, the architect rewrites it and asks you to approve
-again, naming what changed since your approval. Work already in flight carries on, through its
-merge: the gate holds a tree's start, and nothing after it. The daemon only reads approvals;
-nothing in Legion approves a spec on a person's behalf, and the approval Dispatch records at your
-answer is yours, in your name.
+approves the new version. Your answer to an ask block writes no version, so it neither closes
+the gate nor approves the spec. When the architect adds an ask to an approved spec, that version
+closes the gate. After you answer, the architect writes what the answer changes and asks you to
+approve again, naming what changed since your approval. Work already in flight carries on,
+through its merge: the gate holds a tree's start, and nothing after it. The daemon only reads
+approvals; nothing in Legion approves a spec on a person's behalf.
 
 `gates.design` is a list, so a deployment can ask for more than one document of the root issue:
-`decisions` is the issue's decisions document, `criteria` its Verification document, and `spec`
-its primary document. The daemon keeps one gate record for each step listed, and the tree starts
-only once a person has approved every one of them; each closes on its own document's next
-version. A deployment that does not want the gate sets `gates.design: []`, and the tree starts as
-soon as the architect has written its spec.
+`criteria` is the issue's Verification document, and `spec` its primary document. The daemon
+keeps one gate record for each step listed, and the tree starts only once a person has approved
+every one of them; each closes on its own document's next version. A deployment that does not
+want the gate sets `gates.design: []`, and the tree starts as soon as the architect has written
+its spec.
 
 ## Handoffs on the Dispatch issue
 

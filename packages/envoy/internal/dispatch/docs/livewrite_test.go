@@ -280,7 +280,7 @@ func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *t
 		t.Fatal(err)
 	}
 	waitForLandedAppends(t, service, artifactID)
-	tree, err := service.storedTree(context.Background(), artifactID)
+	tree, err := service.storedTree(context.Background(), roomTarget(artifactID))
 	if err != nil {
 		t.Fatalf("read the stored document: %v", err)
 	}

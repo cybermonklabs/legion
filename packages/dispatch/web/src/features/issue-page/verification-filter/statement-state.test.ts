@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 
-import type { Artifact, ArtifactBlock, CheckBlock, IssueDetails } from "../../../api/types";
+import type { Artifact, CheckBlock, IssueDetails } from "../../../api/types";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NODE_STATE_WORDS, RESULT_STANDS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
 import { blockNodeId } from "../tree-drafts";
 import { treeRows } from "../tree-fold";
+import type { TreeAnswerNode } from "../tree-read/tree-read";
 import {
   COMMIT_CHARACTERS,
   namedCommit,
@@ -410,14 +411,26 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
     false
   );
   const statement = `dispatch://${ISSUE_KEY}/${SPEC_SLUG}#b-r1`;
-  const block = (id: string, type: string, serves?: string): ArtifactBlock => ({
-    attributes: serves === undefined ? [] : [{ kind: "block[]", name: "serves", value: serves }],
-    from: 0,
+  // A node of the tree read's answer: a typed block of `document`, at `position` in it.
+  const answered = (
+    id: string,
+    supertag: string,
+    parent: string,
+    document: Artifact,
+    position: number,
+    text: string
+  ): TreeAnswerNode => ({
+    attributes: {},
+    author: [],
+    document: { artifact_id: document.id, position, slug: document.slug },
     id,
-    references: { asks: 0, comments: 0 },
-    to: 1,
-    token: id,
-    type,
+    made_at: "2026-11-05T00:00:00Z",
+    parent,
+    rank: null,
+    state: "live",
+    supertag,
+    text,
+    visibility: "project",
   });
   const issue: IssueDetails = {
     advances: [],
@@ -478,13 +491,38 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
       ],
       spec_artifact_id: spec.id,
     },
-    documents: [
-      { artifactId: spec.id, blocks: [block("r1", "requirement")] },
-      {
-        artifactId: verification.id,
-        blocks: checks.map((one) => block(one.block_id, "check", statement)),
-      },
-    ],
+    // The tree read's answer: the statement under the issue, and each check under it, which it
+    // serves.
+    tree: {
+      converted: false,
+      cursor: null,
+      nodes: [
+        answered("r1", "requirement", ISSUE_KEY, spec, 0, "The page draws it."),
+        ...checks.map((one, at) =>
+          answered(one.block_id, "check", "r1", verification, at, one.text)
+        ),
+        // Each result under its check, as the read answers it.
+        ...checks.flatMap((one) =>
+          (one.results ?? []).map(
+            (held): TreeAnswerNode => ({
+              attributes: {},
+              author: [],
+              id: held.id,
+              made_at: held.created_at,
+              parent: one.block_id,
+              rank: null,
+              state: "live",
+              supertag: "result",
+              text: held.observed,
+              visibility: "project",
+            })
+          )
+        ),
+      ],
+      tree: null,
+      tuples: checks.map((one) => ({ from: one.block_id, kind: "serves", to: "r1" })),
+      view_of: null,
+    },
     issue,
     results: { checks: [...checks], issue: ISSUE_KEY, verification_artifact_id: verification.id },
   });

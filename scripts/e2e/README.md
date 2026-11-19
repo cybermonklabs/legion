@@ -2276,10 +2276,13 @@ Every verdict but the pass exits non-zero: 1, or the stopping signal's 129, 130 
 
 `STAGE4B_DESIGN_GATE=root-issues`, refused without a `STAGE4B_UNTIL` of `spec-posted` or a checkpoint before it, arms the design gate (`gates.design: root-issues`) and files tree 1 alone, since each admitted root's architect requests approval on its own.
 Tree 1's document leaves one choice (where the smoke file goes) to the human.
-`admitted-issue-cap` prints `SKIPPED`, and `spec-posted` waits up to 12 hours for a human to answer the architect's decision block and approve the spec in Dispatch.
-It then fails unless the architect's approval request at the approved version carries a summary after `Approve spec.md (version N)?`, a human answered at least one of the spec's decision blocks, and no approval request on the spec was early by either of two rules ([`lib/design-gate-verdict.jq`](lib/design-gate-verdict.jq), tested by `bun test scripts/e2e/lib`).
+`admitted-issue-cap` prints `SKIPPED`, and `spec-posted` waits up to 12 hours for a human to answer the architect's ask block and approve the spec in Dispatch.
+It then fails unless the architect's approval request at the approved version carries a summary after `Approve spec.md (version N)?`, a human answered at least one of the spec's ask blocks, and no approval request on the spec was early by either of two rules ([`lib/design-gate-verdict.jq`](lib/design-gate-verdict.jq), tested by `bun test scripts/e2e/lib`).
 The version rule judges every hand-back:
-the version its event records in `requested_version` must hold none of the spec's blocks open, read from the version itself by the block ids of the spec's block asks, because Dispatch indexes a block as an ask only when it settles the document, after the edit that wrote it.
+the version its event records in `requested_version` must hold none of the spec's blocks open at the hand-back, each block read from the version by the block ids of the spec's block asks.
+A block the version holds is open when its ask held no answer and no resolution at the hand-back (the asks row's `answer.at` and `resolution.at` are each absent or later), since a person's answer is held on the ask alone and a version this release writes records no state on a block;
+a version the release before wrote records it, and a block that version records `state="open"` is open whatever its ask's times.
+The ask's own `created_at` is never read, because Dispatch indexes a block as an ask only when it settles the document, after the edit that wrote it.
 An approval row follows versions in place, so `ask.opened` records its first hand-back and each `ask.handed_back` a later one;
 an `ask.edited` only rewords the request.
 The answer-time rule judges every hand-back against the human's first turn on it (an answer to its request, or a human's reply in the request's thread before the request is handed back again):
@@ -4219,7 +4222,7 @@ Each item below names a case and how it is driven, then what must hold for it to
 - `values-kept` — one issue with three `before_merge` checks, and five steps.
   Step 1 records a result for the first check with `--run "go test ./internal/workflow/ -run 'AppendOnly|Line|StartWrittenOverAnOwedRow' -count=1"`, with `--observed-file -` fed the two lines `--- PASS: TestAppendOnly (0.00s)` and `ok`, and with `--negative-control "-run 'A|B' with the guard taken out: 2 tests fail"`.
   Step 2 records a result for the second check with `--observed='--- PASS: TestLine (0.00s)'`, and with `--negative-control-file` naming a file that holds the one character `-` and no line feed.
-  Step 3 records a result for the third check with `--observed-file -` fed the one character `-` and no line feed.
+  Step 3 records a result for the third check with `--observed-file -` fed the one character `-` and no line feed, and with `--negative-control` set to the control step 1 sends, because the server refuses a `before_merge` pass that states none.
   Step 4 gives the third check `--observed '--- PASS: TestLine (0.00s)'`, the value as a word of its own.
   Step 5 reads `GET /api/v1/issues/{key}/results`
 
@@ -6551,7 +6554,7 @@ it fails the check before any call when `dispatch_default_assignee` is unset, 20
 Stage 4b's `scrub` replaces that email, in any case, with `<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>` in each of those spellings and as written.
 `dispatch_human METHOD PATH [BODY]` is every proof-human write, over `dispatch-human-header`;
 `dispatch_agent METHOD PATH BODY` is a write in an agent's name over `dispatch-auth-header`, the agents' bearer, whose body gains the stand-in session `stage3-architect-stand-in` as its `actor` (a bearer caller must name one;
-the stand-in holds no claim), for a proof step whose author must be a session, such as the decision block Stage 3 inserts into the spec as its architect would.
+the stand-in holds no claim), for a proof step whose author must be a session, such as the ask block Stage 3 inserts into the spec as its architect would.
 `lib/ensure-project.test.ts` drives `write_dispatch_header`, `ensure_project` and `dispatch_agent` against a fake `curl`: among its rows, `ensure_project` refuses an unset `LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE` before any call and prints a refusal's body through `scrub`, and Stage 4b's own `scrub`, taken from its text, prints a refusal naming the person in the operator's spelling with the variable's name instead.
 It also holds Stage 4b's refusal of each development switch above the `ensure_project` call that makes that first write.
 
