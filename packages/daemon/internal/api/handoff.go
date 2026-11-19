@@ -309,27 +309,19 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// works the issue's phase. A phase that writes none takes no record, and a completion of such a
 	// phase that names one is refused.
 	of := phase.Of(grant.Role, issue.Phase)
-	endsRetro := of == phase.Retro
 	if of == "" {
 		of = issue.Phase
 	}
-	// The rating of the plan is the retro's (planRatingOf), and which completion ends the
-	// retro is phase.Of's answer itself rather than the issue's phase the architect falls back to,
-	// since an architect ends no phase. It is read past the fences above, which decide whether
-	// this completion is the turn's own work at all, so a completion of a run or an entry that is
-	// over is told that rather than asked for a rating; and before the handoff record and the pull
-	// request are read, so a rating where none belongs costs no read of Dispatch or GitHub. A held
-	// issue's phase runs no role, so the workflow refuses every completion of it
-	// (HANDOFF_NOT_CURRENT_PHASE), rated or not, and the retro run again once the hold is retried
-	// is the one rated: the rule is not read for it, since phase.Of reads held as no retro and would
-	// tell a rated completion of an issue held from its retro to drop the rating.
-	var rating *record.PlanRating
-	if issue.Phase != phase.Held {
-		var refusal *intake.Refusal
-		if rating, refusal = planRatingOf(req, endsRetro, c.PluginContract, fmt.Sprintf("this completion of phase %s of %s", of, issue.Key)); refusal != nil {
-			writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
-			return
-		}
+	// The rating of the plan is held here to its form alone (planRatingOf), which no state of the
+	// issue changes; which completion ends the retro, and so carries a rating or must, is the
+	// workflow's to judge where it ends the retro, on the issue its transaction reads under the
+	// fact's lock (PlanRatingContract). It is read past the fences above, which decide whether
+	// this completion is the turn's own work at all, and before the handoff record and the pull
+	// request are read, so a rating of the wrong form costs no read of Dispatch or GitHub.
+	rating, refusal := planRatingOf(req)
+	if refusal != nil {
+		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
+		return
 	}
 	word, writer, handoffPhase := phase.Handoff(of)
 	namesRecord := req.HandoffID != "" || req.HandoffVersion != 0
@@ -382,12 +374,14 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			return
 		}
 	}
-	// The rating rides only the completion that ends the retro (planRatingOf above), and it is
-	// left out of the key as the summary is: the first completion is what the workflow took, so a
-	// retry that rates again is answered already received and the first rating stands.
+	// The rating rides the fact as the completion named it, beside whether the claim must rate,
+	// and the workflow judges both (PlanRatingContract). It is left out of the key as the summary
+	// is: the first completion the workflow took is what stands, so a retry that rates again is
+	// answered already received and the first rating stands, and a completion the workflow
+	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
 	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
-		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating})
+		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract})
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
@@ -864,8 +858,8 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 //   - CHECK_WAKE_UNEXPECTED: a wakeAt where no look follows it — on a pass or a fail, each of
 //     which closes the check, or on a pending on the check's last look, after which the check
 //     closes as not run.
-//   - PLAN_RATING_UNEXPECTED: a planRating or a planReason, which only the completion that ends
-//     the retro carries (planRatingOf).
+//   - PLAN_RATING_UNEXPECTED: a planRating or a planReason, whatever its form, which only the
+//     completion that ends the retro carries (intake.PlanRatingUnexpected).
 //
 // No commit is read: the look pushed nothing. No run is read either: the check fences itself on
 // the issue and the look, since the look's task is no phase's run and a woken session may hold an
@@ -914,7 +908,8 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 			"this report names wakeAt and no look follows it: %s; send it again without a time, and nothing was recorded", why))
 		return
 	}
-	if _, refusal := planRatingOf(req, false, 0, fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue)); refusal != nil {
+	if req.PlanRating != nil || req.PlanReason != nil {
+		refusal := intake.PlanRatingUnexpected(fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue))
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}

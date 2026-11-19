@@ -5126,8 +5126,8 @@ The four of the library name themselves in their `FAIL` line; a step of the proo
 ### A control to run by hand
 
 This change of the daemon makes the second step fail while the first passes, which shows the proof can see the fault it is for.
-In `packages/daemon/internal/api/handoff_rating.go`, in `planRatingOf`, delete the `if endsRetro && pluginContract >= PlanRatingContract { … }` block, so the route takes a completion that ends the retro and carries no rating from any plugin, as it does from one of the release before.
-Run on 2026-11-17 on a loaded host, it failed after 47 s with these lines, the project's key, the times and the line of the driver's call aside:
+In `packages/daemon/internal/workflow/plan.go`, in `planRatingRefusal`, delete the `case endsRetro && fact.PlanRating == nil && fact.MustRate:` case and its return, so the workflow takes a completion that ends the retro and carries no rating from any plugin, as it does from one of the release before.
+Run on 2026-11-19 on a loaded host, it failed after 46 s with these lines, the project's key, the times and the line of the driver's call aside:
 
 ```sh
 LEGION_TEST_PG_DSN=… bash scripts/e2e/plan-ratings.sh
@@ -5142,7 +5142,7 @@ LEGION_TEST_PG_DSN=… bash scripts/e2e/plan-ratings.sh
 #   exit 1
 ```
 
-Put the block back before anything else runs from that checkout.
+Put the case back before anything else runs from that checkout.
 
 ## plan-ratings-read.sh
 

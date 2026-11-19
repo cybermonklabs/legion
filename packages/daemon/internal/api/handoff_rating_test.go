@@ -37,47 +37,54 @@ func ratedAs(fact intake.HandoffComplete, score int, reason string) bool {
 	return fact.PlanRating != nil && *fact.PlanRating == (record.PlanRating{Rating: score, Reason: reason})
 }
 
-// The completion that ends the retro carries the rating of the plan: the agent that does the retro
-// gives it. The route reads which completion that is from phase.Of and never from the role: the
-// implementer's completion while the issue is in retro, and its late completion of retro once the
-// issue has moved on to merging, which is still of retro. The fact the route applies carries the
-// rating and its reason in both. The workflow writes it on the retro's record for the completion
-// in retro alone: that completion is what moves the issue on to merging (TriggerRetroCompleted),
-// so a late one finds the implementer's retro standing and is refused HANDOFF_NOT_CURRENT_PHASE,
-// and its rating is never written (TestARatedRetroSentAgainKeepsItsFirstRating).
+// The agent that does the retro gives the rating of the plan, and the route judges nothing of the
+// issue for it: which completion ends the retro is the workflow's to judge where it ends it
+// (TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn). So the fact the route applies
+// carries a rating of a right form as the completion named it, and that the claim must rate,
+// wherever the route read the issue: in retro, past it in merging, and held from it. The workflow
+// writes it on the retro's record for the completion in retro alone: that completion moves the
+// issue on to merging (TriggerRetroCompleted), so a late one finds the implementer's retro
+// standing and is refused HANDOFF_NOT_CURRENT_PHASE (TestARatedRetroSentAgainKeepsItsFirstRating).
 func TestTheRetrosAgentGivesTheRating(t *testing.T) {
-	for _, at := range []phase.Phase{phase.Retro, phase.Merging} {
-		t.Run(string(at), func(t *testing.T) {
-			if of := phase.Of(claim.RoleImplementer, at); of != phase.Retro {
-				t.Fatalf("the implementer's completion at %s is of %s, want retro: this case proves nothing", at, of)
-			}
+	for _, tc := range []struct {
+		name string
+		at   phase.Phase
+		held bool
+	}{
+		{name: "in retro", at: phase.Retro},
+		{name: "in merging", at: phase.Merging},
+		{name: "held from its retro", at: phase.Retro, held: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
-			seedIssueAt(t, h, "LEGION-208", at)
+			seedIssueAt(t, h, "LEGION-208", tc.at)
 			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+			if tc.held {
+				holdFrom(t, h, "LEGION-208", tc.at)
+			}
 
 			completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
 				PlanRating: new(4), PlanReason: new("The tester found the bug.")}))
 			fact := lastCompletion(t, facts)
-			if !ratedAs(fact, 4, "The tester found the bug.") {
-				t.Fatalf("the retro's fact carries the rating %+v, want 4 with its reason", fact.PlanRating)
+			if !ratedAs(fact, 4, "The tester found the bug.") || !fact.MustRate {
+				t.Fatalf("the retro's fact carries the rating %+v, must rate %t, want 4 with its reason from a claim that must rate", fact.PlanRating, fact.MustRate)
 			}
 		})
 	}
 }
 
 // A rating rides the completion that ends the retro and no other. Every other completion that
-// names one is refused PLAN_RATING_UNEXPECTED with nothing recorded: a phase of a role that does
-// no retro (the tester's testing, the merger's merging), another phase of the very role that does
-// it (the implementer's implementing, refused before GitHub is read for its pull request), and a
-// report on a look of a closed issue's production check. The same completion without the rating
-// is taken, so the rating is what the refusal is about.
+// names one is refused PLAN_RATING_UNEXPECTED, naming the phase the workflow read, with nothing
+// recorded: a phase of a role that does no retro (the tester's testing, the merger's merging) and
+// another phase of the very role that does it (the implementer's implementing). The workflow
+// refuses it where it would end the retro, on the issue the fact's transaction reads, and leaves
+// the fact unspent, so the same completion without the rating is taken under the same key: the
+// rating is what the refusal is about.
 func TestARatingOutsideTheRetroIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		at   phase.Phase
 		role claim.Role
-		// look is whether the worker's live assignment is look 2 of the issue's production check.
-		look bool
 		// request is the completion before the grant and the rating are added.
 		request func(c liveClaim) HandoffCompleteRequest
 	}{
@@ -90,68 +97,80 @@ func TestARatingOutsideTheRetroIsRefused(t *testing.T) {
 		{name: "the merger in merging", at: phase.Merging, role: claim.RoleMerger, request: func(liveClaim) HandoffCompleteRequest {
 			return HandoffCompleteRequest{Summary: "merged", Commit: "c0ffee"}
 		}},
-		{name: "a report on a look of the production check", at: phase.Done, role: claim.RoleImplementer, look: true, request: func(liveClaim) HandoffCompleteRequest {
-			return HandoffCompleteRequest{Summary: "looked", Verdict: "pass"}
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			github := newHandoffGitHub(t)
-			h, facts := newHandoffHarness(t, github, nil, nil)
+			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 			seedIssueAt(t, h, "LEGION-208", tc.at)
-			var worker liveClaim
-			if tc.look {
-				seedCheck(t, h, "LEGION-208", tc.role, false, false)
-				worker = newCheckLookClaim(t, h, "LEGION-208", tc.role, 2)
-			} else {
-				worker = newLiveClaim(t, h, "LEGION-208", tc.role)
-			}
+			worker := newLiveClaim(t, h, "LEGION-208", tc.role)
 			request := tc.request(worker)
 
 			rating := request
 			rating.GrantID, rating.PlanRating, rating.PlanReason = worker.grant(t), new(3), new("The plan fit the work.")
 			message := refused(t, h.complete(rating), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
-			for _, want := range []string{"of LEGION-208", "only the completion that ends the retro rates the plan", "nothing was recorded"} {
+			for _, want := range []string{fmt.Sprintf("this completion of phase %s of LEGION-208", tc.at), "only the completion that ends the retro rates the plan", "nothing was recorded"} {
 				if !strings.Contains(message, want) {
 					t.Fatalf("the refusal = %q, want it to say %q", message, want)
 				}
 			}
-			if got := facts.recorded(); len(got) != 0 {
-				t.Fatalf("facts after the refusal = %#v, want none applied", got)
+			assertIssuePhase(t, h, tc.at)
+			if row := phaseRowOf(t, h, "LEGION-208", tc.role); row != nil && row.Completed() {
+				t.Fatalf("the %s's row after the refusal = %+v, want no completion recorded", tc.role, *row)
 			}
-			if served := github.serves(); len(served) != 0 {
-				t.Fatalf("GitHub was asked for %v before the refusal, want nothing: the rating is refused before any read", served)
+			if completionSpent(t, h, "LEGION-208") {
+				t.Fatal("the refusal left the completion processed, want it unspent")
 			}
 
-			// The implementer's completion also applies the pull request GitHub shows on its branch
-			// (implementationPullRequest) before its own fact, so the completion is the newest fact.
 			request.GrantID = worker.grant(t)
 			completion(t, h.complete(request))
-			got := facts.recorded()
-			if len(got) == 0 {
-				t.Fatal("no fact after the same completion without the rating, want it applied")
-			}
-			switch fact := got[len(got)-1].(type) {
-			case intake.HandoffComplete:
-				if fact.Claim != worker.token || fact.PlanRating != nil {
-					t.Fatalf("the completion's fact = %+v, want %s's with no rating", fact, worker.token)
-				}
-			case intake.CheckReport:
-				if fact.Claim != worker.token {
-					t.Fatalf("the report's fact = %+v, want %s's", fact, worker.token)
-				}
-			default:
-				t.Fatalf("the newest fact is %T, want the completion or the report", fact)
+			if row := phaseRowOf(t, h, "LEGION-208", tc.role); row == nil || !row.Completed() {
+				t.Fatalf("the %s's row after the same completion without the rating = %+v, want its completion recorded", tc.role, row)
 			}
 		})
+	}
+}
+
+// A report on a look of a closed issue's production check ends no phase, so the route refuses a
+// rating on it PLAN_RATING_UNEXPECTED, whatever the rating's form, before anything is read or
+// recorded, and the same report without the rating is taken.
+func TestARatingOnAProductionChecksReportIsRefused(t *testing.T) {
+	github := newHandoffGitHub(t)
+	h, facts := newHandoffHarness(t, github, nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Done)
+	seedCheck(t, h, "LEGION-208", claim.RoleImplementer, false, false)
+	worker := newCheckLookClaim(t, h, "LEGION-208", claim.RoleImplementer, 2)
+	for _, named := range []struct {
+		rating *int
+		reason *string
+	}{{rating: new(3), reason: new("The plan fit the work.")}, {reason: new("")}} {
+		message := refused(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "looked", Verdict: "pass",
+			PlanRating: named.rating, PlanReason: named.reason}), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
+		for _, want := range []string{"this report on look 2 of LEGION-208's production check", "only the completion that ends the retro rates the plan", "nothing was recorded"} {
+			if !strings.Contains(message, want) {
+				t.Fatalf("the refusal = %q, want it to say %q", message, want)
+			}
+		}
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts after the refusals = %#v, want none applied", got)
+	}
+	if served := github.serves(); len(served) != 0 {
+		t.Fatalf("GitHub was asked for %v before the refusals, want nothing: the rating is refused before any read", served)
+	}
+
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "looked", Verdict: "pass"}))
+	got := facts.recorded()
+	if report, ok := got[len(got)-1].(intake.CheckReport); len(got) != 1 || !ok || report.Claim != worker.token {
+		t.Fatalf("facts after the report without the rating = %#v, want %s's one report", got, worker.token)
 	}
 }
 
 // The architect ends no phase: phase.Of names none for it outside admitted and accepting, and the
 // route falls back to the issue's phase only to read the handoff record. So an architect's
 // completion while its issue stands in retro is not the retro's, though the phase it falls back to
-// is: one carrying a rating is refused PLAN_RATING_UNEXPECTED before the workflow reads it, and one
-// carrying none is not asked for a rating and reaches the workflow, which refuses an architect's
-// completion of its own accord (ACCEPTANCE_IS_SIGN_OFF). The issue stays in retro either way.
+// is, and the workflow refuses it of its own accord (ACCEPTANCE_IS_SIGN_OFF), rated or not: that
+// refusal comes before any rule of the rating. The issue stays in retro either way. That refusal
+// is recorded under the completion's key, which leaves the rating out, so the unrated completion
+// names a commit of its own.
 func TestAnArchitectsCompletionInTheRetroIsNotTheRetros(t *testing.T) {
 	if of := phase.Of(claim.RoleArchitect, phase.Retro); of != "" {
 		t.Fatalf("the architect's completion at retro is of %q, want none: this case proves nothing", of)
@@ -164,9 +183,9 @@ func TestAnArchitectsCompletionInTheRetroIsNotTheRetros(t *testing.T) {
 	}
 
 	refused(t, h.complete(HandoffCompleteRequest{GrantID: architect.grant(t), Summary: "accepted", Commit: "c0ffee",
-		PlanRating: new(3), PlanReason: new("The plan fit the work.")}), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
+		PlanRating: new(3), PlanReason: new("The plan fit the work.")}), http.StatusConflict, "ACCEPTANCE_IS_SIGN_OFF")
 	assertIssuePhase(t, h, phase.Retro)
-	refused(t, h.complete(HandoffCompleteRequest{GrantID: architect.grant(t), Summary: "accepted", Commit: "c0ffee"}),
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: architect.grant(t), Summary: "accepted", Commit: "c0ffee1"}),
 		http.StatusConflict, "ACCEPTANCE_IS_SIGN_OFF")
 	assertIssuePhase(t, h, phase.Retro)
 }
@@ -230,15 +249,16 @@ func TestARatingIsOneToFiveWithAReason(t *testing.T) {
 }
 
 // A completion names a rating by its members written with a value, whatever the value:
-// `"planReason": ""` is a reason named, and empty. So a completion that does not end the retro and
-// carries it, or either member alone, is refused PLAN_RATING_UNEXPECTED; the retro's completion
-// carrying it alone is refused PLAN_RATING_INPUT for the rating it lacks, from a plugin at
-// PlanRatingContract and from one before it alike, rather than told it carries no rating or taken
-// unrated; and with a rating it is refused as blank. A member written null names nothing: it
-// decodes to nil and reads as left out, so the completion outside the retro that writes both
-// members null is taken, and its fact carries no rating. That body alone is written by hand, since
-// HandoffCompleteRequest leaves a nil member out rather than writing it null. A refusal records
-// nothing, and the completion each case corrects to is taken.
+// `"planReason": ""` is a reason named, and empty. The route holds a named rating to its form
+// wherever the completion stands, since which completion ends the retro is the workflow's to judge
+// (TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn). So a completion carrying it, or
+// either member alone, is refused PLAN_RATING_INPUT for the member it lacks, outside the retro and
+// in it, from a plugin at PlanRatingContract and from one before it alike, rather than told it
+// carries no rating or taken unrated; and with a rating it is refused as blank. A member written
+// null names nothing: it decodes to nil and reads as left out, so the completion outside the retro
+// that writes both members null is taken, and its fact carries no rating. That body alone is
+// written by hand, since HandoffCompleteRequest leaves a nil member out rather than writing it
+// null. A refusal records nothing, and the completion each case corrects to is taken.
 func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 	type rating struct {
 		rating *int
@@ -252,8 +272,17 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 		h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 		seedIssueAt(t, h, "LEGION-208", phase.Merging)
 		merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
-		for _, named := range []rating{{reason: new("")}, {reason: new("fit")}, {rating: new(4)}} {
-			refused(t, complete(h, merger.grant(t), named), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
+		for _, row := range []struct {
+			named rating
+			says  string
+		}{
+			{named: rating{reason: new("")}, says: "planReason comes with no planRating"},
+			{named: rating{reason: new("fit")}, says: "planReason comes with no planRating"},
+			{named: rating{rating: new(4)}, says: "planRating 4 comes with no planReason"},
+		} {
+			if message := refused(t, complete(h, merger.grant(t), row.named), http.StatusBadRequest, "PLAN_RATING_INPUT"); !strings.Contains(message, row.says) {
+				t.Fatalf("the refusal = %q, want it to say %q", message, row.says)
+			}
 		}
 		if got := facts.recorded(); len(got) != 0 {
 			t.Fatalf("facts after the refusals = %#v, want none applied", got)
@@ -324,32 +353,51 @@ func TestARatingReasonWithANULIsRefusedAsInput(t *testing.T) {
 	}
 }
 
+// mustRate holds h's LEGION-208, in retro and worked by an implementer, to the rule that its claim
+// must rate: the retro's completion with no rating, sent with the grant unrated, is refused
+// PLAN_RATING_REQUIRED by the workflow and answers the refusal's sentence, with nothing recorded:
+// the issue still in retro, no completion on the implementer's row, no rated step record and the
+// fact left unspent. The same completion with the rating score and reason, sent with the grant
+// rated, is then taken under the same key: the issue moves on to merging and one step record
+// carries the reason.
+func mustRate(t *testing.T, h *harness, unrated, rated string, score int, reason string) string {
+	t.Helper()
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: unrated, Summary: "retro done", Commit: "c0ffee"}),
+		http.StatusBadRequest, "PLAN_RATING_REQUIRED")
+	assertIssuePhase(t, h, phase.Retro)
+	if row := phaseRowOf(t, h, "LEGION-208", claim.RoleImplementer); row != nil && row.Completed() {
+		t.Fatalf("the implementer's row after the refusal = %+v, want no completion recorded", *row)
+	}
+	if got := ratedStepRecords(t, h, "LEGION-208"); got != 0 || completionSpent(t, h, "LEGION-208") {
+		t.Fatalf("after the refusal LEGION-208 has %d rated step records, processed %t, want none and unspent", got, completionSpent(t, h, "LEGION-208"))
+	}
+
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: rated, Summary: "retro done", Commit: "c0ffee",
+		PlanRating: new(score), PlanReason: new(reason)}))
+	assertIssuePhase(t, h, phase.Merging)
+	if written := stepRecordPayloads(t, h, "LEGION-208"); ratedStepRecords(t, h, "LEGION-208") != 1 ||
+		!slices.ContainsFunc(written, func(p string) bool { return strings.Contains(p, reason) }) {
+		t.Fatalf("after the rated completion the step records are %v, want one rated %d with its reason", written, score)
+	}
+	return message
+}
+
 // A plugin at PlanRatingContract or later must rate: its retro's completion with no rating is
 // refused PLAN_RATING_REQUIRED, which says how to rate, with nothing recorded, and the same
-// completion with a rating is taken.
+// completion with a rating is taken (mustRate).
 func TestANewPluginMustRate(t *testing.T) {
-	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	if got := pluginContractOf(t, h, implementer.token); got != PlanRatingContract {
 		t.Fatalf("the implementer's plugin declared contract %d, want PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
 	}
 
-	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee"}),
-		http.StatusBadRequest, "PLAN_RATING_REQUIRED")
+	message := mustRate(t, h, implementer.grant(t), implementer.grant(t), 5, "The plan fit the work.")
 	for _, want := range []string{"this completion of phase retro of LEGION-208 carries no rating of the plan", "planRating", "planReason", "1 (the plan cost the work) to 5 (the plan fit the work)", "nothing was recorded"} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("the refusal = %q, want it to say %q", message, want)
 		}
-	}
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("facts after the refusal = %#v, want none applied", got)
-	}
-
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
-		PlanRating: new(5), PlanReason: new("The plan fit the work.")}))
-	if fact := lastCompletion(t, facts); !ratedAs(fact, 5, "The plan fit the work.") {
-		t.Fatalf("the retro's fact carries the rating %+v, want 5 with its reason", fact.PlanRating)
 	}
 }
 
@@ -358,9 +406,9 @@ func TestANewPluginMustRate(t *testing.T) {
 // PlanRatingContract. The claim here records a later one and the daemon still serves it, a claim
 // in its turn (staleClaim), as after a later release rolled back to this daemon while its worker
 // was in the retro's turn. Its retro's completion with no rating is refused PLAN_RATING_REQUIRED
-// with nothing recorded, and the same completion with a rating is taken.
+// with nothing recorded, and the same completion with a rating is taken (mustRate).
 func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
-	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	grants := []string{implementer.grant(t), implementer.grant(t)}
@@ -371,17 +419,7 @@ func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
 			c.State, c.UpdateRound, c.PluginContract, later)
 	}
 
-	refused(t, h.complete(HandoffCompleteRequest{GrantID: grants[0], Summary: "retro done", Commit: "c0ffee"}),
-		http.StatusBadRequest, "PLAN_RATING_REQUIRED")
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("facts after the refusal = %#v, want none applied", got)
-	}
-
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: grants[1], Summary: "retro done", Commit: "c0ffee",
-		PlanRating: new(2), PlanReason: new("The plan left out a step the tester needed.")}))
-	if fact := lastCompletion(t, facts); !ratedAs(fact, 2, "The plan left out a step the tester needed.") {
-		t.Fatalf("the retro's fact carries the rating %+v, want 2 with its reason", fact.PlanRating)
-	}
+	mustRate(t, h, grants[0], grants[1], 2, "The plan left out a step the tester needed.")
 }
 
 // stepRecordPayloads is the text of every step record row key's outbox holds, in the order they
@@ -459,7 +497,7 @@ func TestARatedRetroSentAgainKeepsItsFirstRating(t *testing.T) {
 // A plugin of the release before PlanRatingContract never sends a rating. Where the daemon serves
 // its claim — here a claim in a turn, which the stale-caller rule serves so the turn can push what
 // it holds (staleClaim) — its retro's completion is taken with no rating, and the fact carries
-// none.
+// none and says the claim need not rate, which is what lets the workflow end its retro unrated.
 func TestAnOldPluginRetroStillCompletesWhereItIsServed(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
@@ -472,8 +510,8 @@ func TestAnOldPluginRetroStillCompletesWhereItIsServed(t *testing.T) {
 	}
 
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: grantID, Summary: "retro done", Commit: "c0ffee"}))
-	if fact := lastCompletion(t, facts); fact.PlanRating != nil || fact.Summary != "retro done" {
-		t.Fatalf("the old plugin's retro fact = %+v, want it with no rating", fact)
+	if fact := lastCompletion(t, facts); fact.PlanRating != nil || fact.MustRate || fact.Summary != "retro done" {
+		t.Fatalf("the old plugin's retro fact = %+v, want it with no rating from a claim that need not rate", fact)
 	}
 }
 
@@ -608,57 +646,203 @@ func TestPlanRatingCasesGolden(t *testing.T) {
 	}{Cases: cases})
 }
 
-// A completion of an issue held from its retro meets the workflow's refusal, never the rating
-// rule: a held issue's phase runs no role, so the workflow refuses every completion of it
-// HANDOFF_NOT_CURRENT_PHASE, with nothing recorded, and the retro run again once the hold is
-// retried is the one rated. Read by the rating rule, the held issue would be no retro (phase.Of
-// answers the implementer's own phase for held), so the rule would tell a rated completion to send
-// it again without the rating, and the workflow would refuse that one all the same. Each row is an
-// issue of its own, held from its retro with the implementer's claim still live, from a plugin that
-// rates; the control is the same claim and completion on an issue in its retro, which the workflow
-// takes.
-func TestAHeldIssuesCompletionMeetsTheWorkflowsRefusalAndNotTheRatingRule(t *testing.T) {
-	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+// unholding is a handler the harness runs ahead of the workflow. For a completion of an issue it
+// names that stands held, it gives the issue back the phase it was held from inside the fact's own
+// transaction, as an architect's retry of the hold leaves it (workflow's retryPhase): the retry
+// committing after the completion route read the issue held and before the fact took the lock
+// every fact applies under. So the route reads one phase and the workflow another.
+type unholding map[string]bool
+
+func (u unholding) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	if completion, ok := fact.(intake.HandoffComplete); ok && u[completion.Issue] {
+		if _, err := tx.Exec(ctx, "update issues set phase = held_from, held_from = null, hold_reason = null where key = $1 and phase = $2",
+			completion.Issue, string(phase.Held)); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	return intake.Result{}, nil
+}
+
+// ratedStepRecords is how many of the step records key's outbox holds carry a rating of the plan.
+func ratedStepRecords(t *testing.T, h *harness, key string) int {
+	t.Helper()
+	rated := 0
+	for _, payload := range stepRecordPayloads(t, h, key) {
+		if strings.Contains(payload, `"rating_reason"`) {
+			rated++
+		}
+	}
+	return rated
+}
+
+// completionSpent is whether a completion of key is recorded as processed, so that the same
+// completion sent again is answered HANDOFF_ALREADY_RECORDED (intake.ApplyFact).
+func completionSpent(t *testing.T, h *harness, key string) bool {
+	t.Helper()
+	var spent bool
+	if err := h.store.Pool().QueryRow(context.Background(),
+		"select exists(select 1 from processed_events where source = 'api' and event_id like 'handoff:' || $1 || ':%')", key).Scan(&spent); err != nil {
+		t.Fatalf("read whether a completion of %s is processed: %v", key, err)
+	}
+	return spent
+}
+
+// The rating of the plan is judged where the retro ends: on the issue as the completion's own
+// transaction reads it, under the lock every fact applies under, where the workflow ends the
+// retro (TriggerRetroCompleted). The route reads the issue before that lock, and the issue can
+// move between the two reads: an architect's retry of a hold puts the issue back in its phase at
+// the same generation (workflow's retryPhase). unholding plays that retry inside the fact's
+// transaction for the rows retried, so the route reads the issue held and the workflow reads the
+// phase it was held from. Each row is an issue of its own, worked by an implementer whose claim is
+// live and records the plugin contract the row names.
+//   - A rated completion from a plugin that must rate, read held and judged in retro: the retro
+//     ends with its rating written, in one rated step record.
+//   - Its unrated twin: PLAN_RATING_REQUIRED, naming the retro the workflow read, with nothing
+//     recorded: no completion on the implementer's row, no rated record, and the fact left
+//     unspent. The same completion, rated, is then taken.
+//   - A held issue's rated and unrated completions, with no retry: the workflow's own refusal of a
+//     held issue (HANDOFF_NOT_CURRENT_PHASE) comes before any rule of the rating.
+//   - An unrated completion from a plugin before the rating, in retro: taken, with no rating.
+//   - A rated completion read held and judged in implementing: PLAN_RATING_UNEXPECTED, naming
+//     implementing, the phase the workflow read, with nothing recorded.
+func TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn(t *testing.T) {
+	// standing is how the issue stands when its completion is sent: in its phase, held from it, or
+	// held from it and retried inside the fact's transaction before the workflow reads it.
+	type standing int
+	const (
+		inPhase standing = iota
+		held
+		retried
+	)
+	retroDone := func(liveClaim) HandoffCompleteRequest {
+		return HandoffCompleteRequest{Summary: "retro done", Commit: "c0ffee"}
+	}
+	implemented := func(c liveClaim) HandoffCompleteRequest {
+		return HandoffCompleteRequest{Summary: "implemented", Commit: headSHA, HandoffID: c.writeHandoff("implement", 1), HandoffVersion: 1}
+	}
+	retry := unholding{}
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard, retry)
 	for i, row := range []struct {
-		name          string
-		held, rated   bool
-		status        int
-		code, standAt string
+		name     string
+		at       phase.Phase
+		stands   standing
+		contract int
+		request  func(liveClaim) HandoffCompleteRequest
+		rated    bool
+		status   int
+		code     string
+		// says is a part of the refusal's sentence, %s the issue's key.
+		says         string
+		standAt      phase.Phase
+		ratedRecords int
 	}{
-		{name: "a rated completion of an issue held from its retro", held: true, rated: true,
-			status: http.StatusConflict, code: "HANDOFF_NOT_CURRENT_PHASE", standAt: string(phase.Held)},
-		{name: "an unrated completion of an issue held from its retro", held: true,
-			status: http.StatusConflict, code: "HANDOFF_NOT_CURRENT_PHASE", standAt: string(phase.Held)},
-		{name: "the control: a rated completion of an issue in its retro", rated: true,
-			status: http.StatusOK, standAt: string(phase.Merging)},
+		{name: "a rated completion from a plugin that must rate, its hold retried after the route read it", at: phase.Retro, stands: retried,
+			contract: PlanRatingContract, request: retroDone, rated: true, status: http.StatusOK, standAt: phase.Merging, ratedRecords: 1},
+		{name: "its unrated twin", at: phase.Retro, stands: retried, contract: PlanRatingContract, request: retroDone,
+			status: http.StatusBadRequest, code: "PLAN_RATING_REQUIRED", says: "this completion of phase retro of %s carries no rating of the plan", standAt: phase.Retro},
+		{name: "a rated completion of an issue held from its retro", at: phase.Retro, stands: held, contract: PlanRatingContract, request: retroDone, rated: true,
+			status: http.StatusConflict, code: "HANDOFF_NOT_CURRENT_PHASE", standAt: phase.Held},
+		{name: "an unrated completion of an issue held from its retro", at: phase.Retro, stands: held, contract: PlanRatingContract, request: retroDone,
+			status: http.StatusConflict, code: "HANDOFF_NOT_CURRENT_PHASE", standAt: phase.Held},
+		{name: "an unrated completion from a plugin before the rating, in retro", at: phase.Retro, stands: inPhase, contract: PlanRatingContract - 1, request: retroDone,
+			status: http.StatusOK, standAt: phase.Merging},
+		{name: "a rated completion judged in implementing, its hold retried after the route read it", at: phase.Implementing, stands: retried,
+			contract: PlanRatingContract, request: implemented, rated: true, status: http.StatusBadRequest, code: "PLAN_RATING_UNEXPECTED",
+			says: "this completion of phase implementing of %s names planRating or planReason", standAt: phase.Implementing},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			key := fmt.Sprintf("LEGION-%d", 400+i)
-			seedIssueAt(t, h, key, phase.Retro)
+			seedIssueAt(t, h, key, row.at)
 			implementer := newLiveClaim(t, h, key, claim.RoleImplementer)
-			if got := pluginContractOf(t, h, implementer.token); got < PlanRatingContract {
-				t.Fatalf("the implementer's plugin declared contract %d, below PlanRatingContract %d: this row proves nothing", got, PlanRatingContract)
+			// A stale claim is served in its turn (staleClaim), and its grant is minted first, as
+			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
+			req := row.request(implementer)
+			req.GrantID = implementer.grant(t)
+			if row.contract != PlanRatingContract {
+				h.makeStale(t, implementer.token, implementer.session, implementer.secret, row.contract)
 			}
-			if row.held {
-				holdFrom(t, h, key, phase.Retro)
+			if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.PluginContract != row.contract {
+				t.Fatalf("the claim is %s at contract %d, want working at %d: this row proves nothing", c.State, c.PluginContract, row.contract)
 			}
-			req := HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee"}
+			if row.stands != inPhase {
+				holdFrom(t, h, key, row.at)
+			}
+			retry[key] = row.stands == retried
 			if row.rated {
 				req.PlanRating, req.PlanReason = new(3), new("The plan fit the work but for its tests.")
 			}
+
 			recorder := h.complete(req)
 			if row.status == http.StatusOK {
 				completion(t, recorder)
-			} else {
-				refused(t, recorder, row.status, row.code)
+			} else if message := refused(t, recorder, row.status, row.code); row.says != "" && !strings.Contains(message, fmt.Sprintf(row.says, key)) {
+				t.Fatalf("the refusal = %q, want it to say %q", message, fmt.Sprintf(row.says, key))
 			}
-			var at string
+			var at phase.Phase
 			if err := h.store.Pool().QueryRow(context.Background(), "select phase from issues where key = $1", key).Scan(&at); err != nil {
 				t.Fatalf("read %s's phase: %v", key, err)
 			}
 			if at != row.standAt {
 				t.Fatalf("after the completion %s stands at %s, want %s", key, at, row.standAt)
 			}
+			if recorded := phaseRowOf(t, h, key, claim.RoleImplementer); (recorded != nil && recorded.Completed()) != (row.status == http.StatusOK) {
+				t.Fatalf("the implementer's row after the completion = %+v, want a completion recorded only on a 200", recorded)
+			}
+			if got := ratedStepRecords(t, h, key); got != row.ratedRecords {
+				t.Fatalf("%s has %d rated step records, want %d: %v", key, got, row.ratedRecords, stepRecordPayloads(t, h, key))
+			}
+			// A refusal of the rating leaves the fact unspent, so the same completion corrected is
+			// applied under its key rather than answered as one already received.
+			if strings.HasPrefix(row.code, "PLAN_RATING_") && completionSpent(t, h, key) {
+				t.Fatalf("the %s refusal left the completion of %s processed, want it unspent", row.code, key)
+			}
+			if row.code != "PLAN_RATING_REQUIRED" {
+				return
+			}
+			rated := row.request(implementer)
+			rated.GrantID, rated.PlanRating, rated.PlanReason = implementer.grant(t), new(4), new("The plan fit the work.")
+			completion(t, h.complete(rated))
+			if got := ratedStepRecords(t, h, key); got != 1 {
+				t.Fatalf("after the rated completion %s has %d rated step records, want 1", key, got)
+			}
 		})
+	}
+}
+
+// A completion ends the retro only while its role works the retro. The reviewer's own approval
+// moves the issue on before the reviewer's completion lands (the review event takes reviewing to
+// accepting), and the architect's sign-off takes it on to retro, so the reviewer's late completion
+// of reviewing finds the issue in retro and is recorded on its own row (workflow's leftItsPhase),
+// ending nothing. From a plugin that must rate, it is not asked for a rating; carrying one, it is
+// refused PLAN_RATING_UNEXPECTED, naming reviewing, with nothing recorded. The same completion
+// without the rating is then taken on the reviewer's row, and the issue stays in retro unrated.
+func TestALateCompletionWhileTheIssueStandsInRetroEndsNoRetro(t *testing.T) {
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	seedApproval(t, h, "LEGION-208", "ccddee")
+	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+	if got := pluginContractOf(t, h, reviewer.token); got < PlanRatingContract {
+		t.Fatalf("the reviewer's plugin declared contract %d, below PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
+	}
+	own := reviewer.writeHandoff("review", 1)
+	late := HandoffCompleteRequest{Summary: "approved", HandoffID: own, HandoffVersion: 1}
+
+	rated := late
+	rated.GrantID, rated.PlanRating, rated.PlanReason = reviewer.grant(t), new(4), new("The plan fit the work.")
+	if message := refused(t, h.complete(rated), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED"); !strings.Contains(message, "this completion of phase reviewing of LEGION-208") {
+		t.Fatalf("the refusal = %q, want it to name the reviewing the reviewer left", message)
+	}
+	if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row != nil && row.HandoffRecord == own {
+		t.Fatalf("the reviewer's row after the refusal = %+v, want its record not recorded", *row)
+	}
+
+	late.GrantID = reviewer.grant(t)
+	completion(t, h.complete(late))
+	if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row == nil || row.HandoffRecord != own {
+		t.Fatalf("the reviewer's row after its late completion = %+v, want it naming %s", row, own)
+	}
+	assertIssuePhase(t, h, phase.Retro)
+	if got := ratedStepRecords(t, h, "LEGION-208"); got != 0 {
+		t.Fatalf("LEGION-208 has %d rated step records after the reviewer's late completion, want none", got)
 	}
 }

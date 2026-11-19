@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/steprecord"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -113,4 +114,24 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 	write := stepWrite(issue, place, role, typ, start.Agent, start.Starts)
 	write.PlanRating = &rating
 	return e.enqueue(ctx, tx, issue.Key, write)
+}
+
+// planRatingRefusal is the rule of which completion carries the rating of the plan, judged where
+// the retro ends: handoff reads it on the issue as the completion's own transaction reads it, under
+// the lock every fact applies under, which is the read its TriggerRetroCompleted ends the retro on.
+// The route held what no state of the issue changes: the rating's form (api's planRatingOf) and
+// whether the caller must rate (intake.HandoffComplete.MustRate). endsRetro is whether this
+// completion ends the retro, and reported the phase it is of, which the refusal names. The
+// completion that ends the retro with no rating from a caller that must rate is refused
+// PLAN_RATING_REQUIRED, and any other completion that carries one PLAN_RATING_UNEXPECTED; nil is
+// no refusal.
+func planRatingRefusal(fact intake.HandoffComplete, endsRetro bool, reported phase.Phase) *intake.Refusal {
+	what := fmt.Sprintf("this completion of phase %s of %s", reported, fact.Issue)
+	switch {
+	case endsRetro && fact.PlanRating == nil && fact.MustRate:
+		return intake.PlanRatingRequired(what)
+	case !endsRetro && fact.PlanRating != nil:
+		return intake.PlanRatingUnexpected(what)
+	}
+	return nil
 }

@@ -2388,20 +2388,24 @@ package api
 // `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
 // (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, in one to 2,000
 // characters counted as Unicode code points and not all blank, the two together
-// (`PLAN_RATING_INPUT`). The agent that does the retro gives them, so the route takes them on the
-// completion whose phase is retro (`phase.Of`: the implementer's today, its late completion of
-// retro while the issue merges included) and refuses them on every other completion and on a
-// production check's report (`PLAN_RATING_UNEXPECTED`). A claim whose plugin declared this
+// (`PLAN_RATING_INPUT`). The agent that does the retro gives them, so the completion that ends the
+// retro takes them, and every other completion and a production check's report are refused them
+// (`PLAN_RATING_UNEXPECTED`). Which completion ends the retro the workflow judges where it ends
+// it, on the issue as the completion's own transaction reads it (`TriggerRetroCompleted`), and its
+// own refusals, a held issue's 409 among them, come first. A claim whose plugin declared this
 // contract or a later one must rate (`PLAN_RATING_REQUIRED`), so a plugin built from this commit
 // sends both on its retro; a plugin below it never sends them, and its retro, where the daemon
 // serves its claim (`staleClaim`: a claim in a turn, in an update round, with no plugin install,
 // or on a daemon that relaunches onto no plugin), completes with no rating
 // (`api.PlanRatingContract`).
-// Every refusal is a 400 written before the fact is applied, so nothing is recorded and the same
-// completion, corrected, is taken. The route hands the two to the workflow on the completion's
-// fact as one value (`intake.HandoffComplete.PlanRating`). `readBody` refuses an unknown field, so
-// a plugin sending them to a daemon below 168 would have every retro refused; the bump is why the
-// two never meet. No shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
+// Every refusal is a 400 that records nothing, so the same completion, corrected, is taken: the
+// route writes `PLAN_RATING_INPUT` and a report's `PLAN_RATING_UNEXPECTED` before the fact is
+// applied, and the workflow refuses the rest with the fact left unspent (`intake.Result.Unspent`).
+// The route hands the two to the workflow on the completion's fact as one value
+// (`intake.HandoffComplete.PlanRating`), beside whether the claim must rate (`MustRate`).
+// `readBody` refuses an unknown field, so a plugin sending them to a daemon below 168 would have
+// every retro refused; the bump is why the two never meet. No shape of `GET /legion/v1/state`
+// moves, so no caller is served a narrower one.
 // The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
 // member's name and an earlier copy of a repeated member included, holds U+0000, which
 // PostgreSQL's text and jsonb cannot hold: 400 `invalid request body` naming the string's place and

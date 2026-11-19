@@ -12,6 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/steprecord"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -943,12 +945,18 @@ type HandoffComplete struct {
 	// Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
-	// PlanRating is the rating of the plan the issue ran, which the completion that ends the retro
-	// carries (api.PlanRatingContract): the route took it only on that completion and held it to
-	// the scale and to a reason (api's planRatingOf, its one producer), and the workflow writes it
-	// onto the retro's record as it stands. nil on every other completion, and on a retro's from a
-	// plugin before that contract.
+	// PlanRating is the rating of the plan the issue ran, as the completion named it: the route held
+	// it to the scale and to a reason (api's planRatingOf, its one producer), and nil is a
+	// completion that named none. Only the completion that ends the retro carries one, and which
+	// completion that is the workflow judges where it ends the retro, on the issue as the fact's
+	// own transaction reads it (workflow's planRatingRefusal); it writes the rating onto the
+	// retro's record as it stands.
 	PlanRating *record.PlanRating
+	// MustRate is whether the completion that ends the retro must carry PlanRating: the claim's
+	// plugin declared the contract that added the rating (api.PlanRatingContract) or a later one,
+	// whose tool takes it. The route reads it from the claim, which no state of the issue changes;
+	// a plugin before that contract sends no rating, and its retro ends with none.
+	MustRate bool
 }
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
@@ -1489,6 +1497,25 @@ func ChildNotAdoptable(key, tree, reason string) *Refusal {
 // (api's handoffComplete), so a worker reads the same words from either.
 func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", role, p, issue)}
+}
+
+// PlanRatingRequired is the 400 PLAN_RATING_REQUIRED refusal of what, the completion that ends the
+// retro, which carries no rating of the plan though its caller must rate (HandoffComplete.MustRate).
+// The workflow answers it where it ends the retro (its planRatingRefusal), and records nothing.
+func PlanRatingRequired(what string) *Refusal {
+	return &Refusal{Status: 400, Code: "PLAN_RATING_REQUIRED", Message: fmt.Sprintf(
+		"%s carries no rating of the plan, and the completion that ends the retro rates it: rate the plan the issue ran from %d (the plan cost the work) to %d (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", what, steprecord.RatingLeast, steprecord.RatingMost)}
+}
+
+// PlanRatingUnexpected is the 400 PLAN_RATING_UNEXPECTED refusal of what, a completion or a report
+// that names planRating or planReason and does not end the retro, which alone rates the plan.
+// Dropping them unread would let an agent believe it had rated the plan. The workflow answers it
+// for a completion that does not end the retro on the issue it reads (its planRatingRefusal), and
+// the completion route for a report on a look of a production check, which ends no phase (api's
+// checkReport), so an agent reads the same words from either. Neither records anything.
+func PlanRatingUnexpected(what string) *Refusal {
+	return &Refusal{Status: 400, Code: "PLAN_RATING_UNEXPECTED", Message: fmt.Sprintf(
+		"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
 }
 
 // Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'

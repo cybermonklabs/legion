@@ -762,8 +762,8 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 // fields (pi-legion's skills-guard test pins it). The composed prompt of the role the daemon starts
 // on the retro (phase.RoleFor) sends it there: it names the two fields the completion carries, the
 // skill, and the three refusals the daemon answers a completion that breaks the rule with (api's
-// planRatingOf), each code as the daemon writes it. This shows the text is loaded, never that a
-// role follows it.
+// planRatingOf and workflow's planRatingRefusal), each code as the daemon writes it. This shows the
+// text is loaded, never that a role follows it.
 func TestTheComposedRetroNamesTheRatingsFieldsAndRefusals(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {

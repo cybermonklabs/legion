@@ -183,8 +183,9 @@ func (c liveClaim) writeHandoff(word string, version int) string {
 
 // newWorkflowHandoffHarness is newHandoffHarness with the workflow deciding every fact the routes
 // apply, so a completion moves the issue and writes its records as the daemon does, and with the
-// server's log written to logs.
-func newWorkflowHandoffHarness(t *testing.T, github *handoffGitHub, logs io.Writer) *harness {
+// server's log written to logs. Each handler of before runs ahead of the workflow, in the fact's
+// own transaction.
+func newWorkflowHandoffHarness(t *testing.T, github *handoffGitHub, logs io.Writer, before ...intake.Handler) *harness {
 	t.Helper()
 	h := newHarness(t)
 	records := record.NewStore()
@@ -194,7 +195,7 @@ func newWorkflowHandoffHarness(t *testing.T, github *handoffGitHub, logs io.Writ
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: []intake.Handler{engine}, Dispatch: h.handoffs, Log: slog.New(slog.NewTextHandler(logs, nil)),
+		Handlers: append(before, engine), Dispatch: h.handoffs, Log: slog.New(slog.NewTextHandler(logs, nil)),
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
 	}).Handler
 	return h
