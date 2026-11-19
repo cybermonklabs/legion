@@ -9,9 +9,10 @@
  *  passes for as long as the rows run in the order their baselines were taken in, and fails as a
  *  row run alone or a row moved. A run in reverse puts every pair of rows the other way round, so a
  *  write one row makes and another reads fails one of the two runs, by the name of the row that
- *  read it. It does not show that a row passes alone: a state the first row writes and a middle row
- *  reads is there for the middle row in both orders. What closes that is the seed writing, before
- *  any row, each mark a page writes (`e2e/review-seed.ts`).
+ *  read it. It does not show that a row passes alone: a state that rows on both sides of a row
+ *  write - as the desktop and phone issue-spec rows both wrote the spec's read mark - is there for
+ *  every row between them in both orders. What closes that is the seed writing, before any row,
+ *  each mark a page writes (`e2e/review-seed.ts`).
  *
  *  This module imports nothing, so the visual spec, which may reach nothing that spawns `psql`,
  *  can read it. */
