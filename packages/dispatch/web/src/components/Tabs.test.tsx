@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
 import { settle } from "../__tests__/fake-clock";
-import { installResizeObserver, layOutScrollBox } from "../__tests__/scroll-box";
+import { installResizeObserver, layOutScrollBox, type ResizeControl } from "../__tests__/scroll-box";
 import { scrollFadeTrailing, scrollFadeTrailingPx } from "../theme/classes";
 import { Tabs } from "./Tabs";
 
@@ -227,6 +227,98 @@ test("a selected tab the tablist narrows over is scrolled back clear of the trai
     right = 300;
     sizes.resize();
     expect(documents.getBoundingClientRect().right).toBe(300 - scrollFadeTrailingPx);
+  } finally {
+    view.unmount();
+    sizes.restore();
+  }
+});
+
+// The issue page's ten tabs, as the visual row draws them at 1280 px with the comment margin open
+// (read from the page in the pinned Playwright image): a 528 px tablist over 749 px of tabs, the
+// selected Artifacts tab ending at 505, so one layout scrolls the strip 9 px to bring the tab clear
+// of the trailing fade, and the baseline is shot there. While the page lays out, the tablist can be
+// narrower for a moment; at 300 px Artifacts runs past the fade and the strip scrolls 237 px. Where
+// the strip stops once the tablist is 528 px again must be where one layout at 528 px puts it, 9 px,
+// whatever width it passed through first.
+const issueTabs = [
+  { id: "spec", label: "Spec" },
+  { id: "verification", label: "Verification" },
+  { id: "plan", label: "Plan" },
+  { id: "steps", label: "Steps" },
+  { id: "conversation", label: "Conversation" },
+  { id: "children", label: "Children" },
+  { count: 5, id: "artifacts", label: "Artifacts" },
+  { id: "activity", label: "Activity" },
+  { id: "decisions", label: "Decisions" },
+  { id: "collaborators", label: "Collaborators" },
+] as const;
+
+function issueTablist(sizes: ResizeControl) {
+  const tablist = screen.getByRole("tablist", { name: "Issue detail" });
+  const artifacts = screen.getByRole("tab", { name: "Artifacts 5" });
+  const box = { client: 528, scroll: 749 };
+  layOutScrollBox(tablist, box);
+  tablist.getBoundingClientRect = () => rect(0, box.client);
+  artifacts.getBoundingClientRect = () => rect(410 - tablist.scrollLeft, 505 - tablist.scrollLeft);
+  /** Lays the tablist out `client` px wide and tells its observers. A browser clamps the scroll to
+   *  the new width as it lays the tablist out, before any observer runs, so this does too. */
+  const layOut = (client: number) => {
+    box.client = client;
+    tablist.scrollLeft = tablist.scrollLeft;
+    sizes.resize();
+  };
+  return { artifacts, layOut, tablist };
+}
+
+test("the strip stops where its last layout puts it, not where a narrower layout before it left it", () => {
+  const sizes = installResizeObserver();
+  const view = render(
+    <Tabs activeTab="artifacts" ariaLabel="Issue detail" idPrefix="issue" onSelect={() => {}} tabs={issueTabs} />
+  );
+
+  try {
+    const { artifacts, layOut, tablist } = issueTablist(sizes);
+    layOut(528);
+    expect(tablist.scrollLeft).toBe(9);
+
+    // For a moment the tablist is 300 px: Artifacts runs past the fade, and the strip scrolls it
+    // back clear of it.
+    layOut(300);
+    expect(tablist.scrollLeft).toBe(237);
+    expect(artifacts.getBoundingClientRect().right).toBe(300 - scrollFadeTrailingPx);
+
+    // The layout settles at 528 px again. The strip is back where one layout at 528 px puts it,
+    // as the baseline shows it, and not at the end of its scroll.
+    layOut(528);
+    expect(tablist.scrollLeft).toBe(9);
+  } finally {
+    view.unmount();
+    sizes.restore();
+  }
+});
+
+// The strip moves itself only when the selected tab or its layout changes; a sideways scroll the
+// reader makes in between is the reader's, and stays.
+test("a sideways scroll the reader makes stays until the strip's layout changes", () => {
+  const sizes = installResizeObserver();
+  const view = render(
+    <Tabs activeTab="artifacts" ariaLabel="Issue detail" idPrefix="issue" onSelect={() => {}} tabs={issueTabs} />
+  );
+
+  try {
+    const { layOut, tablist } = issueTablist(sizes);
+    layOut(528);
+    expect(tablist.scrollLeft).toBe(9);
+
+    // The reader scrolls the strip to its end: the strip's own scroll event, which user-event has
+    // no form for.
+    tablist.scrollLeft = 221;
+    fireEvent.scroll(tablist);
+    expect(tablist.scrollLeft).toBe(221);
+
+    // The layout changes; the strip goes back to where that layout puts it.
+    layOut(528);
+    expect(tablist.scrollLeft).toBe(9);
   } finally {
     view.unmount();
     sizes.restore();

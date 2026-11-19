@@ -31,7 +31,10 @@ export function tabButtonId(idPrefix: string, id: string): string {
  *
  *  While tabs lie past its trailing edge, the tablist's last `scrollFadeTrailingPx` wear the
  *  trailing fade, so a tab is whole only clear of it: the tab stops that far inside the edge. A
- *  tab too near the end of the scroll for that stops at the end instead, where the fade is off. */
+ *  tab too near the end of the scroll for that stops at the end instead, where the fade is off.
+ *
+ *  This one is the keyboard's: it moves the tablist by the least that brings the focused tab into
+ *  view, from wherever the tablist is. */
 function revealTab(node: HTMLElement | null | undefined): void {
   const list = node?.parentElement;
   if (node === null || node === undefined || list === null || list === undefined) {
@@ -45,6 +48,25 @@ function revealTab(node: HTMLElement | null | undefined): void {
   } else if (box.right > visibleRight) {
     list.scrollLeft += box.right - visibleRight;
   }
+}
+
+/** Puts the tablist where its current layout alone puts the selected tab: at the smallest scroll
+ *  that shows the tab whole and clear of the trailing fade, which is the start when the tab fits
+ *  there, and at the tab's own left edge when the tab is wider than what the fade leaves. It is
+ *  set rather than moved by a delta, so where the tablist stops after the page settles does not
+ *  depend on the layouts it passed through: a narrower moment that scrolled the tab clear of the
+ *  fade leaves nothing behind once the tablist widens again. */
+function settleTab(node: HTMLElement | null | undefined): void {
+  const list = node?.parentElement;
+  if (node === null || node === undefined || list === null || list === undefined) {
+    return;
+  }
+  const listLeft = list.getBoundingClientRect().left;
+  const box = node.getBoundingClientRect();
+  // The tab's edges from the start of the scroll, whatever the tablist is scrolled to now.
+  const left = box.left - listLeft + list.scrollLeft;
+  const right = box.right - listLeft + list.scrollLeft;
+  list.scrollLeft = Math.min(Math.max(0, right - (list.clientWidth - scrollFadeTrailingPx)), left);
 }
 
 export function Tabs<Id extends string>({
@@ -103,18 +125,19 @@ export function Tabs<Id extends string>({
     revealTab(node);
   };
 
-  // Reveal the selected tab when it is chosen, when the list narrows (the comment margin opens
-  // or the window narrows), when a tab's width changes (a live count grows), and when a tab is
-  // added or taken away (the project's Architecture tab arriving before Issues). A preceding tab
-  // can move the selection under the fade without changing the list's or selected tab's width.
+  // Settle the selected tab when it is chosen, when the list narrows or widens (the comment margin
+  // opens, or the window changes), when a tab's width changes (a live count grows), and when a tab
+  // is added or taken away (the project's Architecture tab arriving before Issues). A preceding
+  // tab can move the selection under the fade without changing the list's or selected tab's
+  // width. A sideways scroll the reader makes in between is none of these, and stays.
   useEffect(() => {
     const selected = tabRefs.current[activeTab];
-    revealTab(selected);
+    settleTab(selected);
     const list = selected?.parentElement;
     if (list === null || list === undefined) {
       return;
     }
-    return observeStrip(list, () => revealTab(selected), { childList: true });
+    return observeStrip(list, () => settleTab(selected), { childList: true });
   }, [activeTab]);
 
   const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";
@@ -122,8 +145,8 @@ export function Tabs<Id extends string>({
   // issue's ten tabs, one carrying a count pill, no longer fit a 390 px viewport, nor the issue
   // page at 1440 px beside its comment margin: there the tablist scrolls sideways, as it already
   // did at 360 px, wears the trailing fade while tabs lie past its edge, and `revealTab` keeps the
-  // focused or selected tab fully visible and clear of the fade. Every tab stays reachable and
-  // keeps its 44 px target.
+  // focused tab and `settleTab` the selected tab fully visible and clear of the fade. Every tab
+  // stays reachable and keeps its 44 px target.
   const tabPadding = compact ? "px-1.5 md:px-2" : "px-3";
   const tabGap = compact ? "gap-0 md:gap-1" : "gap-1";
 
