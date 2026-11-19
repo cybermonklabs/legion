@@ -3096,12 +3096,12 @@ else
 fi
 
 # 115. A row that reads a private repository cannot run where gh cannot read it (test round
-# 37). n-collector-keep-keys reads the spend collector's keep-list in theorem-labs/agent-infra,
-# a private repository, with gh at three pinned commits. A reader whose gh cannot read that
-# repository would see the row's read fail, a FAIL of replay-command that is no verdict on
+# 37). Six rows, n-collector-keep-keys among them, read theorem-labs/agent-infra, a private
+# repository, with gh at pinned commits. A reader whose gh cannot read that repository would
+# see each row's read fail, a FAIL of replay-command that is no verdict on
 # the deliverable. --replay now reads the repository through live_read before the GitHub
 # budget and before env.sh builds anything (private_repository_read), so such a reader gets
-# check.sh cannot run, exit 2, naming the repository and the row. The case runs --replay over
+# check.sh cannot run, exit 2, naming the repository and the rows. The case runs --replay over
 # this directory with a gh of the case's own first on PATH, which refuses
 # repos/theorem-labs/agent-infra with exit 1, as gh does for a repository its credential
 # cannot read, and answers nothing else; the run must end exit 2, its last line naming
@@ -3131,12 +3131,12 @@ exit 7
 STUB
 chmod +x "$PRIVATE/bin/gh" "$PRIVATE/bin/curl"
 out="$(PATH="$PRIVATE/bin:$PATH" gate_run "$HERE/check.sh" --replay)"
-private_case="--replay whose gh cannot read theorem-labs/agent-infra cannot run, exit 2, naming the repository and the row that reads it, and prints no FAIL"
+private_case="--replay whose gh cannot read theorem-labs/agent-infra cannot run, exit 2, naming the repository and the rows that read it, and prints no FAIL"
 if grep -q '^FAIL' "$out/text"; then
     case_failed "$private_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')"
 else
     ending_result "$private_case" 2 \
-        "^check\\.sh cannot run --replay: GitHub's read of theorem-labs/agent-infra, the private repository the row n-collector-keep-keys reads with gh, did not answer: gh: Not Found \\(HTTP 404\\)" "$out" \
+        "^check\\.sh cannot run --replay: GitHub's read of theorem-labs/agent-infra, the private repository six rows read with gh, n-collector-keep-keys among them, did not answer: gh: Not Found \\(HTTP 404\\)" "$out" \
         '^check\.sh cannot run --replay: GitHub'
 fi
 
