@@ -122,10 +122,11 @@ export interface ChannelNatsSettings {
 /**
  * Opens the session's NATS connection with the credential `inbound` resolved. A broker token is
  * signed into the CONNECT itself, so a live one is taken before the dial; and the connection is
- * then kept on a token the auth service admits (`keepNatsCredential`, warnings through `warn`),
- * until `stop` or the connection closing. A dial that fails is dialed again as `plan` says, which
- * by default is for the server's life; each redial is warned of, naming the servers by their
- * setting and the credential it presented beside why it failed, as a log may print both
+ * then kept on a token the auth service admits (`keepNatsCredential`, warnings through `warn`,
+ * with no dial error, which tells them from a redial's), until `stop` or the connection closing.
+ * A dial that fails is dialed again as `plan` says, which by default is for the server's life;
+ * each redial is warned of, naming the servers by their setting and the credential it presented
+ * beside why it failed, as a log may print both
  * (`natsDialFailure`: no part of a server's text, and the reason nats.js's code or the server's
  * fixed refusal, never text derived from what the servers were set to or what the client sent),
  * and `warn` is handed the failed dial's error with its line. A dial that fails for good (an

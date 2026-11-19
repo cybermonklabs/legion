@@ -18,7 +18,7 @@ import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "..
 import { type AgentStreamRunner, startAgentStream } from "../src/agent-stream-runner"
 import { sessionAdmission } from "../src/channel-connection"
 import type { ModLink } from "../src/mod-link"
-import { FakeNats } from "./channel-session-harness"
+import { FakeNats, waitFor } from "./channel-session-harness"
 
 const SESSION = "0c3b6f6e-0000-4000-8000-000000000001"
 const CLEARED = "0c3b6f6e-0000-4000-8000-000000000002"
@@ -506,3 +506,45 @@ test("a row that arrives twice is read once", async () => {
   expect(live.observed.filter((event) => event.kind === "append")).toHaveLength(2)
   live.runner.stop()
 })
+
+// A control subscription can end while the connection stays up (the server refused it): the
+// view takes the subject again a second later (`../src/control-subscription`), and takes nothing
+// for an id it moved off, or once it stopped, while that retake waits.
+test("a control subscription that ends on a live connection is taken again a second later, and not after a clear or a stop", async () => {
+  const live = running()
+  const subject = agentStreamControlSubject(SESSION)
+  const cleared = agentStreamControlSubject(CLEARED)
+  const takes = (taken: string): number =>
+    live.nats.calls.filter((call) => call === `nats.subscribe ${taken}`).length
+  const refusal = Object.assign(new Error("Permissions Violation for Subscription"), {
+    name: "NatsError",
+    code: "PERMISSIONS_VIOLATION",
+  })
+  await settle()
+  expect(takes(subject)).toBe(1)
+
+  // Ended on a live connection: taken again about a second later.
+  const endedAt = performance.now()
+  live.nats.failSubscription(subject, refusal)
+  await waitFor(async () => takes(subject) === 2, "the control subject taken again")
+  expect(performance.now() - endedAt).toBeGreaterThanOrEqual(900)
+  expect(live.nats.liveSubscriptions(subject)).toBe(1)
+
+  // Ended again, and a `/clear` lands while the retake waits: the old id is not taken again.
+  live.nats.failSubscription(subject, refusal)
+  await Bun.sleep(100)
+  live.mod.moveSession(CLEARED)
+  await settle()
+  expect(takes(cleared)).toBe(1)
+  await Bun.sleep(1_500)
+  expect(takes(subject)).toBe(2)
+  expect(takes(cleared)).toBe(1)
+
+  // Ended again, and the view stops while the retake waits: nothing is taken again.
+  live.nats.failSubscription(cleared, refusal)
+  await Bun.sleep(100)
+  live.runner.stop()
+  await Bun.sleep(1_500)
+  expect(takes(cleared)).toBe(1)
+  expect(live.nats.liveSubscriptions(cleared)).toBe(0)
+}, 15_000)

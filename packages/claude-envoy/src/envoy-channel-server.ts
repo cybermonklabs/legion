@@ -2777,8 +2777,10 @@ export async function runEnvoyChannelServer(): Promise<void> {
       const dialled = await dialChannelNats(
         inbound,
         natsName,
-        (text) => {
-          starting = text
+        (text, dialError) => {
+          // A redial's warning names what the start waits on; the token keeper warns through the
+          // same channel once the connection is up, and names nothing the start waits on.
+          if (dialError !== undefined) starting = text
           process.stderr.write(`envoy-channel: ${text}\n`)
         },
         connect,

@@ -131,8 +131,18 @@ export class FakeNats implements ChannelConnection {
   }
 
   private end(queue: Queue, error: Error): void {
+    this.closeQueue(queue)
+    this.endIterator(queue, error)
+  }
+
+  /** The subscription is closed: no message reaches it, and it is no longer live. */
+  private closeQueue(queue: Queue): void {
     if (this.subscriptions.get(queue.subject) === queue) this.subscriptions.delete(queue.subject)
     this.live.delete(queue)
+  }
+
+  /** The subscription's iterator throws `error` at its next pull. */
+  private endIterator(queue: Queue, error: Error): void {
     queue.refusal = undefined
     queue.failed = error
     queue.waiter?.resolve(null)
@@ -143,10 +153,10 @@ export class FakeNats implements ChannelConnection {
 
   /**
    * The server refuses every subscription to `subject` from now on, as it refuses one whose
-   * subject the connection's user may not take: the refusal reaches the client before the answer
-   * to its next flush (nats-server sends `-ERR` as it reads the `SUB`, then the `PONG`), or, where
-   * that flush is lost to a redial, after the reconnect sends the `SUB` again
-   * (`deliverRefusals`). `undefined` ends the refusals; a subscription already refused stays so.
+   * subject the connection's user may not take: the refusal reaches the client with its next
+   * flush, and ends the subscription a turn after that flush resolves (`flush`), or, where that
+   * flush is lost to a redial, after the reconnect sends the `SUB` again (`deliverRefusals`).
+   * `undefined` ends the refusals; a subscription already refused stays so.
    */
   refuse(subject: string, error: Error | undefined): void {
     if (error === undefined) this.refused.delete(subject)
@@ -173,8 +183,13 @@ export class FakeNats implements ChannelConnection {
   /** Every flush asked for, the failed ones included. */
   flushes = 0
 
-  /** Rejects on a connection closed for good, as nats.js does. A flush that reaches the server
-   *  delivers its refusals first (`refuse`). */
+  /**
+   * Rejects on a connection closed for good, as nats.js does. A flush that reaches the server
+   * delivers its refusals (`refuse`), as nats.js delivers them: nats-server sends `-ERR` as it
+   * reads the `SUB`, then the `PONG`, so a refused subscription is closed before the flush
+   * resolves, and its iterator ends a turn of the event loop after it: a caller that looks at the
+   * iterator's reader as the flush returns still finds it running.
+   */
   flush(): Promise<void> {
     this.flushes += 1
     if (this.closedForGood) return Promise.reject(connectionClosedError())
@@ -183,7 +198,15 @@ export class FakeNats implements ChannelConnection {
       return Promise.reject(new Error("DISCONNECT"))
     }
     if (this.stallFlush) return new Promise<void>(() => undefined)
-    this.deliverRefusals()
+    const refused = [...this.subscriptions.values()].filter((queue) => queue.refusal !== undefined)
+    for (const queue of refused) this.closeQueue(queue)
+    if (refused.length > 0) {
+      setImmediate(() => {
+        for (const queue of refused) {
+          if (queue.refusal !== undefined) this.endIterator(queue, queue.refusal)
+        }
+      })
+    }
     return Promise.resolve()
   }
 

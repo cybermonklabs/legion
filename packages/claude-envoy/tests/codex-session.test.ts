@@ -26,6 +26,7 @@ import {
 } from "../src/codex/codex-session-record"
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
 import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user-turn-state"
+import { FakeNats, waitFor } from "./channel-session-harness"
 
 const directory = temporaryDirectory("codex-session")
 
@@ -414,6 +415,47 @@ describe("the Codex live view", () => {
     expect(swapped.published.length).toBeGreaterThan(0)
     stream.stop()
   })
+
+  // A control subscription can end while the connection stays up (the server refused it): the
+  // view takes the subject again a second later (`../src/control-subscription`), and takes nothing
+  // for an id it moved off, or once it stopped, while that retake waits.
+  test("a control subscription that ends on a live connection is taken again a second later, and not after a /new or a stop", async () => {
+    const nats = new FakeNats()
+    const stream = startCodexAgentStream({ connection: nats, sessionId: "s15", warn: () => {} })
+    const subject = agentStreamControlSubject("s15")
+    const renewed = agentStreamControlSubject("s16")
+    const takes = (taken: string): number =>
+      nats.calls.filter((call) => call === `nats.subscribe ${taken}`).length
+    const refusal = Object.assign(new Error("Permissions Violation for Subscription"), {
+      name: "NatsError",
+      code: "PERMISSIONS_VIOLATION",
+    })
+    expect(takes(subject)).toBe(1)
+
+    // Ended on a live connection: taken again about a second later.
+    const endedAt = performance.now()
+    nats.failSubscription(subject, refusal)
+    await waitFor(async () => takes(subject) === 2, "the control subject taken again")
+    expect(performance.now() - endedAt).toBeGreaterThanOrEqual(900)
+    expect(nats.liveSubscriptions(subject)).toBe(1)
+
+    // Ended again, and a `/new` lands while the retake waits: the old id is not taken again.
+    nats.failSubscription(subject, refusal)
+    await Bun.sleep(100)
+    stream.rebind("s16")
+    expect(takes(renewed)).toBe(1)
+    await Bun.sleep(1_500)
+    expect(takes(subject)).toBe(2)
+    expect(takes(renewed)).toBe(1)
+
+    // Ended again, and the view stops while the retake waits: nothing is taken again.
+    nats.failSubscription(renewed, refusal)
+    await Bun.sleep(100)
+    stream.stop()
+    await Bun.sleep(1_500)
+    expect(takes(renewed)).toBe(1)
+    expect(nats.liveSubscriptions(renewed)).toBe(0)
+  }, 15_000)
 })
 
 function frame(mode: "steer" | "btw", body: string): RenderInboundResult {

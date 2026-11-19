@@ -8,7 +8,9 @@
 //   is lost to a redial or times out, and the server can still refuse it after the reconnect;
 // - the connection closes for good between a `/clear`'s deregistration of the old id and its
 //   registration of the new one: the credential move must wait for the connection that replaces
-//   it, and the outage is told, naming the close.
+//   it, and the outage is told, naming the close;
+// - the relay subscription ends as the session shuts down, with a registration still queued for
+//   it: the leaving session is told no outage, and nothing registers behind the DELETE.
 import { expect, test } from "bun:test"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import type { SubscribeInput } from "@legion/envoy-client/transport"
@@ -295,6 +297,76 @@ test("a connection closed for good between a /clear's deregistration and its reg
     expect(notices(notifier, "Envoy inbound unavailable")).toHaveLength(1)
     expect(notices(notifier, "Envoy inbound restored")).toHaveLength(1)
   } finally {
+    await session.shutdown()
+  }
+}, 30_000)
+
+// A relay subscription that ends while a heartbeat's registration is still on the wire queues a
+// registration behind it, which names the outage. Shutdown then closes the relay and sends the
+// DELETE once its bounded wait for the chain gives up. The queued registration runs after that:
+// it must tell the leaving session nothing (`inboundOutage` says nothing once shutdown began) and
+// register nothing (`register` returns at once), since a registration behind the DELETE would
+// write the record back.
+test("a registration queued behind a held listener call as the session shuts down tells no outage and registers nothing after the DELETE", async () => {
+  const SESSION = "ses_relay_shutdown"
+  const RELAY = deliverSubject(SESSION)
+  const nats = new FakeNats()
+  const notifier = new FakeNotifier()
+  const calls: string[] = []
+  // The start's registration is answered at once; the first heartbeat's is held until the test
+  // answers it, after the DELETE.
+  const held = Promise.withResolvers<void>()
+  const heldAsked = Promise.withResolvers<void>()
+  let registrations = 0
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), scratchState(), {
+      connection: nats,
+      notifier,
+      heartbeatMs: 25,
+      // The shutdown's wait for the chain gives up quickly, so the DELETE goes out while the
+      // heartbeat's registration still holds the chain.
+      registrationSettleMs: 100,
+      client: recordingClient(calls, {
+        subscribe: async (input) => {
+          calls.push(`subscribe ${input.sessionID}`)
+          registrations += 1
+          if (registrations > 1) {
+            heldAsked.resolve()
+            await held.promise
+          }
+          return noInterest(input.sessionID)
+        },
+      }),
+    }),
+  )
+  try {
+    await heldAsked.promise
+    // The relay subscription ends with the server's refusal: a registration is queued behind the
+    // held one, and would refuse itself and name the outage.
+    nats.failSubscription(
+      RELAY,
+      serverRefusal(
+        "PERMISSIONS_VIOLATION",
+        `Permissions Violation for Subscription to "${RELAY}"`,
+      ),
+    )
+    await waitFor(async () => nats.liveSubscriptions(RELAY) === 0, "the relay subscription ended")
+
+    await session.shutdown()
+    const deregisteredAt = calls.indexOf(`unregister ${SESSION}`)
+    expect(deregisteredAt).toBeGreaterThan(-1)
+
+    // The held registration is answered now, after the DELETE, and the queued one runs behind it.
+    // Its absence needs the time to pass: a few turns are ample for a chain with no wait left.
+    held.resolve()
+    await Bun.sleep(200)
+    expect(notices(notifier, "Envoy inbound unavailable")).toEqual([])
+    expect(notices(notifier, "Envoy inbound restored")).toEqual([])
+    expect(calls.slice(deregisteredAt + 1).filter((call) => call.startsWith("subscribe "))).toEqual(
+      [],
+    )
+  } finally {
+    held.resolve()
     await session.shutdown()
   }
 }, 30_000)

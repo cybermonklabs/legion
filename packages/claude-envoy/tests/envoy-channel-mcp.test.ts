@@ -413,3 +413,109 @@ test("an Envoy tool called while the start dials NATS again is told the dial's l
     await rm(stateDirectory, { recursive: true, force: true })
   }
 }, 30_000)
+
+// The dial's warnings name what the start waits on while it dials; the broker token's keeper warns
+// through the same channel once the connection is up, and a keeper warning is no reason the start
+// is waiting. Here the first token lives two seconds and every later trade is refused, so the
+// keeper warns about a second after the dial, while the listener holds the start's registration:
+// a tool call then is told the start registers, not the keeper's warning.
+test("a broker token keeper's warning while the start registers leaves the tool told what the start waits on", async () => {
+  let trades = 0
+  const tokens = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (request) => {
+      await request.text()
+      trades += 1
+      if (trades > 1) return new Response("the broker is away", { status: 503 })
+      return Response.json({
+        access_token: fixtureSecret("channel"),
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 2,
+      })
+    },
+  })
+  const broker = new FakeNatsServer({ nonce: "fake-nonce" })
+  const held = Promise.withResolvers<void>()
+  const listener = Bun.serve({
+    port: 0,
+    fetch: async (request) => {
+      const url = new URL(request.url)
+      if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
+        const body = (await request.json()) as { session_id: string; topics: string[] }
+        await held.promise
+        return Response.json({
+          session_id: body.session_id,
+          machine_id: "test",
+          dir: "/tmp",
+          topics: body.topics,
+          delivery: consumerDelivery(body.session_id),
+        })
+      }
+      if (request.method === "DELETE") return new Response(null, { status: 200 })
+      return Response.json({ error: "not found" }, { status: 404 })
+    },
+  })
+  const stateDirectory = await sessionHome("claude-envoy-keeper-")
+  const tokenFile = join(stateDirectory, "projected-token")
+  await writeFile(tokenFile, `${fixtureSecret("proj")}\n`)
+  const client = new Client({ name: "test", version: "0" })
+  const transport = new StdioClientTransport({
+    command: "bun",
+    args: [entry],
+    cwd: stateDirectory,
+    env: {
+      PATH: process.env["PATH"] ?? "",
+      HOME: stateDirectory,
+      ENVOY_NATS_URL: broker.url,
+      ENVOY_URL: `http://127.0.0.1:${listener.port}`,
+      CLAUDE_CODE_SESSION_ID: "ses_keeper_warns",
+      CLAUDE_PLUGIN_DATA: stateDirectory,
+      XDG_RUNTIME_DIR: stateDirectory,
+      NATS_AUTH: "broker",
+      AGENT_SECRETS_URL: `http://127.0.0.1:${tokens.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+    },
+    stderr: "pipe",
+  })
+  let stderr = ""
+  transport.stderr?.on("data", (chunk: Buffer | string) => {
+    stderr += String(chunk)
+  })
+  const whoami = () =>
+    client.callTool({ name: "envoy_whoami", arguments: {} }).then(
+      () => "answered",
+      (error: unknown) => String(error),
+    )
+
+  try {
+    await client.connect(transport)
+    // Connected, and the start's registration held: the keeper warns about the lapsing token.
+    await waitFor(
+      async () => broker.subscribed.length > 0,
+      "the session's subscriptions to reach NATS",
+      () => stderr,
+      30_000,
+    )
+    await waitFor(
+      async () => stderr.includes("envoy-channel: the NATS connection's broker token"),
+      "the keeper's warning",
+      () => stderr,
+      15_000,
+    )
+    const answer = await whoami()
+    expect(answer).toContain(
+      "Envoy channel server is still starting: it registers this session with Envoy",
+    )
+    expect(answer).not.toContain("broker token")
+  } finally {
+    held.resolve()
+    await client.close().catch(() => undefined)
+    listener.stop(true)
+    tokens.stop(true)
+    await broker.stop()
+    await rm(stateDirectory, { recursive: true, force: true })
+  }
+}, 90_000)
