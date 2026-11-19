@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -1918,10 +1919,7 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		{name: "an unserved owner's repository GitHub asks ls-remote a credential for", slug: "other-owner/invented-repo", rest: rest("private"), git: refused, reads: "git\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repo := tc.slug
-			if repo == "" {
-				repo = slug
-			}
+			repo := cmp.Or(tc.slug, slug)
 			bin, record, state := t.TempDir(), filepath.Join(t.TempDir(), "reads"), t.TempDir()
 			if tc.kept {
 				keepPublic(t, state)

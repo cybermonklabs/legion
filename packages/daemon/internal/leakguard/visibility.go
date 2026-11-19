@@ -439,43 +439,51 @@ func (e *OwnerNotServedError) Error() string {
 	return fmt.Sprintf("the role's GitHub App is not installed on %q: %s holds no gh directory for it", e.Owner, e.OwnersDir)
 }
 
+// ownerNotServedLine is the one line `legion gh` prints for its refusal of a repository of owner
+// (OwnerNotServedError), without its newline: the line the guard matches (Guard.unservedOwner)
+// and its refusal quotes (unservedOwnerError).
+func ownerNotServedLine(owner, ownersDir string) string {
+	return "legion gh: " + (&OwnerNotServedError{Owner: owner, OwnersDir: ownersDir}).Error()
+}
+
 // unservedOwner is gh's answer to the guard's REST read of slug, its exit status and everything it
 // printed, read as the refusal `legion gh` makes of a repository whose owner the project's gh
 // bundle holds no directory for (OwnerNotServedError), and nil for any other answer. That refusal
 // is exit 2, runGh's status for a call it refuses before gh runs, and one line with nothing
-// before or after it: `legion gh: ` and OwnerNotServedError's words for slug's owner, lowercased
-// as `legion gh` names it, and for the bundle LEGION_GH_OWNERS_DIR names in the guard's
-// environment, which is the environment gh ran with. Anything else says nothing of the owner and
-// stays the failure it was: another refusal of `legion gh`, these words for another owner or
-// another bundle, these words beside other words in one line (the refusal of a configured rename
-// whose new owner the bundle holds no directory for, cmd/legion's ghConfigDirFor), these words
-// beside other output, and these words under another exit status.
+// before or after it (ownerNotServedLine): `legion gh: ` and OwnerNotServedError's words for
+// slug's owner, lowercased as `legion gh` names it, and for the bundle LEGION_GH_OWNERS_DIR names
+// in the guard's environment, which is the environment gh ran with. Anything else says nothing of
+// the owner and stays the failure it was: another refusal of `legion gh`, these words for another
+// owner or another bundle, these words beside other words in one line (the refusal of a
+// configured rename whose new owner the bundle holds no directory for, cmd/legion's
+// ghConfigDirFor), these words beside other output, and these words under another exit status.
 func (g *Guard) unservedOwner(status int, printed, slug string) *unservedOwnerError {
+	if status != 2 {
+		return nil
+	}
 	ownersDir := value(g.base(), "LEGION_GH_OWNERS_DIR")
-	if status != 2 || ownersDir == "" {
+	if ownersDir == "" {
 		return nil
 	}
 	owner, _, _ := strings.Cut(slug, "/")
-	refusal := &OwnerNotServedError{Owner: strings.ToLower(owner), OwnersDir: ownersDir}
-	if printed != "legion gh: "+refusal.Error()+"\n" {
+	owner = strings.ToLower(owner)
+	if printed != ownerNotServedLine(owner, ownersDir)+"\n" {
 		return nil
 	}
-	return &unservedOwnerError{slug: slug, ownersDir: ownersDir}
+	return &unservedOwnerError{slug: slug, owner: owner, ownersDir: ownersDir}
 }
 
 // unservedOwnerError is the guard's REST read of slug that `legion gh` refused because the gh
-// bundle under ownersDir holds no directory for slug's owner (Guard.unservedOwner). The refusal
-// says nothing of the repository's visibility, which the guard reads with no credential instead
-// (Guard.readUnservedOwner). It says what `legion gh` printed, the repository and its owner
-// masked.
+// bundle under ownersDir holds no directory for slug's owner, owner as `legion gh` names it
+// (Guard.unservedOwner). The refusal says nothing of the repository's visibility, which the guard
+// reads with no credential instead (Guard.readUnservedOwner). It says what `legion gh` printed,
+// the repository and its owner masked.
 type unservedOwnerError struct {
-	slug, ownersDir string
+	slug, owner, ownersDir string
 }
 
 func (e *unservedOwnerError) Error() string {
-	owner, _, _ := strings.Cut(e.slug, "/")
-	refusal := &OwnerNotServedError{Owner: maskPath(strings.ToLower(owner)), OwnersDir: e.ownersDir}
-	return fmt.Sprintf("gh api repos/%s exited 2: legion gh: %v", maskPath(e.slug), refusal)
+	return fmt.Sprintf("gh api repos/%s exited 2: %s", maskPath(e.slug), ownerNotServedLine(maskPath(e.owner), e.ownersDir))
 }
 
 // graphQLVisibility reads slug's visibility from GitHub's GraphQL API through gh, as the same

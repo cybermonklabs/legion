@@ -395,10 +395,7 @@ func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			bin, record := t.TempDir(), filepath.Join(t.TempDir(), "reads")
 			stub := filepath.Join(bin, "real-gh")
-			script := "#!/bin/sh\nfor last; do :; done\n" +
-				"if [ \"$last\" = --help ]; then\n" +
-				"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
-				"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
+			script := ghStandInHelp(help) +
 				"echo rest >> \"$GH_STANDIN_RECORD\"\n" +
 				"printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' private\nexit 0\n"
 			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {

@@ -1,6 +1,7 @@
 package leakguard
 
 import (
+	"cmp"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -10,15 +11,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
-
-// notAnOwner is the line `legion gh` refuses a call with when the gh bundle under ownersDir holds
-// no directory for owner, before any gh runs, exit 2: `legion gh: ` and the words of
-// OwnerNotServedError, the type `legion gh` prints that refusal from, so the two cannot part. It
-// is the refusal a push to another owner's public fork met on 2026-11-17, through the guard's
-// REST read.
-func notAnOwner(owner, ownersDir string) string {
-	return "legion gh: " + (&OwnerNotServedError{Owner: owner, OwnersDir: ownersDir}).Error()
-}
 
 // ghAnswers is a stand-in gh whose every call appends a line to the file reads names, prints
 // lines to standard error and exits with exit: what `legion gh` does when it refuses a call before
@@ -39,7 +31,10 @@ func ghAnswers(reads string, exit int, lines ...string) string {
 // and never through GraphQL, and curl never runs: the guard makes no REST read with no credential,
 // whose budget every reader of GitHub from the address shares (readUnservedOwner).
 func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *testing.T) {
-	scanned := func(t *testing.T, _ string, err error, sources []VisibilitySource) {
+	// owners is the bundle LEGION_GH_OWNERS_DIR names. Nothing reads it: Guard.unservedOwner
+	// compares that name, as text, with the one in `legion gh`'s refusal.
+	const owners = "/var/run/invented/gh"
+	scanned := func(t *testing.T, err error, sources []VisibilitySource) {
 		t.Helper()
 		if refused := refusal(t, err); refused.By != byRules {
 			t.Errorf("the push was refused by %q, want the rules: a public destination is scanned", refused.By)
@@ -48,12 +43,12 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 			t.Errorf("the guard reported the sources %q, want %q", sources, want)
 		}
 	}
-	refusedSaying := func(wants ...string) func(*testing.T, string, error, []VisibilitySource) {
-		return func(t *testing.T, owners string, err error, sources []VisibilitySource) {
+	refusedSaying := func(wants ...string) func(*testing.T, error, []VisibilitySource) {
+		return func(t *testing.T, err error, sources []VisibilitySource) {
 			t.Helper()
 			says(t, setupFailure(t, err), append([]string{
 				"the visibility of " + theRepo + " could not be read",
-				"gh api repos/" + theRepo + " exited 2: " + notAnOwner("invented-org", owners) +
+				"gh api repos/" + theRepo + " exited 2: " + ownerNotServedLine("invented-org", owners) +
 					", and git ls-remote with no credential could not answer: git ls-remote of " + theRepo + " exited 128",
 			}, wants...)...)
 			if len(sources) != 0 {
@@ -65,19 +60,18 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 		name string
 		// git is what the stand-in git does after it records its call.
 		git string
-		// check reads the push's answer and the sources the guard reported, given the bundle
-		// LEGION_GH_OWNERS_DIR names.
-		check func(t *testing.T, owners string, err error, sources []VisibilitySource)
+		// check reads the push's answer and the sources the guard reported.
+		check func(t *testing.T, err error, sources []VisibilitySource)
 	}{
 		{name: "ls-remote lists the refs", git: answersTheRefs, check: scanned},
 		{name: "GitHub asks ls-remote for a credential", git: asksForACredential, check: refusedSaying("could not read Username")},
 		{name: "ls-remote fails another way", git: cannotConnect, check: refusedSaying("Could not resolve host")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bin, records, owners := t.TempDir(), t.TempDir(), t.TempDir()
+			bin, records := t.TempDir(), t.TempDir()
 			reads, graphql, record := filepath.Join(records, "reads"), filepath.Join(records, "graphql"), filepath.Join(records, "git")
 			curl := filepath.Join(records, "curl")
-			writeProgram(t, bin, "gh", ghStandIn(ghAnswers(reads, 2, notAnOwner("invented-org", owners)), graphQLAnswers(graphql, "PRIVATE")))
+			writeProgram(t, bin, "gh", ghStandIn(ghAnswers(reads, 2, ownerNotServedLine("invented-org", owners)), graphQLAnswers(graphql, "PRIVATE")))
 			writeProgram(t, bin, "curl", curlStandIn(curl, filepath.Join(records, "curl-stdin"), curlAnswers("private")))
 			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
 			var sources []VisibilitySource
@@ -94,7 +88,7 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 				URL:     theURL,
 				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: noSHA, RemoteRef: "refs/heads/legion/" + theHost, RemoteSHA: noSHA}},
 			})
-			tc.check(t, owners, err, sources)
+			tc.check(t, err, sources)
 			if got := countLines(t, reads); got != 1 {
 				t.Errorf("gh's REST read ran %d times, want once", got)
 			}
@@ -130,7 +124,7 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 // and the line where the guard's environment names no bundle at all.
 func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 	const owners = "/var/run/invented/gh"
-	theRefusal := notAnOwner("invented-org", owners)
+	theRefusal := ownerNotServedLine("invented-org", owners)
 	renameRefusal := "legion gh: the configured rename invented-org/invented-repo -> moved-org/invented-repo serves invented-org/invented-repo " +
 		"from moved-org's gh directory, and " + (&OwnerNotServedError{Owner: "moved-org", OwnersDir: owners}).Error() +
 		"; GitHub holds the repository under the name it moved to, so no other token of this bundle reaches it"
@@ -156,8 +150,8 @@ func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 			lines: []string{"legion gh: GH_CONFIG_DIR is unset: a Legion pane or pod sets it, and nothing else runs this gh"},
 			fails: "exited 2: legion gh: GH_CONFIG_DIR is unset",
 		},
-		{name: "the refusal of another owner", exit: 2, lines: []string{notAnOwner("other-owner", owners)}, fails: "exited 2: " + notAnOwner("other-owner", owners)},
-		{name: "the refusal for another bundle", exit: 2, lines: []string{notAnOwner("invented-org", "/var/run/other/gh")}, fails: "exited 2: " + notAnOwner("invented-org", "/var/run/other/gh")},
+		{name: "the refusal of another owner", exit: 2, lines: []string{ownerNotServedLine("other-owner", owners)}, fails: "exited 2: " + ownerNotServedLine("other-owner", owners)},
+		{name: "the refusal for another bundle", exit: 2, lines: []string{ownerNotServedLine("invented-org", "/var/run/other/gh")}, fails: "exited 2: " + ownerNotServedLine("invented-org", "/var/run/other/gh")},
 		{name: "the refusal under exit 1", exit: 1, lines: []string{theRefusal}, fails: "exited 1: " + theRefusal},
 		{name: "the refusal and another line after it", exit: 2, lines: []string{theRefusal, "usage: legion gh"}, fails: "exited 2: " + theRefusal},
 		{name: "another line and the refusal after it", exit: 2, lines: []string{"warning: invented", theRefusal}, fails: "exited 2: warning: invented"},
@@ -173,10 +167,7 @@ func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 		{name: "the refusal where no bundle is named", exit: 2, lines: []string{theRefusal}, env: []string{"LEGION_GH_OWNERS_DIR="}, fails: "exited 2: " + theRefusal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			slug := tc.slug
-			if slug == "" {
-				slug = theRepo
-			}
+			slug := cmp.Or(tc.slug, theRepo)
 			env := tc.env
 			if env == nil {
 				env = []string{"LEGION_GH_OWNERS_DIR=" + owners}
@@ -219,7 +210,7 @@ func TestTheVisibilityOfAnOwnerLegionGhServesIsReadAsBefore(t *testing.T) {
 			bin, records := t.TempDir(), t.TempDir()
 			reads, record := filepath.Join(records, "reads"), filepath.Join(records, "git")
 			writeProgram(t, bin, "gh", "echo read >> "+shQuote(reads)+"\n"+
-				"printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' "+string(visibility)+"\nexit 0\n")
+				printsResponse("HTTP/2.0 200 OK", []string{"X-Ratelimit-Remaining: 4999"}, string(visibility))+"exit 0\n")
 			writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
 			var sources []VisibilitySource
 			guard := New(Options{

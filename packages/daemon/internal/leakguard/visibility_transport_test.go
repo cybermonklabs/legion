@@ -310,7 +310,7 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 			// that runs no curl and no git here: the rig's environment (fixtureenv.Isolated) names
 			// no LEGION_GH_OWNERS_DIR, so Guard.unservedOwner does not read it as an unserved owner.
 			name:  "a refusal by legion gh",
-			rest:  printsToStderr(notAnOwner("invented-org", "/invented")) + "exit 2\n",
+			rest:  printsToStderr(ownerNotServedLine("invented-org", "/invented")) + "exit 2\n",
 			fails: (&OwnerNotServedError{Owner: "invented-org", OwnersDir: "/invented"}).Error(),
 		},
 		{
