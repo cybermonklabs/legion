@@ -3072,9 +3072,6 @@ func (m *Machine) sessionGone(ctx context.Context) {
 		return
 	}
 	if err := m.holdRecorded(context.WithoutCancel(ctx), m.claim.Session, m.claim.SessionFile); err != nil {
-		// A store that did not answer says nothing of whose the session is: the claim may well
-		// hold it, and its stop is what is lost, so the line says so at Warn. A refusal is the
-		// claim that does not hold its session, whose stop is withheld on purpose.
 		if errors.Is(err, errHoldUnanswered) {
 			m.log.Warn("supervise: no clean stop of the Envoy session: the store did not answer whether the claim holds it",
 				"claim", m.claim.Token, "session", m.claim.Session, "error", err)

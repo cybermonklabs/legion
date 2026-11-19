@@ -339,8 +339,6 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 	// Machine.Compact answers it as a take that did not happen, carrying the hold's own refusal,
 	// or the store's error when the store did not answer.
 	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
-		// A store that did not answer says nothing of whose the session is, so the answer says
-		// that, not that the claim does not hold its session (as sessionGone tells the two apart).
 		if errors.Is(err, errHoldUnanswered) {
 			return fmt.Errorf("the store did not answer whether the claim holds its session, so nothing is asked of that session: %w", err)
 		}

@@ -2152,8 +2152,8 @@ The kind check keeps the name after the rollback, and the rollback needs no stat
 
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
 
-This release's broker migration `0037_pod_carry_launcher` rewrites, once, the `carry_principal` of every pod enrollment that a token login which proved an account enrolled: from the pod's account alone to the pair of that account and the login's account, `account:<pod account> launched-by account:<login account>` (`exchange.PodLaunchPrincipal`).
-Every pod enrollment this release's broker writes carries the pair as well.
+This release's broker migration `0037_pod_carry_launcher` rewrites, once, the `carry_principal` of every pod enrollment that carries the pod's account alone and that a token login which proved an account enrolled: to the pair of that account and the login's account, `account:<pod account> launched-by account:<login account>` (`exchange.PodLaunchPrincipal`).
+Every pod enrollment of a session that this release's broker writes under such a login carries the pair as well.
 A broker from before this release spells a pod's carry principal as its account alone, so its `adopt` takes no row that carries the pair, the rewritten ones and the ones this release wrote alike.
 So after a rollback a session enrolled again on the earlier broker starts with none of the grants and pending requests its pair rows hold, and asks again for the secrets it needs; the rows keep them only until the carry sweep ends each one, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default) after it went dormant, when its grants are revoked.
 A roll forward inside that window takes them back: the migration's version row stands, so the rewrite does not run again, and the next enrollment of a session by its own daemon takes both the rows that carry the pair and the account-alone rows the earlier broker wrote for that daemon's login (`adopt`'s legacy arm).

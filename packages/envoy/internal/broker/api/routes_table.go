@@ -269,11 +269,12 @@ func routes() []apiRoute {
 		// and refused at the entry past 4096. Its cap is the longest list those bounds allow with
 		// every byte of every id escaped as \u00XX, about 6 MiB, in place of the 1 MiB of every other
 		// JSON route (413 REQUEST_TOO_LARGE past it). It answers each pod enrollment of one of the ids
-		// that the next enrollment of that id under a login of the caller's account would take from:
+		// that the next enrollment of that id under a login of the caller's account could take from:
 		// a live one whatever it holds, a dormant one while it holds a live grant or a pending
-		// request, and never one ended for good, nor another login's, another daemon's pods of the
-		// same id and pod account among them. A credential whose login names no account, one a person
-		// approved through a code, is 403 SERVICE_LOGIN_REQUIRED before its body is read.
+		// request, and never one ended for good, nor one a login of another account launched,
+		// another daemon's pods of the same id and pod account among them. A credential whose login
+		// names no account, one a person approved through a code, is 403 SERVICE_LOGIN_REQUIRED
+		// before its body is read.
 		{http.MethodPost, "/v1/enrollments/carried", launcherAuth((*server).carriedEnrollments)},
 		// Log a service in with its own projected Kubernetes ServiceAccount token, which no person
 		// approves: answers its launcher credential's id and expiry.
