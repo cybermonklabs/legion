@@ -40,8 +40,9 @@ func r6Decodes(room *crdt.Doc) error {
 	return err
 }
 
-// Finding 1 (peer_update.go:260-261): Structs and Split each get the whole decode-cap headroom,
-// and the fork checks them separately, so k inserted structs + k splits end at cap+k.
+// Finding 1 (peerApplyAllowance, as review 6 read it): Structs and Split each get the whole
+// decode-cap headroom, and the fork checks them separately, so k inserted structs + k splits end
+// at cap+k.
 func TestR6Finding1StructsAndSplitShareNoHeadroom(t *testing.T) {
 	for _, k := range []int{1, 1000} {
 		t.Run(map[int]string{1: "k=1 one mid-word character", 1000: "k=1000 mid-run characters"}[k], func(t *testing.T) {
@@ -66,8 +67,9 @@ func TestR6Finding1StructsAndSplitShareNoHeadroom(t *testing.T) {
 	}
 }
 
-// Finding 2 (peer_update.go:544): headroom read info.Doc.StructCount(), which excludes the
-// pending queue, so frames parked behind a clock gap escaped the decode cap, and the room's stored
+// Finding 2 (weighPeerUpdate, as review 6 read it): headroom read info.Doc.StructCount(), which
+// excludes the pending queue, so frames parked behind a clock gap escaped the decode cap, and the
+// room's stored
 // state, which then carried its pending queue, no longer decoded under decodeStoredCopy. The
 // ceiling now charges each parked struct twice (storedCeiling), and the room leaves what it parks
 // out of its state (leaveParkedOut), so the state a load decodes carries what landed alone.
@@ -103,7 +105,7 @@ func TestR6Finding2ParkedStructsEscapeTheDecodeCap(t *testing.T) {
 	}
 }
 
-// Finding 3 (peer_update.go:273, 0006b73c): under a full budget Split = min(headroom, 8) per
+// Finding 3 (peerApplyAllowance at 0006b73c): under a full budget Split = min(headroom, 8) per
 // update with no cumulative bound, so a stream of small cutting deletes grows the room freely.
 func TestR6Finding3PressureSplitsHaveNoCumulativeBound(t *testing.T) {
 	const updates, perUpdate = 5000, 4
@@ -144,9 +146,9 @@ func TestR6Finding3PressureSplitsHaveNoCumulativeBound(t *testing.T) {
 	}
 }
 
-// Finding 4 (rebuild.go:74-86): a paste refused DOC_NEEDS_REBUILD under the state cap leaves
-// nearACap answering near=false, since it adds only smallestReplacementBytes (64), so the
-// dashboard's rebuild offer is answered 409.
+// Finding 4 (nearACap, as review 6 read it): a paste refused DOC_NEEDS_REBUILD under the state
+// cap leaves nearACap answering near=false, since it adds only smallestReplacementBytes (64), so
+// the dashboard's rebuild offer is answered 409.
 func TestR6Finding4StateCapRefusalYetNotNearACap(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
 	defer runtime.KeepAlive(replica)

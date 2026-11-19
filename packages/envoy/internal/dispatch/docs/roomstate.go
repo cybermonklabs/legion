@@ -176,7 +176,7 @@ type roomState struct {
 // observer of the commit (sameUpdate), whether it changed the content, whether it is durable
 // work the room's state waits on, the browser edit's in-flight credit, nil for an update no
 // browser edit credited, and cursor, the durable version the room instance the update was made in
-// stands at, which gates and then takes in the update's own append (StoreUpdateContext). seq is the
+// stands at, which gates and then takes in the update's own append (StoreUpdateStored). seq is the
 // update's commit position in that room instance (renderedReplica.seq): updates of one instance are
 // stored in seq order (flushThrough). roomCredit is, for a browser update measured as no change
 // while a live write was open, the peers connected as the room took it, outside F and with no
@@ -381,7 +381,7 @@ func (s *Service) forgetLocked(room string, state *roomState) {
 // and what the failed room left is the failed room's, except the
 // updates its persistence has not taken yet. Those are carried, with the counts that hold the
 // record for them: a failed room's update is dropped while the room is failed
-// (StoreUpdateContext), but ygo's stranded persistence can hand one on after the eviction has
+// (StoreUpdateStored), but ygo's stranded persistence can hand one on after the eviction has
 // cleared that failure, and a class the successor does not hold is an append stored with no
 // credit at all - the author of that keystroke is then on no version and in no pending row. An
 // in-flight credit the record still holds is reached through its update's UpdateCredit, which
@@ -397,9 +397,9 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 	// stored with the class its update observer recorded.
 	state.shadow = nil
 	// Only the updates still waiting for the room's persistence move, with the appends they
-	// count and the bytes a batch of them is bounded by. An append already in flight finishes on
-	// the record that counted it, with its class (finishUpdateClass takes the record
-	// consumeUpdateClass answered), so both stay where they are.
+	// count and the bytes of them the room's figures report (queuedBytes). An append already in
+	// flight finishes on the record that counted it, with its class (finishUpdateClass takes the
+	// record consumeUpdateClass answered), so both stay where they are.
 	var carried []*queuedClass
 	var durable int64
 	var carriedBytes int

@@ -3283,8 +3283,9 @@ peers still hold their rooms, before
 the evidence export (and at the latest when the step ends, also when the step dies on the way).
 The step then writes:
 
-- `browsertype.txt`: browsertype's output, one line per peer: `artifact=<id> peer=<i> sent=<n>
-  skipped=<n> errors=<0|1> error="<message>"`.
+- `browsertype.txt`: browsertype's standard output and standard error together: one line per
+  peer, `artifact=<id> peer=<i> sent=<n> skipped=<n> errors=<0|1> error="<message>"`, and on
+  stderr a line for each connection a room gave no client id (above), which the sums leave out.
 - `browsertype.json`: `commit`, `docs` (the copy ids), `planned_versions` (a load step's planned
   edits and uploads of each typed document, by artifact id; `null` for a replay), `peers`,
   `rate`, `exit` (0, or 1 when a
@@ -3349,7 +3350,7 @@ its cores and working set from `cgroup.json`. It also holds:
 | `loadgen.out` | The output of `loadgen run` in the runner. |
 | `stored-order.txt`, `stored-order.json`, `stored-order-evidence/` | The output of `envoy-dispatch stored-order --since <window_start>` over every document after the step, and the checker's fields (`dispatch_commit`, `built_from`, `overlay_source`, `overlay_files`, `registration`, `renderer_matches`, `sha256`), `exit`, `since` and the counts of its summary line (`null` without one, never 0) and `evidence`; and the rows of each mismatched or refused document, never uploaded (The stored-order check, above). A non-zero exit is a correctness finding, not a `step-failed.json` reason. |
 | `stored-order-typed.txt`, `stored-order-typed.json` | Only with `--typing`: the same two files of the call over the typed documents alone (one `--artifact <id>` each), which runs first (The stored-order check, above). |
-| `browsertype.txt`, `browsertype.json` | Only with `--typing`: browsertype's output, one line per peer, and `commit`, `docs`, `planned_versions` (a load step's planned edits and uploads of each typed document; `null` for a replay), `peers`, `rate`, `exit` and the sums `sent`, `skipped` and `errors` (Browser typing, above). A peer error is reported, not a `step-failed.json` reason. |
+| `browsertype.txt`, `browsertype.json` | Only with `--typing`: browsertype's output, one line per peer and, from stderr, one for each connection a room gave no client id, and `commit`, `docs`, `planned_versions` (a load step's planned edits and uploads of each typed document; `null` for a replay), `peers`, `rate`, `exit` and the sums `sent`, `skipped` and `errors` of the peer lines (Browser typing, above). A peer error is reported, not a `step-failed.json` reason. |
 | `dispatch.log`, `listener.log`, `postgres.log`, `nats-0.log`, `nats-1.log`, `nats-2.log` | Each container's log from the step's start. |
 | `CODEPATHS.md`, `codepaths.json` | `loadgen codepaths` (a replay step's from `replay` and again from `collect`, with the replay's flags; every other step's from `collect`): Dispatch's CPU by entry point and by subsystem (cores = the share × the Dispatch container's `cores_mean`), its working set at the window's end split into heap by code path, heap idle retained (HeapSys − HeapInuse − HeapReleased), stacks, other runtime memory and non-Go memory (working set − (Sys − HeapReleased)), with HeapReleased, the heap the runtime has returned to the OS and so outside the working set, on a line under the table and in no row (a `runtime.MemStats` block without HeapReleased keeps HeapSys − HeapInuse and working set − Sys, with a note saying so), and the outage's 10-minute buckets beside it. |
 

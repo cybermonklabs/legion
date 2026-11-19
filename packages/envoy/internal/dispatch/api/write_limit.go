@@ -156,7 +156,7 @@ func (s *server) holdWriteLimit(handler http.HandlerFunc) http.HandlerFunc {
 			handler(w, r)
 			return
 		}
-		body := &deadlinedBody{ReadCloser: r.Body, writer: w, idle: s.drainTime(), whole: bodyDrainLimit}
+		body := &deadlinedBody{ReadCloser: r.Body, writer: w, idle: s.idleBound(), whole: bodyDrainLimit}
 		r.Body = body
 		// The drain is this request's writer, and it is what answers a cut body (drainingWriter):
 		// routeHandler puts drainBeforeAnswer directly around this layer on every route that is not
@@ -183,9 +183,9 @@ func (s *server) holdWriteLimit(handler http.HandlerFunc) http.HandlerFunc {
 //     bytes, where under the 45 s ceiling this replaced it held them until 45 s after its first.
 const bodyIdleLimit = 20 * time.Second
 
-// drainTime is how long a handler's read of a request's body waits for the body's next bytes
+// idleBound is how long a handler's read of a request's body waits for the body's next bytes
 // (bodyIdleLimit; drainReadLimit in a test, which shortens the drain's own wait too, drainBound).
-func (s *server) drainTime() time.Duration {
+func (s *server) idleBound() time.Duration {
 	if s.drainReadLimit > 0 {
 		return s.drainReadLimit
 	}
@@ -196,7 +196,7 @@ func (s *server) drainTime() time.Duration {
 // drain's own, readFor), so a client that sends headers and stops does not hold the connection
 // and the handler reading it for as long as it keeps the connection open.
 //
-// The deadline is an IDLE one: every read that brings bytes sets it again, drainTime ahead, so
+// The deadline is an IDLE one: every read that brings bytes sets it again, idleBound ahead, so
 // what it bounds is a body that has stopped arriving and not a body that is slow. One absolute
 // deadline at the first read cut a body that was still arriving, steadily: 41 bytes sent three at
 // a time every 150 ms - 2.0 s in all, against a drain bound of 1 s - were answered 400
@@ -211,7 +211,7 @@ func (s *server) drainTime() time.Duration {
 //     450 KB/s or more, as it does for the drain. Under the 45 s ceiling it replaced, the same
 //     upload needed about 600 KB/s, so the server waited longer for an upload it refused (the
 //     drain) than it read one it would take.
-//   - A body still arriving a minute after its first byte is one no `dispatch` command is waiting
+//   - A body still arriving a minute after its first read is one no `dispatch` command is waiting
 //     for: every call's deadline is 60 s (envoy-client's DISPATCH_TOOL_DEADLINE_MS).
 //
 // The ceiling was docs.WriteRequestBound, 45 s, on the ground that a body still arriving then has
@@ -283,7 +283,7 @@ func (b *deadlinedBody) Read(p []byte) (int, error) {
 	case errors.Is(err, os.ErrDeadlineExceeded) && b.cut == nil:
 		if b.atCeiling {
 			b.cut = errorf(http.StatusServiceUnavailable, "BODY_TOO_SLOW",
-				"the request's body had not arrived whole %s after its first byte, which is the longest the server reads a body for; send it over a faster link, or in smaller writes, and retry", b.whole)
+				"the request's body had not arrived whole %s after the server began reading it, which is the longest the server reads a body for; send it over a faster link, or in smaller writes, and retry", b.whole)
 			break
 		}
 		b.cut = errorf(http.StatusServiceUnavailable, "BODY_STALLED",

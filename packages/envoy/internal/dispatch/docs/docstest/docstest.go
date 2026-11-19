@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,9 +104,10 @@ type Peer struct {
 	// closed is the close frame the room ended the connection with, nil for one that ended
 	// otherwise.
 	closed *gws.CloseError
-	// heard is each SyncStatus answer the room sent and the connection's end, as they arrived
-	// (Heard).
-	heard []Heard
+	// hearing is whether the peer keeps what it hears (Hear), and heard is each SyncStatus answer
+	// the room sent and the connection's end, as they arrived since (Heard).
+	hearing atomic.Bool
+	heard   []Heard
 }
 
 // Heard is one thing a peer heard from the room - a SyncStatus answer or the connection's end -
@@ -309,7 +311,7 @@ func (g *ClientIDRoom) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	admission := Admission{Person: r.Header.Get("X-Dispatch-User"), Presented: presented[0]}
 	g.mu.Lock()
-	if client, err := strconv.ParseUint(admission.Presented, 10, 64); err == nil && g.owners[crdt.ClientID(client)] == admission.Person {
+	if client, err := strconv.ParseUint(admission.Presented, 10, 64); err == nil && g.gave(crdt.ClientID(client), admission.Person) {
 		admission.Given = crdt.ClientID(client)
 	} else {
 		admission.Given = g.next
@@ -324,6 +326,12 @@ func (g *ClientIDRoom) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		encoder.WriteVarString(contracts.DocumentClientIdMessagePrefix + strconv.FormatUint(uint64(admission.Given), 10))
 	})
 	g.room.ServeHTTP(&firstFrameWriter{ResponseWriter: w, frame: serverFrame(message)}, r)
+}
+
+// gave is whether this room gave client to person; the caller holds g.mu.
+func (g *ClientIDRoom) gave(client crdt.ClientID, person string) bool {
+	owner, given := g.owners[client]
+	return given && owner == person
 }
 
 // serverFrame is message as one final, unmasked binary websocket frame, as a server sends it (RFC
@@ -375,7 +383,7 @@ func (c *firstFrameConn) Write(p []byte) (int, error) {
 	if !bytes.HasPrefix(p, []byte("HTTP/1.1 101 ")) {
 		return c.Conn.Write(p)
 	}
-	written, err := c.Conn.Write(append(bytes.Clone(p), frame...))
+	written, err := c.Conn.Write(slices.Concat(p, frame))
 	return min(written, len(p)), err
 }
 
@@ -541,16 +549,27 @@ func (p *Peer) Scope() string {
 	return p.scope
 }
 
-// Heard is each SyncStatus answer the room has sent this peer and, once the connection has
-// ended, its end, in the order they arrived.
+// Hear starts keeping what the peer hears from the room, for Heard: each SyncStatus answer and the
+// connection's end from now on. A peer keeps none until asked, since one answers a SyncStatus for
+// every frame it sends, and a load driver's peers send one a keystroke for as long as they type.
+func (p *Peer) Hear() {
+	p.hearing.Store(true)
+}
+
+// Heard is each SyncStatus answer the room has sent this peer since Hear and, once the
+// connection has ended, its end, in the order they arrived.
 func (p *Peer) Heard() []Heard {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return slices.Clone(p.heard)
 }
 
-// hear records what as heard now.
-func (p *Peer) hear(what string) {
+// hear records what format and args say as heard now, where the peer keeps what it hears (Hear).
+func (p *Peer) hear(format string, args ...any) {
+	if !p.hearing.Load() {
+		return
+	}
+	what := fmt.Sprintf(format, args...)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.heard = append(p.heard, Heard{At: time.Now(), What: what})
@@ -600,7 +619,7 @@ func (p *Peer) read(first []byte, answers chan<- []byte, awareness chan<- []Awar
 				if errors.As(err, &closed) {
 					p.closed = closed
 				}
-				p.hear(fmt.Sprintf("the connection ended: %v", err))
+				p.hear("the connection ended: %v", err)
 				return
 			}
 			message = read
@@ -637,7 +656,7 @@ func (p *Peer) read(first []byte, answers chan<- []byte, awareness chan<- []Awar
 			p.readAuth(decoder)
 		case messageSyncStatus:
 			if applied, err := decoder.ReadVarUint(); err == nil {
-				p.hear(fmt.Sprintf("SyncStatus %d (applied: %t)", applied, applied == 1))
+				p.hear("SyncStatus %d (applied: %t)", applied, applied == 1)
 			}
 		}
 	}

@@ -312,7 +312,7 @@ func (stoppedBody) Read([]byte) (int, error) {
 
 func (stoppedBody) Close() error { return nil }
 
-// A body read is bounded by two deadlines - the idle one, drainTime after the last bytes to
+// A body read is bounded by two deadlines - the idle one, idleBound after the last bytes to
 // arrive, and the ceiling over it, bodyDrainLimit after the first read - and the refusal names the
 // one that ended it, so a caller is told whether to resend the body or to send it faster. The
 // lengths here are chosen so that each deadline is the first a read meets: an idle deadline short
@@ -323,8 +323,8 @@ func TestABodyCutByADeadlineNamesWhichOfTheTwoEndedIt(t *testing.T) {
 		idle, whole time.Duration
 		code        string
 	}{
-		{name: "a body that stopped arriving meets the idle deadline", idle: time.Second, whole: docs.WriteRequestBound, code: "BODY_STALLED"},
-		{name: "a trickle meets the ceiling", idle: bodyDrainLimit, whole: docs.WriteRequestBound, code: "BODY_TOO_SLOW"},
+		{name: "a body that stopped arriving meets the idle deadline", idle: time.Second, whole: bodyDrainLimit, code: "BODY_STALLED"},
+		{name: "a trickle meets the ceiling", idle: bodyDrainLimit + time.Second, whole: bodyDrainLimit, code: "BODY_TOO_SLOW"},
 	} {
 		t.Run(cut.name, func(t *testing.T) {
 			body := &deadlinedBody{ReadCloser: stoppedBody{}, writer: httptest.NewRecorder(), idle: cut.idle, whole: cut.whole}

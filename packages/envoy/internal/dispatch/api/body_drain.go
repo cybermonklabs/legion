@@ -22,11 +22,12 @@ import (
 
 // bodyDrainLimit is the longest the server reads one request's body for: a drain waits for the
 // rest of a body for at most this, counted from when the drain begins (readFor), and a handler's
-// read of a body is cut this long after the body's first byte, however steadily it is still
+// read of a body is cut this long after its first read, however steadily the body is still
 // arriving (deadlinedBody's ceiling). A minute carries a whole upload (routeBody) over a link of
-// 450 KB/s or more. A body still arriving then is not waited for: its answer goes out as it stood,
-// and the connection closes after it, so a client that stopped sending does not hold its request
-// open - nor whatever the layer that answered it holds - for as long as it cares to.
+// 450 KB/s or more. A body still arriving then is not waited for: a drain's answer goes out as it
+// stood, a handler's cut read is answered BODY_TOO_SLOW, and the connection closes after either,
+// so a client that stopped sending does not hold its request open - nor whatever the layer that
+// answered it holds - for as long as it cares to.
 const bodyDrainLimit = time.Minute
 
 // drainBound is how long a drain waits for the rest of a body, from when the drain begins

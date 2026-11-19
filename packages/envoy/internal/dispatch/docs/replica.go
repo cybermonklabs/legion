@@ -201,7 +201,7 @@ type renderedReplica struct {
 	pairing  reportPairing
 	// passUpdate is whether the replica's document's apply check (holdParked) is to pass the next
 	// check of the apply in hand, which is then the update's own, made before any drain's
-	// (applyPart). Guarded by mu, and the check that reads it runs inside that apply.
+	// (applyUpdate). Guarded by mu, and the check that reads it runs inside that apply.
 	passUpdate bool
 	// classify records each update a drain hands over (Service.classifyDrained), set by the
 	// room's load before ygo hands the room to anyone. Nil for a replica nothing classifies.
@@ -368,8 +368,8 @@ type renderPathCounts struct {
 	// of its own (takeChecked).
 	observerChecked atomic.Uint64
 	// checkUntouched, checkIncremental and checkRendered count the browsers' applies the room's
-	// apply check rendered (renderInView): as the rendering the apply found, since it touched no
-	// top-level block; by splicing the blocks it touched into that rendering; and whole.
+	// apply check rendered (renderCheck.render): as the rendering the apply found, since it touched
+	// no top-level block; by splicing the blocks it touched into that rendering; and whole.
 	checkUntouched   atomic.Uint64
 	checkIncremental atomic.Uint64
 	checkRendered    atomic.Uint64
@@ -506,7 +506,7 @@ func (r *renderedReplica) drainLog() (base []byte, updates []crdt.LoggedUpdate, 
 // (publishRendered).
 //
 // Each update is applied as the log hands it over: Update, the structs and deletions the
-// transaction integrated, through applyPart, so no drain of the replica's own pending queue lands
+// transaction integrated, through applyUpdate, so no drain of the replica's own pending queue lands
 // anything the commit's update did not carry (holdParked). A failure leaves the replica holding a
 // state the room never had, so it goes to recover with the rest of the drain. The commit is
 // consumed, counted, classified and recorded once.
@@ -540,7 +540,7 @@ func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.Lo
 		}
 		r.touched.reset()
 		r.measured, r.measures = 0, 0
-		if err := r.applyPart(update.Update, !bytes.Equal(update.Update, emptyUpdateV1)); err != nil {
+		if err := r.applyUpdate(update.Update); err != nil {
 			slog.Error("dispatch: apply a committed update to the document's rendered copy", "room", room, "error", err)
 			r.recover(room, updates[i:], note)
 			return settles, changed, local
@@ -563,11 +563,11 @@ func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.Lo
 // pending queue that lands anything (holdParked).
 var errDrainLandsWhatNoCommitCarried = errors.New("the room's commit carries what the room's own drain landed, so the replica's drain lands nothing of its own")
 
-// applyPart applies part, a logged commit's update (takeLocked), to the replica's document, and
+// applyUpdate applies update, a logged commit's (takeLocked), to the replica's document, and
 // answers nil for an apply whose drain of the pending queue the document's apply check refused
-// (holdParked, crdt.ErrApplyCheckDrain): ygo discarded that drain and the part stands, committed.
-// update says whether part carries a change, whose own check holdParked passes. The caller holds
-// mu.
+// (holdParked, crdt.ErrApplyCheckDrain): ygo discarded that drain and the update stands,
+// committed. An update that is not the empty one carries a change, whose own check holdParked
+// passes (passUpdate). The caller holds mu.
 //
 // On a document holding something parked, which is the only one with a check (holdParkedIn), ygo
 // checks an apply's update where it changed the document, and then its drain where that lands a
@@ -575,9 +575,9 @@ var errDrainLandsWhatNoCommitCarried = errors.New("the room's commit carries wha
 // it, so an update carrying a change - every logged update but the empty one of a commit that only
 // parked - changes the replica's document too, the same structs and deletions being new to it, and
 // its first check is the update's. Every later check of the apply is a drain's.
-func (r *renderedReplica) applyPart(part []byte, update bool) error {
-	r.passUpdate = update
-	err := crdt.ApplyUpdateV1(r.doc, part, nil)
+func (r *renderedReplica) applyUpdate(update []byte) error {
+	r.passUpdate = !bytes.Equal(update, emptyUpdateV1)
+	err := crdt.ApplyUpdateV1(r.doc, update, nil)
 	if errors.Is(err, crdt.ErrApplyCheckDrain) {
 		return nil
 	}
@@ -585,12 +585,12 @@ func (r *renderedReplica) applyPart(part []byte, update bool) error {
 }
 
 // holdParked is the apply check of a replica's document that holds something parked
-// (holdParkedIn): it passes the update of the apply in hand (passUpdate, applyPart) and refuses
+// (holdParkedIn): it passes the update of the apply in hand (passUpdate, applyUpdate) and refuses
 // every drain of the pending queue that lands anything, which ygo then discards while the update
 // stands (leaveParkedOut), so the replica integrates nothing but what each commit's update
 // carries (renderedReplica says why). Only a replica whose load decoded parked content from rows
 // an earlier build stored holds anything to refuse; one holding nothing has no drain to refuse and
-// no check. ygo calls it under the replica document's lock, inside an apply applyPart makes
+// no check. ygo calls it under the replica document's lock, inside an apply applyUpdate makes
 // holding mu, and it reads nothing of the document.
 func (r *renderedReplica) holdParked(any, *crdt.ApplyView) error {
 	if r.passUpdate {
@@ -600,12 +600,13 @@ func (r *renderedReplica) holdParked(any, *crdt.ApplyView) error {
 	return errDrainLandsWhatNoCommitCarried
 }
 
-// holdParkedIn gives doc, a document the replica takes (startAt, startFromLoad), its apply check
-// (holdParked) where doc holds anything parked, a struct or a delete range, and no check where it
-// holds nothing: ygo walks every client of a checked document twice for each apply, whatever the
-// check answers (renderedReplica says why the replica needs none then).
+// holdParkedIn gives doc, a document the replica takes (takeDoc), its apply check (holdParked)
+// where doc holds anything parked, a struct or a delete range, and no check where it holds
+// nothing: a check costs each apply ygo's question of whether the apply changed the document and
+// the check's own call, for no drain the replica has to refuse (renderedReplica says why it needs
+// none then).
 func (r *renderedReplica) holdParkedIn(doc *crdt.Doc) {
-	if parked := doc.PendingStats(); parked.Items > 0 || parked.DeleteRanges > 0 {
+	if parks(doc) {
 		doc.SetApplyCheck(r.holdParked)
 	}
 }
@@ -924,27 +925,17 @@ func (r *renderedReplica) startFromRead(doc *crdt.Doc, epoch uint64) *crdt.Doc {
 	return doc
 }
 
-// startAt makes doc the replica's document and takes its rendering as the one the replica's next
-// update is measured against: the load's rendering (loaded) where the replica still holds it, as
-// start says, and a render of doc otherwise. It subscribes noteChangedTypes to doc's transactions,
-// with doc's own fragment, so what it records is each later update's, gives doc the report each
-// drain measures a commit by (noteReplicaApply), leaves what doc parks out of it as the room
-// leaves its own (leaveParkedOut), and, where doc holds anything parked, sets doc's apply check,
-// which refuses every drain of doc's pending queue that lands anything (holdParkedIn). A
-// rendering other than the one the room last published is published as the room's measurement
-// (publishSize), and the rendering is published at the commit position doc stands at for the
-// room's apply check (publishRendered).
+// startAt makes doc the replica's document (takeDoc) and takes its rendering as the one the
+// replica's next update is measured against: the load's rendering (loaded) where the replica still
+// holds it, as start says, and a render of doc otherwise. A rendering other than the one the room
+// last published is published as the room's measurement (publishSize), and the rendering is
+// published at the commit position doc stands at for the room's apply check (publishRendered).
 // The caller holds mu.
 func (r *renderedReplica) startAt(doc *crdt.Doc) {
 	published := r.rendering
 	loaded := r.loaded.Value()
 	r.loaded = weak.Pointer[replicaRendering]{}
-	fragment := doc.GetXmlFragment(fragmentName)
-	r.doc, r.fragment = doc, fragment
-	doc.OnAfterTransaction(func(txn *crdt.Transaction) { noteChangedTypes(txn, fragment, &r.touched) })
-	doc.SetApplyReport(r.noteReplicaApply)
-	leaveParkedOut(doc)
-	r.holdParkedIn(doc)
+	r.takeDoc(doc)
 	if loaded != nil {
 		r.rendering = loaded
 		r.recordVerdict(nil)
@@ -962,6 +953,21 @@ func (r *renderedReplica) startAt(doc *crdt.Doc) {
 		r.publishSize(markdownAt(r.rendering))
 	}
 	r.publishRendered()
+}
+
+// takeDoc makes doc the replica's document, as startAt and startFromLoad do: it subscribes
+// noteChangedTypes to doc's transactions, with doc's own fragment, so what the replica records is
+// each later update's, gives doc the report each drain measures a commit by (noteReplicaApply),
+// leaves what doc parks out of it as the room leaves its own (leaveParkedOut), and, where doc
+// holds anything parked, sets doc's apply check, which refuses every drain of doc's pending queue
+// that lands anything (holdParkedIn). The caller holds mu, or nothing else holds the replica yet.
+func (r *renderedReplica) takeDoc(doc *crdt.Doc) {
+	fragment := doc.GetXmlFragment(fragmentName)
+	r.doc, r.fragment = doc, fragment
+	doc.OnAfterTransaction(func(txn *crdt.Transaction) { noteChangedTypes(txn, fragment, &r.touched) })
+	doc.SetApplyReport(r.noteReplicaApply)
+	leaveParkedOut(doc)
+	r.holdParkedIn(doc)
 }
 
 // publishRendered publishes the replica's rendering as of the commit position it stands at
@@ -1239,23 +1245,15 @@ func (s *Service) keepReplica(live *crdt.Doc, log *crdt.UpdateLog, loaded *repli
 }
 
 // startFromLoad makes decoded, the copy the room's load decoded of the stored state, the replica's
-// document, with loaded, the load's rendering of that very state, as the rendering the replica's
-// first update is measured against (keepReplica). It subscribes noteChangedTypes to the copy's
-// transactions, as start does on the document it makes, so what the replica records is each
-// update's, and gives the copy the report each drain measures a commit by (noteReplicaApply),
-// the room's own setting for what it parks (leaveParkedOut) and, where the copy holds anything
-// parked, the apply check that refuses every drain of its own that lands anything (holdParkedIn).
-// The load's rendering counts as the run's catch-up: it is the rendering of the base the
-// run starts from, taken in place of rendering it (renderPathCounts.catchUpFromLoad). A load that
+// document (takeDoc), with loaded, the load's rendering of that very state, as the rendering the
+// replica's first update is measured against (keepReplica). The load's rendering counts as the
+// run's catch-up: it is the rendering of the base the run starts from, taken in place of rendering
+// it (renderPathCounts.catchUpFromLoad). A load that
 // made none - a document outside the schema - leaves the replica no rendering, and its first
 // update renders the copy whole. It runs before anything else holds the replica.
 func (r *renderedReplica) startFromLoad(decoded *crdt.Doc, loaded *replicaRendering) {
-	fragment := decoded.GetXmlFragment(fragmentName)
-	r.doc, r.fragment, r.rendering = decoded, fragment, loaded
-	decoded.OnAfterTransaction(func(txn *crdt.Transaction) { noteChangedTypes(txn, fragment, &r.touched) })
-	decoded.SetApplyReport(r.noteReplicaApply)
-	leaveParkedOut(decoded)
-	r.holdParkedIn(decoded)
+	r.takeDoc(decoded)
+	r.rendering = loaded
 	if loaded != nil {
 		r.paths.catchUpFromLoad.Add(1)
 	}
@@ -1433,7 +1431,7 @@ func (r *renderedReplica) updateChangesMarkdown(room string) (bool, func() map[s
 // rendered whole. The caller holds mu.
 func (r *renderedReplica) spliceTouched(room string) (changed bool, asks func() map[string]struct{}, ok bool) {
 	children := r.fragment.Children()
-	spliced, ok := spliceBlocks(r.rendering, children, r.touched.blocks, pmdoc.ReadBlockForRendering)
+	spliced, ok := spliceBlocks(r.rendering, children, r.touched.blocks)
 	if !ok {
 		return false, nil, false
 	}
@@ -1444,18 +1442,16 @@ func (r *renderedReplica) spliceTouched(room string) (changed bool, asks func() 
 }
 
 // spliceBlocks is rendering with the top-level blocks of children that blocks names - the blocks
-// an update touched (touchedBlocks) - read through read and rendered again into its markdown
-// (pmdoc.Layout.Splice), or ok false where the document must be rendered whole. children is the
-// document fragment's children as the update left them. Splice wants the document's top-level
-// blocks as many and in the order the layout recorded, which an update that did not change the
-// fragment leaves them, and every touched block among them, which a touched block deleted with
-// its parent's own deletion is not; it checks the rest itself. A markdown the splice leaves as it
-// was keeps rendering's own string, so no two equal copies of it are held.
-//
-// It serves both renders that splice a room's document: the update observer's of the replica
-// (spliceTouched), read through pmdoc.ReadBlockForRendering, and the room's apply check's of the
-// room's document as a browser's apply leaves it (renderInView), read through the apply's view.
-func spliceBlocks[N any](rendering *replicaRendering, children []N, blocks []crdt.SharedType, read func(*crdt.YXmlElement) (*pmdoc.Node, error)) (*replicaRendering, bool) {
+// an update touched (touchedBlocks) - read for rendering (pmdoc.ReadBlockForRendering) and
+// rendered again into its markdown (pmdoc.Layout.Splice), or ok false where the document must be
+// rendered whole. children is the document fragment's children as the update left them. Splice
+// wants the document's top-level blocks as many and in the order the layout recorded, which an
+// update that did not change the fragment leaves them, and every touched block among them, which a
+// touched block deleted with its parent's own deletion is not; it checks the rest itself. A
+// markdown the splice leaves as it was keeps rendering's own string, so no two equal copies of it
+// are held. It is the update observer's splice of the replica (spliceTouched); the room's apply
+// check splices the room's document by an index of its blocks instead (spliceIndexed).
+func spliceBlocks[N any](rendering *replicaRendering, children []N, blocks []crdt.SharedType) (*replicaRendering, bool) {
 	if len(children) != rendering.layout.Blocks() {
 		return nil, false
 	}
@@ -1473,7 +1469,7 @@ func spliceBlocks[N any](rendering *replicaRendering, children []N, blocks []crd
 		return nil, false
 	}
 	markdown, layout, ok := rendering.layout.Splice(rendering.markdown, touched, func(index int) (*pmdoc.Node, error) {
-		return read(any(children[index]).(*crdt.YXmlElement))
+		return pmdoc.ReadBlockForRendering(any(children[index]).(*crdt.YXmlElement))
 	})
 	if !ok {
 		return nil, false

@@ -188,33 +188,33 @@ func weighOneUpdate(t *testing.T, room *typedResidentRoom, update []byte) crdt.A
 	return given
 }
 
-// The cap the hook holds a room to is the decode cap, and what a load decodes is the room's
-// encoded state, which carries the pending queue beside the store (withParked,
-// crdt/update.go:268-296). The hook asks that cap of what that state carries: the structs the
-// room reports holding, each parked struct again for the skip it waits behind, and each parked
-// delete range (storedCeiling). This drives that counting at the sizes it is for.
+// The cap the hook holds a room to is the decode cap, asked of the ceiling the room is weighed at:
+// the structs the room reports holding, each parked struct again and each parked delete range
+// (storedCeiling). Nothing the room parks is stored (leaveParkedOut), so the parked terms bound
+// the room's pending queue in memory, out of the same headroom as what it integrates. This drives
+// that counting at the sizes it is for.
 //
 // Frames of 200,000 GC structs, each parked behind a gap of its own client. The first is
 // admitted and leaves the room's ceiling at 400,010, so the second, 200,000 against a structs'
-// share of 162,141, is refused DOC_NEEDS_REBUILD and the room's stored state still decodes.
-// The ceiling stands above what this shape's state carries - 200,011 items, because the merge
-// that builds it writes one skip over each gap and not one over each parked struct, the
-// structs of a client's contiguous clocks travelling as one group - and it is the bound all
-// the same, since a frame can park each of its structs behind a gap of its own and make the
-// state carry both (TestR7ParkedStructsBehindTheirOwnGapsPassTheDecodeCap). Counting the
-// margin away was what let two such frames leave a state that no longer decodes.
+// share of 162,141, is refused DOC_TOO_LARGE, and the room's ceiling stays within the cap.
+// Counted once, as the report counts them, the parked structs would leave the room weighed at
+// 200,010, and the second frame, against a share of 212,141, would be admitted too.
 //
-// So the room a browser can park its way into is one that loads, which is what review 6's
-// finding 2 asks for (TestR6Finding2ParkedStructsEscapeTheDecodeCap holds the same rule at the
-// cap itself).
+// So the backlog a browser can park its way into is bounded by the decode cap, which is what
+// review 6's finding 2 asks for (TestR6Finding2ParkedStructsEscapeTheDecodeCap holds the same rule
+// at the cap itself).
 func TestAParkedBacklogTheHookAdmitsLeavesTheRoomsStateDecodable(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
 	defer runtime.KeepAlive(replica)
 	const perFrame = 200_000
 	admitted := 0
+	var refusal error
+	var before []byte
 	for client := uint64(8_200_001); client <= 8_200_004; client++ {
+		before = crdt.EncodeStateAsUpdateV1(room, nil)
 		err, called := weighInto(service, room, parkedGCFrame(client, perFrame))
 		if err != nil {
+			refusal = err
 			t.Logf("the frame of %d parked structs after %d admitted was refused: %v", perFrame, admitted, err)
 			break
 		}
@@ -224,13 +224,15 @@ func TestAParkedBacklogTheHookAdmitsLeavesTheRoomsStateDecodable(t *testing.T) {
 		admitted++
 	}
 	parked := room.PendingStats()
-	state := crdt.EncodeStateAsUpdateV1(room, nil)
-	_, err := decodeStoredCopy(state, maxUpdateItems)
-	t.Logf("%d frames of %d parked structs admitted; the room holds %d structs in its store and %d parked, and its %d-byte stored state decodes: %v",
-		admitted, perFrame, room.StructCount(), parked.Items, len(state), err == nil)
-	if err != nil {
-		t.Fatalf("the hook admitted %d frames of %d parked structs over a room of %d, and the room's stored state no longer decodes: %v",
-			admitted, perFrame, room.StructCount(), err)
+	ceiling := structCeiling(room)
+	t.Logf("%d frames of %d parked structs admitted; the room holds %d structs in its store and %d parked, weighed at %d against the %d cap",
+		admitted, perFrame, room.StructCount(), parked.Items, ceiling, maxUpdateItems)
+	if admitted != 1 || refusal == nil {
+		t.Fatalf("the hook admitted %d frames of %d parked structs before it refused one (%v), want the first alone: the ceiling it leaves counts each parked struct twice", admitted, perFrame, refusal)
+	}
+	requireRefusedTooLarge(t, refusal, room, before)
+	if ceiling > maxUpdateItems {
+		t.Fatalf("the hook admitted %d frames of %d parked structs, and the room is weighed at %d items, past the %d cap", admitted, perFrame, ceiling, maxUpdateItems)
 	}
 }
 

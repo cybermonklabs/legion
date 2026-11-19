@@ -5162,7 +5162,7 @@ Each item below names a status and code, then its meaning.
   No route repairs it: an upload or replacement over it is refused with this code and leaves the document unchanged, and settlement writes no version of it.
   The document websocket admits no connection to such a room:
   it completes the upgrade and closes with code `4425` (reason `DOC_NEWER_CONTENT`, `DOCUMENT_NEWER_CONTENT_CLOSE_CODE` and `DOCUMENT_NEWER_CONTENT_CLOSE_REASON` in `packages/contracts`, generated into Go) before any sync.
-  The Hocuspocus provider reconnects on that code with its backoff, so a later connection can reach a build that reads the document.
+  The dashboard reconnects on that code, on its own backoff (`reconnectDelayMs`), so a later connection can reach a build that reads the document.
 
 - `409 DOCUMENT_UNLOADABLE`
 
@@ -5209,6 +5209,8 @@ Each item below names a status and code, then its meaning.
 
   The same close for an update the document cannot take until it is rebuilt:
   its apply would carry the room's encoded state past the 16,777,216 bytes one room may hold, a quarter of the 64 MiB message floor so that four such handoffs fit the floor; or it would carry the document past the decode cap, the 1,048,576 structs ygo decodes in one update, counting both the structs the update carries and the items a delete inside a run splits, since a room holding more could never be loaded again; or the room's scan total is used up, where it still takes an update whose scans pass 64 items or fewer so that typing in place goes on.
+  The close is given only in a room the rebuild route takes as it stands, since only there is a rebuild the remedy:
+  elsewhere the same update is closed `DOC_TOO_LARGE` at the two caps and `DOC_TOO_TANGLED` for the used-up scan total, since there a smaller edit lands.
   The dashboard drops the refused edit and offers the rebuild (`POST /api/v1/artifacts/{id}/rebuild`), as it does for `409 DOCUMENT_UNLOADABLE`.
 
 - `4413 DOC_REBUILT`
@@ -5231,10 +5233,10 @@ Each item below names a status and code, then its meaning.
   and for a claim past the bounds below.
   Each document socket's admission gives its page a client id of its own, stored with the person the socket is signed in as (`document_client_ids`), and names it in the socket's first frame, a stateless message starting `dispatch.client_id:` (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`);
   the page presents that id again on every reconnect (`client_id`, `DOCUMENT_CLIENT_ID_PARAMETER`) and is given it back, so a tab keeps one id across reconnects and offline edits.
-  An id below 2^32 that no row names - one a page of a build from before client ids, or a client that presents no `client_id` at all, drew for itself - may be claimed by the first person whose browser lands an edit under it, so such a tab, the rows it saved, and the clients deployed without an id still land:
+  An id below 2^32 that no row names - one a page of a build from before client ids, or a client that presents no `client_id` at all, drew for itself - may be claimed by the first person whose browser lands an edit under it, so such a tab, the rows it saved, and the clients deployed without an id still land, and by a page of this build that presents it, at its admission:
   a socket that presents no `client_id` may claim an id the stored history does not name at any time, up to 64 such claims a socket and 64 claims a person in one document in one UTC day, counted from `document_client_ids`, past which the update is refused and nothing in it is claimed;
-  an id the stored history names may be claimed for 30 days from the first boot of a build that gives client ids out (`document_client_ids_since`, written once and never moved), and only by a person a version or a pending author row lists as having edited the document since the history first named it;
-  and a page that presents a `client_id` claims another id only within those 30 days.
+  an id the stored history names may be claimed for 30 days from the first boot of a build that gives client ids out (`document_client_ids_since`, set once and never moved), and only by a person a version or a pending author row lists as having edited the document since the history first named it;
+  and a page that presents a `client_id` claims an id only within those 30 days, its admission's claim stored as landed and counted in those 64 a day, and a fresh id given where it is refused.
   A sync step 2 is not refused for another person's client id: the structs under it are cut out of the step 2 before the apply (`DiffUpdateV1`), and the rest of it, deletions included, applies;
   an incremental update under another person's id is refused whole.
   Deletions are not judged: a person deletes other people's text.
@@ -5250,11 +5252,12 @@ Each item below names a status and code, then its meaning.
 - `4503 DOC_BUSY`
 
   The memory budget over the documents this server holds open is full and no room can be closed:
-  a browser asking for one more document is closed with code `4503` (`DOCUMENT_BUSY_CLOSE_CODE` and `DOCUMENT_BUSY_CLOSE_REASON` in `packages/contracts`) before any room is made for it, once its admission has waited for the sweep it started, and an update into a document already open is closed with it too unless it integrates no struct, cuts no item the room holds and adds no byte of content, since an insert of fewer bytes than it deletes can still multiply what the room holds.
-  The budget is the share of the server's Go memory limit the open rooms are charged together (2 GiB at the 4 GiB limit the figures are calibrated on, 10 GiB on the production pod's 20Gi; the boot line `dispatch: the document service's memory bounds` names it), and the one update admitted while it is full is one that grows the room in no measure - a delete of whole items, or a frame of structs the room already holds - so a full document can still be cut.
-  The 4500-4599 band is transient, so the dashboard keeps the edit it could not send and lets the provider's own backoff retry.
-  The same close refuses for now an update whose rendering would end past the 1 MiB bound and its creep in a room that has just taken a write of the server's own its rendered copy has not taken yet, where what the update found is not known;
+  a browser asking for one more document is closed with code `4503` (`DOCUMENT_BUSY_CLOSE_CODE` and `DOCUMENT_BUSY_CLOSE_REASON` in `packages/contracts`) before any room is made for it, once its admission has waited for the sweep it started, and an update into a document already open is closed with it too unless it integrates no struct, adds no byte of content and cuts at most 8 of the items the room holds, since an insert of fewer bytes than it deletes can still multiply what the room holds.
+  The budget is the share of the server's Go memory limit the open rooms are charged together (2 GiB at the 4 GiB limit the figures are calibrated on, 10 GiB on the production pod's 20Gi; the boot line `dispatch: the document service's memory bounds` names it), and what is admitted while it is full integrates no struct and adds no content - a delete of whole items, a delete inside a word that cuts the items it lands in, or a frame of structs the room already holds - and its cuts grow a room's structs by at most 256 over the whole of the pressure, past which an update that cuts an item is refused too, so a full document can still be cut.
+  The 4500-4599 band is transient, so the dashboard keeps the edit it could not send and reconnects on its own backoff, the live socket's (`reconnectDelayMs`), which spreads a crowd of tabs and caps at 30 s, to retry it.
+  The same close refuses for now an update whose rendering would end past the 1 MiB bound and its creep where the rendering of the commit it starts from is not known yet, since a commit no browser's apply made - a write of the server's own, a catch-up or ygo's format cleanup - has landed since and the room's rendered copy has not taken it;
   the edit is sent again on the backoff and weighed once the room's rendering is known, an edit that shortens the document taken and one that grows it past the bound refused `DOC_TOO_LARGE`.
+  It also closes, for a retry, a socket whose update's client ids the server could not read or write `document_client_ids` for, and one whose first sync the pod's copy heap had no room to answer within the server's wait bound.
 
 ## Comment errors
 

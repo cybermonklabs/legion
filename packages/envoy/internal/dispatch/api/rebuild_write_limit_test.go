@@ -41,14 +41,7 @@ func TestARebuildIsShedAtItsEntryWhileEveryWriteSlotIsHeld(t *testing.T) {
 	if err := documentService.Evict(ctx, artifact.ID); err != nil {
 		t.Fatalf("evict the document: %v", err)
 	}
-	updates := func() int {
-		t.Helper()
-		var count int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from doc_updates where artifact_id = $1`, artifact.ID).Scan(&count); err != nil {
-			t.Fatalf("count the document's updates: %v", err)
-		}
-		return count
-	}
+	updates := func() int { return storedUpdateCount(t, database, artifact.ID) }
 	before := updates()
 	rebuild := func() *httptest.ResponseRecorder {
 		request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/artifacts/"+artifact.ID+"/rebuild", strings.NewReader("{}"))
@@ -62,8 +55,7 @@ func TestARebuildIsShedAtItsEntryWhileEveryWriteSlotIsHeld(t *testing.T) {
 	if !slots.TryAcquire(apiWriteLimit) {
 		t.Fatalf("the limit had fewer than its %d slots free before the test took them", apiWriteLimit)
 	}
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { slots.Release(apiWriteLimit) }) }
+	release := sync.OnceFunc(func() { slots.Release(apiWriteLimit) })
 	t.Cleanup(release)
 
 	started := time.Now()

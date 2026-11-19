@@ -524,19 +524,19 @@ func plusCapped(a, b uint64) uint64 {
 	return math.MaxUint64
 }
 
-// structCeiling is how many structs doc's whole state holds as the next load's decode meets
-// them, the one measure of a document against the decode cap that costs neither an encode nor a
-// decode: the structs its store holds (crdt.Doc.StructCount, a walk of the handful of client
-// slices) and what it has parked, weighed as storedCeiling weighs them. A room may park up to
-// maxUpdateItems structs (Server.MaxPendingItems, which New sets), none of which the store holds
-// yet. Every sum here is capped rather than wrapped, for the reason clockSum gives.
+// structCeiling is how many items doc is weighed at against the decode cap, the one measure of a
+// document against that cap that costs neither an encode nor a decode: the structs its store
+// holds (crdt.Doc.StructCount, a walk of the handful of client slices) and what it has parked,
+// weighed as storedCeiling weighs them. A room may park up to maxUpdateItems structs
+// (Server.MaxPendingItems, which New sets), none of which the store holds yet. Every sum here is
+// capped rather than wrapped, for the reason clockSum gives.
 //
 // It is read where nothing reports: a live write's fork, the copy a server write's count is
 // taken on (structsAfter), the room that count compares with that copy (leavesPastDecodeCap,
 // which must weigh the two alike) and the document a rebuild judges (rebuild.go). A resident
 // room reads the library's own figure instead, as each apply that commits reports it
 // (crdt.ApplyReport.Structs, heldStructs), and weighs it the same way, through storedCeiling
-// (Service.weighPeerUpdate): one measure of what the stored state carries, read from two places.
+// (Service.weighPeerUpdate): one measure of the room against the decode cap, read from two places.
 func structCeiling(doc *crdt.Doc) uint64 {
 	parked := doc.PendingStats()
 	return storedCeiling(plusCapped(uint64(doc.StructCount()), uint64(parked.Items)), parked)
@@ -571,9 +571,9 @@ func storedCeiling(held uint64, parked crdt.PendingStats) uint64 {
 //
 // A room reads it only where no apply has reported one: the room's load from its stored state
 // and a compaction's re-base, which are the anchor, and the room's first update after a load
-// (roomWeighing.heldOrRead). It is not what the decode cap is asked of: that is the ceiling
-// above it (storedCeiling), which counts a parked struct again for the skip the encoded state
-// carries it behind, where a report counts what the document holds.
+// (roomApplies.structsHeld). It is not what the decode cap is asked of: that is the ceiling above
+// it (storedCeiling), which counts a parked struct again to bound the pending queue in memory,
+// where a report counts what the document holds.
 func heldStructs(doc *crdt.Doc) uint64 {
 	return plusCapped(uint64(doc.StructCount()), uint64(doc.PendingStats().Items))
 }

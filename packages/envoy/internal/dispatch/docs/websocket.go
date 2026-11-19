@@ -12,7 +12,6 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -877,11 +876,12 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// for a transaction that changes the document, reearth/ygo#350), but ygo logs it. ygo calls
 	// OnAfterTransaction for every committed transaction, outside the document's lock and before
 	// OnUpdate, so the replica is drained here for a transaction that changed no shared type while
-	// the log holds something: the replica takes the commit as one more position and nothing
-	// else (classifyDrained), whichever path the update reached the room by - a peer's
-	// connection, or a published write whose update waits on an item a cold fork read from the
-	// store. A transaction that changed a shared type is drained by the update observer above,
-	// after the steps it takes first.
+	// the log holds something: the replica takes the commit as one more position, and the claim
+	// rule's set of the ids the stored history names takes the ids of what it parked
+	// (classifyDrained, storedClients.took), and nothing else, whichever path the update reached
+	// the room by - a peer's connection, or a published write whose update waits on an item a cold
+	// fork read from the store. A transaction that changed a shared type is drained by the update
+	// observer above, after the steps it takes first.
 	doc.OnAfterTransaction(func(txn *crdt.Transaction) {
 		if replica.log.Pending() > 0 && len(txn.ChangedTypes()) == 0 {
 			s.observeRoomUpdates(room, replica)
@@ -932,8 +932,9 @@ func leaveParkedOut(doc *crdt.Doc) {
 // answer to a browser holding nothing held 24,071,008 to 25,428,848 bytes above the document,
 // having allocated about 25.7 MB in under 900 objects
 // (TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot). Before the fork's v1.55.1-sami.14,
-// which this tag carries, a room that parked anything was cut from its encoded state instead,
-// decoding the whole document twice - 371,149,976 to 429,891,496 bytes held and about 840 MB
+// which the pinned theorem-labs/ygo v1.55.1-theorem.9 carries, a room that parked anything was
+// cut from its encoded state instead, decoding the whole document twice - 371,149,976 to
+// 429,891,496 bytes held and about 840 MB
 // allocated for the same room - and is no longer. Nothing in ygo bounds how many answers run
 // together, so before this hook a reconnect storm on one big room built one per browser side by
 // side, off the pod's load concurrency entirely, while every other whole-document copy in the
@@ -1097,10 +1098,10 @@ const answerHeapAStruct = 101
 
 // answerHeapAnAnswer is the heap an answer cut from a room's own structs holds whatever the room:
 // the splitter, its maps, the encoders and each update's three copies at their smallest. The ten
-// structs of the seeded paragraph held 2,800 to 3,296 bytes in all, 2,076 beyond their 880 at 88
-// a struct and their client's 340, and the document a test room is seeded with 2,112 to 2,480. It
-// is set at 4,096, past those, which is what leaves answerHeapAStruct at the 85.95 the
-// small-struct rooms needed rather than the 95.90 a 2,048 would.
+// structs of the seeded paragraph held 2,800 to 3,296 bytes in all, 1,946 beyond their 1,010 at
+// 101 a struct and their client's 340, and the document a test room is seeded with 2,112 to 2,480.
+// It is set at 4,096, past those, which is what leaves answerHeapAStruct at the 100.2 the
+// small-struct rooms needed, 101, rather than the 107.9 a 2,048 would.
 const answerHeapAnAnswer = 4_096
 
 // answerFrameStructs is the most structs one update of an answer can hold, past which the update
@@ -1124,7 +1125,7 @@ func (s *Service) refusedStateAnswer(info websocket.StateAnswerInfo, state, weig
 	slog.Warn("dispatch: refused to answer a browser's first sync; the pod's copy heap had no room for the answer",
 		"room", info.Room, "structs", info.Structs, "state_bytes", state, "grant_bytes", weight,
 		"wait_bound", WriteWaitBound, "charged", used, "limit", limit, "error", err.Error())
-	return &websocket.PeerClose{Code: contracts.DocumentBusyCloseCode, Reason: contracts.DocumentBusyCloseReason}
+	return documentBusy()
 }
 
 // observeRoomUpdates drains replica's log and arms the settlement the drained updates owe. It runs

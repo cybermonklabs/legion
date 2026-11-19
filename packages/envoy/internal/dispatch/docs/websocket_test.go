@@ -886,9 +886,9 @@ func TestUnauthenticatedDocumentRequestsDoNotAllocateRooms(t *testing.T) {
 // not with its structs). The room here is one paragraph its seeding writer wrote and
 // forgedClients client ids a browser named of its own, one GC struct each, as any browser can, so
 // its clients and its update outweigh its state and set the grant: 17 clients at 340 bytes is
-// 5,780 and the update of its 20 structs 5,856 more, 11,636, where its 379 bytes of tracked state
-// cost 3,032, the same price with no client 5,856, and a price on its 20 structs read as clients
-// 12,656. The paragraph alone is one client and 139 bytes of state, which leaves the client term
+// 5,780 and the update of its 20 structs 6,116 more, 11,896, where its 379 bytes of tracked state
+// cost 3,032, the same price with no client 6,116, and a price on its 20 structs read as clients
+// 12,916. The paragraph alone is one client and 139 bytes of state, which leaves the client term
 // too small to see.
 func TestAnAnswerFromARoomThatParksNothingIsGrantedWhatItsCutCosts(t *testing.T) {
 	service, artifactID := newTestService(t)
@@ -912,7 +912,7 @@ func TestAnAnswerFromARoomThatParksNothingIsGrantedWhatItsCutCosts(t *testing.T)
 	})
 	live, replica := answeringRoom(t, service, artifactID)
 	if parks(live) {
-		t.Fatal("the room parks something, so its answer reads that back beside its cut")
+		t.Fatal("the room parks something, and this is the answer of a room that parks nothing")
 	}
 
 	granted := grantOfAJoin(t, httpServer.URL, artifactID)

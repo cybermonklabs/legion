@@ -66,13 +66,11 @@ func testRoom(t *testing.T, artifact string, seeded []byte, ids bool) (srv *ygow
 	return srv, given, base
 }
 
-// A peer presents an empty client id, takes the one the room's first frame names, and every
-// keystroke it sends lands under that id.
-func TestAPeerWritesUnderTheClientIdTheRoomGivesIt(t *testing.T) {
-	const artifact = "3c7a1e5f-9b2d-4f6a-8e0c-2d4b6f8a0c1e"
-	seeded := typableDocument()
-	srv, given, base := testRoom(t, artifact, crdt.EncodeStateAsUpdateV1(seeded, nil), true)
-	// An observer that takes no id keeps the room resident after the peer has gone.
+// typeOneBurst opens an observer that takes no id, which keeps the room resident after the peer
+// has gone, and has one peer type into artifact for half a second, requiring it to have sent
+// something and ended with no error.
+func typeOneBurst(t *testing.T, base *url.URL, artifact string) {
+	t.Helper()
 	observer := docstest.Dial(t, "ws"+strings.TrimPrefix(base.String(), "http")+"/ws/doc/"+artifact+"?schema_version="+strconv.Itoa(pmdoc.SchemaVersion()),
 		http.Header{"X-Dispatch-User": {"observer"}}, artifact, crdt.New())
 	select {
@@ -80,7 +78,6 @@ func TestAPeerWritesUnderTheClientIdTheRoomGivesIt(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the room sent the observer no document")
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	r := result{artifact: artifact}
@@ -89,6 +86,15 @@ func TestAPeerWritesUnderTheClientIdTheRoomGivesIt(t *testing.T) {
 	if r.err != nil || r.sent == 0 {
 		t.Fatalf("the peer sent %d updates and ended with %v, want some and no error", r.sent, r.err)
 	}
+}
+
+// A peer presents an empty client id, takes the one the room's first frame names, and every
+// keystroke it sends lands under that id.
+func TestAPeerWritesUnderTheClientIdTheRoomGivesIt(t *testing.T) {
+	const artifact = "3c7a1e5f-9b2d-4f6a-8e0c-2d4b6f8a0c1e"
+	seeded := typableDocument()
+	srv, given, base := testRoom(t, artifact, crdt.EncodeStateAsUpdateV1(seeded, nil), true)
+	typeOneBurst(t, base, artifact)
 	admissions := given.Admissions()
 	if len(admissions) != 1 || admissions[0].Person != "browsertype-0" || admissions[0].Presented != "" {
 		t.Fatalf("the room admitted %+v, want the peer alone, presenting an empty client id", admissions)
@@ -113,22 +119,7 @@ func TestAPeerAgainstARoomThatGivesNoIdWritesUnderItsOwn(t *testing.T) {
 	const artifact = "6f0b2d4e-8a1c-4e3f-9d5b-7c9e1a3f5b2d"
 	seeded := typableDocument()
 	srv, _, base := testRoom(t, artifact, crdt.EncodeStateAsUpdateV1(seeded, nil), false)
-	observer := docstest.Dial(t, "ws"+strings.TrimPrefix(base.String(), "http")+"/ws/doc/"+artifact+"?schema_version="+strconv.Itoa(pmdoc.SchemaVersion()),
-		http.Header{"X-Dispatch-User": {"observer"}}, artifact, crdt.New())
-	select {
-	case <-observer.Answers:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the room sent the observer no document")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	r := result{artifact: artifact}
-	typePeer(ctx, config{rate: 50, connectTimeout: 10 * time.Second}, roomURL(base, artifact),
-		http.Header{"X-Dispatch-User": {"browsertype-0"}}, rand.New(rand.NewPCG(1, 1)), &r)
-	if r.err != nil || r.sent == 0 {
-		t.Fatalf("the peer sent %d updates and ended with %v, want some and no error", r.sent, r.err)
-	}
+	typeOneBurst(t, base, artifact)
 	var own []crdt.ClientID
 	testwait.WithinPolling(t, 10*time.Second, 5*time.Millisecond, "the room to apply the peer's keystrokes", func() bool {
 		own = own[:0]

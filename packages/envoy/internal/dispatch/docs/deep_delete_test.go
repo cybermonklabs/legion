@@ -42,17 +42,19 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 		service, artifactID := newTestService(t)
 		service.settle = time.Hour
 		// The chain leaves the Proof schema (a document nests at most 1,000 levels), so no count of
-		// its rendering ever lands, and the room budget charges every element the peer adds at the
-		// densest price until one does (roomCharge): the budget would refuse the chain long before it
-		// is deep enough to need a stack per level. What is under test is the delete, not the budget.
+		// its rendering ever lands, and the room budget charges every element the server's writes
+		// add at the densest price until one does (roomCharge): the budget would be past its limit
+		// long before the chain is deep enough to need a stack per level. What is under test is the
+		// delete, not the budget.
 		service.budget.setLimit(1 << 50)
 		seedServiceText(t, service, artifactID, "before")
 		httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 		t.Cleanup(httpServer.Close)
 
 		peer := connectPeer(t, httpServer.URL, artifactID, "alice")
-		// The peer writes on the room's document, as a browser does once the room has sent it, so
-		// the chain's root always lands beside the seeded paragraph.
+		// The peer is sent the room's document, as a browser is, before the server writes anything
+		// of the chain, so the chain's root lands beside the seeded paragraph and the peer is sent
+		// both.
 		if err := peer.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
 			t.Fatal(err)
 		}

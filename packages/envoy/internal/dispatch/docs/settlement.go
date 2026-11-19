@@ -442,7 +442,7 @@ func (st *settlement) endOnRefusedUpdate() settleOutcome {
 // first read to its commit, so no append of the room is refused between the two reads. A refusal
 // the worker made before the settlement took the lock is the one the first read can miss: the
 // worker takes the mark after its refused transaction has released the lock. But it takes the
-// mark before it drops the update from the room's queue (StoreUpdateContext, finishUpdateClass).
+// mark before it drops the update from the room's queue (StoreUpdateStored, finishUpdateClass).
 // So when the settlement stores the room's updates, either that update is still queued, and the
 // gate refuses the settlement's own write (the first order), or it has gone, and its mark was
 // taken before, which the second read finds.

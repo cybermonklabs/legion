@@ -38,7 +38,7 @@ var ErrRoomBehindHead = fmt.Errorf("%w: the document's room is behind its durabl
 type appendKind int
 
 const (
-	// appendBrowser is a raw client delta (servicePersistenceAdapter.StoreUpdateContext): a Yjs
+	// appendBrowser is a raw client delta (servicePersistenceAdapter.StoreUpdateStored): a Yjs
 	// update commutes with whatever landed since, so it is admitted from a room that is behind
 	// with its history intact, at the head, and its room's cursor folds it in once catch-up fills
 	// the gap. A replaced history refuses it unless that history still holds every item it builds
@@ -344,7 +344,7 @@ type roomCursorContextKey struct{}
 // room outside any live write mark their own context, since no ledger of theirs names the document
 // they were made on: settlement's repairs (settleRoomWithin), the block-id backfill's stamp
 // (backfillBlockIDs) and the room's own append of an update its observer recorded no class for
-// (servicePersistenceAdapter.StoreUpdateContext). A room's own batch of browser updates is gated
+// (servicePersistenceAdapter.StoreUpdateStored). A room's own batch of browser updates is gated
 // on the flush it stores instead (RoomFlush, appendRoomTx).
 func withRoomCursor(ctx context.Context, cursor *roomCursor) context.Context {
 	if cursor == nil {

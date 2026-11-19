@@ -242,11 +242,7 @@ func measureCopyPaths(t *testing.T, state []byte) {
 		{"a write's fork of the stored history", fresh, stored, fork},
 		{"a write's first fork of the resident room", func() { fresh(); live = resident() }, liveState, fork},
 		{"the replica's build from a base", func() {
-			doc := newDocumentCopy()
-			if err := crdt.ApplyUpdateV1(doc, state, nil); err != nil {
-				t.Fatal(err)
-			}
-			rendered, err := renderDocument(doc)
+			rendered, err := renderDocument(copyOf(t, state))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -479,13 +475,7 @@ func answerFrames(t *testing.T, doc *crdt.Doc, step1 []byte) [][]byte {
 // counts garbage a collection at copyMeasurementGCPercent has not reached yet: that peak put the
 // keystrokes' answer at 561,560 bytes, where 312,968 to 323,104 of them were live.
 func TestAStateAnswerAtMidSizesHoldsNoMoreLiveHeapThanItsGrant(t *testing.T) {
-	skipUnderRace(t)
-	godebug := "gcstoptheworld=1"
-	if inherited := os.Getenv("GODEBUG"); inherited != "" {
-		godebug = inherited + "," + godebug
-	}
-	t.Setenv("GODEBUG", godebug)
-	if !measuredAlone(t) {
+	if !measuredAloneStoppingTheWorld(t) {
 		return
 	}
 	step1 := ygsync.EncodeSyncStep1(crdt.New())
@@ -543,13 +533,7 @@ func TestAStateAnswerAtMidSizesHoldsNoMoreLiveHeapThanItsGrant(t *testing.T) {
 // (liveHeapPeak, a process of its own whose collections stop the world), and the allocation as
 // the fewest bytes of five answers (answerAllocation).
 func TestAnAnswerAllocatingPastItsGrantHoldsNoMoreLiveHeapThanIt(t *testing.T) {
-	skipUnderRace(t)
-	godebug := "gcstoptheworld=1"
-	if inherited := os.Getenv("GODEBUG"); inherited != "" {
-		godebug = inherited + "," + godebug
-	}
-	t.Setenv("GODEBUG", godebug)
-	if !measuredAlone(t) {
+	if !measuredAloneStoppingTheWorld(t) {
 		return
 	}
 	step1 := ygsync.EncodeSyncStep1(crdt.New())
@@ -576,7 +560,7 @@ func TestAnAnswerAllocatingPastItsGrantHoldsNoMoreLiveHeapThanIt(t *testing.T) {
 		t.Run(shape.name, func(t *testing.T) {
 			doc := shape.doc(t)
 			if parks(doc) {
-				t.Fatal("the document parks something, so its answer reads that back beside its cut")
+				t.Fatal("the document parks something, and this measures the answer of one that parks nothing")
 			}
 			state, structs := int64(len(crdt.EncodeStateAsUpdateV1(doc, nil))), int64(doc.StructCount())
 			grant := answerWeight(doc, state, structs)
@@ -622,13 +606,7 @@ func TestAnAnswerAllocatingPastItsGrantHoldsNoMoreLiveHeapThanIt(t *testing.T) {
 // (answerHeapAStruct), which grants the room 31,642. Each run logs the architecture and the
 // processors it measured on, so a reading names the machine it came from.
 func TestAnAnswerFromARoomOfUnderAThousandStructsHoldsNoMoreThanItsGrant(t *testing.T) {
-	skipUnderRace(t)
-	godebug := "gcstoptheworld=1"
-	if inherited := os.Getenv("GODEBUG"); inherited != "" {
-		godebug = inherited + "," + godebug
-	}
-	t.Setenv("GODEBUG", godebug)
-	if !measuredAlone(t) {
+	if !measuredAloneStoppingTheWorld(t) {
 		return
 	}
 	t.Logf("measured on %s/%s, %d processors of the machine's %d (liveHeapProcessors)",
@@ -658,7 +636,7 @@ func TestAnAnswerFromARoomOfUnderAThousandStructsHoldsNoMoreThanItsGrant(t *test
 		t.Run(shape.name, func(t *testing.T) {
 			doc := shape.doc(t)
 			if parks(doc) {
-				t.Fatal("the document parks something, so its answer reads that back beside its cut")
+				t.Fatal("the document parks something, and this measures the answer of one that parks nothing")
 			}
 			state, structs, clients := int64(len(crdt.EncodeStateAsUpdateV1(doc, nil))), int64(doc.StructCount()), int64(doc.ClientCount())
 			if structs >= 1_000 {
@@ -796,6 +774,21 @@ type liveHeapReading struct {
 	peak        int64
 	collections uint64
 	runs        int
+}
+
+// measuredAloneStoppingTheWorld is measuredAlone for a reading of the live heap (liveHeapPeak):
+// the process it measures in has every collection stop the world (GODEBUG gcstoptheworld=1,
+// beside what the test inherits), and a race build, whose instrumentation is no heap a room
+// holds, measures nothing.
+func measuredAloneStoppingTheWorld(t *testing.T) bool {
+	t.Helper()
+	skipUnderRace(t)
+	godebug := "gcstoptheworld=1"
+	if inherited := os.Getenv("GODEBUG"); inherited != "" {
+		godebug = inherited + "," + godebug
+	}
+	t.Setenv("GODEBUG", godebug)
+	return measuredAlone(t)
 }
 
 // liveHeapPeak runs cut again and again, for a second and at least five times, with the collector

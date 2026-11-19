@@ -172,7 +172,8 @@ func (w *awarenessLimitWriter) Unwrap() http.ResponseWriter { return w.ResponseW
 
 // awarenessLimitConn is a document socket's connection under ygo's websocket reader. It reads the
 // frames the socket's peer sends and hands ygo an awareness message holding only the clients the
-// socket may hold; every other message reaches ygo as it arrived.
+// socket may hold, and a sync step 2 with the structs under another person's client ids cut out
+// of it (collectStepTwo); every other message reaches ygo as it arrived.
 type awarenessLimitConn struct {
 	net.Conn
 	room string
@@ -187,12 +188,14 @@ type awarenessLimitConn struct {
 	// time is never refused.
 	live map[uint64]struct{}
 	src  *bufio.Reader
-	// out is the rewritten bytes ygo's reader has yet to take.
+	// out is the rewritten bytes ygo's reader has yet to take. A buffer a sync step 2 grew past
+	// what any other message needs is let go once ygo has taken it all (Read).
 	out bytes.Buffer
 	// through is how much of the frame being read reaches ygo unread, straight from src.
 	through int64
 	// message is the payload of the message being read, unmasked: its Hocuspocus header while the
-	// filter is deciding what the message is, and the whole of it for an awareness message.
+	// filter is deciding what the message is, and the whole of it for an awareness message, or of
+	// its sync message for a sync step 2.
 	message []byte
 	mode    awarenessLimitMode
 	// name is the document the message being read names, which the rewritten message carries.
@@ -221,7 +224,11 @@ func (c *awarenessLimitConn) Read(p []byte) (int, error) {
 		}
 	}
 	if c.out.Len() > 0 {
-		return c.out.Read(p)
+		read, err := c.out.Read(p)
+		if c.out.Len() == 0 && c.out.Cap() > maxAwarenessMessageBytes+maxFrameHeader {
+			c.out = bytes.Buffer{}
+		}
+		return read, err
 	}
 	if int64(len(p)) > c.through {
 		p = p[:c.through]
@@ -276,8 +283,9 @@ func (c *awarenessLimitConn) readFrame() error {
 
 // decide reads as much of the frame as it takes to learn what the message is - the document it
 // names and its type - and sets the mode the rest of the message is read in. A message that is
-// not awareness is handed to ygo as it stands: the bytes already read go out as one frame and the
-// rest of the frame is copied through unread. A message that ends without naming both, or that
+// neither awareness nor a sync step 2 the filter cuts is handed to ygo as it stands: the bytes
+// already read go out as one frame and the rest of the frame is copied through unread. A message
+// that ends without naming both, or that
 // has not named them within maxDocumentMessageHeader bytes, ends the connection: whatever its
 // length, it is not a message this service reads, and ygo, which reads the same header, would
 // make nothing of it either.
@@ -291,12 +299,9 @@ func (c *awarenessLimitConn) decide(payload int64, final bool) error {
 	if want <= 0 {
 		return fmt.Errorf("dispatch: a document socket's message does not name its document and type within %d bytes", maxDocumentMessageHeader)
 	}
-	start := len(c.message)
-	c.message = append(c.message, make([]byte, want)...)
-	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
+	if err := c.readMessage(want); err != nil {
 		return err
 	}
-	c.unmask(start)
 	rest := payload - want
 	name, kind, read, named := documentMessageKind(c.message)
 	switch {
@@ -338,30 +343,31 @@ func (c *awarenessLimitConn) decide(payload int64, final bool) error {
 // (maxMessageBytes) ends the connection, as ygo's reader would refuse it, and one whose update
 // does not read reaches ygo as it arrived. The message is held whole until it ends, beside the
 // copy ygo's reader holds once it is handed on, so its buffer is let go then rather than kept for
-// the socket's next message.
+// the socket's next message, and so is the rewritten copy once ygo has taken it (Read).
 func (c *awarenessLimitConn) collectStepTwo(n int64, final bool) error {
 	if int64(len(c.message))+n > maxMessageBytes {
 		return fmt.Errorf("dispatch: a document socket's sync step 2 is past the %d bytes one message may carry", maxMessageBytes)
 	}
-	start := len(c.message)
-	c.message = append(c.message, make([]byte, n)...)
-	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
+	if err := c.readMessage(n); err != nil {
 		return err
 	}
-	c.unmask(start)
 	if !final {
 		return nil
 	}
 	c.mode = limitIdle
-	body := c.message
-	if update, err := encoding.NewDecoder(c.message).ReadVarBytes(); err == nil {
-		body = encoding.EncodeBytes(func(encoder *encoding.Encoder) { encoder.WriteVarBytes(c.cut(update)) })
+	update, err := encoding.NewDecoder(c.message).ReadVarBytes()
+	if err == nil {
+		update = c.cut(update)
 	}
 	c.writeFrame(gws.BinaryMessage, true, encoding.EncodeBytes(func(encoder *encoding.Encoder) {
 		encoder.WriteVarString(c.name)
 		encoder.WriteVarUint(c.kind)
 		encoder.WriteVarUint(syncStepTwo)
-		encoder.WriteRaw(body)
+		if err != nil {
+			encoder.WriteRaw(c.message)
+			return
+		}
+		encoder.WriteVarBytes(update)
 	}))
 	c.message = nil
 	return nil
@@ -376,12 +382,9 @@ func (c *awarenessLimitConn) collect(n int64, final bool) error {
 		c.message = c.message[:0]
 		return c.skip(n, final)
 	}
-	start := len(c.message)
-	c.message = append(c.message, make([]byte, n)...)
-	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
+	if err := c.readMessage(n); err != nil {
 		return err
 	}
-	c.unmask(start)
 	c.mode = limitAwareness
 	if !final {
 		return nil
@@ -423,12 +426,19 @@ func (c *awarenessLimitConn) pass(rest int64, final bool) {
 	}
 }
 
-// unmask takes the mask off the message's bytes from start, the first of the frame in hand: each
-// stands at its own offset within that frame, which the key repeats over every four bytes.
-func (c *awarenessLimitConn) unmask(start int) {
+// readMessage reads n more bytes of the frame in hand onto the message and takes the mask off
+// them: each stands at its own offset within that frame, which the key repeats over every four
+// bytes.
+func (c *awarenessLimitConn) readMessage(n int64) error {
+	start := len(c.message)
+	c.message = append(c.message, make([]byte, n)...)
+	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
+		return err
+	}
 	for i := start; i < len(c.message); i++ {
 		c.message[i] ^= c.key[(i-start)%4]
 	}
+	return nil
 }
 
 // allowed is the awareness update a socket may send of the one it sent: the entries of the
@@ -491,8 +501,10 @@ func (c *awarenessLimitConn) writeAwareness(update []byte) {
 // as every frame a client sends is.
 func (c *awarenessLimitConn) writeFrame(opcode byte, final bool, payload []byte) {
 	c.out.Write(frameHeader(opcode, final, int64(len(payload)), c.key[:]))
-	for i, b := range payload {
-		c.out.WriteByte(b ^ c.key[i%4])
+	c.out.Write(payload)
+	masked := c.out.Bytes()[c.out.Len()-len(payload):]
+	for i := range masked {
+		masked[i] ^= c.key[i%4]
 	}
 }
 

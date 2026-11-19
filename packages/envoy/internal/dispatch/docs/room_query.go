@@ -41,7 +41,7 @@ import (
 // the asker reads the store knowing it holds them. A "share" is answered at once, appending
 // nothing, with "updates": the merge of the member's unstored updates, the one whose append is
 // under way included, since an update stays listed until its append has returned
-// (StoreUpdateContext). One over roomShareLimit answers "too_large" and no updates. A share's
+// (StoreUpdateStored). One over roomShareLimit answers "too_large" and no updates. A share's
 // answer carries "actors" as well, the distinct actors connected to the member's room, which is
 // what names a lost write's participants (lostedit.go); a holds or a flush answer carries none,
 // since no asker of those reads them. An answer whose notification would pass
@@ -501,7 +501,7 @@ func (s *Service) unstoredShare(room string, live *crdt.Doc) ([]byte, error) {
 }
 
 // awaitStored returns once none of classes is among instance's unstored updates any more: each
-// was appended, or dropped with a room that failed (StoreUpdateContext). It looks every
+// was appended, or dropped with a room that failed (StoreUpdateStored). It looks every
 // roomFlushPoll until ctx ends.
 func awaitStored(ctx context.Context, instance *roomInstance, classes []*queuedClass) error {
 	if instance == nil || len(classes) == 0 {

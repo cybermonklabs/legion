@@ -13,10 +13,11 @@ import "testing"
 // refuses a read that no one top-level test encloses, since it cannot say which test that read
 // makes smaller. A helper's read is exactly that, and the two helpers below are the shape the
 // package wants: one sentence of reasoning, written once, for the thirty-odd tests that skip for
-// it. The full-size plain run those tests need is their own package's job, envoy-go-docs, which
-// runs every test of this package plain on every change envoy_go selects and again in
-// envoy-go-docs-finalizers; naming them in envoy-go's ten-minute step as well would run this
-// package's heaviest rows a second time under a budget they do not fit (INFRA-179).
+// it. The full-size plain run those tests need is their own package's job,
+// envoy-go-docs-finalizers, which runs every test of this package plain, under the cleanup
+// detector (GODEBUG=checkfinalizers=1), wherever the race lane of this package runs; naming them in
+// envoy-go's ten-minute step as well would run this package's heaviest rows a second time under a
+// budget they do not fit (INFRA-179).
 
 // skipUnderRace skips a measurement of the heap, or of the allocations a path makes, in a -race
 // build: the race detector distorts both figures (its shadow memory, its instrumented allocations

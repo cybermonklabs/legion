@@ -224,8 +224,9 @@ func (r *roomScans) reserve(origin any, ceiling int) *scanAllowance {
 // the count its refusal reports. What a discarded drain scanned (crdt.DrainDiscardedError.Scanned)
 // is left out: the apply's own allowance bounded how long that drain held the document's lock,
 // and nothing it scanned is left in the room, whose total counts what reaching its own state
-// cost. A discarded drain is checked first, since the refusal that stopped it can be what its
-// error wraps (crdt.RefusedUpdateError). Nil settles nothing.
+// cost. A discarded drain's error carries the check's refusal or the budget's error that stopped
+// the drain (crdt.DrainDiscardedError.Cause), never a crdt.RefusedUpdateError: its update stood.
+// Nil settles nothing.
 func (r *roomScans) settle(allowance *scanAllowance, err error) {
 	if r == nil || allowance == nil {
 		return

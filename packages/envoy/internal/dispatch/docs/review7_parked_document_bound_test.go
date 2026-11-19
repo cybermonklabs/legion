@@ -4,7 +4,7 @@
 // The PR body's table says the document bound (1 MiB rendered) is "charged where it parks" for a
 // drain of parked content. What an update parks is charged against Bytes, and Bytes is the
 // document bound's maxPeerInsertAtTheBound only where the room's rendering plus the update's own
-// length reach pmdoc.MaxDocumentBytes (peerApplyAllowance, peer_update.go:298-306); otherwise it is
+// length reach pmdoc.MaxDocumentBytes (peerApplyAllowance); otherwise it is
 // what the state cap leaves (16 MiB). Parked content renders nothing, so the rendering the next
 // frame is weighed against does not move: one browser parks frame after frame of just under a
 // mebibyte each, then one tiny update fills every gap and the drain lands them all at once.

@@ -18,9 +18,10 @@ import (
 )
 
 // A room's browser updates reach the store through ygo's per-room persistence worker, which calls
-// StoreUpdateContext once per update, in order (PersistCoalesceWindow = -1 keeps one call, and one
-// stored row, per update), and returns from a flush - a CloseRoom, the idle sweep, Shutdown - only
-// once every update it buffered has had its call return. A person typing makes an update every
+// StoreUpdateStored once per update, in order (Server.AnswerOnceStored; StoreUpdateContext is its
+// wrapper for a caller that reads only the error; PersistCoalesceWindow = -1 keeps one call, and
+// one stored row, per update), and returns from a flush - a CloseRoom, the idle sweep, Shutdown -
+// only once every update it buffered has had its call return. A person typing makes an update every
 // keystroke or so. Stored in a transaction each, on a connection of the shared request pool, every
 // keystroke cost the API a connection and about ten round trips under the document's lock. The
 // room's queued updates are stored together instead, which is what this file does.
@@ -47,9 +48,11 @@ import (
 //
 // What holds:
 //
-//   - Durable on return. A call returns nil only once its update is committed: by its own
-//     transaction, or by another writer's that stored it first and marked its class stored
-//     (RoomFlush.markStored). ygo's flush still means every update it held is durable.
+//   - Durable or dropped on return. A call answers its update stored only once it is committed:
+//     by its own transaction, or by another writer's that stored it first and marked its class
+//     stored (RoomFlush.markStored). An update its failed room drops, or that a closed issue
+//     refuses, is answered not stored with no error (StoreUpdateStored). ygo's flush still means
+//     every update it held is durable or dropped.
 //   - Stored once. No class is stored by two transactions. A class is stored only by a transaction
 //     that holds the document's advisory lock and finds it, under the room's state lock, still
 //     queued and not stored (Service.flushRun), and every such transaction marks what it
@@ -116,7 +119,7 @@ type BrowserUpdate struct {
 	Observed       time.Time
 }
 
-// AppendRoomFlush is the room's persistence worker's append of its own update (StoreUpdateContext),
+// AppendRoomFlush is the room's persistence worker's append of its own update (StoreUpdateStored),
 // the whole flush its transaction runs: under the document's lock, in one transaction, it stores
 // every update of the room instance flush names through `through`, the last commit position of the
 // run its batch takes (roomBatchThrough), that no writer has stored yet, in the room's commit order
@@ -144,11 +147,6 @@ func (p *PgVersioned) AppendRoomFlush(ctx context.Context, room string, flush *R
 // the same transaction a room's batch does, with the updates given rather than read off the room's
 // queue, and is gated on the room cursor ctx is marked with, if any.
 func (p *PgVersioned) AppendUpdatesWithCredit(ctx context.Context, room string, updates []BrowserUpdate) (persistence.Version, error) {
-	return p.appendUpdates(ctx, room, updates)
-}
-
-// appendUpdates is AppendUpdatesWithCredit's append.
-func (p *PgVersioned) appendUpdates(ctx context.Context, room string, updates []BrowserUpdate) (persistence.Version, error) {
 	if len(updates) == 0 {
 		return 0, fmt.Errorf("append document updates: no update to append")
 	}
@@ -405,7 +403,7 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 			update.Credit.held(first + persistence.Version(index))
 		}
 		// The room instance's cursor advances here, inside the lock the append holds, rather than
-		// where the caller marked the context with it (StoreUpdateContext): a writer that took the
+		// where the caller marked the context with it (StoreUpdateStored): a writer that took the
 		// lock after this commit released it would otherwise read a cursor behind the head it
 		// reads under that lock, and the gate would refuse an agent's edit while nothing was wrong
 		// with its room.

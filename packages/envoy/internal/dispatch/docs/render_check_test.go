@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"math/rand/v2"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
@@ -45,11 +43,13 @@ type rcRoom struct {
 
 func newRCRoom(t *testing.T, state []byte) *rcRoom {
 	t.Helper()
-	live := newDocumentCopy()
-	if err := crdt.ApplyUpdateV1(live, state, nil); err != nil {
-		t.Fatal(err)
-	}
-	return loadedRCRoom(t, live, nil)
+	return loadedRCRoom(t, copyOf(t, state), nil)
+}
+
+// deleteAllOf is a frame of no structs whose delete set covers every clock room holds of client:
+// a browser's delete of all client wrote, the format items of a mark here.
+func deleteAllOf(room *rcRoom, client crdt.ClientID) []byte {
+	return newV1Frame(0).uint(1).uint(uint64(client)).uint(1).uint(0).uint(room.live.StateVector().Clock(client)).done()
 }
 
 // loadedRCRoom is newRCRoom's room on live, with decoded, the copy a load decodes of the same
@@ -340,7 +340,7 @@ func rcShapes() []rcShape {
 				return newRCRoom(t, crdt.EncodeStateAsUpdateV1(base, nil))
 			},
 			frame: func(t *testing.T, room *rcRoom) []byte {
-				return newV1Frame(0).uint(1).uint(777).uint(1).uint(0).uint(room.live.StateVector().Clock(777)).done()
+				return deleteAllOf(room, 777)
 			},
 		},
 		{
@@ -534,10 +534,7 @@ func (g rcGen) document(t *testing.T, mode int) []byte {
 			last = fmt.Errorf("encode: %w", err)
 			continue
 		}
-		doc := newDocumentCopy()
-		if err := crdt.ApplyUpdateV1(doc, state, nil); err != nil {
-			t.Fatal(err)
-		}
+		doc := copyOf(t, state)
 		rendering, err := renderDocument(doc)
 		if err != nil {
 			last = fmt.Errorf("render: %w", err)
@@ -916,7 +913,7 @@ func TestAnUpdateThatShrinksOrKeepsTheRenderingIsNeverRefused(t *testing.T) {
 			})
 		}},
 		{"a delete of a comment mark's format items", func() []byte {
-			return newV1Frame(0).uint(1).uint(778).uint(1).uint(0).uint(room.live.StateVector().Clock(778)).done()
+			return deleteAllOf(room, 778)
 		}},
 	} {
 		before, err := renderDocument(room.live)
@@ -1005,7 +1002,7 @@ func TestAnUpdateAfterAServerWriteTheReplicaHasNotTakenIsRefusedOnlyForNow(t *te
 		t.Fatal(err)
 	}
 	room := newRCRoom(t, crdt.EncodeStateAsUpdateV1(base, nil))
-	unmark := newV1Frame(0).uint(1).uint(779).uint(1).uint(0).uint(room.live.StateVector().Clock(779)).done()
+	unmark := deleteAllOf(room, 779)
 	stale, _ := renderDocument(room.live)
 	room.held.Store(true)
 	room.live.Transact(func(txn *crdt.Transaction) {
@@ -1050,26 +1047,16 @@ func TestARefusedDrainClosesTheBrowserThatParkedItAndTheUpdateIsAnsweredApplied(
 	prefix := strings.Repeat("> ", 98)
 	storeHistory(t, service, artifactID, stateOf(t, rcProse(300_000)+"\n\n"+prefix+"```\n"+prefix+"x\n"+prefix+"```\n"))
 	closeResidentRoom(t, service, artifactID)
-	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
-	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
-	alice := http.Header{"X-Dispatch-User": []string{"alice"}}
+	url := socketURL(newTestServer(t, service).URL, artifactID)
+	alice := pageHeader("alice")
 	sender := docstest.Dial(t, url, alice, artifactID, crdt.New())
 	awaitAnswer(t, sender, "the document")
 	parker := docstest.Dial(t, url, alice, artifactID, crdt.New())
 	awaitAnswer(t, parker, "the document in the parking tab")
-	watcher := docstest.Dial(t, url, http.Header{"X-Dispatch-User": []string{"bob"}}, artifactID, crdt.New())
+	watcher := docstest.Dial(t, url, pageHeader("bob"), artifactID, crdt.New())
 	awaitAnswer(t, watcher, "the document")
 
-	code := allTexts(sender.Doc.GetXmlFragment(fragmentName))[1]
-	fill := docstest.Transact(sender.Doc, func(txn *crdt.Transaction) { code.Insert(txn, 0, "FILL", nil) })
-	const parkingClient = 4242
-	other := crdt.New(crdt.WithClientID(parkingClient))
-	if err := crdt.ApplyUpdateV1(other, crdt.EncodeStateAsUpdateV1(sender.Doc, nil), nil); err != nil {
-		t.Fatal(err)
-	}
-	otherCode := allTexts(other.GetXmlFragment(fragmentName))[1]
-	parked := docstest.Transact(other, func(txn *crdt.Transaction) { otherCode.Insert(txn, 4, strings.Repeat("\n", 5_000), nil) })
+	fill, parked := gapNewlines(t, sender.Doc)
 	if err := parker.Write(ygsync.EncodeUpdate(parked)); err != nil {
 		t.Fatal(err)
 	}
@@ -1105,7 +1092,7 @@ func TestARefusedDrainClosesTheBrowserThatParkedItAndTheUpdateIsAnsweredApplied(
 	if live == nil {
 		t.Fatal("the room is not resident")
 	}
-	if pending, held := live.PendingStats(), live.StateVector().Clock(parkingClient); pending.Items != 0 || held != 0 {
+	if pending, held := live.PendingStats(), live.StateVector().Clock(gapNewlinesClient); pending.Items != 0 || held != 0 {
 		t.Fatalf("the room parks %+v and holds the parking client to clock %d, want the newlines discarded", pending, held)
 	}
 	rendering, err := renderDocument(live)
@@ -1126,10 +1113,8 @@ func TestADocumentStoredPastTheBoundLoadsAndCanBeShortened(t *testing.T) {
 	if err != nil || len(stored) <= maxPeerRenderingBytes {
 		t.Fatalf("the stored document reads %d bytes (%v), want it past %d", len(stored), err, maxPeerRenderingBytes)
 	}
-	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
-	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
-	browser := docstest.Dial(t, url, http.Header{"X-Dispatch-User": []string{"alice"}}, artifactID, crdt.New())
+	url := socketURL(newTestServer(t, service).URL, artifactID)
+	browser := docstest.Dial(t, url, pageHeader("alice"), artifactID, crdt.New())
 	awaitAnswer(t, browser, "the document stored past the bound")
 	if rendering, err := renderDocument(browser.Doc); err != nil || rendering != stored {
 		t.Fatalf("the browser holds a %d-byte rendering (%v), want the stored %d", len(rendering), err, len(stored))

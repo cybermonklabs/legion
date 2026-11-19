@@ -8,7 +8,7 @@
 // update carries is bounded by Decoded instead"), so one browser's frame of delete ranges over a
 // client the room has never seen parked them all, and two updates later the room refused every
 // person's keystroke, offering a rebuild the route refused: nearACap read the room far from every
-// cap, so RebuildDocument answered 409 DOCUMENT_LIVE (rebuild.go:421-427). That rule is gone: a
+// cap, so RebuildDocument answered 409 DOCUMENT_LIVE. That rule is gone: a
 // drain the room cannot take is discarded while the update that released it stands
 // (leaveParkedOut), so no queue stands still for a rule to read, and this holds that a frame of
 // parked delete ranges locks no editor out.

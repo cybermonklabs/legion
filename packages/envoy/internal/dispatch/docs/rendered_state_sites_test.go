@@ -2,9 +2,6 @@ package docs
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +12,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -196,6 +192,22 @@ func gapFrames(t *testing.T, room *rcRoom, newlines int) (parked, fill []byte) {
 	filled := other.StateVector()
 	other.Transact(func(txn *crdt.Transaction) { otherCode.Insert(txn, 4, strings.Repeat("\n", newlines), nil) })
 	return crdt.EncodeStateAsUpdateV1(other, filled), fill
+}
+
+// gapNewlines is the two frames of gapFrames written on sender, a browser's document of the gap
+// room (gapRoom's state): the keystroke that fills the gap, and the 5,000 newlines a browser of
+// its own, gapNewlinesClient, types right after it.
+func gapNewlines(t *testing.T, sender *crdt.Doc) (fill, parked []byte) {
+	t.Helper()
+	code := allTexts(sender.GetXmlFragment(fragmentName))[1]
+	fill = docstest.Transact(sender, func(txn *crdt.Transaction) { code.Insert(txn, 0, "FILL", nil) })
+	other := crdt.New(crdt.WithClientID(gapNewlinesClient))
+	if err := crdt.ApplyUpdateV1(other, crdt.EncodeStateAsUpdateV1(sender, nil), nil); err != nil {
+		t.Fatal(err)
+	}
+	otherCode := allTexts(other.GetXmlFragment(fragmentName))[1]
+	parked = docstest.Transact(other, func(txn *crdt.Transaction) { otherCode.Insert(txn, 4, strings.Repeat("\n", 5_000), nil) })
+	return fill, parked
 }
 
 // gapRoom is a room of 300,000 bytes of prose and a code block nested 98 quotes deep, where each
@@ -435,20 +447,11 @@ func TestASettlementAfterARefusedDrainVersionsAWholeRenderOfTheRoom(t *testing.T
 			prefix := strings.Repeat("> ", 98)
 			storeHistory(t, service, artifactID, stateOf(t, rcProse(300_000)+"\n\n"+prefix+"```\n"+prefix+"x\n"+prefix+"```\n"))
 			closeResidentRoom(t, service, artifactID)
-			server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-			t.Cleanup(server.Close)
-			url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
-			sender := docstest.Dial(t, url, http.Header{"X-Dispatch-User": []string{"alice"}}, artifactID, crdt.New())
+			url := socketURL(newTestServer(t, service).URL, artifactID)
+			sender := docstest.Dial(t, url, pageHeader("alice"), artifactID, crdt.New())
 			awaitAnswer(t, sender, "the document")
 
-			code := allTexts(sender.Doc.GetXmlFragment(fragmentName))[1]
-			fill := docstest.Transact(sender.Doc, func(txn *crdt.Transaction) { code.Insert(txn, 0, "FILL", nil) })
-			other := crdt.New(crdt.WithClientID(gapNewlinesClient))
-			if err := crdt.ApplyUpdateV1(other, crdt.EncodeStateAsUpdateV1(sender.Doc, nil), nil); err != nil {
-				t.Fatal(err)
-			}
-			otherCode := allTexts(other.GetXmlFragment(fragmentName))[1]
-			parked := docstest.Transact(other, func(txn *crdt.Transaction) { otherCode.Insert(txn, 4, strings.Repeat("\n", 5_000), nil) })
+			fill, parked := gapNewlines(t, sender.Doc)
 			if err := sender.Write(ygsync.EncodeUpdate(parked)); err != nil {
 				t.Fatal(err)
 			}

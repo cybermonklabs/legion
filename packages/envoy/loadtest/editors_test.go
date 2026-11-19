@@ -206,13 +206,7 @@ func TestAnEditorThatConnectsAgainPresentsItsClientIdAndKeepsItsCopy(t *testing.
 	stats := newEditorStats()
 	ctx := context.Background()
 	r := rand.New(rand.NewPCG(5, 5))
-	acked := func(n int) func() bool {
-		return func() bool {
-			stats.mu.Lock()
-			defer stats.mu.Unlock()
-			return stats.acked == n
-		}
-	}
+	acked := func(n int) func() bool { return ackedEdits(stats, n) }
 
 	first, err := dialEditor(ctx, url, "person-0", schema, nil, 0, d, stats)
 	if err != nil {
@@ -249,12 +243,7 @@ func TestAnEditorThatConnectsAgainPresentsItsClientIdAndKeepsItsCopy(t *testing.
 		t.Fatalf("the room holds client id %d to clock %d, want both edits' %d", first.client, clock, again.ydoc.StateVector().Clock(first.client))
 	}
 	requireClients(t, srv, room, seededDoc, first.client)
-	stats.mu.Lock()
-	refused, closes := stats.refused, len(stats.closes)
-	stats.mu.Unlock()
-	if refused != 0 || closes != 0 {
-		t.Fatalf("refused %d, closes %d; want none", refused, closes)
-	}
+	requireUnrefused(t, stats)
 
 	// Another person presenting the same id is not given it, so that editor starts a new copy
 	// under the id it is given.
@@ -282,13 +271,7 @@ func TestAnEditorAgainstARoomThatGivesNoIdWritesUnderItsCopysOwn(t *testing.T) {
 	stats := newEditorStats()
 	ctx := context.Background()
 	r := rand.New(rand.NewPCG(9, 9))
-	acked := func(n int) func() bool {
-		return func() bool {
-			stats.mu.Lock()
-			defer stats.mu.Unlock()
-			return stats.acked == n
-		}
-	}
+	acked := func(n int) func() bool { return ackedEdits(stats, n) }
 	roomHolds := func(e *editorConn) func() bool {
 		return func() bool {
 			want := e.ydoc.StateVector().Clock(e.client)
@@ -329,6 +312,22 @@ func TestAnEditorAgainstARoomThatGivesNoIdWritesUnderItsCopysOwn(t *testing.T) {
 	waitUntil(t, "the room to acknowledge the third edit", acked(2))
 	waitUntil(t, "the room to hold every edit", roomHolds(again))
 	requireClients(t, srv, room, seededDoc, first.client)
+	requireUnrefused(t, stats)
+}
+
+// ackedEdits is whether the room has acknowledged exactly n of the editors' edits, for waitUntil.
+func ackedEdits(stats *editorStats, n int) func() bool {
+	return func() bool {
+		stats.mu.Lock()
+		defer stats.mu.Unlock()
+		return stats.acked == n
+	}
+}
+
+// requireUnrefused requires the room to have refused none of the editors' edits and closed none
+// of their sockets.
+func requireUnrefused(t *testing.T, stats *editorStats) {
+	t.Helper()
 	stats.mu.Lock()
 	refused, closes := stats.refused, len(stats.closes)
 	stats.mu.Unlock()

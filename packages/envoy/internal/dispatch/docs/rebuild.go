@@ -241,8 +241,8 @@ func (s *Service) roomBlocks(live *crdt.Doc) (uint64, bool) {
 
 // nearACap reports whether doc, a document's decoded history or its live room, stands so near a
 // cap that it must be rebuilt, and why. Near the decode cap is nearTheDecodeCap of doc's struct
-// total as a load decodes it (structCeiling) and its tree: a write it must still take, a write of
-// its whole text or a write's smallest replacement, would carry it past the cap, which
+// total as the decode cap weighs it (structCeiling) and its tree: a write it must still take, a
+// write of its whole text or a write's smallest replacement, would carry it past the cap, which
 // refuseUndecodable refuses, as it refuses the write of a document no room holds by the count of
 // its fork, a decode of the same history (leavesRoomPastDecodeCap). Near the scan total means a
 // re-scan of its state (rescan) scans at least roomScanTotal less honestHandoffScans items, a
@@ -290,9 +290,10 @@ func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64, tracked int64) (w
 }
 
 // nearACapUnencoded reports whether doc, a room resident in this server, stands near a cap by the
-// two of nearACap's tests that read neither its state nor its tree: its struct total as a load
-// decodes it (structCeiling) against the decode cap with a write's smallest replacement, its
-// whole text counted as nothing (nearTheDecodeCap), and tracked, the bytes of state the room is
+// two of nearACap's tests that read neither its state nor its tree: its struct total as the
+// decode cap weighs it (structCeiling) against the decode cap with a write's smallest
+// replacement, its whole text counted as nothing (nearTheDecodeCap), and tracked, the bytes of
+// state the room is
 // tracked at (roomApplies.stateBytes), against the state cap's margin (nearTheStateCap). nearACap
 // makes both tests of the same room on the same figures, and each of its own readings can only
 // come out nearer - its encode is read beside tracked and the larger decides, and its whole-text

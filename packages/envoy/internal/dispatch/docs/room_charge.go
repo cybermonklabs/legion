@@ -7,23 +7,26 @@ import (
 )
 
 // This file holds one loaded room's charge against the budget (roomCharge): the one weight it
-// carries, the two writes that move it - the drain that adds each committed update's bytes
-// to the room's tracked state, and the re-base that replaces the tracked state with a figure
-// read from bytes already in hand - and the anchor the two paths that carry no report weigh
-// their own reading of the room against (anchorStructs).
+// carries, the three writes that move it - the drain that adds each committed update's bytes to
+// the room's tracked state, the peer hook's own weighing where an apply moved what the room's
+// pending queue holds, and the re-base that replaces the tracked state with a figure read from
+// bytes already in hand - and the anchor the two paths that carry no report weigh their own
+// reading of the room against (anchorStructs).
 
-// roomCharge is one loaded room's charge against the budget: one weight, the larger of its
-// tracked state at bytesOfHeapAStateByte and its structs at bytesOfHeapAStruct in each of its
-// two copies (roomWeight), and the room it belongs to.
+// roomCharge is one loaded room's charge against the budget: one weight, the larger of what it
+// holds resident - its tracked state and its pending queue's content (roomApplies.residentBytes)
+// - at bytesOfHeapAStateByte and its structs at bytesOfHeapAStruct in each of its two copies
+// (roomWeight), and the room it belongs to.
 //
-// Its writer is the room's update observer, whose drain of the room's update log weighs the
-// room again from the room's tracked state and what its pending queue holds
+// Its writer for every commit is the room's update observer, whose drain of the room's update log
+// weighs the room again from the room's tracked state and what its pending queue holds
 // (renderedReplica.chargeAdded, roomApplies.residentBytes), whoever wrote what it drained: a
 // browser's update the peer hook admitted, an API write's publish, an injected update,
 // settlement's repair. The tracked state is what each remote apply's report added as it
 // committed and what the drain counted for a commit no report covers (roomApplies.state,
 // renderedReplica.countCommit). An update the peer hook admits is drained by that observer inside
-// the apply that committed it (crdt/doc.go:984-992), before the hook can read what the apply left
+// the apply that committed it, as the transaction ends (buildPhase2, crdt/doc.go:1328-1453 in
+// theorem-labs/ygo v1.55.1-theorem.9), before the hook can read what the apply left
 // in the queue, so the hook weighs the room once more itself where its queue's charge moved
 // (Service.weighPeerUpdate, roomApplies.noteQueued); one its apply refused committed nothing to
 // drain and reported nothing.
@@ -45,9 +48,10 @@ type roomCharge struct {
 	closeOnceUnused bool
 }
 
-// weigh charges the room what its tracked state of stateBytes bytes and its structs structs come
-// to (roomWeight) and re-weighs its entry under the budget's lock. A nil charge, a replica no
-// room's load charged (a test's), charges nothing.
+// weigh charges the room what its resident bytes, stateBytes - its tracked state and its pending
+// queue's content (roomApplies.residentBytes) - and its structs structs come to (roomWeight) and
+// re-weighs its entry under the budget's lock. A nil charge, a replica no room's load charged (a
+// test's), charges nothing.
 func (c *roomCharge) weigh(stateBytes, structs int64) {
 	if c == nil {
 		return

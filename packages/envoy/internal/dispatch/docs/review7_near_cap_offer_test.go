@@ -3,9 +3,10 @@
 //
 // Review 6's finding 4, re-checked against every refusal that closes DOC_NEEDS_REBUILD: the editor
 // offers the rebuild on that close, and the route takes only a document nearACap answers near
-// (RebuildDocument, rebuild.go:421-427, 409 DOCUMENT_LIVE otherwise). nearACap's state-cap margin
-// is 64 KiB (nearTheStateCap); the hook refuses any update whose content passes what the state cap
-// leaves (peer_update.go:304-306) or the decode cap's structs' half.
+// (RebuildDocument, 409 DOCUMENT_LIVE otherwise). nearACap's state-cap margin is 64 KiB
+// (nearTheStateCap); the hook refuses any update whose content passes what the state cap leaves
+// or the decode cap's structs' share (peerApplyAllowance), and offers the rebuild only where
+// nearACapUnencoded answers near (peerRule.refusal).
 package docs
 
 import (
@@ -20,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-func r7RequireOfferAgrees(t *testing.T, service *Service, err error, room interface{}, why string, near bool, nearErr error) {
+func r7RequireOfferAgrees(t *testing.T, err error, why string, near bool, nearErr error) {
 	t.Helper()
 	var closed *websocket.PeerClose
 	refused := errors.As(err, &closed) && closed.Reason == contracts.DocumentNeedsRebuildCloseReason
@@ -40,17 +41,17 @@ func TestR7AStateCapRefusalOfAPastePastTheMarginIsOfferedARebuildTheRouteRefuses
 	service.chargeLoadedRoom("room", replica, tracked)
 	err, _ := weighInto(service, room, peerTyping(t, room, strings.Repeat("p", 200<<10)))
 	why, near, nearErr := nearACap(context.Background(), room, 1, tracked)
-	r7RequireOfferAgrees(t, service, err, room, why, near, nearErr)
+	r7RequireOfferAgrees(t, err, why, near, nearErr)
 }
 
-// The decode cap's branch: a room 100,000 structs short of the cap refuses a frame of 60,000
-// (more than the structs' half) DOC_NEEDS_REBUILD; its text is a few blocks, so nearTheDecodeCap
-// reads it far.
+// The decode cap's branch: a room 100,000 structs short of the cap refuses a frame of 60,000,
+// more than the structs' share of that headroom (a quarter of it, capShares); its text is a few
+// blocks, so nearTheDecodeCap reads it far, and the close is DOC_TOO_LARGE, offering no rebuild.
 func TestR7ADecodeCapRefusalIsOfferedARebuildTheRouteRefuses(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
 	defer runtime.KeepAlive(replica)
 	fillToStructs(t, service, room, maxUpdateItems-100_000)
 	err, _ := weighInto(service, room, gcFrameFrom(7, 60_000))
 	why, near, nearErr := nearACap(context.Background(), room, 1, service.roomWeighingOf(room).roomStateBytes())
-	r7RequireOfferAgrees(t, service, err, room, why, near, nearErr)
+	r7RequireOfferAgrees(t, err, why, near, nearErr)
 }

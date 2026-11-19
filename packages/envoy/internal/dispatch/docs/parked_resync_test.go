@@ -28,6 +28,8 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type lcRow struct {
@@ -43,7 +45,6 @@ type lcSent struct {
 }
 
 type lcPage struct {
-	t          *testing.T
 	name       string
 	artifactID string
 	conn       *gws.Conn
@@ -57,7 +58,6 @@ type lcPage struct {
 	sent        []lcSent
 	synced      chan struct{}
 	ended       chan struct{}
-	closed      *gws.CloseError
 	lines       *[]string
 	linesMu     *sync.Mutex
 }
@@ -83,21 +83,18 @@ func lcDial(t *testing.T, serverURL, artifactID, name string, prev *lcPage, star
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, first, err := conn.ReadMessage()
+	given, named, _, err := docstest.ReadGivenClient(conn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := encoding.NewDecoder(first)
-	_, _ = d.ReadVarString()
-	_, _ = d.ReadVarUint()
-	payload, _ := d.ReadVarString()
-	digits, _ := strings.CutPrefix(payload, contracts.DocumentClientIdMessagePrefix)
-	given, _ := strconv.ParseUint(digits, 10, 64)
+	if !named {
+		t.Fatalf("the room gave %s's page no client id in the socket's first frame", name)
+	}
 	doc := kept
 	if doc == nil {
-		doc = crdt.New(crdt.WithClientID(crdt.ClientID(given)))
+		doc = crdt.New(crdt.WithClientID(given))
 	}
-	p := &lcPage{t: t, name: name, artifactID: artifactID, conn: conn, doc: doc, start: start,
+	p := &lcPage{name: name, artifactID: artifactID, conn: conn, doc: doc, start: start,
 		synced: make(chan struct{}, 1), ended: make(chan struct{}), lines: lines, linesMu: linesMu}
 	if prev != nil {
 		// The editor's rows outlive the socket (pending-sync.ts keeps one ordinal count per document).
@@ -135,7 +132,7 @@ func (p *lcPage) write(message []byte, queued *lcSent) {
 // typeAt types text into the first paragraph after offset characters, records the edit as a row
 // and sends it as an Update frame.
 func (p *lcPage) typeAt(offset int, text string) {
-	update := lcTransact(p.doc, func(txn *crdt.Transaction) {
+	update := docstest.Transact(p.doc, func(txn *crdt.Transaction) {
 		paragraphTextsOf(txn.GetXmlFragment(fragmentName))[0].Insert(txn, offset, text, nil)
 	})
 	p.mu.Lock()
@@ -146,12 +143,6 @@ func (p *lcPage) typeAt(offset int, text string) {
 	p.write(ygsync.EncodeUpdate(update), &lcSent{update: update, what: fmt.Sprintf("Update %q", text)})
 }
 
-func lcTransact(doc *crdt.Doc, change func(*crdt.Transaction)) []byte {
-	before := doc.StateVector()
-	doc.Transact(change)
-	return crdt.EncodeStateAsUpdateV1(doc, before)
-}
-
 func (p *lcPage) read() {
 	defer close(p.ended)
 	for {
@@ -159,7 +150,6 @@ func (p *lcPage) read() {
 		if err != nil {
 			var closed *gws.CloseError
 			if errors.As(err, &closed) {
-				p.closed = closed
 				p.logf("closed %d %s", closed.Code, closed.Text)
 			} else {
 				p.logf("ended: %v", err)
@@ -258,12 +248,8 @@ func lcText(doc *crdt.Doc) string {
 
 func lcWait(t *testing.T, what string, within time.Duration, done func() bool) bool {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
-		if done() {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
+	if testwait.Holds(within, testwait.Poll, done) {
+		return true
 	}
 	t.Logf("TIMEOUT waiting for %s", what)
 	return false
@@ -328,11 +314,7 @@ func TestAnEditParkedBehindALostCommitIsUnsavedUntilTheCommitThatLandsItIsStored
 				if err != nil {
 					t.Fatal(err)
 				}
-				doc := newDocumentCopy()
-				if err := crdt.ApplyUpdateV1(doc, loaded.Update, nil); err != nil {
-					t.Fatal(err)
-				}
-				return doc.StateVector().Clock(client)
+				return copyOf(t, loaded.Update).StateVector().Clock(client)
 			}
 
 			alice := lcDial(t, serverURL, artifactID, "alice", nil, start, &lines, &linesMu)
@@ -426,9 +408,6 @@ func TestAnEditParkedBehindALostCommitIsUnsavedUntilTheCommitThatLandsItIsStored
 			note("after bob's next reconnect: bob holds %d row(s); room %s", bob3.rowsHeld(), room())
 			if want := map[bool]int{true: 0, false: 1}[aliceReturns]; bob3.rowsHeld() != want {
 				t.Fatalf("after bob's reconnect he holds %d rows, want %d", bob3.rowsHeld(), want)
-			}
-			for _, line := range lines {
-				t.Log(line)
 			}
 		})
 	}

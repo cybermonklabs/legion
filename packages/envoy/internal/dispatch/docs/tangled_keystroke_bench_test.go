@@ -1,7 +1,6 @@
 package docs
 
 import (
-	"syscall"
 	"testing"
 	"time"
 
@@ -9,6 +8,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/cputest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -24,11 +24,12 @@ import (
 // ygo walks every client of a document several times in each apply whatever the apply holds: a
 // keystroke here makes eight StateVector calls over the room's 40,002 clients, four in the room's
 // apply and four in the replica's (its state before and after, the apply's own, the drain's),
-// counted from an allocation profile, and every apply check a document carries adds two walks
-// more (renderedReplica says which). The replica's document carries none while it holds nothing
-// parked (holdParkedIn). Measured on a shared two-CPU pod, five runs a side of 30 keystrokes each,
-// alternating between 2a57f092, where the replica always carried holdParked, and this change: a
-// median of 166 ms a keystroke (151 ms of CPU) before and 150 ms (145 ms of CPU) after.
+// counted from an allocation profile. Before theorem-labs/ygo v1.55.1-theorem.9 every apply check
+// a document carried added two walks more, which is why the replica's document carries none while
+// it holds nothing parked (holdParkedIn). Measured on theorem.8 on a shared two-CPU pod, five runs
+// a side of 30 keystrokes each, alternating between 2a57f092, where the replica always carried
+// holdParked, and the change that dropped it there: a median of 166 ms a keystroke (151 ms of
+// CPU) before and 150 ms (145 ms of CPU) after.
 func BenchmarkATangledRoomTakesAKeystroke(b *testing.B) {
 	tree, err := pmdoc.Parse("# Tangled\n\nThe tangle follows the next paragraph.\n")
 	if err != nil {
@@ -85,7 +86,7 @@ func BenchmarkATangledRoomTakesAKeystroke(b *testing.B) {
 	var cpuFrom time.Duration
 	for b.Loop() {
 		if keystrokes == 0 {
-			cpuFrom = processCPU(b)
+			cpuFrom = cputest.Process()
 		}
 		keystrokes++
 		keystroke := encoding.NewEncoder()
@@ -108,16 +109,6 @@ func BenchmarkATangledRoomTakesAKeystroke(b *testing.B) {
 	if held := live.StateVector().Clock(tangledTypist); held != last.Clock+1 {
 		b.Fatalf("the room holds the typist to clock %d, want %d", held, last.Clock+1)
 	}
-	b.ReportMetric(float64(processCPU(b)-cpuFrom)/float64(keystrokes)/float64(time.Millisecond), "cpu-ms/op")
+	b.ReportMetric(float64(cputest.Process()-cpuFrom)/float64(keystrokes)/float64(time.Millisecond), "cpu-ms/op")
 	b.ReportMetric(float64(len(live.StateVector())), "clients")
-}
-
-// processCPU is the user and system CPU the process has spent so far.
-func processCPU(tb testing.TB) time.Duration {
-	tb.Helper()
-	var usage syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage); err != nil {
-		tb.Fatal(err)
-	}
-	return time.Duration(usage.Utime.Nano() + usage.Stime.Nano())
 }

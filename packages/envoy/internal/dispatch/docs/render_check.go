@@ -10,7 +10,6 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -38,7 +37,8 @@ import (
 // rendering no larger is never refused by it, so a document already past the bound can still be
 // shortened. A refused drain is discarded and the update that filled its gap stands
 // (crdt.ErrApplyCheckDrain, leaveParkedOut), and the browsers whose frames it held are closed
-// DOC_TOO_LARGE (closeDiscardedSenders). What it would have landed is gone from the room, and
+// with the check's close for what the drain would land, DOC_TOO_LARGE for a rendering past the
+// bound (closeDiscardedSenders). What it would have landed is gone from the room, and
 // never reached its replica: the commit's update leaves it out, and the replica's document refuses
 // every drain of its own that lands anything, so it integrates only what each commit's update
 // carries (renderedReplica, holdParked).
@@ -54,10 +54,10 @@ import (
 // keeps and publishes for the commit (takeChecked), so the observer renders nothing of its own for
 // a browser's update, as it renders nothing for a published live write whose operation rendered
 // the state it leaves (publishedRendering); the render has moved from after the commit, outside
-// the document's lock, to before it, inside. And it is the render the observer made: from the
-// room's rendering as the apply found it, splicing in just the top-level blocks the apply touched
-// (spliceBlocks), the very path the observer took (updateChangesMarkdown), and whole only where
-// that path would have been whole.
+// the document's lock, to before it, inside. And it follows the observer's own three paths
+// (updateChangesMarkdown): from the room's rendering as the apply found it, splicing in just the
+// top-level blocks the apply touched (spliceIndexed, through the same pmdoc.Layout.Splice the
+// observer's spliceBlocks takes), and whole only where that path would have been whole.
 //
 // That needs the room's rendering as the apply found it, which the check cannot read from the
 // replica: the replica's lock is taken by holders that then take the document's (atPoint), so the
@@ -167,9 +167,6 @@ func (c *loggedCommits) reset() []crdt.LoggedUpdate {
 // budget, runs its check and makes its report under that lock (roomApplies.budget, renderCheck,
 // roomApplies.noteApply).
 func (c *loggedCommits) now() (uint64, bool) {
-	if c == nil {
-		return 0, false
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.resetting {
@@ -188,7 +185,6 @@ func (c *loggedCommits) now() (uint64, bool) {
 // resolved before any apply, since a view resolves no root (crdt.ApplyView). panicsForTest makes
 // every whole render the check makes panic, so a test can hold it to its recovery (check).
 type renderCheck struct {
-	applies       *roomApplies
 	weighing      *roomWeighing
 	fragment      *crdt.YXmlFragment
 	paths         *renderPathCounts
@@ -200,7 +196,7 @@ type renderCheck struct {
 // Like the room's other apply callbacks it is set as the room is listed, before ygo hands the
 // document to anyone, so every remote apply from then on is checked.
 func newRenderCheck(live *crdt.Doc, weighing *roomWeighing, paths *renderPathCounts) *renderCheck {
-	check := &renderCheck{applies: weighing.applies(), weighing: weighing, fragment: live.GetXmlFragment(fragmentName), paths: paths}
+	check := &renderCheck{weighing: weighing, fragment: live.GetXmlFragment(fragmentName), paths: paths}
 	live.SetApplyCheck(check.check)
 	return check
 }
@@ -212,7 +208,7 @@ func newRenderCheck(live *crdt.Doc, weighing *roomWeighing, paths *renderPathCou
 // that takes that lock. A panic in the render is recovered here and refuses the apply as a render
 // error does, rather than reaching the peer's read loop.
 func (c *renderCheck) check(origin any, view *crdt.ApplyView) (err error) {
-	running := c.applies.checking(origin)
+	running := c.weighing.applies().checking(origin)
 	if running == nil {
 		return nil
 	}
@@ -234,7 +230,7 @@ func (c *renderCheck) check(origin any, view *crdt.ApplyView) (err error) {
 	after, renderErr := c.render(view, from)
 	switch {
 	case renderErr != nil && before == sizeUnmeasured:
-		c.applies.passed(running, nil)
+		c.weighing.applies().passed(running, nil)
 		return nil
 	case renderErr != nil:
 		return &renderRefusal{before: before, after: sizeUnmeasured, cause: renderErr}
@@ -250,7 +246,7 @@ func (c *renderCheck) check(origin any, view *crdt.ApplyView) (err error) {
 	case size > before:
 		return &renderRefusal{before: before, after: size}
 	}
-	c.applies.passed(running, after)
+	c.weighing.applies().passed(running, after)
 	return nil
 }
 
@@ -275,7 +271,7 @@ func (c *renderCheck) check(origin any, view *crdt.ApplyView) (err error) {
 // its recover state before anything was checked - is weighed against the measurement it last
 // published (roomWeighing.size), not exact either.
 func (c *renderCheck) base(running *peerApply) (*roomRendered, bool) {
-	checked, published := c.applies.checked.Load(), c.weighing.rendered.Load()
+	checked, published := c.weighing.applies().checked.Load(), c.weighing.rendered.Load()
 	if running.counted {
 		var standing *roomRendered
 		for _, at := range []*roomRendered{checked, published} {
@@ -454,7 +450,7 @@ func (r *renderRefusal) close() *websocket.PeerClose {
 	case r.cause != nil:
 		return documentUpdateRefused()
 	case r.unsure:
-		return &websocket.PeerClose{Code: contracts.DocumentBusyCloseCode, Reason: contracts.DocumentBusyCloseReason}
+		return documentBusy()
 	}
 	return documentTooLarge()
 }

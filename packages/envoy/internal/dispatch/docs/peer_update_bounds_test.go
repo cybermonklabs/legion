@@ -43,10 +43,7 @@ func TestALoadedBacklogsDrainIsWeighedAgainstTheDocumentBound(t *testing.T) {
 	}
 	// The room leaves what it parks out of its state (leaveParkedOut), so the rows an earlier
 	// build stored of what parked are the frames themselves, folded into the state after it.
-	state, err := crdt.MergeUpdatesV1(append([][]byte{crdt.EncodeStateAsUpdateV1(parker, nil)}, parking...)...)
-	if err != nil {
-		t.Fatal(err)
-	}
+	state := mergeStoredOrder(t, append([][]byte{crdt.EncodeStateAsUpdateV1(parker, nil)}, parking...)...)
 	runtime.KeepAlive(replica)
 
 	loaded := loadAndType(t, state, nil)
@@ -57,13 +54,10 @@ func TestALoadedBacklogsDrainIsWeighedAgainstTheDocumentBound(t *testing.T) {
 	if parked.Items == 0 {
 		t.Fatal("the loaded room parks nothing: the fixture does not load a backlog")
 	}
-	fill, err := crdt.MergeUpdatesV1(fills...)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fill := mergeStoredOrder(t, fills...)
 	browser := new(int)
 	info := websocket.PeerUpdateInfo{Room: "room", Doc: loaded.live, Update: fill, Origin: browser}
-	err = loaded.service.weighPeerUpdate(info, func() error { return crdt.ApplyUpdateV1(loaded.live, fill, browser) })
+	err := loaded.service.weighPeerUpdate(info, func() error { return crdt.ApplyUpdateV1(loaded.live, fill, browser) })
 	markdown, renderErr := renderDocument(loaded.live)
 	if renderErr != nil {
 		t.Fatal(renderErr)
@@ -114,16 +108,10 @@ func TestParkedContentThatSwapsDrainsNoRoomPastTheDocumentBound(t *testing.T) {
 		fills = append(fills, crdt.EncodeStateAsUpdateV1(parker, room.StateVector()))
 		held = parker.StateVector()
 		parker.Transact(func(txn *crdt.Transaction) { at.Insert(txn, 1, strings.Repeat("p", each), nil) })
-		swap, err := crdt.MergeUpdatesV1(kept, crdt.EncodeStateAsUpdateV1(parker, held))
-		if err != nil {
-			t.Fatal(err)
-		}
+		swap := mergeStoredOrder(t, kept, crdt.EncodeStateAsUpdateV1(parker, held))
 		swapping = append(swapping, swap)
 	}
-	parks, err := crdt.MergeUpdatesV1(small...)
-	if err != nil {
-		t.Fatal(err)
-	}
+	parks := mergeStoredOrder(t, small...)
 	if err, called := weighInto(service, room, parks); err != nil || !called {
 		t.Fatalf("the frame parking one character for each of %d browsers was answered %v (apply ran %t), want it admitted", swaps, err, called)
 	}
@@ -135,10 +123,7 @@ func TestParkedContentThatSwapsDrainsNoRoomPastTheDocumentBound(t *testing.T) {
 		t.Logf("swap %d: %d bytes, hook=%v, apply ran %t; parked structs %d -> %d; queue charged %d bytes; rendering %d bytes",
 			i+1, len(swap), err, called, found, room.PendingStats().Items, service.roomWeighingOf(room).applies().queuedBytes(), publish())
 	}
-	fill, err := crdt.MergeUpdatesV1(fills...)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fill := mergeStoredOrder(t, fills...)
 	err, called := weighInto(service, room, fill)
 	rendered := publish()
 	t.Logf("one %d-byte fill of every gap: hook=%v, apply ran %t; parked structs %d; rendering %d bytes (document bound %d, creep cap %d)",

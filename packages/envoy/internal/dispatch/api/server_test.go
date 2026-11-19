@@ -2459,9 +2459,10 @@ func TestTangledHookIsGatedByTestHooksEnabled(t *testing.T) {
 
 // The near-decode-cap hook is a browser test's alone: unmounted without DISPATCH_TEST_HOOKS. What
 // it does with them is held where it costs no million inserts under the race detector: docs'
-// TestTheNearDecodeCapHookLeavesADocumentTheRebuildTakes, run without it (envoy-go-docs), finds
-// the hooked document near for a write of its whole text with no write refused, the page's read
-// near, and the rebuild taking it; TestThePagesReadOfADocumentSaysWhetherTheRebuildTakesIt holds
+// TestTheNearDecodeCapHookLeavesADocumentTheRebuildTakes, run without it
+// (envoy-go-docs-finalizers), finds the hooked document near for a write of its whole text with no
+// write refused, the page's read near, and the rebuild taking it;
+// TestThePagesReadOfADocumentSaysWhetherTheRebuildTakesIt holds
 // that the page's read through this API says what the service answers; and the used-up and
 // tangled hooks' tests drive the handler the three document hooks share (runDocumentTestHook).
 func TestNearDecodeCapHookIsGatedByTestHooksEnabled(t *testing.T) {

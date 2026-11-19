@@ -1116,8 +1116,10 @@ func documentFrame(room string, tag uint64, payload []byte) []byte {
 //
 // It presents no client id (contracts.DocumentClientIdParameter), as a page of a build from
 // before Dispatch gave them out does, so the socket is given none: each id below 2^32 its updates
-// first write structs under is claimed by that write, and an update with structs under an id at
-// 2^32 or above is refused (docs' client_ids.go). openGivenBrowser is a page of this build.
+// first write structs under is claimed by that write, up to the claims a socket holds and a
+// person makes in a document a day (docs' maxConfirmedClients, maxClaimsADay), past which the
+// update is refused, and an update with structs under an id at 2^32 or above is refused (docs'
+// client_ids.go). openGivenBrowser is a page of this build.
 func (p *memoryServer) dialDocument(artifactID string) (*gws.Conn, error) {
 	return p.dialDocumentWith(artifactID, "")
 }

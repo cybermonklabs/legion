@@ -29,9 +29,9 @@ body: |-
       `409`.
     - `DOCUMENT_UPDATE_REFUSED_CLOSE_REASON` (`DOC_UPDATE_REFUSED`): the update holds content the
       document does not take (bytes the decoder refuses, an embed or raw binary content, or a root
-      the Proof editor never writes), or it leaves a document the server cannot render. Nothing of
-      it is stored or relayed, and the dashboard drops the refused edit and says "Your last edit was
-      not saved: it holds content this document does not take."
+      the Proof editor never writes), or it leaves a document the server cannot render where it
+      rendered before. Nothing of it is stored or relayed, and the dashboard drops the refused edit
+      and says "Your last edit was not saved: it holds content this document does not take."
     - `DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON` (`DOC_CLIENT_ID_REFUSED`): the update carries an
       edit under a client id that is not the sender's, or an edit at clocks another person claimed
       first that differs from what the document holds there. Nothing of it is stored or relayed.

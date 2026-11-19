@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -23,34 +24,12 @@ import (
 
 const clientIDsSeed = "# Title\n\nAlice's paragraph.\n"
 
-// clientIDTexts is every text of node in document order.
-func clientIDTexts(node any) []*crdt.YXmlText {
-	var texts []*crdt.YXmlText
-	var walk func(node any)
-	walk = func(node any) {
-		switch node := node.(type) {
-		case *crdt.YXmlText:
-			texts = append(texts, node)
-		case *crdt.YXmlFragment:
-			for _, child := range node.Children() {
-				walk(child)
-			}
-		case *crdt.YXmlElement:
-			for _, child := range node.Children() {
-				walk(child)
-			}
-		}
-	}
-	walk(node)
-	return texts
-}
-
 // typeAt types text at offset into the seed's paragraph, in one transaction of doc, and returns
 // the update it made.
 func typeAt(t *testing.T, doc *crdt.Doc, offset int, text string) []byte {
 	t.Helper()
 	update := docstest.Transact(doc, func(txn *crdt.Transaction) {
-		clientIDTexts(txn.GetXmlFragment(fragmentName))[1].Insert(txn, offset, text, nil)
+		allTexts(txn.GetXmlFragment(fragmentName))[1].Insert(txn, offset, text, nil)
 	})
 	if update == nil {
 		t.Fatalf("typing %q made no update", text)
@@ -97,18 +76,7 @@ func forgedUnder(t *testing.T, source *crdt.Doc, text string, client crdt.Client
 // awaitRendering waits for doc to render want, the room's own document or a page's.
 func awaitRendering(t *testing.T, doc func() *crdt.Doc, want, what string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	var got string
-	for time.Now().Before(deadline) {
-		if current := doc(); current != nil {
-			got, _ = renderDocument(current)
-			if got == want {
-				return
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("%s renders %q, want %q", what, got, want)
+	waitForRoomRendering(t, doc, func(rendering string) bool { return rendering == want }, fmt.Sprintf("%s to render %q", what, want))
 }
 
 // clientIDRoom is a document seeded with clientIDsSeed and served over websockets.
@@ -149,8 +117,12 @@ func TestAnEditForgedUnderAnotherPersonsClientIsRefusedAndHersLandsWhereSheTyped
 		t.Fatal(err)
 	}
 	awaitRefused(t, mallory, "mallory")
-	if live := service.srv.GetDoc(artifactID); live == nil || live.StateVector().Clock(victim) != next {
-		t.Fatalf("the room holds alice's client to clock %d after mallory's frame, want %d: the forged struct landed", live.StateVector().Clock(victim), next)
+	live := service.srv.GetDoc(artifactID)
+	if live == nil {
+		t.Fatal("the room is not loaded after mallory's frame")
+	}
+	if clock := live.StateVector().Clock(victim); clock != next {
+		t.Fatalf("the room holds alice's client to clock %d after mallory's frame, want %d: the forged struct landed", clock, next)
 	}
 	if err := alice.Write(ygsync.EncodeUpdate(inFlight)); err != nil {
 		t.Fatal(err)
@@ -366,7 +338,7 @@ func TestAnAgentsWriteWhileABrowserTypesIsUnderAClientNoPageIsGiven(t *testing.T
 		defer close(typed)
 		for i := range 20 {
 			update := docstest.Transact(alice.Doc, func(txn *crdt.Transaction) {
-				clientIDTexts(txn.GetXmlFragment(fragmentName))[1].Insert(txn, i, "k", nil)
+				allTexts(txn.GetXmlFragment(fragmentName))[1].Insert(txn, i, "k", nil)
 			})
 			if err := alice.Write(ygsync.EncodeUpdate(update)); err != nil {
 				return
@@ -419,7 +391,8 @@ func TestAnAgentsWriteWhileABrowserTypesIsUnderAClientNoPageIsGiven(t *testing.T
 // under it, claims it. The id the history never named is claimed by its first writer, and
 // mallory's edit under a claimed id afterwards is refused.
 func TestAnEarlierBuildsTabLandsItsEditsAndSavedRowsAcrossTheDeploy(t *testing.T) {
-	// The service's lines are kept for the claim trace (awaitClaimRefused) and printed only with it.
+	// The service's lines are kept for the claim trace (awaitClaimRefused) and printed only with
+	// it, and so is what each claiming page hears (docstest.Peer.Hear).
 	logs, start := captureLogs(t), time.Now()
 	service, artifactID, serverURL := clientIDRoom(t)
 	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
@@ -432,9 +405,9 @@ func TestAnEarlierBuildsTabLandsItsEditsAndSavedRowsAcrossTheDeploy(t *testing.T
 	reloadedTab := docstest.Dial(t, url, pageHeader("alice"), artifactID, crdt.New(crdt.WithClientID(reloaded)))
 	awaitAnswer(t, reloadedTab, "the document")
 	sendTyped(t, openTab, 0, "o")
-	sendTyped(t, reloadedTab, 0, "r")
+	sendTyped(t, reloadedTab, 0, "w")
 	waitForRoomRendering(t, room, func(rendering string) bool {
-		return strings.Contains(rendering, "o") && strings.Contains(rendering, "r")
+		return strings.Contains(rendering, "o") && strings.Contains(rendering, "w")
 	}, "the room holding both earlier-build tabs' edits")
 	openTab.Close()
 	reloadedTab.Close()
@@ -455,6 +428,7 @@ func TestAnEarlierBuildsTabLandsItsEditsAndSavedRowsAcrossTheDeploy(t *testing.T
 	// Mallory, a reader who never edited the document, reads the open tab's id off its history and
 	// claims it before the tab comes back.
 	early := openPage(t, serverURL, artifactID, "mallory")
+	early.Hear()
 	awaitAnswer(t, early, "the document")
 	if err := early.Write(ygsync.EncodeUpdate(forgedUnder(t, early.Doc, "EVIL", open, early.Doc.StateVector().Clock(open)))); err != nil {
 		t.Fatal(err)
@@ -476,7 +450,7 @@ func TestAnEarlierBuildsTabLandsItsEditsAndSavedRowsAcrossTheDeploy(t *testing.T
 		}
 	}
 	waitForRoomRendering(t, room, func(rendering string) bool {
-		for _, typed := range []string{"o", "r", "O", "R", "F"} {
+		for _, typed := range []string{"o", "w", "O", "R", "F"} {
 			if !strings.Contains(rendering, typed) {
 				return false
 			}
@@ -487,6 +461,7 @@ func TestAnEarlierBuildsTabLandsItsEditsAndSavedRowsAcrossTheDeploy(t *testing.T
 	requireConnected(t, page, "the reloaded page")
 
 	mallory := openPage(t, serverURL, artifactID, "mallory")
+	mallory.Hear()
 	awaitAnswer(t, mallory, "the document")
 	next := mallory.Doc.StateVector().Clock(reloaded)
 	if err := mallory.Write(ygsync.EncodeUpdate(forgedUnder(t, mallory.Doc, "EVIL", reloaded, next))); err != nil {
@@ -610,10 +585,7 @@ func TestAnEditAtAClockACoAuthorClaimedFirstIsRefusedNotDroppedInSilence(t *test
 	oldTab.Close()
 	<-oldTab.Ended
 	// The earlier build stored no binding for the tab's id: the history names it, and no row does.
-	if _, err := service.store.Pool.Exec(context.Background(),
-		`delete from document_client_ids where artifact_id = $1 and client_id = $2`, artifactID, int64(tab)); err != nil {
-		t.Fatal(err)
-	}
+	forgetStoredClientID(t, service, artifactID, tab)
 
 	// While the deploy runs, the tab types on offline at its next clock and saves the row.
 	next := oldTab.Doc.StateVector().Clock(tab)
@@ -643,14 +615,14 @@ func TestAnEditAtAClockACoAuthorClaimedFirstIsRefusedNotDroppedInSilence(t *test
 
 	// Alice reloads: a page of this build replays the tab's saved row under the id it was typed
 	// under, at the clock bob's claim took.
-	before := mustRendering(t, room())
+	before := renderedBy(t, room())
 	page := openPage(t, serverURL, artifactID, "alice")
 	awaitAnswer(t, page, "the document in the reloaded page")
 	if err := page.Write(ygsync.EncodeUpdate(saved)); err != nil {
 		t.Fatal(err)
 	}
 	awaitRefused(t, page, "alice's reloaded page replaying the tab's saved row")
-	if after := mustRendering(t, room()); after != before {
+	if after := renderedBy(t, room()); after != before {
 		t.Fatalf("the room renders %q after the refused row, want %q as before it", after, before)
 	}
 	if clock := room().StateVector().Clock(tab); clock != next+uint64(len("BOB")) {
@@ -681,10 +653,7 @@ func TestALegacySocketsForgeriesAreRefusedAfterTheWindowAsBefore(t *testing.T) {
 	earlier.Close()
 	<-earlier.Ended
 	// The earlier build stored no binding for that tab's id: the history names it, and no row does.
-	if _, err := service.store.Pool.Exec(context.Background(),
-		`delete from document_client_ids where artifact_id = $1 and client_id = $2`, artifactID, int64(unbound)); err != nil {
-		t.Fatal(err)
-	}
+	forgetStoredClientID(t, service, artifactID, unbound)
 	for _, forged := range []struct {
 		name   string
 		client crdt.ClientID
@@ -807,10 +776,7 @@ func TestAPageReplayingAnOldTabsSavedRowAfterTheWindowAtClocksClaimedInsideItIsR
 	waitForRoomRendering(t, room, func(rendering string) bool { return strings.Contains(rendering, "boAlice") }, "the room holding bob's edit")
 	oldTab.Close()
 	<-oldTab.Ended
-	if _, err := service.store.Pool.Exec(context.Background(),
-		`delete from document_client_ids where artifact_id = $1 and client_id = $2`, artifactID, int64(tab)); err != nil {
-		t.Fatal(err)
-	}
+	forgetStoredClientID(t, service, artifactID, tab)
 	next := oldTab.Doc.StateVector().Clock(tab)
 	saved := typeAt(t, oldTab.Doc, 0, "T")
 	// Inside the window, bob writes under the tab's id first, at that clock.
@@ -821,26 +787,26 @@ func TestAPageReplayingAnOldTabsSavedRowAfterTheWindowAtClocksClaimedInsideItIsR
 	requireConnected(t, bob, "bob")
 	// Day 31: alice reloads, and her page replays the tab's saved row.
 	setClientIDsSince(t, service, time.Now().Add(-31*24*time.Hour))
-	before := mustRendering(t, room())
+	before := renderedBy(t, room())
 	page := openPage(t, serverURL, artifactID, "alice")
 	awaitAnswer(t, page, "the document in the reloaded page")
 	if err := page.Write(ygsync.EncodeUpdate(saved)); err != nil {
 		t.Fatal(err)
 	}
 	awaitRefused(t, page, "alice's reloaded page replaying the tab's saved row after the window")
-	if after := mustRendering(t, room()); after != before {
+	if after := renderedBy(t, room()); after != before {
 		t.Fatalf("the room renders %q after the refused row, want %q as before it", after, before)
 	}
 }
 
-// mergedUpdate is updates merged into one, as a whole-state handoff carries them.
-func mergedUpdate(t *testing.T, updates [][]byte) []byte {
+// forgetStoredClientID deletes artifactID's stored row of client, as a build before this one
+// stored none: the history names the id, and no row does.
+func forgetStoredClientID(t *testing.T, service *Service, artifactID string, client crdt.ClientID) {
 	t.Helper()
-	merged, err := crdt.MergeUpdatesV1(updates...)
-	if err != nil {
+	if _, err := service.store.Pool.Exec(context.Background(),
+		`delete from document_client_ids where artifact_id = $1 and client_id = $2`, artifactID, int64(client)); err != nil {
 		t.Fatal(err)
 	}
-	return merged
 }
 
 // An update is compared only where it carries structs at clocks the room holds under at most
@@ -865,13 +831,13 @@ func TestAnUpdateUnderMoreClaimedIDsThanTheComparedFewIsNotComparedOrIsRefusedFr
 		}
 	}
 	awaitHeld(t, room, claimed, "bob's claims")
-	before := mustRendering(t, room())
+	before := renderedBy(t, room())
 	differing := func(page *docstest.Peer, ids []crdt.ClientID) []byte {
 		updates := make([][]byte, len(ids))
 		for i, id := range ids {
 			updates[i] = forgedUnder(t, page.Doc, "y", id, 0)
 		}
-		return mergedUpdate(t, updates)
+		return mergeStoredOrder(t, updates...)
 	}
 	handoff := openPage(t, serverURL, artifactID, "carol")
 	awaitAnswer(t, handoff, "the document")
@@ -887,17 +853,17 @@ func TestAnUpdateUnderMoreClaimedIDsThanTheComparedFewIsNotComparedOrIsRefusedFr
 	awaitRefused(t, resend, "carol's page sending differing structs under four claimed ids")
 	few := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("dave"), artifactID, crdt.New(crdt.WithClientID(1_234_568_300)))
 	awaitAnswer(t, few, "the document")
-	if err := few.Write(ygsync.EncodeUpdate(mergedUpdate(t, bobs[:maxComparedClaims]))); err != nil {
+	if err := few.Write(ygsync.EncodeUpdate(mergeStoredOrder(t, bobs[:maxComparedClaims]...))); err != nil {
 		t.Fatal(err)
 	}
 	requireConnected(t, few, "dave's legacy socket handing back bob's structs under four ids")
 	many := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("dave"), artifactID, crdt.New(crdt.WithClientID(1_234_568_301)))
 	awaitAnswer(t, many, "the document")
-	if err := many.Write(ygsync.EncodeUpdate(mergedUpdate(t, bobs))); err != nil {
+	if err := many.Write(ygsync.EncodeUpdate(mergeStoredOrder(t, bobs...))); err != nil {
 		t.Fatal(err)
 	}
 	awaitRefused(t, many, "dave's legacy socket handing back bob's structs under five ids")
-	if after := mustRendering(t, room()); after != before {
+	if after := renderedBy(t, room()); after != before {
 		t.Fatalf("the room renders %q after the duplicates, want %q as before them", after, before)
 	}
 }
@@ -972,7 +938,7 @@ func TestAForgersSyncStep2HasAnotherPersonsStructsCutAndItsOwnLand(t *testing.T)
 	waitForRoomRendering(t, room, func(rendering string) bool {
 		return strings.Contains(rendering, "M")
 	}, "the room holding the forger's own struct")
-	if rendering := mustRendering(t, room()); strings.Contains(rendering, "EVIL") {
+	if rendering := renderedBy(t, room()); strings.Contains(rendering, "EVIL") {
 		t.Fatalf("the room holds the struct forged under alice's id: %q", rendering)
 	}
 	if clock := room().StateVector().Clock(victim); clock != next {
@@ -1013,21 +979,11 @@ func TestASyncStep2CarryingAnotherPersonsLostEditLandsTheSendersOwnAndCutsHers(t
 		return strings.Contains(rendering, "B")
 	}, "the room holding bob's own edit")
 	requireConnected(t, back, "bob")
-	rendering := mustRendering(t, room())
+	rendering := renderedBy(t, room())
 	if strings.Contains(rendering, "L") || strings.Contains(rendering, "D") {
 		t.Fatalf("the room renders %q: alice's lost edit, or bob's edit built on it, landed", rendering)
 	}
 	t.Logf("the room renders %q and parks %+v: bob's edit built on alice's lost one waits for it", rendering, room().PendingStats())
-}
-
-// mustRendering is doc's rendering, failing the test where it does not render.
-func mustRendering(t *testing.T, doc *crdt.Doc) string {
-	t.Helper()
-	rendering, err := renderDocument(doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return rendering
 }
 
 // waitForRoomRendering waits for room's rendering to satisfy holds.

@@ -87,11 +87,16 @@ func (a *roomApplies) noteParked(info websocket.PeerUpdateInfo, before, after cr
 // reads their headers alone), and, where readDeletes says the apply left the room more delete
 // ranges parked than it found, where each of its delete ranges ends, read from the update's delete
 // set (crdt.ContentIDsFromUpdateV1, which decodes the update without integrating it). Only a frame
-// that grew the queue's delete ranges pays that decode.
+// that grew the queue's delete ranges pays that decode, and only a frame carrying structs or
+// growing them reads doc's state vector: a delete that grew nothing answers nothing.
 func parkedNeeds(doc *crdt.Doc, update []byte, readDeletes bool) crdt.StateVector {
+	_, to, err := crdt.ParseUpdateMeta(update)
+	if (err != nil || len(to) == 0) && !readDeletes {
+		return nil
+	}
 	held := doc.StateVector()
 	needs := crdt.StateVector{}
-	if _, to, err := crdt.ParseUpdateMeta(update); err == nil {
+	if err == nil {
 		for client, end := range to {
 			if end > held[client] {
 				needs[client] = end
@@ -162,30 +167,28 @@ func (w *parkedWaits) dropUncovered() {
 
 // coverParked marks, for each sender whose frames doc - the replica, standing at commit position
 // seq as the room's commit left it - holds all of, seq as where they landed. A room listing no
-// sender reads one atomic.
+// sender reads one atomic, and one whose every listed sender has landed already reads no state
+// vector: doc's is read once, at the first sender still waiting. No holder of doc's lock takes
+// w.mu, so reading it under w.mu waits on nothing that waits on this.
 func (a *roomApplies) coverParked(doc *crdt.Doc, seq uint64) {
 	if a == nil || a.parked.held.Load() == 0 {
 		return
 	}
-	held := doc.StateVector()
 	w := &a.parked
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	var held crdt.StateVector
 	for _, wait := range w.waits {
-		if wait.coveredAt == 0 && holdsClocks(held, wait.needs) {
+		if wait.coveredAt != 0 {
+			continue
+		}
+		if held == nil {
+			held = doc.StateVector()
+		}
+		if storedClocksReached(held, wait.needs) {
 			wait.coveredAt = seq
 		}
 	}
-}
-
-// holdsClocks is whether held reaches every clock of needs.
-func holdsClocks(held, needs crdt.StateVector) bool {
-	for client, clock := range needs {
-		if held[client] < clock {
-			return false
-		}
-	}
-	return true
 }
 
 // landedParked takes out the senders whose frames landed at a commit position through, through

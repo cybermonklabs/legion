@@ -20,7 +20,7 @@ import (
 // under the document's advisory lock and before an append of its own, every update of the
 // instance through the position it read the room at that no writer has stored yet (flushThrough).
 // The room's own persistence is one such writer, through the position its batch takes, its own
-// update's at least (roomBatchThrough, StoreUpdateContext), so the order ygo hands it updates in
+// update's at least (roomBatchThrough, StoreUpdateStored), so the order ygo hands it updates in
 // never decides the stored order.
 
 // roomPoint is an exact position in one room instance's commits: cursor names the instance (its

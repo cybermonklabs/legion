@@ -435,8 +435,9 @@ func peerAppend(t *testing.T, peer *crdt.Doc, markdown string) {
 	})
 }
 
-// replicaState is the replica's whole state, parked structs and deletions included, taken under
-// the lock its update observer holds, as a read served from the replica takes it.
+// replicaState is the replica's whole state as an encode of its document carries it, nothing it
+// parks included (leaveParkedOut), taken under the lock its update observer holds, as a read
+// served from the replica takes it.
 func replicaState(t *testing.T, replica *renderedReplica) []byte {
 	t.Helper()
 	replica.mu.Lock()

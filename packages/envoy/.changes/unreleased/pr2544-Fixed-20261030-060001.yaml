@@ -10,8 +10,8 @@ body: |-
     - `4413 DOC_UPDATE_REFUSED` for bytes the decoder refuses, for content the Proof editor never
       sends (an embed, raw binary content, a subdocument, a root other than the document's own
       fragment and its margin, or a write of the list of clients a rebuild retired), and for an
-      update that leaves a document this build cannot render. The dashboard drops only the refused
-      edit.
+      update that leaves a document this build cannot render where it rendered before. The
+      dashboard drops only the refused edit.
     - `4413 DOC_TOO_LARGE` when the update would carry the document past the 1 MiB byte bound every
       server write obeys, or decode more than the 1,200,000 values one apply may decode. Past the
       bound an update may still carry 8 KiB of new content, for the editor's own derived writes and
@@ -43,25 +43,27 @@ body: |-
     parked as not applied, so the editor keeps the edit and sends it again, and it resyncs that
     browser once a later stored commit lands what the frame parked. Where the room cannot take a
     drain of parked content, it discards the drain and keeps the update that released it. Each
-    browser that parked what was discarded is closed with the refusal its own frame would have
-    earned: `4413 DOC_TOO_LARGE` or `4413 DOC_TOO_TANGLED`, or `4503 DOC_BUSY` while the room cannot
-    yet size the rendering the drain starts from. A browser's edit is now answered saved only once
-    the commit that holds it is stored. Where the store refuses it or the room fails, the editor
-    keeps the edit and sends it again. The other browsers still see the edit at once.
+    browser that parked what was discarded is closed `4413 DOC_TOO_LARGE` where the drain would
+    leave the rendering past the bound, `4413 DOC_UPDATE_REFUSED` where it would leave a document
+    this build cannot render, and `4413 DOC_TOO_TANGLED` where its merge would scan or split more
+    than the apply allows. A browser's edit is now answered saved only once the commit that holds
+    it is stored. Where the store refuses it or the room fails, the editor keeps the edit and sends
+    it again. The other browsers still see the edit at once.
 
     Each page is now given a client id of its own for each document, from 2^32 up, in the socket's
     first frame, and the id is stored with the person it was given to. An update carrying edits
     under an id given to another person, or under an id from 2^32 up that no admission gave out, is
-    refused `4413 DOC_CLIENT_ID_REFUSED`, and nothing of it is stored or relayed. The dashboard then
-    drops every saved edit under that id, reloads the document and takes a fresh id. A socket given
-    an id carries presence only under that id. A socket that presents no id, such as a page of an
-    earlier build or a load-test client, still writes: it claims an id below 2^32 that no stored
-    history names, at most 64 a socket and 64 a person a document a UTC day, and past either its
-    update is refused the same way. An id the stored history names may be claimed only by a person
-    who edited the document after the history first named it, and only for 30 days after the
-    database first served this build. An edit under an id another person claimed, at clocks the
-    room holds with different content, is refused rather than dropped in silence, where one update
-    carries such edits under at most 4 claimed ids.
+    refused `4413 DOC_CLIENT_ID_REFUSED`, and nothing of it is stored or relayed; a sync step 2 has
+    another person's edits cut out instead, and the rest of it applies. The dashboard then drops
+    every saved edit under that id, reloads the document and takes a fresh id. A socket given an id
+    carries presence only under that id. A socket that presents no id, such as a page of an earlier
+    build, still writes: it claims an id below 2^32 that no stored history names, at most 64 a
+    socket and 64 a person a document a UTC day, and past either its update is refused the same
+    way. An id the stored history names may be claimed only by a person who edited the document
+    after the history first named it, and only for 30 days after the database first served this
+    build. An edit under an id another person claimed, at clocks the room holds with different
+    content, is refused rather than dropped in silence, where one update carries such edits under
+    at most 4 claimed ids.
 
     The open documents are charged a memory budget under the Go soft memory limit the server now
     sets at boot, 90 per cent of its container's limit, so the collector works harder as the heap

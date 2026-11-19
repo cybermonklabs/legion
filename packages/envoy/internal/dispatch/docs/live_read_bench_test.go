@@ -357,18 +357,5 @@ func benchmarkLiveDocument(tb testing.TB, size int) *crdt.Doc {
 }
 
 func paragraphTexts(live *crdt.Doc) []*crdt.YXmlText {
-	var texts []*crdt.YXmlText
-	for _, block := range live.GetXmlFragment(fragmentName).Children() {
-		paragraph, ok := block.(*crdt.YXmlElement)
-		if !ok || paragraph.NodeName != "paragraph" {
-			continue
-		}
-		for _, child := range paragraph.Children() {
-			if text, ok := child.(*crdt.YXmlText); ok {
-				texts = append(texts, text)
-				break
-			}
-		}
-	}
-	return texts
+	return paragraphTextsOf(live.GetXmlFragment(fragmentName))
 }

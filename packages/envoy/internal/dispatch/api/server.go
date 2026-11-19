@@ -518,7 +518,7 @@ type server struct {
 	requestKeyLease, requestKeyRenewal, requestKeyRunLimit time.Duration
 	// drainReadLimit replaces both of the server's waits on a body that has stopped arriving: how
 	// long a drain waits for the rest of a request's body (drainBound; bodyDrainLimit, a minute)
-	// and how long a handler's read waits for the body's next bytes (drainTime; bodyIdleLimit,
+	// and how long a handler's read waits for the body's next bytes (idleBound; bodyIdleLimit,
 	// 20 s). It leaves the ceiling on a handler's read (bodyDrainLimit) as it is. Zero, which every
 	// server the deployment builds leaves it, keeps those. Only a test sets it, so a body that
 	// stalls is the test's choice rather than seconds of wall clock.

@@ -541,7 +541,7 @@ func TestTheRoomScanTotalIsReMeasuredByEachLoadOverARealSocket(t *testing.T) {
 	t.Cleanup(setting.leave)
 
 	// The room's scan total is a million items and no one browser's frame may scan more than
-	// what its own bytes are allowed, about twenty-four thousand (scanCeilingForTest), so the
+	// what its own bytes are allowed, about twenty-seven thousand (scanCeilingForTest), so the
 	// total is used up by a run of frames rather than by two. Each is the longest frame of a
 	// client of its own that stays within its own allowance; the run stops at the frame the
 	// room refuses, which is the one whose scans pass what is left of the total rather than
@@ -2270,7 +2270,7 @@ var refusalFigure = regexp.MustCompile(`(\w+)=("[^"]*"|\S+)`)
 // key, quotes taken off; nil where it has logged no more than n such lines.
 func refusalFigures(server *memoryServer, room string, n int) map[string]string {
 	seen := 0
-	for _, line := range strings.Split(server.output.String(), "\n") {
+	for line := range strings.Lines(server.output.String()) {
 		if !strings.Contains(line, `msg="dispatch: refused a browser's update`) || !strings.Contains(line, " room="+room+" ") {
 			continue
 		}
