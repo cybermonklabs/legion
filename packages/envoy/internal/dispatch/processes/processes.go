@@ -39,6 +39,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // The registry's intervals. Variables rather than constants only so this package's tests can
@@ -300,11 +301,14 @@ func waitForAdmission(ctx context.Context, pool *pgxpool.Pool, id string, instan
 }
 
 // tryRegister is one admission of Register, in its own transaction under registryLock: admit's
-// refusal, nil once the row is written, and an error when no decision was reached.
+// refusal, nil once the row is written, and an error when no decision was reached. The registry's
+// pool dials as it needs a connection, so its Begin can be the connect that fails, which pgx names
+// with DATABASE_URL's user, and a token can stand there: it is named without it
+// (pgsetting.ConnectFailure), as at renew and Deregister.
 func tryRegister(ctx context.Context, pool *pgxpool.Pool, id string, instance Instance) (refusal error, err error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, pgsetting.ConnectFailure(err)
 	}
 	// A no-op once the transaction has committed.
 	defer func() { _ = tx.Rollback(context.Background()) }()
@@ -440,7 +444,7 @@ func (r *Registration) beat(ctx context.Context) error {
 func (r *Registration) renew(ctx context.Context) (refusal error, err error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, pgsetting.ConnectFailure(err)
 	}
 	// A no-op once the transaction has committed.
 	defer func() { _ = tx.Rollback(context.Background()) }()
@@ -487,7 +491,7 @@ func (r *Registration) Deregister(ctx context.Context) error {
 	<-r.stopped
 	defer r.pool.Close()
 	if _, err := r.pool.Exec(ctx, `delete from server_processes where instance = $1`, r.ID); err != nil {
-		return fmt.Errorf("deregister server process %s: %w", r.ID, err)
+		return fmt.Errorf("deregister server process %s: %w", r.ID, pgsetting.ConnectFailure(err))
 	}
 	return nil
 }

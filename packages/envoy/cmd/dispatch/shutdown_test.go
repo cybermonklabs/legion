@@ -1298,8 +1298,10 @@ func TestAProcessThatExitsBeforeItIsHealthySaysWhy(t *testing.T) {
 	if err := database.Pool.QueryRow(context.Background(), "select current_setting('max_connections')").Scan(&allowed); err != nil {
 		t.Fatalf("read the server's max_connections: %v", err)
 	}
-	refused := `level=ERROR msg="dispatch: register this server process" error="probe the database: failed to connect to ` +
-		"`user=postgres database=dispatch_test_0`: 127.0.0.1:5432 (127.0.0.1): server error: FATAL: sorry, too many clients already (SQLSTATE 53300)\""
+	// The line as the registry's probe writes it: a failed connect named without the user and the
+	// database, and the server's answer by its severity and SQLSTATE (pgsetting.ConnectFailure).
+	refused := `level=ERROR msg="dispatch: register this server process" error="probe the database: failed to connect: ` +
+		"127.0.0.1:5432 (127.0.0.1): server error: FATAL (SQLSTATE 53300)\""
 	head = cause(exited(`level=INFO msg="dispatch: starting"`+"\n"+refused+"\n"+`level=INFO msg="dispatch duty: leased pass cut short by shutdown"`+"\n",
 		database.Pool.Config().ConnString()))
 	for _, want := range []string{"exited before it became healthy", refused, "max_connections=" + allowed, "client backends open"} {
