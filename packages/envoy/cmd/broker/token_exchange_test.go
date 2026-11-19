@@ -9,6 +9,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
@@ -25,6 +27,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
@@ -42,7 +48,7 @@ const (
 	// with the project and the person its entry gives it; listedAccount is listed too, for another
 	// project and another person; otherAccount is listed nowhere; apiAccount is the listed caller
 	// of the introspection route, BROKER_API_ACCOUNTS' own; registrarAccount is the deployment's
-	// own daemon, which BROKER_SERVICE_LOGINS lets log in as legion-daemon, which
+	// own daemon, which BROKER_SERVICE_LOGINS lets log in as registrarService, which
 	// BROKER_POD_REGISTRARS lists as the registrar of podAccount's and listedAccount's pods, and
 	// which registers the pods it starts under their session names.
 	podAccount       = "system:serviceaccount:example-ns:example-worker"
@@ -50,6 +56,7 @@ const (
 	otherAccount     = "system:serviceaccount:example-ns:example-other"
 	apiAccount       = "system:serviceaccount:example-ns:example-dispatch"
 	registrarAccount = "system:serviceaccount:example-ns:example-daemon"
+	registrarService = "legion-daemon"
 	person           = "ada@example.com"
 	project          = "ACME"
 	// readerAccount is the account BROKER_EXCHANGE_READ_ACCOUNTS lists here: its pods are minted
@@ -436,6 +443,228 @@ func TestAPodWritesOnlyUnderASessionRegisteredForIt(t *testing.T) {
 			t.Fatalf("the exchange of %s once registered for %s = %d %v, want 200 with an access token", thirdPodUID, heldSession, status, body)
 		}
 	})
+}
+
+// pairedPodAccount is the account a deployment moves podAccount's pods to: the rows that pair the
+// two (BROKER_SESSION_ACCOUNT_PAIRS) list it beside podAccount for the same project and person, as
+// an operator moving a deployment lists its new account. pairedSession is the role's session name
+// those rows move from one account's pods to the other's.
+const (
+	pairedPodAccount = "system:serviceaccount:example-next:example-worker"
+	pairedSession    = "example-paired-session"
+)
+
+// exchangeTookName is the line the broker logs once a token exchange that took its session name
+// from the account paired with its own has committed.
+const exchangeTookName = "broker: the token exchange took a session name from the account paired with its own"
+
+// pairedExchangeEnv is exchangeEnv with pairedPodAccount listed for the exchange beside
+// podAccount, and listedAccount's entry kept: the third listed account, which no pair here names.
+// registrarAccount is listed as the registrar of pairedPodAccount's pods too
+// (BROKER_POD_REGISTRARS), since a row registers a moved pod of that account. It pairs nothing
+// itself; a row adds BROKER_SESSION_ACCOUNT_PAIRS to it.
+func pairedExchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer) []string {
+	t.Helper()
+	return append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds), "BROKER_EXCHANGE_ACCOUNTS="+
+		podAccount+"="+project+"="+person+" "+pairedPodAccount+"="+project+"="+person+" "+listedAccount+"=OTHER=mallory@example.com",
+		"BROKER_POD_REGISTRARS="+registrarAccount+"="+podAccount+" "+registrarAccount+"="+pairedPodAccount+" "+registrarAccount+"="+listedAccount)
+}
+
+// pairedRegistrar is a broker serving pairedExchangeEnv with podAccount and pairedPodAccount
+// paired (BROKER_SESSION_ACCOUNT_PAIRS) and both bound to registrarService (BROKER_SERVICES), so
+// the registrar's one login enrols the pods of both: the broker's process, the test's own
+// connection to its database, the podBroker that enrols its pods with the cluster's tokens, and
+// the registrar's launcher credential.
+type pairedRegistrar struct {
+	broker   *brokerProcess
+	db       *pgx.Conn
+	pods     podBroker
+	launcher launcher
+}
+
+// startPairedRegistrar starts that broker on databaseURL, with env beside its own settings, waits
+// for its "session account pairs" line to say on, and logs registrarService in as
+// registrarAccount.
+func startPairedRegistrar(t *testing.T, databaseURL string, cluster, github *oidctest.Issuer, clusterKey *oidctest.Key, env ...string) pairedRegistrar {
+	t.Helper()
+	broker := startBroker(t, brokerOptions{Env: append(append(pairedExchangeEnv(t, databaseURL, cluster, github),
+		"BROKER_SERVICES="+registrarService+"="+podAccount+" "+registrarService+"="+pairedPodAccount,
+		"BROKER_SESSION_ACCOUNT_PAIRS="+podAccount+"="+pairedPodAccount), env...)})
+	broker.AwaitRecord(t, "session account pairs", map[string]any{"state": "on"})
+	pods := podBroker{t: t, base: "http://" + broker.Addr, issuer: cluster, key: clusterKey, audience: enrolmentAudience}
+	return pairedRegistrar{broker: broker, db: connectToBroker(t, databaseURL), pods: pods, launcher: pods.logIn(registrarService, registrarAccount)}
+}
+
+// TestAPairedAccountsPodExchangesUnderTheNameItsPairHolds is BROKER_SESSION_ACCOUNT_PAIRS at the
+// token exchange, on the real binary: a deployment moves a role's pods from podAccount to
+// pairedPodAccount, and the role's next pod trades under the session name the role's earlier pod
+// claimed. Three accounts are listed for the exchange and each one's pod is registered for that
+// name, so what decides each trade is who holds the name and nothing else. Served by a broker
+// started without the setting, the moved account's trade is refused invalid_grant, as it always
+// was. Served by a broker started with the pair on the same database, as the next generation of a
+// rollout is, the same trade is answered a token under that name, the name is the moved account's
+// from then on, and the broker logs the take once, naming the name, the account it took the name
+// from and the account that took it. listedAccount, which no pair names, is refused the name by
+// both brokers.
+func TestAPairedAccountsPodExchangesUnderTheNameItsPairHolds(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	db := connectToBroker(t, databaseURL)
+	binary := buildBroker(t)
+	key := proofKey(t)
+	oldPrincipal, movedPrincipal := exchange.AccountPrincipal(podAccount), exchange.AccountPrincipal(pairedPodAccount)
+	// Each account's one pod, which its deployment's daemon registers for the name before it
+	// trades under it.
+	podUIDs := map[string]string{podAccount: "pod-uid-old", pairedPodAccount: "pod-uid-moved", listedAccount: "pod-uid-unpaired"}
+	trade := func(broker *liveBroker, account string) (int, map[string]any) {
+		t.Helper()
+		return broker.exchange(t, exchangeForm(mintPodToken(t, cluster, clusterKey, account, exchangeAudience, podUIDs[account]), pairedSession))
+	}
+	refusedTheName := func(status int, body map[string]any) bool {
+		description, _ := body["error_description"].(string)
+		return status == http.StatusBadRequest && body["error"] == "invalid_grant" && body["access_token"] == nil &&
+			strings.Contains(description, "The session name '"+pairedSession+"' belongs to another identity")
+	}
+
+	t.Log("--- a broker started without the pair: the old account's pod claims the name")
+	unpaired := startBroker(t, brokerOptions{Binary: binary, Env: pairedExchangeEnv(t, databaseURL, cluster, github)})
+	unpaired.AwaitRecord(t, "session account pairs", map[string]any{"state": "off"})
+	before := newLiveBroker(unpaired.Addr, key)
+	registrarToken := accountToken(t, cluster, clusterKey, registrarAccount)
+	for account, uid := range podUIDs {
+		before.registered(t, mintPodToken(t, cluster, clusterKey, account, enrolmentAudience, uid), pairedSession, registrarToken)
+	}
+	if status, body := trade(before, podAccount); status != http.StatusOK || body["access_token"] == nil {
+		t.Fatalf("the old account's pod trading under %s = %d %v, want 200 with an access token", pairedSession, status, body)
+	}
+
+	t.Log("--- unpaired, the moved account's pod is refused the name")
+	if status, body := trade(before, pairedPodAccount); !refusedTheName(status, body) {
+		t.Fatalf("the moved account's pod trading under %s with no pair = %d %v, want 400 invalid_grant naming the name another identity's", pairedSession, status, body)
+	}
+	if holder, _ := sessionHolder(t, db, pairedSession); holder != oldPrincipal {
+		t.Fatalf("after the refusal the name %s is held by %q, want the old account %q still", pairedSession, holder, oldPrincipal)
+	}
+
+	t.Log("--- a broker started with the pair on the same database: the moved account's pod takes the name")
+	paired := startBroker(t, brokerOptions{Binary: binary, Env: append(pairedExchangeEnv(t, databaseURL, cluster, github),
+		"BROKER_SESSION_ACCOUNT_PAIRS="+podAccount+"="+pairedPodAccount)})
+	paired.AwaitRecord(t, "session account pairs", map[string]any{"state": "on"})
+	after := newLiveBroker(paired.Addr, key)
+	status, body := trade(after, pairedPodAccount)
+	token, _ := body["access_token"].(string)
+	if status != http.StatusOK || token == "" {
+		t.Fatalf("the moved account's pod trading under %s with the pair = %d %v, want 200 with an access token: a paired account takes the name its pair holds", pairedSession, status, body)
+	}
+	if status, answer := after.introspect(t, token, accountToken(t, cluster, clusterKey, apiAccount)); status != http.StatusOK || answer["active"] != true || answer["session"] != pairedSession {
+		t.Fatalf("introspection of the moved account's token = %d %v, want 200, live, under the session %s", status, answer, pairedSession)
+	}
+	if holder, _ := sessionHolder(t, db, pairedSession); holder != movedPrincipal {
+		t.Fatalf("after the take the name %s is held by %q, want the moved account %q", pairedSession, holder, movedPrincipal)
+	}
+	paired.AwaitRecord(t, exchangeTookName, map[string]any{"severity": "WARNING", "session": pairedSession, "from": oldPrincipal, "to": movedPrincipal})
+	if takes := recordsWith(paired.Log(), exchangeTookName, nil); len(takes) != 1 {
+		t.Fatalf("the paired broker logged %d %q lines, want the one take: %v", len(takes), exchangeTookName, takes)
+	}
+	if takes := recordsWith(unpaired.Log(), exchangeTookName, nil); len(takes) != 0 {
+		t.Fatalf("the unpaired broker logged %v, want no take: its refusal took nothing", takes)
+	}
+
+	t.Log("--- an account no pair names is refused the name, by either broker")
+	for _, broker := range []*liveBroker{before, after} {
+		if status, body := trade(broker, listedAccount); !refusedTheName(status, body) {
+			t.Fatalf("the unpaired account's pod trading under %s at %s = %d %v, want 400 invalid_grant naming the name another identity's: a pair takes for its two accounts alone",
+				pairedSession, broker.base, status, body)
+		}
+	}
+	if holder, _ := sessionHolder(t, db, pairedSession); holder != movedPrincipal {
+		t.Fatalf("after the unpaired account's refusals the name %s is held by %q, want the moved account %q still", pairedSession, holder, movedPrincipal)
+	}
+}
+
+// TestAPairedAccountsPodThatExchangedFirstEnrolsAndReadsItsPairsGrant is the other order a Legion
+// pod may name its session in: it trades a token under the name before it enrols under it. One
+// service login enrols the pods of podAccount and pairedPodAccount, which BROKER_SERVICES binds to
+// its service, BROKER_SESSION_ACCOUNT_PAIRS pairs and the exchange lists. podAccount's pod enrols
+// the name and asks for a secret a person owns, which that person approves on the broker's own
+// page. pairedPodAccount's pod then trades under the name, which takes the name for its account,
+// and enrols under it: it is enrolled, it reads the same value from the same grant, and the broker
+// holds one grant and one request for the name, on the moved pod's enrollment, so the grant
+// followed the name across the pair rather than the person being asked again.
+func TestAPairedAccountsPodThatExchangedFirstEnrolsAndReadsItsPairsGrant(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	// The cluster's issuer serves the approval page's provider too, as session_carry_test.go's
+	// does, which is what lets a person sign in and press Approve against this broker.
+	brokertest.SignIn(cluster, cluster.PublishKey(t, "signin-key"))
+	paired := startPairedRegistrar(t, databaseURL, cluster, github, clusterKey, "BROKER_SIGNIN_ISSUER="+cluster.URL())
+	rig := carryRig{t: t, ctx: context.Background(), addr: paired.broker.Addr, base: paired.pods.base, db: paired.db, signIn: cluster}
+	const oldPod, movedPod = "pod-uid-old", "pod-uid-moved"
+
+	t.Log("--- the old account's pod enrols the name under the service's one login and is granted a person's secret")
+	_, grant := rig.pairedGrant(paired.pods, paired.launcher, oldPod)
+
+	t.Log("--- the moved account's pod trades under the name, which takes it")
+	live := newLiveBroker(paired.broker.Addr, proofKey(t))
+	live.registered(t, mintPodToken(t, cluster, clusterKey, pairedPodAccount, enrolmentAudience, movedPod), pairedSession,
+		accountToken(t, cluster, clusterKey, registrarAccount))
+	status, body := live.exchange(t, exchangeForm(mintPodToken(t, cluster, clusterKey, pairedPodAccount, exchangeAudience, movedPod), pairedSession))
+	if status != http.StatusOK || body["access_token"] == nil {
+		t.Fatalf("the moved account's pod trading under %s = %d %v, want 200 with an access token: a paired account takes the name its pair holds", pairedSession, status, body)
+	}
+	movedPrincipal := exchange.AccountPrincipal(pairedPodAccount)
+	if holder, _ := sessionHolder(t, rig.db, pairedSession); holder != movedPrincipal {
+		t.Fatalf("after the trade the name %s is held by %q, want the moved account %q", pairedSession, holder, movedPrincipal)
+	}
+
+	t.Log("--- the moved account's pod enrols the name and reads the grant the old account's pod was approved")
+	moved := paired.pods.enroll(paired.launcher, movedPod, pairedPodAccount, pairedSession)
+	rig.requireValue(moved, grant, personSecret, personSecretValue,
+		"an enrolment under a name its account's trade took from the paired account takes what that account's enrollment of the name holds")
+	if held := rig.held(pairedSession); held.Requests != 1 || held.Grants != 1 || held.Grant != grant || held.GrantEnrollment != moved.enrollmentID {
+		t.Fatalf("after the move the broker holds %+v for session %s, want one request and the one grant %s, on the moved pod's enrollment %s: the moved pod takes the grant rather than %s being asked again",
+			held, pairedSession, grant, moved.enrollmentID, fleetPerson)
+	}
+}
+
+// TestAPairIsRefusedANameAnExchangeEntryFixesThatItsPairHolds is the fixed name against
+// BROKER_SESSION_ACCOUNT_PAIRS on the real binary, in the window before the provider's first
+// exchange, when nothing has reserved the names the configuration fixes yet: the read entry's
+// session, readerSession, can still be held by another account as an ordinary claim, which is
+// what podAccount's pod does here by enrolling under it. pairedPodAccount, paired with podAccount,
+// enrols under the same name and is refused 403 SESSION_HELD, the name staying podAccount's, since
+// a name the configuration fixes goes to its entry and to no pair. What refuses it is the
+// broker's own read of the names its exchange entries fix (oauthstore.Store.Reserved, which
+// oauth.New sets from the exchange's reservations): the row itself is an ordinary claim, so
+// without that read the pair would take it.
+func TestAPairIsRefusedANameAnExchangeEntryFixesThatItsPairHolds(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	paired := startPairedRegistrar(t, databaseURL, cluster, github, clusterKey)
+
+	t.Log("--- before any exchange, the old account's pod enrols under the name the read entry fixes")
+	paired.pods.enroll(paired.launcher, "pod-uid-old", podAccount, readerSession)
+	held := exchange.AccountPrincipal(podAccount)
+	if holder, fixed := sessionHolder(t, paired.db, readerSession); holder != held || fixed {
+		t.Fatalf("after the old account's enrolment the name %s is held by %q (the configuration's hold: %t), want %q, an ordinary claim", readerSession, holder, fixed, held)
+	}
+
+	t.Log("--- the paired account's pod is refused it")
+	if _, status, answer := paired.pods.enrolPod(paired.launcher, "pod-uid-moved", pairedPodAccount, readerSession); status != http.StatusForbidden || decodeError(t, answer).Code != "SESSION_HELD" {
+		t.Fatalf("the paired account's pod enrolling %s, a name the read entry fixes = %d %s, want 403 SESSION_HELD: no pair takes a name the configuration fixes", readerSession, status, bytes.TrimSpace(answer))
+	}
+	if holder, fixed := sessionHolder(t, paired.db, readerSession); holder != held || fixed {
+		t.Fatalf("after the paired account's refusal the name %s is held by %q (the configuration's hold: %t), want %q still, an ordinary claim", readerSession, holder, fixed, held)
+	}
+	if takes := recordsWith(paired.broker.Log(), enrollmentTookName, nil); len(takes) != 0 {
+		t.Fatalf("the broker logged %v, want no take: its refusal took nothing", takes)
+	}
 }
 
 // TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads is the live proof of the read
@@ -1099,7 +1328,7 @@ func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Iss
 		"BROKER_EXCHANGE_GITHUB_ISSUER=" + github.URL(),
 		"BROKER_EXCHANGE_GITHUB_AUDIENCE=" + workflowAudience,
 		"BROKER_API_ACCOUNTS=dispatch=" + apiAccount + " listener=" + listenerAccount,
-		"BROKER_SERVICE_LOGINS=legion-daemon=" + registrarAccount,
+		"BROKER_SERVICE_LOGINS=" + registrarService + "=" + registrarAccount,
 		"BROKER_POD_REGISTRARS=" + registrarAccount + "=" + podAccount + " " + registrarAccount + "=" + listedAccount,
 		"BROKER_ACCESS_TOKEN_SECONDS=" + strconv.Itoa(accessSeconds),
 	}

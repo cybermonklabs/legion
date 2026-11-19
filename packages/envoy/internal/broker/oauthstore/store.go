@@ -192,6 +192,19 @@ type Store struct {
 	// production caller sets it.
 	testWriteHook func(ctx context.Context)
 
+	// sessionPairs maps each account principal to every principal it is paired with for session
+	// names, both ways (SetSessionPairs, the one writer, so the map is symmetric). nil pairs
+	// nothing.
+	sessionPairs map[string][]string
+
+	// Reserved maps each session name the configuration fixes to the principal it fixes it for,
+	// so BindSession refuses a pair any name the configuration fixes, even one another principal
+	// still holds as an ordinary claim. oauth.New sets it from the exchange policy the provider is
+	// composed with (exchange.Set.Reservations), the same map the provider's own fixed claim and
+	// ReserveSessions read. nil reserves nothing. It must be set before the store serves an
+	// enrollment or a token exchange.
+	Reserved map[string]string
+
 	// sweepMu serialises Sweep's refresh walk, which reads and advances sweepAt.
 	sweepMu sync.Mutex
 	sweepAt sweepCursor

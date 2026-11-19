@@ -10,8 +10,9 @@ name: Dispatch browser nightly
 # head, below, says what it guards and why it is here rather than in a file of its own.
 #
 # What a red run does, and what it does not. The run fails, and its merged report, every leg's
-# blob and the failed legs' traces are artifacts of that run; GitHub mails the default branch's
-# last committer that a scheduled workflow failed. Nothing else is told: this call passes no
+# blob and the failed legs' traces are artifacts of that run; GitHub's "Events that trigger
+# workflows" page says: "Notifications for scheduled workflows are sent to the user who last
+# modified the cron syntax in the workflow file." Nothing else is told: this call passes no
 # `ci-ok-changes`, so the merge job's report step does not run and the run posts no check, files
 # no issue and sends no message. dispatch://INFRA-1066's R22 owns a reader for nightly results,
 # and this workflow deliberately builds no second one: a reader written here is the thing R22
@@ -82,8 +83,9 @@ jobs:
   # the judgement and says why a comparison of values would be red every night on nothing.
   #
   # It is a job of this file rather than a workflow of its own because GitHub starts a schedule
-  # and a `workflow_dispatch` from the default branch alone, so a workflow that exists only on a
-  # branch can be dispatched by nobody and proved before its merge by nothing
+  # from the default branch alone and offers a `workflow_dispatch` only for a file the default
+  # branch holds, so a workflow that exists only on a branch can be dispatched by nobody and
+  # proved before its merge by nothing
   # (dispatch://INFRA-1621/comment/36392fee-60e8-4dbd-9068-bd8524088d08 records that refusal).
   # This file already stands on main with both triggers, so `gh workflow run
   # dispatch-browser-nightly.yaml --ref <branch>` runs the branch's own copy of this job.

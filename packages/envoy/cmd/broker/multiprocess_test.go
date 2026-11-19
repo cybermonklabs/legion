@@ -469,20 +469,6 @@ func (f *brokerFleet) database(t *testing.T) *pgx.Conn {
 	return connectToBroker(t, f.DatabaseURL)
 }
 
-// connectToBroker opens a connection of the test's own to a broker's database, closed when t
-// ends. It is a connection outside every broker's pool, which is what a row needs to hold a row
-// lock a broker then waits on: a lock taken through the pool the broker draws on would starve it
-// of a connection rather than block it on the row.
-func connectToBroker(t *testing.T, databaseURL string) *pgx.Conn {
-	t.Helper()
-	conn, err := pgx.Connect(context.Background(), databaseURL)
-	if err != nil {
-		t.Fatalf("connect to the broker's database: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	return conn
-}
-
 // countRows runs a counting query on the brokers' own database and answers what it counted.
 func countRows(t *testing.T, conn *pgx.Conn, query string, args ...any) int {
 	t.Helper()
@@ -1431,20 +1417,6 @@ type rolloutBroker struct {
 	fixer   string
 	process *brokerProcess
 	client  *liveBroker
-}
-
-// sessionHolder reads who holds session in the database every process of the rollout shares, and
-// whether that hold is the configuration's, which never runs out: the one record of whose a name
-// is, read past every process's own opinion of it.
-func sessionHolder(t *testing.T, conn *pgx.Conn, session string) (string, bool) {
-	t.Helper()
-	var principal string
-	var fixed bool
-	if err := conn.QueryRow(context.Background(), `select principal, expires_at = 'infinity' from oauth_session_bindings
-		where session = $1`, session).Scan(&principal, &fixed); err != nil {
-		t.Fatalf("read the claim on %s: %v", session, err)
-	}
-	return principal, fixed
 }
 
 // TestAFixedSessionNameAcrossARollout drives a rollout that re-points a fixed session name, on

@@ -528,7 +528,7 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 		p.writeError(ctx, w, request, err)
 		return
 	}
-	taken, err := p.claimSession(txCtx, session)
+	taken, fixed, err := p.claimSession(txCtx, session)
 	if err != nil {
 		p.writeError(ctx, w, request, err)
 		return
@@ -544,10 +544,17 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 		resp.SetExtra(oauthwire.ExtraCredentialID, credentialID)
 		resp.SetExtra(oauthwire.ExtraCredentialExpiresAt, credential.Expires.UTC().Format(time.RFC3339))
 	}
-	if taken != "" {
-		// Logged once the claim has committed, because it is the one way a principal loses a name
-		// it used within the retention: the configuration now fixes it for an entry.
+	switch {
+	case taken != "" && fixed:
+		// Logged once the claim has committed, because it is one of the two ways a principal
+		// loses a name it used within the retention: the configuration now fixes it for an entry.
 		slog.Warn("broker: the token exchange took a session name the configuration fixes from its holder",
+			"session", session.Extra[ClaimSession], "from", taken, "to", session.Principal)
+	case taken != "":
+		// The other way: a claim the configuration does not fix takes a live name only from an
+		// account paired with its own (oauthstore.Store.SetSessionPairs), as an operator moving a
+		// deployment's pods to another account does. Logged once it has committed, as the other.
+		slog.Warn("broker: the token exchange took a session name from the account paired with its own",
 			"session", session.Extra[ClaimSession], "from", taken, "to", session.Principal)
 	}
 	p.oauth.WriteAccessResponse(ctx, w, request, resp)
@@ -864,33 +871,39 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 // claimSession claims the session name decide wrote onto session for the principal it decided,
 // until oauthstore.SessionRetention past the expiry the library has just set on the issued token,
 // in the transaction that stores that token: the claim can never end before the token it was made
-// for, and a token whose claim is refused is never stored.
+// for, and a token whose claim is refused is never stored. It answers the principal it took the
+// name from ("" for none) and whether the configuration fixed the claim, which is what tells
+// exchangeGrant's log a fixed claim's take from a pair's.
 //
 // It is where the configuration decides who a fixed name belongs to: when this provider's
 // configuration fixes the name for the principal asking (the entry's own caller), the claim holds
 // it for that principal with no expiry and takes it from any other holder, answering whom it took
 // it from, so an entry is never refused its own name, whatever a replica started with another
-// configuration reserved. Every other claim is the ordinary one, which a held name refuses: that
-// one statement, oauthstore.Store.BindSession, is the only refusal of a claim.
+// configuration reserved. Every other claim is the ordinary one, which a name another principal
+// holds refuses unless that principal is an account paired with the claimant's
+// (oauthstore.Store.SetSessionPairs): such a claim takes the name, answering whom it took it
+// from, though never a name the configuration fixes, and a pair does not chain.
+// oauthstore.Store.BindSession makes both claims, and its refusal is the only refusal of a claim.
 //
-// A name another principal holds is invalid_grant, because the subject token is sound and it is
-// the broker's state that refuses.
-func (p *Provider) claimSession(ctx context.Context, session *oauthstore.ExchangeSession) (string, error) {
+// A name another principal holds and the claimant may not take is invalid_grant, because the
+// subject token is sound and it is the broker's state that refuses.
+func (p *Provider) claimSession(ctx context.Context, session *oauthstore.ExchangeSession) (taken string, fixed bool, err error) {
 	name, _ := session.Extra[ClaimSession].(string)
 	expires := session.GetExpiresAt(oauth2.AccessToken)
 	if name == "" || session.Principal == "" || expires.IsZero() {
-		return "", oauth2.ErrServerError.WithDebugf("the exchange issued a token without deciding its session name (%t), principal (%t) and expiry (%t)",
+		return "", false, oauth2.ErrServerError.WithDebugf("the exchange issued a token without deciding its session name (%t), principal (%t) and expiry (%t)",
 			name != "", session.Principal != "", !expires.IsZero())
 	}
-	taken, err := p.store.BindSession(ctx, name, session.Principal, p.reservations[name] == session.Principal, expires)
+	fixed = p.reservations[name] == session.Principal
+	taken, err = p.store.BindSession(ctx, name, session.Principal, fixed, expires)
 	if err != nil {
 		if errors.Is(err, oauthstore.ErrSessionHeld) {
-			return "", oauth2.ErrInvalidGrant.WithHintf("The session name '%s' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last %d days. Ask under a name of your own.",
+			return "", false, oauth2.ErrInvalidGrant.WithHintf("The session name '%s' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last %d days. Ask under a name of your own.",
 				name, int(oauthstore.SessionRetention/(24*time.Hour))).WithWrap(err).WithDebugError(err)
 		}
-		return "", oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
+		return "", false, oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}
-	return taken, nil
+	return taken, fixed, nil
 }
 
 // liveCredential holds the launcher credential a machine access token names
@@ -1198,11 +1211,13 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // carry a name their configuration or their person decides, and nothing of theirs is registered.
 //
 // It is the second, independent rule beside the claim on the session name: the claim refuses
-// another principal the name, and this refuses another pod of the same principal, which the claim
-// cannot tell apart because the name belongs to the account. It runs here rather than inside
-// decide because a refusal raised through the library's store hook arrives as invalid_request,
-// and this one is invalid_grant: the subject token is sound and it is the broker's state that
-// refuses it, exactly as a session name another principal holds is.
+// another principal the name, an account paired with the holder's excepted
+// (oauthstore.Store.SetSessionPairs), and this refuses another pod of the same principal, which
+// the claim cannot tell apart because the name belongs to the account; a pod of a paired account
+// is held to it too. It runs here rather than inside decide because a refusal raised through the
+// library's store hook arrives as invalid_request, and this one is invalid_grant: the subject
+// token is sound and it is the broker's state that refuses it, exactly as the claim refuses a
+// session name another principal holds and the caller may not take.
 //
 // Its error_description begins oauthwire.PodSessionNotRegistered and a colon, in place of the
 // library's stock invalid_grant text, because unlike every other invalid_grant a later trade can
