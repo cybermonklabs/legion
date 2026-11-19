@@ -585,8 +585,9 @@ const DocumentSchemaCloseReason = ${JSON.stringify(DOCUMENT_SCHEMA_CLOSE_REASON)
 // one whose update holds content the document does not take - bytes the decoder refuses, or
 // content the Proof editor never sends - and DocumentClientIdRefusedCloseReason the one whose
 // update carries an edit under a client id that is not the sender's; DocumentBusyCloseCode and
-// DocumentBusyCloseReason close a browser the room-memory budget has no room for, and the one
-// whose update would grow a document while that budget is full.
+// DocumentBusyCloseReason close a browser the room-memory budget has no room for, one whose
+// person holds every client id no edit has landed under that a document allows them, each held by
+// a socket still open, and the one whose update would grow a document while that budget is full.
 // Generated from DOCUMENT_TOO_LARGE_CLOSE_CODE, DOCUMENT_TOO_LARGE_CLOSE_REASON,
 // DOCUMENT_TOO_TANGLED_CLOSE_REASON, DOCUMENT_NEEDS_REBUILD_CLOSE_REASON,
 // DOCUMENT_REBUILT_CLOSE_REASON, DOCUMENT_UPDATE_REFUSED_CLOSE_REASON,

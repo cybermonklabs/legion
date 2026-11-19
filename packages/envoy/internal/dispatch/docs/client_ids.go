@@ -39,15 +39,15 @@ import (
 //
 // So Dispatch gives the client ids out, and a browser writes under no other. A document socket's
 // admission (ServeHTTP) gives its page a client id for that document, stored with the person the
-// socket is signed in as (document_client_ids, minted), before the page syncs or announces
-// anything: the page presents the id it holds under DocumentClientIdParameter, and the admission
-// gives it back where it was given to the same person, and gives out a fresh one otherwise. The
-// answer is the first frame on the socket, a stateless message (DocumentClientIdMessagePrefix)
-// written right after the upgrade's 101 (clientIDConn): the page cannot read the upgrade's
-// headers, and y-protocols' awareness takes the document's client id as it is made, so the page
-// needs the id before its provider sends anything of its own. The same tab keeps its id across
-// every reconnect of one document - its offline edits are under it - and takes a fresh one only
-// with a fresh document, after a refusal the editor rebuilds for.
+// socket is signed in as (document_client_ids, minted) where the page may write, before the page
+// syncs or announces anything: the page presents the id it holds under DocumentClientIdParameter,
+// and the admission gives it back where it was given to the same person, and gives out a fresh one
+// otherwise. The answer is the first frame on the socket, a stateless message
+// (DocumentClientIdMessagePrefix) written right after the upgrade's 101 (clientIDConn): the page
+// cannot read the upgrade's headers, and y-protocols' awareness takes the document's client id as
+// it is made, so the page needs the id before its provider sends anything of its own. The same
+// tab keeps its id across every reconnect of one document - its offline edits are under it - and
+// takes a fresh one only with a fresh document, after a refusal the editor rebuilds for.
 //
 // The rule, judged on each browser update before its apply (judgeClients): an update carrying
 // structs under a client id stored for another person is refused whole, with
@@ -83,17 +83,18 @@ import (
 // drew for itself. So an id below the floor that no row names may be claimed - before the apply
 // (claimClients), by the person whose browser update carries structs under it first, or at the
 // admission of a page of this build that presents it (keepsClient) - and is that person's from
-// then on; a claim an update made whose apply does not stand is given back (releaseClaims). Every
-// claim is counted, from the stored rows, among the person's claims in the document in the UTC
-// day (maxClaimsADay), and a claim is held to three rules (claimable):
+// then on; an update's claim is given back where its apply does not stand, and kept where it
+// stands, its structs parked or not (settleClients, releaseClaims). Every claim, on every kind of
+// socket, is counted from the stored rows among the person's claims in the document in the UTC
+// day, and none is stored past maxClaimsADay; the claims one socket's updates hold are held to
+// maxClaimsASocket besides. Past either an update is refused and nothing it carries is claimed,
+// and an admission keeps no id it would claim, and gives its page one afresh. A claim is held to
+// three rules besides (claimable):
 //
 //   - An id the stored history does not name, and the room does not hold, may be claimed by a
 //     legacy socket at any time, so the clients deployed without an id keep writing: no edit the
-//     document holds is under it, so a forged claim of it takes nothing from anyone. Those claims
-//     are bounded, as no window ends them: a socket holds at most maxConfirmedClients of them,
-//     and none is stored where the person's claims in the document since the start of the UTC
-//     day, counted from the stored rows, would come to more than maxClaimsADay (claimClients).
-//     Past either the update is refused, and nothing it carries is claimed.
+//     document holds is under it, so a forged claim of it takes nothing from anyone. No window
+//     ends these claims, and the two bounds above are what bound them.
 //   - An id the stored history names, or the room holds, is a writer's. It may be claimed only
 //     until claimWindow has passed since this database first served a build that gives ids out
 //     (document_client_ids_since), the architect's bound on the deploy, and only by a person a
@@ -103,8 +104,7 @@ import (
 //   - A page of this build has an id of its own, and claims another - a saved row of the earlier
 //     build that it replays, or, at its admission, the id its document drew while its first
 //     socket reached a process of the earlier build - only until claimWindow has passed, whether
-//     the history names the id or not. An admission's claim is held to maxClaimsADay as well:
-//     past it the id is not kept, and the page is given one afresh.
+//     the history names the id or not.
 //
 // Which ids the stored history names is read once per room instance, at the first claim that
 // needs it, and every commit the room takes from then on adds its own (storedClients): a claim
@@ -132,14 +132,30 @@ import (
 // wholly at clocks the room holds pays the one lookup of their ids' rows that finds the claims
 // among them, never a keystroke under the socket's own id.
 //
-// Every page load is given an id, and most never type, so a row that never landed an edit and
-// that no admission has presented for unusedClientIDAge is deleted by the hourly compaction sweep
-// (sweepUnusedClientIDs); a page that comes back after that is given a fresh id, which loses
-// nothing. A row whose id landed an edit is never swept, and neither is a claimed row: the first
-// edit a socket lands under its own given id marks the row (recordLanded), and a claim is stored
-// as landed. An update's claim is given back unless its apply stands. An admission's claim is
-// bounded by the claim window and maxClaimsADay rather than swept: a swept claim's id could be
-// claimed by another person while the tab that holds it is still open and writing under it.
+// A row is stored only for a page that may write. A read-only admission - a closed issue, a page
+// the live fleet does not admit - is decided before its id (ServeHTTP, decideWritable), and is
+// given back an id the table names its person for or else sent one drawn at mintedClientFloor or
+// above that is stored nowhere and claims nothing: its page cannot write under it, and a page
+// admitted writable later presents it, finds no row and is given one afresh, which its document
+// takes while it has written nothing under the first (connection.ts, takeClientId). A request
+// that never becomes a socket - no websocket upgrade, or another origin - stores nothing either.
+//
+// Every writable page load is given an id, and most never type. So a person holds at most
+// maxUnlandedMintsADocument rows in a document that no edit landed under: a mint past that gives
+// back, in the same statement, the person's row there least recently presented (mintClient), and
+// where each of them is live the admission is refused for now, DocumentBusyCloseCode, which the
+// editor retries. A row is live while an open socket holds it: the socket presents it again every
+// clientPresenceInterval until an edit lands under it (keepPresenting), and a row presented within
+// clientPresenceLapses intervals is no mint's to give back, on this process or another. A page
+// whose row was given back is given a fresh id at its next admission, and loses only what it
+// typed offline under the old one that never landed. A row no edit landed under that nothing has
+// presented for unusedClientIDAge is deleted by the hourly compaction sweep
+// (sweepUnusedClientIDs). A row whose id landed an edit is neither given back nor swept, and
+// neither is a claimed row: a socket marks its own row once the room holds a struct under the id
+// after one of its applies (recordLanded), which a frame that only parked leaves it holding none
+// of, and a claim is stored as landed. A claim is bounded by the claim window and the claims'
+// bounds rather than swept: a swept claim's id could be claimed by another person while the tab
+// that holds it is still open and writing under it.
 
 const (
 	// mintedClientFloor and mintedClientCeiling bound the client ids an admission gives out:
@@ -159,19 +175,36 @@ const (
 	// maxConfirmedClients is the most client ids one socket remembers as its own beyond the one
 	// it was given (socketClients.confirmed): the ids of the saved rows its page replays, each
 	// read from the table once rather than once a frame. Past it an id is read again on each
-	// update that carries it, which costs a query and changes no answer. It is also the most
-	// claims of ids no stored history names that one legacy socket holds (socketClients.claims).
+	// update that carries it, which costs a query and changes no answer: it is the size of a
+	// cache, and bounds nothing anyone stores.
 	maxConfirmedClients = 64
+	// maxClaimsASocket is the most claims one socket's updates hold (socketClients.claims), on
+	// every kind of socket: each claim an update made that was not given back (settleClients). An
+	// honest page claims one id for each tab of the earlier build whose saved rows its browser
+	// replays, which is a few.
+	maxClaimsASocket = 64
 	// claimWindow is how long after document_client_ids_since an id below mintedClientFloor that
 	// the stored history names may still be claimed, and any id by a page of this build: the
 	// architect's bound on how long a tab of the earlier build, or the edits it saved, may take to
 	// come back. A legacy socket's claim of an id the history does not name has no window.
 	claimWindow = 30 * 24 * time.Hour
 	// maxClaimsADay is the most claims one person makes in one document in one UTC day, counted
-	// from the stored rows, wherever a legacy socket claims an id no stored history names or a
-	// page of this build claims one at its admission (claimClients, keepsClient): with
-	// maxConfirmedClients and claimWindow, the bound on the claimed rows, which no sweep takes.
+	// from the stored rows: every claim, on every kind of socket, an update's and an admission's
+	// alike (claimClients). With maxClaimsASocket and claimWindow, the bound on the claimed rows,
+	// which no sweep takes.
 	maxClaimsADay = 64
+	// maxUnlandedMintsADocument is the most rows one person holds in one document of ids an
+	// admission gave out that no edit has landed under (mintClient). The most ids given to one
+	// person in one document over every honest drive of round 9 was 5
+	// (dispatch://INFRA-179/artifact/infra179-r9-caps-measure-md).
+	maxUnlandedMintsADocument = 64
+	// clientPresenceInterval is how often an open socket presents its own id again while no edit
+	// has landed under it (keepPresenting), and clientPresenceLapses how many such intervals a row
+	// may go unpresented and still be live: no mint gives back a row presented more recently than
+	// that (mintClient). Three intervals leave room for two presentations that came late or
+	// failed before the row of a socket still open could be given back.
+	clientPresenceInterval = 5 * time.Minute
+	clientPresenceLapses   = 3
 	// maxComparedClaims is the most ids another person claimed whose structs at clocks the room
 	// holds one update has compared (refusedDuplicates): a keystroke in flight, a resend or a saved
 	// row replayed carries one. An update past it is a whole-state handoff of the history, which
@@ -185,36 +218,54 @@ const (
 	hocuspocusStateless = 5
 )
 
-// clientClaimsLockNamespace is the first key of the lock a claim held to maxClaimsADay takes
-// ("CLMS"), its second the hashtext of the document and the person, so two such claims of one
-// person in one document count each other's rows (claimClients). It is the two-key form, which
+// clientClaimsLockNamespace is the first key of the lock every claim takes ("CLMS"), its second
+// the hashtext of the document and the person, so two claims of one person in one document count
+// each other's rows (claimClients). A mint takes the same first key with a second of its own, the
+// hashtext of "mints", the document and the person, so two mints of one person in one document
+// count each other's rows (mintClient): the two keys meet only where the hashes collide, which
+// makes one wait for the other's statement and changes no count. It is the two-key form, which
 // Postgres keeps apart from the single-key locks (a document's room, lockDocumentRoom, among
 // them), and it is no other first key: neither conditionalEditQueueLockNamespace's own nor any of
-// the others that lock's comment lists, which names this one among them. The statement that takes
-// it names itself client_claims_lock and spells its key's text type, as the owner lock's do
-// (store/ownerlock.go): the copy lock (projectCopiesLock) is taken by the same two-key call, and
-// the copy-lock guard (api's TestCopyLockComesBeforeEveryPendingRowAndEvent) and the copy-lock
-// waits a test reads off pg_stat_activity tell that lock by its statement's text, which this one
-// would otherwise share.
+// the others that lock's comment lists, which names this one among them. The statements that take
+// it name themselves client_claims_lock and client_mints_lock and spell their key's text type, as
+// the owner lock's do (store/ownerlock.go): the copy lock (projectCopiesLock) is taken by the same
+// two-key call, and the copy-lock guard (api's TestCopyLockComesBeforeEveryPendingRowAndEvent) and
+// the copy-lock waits a test reads off pg_stat_activity tell that lock by its statement's text,
+// which these would otherwise share.
 const clientClaimsLockNamespace int32 = 0x434C4D53
+
+// presenceIntervalForTest replaces clientPresenceInterval where it is set, in nanoseconds: a test
+// of the give-back shortens it, so the sockets it holds open present their ids within the test's
+// time. Zero, which leaves clientPresenceInterval, outside tests.
+var presenceIntervalForTest atomic.Int64
+
+// presenceInterval is clientPresenceInterval, or a test's in its place.
+func presenceInterval() time.Duration {
+	if interval := presenceIntervalForTest.Load(); interval > 0 {
+		return time.Duration(interval)
+	}
+	return clientPresenceInterval
+}
 
 // socketClients is what one document socket may write and announce under: the client id its
 // admission gave its page, and the ids its page has since shown are that person's too. legacy is
 // a page that presented no client id at all, a build from before Dispatch gave them out, which
-// has no id of its own here. landed is whether own's row says an edit landed under it: read at
-// the admission (keepsClient), and set once this socket has marked the row on its first edit
+// has no id of its own here. stored is whether a row names own as the socket's person's: false
+// for a legacy socket and for a read-only admission's id, drawn and stored nowhere. landed is
+// whether own's row says an edit landed under it: read at the admission (keepsClient), and set
+// once this socket has marked the row after its first apply that left the room holding a struct
 // under own (recordLanded), which it does once.
 type socketClients struct {
 	legacy bool
 	own    crdt.ClientID
+	stored bool
 	landed atomic.Bool
 	// mu guards confirmed and claims: the hook changes them on the peer's read loop, and nothing
 	// else reads them, so the lock is never contended.
 	mu        sync.Mutex
 	confirmed map[crdt.ClientID]struct{}
-	// claims is how many claims of ids no stored history names this socket holds: made by its
-	// updates (judgeClients) and not given back (settleClients). A legacy socket holds at most
-	// maxConfirmedClients of them.
+	// claims is how many claims this socket's updates hold: made by its updates (judgeClients)
+	// and not given back (settleClients). A socket holds at most maxClaimsASocket of them.
 	claims int
 }
 
@@ -254,15 +305,14 @@ func (c *socketClients) forget(clients []uint64) {
 	}
 }
 
-// mayClaim is whether this socket may hold n claims more of ids no stored history names.
+// mayClaim is whether this socket may hold n claims more (maxClaimsASocket).
 func (c *socketClients) mayClaim(n int) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.claims+n <= maxConfirmedClients
+	return c.claims+n <= maxClaimsASocket
 }
 
-// countClaims counts n claims of ids no stored history names as this socket's, or, for a
-// negative n, takes -n of them back.
+// countClaims counts n claims as this socket's, or, for a negative n, takes -n of them back.
 func (c *socketClients) countClaims(n int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -343,41 +393,40 @@ func (s *Service) claimWindowOpen(ctx context.Context) (bool, error) {
 // claim window has closed for a page of this build (legacy false), whatever the id, and for an id
 // the stored history names (historyNames) or held holds; or the window is open, the id is one of
 // those, and neither a version holding the history's first row naming it nor a pending author row
-// lists actor. unnamed says the id is neither, so that a legacy socket's claim of it is held to
-// its bounds (judgeClients). heldTo is the clock the document holds client to, where a claim made
-// now starts (claimed_from).
+// lists actor. heldTo is the clock the document holds client to, where a claim made now starts
+// (claimed_from).
 //
 // A claim the closed window refuses whatever the history says - a page of this build's, or one of
 // an id the room holds - reads no history; every other claim reads it once per room instance
 // (historyNames).
-func (s *Service) claimable(ctx context.Context, room string, live *crdt.Doc, held crdt.StateVector, actor model.Actor, legacy bool, client uint64) (heldTo uint64, unnamed bool, err error) {
+func (s *Service) claimable(ctx context.Context, room string, live *crdt.Doc, held crdt.StateVector, actor model.Actor, legacy bool, client uint64) (heldTo uint64, err error) {
 	open, err := s.claimWindowOpen(ctx)
 	if err != nil {
-		return 0, false, err
+		return 0, err
 	}
 	id := crdt.ClientID(client)
 	if !open && (!legacy || held[id] > 0) {
-		return 0, false, claimWindowClosed()
+		return 0, claimWindowClosed()
 	}
 	from, storedTo, named, err := s.historyNames(ctx, room, live, id)
 	if err != nil {
-		return 0, false, err
+		return 0, err
 	}
 	if !named && held[id] == 0 {
-		return 0, true, nil
+		return 0, nil
 	}
 	if !open {
-		return 0, false, claimWindowClosed()
+		return 0, claimWindowClosed()
 	}
 	// A co-author's edit names them in a pending author row once its append lands, so the room's
 	// appends are asked for at once, and waited for, before the authors are read
 	// (waitForDurableAppends): an edit the room took a moment ago lists its author.
 	if err := s.waitForDurableAppends(ctx, room); err != nil {
-		return 0, false, err
+		return 0, err
 	}
 	author, err := json.Marshal([]map[string]string{{"kind": actor.Kind, "id": actor.ID}})
 	if err != nil {
-		return 0, false, err
+		return 0, err
 	}
 	var listed bool
 	if err := s.store.Pool.QueryRow(ctx, `
@@ -388,12 +437,12 @@ func (s *Service) claimable(ctx context.Context, room string, live *crdt.Doc, he
 			select 1 from doc_pending_authors where artifact_id = $1 and actor_kind = $4 and actor_id = $5
 		)
 	`, room, from, string(author), actor.Kind, actor.ID).Scan(&listed); err != nil {
-		return 0, false, fmt.Errorf("read the document's authors: %w", err)
+		return 0, fmt.Errorf("read the document's authors: %w", err)
 	}
 	if !listed {
-		return 0, false, fmt.Errorf("%w: the document's history names it, and no version since lists the claimant", errClaimRefused)
+		return 0, fmt.Errorf("%w: the document's history names it, and no version since lists the claimant", errClaimRefused)
 	}
-	return max(storedTo, held[id]), false, nil
+	return max(storedTo, held[id]), nil
 }
 
 // claimWindowClosed is the refusal of a claim claimWindow bounds once it has passed.
@@ -593,13 +642,17 @@ func (s *Service) readHistoryClients(ctx context.Context, room string) (map[crdt
 	return names, through, nil
 }
 
-// admitClients is a document socket's client ids, decided by its admission: none for a page that
-// presented no DocumentClientIdParameter, and otherwise the id the page presented where the
-// table names the same person for it, or one below mintedClientFloor that no row names and the
-// page may claim (claimable: a page of this build whose first socket reached a process of the
-// earlier build and kept the id its document drew); and an id given out afresh in every other
-// case.
-func (s *Service) admitClients(ctx context.Context, room string, actor model.Actor, r *http.Request) (*socketClients, error) {
+// admitClients is a document socket's client ids, decided by its admission once writable says
+// whether its page may write (decideWritable): none for a page that presented no
+// DocumentClientIdParameter; otherwise the id the page presented where the table names the same
+// person for it, or, for a page that may write, one below mintedClientFloor that no row names and
+// the page may claim (claimable: a page of this build whose first socket reached a process of the
+// earlier build and kept the id its document drew); and in every other case an id given out
+// afresh (mintClient) to a page that may write, and to one that may not an id drawn as a mint
+// draws it that is stored nowhere and claims nothing (drawClient). A read-only page writes under
+// no id - ygo hands the hook nothing it sends - so a read-only admission adds no row, and the
+// page that is admitted writable later presents that id, finds no row and is given one afresh.
+func (s *Service) admitClients(ctx context.Context, room string, actor model.Actor, r *http.Request, writable bool) (*socketClients, error) {
 	presented, takes := r.URL.Query()[contracts.DocumentClientIdParameter]
 	if !takes {
 		return &socketClients{legacy: true}, nil
@@ -608,35 +661,43 @@ func (s *Service) admitClients(ctx context.Context, room string, actor model.Act
 	defer cancel()
 	if presented[0] != "" {
 		if client, err := strconv.ParseUint(presented[0], 10, 64); err == nil {
-			kept, err := s.keepsClient(ctx, room, actor, client)
+			kept, err := s.keepsClient(ctx, room, actor, client, writable)
 			if err != nil || kept != nil {
 				return kept, err
 			}
 		}
 	}
+	if !writable {
+		client, err := drawClient()
+		if err != nil {
+			return nil, err
+		}
+		return &socketClients{own: client}, nil
+	}
 	client, err := s.mintClient(ctx, room, actor)
 	if err != nil {
 		return nil, err
 	}
-	return &socketClients{own: client}, nil
+	return &socketClients{own: client, stored: true}, nil
 }
 
 // keepsClient is the socket's client ids where a page may keep client, the id it presented, and
 // nil where it may not. It may keep an id the table names actor for, which this records as a
 // presentation (presented_at) in the same statement, reading back whether an edit landed under
 // it (socketClients.landed), so a socket whose id has landed an edit already writes nothing more
-// on its first edit. And it may keep an id below mintedClientFloor no row names that actor may
-// claim (claimable, as a page of this build), which this claims from the clock the document holds
-// it to, in the stored history or the room where this server holds it, held to maxClaimsADay
-// with actor's other claims in the document (claimClients, capped): a claim it refuses keeps
-// nothing, and the page is given an id afresh. An id at mintedClientCeiling or above is neither:
-// no admission gives one out and no claim takes one, so it is not kept and the table is not
-// asked, as a presented id that does not read is not.
-func (s *Service) keepsClient(ctx context.Context, room string, actor model.Actor, client uint64) (*socketClients, error) {
+// on its first edit; a read-only page keeps such an id too, which adds no row. And a page that
+// may write (writable) may keep an id below mintedClientFloor no row names that actor may claim
+// (claimable, as a page of this build), which this claims from the clock the document holds it
+// to, in the stored history or the room where this server holds it, held to maxClaimsADay with
+// actor's other claims in the document (claimClients): a claim it refuses keeps nothing, and the
+// page is given an id afresh. An id at mintedClientCeiling or above is neither: no admission
+// gives one out and no claim takes one, so it is not kept and the table is not asked, as a
+// presented id that does not read is not.
+func (s *Service) keepsClient(ctx context.Context, room string, actor model.Actor, client uint64, writable bool) (*socketClients, error) {
 	if client >= mintedClientCeiling {
 		return nil, nil
 	}
-	kept := &socketClients{own: crdt.ClientID(client)}
+	kept := &socketClients{own: crdt.ClientID(client), stored: true}
 	var landed bool
 	err := s.store.Pool.QueryRow(ctx, `
 		update document_client_ids set presented_at = now()
@@ -649,7 +710,7 @@ func (s *Service) keepsClient(ctx context.Context, room string, actor model.Acto
 		return kept, nil
 	case !errors.Is(err, pgx.ErrNoRows):
 		return nil, fmt.Errorf("give the page its client id back: %w", err)
-	case client >= mintedClientFloor:
+	case client >= mintedClientFloor || !writable:
 		return nil, nil
 	}
 	owners, err := s.clientOwners(ctx, room, []uint64{client})
@@ -660,10 +721,10 @@ func (s *Service) keepsClient(ctx context.Context, room string, actor model.Acto
 		return nil, nil
 	}
 	live := s.srv.GetDoc(room)
-	heldTo, _, err := s.claimable(ctx, room, live, heldBy(live), actor, false, client)
+	heldTo, err := s.claimable(ctx, room, live, heldBy(live), actor, false, client)
 	var claimed []uint64
 	if err == nil {
-		claimed, err = s.claimClients(ctx, room, actor, []uint64{client}, []uint64{heldTo}, true)
+		claimed, err = s.claimClients(ctx, room, actor, []uint64{client}, []uint64{heldTo})
 	}
 	switch {
 	case errors.Is(err, errClaimRefused):
@@ -675,28 +736,146 @@ func (s *Service) keepsClient(ctx context.Context, room string, actor model.Acto
 	return kept, nil
 }
 
+// drawClient is a random id in [mintedClientFloor, mintedClientCeiling), as a mint draws one.
+func drawClient() (crdt.ClientID, error) {
+	var drawn [8]byte
+	if _, err := rand.Read(drawn[:]); err != nil {
+		return 0, err
+	}
+	return crdt.ClientID(mintedClientFloor + binary.BigEndian.Uint64(drawn[:])%(mintedClientCeiling-mintedClientFloor)), nil
+}
+
+// errMintsLive is a mint refused because actor holds maxUnlandedMintsADocument rows in the
+// document that no edit landed under and every one of them is live (mintClient). The admission is
+// refused with the transient DocumentBusyCloseCode, which the editor retries on its backoff: by
+// then a row whose socket has gone has lapsed, or the person's open pages have typed.
+var errMintsLive = errors.New("dispatch: every client id the person holds in the document unlanded is held by an open socket")
+
 // mintClient gives actor a client id for room, stored before it is returned: a random id in
-// [mintedClientFloor, mintedClientCeiling) the document has not given out.
+// [mintedClientFloor, mintedClientCeiling) the document has not given out (drawClient).
+//
+// It is held to maxUnlandedMintsADocument: where actor holds that many rows in room of ids an
+// admission gave out that no edit landed under, the same statement gives back the one presented
+// least recently and stores the new one, and where none of them is old enough to give back,
+// stores nothing and answers errMintsLive. A row is old enough once clientPresenceLapses
+// intervals have passed since it was last presented: every open socket presents its row again
+// each interval until an edit lands under it (keepPresenting), so no row an open socket holds,
+// on this process or another, is given back, and a row whose socket has gone lapses within those
+// intervals. Both sides read Postgres's own clock, so no process's clock skew moves the line. The
+// count, the give-back and the insert are one statement behind the lock of actor's mints in room
+// (clientClaimsLockNamespace, with a key of its own), in the one implicit transaction a batch
+// runs in, so two mints of one person in one document count each other's rows; the statement
+// reads them off document_client_ids_unlanded_mints. The delete reads its row's presentation and
+// landing again as it deletes, so a row presented or landed since the statement's snapshot is
+// not given back. A draw of an id the document gave out already stores nothing and is drawn
+// again, a row given back with it or not.
 func (s *Service) mintClient(ctx context.Context, room string, actor model.Actor) (crdt.ClientID, error) {
+	lapse := clientPresenceLapses * presenceInterval()
 	for range mintTries {
-		var drawn [8]byte
-		if _, err := rand.Read(drawn[:]); err != nil {
+		client, err := drawClient()
+		if err != nil {
 			return 0, err
 		}
-		client := mintedClientFloor + binary.BigEndian.Uint64(drawn[:])%(mintedClientCeiling-mintedClientFloor)
-		tag, err := s.store.Pool.Exec(ctx, `
-			insert into document_client_ids (artifact_id, client_id, actor_kind, actor_id, minted)
-			values ($1, $2, $3, $4, true)
-			on conflict do nothing
-		`, room, int64(client), actor.Kind, actor.ID)
-		if err != nil {
+		var atCap bool
+		var givenBack, minted *int64
+		batch := &pgx.Batch{}
+		batch.Queue(`select pg_advisory_xact_lock($1, hashtext($2::text)) as client_mints_lock`,
+			clientClaimsLockNamespace, "mints "+room+" "+ActorRef(actor))
+		batch.Queue(`
+			with unlanded as (
+				select client_id, presented_at from document_client_ids
+				where artifact_id = $1 and actor_kind = $3 and actor_id = $4 and minted and not landed
+			), cap as (
+				select count(*) >= $5::bigint as reached from unlanded
+			), given_back as (
+				delete from document_client_ids
+				where artifact_id = $1 and actor_kind = $3 and actor_id = $4 and minted and not landed
+					and presented_at < now() - $6::bigint * interval '1 microsecond'
+					and client_id = (
+						select client_id from unlanded
+						where (select reached from cap) and presented_at < now() - $6::bigint * interval '1 microsecond'
+						order by presented_at, client_id
+						limit 1
+					)
+				returning client_id
+			), minted as (
+				insert into document_client_ids (artifact_id, client_id, actor_kind, actor_id, minted)
+				select $1, $2::bigint, $3, $4, true
+				where not (select reached from cap) or exists (select 1 from given_back)
+				on conflict do nothing
+				returning client_id
+			)
+			select (select reached from cap), (select client_id from given_back), (select client_id from minted)
+		`, room, int64(client), actor.Kind, actor.ID, int64(maxUnlandedMintsADocument), lapse.Microseconds()).QueryRow(func(row pgx.Row) error {
+			return row.Scan(&atCap, &givenBack, &minted)
+		})
+		if err := s.store.Pool.SendBatch(ctx, batch).Close(); err != nil {
 			return 0, fmt.Errorf("give out a client id: %w", err)
 		}
-		if tag.RowsAffected() == 1 {
-			return crdt.ClientID(client), nil
+		if givenBack != nil {
+			slog.Info("dispatch: gave back a person's least recently presented client id no edit landed under, to give out another",
+				"room", room, "actor", ActorRef(actor), "given_back", *givenBack, "most", maxUnlandedMintsADocument)
+		}
+		switch {
+		case minted != nil:
+			return client, nil
+		case atCap && givenBack == nil:
+			return 0, errMintsLive
 		}
 	}
 	return 0, fmt.Errorf("give out a client id: %d draws were all taken", mintTries)
+}
+
+// keepPresenting presents clients' own id again every presenceInterval while its socket is open
+// and no edit has landed under it (presentClient), so its row stays live and no mint gives it
+// back (mintClient), on this process or another. A socket whose id no row of its own names - a
+// legacy socket, a read-only admission's drawn id - presents nothing, and nor does one whose row
+// says an edit landed already, which no mint gives back. Each presentation is one timer and one
+// statement, and the timer is set again only once the statement has returned and while no edit
+// has landed under the id. It returns what the socket's end runs, which stops it.
+func (s *Service) keepPresenting(room string, actor model.Actor, clients *socketClients) (end func()) {
+	if !clients.stored || clients.landed.Load() {
+		return func() {}
+	}
+	interval := presenceInterval()
+	var mu sync.Mutex
+	ended := false
+	mu.Lock()
+	defer mu.Unlock()
+	var timer *time.Timer
+	timer = time.AfterFunc(interval, func() {
+		if clients.landed.Load() {
+			return
+		}
+		s.presentClient(room, actor, clients.own)
+		mu.Lock()
+		defer mu.Unlock()
+		if !ended {
+			timer.Reset(interval)
+		}
+	})
+	return func() {
+		mu.Lock()
+		defer mu.Unlock()
+		ended = true
+		timer.Stop()
+	}
+}
+
+// presentClient records that an open socket still holds client, actor's id in room that no edit
+// landed under, as an admission that gives an id back records it (presented_at). A row an edit
+// has landed under since is left as it is. A write that fails is logged, and the next interval
+// presents the row again.
+func (s *Service) presentClient(room string, actor model.Actor, client crdt.ClientID) {
+	ctx, cancel := context.WithTimeout(context.Background(), clientCheckTimeout)
+	defer cancel()
+	if _, err := s.store.Pool.Exec(ctx, `
+		update document_client_ids set presented_at = now()
+		where artifact_id = $1 and client_id = $2 and actor_kind = $3 and actor_id = $4 and not landed
+	`, room, int64(client), actor.Kind, actor.ID); err != nil {
+		slog.Warn("dispatch: could not present an open socket's client id again; the next interval presents it",
+			"room", room, "client", uint64(client), "error", err)
+	}
 }
 
 // clientOwners is the person the table names for each of clients in room, with where a claimed
@@ -733,47 +912,43 @@ func (s *Service) clientOwners(ctx context.Context, room string, clients []uint6
 
 // claimClients stores clients, ids no admission gave out, as actor's in room, each claimed from
 // the clock at the same index of from (claimed_from), marked as having landed an edit, so no sweep
-// takes it: an update's claim is given back unless its edit lands (releaseClaims), and an
-// admission's is bounded by the claim window and maxClaimsADay (keepsClient). It returns the ones
-// this call stored: an id another call stored first is not among them, and the caller reads who
-// that was.
+// takes it: an update's claim is given back unless its apply stands (settleClients,
+// releaseClaims), and an admission's is bounded by the claim window and maxClaimsADay
+// (keepsClient). It returns the ones this call stored: an id another call stored first is not
+// among them, and the caller reads who that was.
 //
-// capped holds the claims to maxClaimsADay, as a legacy socket's claims of ids no stored history
-// names are (judgeClients) and an admission's claim is (keepsClient): where actor's claims stored
-// in room since the start of the UTC day (created_at, not minted) - every claim, capped or not -
-// and these come to more, none of them is stored and the call answers errClaimRefused. The count
-// and the insert are one statement behind the lock of actor's claims in room
-// (clientClaimsLockNamespace), in the one implicit transaction a batch runs in, so two capped
-// calls of one person count each other's rows; the statement reads the count off
-// document_client_ids_claims.
-func (s *Service) claimClients(ctx context.Context, room string, actor model.Actor, clients, from []uint64, capped bool) ([]uint64, error) {
+// Every claim is held to maxClaimsADay, on every kind of socket: where actor's claims stored in
+// room since the start of the UTC day (created_at, not minted) and these come to more, none of
+// them is stored and the call answers errClaimRefused. The count and the insert are one statement
+// behind the lock of actor's claims in room (clientClaimsLockNamespace), in the one implicit
+// transaction a batch runs in, so two calls of one person count each other's rows; the statement
+// reads the count off document_client_ids_claims.
+func (s *Service) claimClients(ctx context.Context, room string, actor model.Actor, clients, from []uint64) ([]uint64, error) {
 	batch := &pgx.Batch{}
-	if capped {
-		batch.Queue(`select pg_advisory_xact_lock($1, hashtext($2::text)) as client_claims_lock`, clientClaimsLockNamespace, room+" "+ActorRef(actor))
-	}
+	batch.Queue(`select pg_advisory_xact_lock($1, hashtext($2::text)) as client_claims_lock`, clientClaimsLockNamespace, room+" "+ActorRef(actor))
 	var today int64
 	var stored []int64
 	batch.Queue(`
 		with today as (
 			select count(*) as claims from document_client_ids
-			where $6::boolean and artifact_id = $1 and actor_kind = $3 and actor_id = $4 and not minted
+			where artifact_id = $1 and actor_kind = $3 and actor_id = $4 and not minted
 				and created_at >= date_trunc('day', now() at time zone 'UTC') at time zone 'UTC'
 		), claimed as (
 			insert into document_client_ids (artifact_id, client_id, actor_kind, actor_id, minted, landed, claimed_from)
 			select $1, claim.client, $3, $4, false, true, claim.claimed_from
 			from unnest($2::bigint[], $5::bigint[]) as claim (client, claimed_from)
-			where not $6::boolean or (select claims from today) + cardinality($2::bigint[]) <= $7::bigint
+			where (select claims from today) + cardinality($2::bigint[]) <= $6::bigint
 			on conflict do nothing
 			returning client_id
 		)
 		select (select claims from today), coalesce((select array_agg(client_id) from claimed), '{}')
-	`, room, clientIDs(clients), actor.Kind, actor.ID, clientIDs(from), capped, int64(maxClaimsADay)).QueryRow(func(row pgx.Row) error {
+	`, room, clientIDs(clients), actor.Kind, actor.ID, clientIDs(from), int64(maxClaimsADay)).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&today, &stored)
 	})
 	if err := s.store.Pool.SendBatch(ctx, batch).Close(); err != nil {
 		return nil, fmt.Errorf("claim client ids: %w", err)
 	}
-	if capped && today+int64(len(clients)) > maxClaimsADay {
+	if today+int64(len(clients)) > maxClaimsADay {
 		return nil, fmt.Errorf("%w: its claimant made %d claims in the document today, and makes at most %d a day", errClaimRefused, today, maxClaimsADay)
 	}
 	claimed := make([]uint64, len(stored))
@@ -784,8 +959,8 @@ func (s *Service) claimClients(ctx context.Context, room string, actor model.Act
 }
 
 // releaseClaims gives back claims, the ids claimClients stored for actor for an update whose
-// apply then did not stand, so an update's claim stands only where its edit landed. A release
-// that fails leaves the claim, which is still actor's own: it is logged and nothing else.
+// apply then did not stand, so an update's claim stands only where its update did. A release that
+// fails leaves the claim, which is still actor's own: it is logged and nothing else.
 func (s *Service) releaseClaims(room string, actor model.Actor, claims []uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), clientCheckTimeout)
 	defer cancel()
@@ -799,11 +974,13 @@ func (s *Service) releaseClaims(room string, actor model.Actor, claims []uint64)
 }
 
 // recordLanded marks the row of client, the id room's socket was given, as having landed an edit,
-// so the sweep never deletes it (sweepUnusedClientIDs). A row the sweep took while the socket
-// stayed open is written again for its person. It runs off the peer's read loop, once a socket,
-// after the socket's first edit under its own id stood, and only where the row did not say an edit
-// had landed as the socket was admitted, which a claimed row does; a write that fails is logged,
-// and the socket's next reconnect marks the row again on its first edit.
+// so no mint gives it back and the sweep never deletes it (mintClient, sweepUnusedClientIDs). A
+// row the sweep took while the socket stayed open is written again for its person. It runs off
+// the peer's read loop, once a socket, after the first of the socket's applies that stood and
+// left the room holding a struct under client (settleClients) - not one whose structs under it
+// only parked - and only where the row did not say an edit had landed as the socket was
+// admitted, which a claimed row does; a write that fails is logged, and the socket's next
+// reconnect marks the row again on its first edit.
 func (s *Service) recordLanded(room string, actor model.Actor, client crdt.ClientID) {
 	ctx, cancel := context.WithTimeout(context.Background(), clientCheckTimeout)
 	defer cancel()
@@ -818,8 +995,9 @@ func (s *Service) recordLanded(room string, actor model.Actor, client crdt.Clien
 	}
 }
 
-// sweepUnusedClientIDs deletes every row whose id never landed an edit and that no admission has
-// presented for unusedClientIDAge, and returns how many it deleted.
+// sweepUnusedClientIDs deletes every row whose id never landed an edit and that nothing has
+// presented for unusedClientIDAge - no admission, and no open socket (keepPresenting) - and
+// returns how many it deleted.
 func sweepUnusedClientIDs(ctx context.Context, pool *pgxpool.Pool) (int64, error) {
 	tag, err := pool.Exec(ctx, `
 		delete from document_client_ids where not landed and presented_at < $1
@@ -840,15 +1018,37 @@ func clientIDs(clients []uint64) []int64 {
 }
 
 // clientJudgement is what judgeClients decided of an update it let through: the ids it claimed
-// for the sender, which the hook gives back if the apply does not stand (settleClients,
-// releaseClaims), how many of them the socket's bound on its claims of ids no stored history names
-// counts (socketClients.claims), which go back with them, and whether the update writes under the
-// socket's own given id, whose row the hook marks once the apply stands (settleClients,
-// recordLanded).
+// for the sender, which the hook gives back with the socket's count of them where the apply does
+// not stand (settleClients, releaseClaims), and whether the update writes under the socket's own
+// given id, whose row the hook marks once an apply has left the room holding a struct under it
+// (settleClients, recordLanded).
 type clientJudgement struct {
 	claimed   []uint64
-	counted   int
 	writesOwn bool
+}
+
+// roomHolds is whether room holds a struct of client: whether its clock of client is past 0. It
+// reads that one clock and no other: it asks whether room holds a GC struct of client one clock
+// long at clock 0 (crdt.DocContainsUpdateV1, which decodes the probe, a few bytes, and compares
+// the struct's end with the store's clock of its client under the room's read lock), where the
+// room's state vector would copy an entry for each client it holds - 40,001 in the tangled
+// document the keystroke drive types into. A parked struct is in the pending queue, not the
+// store, so a room whose structs of client only parked holds none. A nil room holds nothing.
+func roomHolds(room *crdt.Doc, client crdt.ClientID) bool {
+	if room == nil {
+		return false
+	}
+	probe := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarUint(1) // one client's structs
+		encoder.WriteVarUint(1) // one struct of them
+		encoder.WriteVarUint(uint64(client))
+		encoder.WriteVarUint(0) // at clock 0
+		encoder.WriteUint8(0)   // a GC struct
+		encoder.WriteVarUint(1) // one clock long
+		encoder.WriteVarUint(0) // and no deletions
+	})
+	held, err := crdt.DocContainsUpdateV1(room, probe)
+	return err == nil && held
 }
 
 // judgeClients is the rule above for one browser update: it returns the refusal of an update
@@ -899,9 +1099,7 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 	if refusal := s.refusedDuplicates(info, connection, owners, duplicated, from, to); refusal != nil {
 		return clientJudgement{}, refusal
 	}
-	// capped are the claims of ids no stored history names that a legacy socket makes: the claims
-	// no window ends, which its bounds count (socketClients.mayClaim, claimClients).
-	var claims, claimFrom, capped []uint64
+	var claims, claimFrom []uint64
 	for _, client := range asked {
 		owner, bound := owners[client]
 		switch {
@@ -910,7 +1108,7 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 		case !bound && client >= mintedClientFloor:
 			return clientJudgement{}, s.refuseClient(info, connection, client, "no admission gave it out")
 		case !bound:
-			heldTo, unnamed, err := s.claimable(ctx, info.Room, info.Doc, held, connection.actor, clients.legacy, client)
+			heldTo, err := s.claimable(ctx, info.Room, info.Doc, held, connection.actor, clients.legacy, client)
 			if errors.Is(err, errClaimRefused) {
 				return clientJudgement{}, s.refuseClient(info, connection, client, err.Error())
 			} else if err != nil {
@@ -918,19 +1116,16 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 			}
 			claims = append(claims, client)
 			claimFrom = append(claimFrom, heldTo)
-			if unnamed && clients.legacy {
-				capped = append(capped, client)
-			}
 		}
 	}
 	if len(claims) > 0 {
-		if len(capped) > 0 && !clients.mayClaim(len(capped)) {
-			return clientJudgement{}, s.refuseClient(info, connection, capped[0],
-				fmt.Sprintf("its socket holds claims of %d ids no history names, the most it may", maxConfirmedClients))
+		if !clients.mayClaim(len(claims)) {
+			return clientJudgement{}, s.refuseClient(info, connection, claims[0],
+				fmt.Sprintf("its socket holds claims of %d ids, the most it may", maxClaimsASocket))
 		}
-		judged.claimed, err = s.claimClients(ctx, info.Room, connection.actor, claims, claimFrom, len(capped) > 0)
+		judged.claimed, err = s.claimClients(ctx, info.Room, connection.actor, claims, claimFrom)
 		if errors.Is(err, errClaimRefused) {
-			return clientJudgement{}, s.refuseClient(info, connection, capped[0], err.Error())
+			return clientJudgement{}, s.refuseClient(info, connection, claims[0], err.Error())
 		} else if err != nil {
 			return clientJudgement{}, s.clientCheckFailed(info, err)
 		}
@@ -949,12 +1144,7 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 				}
 			}
 		}
-		for _, client := range judged.claimed {
-			if slices.Contains(capped, client) {
-				judged.counted++
-			}
-		}
-		clients.countClaims(judged.counted)
+		clients.countClaims(len(judged.claimed))
 	}
 	clients.confirm(asked)
 	return judged, nil
@@ -1046,25 +1236,37 @@ func heldBy(room *crdt.Doc) crdt.StateVector {
 }
 
 // settleClients is what the hook does with judged once the apply has returned, stood saying
-// whether its update stood: an apply that did not stand gives back the claims it made
-// (releaseClaims), with the socket's count of them, and the first apply of a socket that stood
-// with an edit under the socket's own id marks that id's row (recordLanded), unless the row said
-// an edit had landed as the socket was admitted.
+// whether its update stood. An apply that did not stand gives back the claims its update made
+// (releaseClaims), with the socket's count of them. A claim whose apply stood is kept, whether its
+// structs integrated or only parked behind a clock the room lacks: it binds the id to its claimant,
+// which is what keeps another person from parking a struct under that id at a clock its tab types
+// next and having the tab's own keystroke there dropped as a duplicate once the gap fills. The
+// rows such claims add are bounded by maxClaimsASocket and maxClaimsADay, on every kind of socket.
+//
+// The first apply of a socket after which the room holds a struct under the socket's own id, from
+// an update writing under it, marks that id's row (recordLanded), unless the row said an edit had
+// landed as the socket was admitted: an update whose structs under the id only parked leaves the
+// room holding none of them and the row unmarked, so a later mint may still give it back once its
+// socket has gone. It asks the room for that one client's clock (roomHolds), never for its state
+// vector, which would copy every client the room holds on every keystroke, and only until an edit
+// has landed under the id, once a socket.
 func (s *Service) settleClients(info websocket.PeerUpdateInfo, judged clientJudgement, stood bool) {
 	connection := connectionOf(info.Context)
 	if connection == nil || connection.clients == nil {
 		return
 	}
+	clients := connection.clients
 	if !stood {
 		if len(judged.claimed) > 0 {
-			connection.clients.forget(judged.claimed)
-			connection.clients.countClaims(-judged.counted)
+			clients.forget(judged.claimed)
+			clients.countClaims(-len(judged.claimed))
 			s.releaseClaims(info.Room, connection.actor, judged.claimed)
 		}
 		return
 	}
-	if judged.writesOwn && connection.clients.landed.CompareAndSwap(false, true) {
-		go s.recordLanded(info.Room, connection.actor, connection.clients.own)
+	if judged.writesOwn && !clients.landed.Load() && roomHolds(info.Doc, clients.own) &&
+		clients.landed.CompareAndSwap(false, true) {
+		go s.recordLanded(info.Room, connection.actor, clients.own)
 	}
 }
 

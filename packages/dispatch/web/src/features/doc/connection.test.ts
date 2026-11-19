@@ -1559,6 +1559,42 @@ test("a page given another client id before it typed keeps what it types after a
   }
 });
 
+// A read-only admission stores no client id for the page: Dispatch sends it one drawn for it alone,
+// which no row names (client_ids.go, admitClients). The page takes it, having written nothing,
+// and presents it on its next socket; once that socket is admitted writable, Dispatch finds no row
+// for it and gives one afresh, which the page takes too (`takeClientId`), since a read-only page
+// writes nothing. What it types then goes out under the fresh id, is kept as a saved row until the
+// room acknowledges it, and the room holds it: no refusal, and nothing lost.
+test("a page admitted read-only and then writable takes the fresh client id its writable socket gives it and writes under it", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const drawn = 2 ** 32 + 51;
+  const fresh = 2 ** 32 + 52;
+  await withProvider(artifact, async ({ connection, refusals, socket, synced }) => {
+    const first = await socket(0);
+    first.receive(clientIdFrame(drawn, artifact));
+    expect(connection.doc.clientID).toBe(drawn);
+    serveInYgoOrder(first, server, "readonly", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    expect(updateClients(first, artifact)).toEqual([]);
+
+    first.drop();
+    const second = await socket(1);
+    expect(presentedClientId(second)).toBe(String(drawn));
+    second.receive(clientIdFrame(fresh, artifact));
+    expect(connection.doc.clientID).toBe(fresh);
+    expect(connection.awareness.clientID).toBe(fresh);
+    serveInYgoOrder(second, server, "read-write", artifact);
+    typeInto(connection.doc, " typed");
+    await waitFor(() => expect(updateClients(second, artifact)).toEqual([fresh]));
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([[artifact, drawn, 1]]));
+    answerUpdates(second, server, artifact);
+    expect(server.getXmlFragment("prosemirror").toString()).toContain(" typed");
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([]));
+    expect(refusals).toEqual([]);
+  });
+});
+
 test("a server that gives no client id leaves the page the id its document drew, and its presence goes out once that is known", async () => {
   const artifact = artifactId();
   const server = serverWith("shared", 100);

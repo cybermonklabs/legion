@@ -1375,7 +1375,8 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	// The client ids the update writes under are judged last before the apply, since the
 	// judgement can claim ids for the sender (judgeClients), which a refusal above would then
 	// have to give back; a claim whose apply does not stand is given back below, and the first
-	// edit a socket lands under its own id marks that id's row (settleClients).
+	// apply after which the room holds a struct under the socket's own id marks that id's row
+	// (settleClients).
 	judged, refusal := s.judgeClients(info)
 	if refusal != nil {
 		return refusal

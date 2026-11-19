@@ -485,13 +485,14 @@ export const DOCUMENT_UPDATE_REFUSED_CLOSE_REASON = "DOC_UPDATE_REFUSED";
  *  one another person's edits claimed first, one Dispatch never gave out at all
  *  (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`), or one below 2^32 that the sender may not claim - one
  *  the document's history names, past the 30-day claim window or by a person who did not edit the
- *  document since, or one past the bounds on a socket's claims when it presents no client id. It
- *  is the same close for an edit at clocks another person claimed first that differs from what
- *  the document holds there, and for a socket presenting no client id whose update carries such
- *  clocks under more than 4 claimed ids. Nothing of it is stored or relayed. Permanent like the
- *  size refusal: the browser that sent it would send it again on every reconnect, so the dashboard
- *  drops the refused edit, re-reads the document and takes a fresh client id with it. Generated
- *  into Go as `contracts.DocumentClientIdRefusedCloseReason`. */
+ *  document since, or one past the bounds every claim is held to on every socket, 64 a socket and
+ *  64 a person in one document in one UTC day. It is the same close for an edit at clocks another
+ *  person claimed first that differs from what the document holds there, and for a socket
+ *  presenting no client id whose update carries such clocks under more than 4 claimed ids. Nothing
+ *  of it is stored or relayed. Permanent like the size refusal: the browser that sent it would
+ *  send it again on every reconnect, so the dashboard drops the refused edit, re-reads the document
+ *  and takes a fresh client id with it. Generated into Go as
+ *  `contracts.DocumentClientIdRefusedCloseReason`. */
 export const DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON = "DOC_CLIENT_ID_REFUSED";
 
 /** The query parameter a document websocket's page presents the Yjs client id it holds for that
@@ -505,19 +506,23 @@ export const DOCUMENT_CLIENT_ID_PARAMETER = "client_id";
  *  other frame, on a socket that presented `DOCUMENT_CLIENT_ID_PARAMETER`: this prefix, then the
  *  decimal client id Dispatch gives that socket's page for the document. It is the id the page
  *  presented where Dispatch had given that id to the same person, and an id given out afresh
- *  otherwise. The page writes and announces its presence under no other id. Generated into Go as
- *  `contracts.DocumentClientIdMessagePrefix`. */
+ *  otherwise; to a page admitted read-only, which writes under no id, an id drawn as a fresh one is
+ *  that Dispatch stores for no one, which the page takes while it has written nothing and gives up
+ *  for the one its next writable admission gives it. The page writes and announces its presence
+ *  under no other id. Generated into Go as `contracts.DocumentClientIdMessagePrefix`. */
 export const DOCUMENT_CLIENT_ID_MESSAGE_PREFIX = "dispatch.client_id:";
 
 /**
  * The close code the document websocket (`/ws/doc/{room}`) refuses with when the memory budget over
  * the documents it holds open is full and no room can be closed: a browser asking for one more
  * document is closed with it before any room is made, and an update that would grow a document
- * already open is closed with it too, while an update that shrinks one still applies. It is in the
- * 4500-4599 band collaborative servers publish as transient, so the dashboard keeps the edit it
- * could not send and reconnects on its own backoff, the live socket's (`reconnectDelayMs`), which
- * spreads a crowd of tabs and caps at 30 s, to retry it. Generated into Go as
- * `contracts.DocumentBusyCloseCode`.
+ * already open is closed with it too, while an update that shrinks one still applies. A browser
+ * asking for a document is closed with it as well where its person holds the 64 client ids no edit
+ * has landed under that one document allows a person, and each is held by a socket still open. It
+ * is in the 4500-4599 band collaborative servers publish as transient, so the dashboard keeps the
+ * edit it could not send and reconnects on its own backoff, the live socket's
+ * (`reconnectDelayMs`), which spreads a crowd of tabs and caps at 30 s, to retry it. Generated into
+ * Go as `contracts.DocumentBusyCloseCode`.
  */
 export const DOCUMENT_BUSY_CLOSE_CODE = 4503;
 

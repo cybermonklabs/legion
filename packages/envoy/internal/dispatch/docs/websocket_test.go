@@ -149,10 +149,12 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 }
 
 // admittedRequest is request on a request context of its own carrying the admission ServeHTTP
-// puts on every document socket's context, that context's cancel included, and the one read of
-// the document's issue ServeHTTP makes for it: authorize fills the admission in and takes that
-// read, and cancelling the context with errSchemaRevoked is how a re-check closes the socket
-// (revokeUnless).
+// puts on every document socket's context, that context's cancel included, the one read of the
+// document's issue ServeHTTP makes for it, and the decision ServeHTTP makes from that read and the
+// live fleet of whether the socket's page may write (decideWritable), for a document whose
+// elements need no schema version: authorize takes that read and decision, and may only turn the
+// admission read-only, and cancelling the context with errSchemaRevoked is how a re-check closes
+// the socket (revokeUnless).
 func admittedRequest(t *testing.T, service *Service, request *http.Request) *http.Request {
 	t.Helper()
 	ctx, cancel := context.WithCancelCause(request.Context())
@@ -162,6 +164,9 @@ func admittedRequest(t *testing.T, service *Service, request *http.Request) *htt
 		t.Fatalf("read the document's issue as the socket's admission does: %v", err)
 	}
 	connection := &connectionState{issue: issue, admission: &schemaAdmission{cancel: cancel}}
+	if err := service.decideWritable(ctx, request.PathValue("room"), connection, request.URL.Query(), 0); err != nil {
+		t.Fatalf("decide whether the socket's page may write as its admission does: %v", err)
+	}
 	return request.WithContext(context.WithValue(ctx, connectionContextKey{}, connection))
 }
 

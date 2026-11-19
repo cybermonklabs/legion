@@ -282,30 +282,31 @@ func requireNothingClaimed(t *testing.T, service *Service, artifactID string, cl
 	}
 }
 
-// A legacy socket holds at most 64 claims of ids no stored history names, in all: its 64 claims
-// land, and once they are a day old, so that the person's daily bound counts none of them, the
-// same socket's 65th is refused and nothing of it is claimed.
+// A socket holds at most 64 claims in all (maxClaimsASocket), a legacy socket's claims of ids no
+// stored history names among them: its 64 claims land, and once they are a day old, so that the
+// person's daily bound counts none of them, the same socket's 65th is refused and nothing of it is
+// claimed.
 func TestALegacySocketHoldsAtMost64ClaimsOfIDsNoHistoryNames(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
 	setClientIDsSince(t, service, time.Now().Add(-31*24*time.Hour))
 	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
 	legacy := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("alice"), artifactID, crdt.New(crdt.WithClientID(1_600_000_000)))
 	awaitAnswer(t, legacy, "the document")
-	claimed := make([]crdt.ClientID, maxConfirmedClients)
+	claimed := make([]crdt.ClientID, maxClaimsASocket)
 	for i := range claimed {
 		claimed[i] = crdt.ClientID(1_600_000_001 + i)
 		writeUnder(t, legacy, claimed[i])
 	}
 	awaitHeld(t, room, claimed, "the legacy socket's 64 claims")
 	requireConnected(t, legacy, "the legacy socket after its 64 claims")
-	if got := claimsOf(t, service, artifactID, "alice"); got != maxConfirmedClients {
-		t.Fatalf("alice holds %d claims, want the socket's %d", got, maxConfirmedClients)
+	if got := claimsOf(t, service, artifactID, "alice"); got != maxClaimsASocket {
+		t.Fatalf("alice holds %d claims, want the socket's %d", got, maxClaimsASocket)
 	}
 	if _, err := service.store.Pool.Exec(context.Background(),
 		`update document_client_ids set created_at = created_at - interval '1 day' where artifact_id = $1`, artifactID); err != nil {
 		t.Fatal(err)
 	}
-	over := crdt.ClientID(1_600_000_001 + maxConfirmedClients)
+	over := crdt.ClientID(1_600_000_001 + maxClaimsASocket)
 	writeUnder(t, legacy, over)
 	awaitRefused(t, legacy, "the legacy socket's 65th claim")
 	requireNothingClaimed(t, service, artifactID, over)
@@ -489,8 +490,8 @@ func TestTheCostOfAClaimOnALongHistory(t *testing.T) {
 		}
 		before := rowsRead.Load()
 		started := time.Now()
-		if _, unnamed, err := service.claimable(ctx, artifactID, live, live.StateVector(), actor, true, uint64(1_400_000_001+i)); err != nil || !unnamed {
-			t.Fatalf("claimable: unnamed %t, %v", unnamed, err)
+		if heldTo, err := service.claimable(ctx, artifactID, live, live.StateVector(), actor, true, uint64(1_400_000_001+i)); err != nil || heldTo != 0 {
+			t.Fatalf("claimable: held to %d, %v; want an id no history names, claimed from 0", heldTo, err)
 		}
 		t.Logf("claim %d of an id no history names: %v, reading %d of the history's %d rows", i+1, time.Since(started), rowsRead.Load()-before, stored)
 	}

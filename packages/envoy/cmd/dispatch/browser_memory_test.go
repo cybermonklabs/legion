@@ -775,8 +775,8 @@ const (
 // nothing for it.
 //
 // No browser can send the chain. Its items are under tangledChain client ids no history names,
-// and a socket that presents no client id claims at most 64 of those, and a person at most 64 in
-// one document a UTC day (docs' maxConfirmedClients and maxClaimsADay, client_ids.go). What the
+// and a socket claims at most 64 ids, and a person at most 64 in one document a UTC day (docs'
+// maxClaimsASocket and maxClaimsADay, client_ids.go). What the
 // drives hold is what the frames after the chain meet, and those still come from browsers.
 func (h *memoryHarness) tangledDocument(t *testing.T) string {
 	t.Helper()
