@@ -16,9 +16,9 @@ body: |-
     requests alone. The broker refuses to
     start on a mapped account that `BROKER_SERVICE_LOGINS` does not name, that `BROKER_SERVICES`
     binds, whose login service `BROKER_SERVICES` or `BROKER_VM_SERVICES` names, that
-    `BROKER_EXCHANGE_ACCOUNTS` maps to another person, that a `BROKER_NATS_SERVICES` or
-    `BROKER_API_ACCOUNTS` entry names, that a `BROKER_SESSION_ACCOUNT_PAIRS` pair names, or that a
-    `BROKER_EXCHANGE_READ_ACCOUNTS` entry names.
+    `BROKER_EXCHANGE_ACCOUNTS` maps to another person, that a `BROKER_EXCHANGE_READ_ACCOUNTS`,
+    `BROKER_API_ACCOUNTS` or `BROKER_NATS_SERVICES` entry names, or that a
+    `BROKER_SESSION_ACCOUNT_PAIRS` pair names.
     `GET /v1/launcher-credentials` names such a
     login's person in a new `person` field, and Dispatch's machine logins page shows the login as
     the viewer's own pod.

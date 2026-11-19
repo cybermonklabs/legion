@@ -57,9 +57,9 @@ var (
 	// says why). Nothing is written.
 	ErrInvalidClaim = errors.New("a claim is only for a pod a launcher enrols and must match ^[a-z][a-z0-9-]{0,127}$")
 	// ErrNotEnrollingCredential refuses a revoke of an enrollment by any launcher credential but
-	// the one that made it (Revoke). It holds for the enrollments that carry no operator, a pod's
-	// or a machine's own session. It holds too for the pod enrollments that a person's pod login
-	// makes (PersonPodLogin), which carry that person as their operator.
+	// the one that made it (Revoke). It holds for the enrollments that carry no operator, a
+	// service's pod's or a machine's own session. It holds too for the pod enrollments that a
+	// person's pod login makes (PersonPodLogin), which carry that person as their operator.
 	ErrNotEnrollingCredential = errors.New("only the machine login that made this enrollment may end it")
 	ErrPodTokenRequired       = errors.New("a pod enrollment's renewal must carry its projected token")
 	// ErrPodSelfEnrollOnly refuses a pod enrollment under the enrolling pod's own token login —
@@ -2105,11 +2105,11 @@ func machineCredential(cred Credential) bool {
 // plausible-looking. A row that does not exist at all has no operator/kind to check ownership
 // against, so that case alone falls through to ErrNotLive below rather than ErrOperatorMismatch.
 //
-// A pod enrollment and a machine's own session carry no operator, so the operator cannot tell
-// one service's sessions from another's. A pod enrollment that a person's pod login made carries
-// its person, and that operator cannot tell one of the person's pods from another. Which
-// credential ends one of these is decided in the two branches below, and a pod enrollment of
-// the login's own account takes the first of them:
+// A service's pod enrollment and a machine's own session carry no operator, so the operator
+// cannot tell one service's sessions from another's. A pod enrollment that a person's pod login
+// made carries its person, and that operator cannot tell one of the person's pods from another.
+// Which credential ends one of these is decided in the two branches below, and a pod enrollment
+// of the login's own account takes the first of them:
 //
 //   - such an enrollment ends under the credential that made it, and only while that credential
 //     is the one its own pod holds: cred.PodUID is the enrollment's runtime id (ownPod, the

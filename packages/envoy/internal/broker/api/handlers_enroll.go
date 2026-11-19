@@ -31,7 +31,9 @@ type createEnrollmentBody struct {
 	// A pod only, optional: which of the pod's independent enrollments this is.
 	Slot string `json:"slot"`
 	// Optional: the operator the session runs for. The broker records the machine credential's own
-	// operator whatever is sent, and refuses any other login. Absent or null for a pod.
+	// operator whatever is sent, and refuses any other login. Absent or null for a service's pod.
+	// A pod that a person's pod login (enroll.PersonPodLogin) enrols records that person, sent or
+	// not.
 	Operator *string `json:"operator"`
 	// The RFC 7638 JWK thumbprint of the session's P-256 signing key.
 	Thumbprint string `json:"thumbprint"`
@@ -84,7 +86,11 @@ type selfResponse struct {
 	Kind string `json:"kind"`
 	// When the session's lease lapses unless it is renewed.
 	LeaseExpiresAt time.Time `json:"lease_expires_at"`
-	// The person the session runs for; null for a pod.
+	// The person the session runs for, as its enrollment row recorded it. For a pod it is the
+	// person that a person's pod login (enroll.PersonPodLogin) carried when it enrolled the pod,
+	// and null for any other pod. The row keeps that person after BROKER_POD_OPERATORS stops
+	// mapping the pod's account, while the pod then acts for no person
+	// (requests.Machine.requester).
 	Operator *string `json:"operator"`
 	// The pod slot it holds; null for every enrollment without one.
 	Slot *string `json:"slot"`

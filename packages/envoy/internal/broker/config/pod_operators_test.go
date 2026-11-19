@@ -256,8 +256,8 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 				t.Fatalf("with BROKER_POD_OPERATORS unset, Load: %v; want it to load, so that the refusal of %s is the mapping's", err, adaAccount)
 			}
 			if state, holds := tc.reachable(unmapped); !holds {
-				t.Fatalf("with BROKER_POD_OPERATORS unset, want %s; ServiceLogins = %v, ServicesByAccount = %v, VMServicesByAccount = %v, ExchangeAccounts = %+v",
-					state, unmapped.ServiceLogins, unmapped.ServicesByAccount, unmapped.VMServicesByAccount, unmapped.ExchangeAccounts)
+				t.Fatalf("with BROKER_POD_OPERATORS unset, want %s; ServiceLogins = %v, ServicesByAccount = %v, VMServicesByAccount = %v, ExchangeAccounts = %+v, ExchangeReadAccounts = %+v, APIAccounts = %v, SessionAccountPairs = %v, NATS = %+v",
+					state, unmapped.ServiceLogins, unmapped.ServicesByAccount, unmapped.VMServicesByAccount, unmapped.ExchangeAccounts, unmapped.ExchangeReadAccounts, unmapped.APIAccounts, unmapped.SessionAccountPairs, unmapped.NATS)
 			}
 			e := tc.env()
 			e["BROKER_POD_OPERATORS"] = adaPodOperator
@@ -280,8 +280,9 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 // same person, in other letter case, is no refusal. Nor is a BROKER_SERVICES entry that binds
 // another account to another service, nor a BROKER_NATS_SERVICES entry that names another
 // account, nor a BROKER_API_ACCOUNTS caller of another Kubernetes account or of a Google account,
-// nor a BROKER_SESSION_ACCOUNT_PAIRS pair of two accounts the setting does not map. No entry gives
-// a nil map.
+// nor a BROKER_EXCHANGE_READ_ACCOUNTS reader of another account, nor a
+// BROKER_SESSION_ACCOUNT_PAIRS pair of two accounts the setting does not map. No entry gives a nil
+// map.
 func TestPodOperatorsLoadsMappedAccounts(t *testing.T) {
 	natsUser, natsIssuer, natsCurve, _ := natsSeeds(t)
 	e := withK8sIssuer()
@@ -297,6 +298,7 @@ func TestPodOperatorsLoadsMappedAccounts(t *testing.T) {
 	e["BROKER_SESSION_ACCOUNT_PAIRS"] = "system:serviceaccount:legion:legion-worker=system:serviceaccount:legion:example-worker"
 	e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch"
 	e["BROKER_EXCHANGE_ACCOUNTS"] = adaAccount + "=EXAMPLE=Ada@Example.com"
+	e["BROKER_EXCHANGE_READ_ACCOUNTS"] = "system:serviceaccount:example-ns:example-reader=example-reader=example-read-session"
 	e["BROKER_POD_OPERATORS"] = " " + adaPodOperator + "\n\tada@example.com=" + adaSecondAccount + " grace@example.com=" + graceAccount + " "
 	cfg, err := Load(env(e))
 	if err != nil {
@@ -307,9 +309,9 @@ func TestPodOperatorsLoadsMappedAccounts(t *testing.T) {
 		t.Fatalf("PodOperators = %v, want %v", cfg.PodOperators, want)
 	}
 	// The other settings loaded as written, so each is beside the mapping and refuses nothing.
-	if len(cfg.APIAccounts) != 1 || len(cfg.GoogleAPIAccounts) != 1 || len(cfg.SessionAccountPairs) != 1 || !cfg.NATS.Enabled() {
-		t.Fatalf("APIAccounts = %v, GoogleAPIAccounts = %v, SessionAccountPairs = %v, NATS = %+v; want one Kubernetes caller, one Google caller, one pair and the NATS auth service",
-			cfg.APIAccounts, cfg.GoogleAPIAccounts, cfg.SessionAccountPairs, cfg.NATS)
+	if len(cfg.APIAccounts) != 1 || len(cfg.GoogleAPIAccounts) != 1 || len(cfg.SessionAccountPairs) != 1 || len(cfg.ExchangeReadAccounts) != 1 || !cfg.NATS.Enabled() {
+		t.Fatalf("APIAccounts = %v, GoogleAPIAccounts = %v, SessionAccountPairs = %v, ExchangeReadAccounts = %+v, NATS = %+v; want one Kubernetes caller, one Google caller, one pair, one reader and the NATS auth service",
+			cfg.APIAccounts, cfg.GoogleAPIAccounts, cfg.SessionAccountPairs, cfg.ExchangeReadAccounts, cfg.NATS)
 	}
 	if people, err := parsePodOperators("BROKER_POD_OPERATORS", " \n\t "); err != nil || people != nil {
 		t.Fatalf("parsePodOperators of white space alone = %v, %v; want nil and no error", people, err)

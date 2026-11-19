@@ -898,8 +898,9 @@ func NewSet(secrets map[string]Secret) *Set {
 
 // Requester is an enrolled session or pod as the policy sees it.
 type Requester struct {
-	// Operator is the email of the person whose machine login the session enrolled under; empty
-	// for a pod.
+	// Operator is the email of the person whose machine login the session enrolled under. For a
+	// pod it is the person a person's pod login carried, while BROKER_POD_OPERATORS still maps the
+	// pod's account to that person (requests.Machine.requester), and empty for any other pod.
 	Operator string
 	// Service is the service of the machine login that enrolled the session, set only when the
 	// session is a pod whose verified service account is one of the accounts BROKER_SERVICES maps

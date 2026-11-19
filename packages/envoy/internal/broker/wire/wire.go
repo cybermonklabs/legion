@@ -211,7 +211,9 @@ type RecordEnrollmentResp struct {
 	// The session's runtime: whatever names the session on its machine (the helper's
 	// host:pid:start time, a container's id), or a pod's UID.
 	RuntimeID string `json:"runtime_id"`
-	// The person the session runs for; empty for a pod.
+	// The person the session runs for, as its enrollment row held it when the request was made.
+	// For a pod it is the person that a person's pod login (enroll.PersonPodLogin) carried when it
+	// enrolled the pod, and empty for any other pod.
 	Operator string `json:"operator"`
 	// The pod slot it holds; null for every enrollment without one.
 	Slot *string `json:"slot"`

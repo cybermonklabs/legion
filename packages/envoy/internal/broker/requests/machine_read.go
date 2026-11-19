@@ -1139,7 +1139,9 @@ func writtenBeforeMigration13(alias string) string {
 // An automatic grant a person's pod got as that person is not ended once BROKER_POD_OPERATORS no
 // longer maps the pod's account to that person, but its re-check refuses it (ErrGrantNotLive),
 // which answers no reusable grant, so Create asks for the names afresh. The grant is reusable
-// again when the entry comes back.
+// again when the entry comes back. The exception is a grant whose secret's requesters tag names
+// the person: the secret no longer lists the requester, so the grant is ended for good, as the
+// paragraph above says (errRequesterNotListed).
 // No live grant holds a withheld name nobody approved: the withhold ended each one (withhold).
 // The lookup reads the requests row's own enrollment_id, which an adoption rewrites, so a session
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
