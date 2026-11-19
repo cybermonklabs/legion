@@ -331,7 +331,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/result-commit.e2e.ts` | the result line is read in the document margin's Pinned tab |
 | `e2e/search-tiers.e2e.ts` | its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls |
 | `e2e/search.e2e.ts` | the server's search hits; the server's answer for the query |
-| `e2e/settings.e2e.ts` | mappings, defaults and architecture sources saved, refused and re-read |
+| `e2e/settings.e2e.ts` | project defaults and architecture sources saved, refused and re-read |
 | `e2e/shell.e2e.ts` | the server must revoke the session |
 | `e2e/signins.e2e.ts` | the broker's machine list and a Revoke decided there |
 | `e2e/smoke.e2e.ts` | the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami |

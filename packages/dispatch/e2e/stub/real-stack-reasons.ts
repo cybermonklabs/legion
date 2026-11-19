@@ -255,7 +255,7 @@ export const realStackReasons: Record<string, string> = {
   "search-tiers.e2e.ts":
     "its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls",
   "search.e2e.ts": "the server's search hits; the server's answer for the query",
-  "settings.e2e.ts": "mappings, defaults and architecture sources saved, refused and re-read",
+  "settings.e2e.ts": "project defaults and architecture sources saved, refused and re-read",
   "shell.e2e.ts": "the server must revoke the session",
   "signins.e2e.ts": "the broker's machine list and a Revoke decided there",
   "smoke.e2e.ts":
