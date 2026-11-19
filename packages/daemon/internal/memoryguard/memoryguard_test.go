@@ -2888,6 +2888,41 @@ func TestMemoryGuardSearchesAtAnUrgentReadingAtTheMarkThoughAHeldProcessGrew(t *
 	}
 }
 
+// The early kill of an urgent reading at the mark keeps the floor: where the processes the guard
+// may end hold less than the floor share between them once the reads again have dropped one gone
+// at the mark, it ends nothing, though a held process grew (INFRA-3531 R1 of spec version 43,
+// "where the processes it may end hold at least the floor share of the limit between them"). The
+// agent holds 3 GiB beside pids 300 and 301, which grow 20 MiB at each of the band's three
+// readings, to 260 and 310 MiB, 570 MiB between them, above the floor of 409.6 MiB. Pid 301 exits
+// before the reading at the mark, 3800 MiB, at or above the urgent share, and pid 300 grows 20 MiB
+// more: the reads again leave pid 300 alone, at 280 MiB, under the floor, so the guard gives the
+// rise up with nothing to end. A guard that sent the early kill on the band's floor ended pid 300.
+func TestMemoryGuardSendsNoEarlyKillWhereTheReadsAgainLeaveLessThanTheFloor(t *testing.T) {
+	pod := newFakePod(t)
+	a := fakeProcess{pid: 300, ppid: 100, start: 3000, args: []string{"python3", "a.py"}, anon: 200 * mib}
+	b := fakeProcess{pid: 301, ppid: 100, start: 3010, args: []string{"python3", "b.py"}, anon: 250 * mib}
+	pod.add(agent(3*gib), a, b)
+	pod.setAnon(3100 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	for _, reading := range []uint64{3200, 3300, 3400} {
+		pod.resize(&a, a.anon+20*mib)
+		pod.resize(&b, b.anon+20*mib)
+		pod.setAnon(reading * mib)
+		h.tick()
+	}
+	h.requireKilled()
+	pod.remove(b.pid)
+	pod.resize(&a, a.anon+20*mib)
+	pod.setAnon(3800 * mib)
+	h.tick()
+	h.requireKilled()
+	if got := h.log.with("stopped for this rise reason=nothing to end"); len(got) != 1 {
+		t.Fatalf("at the urgent reading at the mark the stopped lines are %q, want the rise given up with nothing to end; the log:\n%s", got, strings.Join(h.log.all(), "\n"))
+	}
+}
+
 // A fork the search finds started since the band's last reading, running the program of a parent
 // the search found too, ranks by its size less its parent's read by that search, since the guard
 // has read that parent in this stay (INFRA-3531 R1 of spec version 43): a fork whose parent's size
