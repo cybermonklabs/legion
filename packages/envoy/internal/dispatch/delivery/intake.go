@@ -322,7 +322,9 @@ func consumerGenerationMetadata() map[string]string {
 // has lapsed reaches the durable a take-over recreated under the same name, where it would move
 // the new holder's pending entry for that message and have it delivered a second time. Withheld,
 // the message is not lost: it stays outstanding, and the take-over's recreate at the durable's
-// ack floor hands it to the new holder once.
+// ack floor hands it to the new holder once. It is also withheld, as every hand-back is, when NATS
+// does not answer within bus.ConnLockWait that the connection is connected
+// (intakeDelivery.handBackOwn), since a stop waits for this handler.
 //
 // It is handed back a bounded number of times and then acknowledged, with an Error naming the
 // envelope and the deliveries it spent (headWriteMaxDeliveries): a message handed back with a
@@ -349,12 +351,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 			return
 		}
 		if headNotStored {
-			if !d.mayAnswer() {
-				slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
-					"subject", msg.Subject)
-				return
-			}
-			redeliverAfter(msg, headWriteRedeliverAfter)
+			d.handBackOwn(msg, headWriteRedeliverAfter)
 			return
 		}
 		d.acknowledge(msg)
@@ -484,17 +481,6 @@ func redeliverAfter(msg *natsgo.Msg, after time.Duration) {
 	if err := msg.NakWithDelay(after); err != nil {
 		slog.Error("dispatch delivery: hand a message back for redelivery",
 			"subject", msg.Subject, "delay", after, "error", err)
-	}
-}
-
-// acknowledge acks msg. An acknowledgement that does not reach the server is never discarded: it
-// leaves the message outstanding, and intakeMaxAckPending of those stop the consumer being given
-// anything until the ack wait expires. The Nak gives the slot back at once; when it fails too (the
-// connection is down, which is why the ack failed), the ack wait is the backstop.
-func acknowledge(msg *natsgo.Msg) {
-	if err := msg.Ack(); err != nil {
-		slog.Error("dispatch delivery: acknowledge message", "subject", msg.Subject, "error", err)
-		redeliverAfter(msg, 0)
 	}
 }
 

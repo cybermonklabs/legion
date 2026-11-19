@@ -1582,9 +1582,10 @@ The messages in their handlers get until the stop's deadline
 — `intakeStopBudget`, 15 s after `Run`'s context ends, armed when it ends
 — to finish and be acknowledged; the handlers still running then are given up, their GitHub calls cancelled, and their messages negatively acknowledged.
 Only then does it negatively acknowledge the held messages, so NATS redelivers them at once to the next holder, which can then not start a pull request's or run's next message while this process still works on the one before it.
-No call the stop makes to NATS keeps it waiting longer than `stopCallWait` (100 ms), since nats.go holds its connection lock through a reconnect's dial and handshake: a drain, an unsubscribe or an acknowledgement NATS has not taken by then goes on without the stop (`stopCall`).
-Every one of those answers, a given-up handler's and a held message's alike, passes one rule (`intakeDelivery.handBack`).
-It is withheld while the drain has not answered, for good when NATS did not take the drain in time or took it with the link down, and when NATS does not answer within `stopCallWait` that the connection is connected:
+The stop's drain and unsubscribe, and the acknowledgements and hand-backs of the handlers it waits for, whether begun before the stop or after, each wait for NATS at most `bus.ConnLockWait` (100 ms), since nats.go holds its connection lock through a reconnect's dial and handshake: a call NATS has not taken by then goes on without its caller (`callNATS`).
+The one call left unbounded is a hand-back's publish once NATS has answered that the connection is connected.
+Every one of those answers, a given-up handler's, a held message's and one a refused acknowledgement makes alike, passes one rule (`intakeDelivery.handBack`).
+Once the stop has begun it is withheld unless NATS took the stop's drain on a live link, and any hand-back is withheld when NATS does not answer within `bus.ConnLockWait` that the connection is connected:
 nothing then says when the server has the subscription's interest gone, and a hand-back would wait for the reconnect.
 It is withheld too once the hold's loss deadline has passed, as the head-write hand-back above is:
 from that moment the durable the answer names may be one a take-over has recreated, where it would move the new holder's pending entry for that message and have it delivered a second time.

@@ -31,8 +31,8 @@ func lockedWithin(mu *sync.Mutex, wait time.Duration) bool {
 // waits for it. The open was made under b.mu with no context, so it held b.mu until the handshake
 // attempt ended, long after the read that made it had answered its caller: every other read of
 // Buckets waited behind it. While a read made during the hold waits on its open, a second caller
-// takes b.mu; the read answers its caller at its own bound; and b.mu is free within
-// testnats.HeldHandshakeAnswerWait of that answer.
+// takes b.mu within 150 ms of trying, from 200 ms into the read; the read answers its caller at its
+// own bound; and b.mu is free within testnats.HeldHandshakeAnswerWait of that answer.
 //
 // The role bucket does not exist, so no read keeps a handle and the read in the hold opens one, as
 // a first read after a reconnect does. The controls: nats.go's lock is still held when the two
@@ -58,8 +58,9 @@ func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 	conn := client.Connection()
 	hold.HoldReconnect(t)
 	// The read's own bound, inside the answer wait. From 200 ms into it, by when the read is
-	// waiting on its open, the second caller must take b.mu within 150 ms: a b.mu that is held at
-	// all while the open waits fails it, however short the hold.
+	// waiting on its open, the second caller tries for b.mu and must take it within 150 ms: a b.mu
+	// held from 200 ms into the read to 350 ms into it fails the row, and one let go before 200 ms
+	// passes it.
 	const (
 		readWait    = time.Second
 		secondAfter = 200 * time.Millisecond

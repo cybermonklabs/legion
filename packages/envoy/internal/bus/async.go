@@ -104,7 +104,7 @@ type RequestOptions struct {
 // once, without sending, once it has been lost or has reconnected since (window.current), so a
 // window does not go on sending across a connection it saw fail. That check holds no lock across a
 // read of nats.go's state, which a reconnect's handshake and a write to a slow socket hold, and
-// reads that state only after a connection event, within eventReadWait.
+// reads that state only after a connection event, within ConnLockWait.
 //
 // A window keeps no order of its own between its sends. Its answers come back in whatever order
 // the server and the stream give them, and a JetStream publish NATS did not acknowledge may still
@@ -217,7 +217,7 @@ func (w *window) send(subject string, item contracts.Envelope, msgID string) (fu
 // It holds pinning only to read and to set the pin. The first send's wait for a connection, and its
 // read of the connection, are made with it released and end at wait whatever nats.go is doing
 // (Bounded): nats.go holds its connection lock through a reconnect's dial and handshake, which
-// those reads wait for. The check of a pinned connection waits for that lock at most eventReadWait,
+// those reads wait for. The check of a pinned connection waits for that lock at most ConnLockWait,
 // with pinning released too, so no send of the window waits for a handshake, nor behind another
 // send that does.
 func (w *window) pin(wait time.Duration) error {
@@ -306,22 +306,27 @@ func (w *window) pinToSend() error {
 	return pinned
 }
 
-// eventReadWait is how long the check of a pinned window (current) waits to read nats.go's state of
-// its connection after a connection event. nats.go takes its connection lock for that read, and
-// holds that lock through a reconnect attempt's dial and handshake (v1.53.1 doReconnect,
-// nats.go:3458-3485): a read kept waiting longer finds the connection in a reconnect, which is
-// what a connection event usually is, and reads it lost.
-const eventReadWait = 100 * time.Millisecond
+// ConnLockWait is how long a caller that holds a lock of its own, or that something holding one
+// waits for, waits for a call to NATS before it takes nats.go's connection lock as held by a
+// reconnect. nats.go holds that lock for microseconds to write or read a frame, and for a whole
+// reconnect attempt, the dial and the handshake (v1.53.1 doReconnect, nats.go:3458-3485), up to the
+// attempt's connect timeout (connectTimeout), or the hub's authorization timeout while its auth
+// service holds the CONNECT. A call kept waiting longer is answered as a reconnect in progress: the
+// check of a pinned window (window.current) reads the connection lost, and an intake's stop goes on
+// without the call (internal/dispatch/delivery). On a box loaded enough to keep such a call waiting
+// this long, the caller answers a loss it need not have, which costs it what a loss costs and holds
+// it no longer.
+const ConnLockWait = 100 * time.Millisecond
 
 // current reports whether the window's connection is still the one it pinned, connected and not
 // reconnected since. While no connection event has reached the client since the connection was
 // last read current (ConnectionChanged), it is, and nothing of nats.go's is read: a write to a slow
 // socket that holds nats.go's connection lock on a healthy connection changes nothing here. After an
-// event, nats.go's state is read, with pinning released and within eventReadWait (Bounded): the
+// event, nats.go's state is read, with pinning released and within ConnLockWait (Bounded): the
 // connection is current while it is connected and its reconnect count is the one pinned, which
 // is how a window pinned just before the client heard of a reconnect that had already landed - a
 // reconnect nats.go marks connected before its callback goroutine reports it - stays pinned. A read
-// kept waiting past eventReadWait, a connection not connected or one that reconnected is lost, and
+// kept waiting past ConnLockWait, a connection not connected or one that reconnected is lost, and
 // stays lost. The client hears of a disconnect from nats.go's callback, which can come after
 // nats.go has marked the connection down; a send checked in that moment writes, and nats.go refuses
 // the write (unsent), as it does a send whose connection drops between the check and the write.
@@ -344,7 +349,7 @@ func (w *window) current() bool {
 		up   bool
 		next <-chan struct{}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), eventReadWait)
+	ctx, cancel := context.WithTimeout(context.Background(), ConnLockWait)
 	defer cancel()
 	read, answered, _ := Bounded(ctx, func() (reading, error) {
 		next := w.client.ConnectionChanged()

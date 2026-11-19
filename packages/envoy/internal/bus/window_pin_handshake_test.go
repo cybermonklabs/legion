@@ -35,16 +35,17 @@ func heldHandshakeClient(t *testing.T) (*Client, *testnats.HandshakeHold) {
 // client's CONNECT, nats.go holds its connection lock, and a send of a window that read the
 // connection under the window's pin held the pin until the handshake attempt ended: the send that
 // held it gave no answer, and every other send of the window waited behind it. Sends of one window
-// made at once while the handshake is held each answer ErrUnavailable within
-// testnats.HeldHandshakeAnswerWait: two sends and a Probe of a window pinned before the hold, and
-// two first sends of a window made during it.
+// made at once while the handshake is held each answer ErrUnavailable: two sends and a Probe of a
+// window pinned before the hold within 600 ms, at the check's bounded read (ConnLockWait), and two
+// first sends of a window made during it within 250 ms past their 400 ms wait for a connection,
+// which two sends that waited one behind the other would miss.
 //
 // The controls: nats.go's lock is still held when the sends have answered (RequireLockHeld), so
 // they answered during the handshake and not after it; and each client pins a window before the
 // hold, and once the hold is released and the client has heard of its reconnect, a new window
 // sends twice, so the answers are the hold's and not a client that cannot connect. The negative
 // control is the pin as it was (ensureConnWithContext, Stats and current() under pinning): neither
-// send answers within the wait.
+// send answers within its bound.
 func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 	pinsAgain := func(t *testing.T, client *Client, hold *testnats.HandshakeHold) {
 		t.Helper()
@@ -78,7 +79,7 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 			t.Fatalf("control: the window's first send could not pin the connection before the hold: %v", err)
 		}
 		hold.HoldReconnect(t)
-		// Each answers at the check's bounded read (eventReadWait), so within half a second on a
+		// Each answers at the check's bounded read (ConnLockWait), so within half a second on a
 		// loaded runner.
 		probe := func() error { return w.Probe(time.Second) }
 		unavailable(t, "a send or probe of the pinned window", testnats.AnswersWithin(t, 600*time.Millisecond, "a send or probe of the pinned window", w.pinToSend, w.pinToSend, probe))
