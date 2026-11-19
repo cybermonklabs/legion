@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # Tests for `disk_watch.py`: `start` writes the state file and leaves a sampler that outlives it,
 # the sampler's least value falls when free space falls, the free kB it reads of a path is df's,
-# it writes a tick of the
-# series every second it is given and keeps the least memory and the greatest load it has seen,
-# a sampler held off the CPU leaves the seconds it never ran in out of the series rather than
-# writing them afterwards, `report` stops the sampler and prints the series, the three worst
-# readings and the four numbers in that order, and it exits 0 whether the margin is ok or short,
-# when a reading was never made, when there is no series file and when there is no state file at
-# all.
+# it writes a tick of the series every second it is given and keeps the least memory and the
+# greatest load it has seen, a sampler held off the CPU leaves the seconds it never ran in out of
+# the series rather than writing them afterwards, `report` stops the sampler and prints the
+# series, the three worst readings and the four numbers in that order, and it exits 0 whether the
+# margin is ok or short, when a reading was never made, when there is no series file and when
+# there is no state file at all.
 #
 # `start` runs here with a PATH holding python3 alone, so neither `go` nor `docker` is on it:
 # that is the runner this script must work on too (no Go toolchain, no Docker daemon, no
@@ -15,10 +14,10 @@
 # two margins are driven from state files written here by hand, so the numbers in the line are
 # chosen rather than measured. So is the fall in free space: on a shared file system other writers
 # move free space by gigabytes in seconds, so 64 MiB of this test's own writes left the least above
-# before_kb in 13 of 19 trials on a busy one. The fall is written to a file the sampler reads in
-# place of the disk (DISK_WATCH_TEST_FREE_KB_FILE), and the reading it stands in for is measured
-# against `df` of the same path. The stall case is measured against a real sampler stopped with
-# SIGSTOP for four seconds.
+# before_kb in 13 of 19 trials on a busy one. The fall case runs the sampler itself, `sample`, with
+# a reader of free kB this test hands it that returns the number a file here holds, and the real
+# reader is held to `df` of the same path. The stall case is measured against a real sampler
+# stopped with SIGSTOP for four seconds.
 # Everything is written under $TMPDIR (mktemp -d honours it), never /tmp by name.
 #
 # Run from anywhere: .github/scripts/disk_watch.test.sh
@@ -34,6 +33,7 @@ source "$script_dir/test-lib.sh"
 
 work=$(mktemp -d)
 pid=""
+fall_pid=""
 cleanup() {
   if [ -n "$pid" ]; then
     # SIGCONT first: the stall case leaves a stopped sampler behind if it dies partway, and a
@@ -42,6 +42,9 @@ cleanup() {
     # no-wait: the sampler takes TERM at its default, so it writes nothing for the rm -rf to meet.
     kill "$pid" 2>/dev/null || true
   fi
+  # no-wait: the fall case's sampler takes TERM at its default too, and a case that went on to
+  # its end has had `report` stop it already.
+  [ -z "$fall_pid" ] || kill "$fall_pid" 2>/dev/null || true
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -64,12 +67,11 @@ if [[ "$python" != /* || ! -x "$python" ]]; then
 fi
 ln -s "$python" "$work/bin/python3"
 
-# run_watch <arguments...>: runs the script under test with that bare PATH, and whatever a case
-# puts in watch_env, leaving its merged output in $out and its status in $status.
-watch_env=()
+# run_watch <arguments...>: runs the script under test with that bare PATH, leaving its merged
+# output in $out and its status in $status.
 run_watch() {
   set +e
-  out=$(env -i PATH="$work/bin" HOME="$work" TMPDIR="$work" ${watch_env[@]+"${watch_env[@]}"} "$watch" "$@" 2>&1)
+  out=$(env -i PATH="$work/bin" HOME="$work" TMPDIR="$work" "$watch" "$@" 2>&1)
   status=$?
   set -e
 }
@@ -162,8 +164,10 @@ echo "case: the detached sampler outlives the process that started it"
 check "the sampler is alive after start returned" "$(alive "$pid")"
 
 echo "case: the least value falls when free space falls"
-# A sampler of its own, reading free kB from the file set_free writes: the fall is written, since
-# the file system's own free space moves under other writers (see the top of this file).
+# The sampler itself, disk_watch.sample, handed a reader of free kB that returns the number the file
+# set_free writes: the fall is written, since the file system's own free space moves under other
+# writers (see the top of this file). Its state is seeded here as `start` seeds it, since `start`
+# runs the sampler as a process of its own with the kernel's reader.
 fall_state="$work/fall.json"
 free_file="$work/free-kb"
 # set_free KB makes KB what every reading returns, replacing the file whole, so a reading never
@@ -173,11 +177,26 @@ set_free() {
   mv -f "$free_file.new" "$free_file"
 }
 set_free 5000000
-watch_env=(DISK_WATCH_TEST_FREE_KB_FILE="$free_file")
-run_watch start --path "$watched" --state "$fall_state"
-watch_env=()
-check "start exits 0" "$(is "$status" 0)"
-check "before_kb is the free kB the file holds" "$(is "$(field "$fall_state" before_kb)" 5000000)"
+env -i PATH="$work/bin" HOME="$work" python3 -B -I -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import disk_watch
+path, state_path, free_file = sys.argv[2:5]
+def read_free(_path):
+    with open(free_file, encoding="utf-8") as numbers:
+        return int(numbers.read().strip())
+before = read_free(path)
+state = {"path": path, "before_kb": before, "sampler_pid": os.getpid()}
+disk_watch.keep_worst(state, "least_kb", before, disk_watch.now_utc(), greater=False)
+disk_watch.write_state(state_path, state)
+disk_watch.sample(path, state_path, read_free=read_free)
+' "$script_dir" "$watched" "$fall_state" "$free_file" &
+fall_pid=$!
+for _ in $(seq 40); do
+  [ -s "$fall_state" ] && break
+  sleep 0.25
+done
+check "before_kb is the free kB the reader returns" "$(is "$(field "$fall_state" before_kb)" 5000000)"
 set_free 4934464
 least=5000000
 for _ in $(seq 20); do
@@ -197,30 +216,31 @@ check "a rise after it, two ticks on, leaves least_kb at the fall" "$(is "$(fiel
 check "before_kb is unchanged" "$(is "$(field "$fall_state" before_kb)" 5000000)"
 run_watch report --state "$fall_state"
 check "report stopped that sampler" "$(is "$status" 0)"
+# Gone, or a zombie of this shell's that holds nothing (it has no thread of its own to outlive it).
+fall_state_of_pid=$(awk '{ print $3 }' "/proc/$fall_pid/stat" 2>/dev/null || true)
+check "and it is gone" "$([ -z "$fall_state_of_pid" ] || [ "$fall_state_of_pid" = Z ] && echo true || echo false)"
+if [ -z "$fall_state_of_pid" ] || [ "$fall_state_of_pid" = Z ]; then
+  wait "$fall_pid" 2>/dev/null || true
+  fall_pid=""
+fi
 
-echo "case: the free kB it reads of a path is df's available kB of that path"
+echo "case: the free kB it reads of a path is df's available kB of that path, within 0.5 per cent"
 # The reading the written fall stands in for, measured: disk_watch.py's own free_kb of the watched
-# directory lies between two reads of `df -k --output=avail` of it, one just before and one just
-# after. Free space under other writers does not move one way between two reads (a reading above
-# both was seen, at a fix's 6th run of 20), so up to five such brackets are taken, and one must
-# hold its reading. A reader of another number (the total, the blocks root may still use, bytes)
-# is outside every one.
-bracketed=false
-for attempt in 1 2 3 4 5; do
-  df_before=$(df -k --output=avail "$watched" | tail -n 1 | tr -d ' ')
-  reading=$(env -i PATH="$work/bin" HOME="$work" python3 -B -I -c \
-    'import sys; sys.path.insert(0, sys.argv[1]); import disk_watch; print(disk_watch.free_kb(sys.argv[2]))' \
-    "$script_dir" "$watched")
-  df_after=$(df -k --output=avail "$watched" | tail -n 1 | tr -d ' ')
-  low=$df_before high=$df_after
-  [ "$low" -le "$high" ] || { low=$df_after high=$df_before; }
-  if [ "$reading" -ge "$low" ] && [ "$reading" -le "$high" ]; then
-    bracketed=true
-    break
-  fi
-done
-check "disk_watch.py read $reading kB, within df's $df_before kB before it and $df_after kB after (bracket $attempt of at most 5)" \
-  "$bracketed"
+# directory, between two reads of `df -k --output=avail` of it. Other writers move free space
+# between the reads, by gigabytes in seconds on a shared file system, so the reading is held to the
+# df read after it within how far df itself moved between its two reads and 0.5 per cent of it. A
+# reader of another number is further off than that: the total, kB of 1000 bytes (2.4 per cent),
+# or the blocks root may still use on a file system that keeps a reserve (5 per cent by default).
+df_before=$(df -k --output=avail "$watched" | tail -n 1 | tr -d ' ')
+reading=$(env -i PATH="$work/bin" HOME="$work" python3 -B -I -c \
+  'import sys; sys.path.insert(0, sys.argv[1]); import disk_watch; print(disk_watch.free_kb(sys.argv[2]))' \
+  "$script_dir" "$watched")
+df_after=$(df -k --output=avail "$watched" | tail -n 1 | tr -d ' ')
+moved=$((df_after > df_before ? df_after - df_before : df_before - df_after))
+off=$((reading > df_after ? reading - df_after : df_after - reading))
+allowed=$((moved + df_after / 200))
+check "disk_watch.py read $reading kB, $off kB from df's $df_after kB, within the $allowed kB allowed (df moved $moved kB between its two reads)" \
+  "$([ "$off" -le "$allowed" ] && echo true || echo false)"
 
 echo "case: the sampler writes the machine to a series file beside the state"
 series="$state.series"

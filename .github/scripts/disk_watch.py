@@ -72,6 +72,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 
 # How often the sampler re-reads the machine, in whole seconds, and the least step between one
 # tick's own second and the next. It costs one line of the series; the state file is written
@@ -103,25 +104,12 @@ STOP_SECONDS = 2.0
 TOOL_SECONDS = 20.0
 
 
-# The test-only input: a file holding one number, the free kB every reading returns while the
-# variable names it, read again at each reading. disk_watch.test.sh writes it for the case that
-# needs free space to fall: on a shared file system other writers move free space by gigabytes in
-# seconds, so no write of the test's own makes the sampler's least fall for certain. Its other
-# case holds the real reading to df's. A CI step never sets it.
-TEST_FREE_KB_FILE = "DISK_WATCH_TEST_FREE_KB_FILE"
-
-
 def total_free_kb(directory: str) -> tuple[int, int]:
     """The total and the free kB of the file system holding `directory`, read from the kernel
     (shutil.disk_usage, which is os.statvfs here), not parsed out of df. Free is what an
     unprivileged process may still write: df's "Available", which is what a CI step actually
-    has, and which is the number disk_usage reports as free. Under the test-only input above,
-    free is the number that file holds."""
+    has, and which is the number disk_usage reports as free."""
     usage = shutil.disk_usage(directory)
-    stand_in = os.environ.get(TEST_FREE_KB_FILE)
-    if stand_in:
-        with open(stand_in, encoding="utf-8") as numbers:
-            return usage.total // 1024, int(numbers.read().strip())
     return usage.total // 1024, usage.free // 1024
 
 
@@ -351,10 +339,11 @@ def keep_worst(state: dict, name: str, value: int | str, when: str, *, greater: 
     return True
 
 
-def sample(path: str, state_path: str) -> int:
+def sample(path: str, state_path: str, read_free: Callable[[str], int] = free_kb) -> int:
     """The detached sampler: write the machine to the series once in each second it is given,
     and keep the worst each reading has reached in the state, until the report stops this
-    process or the deadline above passes."""
+    process or the deadline above passes. `read_free` reads the free kB of `path`: free_kb, the
+    kernel's, for every caller but a test that has to make free space fall for certain."""
     deadline = time.monotonic() + SAMPLE_SECONDS + SAMPLER_MAX_SECONDS
     # The second the first tick is stamped from, and a floor under every stamp after it: every
     # pass reads the clock again once its readings are in, so a pass that ran long names the
@@ -372,7 +361,7 @@ def sample(path: str, state_path: str) -> int:
     worst: dict = {}
     while time.monotonic() < deadline:
         try:
-            free = free_kb(path)
+            free = read_free(path)
         except OSError:
             free = None
         memory = available_memory_kb()
