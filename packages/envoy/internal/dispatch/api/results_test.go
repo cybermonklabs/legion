@@ -1683,14 +1683,16 @@ func TestAResultAtTheHeadOfAPullRequestTitledAfterAnotherRepositorysIssueStandsA
 		model.CommitAtBasis, false)
 }
 
-// The same surface for a repository under two names. An issue is recorded under the name its
-// repository was renamed away from, and its pull request is on the name GitHub knows.
-// Dispatch holds the pair — the old name's repo_projects row names what it was renamed to, and
-// the server reads it once, as it is built — so the results route asks the App about the
-// canonical name (refs.Renames.Canonical) and the attribution holds the issue to it. Before
-// that pair was read, the App was asked about the old name, whose installation GitHub answers
-// 404 for: the read-through learned no pull request and Dispatch could see no repository at
-// all, so the result was unknown rather than placed at a head.
+// The same surface for a repository under two names. An issue's row names the old name of a
+// renamed repository, and its pull request is on the new name, the one GitHub knows. This build
+// stores the new name on every write (TestAnIssueWriteStoresARenamedRepositoryUnderItsNewName),
+// so the create stores acme/gadgets. The test then writes oldco/gadgets into the row by SQL, as a
+// build before this one writes it during a roll. The next boot's rename pass rewrites such a row.
+// The results route asks the App about the canonical name (refs.Renames.Canonical). The
+// Attributor that api.NewDeps builds of the same rename pairs holds the issue to its pull request
+// on the new name, so the result stands at its head. Before the route read the pairs, it asked
+// the App about the old name, whose installation GitHub answers 404 for: the read-through learned
+// no pull request, and the result was unknown rather than placed at a head.
 func TestAResultOfAnIssueRecordedUnderARepositorysOldNameStandsAtItsHead(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -1736,6 +1738,10 @@ func TestAResultOfAnIssueRecordedUnderARepositorysOldNameStandsAtItsHead(t *test
 
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RENM", "title": "Recorded under the old name", "spec": "A spec\n", "repo": "oldco/gadgets"}, "alice"))
+	if tag, err := database.Pool.Exec(context.Background(),
+		`update issues set repo = $2 where key = $1`, issue.Key, "oldco/gadgets"); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("store %s under oldco/gadgets as a build before this one would: %v (%d rows)", issue.Key, err, tag.RowsAffected())
+	}
 	title = issue.Key + ": the work, on the new name"
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 
