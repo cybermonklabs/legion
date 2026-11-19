@@ -208,6 +208,22 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 			names: []string{"BROKER_API_ACCOUNTS names it as the caller " + strconv.Quote("dispatch")},
 		},
 		{
+			name: "a BROKER_EXCHANGE_READ_ACCOUNTS entry names it",
+			env: func() map[string]string {
+				e := withK8sIssuer()
+				e["BROKER_SERVICE_LOGINS"] = adaLoginService + "=" + adaAccount
+				e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch"
+				e["BROKER_EXCHANGE_READ_ACCOUNTS"] = adaAccount + "=example-reader=example-read-session"
+				return e
+			},
+			reachable: func(cfg Config) (string, bool) {
+				return "BROKER_EXCHANGE_READ_ACCOUNTS names " + adaAccount + " as a reader of example-reader, and no other setting gives the account a role",
+					len(cfg.ExchangeReadAccounts) == 1 && cfg.ExchangeReadAccounts[0].Account == adaAccount && cfg.ExchangeReadAccounts[0].Service == "example-reader" &&
+						cfg.ServiceLogins[adaAccount] == adaLoginService && len(cfg.ExchangeAccounts) == 0 && len(cfg.APIAccounts) == 0
+			},
+			names: []string{"BROKER_EXCHANGE_READ_ACCOUNTS names it as a reader of the service " + strconv.Quote("example-reader")},
+		},
+		{
 			name: "a BROKER_SESSION_ACCOUNT_PAIRS pair names it as the first account",
 			env: func() map[string]string {
 				e := withK8sIssuer()

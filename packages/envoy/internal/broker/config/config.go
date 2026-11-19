@@ -520,8 +520,9 @@ type Config struct {
 	// a BROKER_API_ACCOUNTS entry names, because that caller's routes relay decisions in the name
 	// the caller gives. It refuses a mapped account that either side of a
 	// BROKER_SESSION_ACCOUNT_PAIRS pair names, because a pair lets another account take the session
-	// names the account holds, and the person's pod the other account's. Unset, the setting maps no
-	// account.
+	// names the account holds, and the person's pod the other account's. It refuses a mapped
+	// account that a BROKER_EXCHANGE_READ_ACCOUNTS entry names, because the exchange would mint the
+	// person's pod a token that names a service and no person. Unset, the setting maps no account.
 	PodOperators map[string]string
 	// BROKER_SESSION_ACCOUNT_PAIRS: pairs of Kubernetes service accounts that take each other's
 	// session names, whitespace-separated <account>=<account> entries, each account
@@ -1355,6 +1356,15 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // and both settings, and says what to change. It examines the mapped accounts in sorted order, so
 // one configuration always gets the same refusal first.
 //
+// The class is every setting that gives a Kubernetes account a role of its own, a service, a
+// caller, a token of its own or another account's session names, since a mapped account acts for
+// its person and for nothing else. The settings it checks are BROKER_SERVICE_LOGINS,
+// BROKER_SERVICES, BROKER_VM_SERVICES, BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS,
+// BROKER_NATS_SERVICES, BROKER_API_ACCOUNTS and BROKER_SESSION_ACCOUNT_PAIRS. A setting added
+// later that gives a Kubernetes account a role joins this list, with its refusal here and its row
+// in TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole. That is a convention: no test
+// lists the settings, so nothing finds a setting this function does not check.
+//
 // It refuses a mapped account that BROKER_SERVICE_LOGINS does not name, because a mapped account
 // logs in with its own token. It refuses a mapped account whose login service a BROKER_SERVICES
 // entry names, because a secret could then name that service as its owner. It refuses a mapped
@@ -1374,7 +1384,10 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // name. It refuses a mapped account that either side of a BROKER_SESSION_ACCOUNT_PAIRS pair names
 // (cfg.SessionAccountPairs), because a pair lets one account take the session names the other
 // holds, with what each name carries: the person's pod would take a service's session names, or
-// the other account's pods the person's.
+// the other account's pods the person's. It refuses a mapped account that a
+// BROKER_EXCHANGE_READ_ACCOUNTS entry names (cfg.ExchangeReadAccounts), because the exchange
+// would then mint the person's pod a read-only token that names that entry's service and no
+// person.
 func mappedAccountRefusal(cfg *Config) error {
 	const setting = "BROKER_POD_OPERATORS"
 	if len(cfg.PodOperators) == 0 {
@@ -1406,6 +1419,10 @@ func mappedAccountRefusal(cfg *Config) error {
 			}
 		}
 	}
+	readServices := make(map[string]string, len(cfg.ExchangeReadAccounts))
+	for _, entry := range cfg.ExchangeReadAccounts {
+		readServices[entry.Account] = entry.Service
+	}
 	for _, account := range slices.Sorted(maps.Keys(cfg.PodOperators)) {
 		person := cfg.PodOperators[account]
 		login, listed := cfg.ServiceLogins[account]
@@ -1423,6 +1440,9 @@ func mappedAccountRefusal(cfg *Config) error {
 		}
 		if other, exchanges := exchangePeople[account]; exchanges && record.CanonicalLogin(other) != record.CanonicalLogin(person) {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_ACCOUNTS maps it to %s; one account acts for one person, so map it to the same person in both settings or take it out of one of them", setting, account, person, other)
+		}
+		if service, reads := readServices[account]; reads {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_READ_ACCOUNTS names it as a reader of the service %q; the exchange would mint the person's pod a read-only token that names that service and no person, so take the account out of BROKER_EXCHANGE_READ_ACCOUNTS or out of %s", setting, account, person, service, setting)
 		}
 		if caller, calls := cfg.APIAccounts[account]; calls {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_API_ACCOUNTS names it as the caller %q; that caller's routes act on the caller's word, and the approval relays take the deciding person's name from it, so take the account out of BROKER_API_ACCOUNTS or out of %s", setting, account, person, caller.Name, setting)
