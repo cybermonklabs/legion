@@ -15,6 +15,11 @@ import (
 // label holds, and wants the refusal to name that field and the second item.
 func TestALabelRefusalNamesTheFieldTheRequestSent(t *testing.T) {
 	handler := newTestHandler(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "CORE", "title": "Label refusals",
 	}, "alice")
