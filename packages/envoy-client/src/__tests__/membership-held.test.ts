@@ -13,6 +13,7 @@ import * as path from "node:path";
 import { signedIn, stubIssuer, writeSignIn } from "@legion/broker-client/test/sign-ins";
 import { RETRY_FIRST_WAIT_MS } from "@legion/broker-client/token-client";
 import { isFinalRefusal, TradeRetryingError } from "@legion/broker-client/token-errors";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { brokerCredential, forgetBrokerClients } from "../broker-credential";
@@ -72,13 +73,6 @@ function holdingBroker(held: { now: boolean }): {
   });
   servers.push(server);
   return { url: `http://127.0.0.1:${server.port}`, trades, minted };
-}
-
-/** One turn of the real event loop: every promise the code has chained settles inside it. */
-function turn(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setImmediate(resolve);
-  return promise;
 }
 
 /** A Dispatch that answers every request `answer`, keeping the Authorization each carried. */
@@ -160,15 +154,36 @@ test("membership_held keeps a sign-in broker credential", async () => {
   expect(dispatch.asked).toHaveLength(0);
 
   held.now = false;
-  // The loop's first wait is at most RETRY_FIRST_WAIT_MS; its trade then goes under the same
-  // sign-in, and a call presents the token it got.
-  jest.advanceTimersByTime(RETRY_FIRST_WAIT_MS);
-  let after: unknown = during;
-  for (let tries = 0; tries < 2_000 && after !== null; tries += 1) {
-    await turn();
-    if (broker.minted.length === 0) continue;
-    after = await failureOf(dispatchOf(env, "ses_01a9").listAllIssues({}));
-  }
+  // The loop's first wait is at most RETRY_FIRST_WAIT_MS (15 s), and it may be set only after the
+  // call above was told: the row waits until it is set, then moves the clock to it and fires it
+  // alone. The clock then stays still while the trade is answered over the real socket: moved on,
+  // it would end the trade's own 30 s attempt first. Its trade goes under the same sign-in, and a
+  // call then presents the token it got.
+  const state = () =>
+    `${broker.trades.length} trades, ${broker.minted.length} minted, ${jest.getTimerCount()} timers`;
+  await turnsUntil(() => jest.getTimerCount() > 0, "the retry loop's wait to be set", { state });
+  const waited = Date.now();
+  jest.advanceTimersToNextTimer();
+  expect(Date.now() - waited).toBeLessThanOrEqual(RETRY_FIRST_WAIT_MS);
+  await turnsUntil(() => broker.minted.length > 0, "the release's token", { state });
+  expect(broker.minted.length).toBe(1);
+  // The broker has answered, and the token client reads its answer over the socket a few turns
+  // later: a call before then is still told the hold (it fails fast), so the row calls again at
+  // each turn, one call at a time, until one goes through or a call fails otherwise.
+  let after: unknown;
+  let calling: Promise<void> | undefined;
+  let settled = false;
+  await turnsUntil(() => settled, "a call after the release to go through", {
+    state,
+    each: () => {
+      if (calling !== undefined) return;
+      calling = failureOf(dispatchOf(env, "ses_01a9").listAllIssues({})).then((failure) => {
+        after = failure;
+        settled = failure === null || !(failure instanceof TradeRetryingError);
+        calling = undefined;
+      });
+    },
+  });
   expect(
     after,
     "after the release the call failed with no new trade: broker-credential.ts remembered membership_held as a final refusal of the sign-in (isFinalRefusal)"

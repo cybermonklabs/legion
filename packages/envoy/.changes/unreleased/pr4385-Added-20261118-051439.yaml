@@ -1,0 +1,5 @@
+kind: Added
+body: 'Dispatch''s `GET /healthz` answers a member `github` that names each GitHub read Dispatch runs in the background: `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and `ci_reconcile`. Each entry gives the newest attempt''s `state` (`succeeded`, `failed`, `no_attempt`, `unknown` or `off`), its time `at`, and, for a failure, its `cause`, cut to 1,024 bytes. The member is `null` when no GitHub App is configured, and it never decides `ok` or the status. A new table, `github_read_attempts`, holds each read''s newest attempt.'
+time: 2026-11-18T05:14:39.304937363Z
+custom:
+    Issue: pr4385

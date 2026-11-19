@@ -19,14 +19,16 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, ErrorCode, headers, type NatsConnection, NatsError, StringCodec } from "nats";
 import { z } from "zod";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
+import { NO_WINDOW_MODEL } from "../test/no-window-provider";
 
 // What the live view's two session-side surfaces do on the real Oh My Pi (dispatch://INFRA-812,
 // R3 and R4): the `context` frame the session publishes about how full its context window is
 // (extensions/envoy.ts's `refreshAgentStreamContext` over `@legion/pi-shared/agent-stream`'s
-// `setContext`), and a person's `!command`, which the session runs itself before the host is
-// handed the line (src/typed-shell.ts, read in `runTypedInput`). Both are read off the wire: the
-// frames over a real NATS server, as the Dispatch relay reads them, and the reply over the
-// stand-in Dispatch. What reached the model is read off the requests the binary sends the
+// `setContext`), with the `context-cleared` frame that takes it away once the session reports no
+// window (dispatch://INFRA-4325), and a person's `!command`, which the session runs itself before
+// the host is handed the line (src/typed-shell.ts, read in `runTypedInput`). Both are read off the
+// wire: the frames over a real NATS server, as the Dispatch relay reads them, and the reply over
+// the stand-in Dispatch. What reached the model is read off the requests the binary sends the
 // stand-in gateway, each held until the test answers it.
 // LEGION_TEST_OMP names the binary, as in card-delivery-omp.test.ts, and LEGION_TEST_NATS_URL the
 // NATS server. A run without both skips, except on GitHub Actions, where the pi-envoy job
@@ -113,6 +115,7 @@ interface Turn {
 const RpcStateSchema = z.object({
   isSettled: z.boolean(),
   sessionFile: z.string().optional(),
+  model: z.object({ provider: z.string(), id: z.string(), contextWindow: z.number() }).optional(),
 });
 
 /** One frame the session published on its stream, and when this test read it. */
@@ -202,7 +205,9 @@ async function until<T>(
  * model gateway, the Envoy listener and Dispatch, and the NATS server `setup` names. `config` lines
  * go into the profile's config.yml and `env` beside the plugin's own variables, and `prepare` is
  * handed the two directories before the binary starts, for a case whose point is a file the
- * binary must read at its launch. Resolves once the session has registered its id with the
+ * binary must read at its launch. `noWindowModel` loads test/no-window-provider.ts beside
+ * envoy.ts and enables its provider, so `set_model` can switch the session to `NO_WINDOW_MODEL`,
+ * whose context window is zero. Resolves once the session has registered its id with the
  * listener, the test holds a NATS connection, and this test's subscription to the session's
  * stream is live.
  */
@@ -210,13 +215,14 @@ async function startSession(
   options: {
     readonly config?: readonly string[];
     readonly env?: Record<string, string>;
+    readonly noWindowModel?: boolean;
     readonly prepare?: (paths: {
       readonly home: string;
       readonly workspace: string;
     }) => Promise<void>;
   } = {}
 ): Promise<SurfaceSession> {
-  const { config = [], env = {}, prepare } = options;
+  const { config = [], env = {}, noWindowModel = false, prepare } = options;
   const { binary, nats } = setup();
   const { home, workspace, sessions } = await ompRoot(binary, "session-surface-omp-", cleanup);
   await prepare?.({ home, workspace });
@@ -284,14 +290,21 @@ async function startSession(
   cleanup.push(async () => {
     for (const turn of turns) turn.reply([text("Case over.")]);
   });
-  await writeStandinProfile(home, base, config);
+  await writeStandinProfile(home, base, config, {
+    registered: noWindowModel ? [NO_WINDOW_MODEL.provider] : [],
+  });
 
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
   const rpc = spawnRpc(
     binary,
     {
-      extensions: [path.join(import.meta.dir, "envoy.ts")],
+      extensions: [
+        path.join(import.meta.dir, "envoy.ts"),
+        ...(noWindowModel
+          ? [path.join(import.meta.dir, "..", "test", "no-window-provider.ts")]
+          : []),
+      ],
       home,
       workspace,
       sessions,
@@ -300,6 +313,7 @@ async function startSession(
         ENVOY_NATS_URL: nats,
         DISPATCH_URL: base,
         DISPATCH_TOKEN,
+        ...(noWindowModel && { NO_WINDOW_PROVIDER_BASE_URL: `${base}/anthropic` }),
         ...env,
       },
       onFrame: (frame) => {
@@ -532,22 +546,26 @@ async function startSession(
   return session;
 }
 
-/** One reading of the context window as a case sees it: the frame's two figures, the publisher's
- *  sequence number on it, and when this case saw the frame. */
+/** One frame of the context slot as a case sees it: a reading's two figures, or the clearing
+ *  frame, which carries none and so reads NaN for both (no figure a row expects of a reading
+ *  holds of it); its kind; the publisher's sequence number on it; and when this case saw the
+ *  frame. */
 interface Reading {
   /** `SeenFrame.clock`: when this case saw the frame, on the wall clock. */
   readonly clock: number;
+  readonly kind: "context" | "context-cleared";
   readonly seq: number;
   readonly tokens: number;
   readonly contextWindow: number;
 }
 
-/** The `context` frames among `seen`, which carry the two figures. */
+/** The frames of the context slot among `seen`: each reading, and each clearing frame. */
 function contextFrames(seen: readonly SeenFrame[]): Reading[] {
   return seen
-    .filter((each) => each.frame.kind === "context")
+    .filter((each) => each.frame.kind === "context" || each.frame.kind === "context-cleared")
     .map((each) => ({
       clock: each.clock,
+      kind: each.frame.kind === "context" ? "context" : "context-cleared",
       contextWindow: Number(each.frame.contextWindow),
       seq: Number(each.frame.seq),
       tokens: Number(each.frame.tokens),
@@ -619,9 +637,10 @@ async function contextSession(): Promise<SurfaceSession> {
 }
 
 /**
- * The newest `context` frame once the publisher owes nothing and its interval has run out, so the
- * next reading the session takes goes out at once. The caller has seen the session take its last
- * reading: it is settled, or it waits on a model request the caller holds.
+ * The newest frame of the context slot (a reading or the clearing frame) once the publisher owes
+ * nothing and its interval has run out, so the next reading the session takes goes out at once.
+ * The caller has seen the session take its last reading: it is settled, or it waits on a model
+ * request the caller holds.
  *
  * Each step waits on the publisher's own schedule rather than on how long this runner takes.
  * Readings come only from the session's events, so every one was taken before this call, and
@@ -849,6 +868,71 @@ test.skipIf(skip)(
     ).toEqual([]);
     expect(after.contextWindow).toBe(200_000);
     expect(after.tokens).not.toBe(beforeCompaction.tokens);
+  },
+  120_000
+);
+
+// A switch to a model with no context window takes the ring away (dispatch://INFRA-4325): the
+// next turn's start reads a window of zero (`getContextUsage`), and the publisher sends the
+// clearing frame in the reading's place, so a viewer drawing the earlier reading drops it and a
+// view that opens later draws none. The pin's models.yml refuses a window of zero, so the model is
+// one test/no-window-provider.ts registers at runtime. The turn on it runs as any other: measured
+// on the pinned binary, its request reaches the stand-in naming the model and the reply ends the
+// turn. The row boots a session of its own, so the context session's rows keep their 200,000-token
+// window.
+test.skipIf(skip)(
+  "a switch to a model with no context window publishes the clearing frame, and the replay keeps no reading",
+  async () => {
+    const session = await startSession({
+      env: { ENVOY_CONTEXT_FRAME_INTERVAL_MS: String(CONTEXT_INTERVAL_MS) },
+      noWindowModel: true,
+    });
+    await session.arm();
+
+    const from = session.frames.length;
+    await session.command({ type: "prompt", message: "What is the first case?" });
+    (await session.nextTurn("the first model request")).reply([text("The first case.")]);
+    await session.settled();
+    await session.until("the turn's context reading", () =>
+      contextFrames(session.frames.slice(from)).find((each) => each.kind === "context")
+    );
+    // Once the publisher owes nothing and its interval has run out, nothing the turn above was
+    // owed follows the switch, and the next turn's start publishes at once.
+    const reading = await settledReading(session);
+    if (reading === undefined) throw new Error("no context frame was published by the first turn");
+    expect(reading.kind).toBe("context");
+    expect(reading.contextWindow).toBe(200_000);
+
+    await session.command({ type: "set_model", ...NO_WINDOW_MODEL });
+    const state = RpcStateSchema.parse((await session.command({ type: "get_state" })).data);
+    expect(state.model).toEqual({
+      provider: NO_WINDOW_MODEL.provider,
+      id: NO_WINDOW_MODEL.modelId,
+      contextWindow: 0,
+    });
+
+    const switched = session.frames.length;
+    await session.command({ type: "prompt", message: "What is the second case?" });
+    const turn = await session.nextTurn("the model request on the model with no window");
+    expect(turn.request.body.model).toBe(NO_WINDOW_MODEL.modelId);
+    turn.reply([text("The second case.")]);
+    await session.settled();
+    const cleared = await session.until("the clearing frame", () =>
+      contextFrames(session.frames.slice(switched)).find((each) => each.kind === "context-cleared")
+    );
+    expect(cleared.seq).toBeGreaterThan(reading.seq);
+    // Every later read of the turn answers the same window of zero, so the clearing frame is the
+    // slot's one frame since the switch, and no reading follows it.
+    await settledReading(session);
+    expect(contextFrames(session.frames.slice(switched)).map((each) => each.kind)).toEqual([
+      "context-cleared",
+    ]);
+
+    const replayed = await session.replay();
+    const kinds = replayed.frames.map((frame) => frame.kind);
+    expect(kinds.slice(-3)).toEqual(["settings", "context-cleared", "commands"]);
+    expect(kinds).not.toContain("context");
+    expect(replayed.frames.at(-2)?.seq).toBe(cleared.seq);
   },
   120_000
 );

@@ -292,15 +292,21 @@ export const DEFAULT_STANDIN_PROVIDERS: readonly StandinProvider[] = [
  * Writes the profile under `home`: the stand-in at `base` as its providers, each keyed by a
  * literal like a plain API-key caller, every model role on the first model of the first provider,
  * and every provider a devbox or runner could answer from without it disabled, so no turn reaches
- * a real model. `config` lines are appended to config.yml. `providers` names what the case's own
- * models are — a fallback chain needs a second model to step to — and defaults to the single
- * `standin/standin-model` every other case runs on.
+ * a real model. `config` lines are appended to config.yml. The option `providers` names what the
+ * case's own models are — a fallback chain needs a second model to step to — and defaults to the
+ * single `standin/standin-model` every other case runs on. The option `registered` names the
+ * providers a case's own extension registers at runtime (`pi.registerProvider`): models.yml
+ * carries none of them, but `enabledModels` must still name each, or the session lists none of its
+ * models and `set_model` answers "Model not found".
  */
 export async function writeStandinProfile(
   home: string,
   base: string,
   config: readonly string[] = [],
-  providers: readonly StandinProvider[] = DEFAULT_STANDIN_PROVIDERS
+  {
+    providers = DEFAULT_STANDIN_PROVIDERS,
+    registered = [],
+  }: { providers?: readonly StandinProvider[]; registered?: readonly string[] } = {}
 ): Promise<void> {
   const agent = path.join(home, ".omp", "agent");
   const first = providers[0];
@@ -339,6 +345,7 @@ export async function writeStandinProfile(
     [
       "enabledModels:",
       ...providers.map(({ provider }) => `  - ${provider}/*`),
+      ...registered.map((provider) => `  - ${provider}/*`),
       "disabledProviders: [amazon-bedrock, bedrock-mantle, google, google-vertex, ollama, llama.cpp, lm-studio]",
       "modelRoles:",
       ...["default", "smol", "slow", "plan", "task", "commit", "tiny", "vision", "advisor"].map(
@@ -1039,7 +1046,7 @@ export async function runLegionPane(
       ...deliveryFor(url.pathname, body, sessionID),
     });
   });
-  await writeStandinProfile(home, base, options.config ?? [], options.providers);
+  await writeStandinProfile(home, base, options.config ?? [], { providers: options.providers });
 
   /**
    * One life of the pane: omp started with `args` on its command line, given each prompt of

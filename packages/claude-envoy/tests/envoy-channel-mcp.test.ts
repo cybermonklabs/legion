@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
@@ -13,6 +13,38 @@ import { startFakeMod } from "./fake-mod"
 import { FakeNatsServer } from "./fake-nats-server"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
+
+/** Where each session's home is made. Its mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and
+ *  that whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a deep
+ *  `TMPDIR` (a dev box's `/mnt/scratch/...`, a Legion pod's) leaves none, and the session then names
+ *  no socket. So the home goes under `/tmp`, whatever `TMPDIR` is, as channel-fatal-exit.test.ts's
+ *  does. */
+const SOCKET_ROOT = "/tmp"
+
+/** A session home of its own, under {@link SOCKET_ROOT}. */
+function sessionHome(prefix: string): Promise<string> {
+  return mkdtemp(join(SOCKET_ROOT, prefix))
+}
+
+// The rows below start each session in a home of its own and reach it at its mod socket; a home
+// under a deep TMPDIR named no socket, and two of them failed (the review of #4140's forward merge).
+test("a session home's mod socket fits however deep TMPDIR is", async () => {
+  const was = process.env["TMPDIR"]
+  const deep = await mkdtemp(join("/tmp", `claude-envoy-depth-${"d".repeat(64)}-`))
+  await mkdir(deep, { recursive: true })
+  process.env["TMPDIR"] = deep
+  let home: string | undefined
+  try {
+    expect(tmpdir()).toBe(deep)
+    home = await sessionHome("claude-envoy-mcp-")
+    expect(modSocketPath("ses_depth", { XDG_RUNTIME_DIR: home })).toBeDefined()
+  } finally {
+    if (was === undefined) delete process.env["TMPDIR"]
+    else process.env["TMPDIR"] = was
+    if (home !== undefined) await rm(home, { recursive: true, force: true })
+    await rm(deep, { recursive: true, force: true })
+  }
+})
 
 // What Claude Code sees over MCP, with Dispatch configured: the Envoy tools and nothing else, since
 // agents reach Dispatch through the `dispatch` command the plugin's bin/ puts on the Bash tool's
@@ -54,7 +86,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
       return Response.json({ error: "not found" }, { status: 404 })
     },
   })
-  const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-mcp-"))
+  const stateDirectory = await sessionHome("claude-envoy-mcp-")
   const dispatchToken = fixtureSecret("dsp")
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
@@ -159,7 +191,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
       return Response.json({ error: "not found" }, { status: 404 })
     },
   })
-  const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-quiet-"))
+  const stateDirectory = await sessionHome("claude-envoy-quiet-")
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
     command: "bun",
@@ -233,7 +265,7 @@ test("a tool call while the start waits for its broker token says what the start
       return new Response("the broker is away", { status: 503 })
     },
   })
-  const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-broker-wait-"))
+  const stateDirectory = await sessionHome("claude-envoy-broker-wait-")
   const tokenFile = join(stateDirectory, "projected-token")
   await writeFile(tokenFile, `${fixtureSecret("proj")}\n`)
   const client = new Client({ name: "test", version: "0" })
