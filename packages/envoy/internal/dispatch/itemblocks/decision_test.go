@@ -140,7 +140,7 @@ func TestCheckStoresABodyTheReaderDrawsNoCardFor(t *testing.T) {
 // bound's own words and under the bound's own code: the decision block is read after both bounds.
 func TestCheckRefusesABodyOverABoundForTheBound(t *testing.T) {
 	overTheBlock := theAsk + "\n\n" + strings.Repeat("x", contracts.DispatchBlockUnits+1)
-	err := requireRefusal(t, "a decision block beside a block one character over", overTheBlock,
+	err := requireRefusal(t, "a decision block beside a block one unit over", overTheBlock,
 		"body block 2 (paragraph): 32001 of at most 32000")
 	var capExceeded *CapExceeded
 	if !errors.As(err, &capExceeded) {

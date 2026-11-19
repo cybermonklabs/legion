@@ -223,7 +223,7 @@ func TestMentionsReadsTheBareAndShortGrammar(t *testing.T) {
 			want: []Ref{ask(askID)},
 		},
 		{
-			name: "seven characters are too few",
+			name: "seven hex characters are too few",
 			body: "See dispatch://CORE-1/ask/2a7f1c9 here.",
 			want: []Ref{ask("2a7f1c9")},
 		},
