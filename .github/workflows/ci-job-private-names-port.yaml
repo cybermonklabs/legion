@@ -30,10 +30,13 @@ name: CI job private-names-port
 #     without a `go` on PATH (:66) and fails the run when the binary does not build (:70-73).
 # No Bun, no Oh My Pi, no uv, no tmux, no database and no container image: the harness starts a
 # `go build` and the binary it built, and makes every fixture with git, which the runner image
-# carries. It restores no Actions cache either, as the test job that carried this step restored
-# none: of ci.yaml's six Go cache families the go-daemon entry is filled with what compiling
-# packages/daemon's test binaries leaves (.github/workflows/ci-caches.yaml), which is not this
-# build, and a restore of it would download a gigabyte to save part of one command's compile.
+# carries. It restores no build cache either, as the test job that carried this step restored
+# none: of ci.yaml's six Go cache families that hold one, the go-daemon entry is filled with what
+# compiling packages/daemon's test binaries leaves (.github/workflows/ci-caches.yaml), which is not
+# this build, and a restore of it would download a gigabyte to save part of one command's compile.
+# What it restores is go-fetch-private-names-port, a module cache alone: what the fetch step
+# fetches for the harness's build and nothing else, about 330 MB, which ci-caches.yaml's
+# fetch-private-names-port job fills, so that step finds every module there and downloads none.
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -61,9 +64,9 @@ jobs:
   private-names-port:
     runs-on: ubuntu-24.04-arm
     # The harness takes 71 s on a machine whose Go build cache is warm, the build of ./cmd/legion
-    # included (measured here, dispatch://INFRA-1413). This job restores no cache, so every run
-    # compiles that command's 1,217 packages from nothing; 20 minutes is many times the cold
-    # build and the 148 cases after it, and still fails a hung case well inside the hour.
+    # included (measured when the harness got a job of its own). This job restores no build cache,
+    # so every run compiles that command's 1,217 packages from nothing; 20 minutes is many times
+    # the cold build and the 148 cases after it, and still fails a hung case well inside the hour.
     timeout-minutes: 20
 
     steps:
@@ -71,17 +74,29 @@ jobs:
         with:
           persist-credentials: false
 
-      # The Go the build runs under, from the module it builds in. No cache: the header says why,
-      # and setup-go caches nothing in any job of ci.yaml.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      # The Go the build runs under, from the module it builds in. No cache of setup-go's: the
+      # header says why, and setup-go caches nothing in any job of ci.yaml.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
           cache: false
 
+      # go-fetch-private-names-port: the modules of the fetch below, under the key
+      # .github/workflows/ci-caches.yaml's fetch-private-names-port job fills: the runner's
+      # architecture, the Go version and the hash of the module files that fetch reads in the root
+      # workspace. A pull request that changes those files restores the newest entry by prefix,
+      # and the fetch then downloads only what moved.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: go-fetch-private-names-port-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
+          restore-keys: ${{ format('go-fetch-private-names-port-{0}-{1}-', runner.os, runner.arch) }}
+
       # The harness builds ./cmd/legion from the module cache alone (GOPROXY=off), since a fetch
       # while it runs fails it whenever the module proxy or the checksum database does, on a
-      # change that touched nothing it tests. This step fetches that build's modules first, tried
-      # again on failure; with no cache restored it downloads what the build would have.
+      # change that touched nothing it tests. This step fetches that build's modules first, from
+      # the cache restored above, tried again on failure.
       - name: Fetch the modules of the legion binary the harness builds
         run: .github/scripts/go-fetch.sh deps packages/daemon ./cmd/legion
 

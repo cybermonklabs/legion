@@ -22,13 +22,13 @@ on:
       changes-result:
         description: >-
           ci.yaml's `needs.changes.result`: the two notices steps below run when `changes` did
-          not succeed, as they do in ci.yaml.
+          not succeed, as they do in ci.yaml, and the go-fetch-lint restore when they do not.
         type: string
         required: true
       go_notices:
         description: >-
           ci.yaml's `needs.changes.outputs.go_notices`: the two notices steps below run when
-          that filter matched.
+          that filter matched, and the go-fetch-lint restore when they do not.
         type: string
         required: true
 
@@ -133,8 +133,9 @@ jobs:
           # shellcheck disable=SC2046 # the file is the package list, split on purpose
           .github/scripts/release-push.sh fold-orphans $(<.github/changelog-packages)
 
-      # No setup-go cache: gofmt needs none, and the notices step below keeps its own (go-notices),
-      # keyed on the Go version this step installs.
+      # No setup-go cache: gofmt needs none, and the two module caches below, go-notices and
+      # go-fetch-lint, are restored in steps of their own, keyed on the Go version this step
+      # installs.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -175,10 +176,44 @@ jobs:
       - name: Check the whole tree with Biome
         run: bunx biome check .
 
+      # One module cache is restored before the fetch below, and never two: a restore extracts its
+      # tar over ~/go/pkg/mod, whose module directories Go makes read-only, so a second entry
+      # restored over a first fails on every file the two share (GNU tar 1.35, the runner's:
+      # "Cannot open: File exists", exit 2). When the notices step at the end of this job runs,
+      # the one is go-notices, which that step needs and which holds every module its builds load,
+      # natsfloor's among them; when it does not, it is go-fetch-lint, which holds what the fetch
+      # below fetches and nothing else. The two conditions are each other's negation.
+      #
+      # go-notices: the notices step builds go-licenses and loads every release binary's modules.
+      # It keeps them in a cache family of its own: one entry, read on every run of that step, so
+      # never evicted, and refreshed only when Go is bumped. Keyed on the go.sum files it would
+      # leave a 2.2 GB entry per key change; keyed on the Go version, a go.sum change only downloads
+      # the changed modules and rebuilds the changed packages, since Go's build cache is
+      # content-addressed. Restored only when the notices step runs; ci-caches.yaml fills it.
+      - if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/legion
+          key: go-notices-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-notices-{0}-{1}-', runner.os, runner.arch) }}
+      # go-fetch-lint: the modules of the fetch below, about 50 MB, under the key
+      # .github/workflows/ci-caches.yaml's fetch-lint job fills: the runner's architecture, the Go
+      # version and the hash of the module files that fetch reads in the root workspace. A pull
+      # request that changes those files restores the newest entry by prefix, and the fetch then
+      # downloads only what moved.
+      - if: inputs.changes-result == 'success' && inputs.go_notices != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: go-fetch-lint-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
+          restore-keys: ${{ format('go-fetch-lint-{0}-{1}-', runner.os, runner.arch) }}
       # The test below builds natsfloor while it runs, with GOPROXY=off
       # (@legion/test-fixtures/go-command): a fetch inside a test fails it whenever the module
       # proxy does, on a change that touched nothing it tests. This step fetches that build's
-      # modules first, tried again on failure; this job restores no module cache before the test.
+      # modules first, from the module cache restored above, tried again on failure.
       - name: Fetch the modules of the natsfloor build the NATS pin scan makes
         run: .github/scripts/go-fetch.sh deps packages/envoy ./natsversion/cmd/natsfloor
 
@@ -199,22 +234,6 @@ jobs:
       - name: Check every Bun gate's filter selects the files its typecheck compiles
         run: .github/scripts/check-ts-filters.sh
 
-      # The notices step below builds go-licenses and loads every release binary's modules. It
-      # keeps them in a cache family of its own, go-notices: one entry, read on every run, so never
-      # evicted, and refreshed only when Go is bumped. Keyed on the go.sum files it would leave a
-      # 2.2 GB entry per key change; keyed on the Go version, a go.sum change only downloads the
-      # changed modules and rebuilds the changed packages, since Go's build cache is
-      # content-addressed. Restored only when the notices step runs; ci-caches.yaml fills it.
-      - if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-            ~/.cache/legion
-          key: go-notices-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-notices-{0}-{1}-', runner.os, runner.arch) }}
-
       # Every Go archive a release ships carries THIRD_PARTY_NOTICES, written at build time with
       # the build's own GOOS, GOARCH and CGO_ENABLED (release.yaml's legion_build job and
       # release-envoy-listener.yaml, whose targets .github/go-release-targets.json lists for all of
@@ -230,7 +249,8 @@ jobs:
       #
       # The loops are in .github/scripts/go-release-notices.sh, which
       # .github/workflows/ci-caches.yaml's notices job runs too, to fill the go-notices entry this
-      # step restores: one script, so the fill cannot warm anything but what this step builds.
+      # job restores before the natsfloor fetch above: one script, so the fill cannot warm anything
+      # but what this step builds.
       - name: Check every Go release archive's third-party notices can be written and the cross-built commands compile
         if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
         run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"

@@ -108,10 +108,23 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # go-fetch-dispatch-two-builds: the modules of the Dispatch server's fetch step below, about
+      # 200 MB and no build cache, under the key .github/workflows/ci-caches.yaml's
+      # fetch-dispatch-two-builds job fills: the runner's architecture, the Go version and the hash
+      # of the module files that fetch reads in the root workspace. Restored here, before the
+      # first go command of the job, so the Go step's build of ./cmd/dispatch reads them too. A
+      # pull request that changes those files restores the newest entry by prefix, and the fetch
+      # then downloads only what moved.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: go-fetch-dispatch-two-builds-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
+          restore-keys: ${{ format('go-fetch-dispatch-two-builds-{0}-{1}-', runner.os, runner.arch) }}
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
       - run: bun install --frozen-lockfile
@@ -188,8 +201,9 @@ jobs:
         working-directory: packages/contracts
       # The browser tests' harness builds Dispatch A's server (e2e/run-server.sh) with
       # GOPROXY=off: a fetch inside a test fails it whenever the module proxy does, on a change
-      # that touched nothing it tests. This step fetches that build's modules first, tried again
-      # on failure, and the build step and the tests after it read them from the module cache.
+      # that touched nothing it tests. This step fetches that build's modules first, from the cache
+      # restored above, tried again on failure, and the build step and the tests after it read
+      # them from the module cache.
       - name: Fetch the modules of the Dispatch server the browser tests build
         run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch
       - name: Build the Dispatch server

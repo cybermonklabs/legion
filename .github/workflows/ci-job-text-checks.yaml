@@ -29,8 +29,9 @@ name: CI job text-checks
 # docs/, a skill under skills/, the committed extract beside the code it pins - and Go's test
 # cache keys on neither, so a cached pass would say nothing about the text as it now stands.
 #
-# The job restores no Actions cache. The six Go cache families ci.yaml's header lists are each
-# filled for a job that builds a whole module's binaries or test binaries, and this job builds
+# The job restores no build cache. The six Go cache families ci.yaml's header lists that hold
+# one are each filled for a job that builds a whole module's binaries or test binaries, and this
+# job builds
 # five packages: measured here, the four calls this job ran before the supervise pins joined it
 # take 4 minutes 4 seconds with an empty build cache and 34 seconds with a warm one, which is
 # less than the download and extraction of any of those families would cost it. The fifth call
@@ -44,8 +45,10 @@ name: CI job text-checks
 # pgconn imports for its secure/precis, gopkg.in/yaml.v3, which internal/ghconfig imports, and
 # the standard library - because its checker's importer reads source rather than export data
 # (table_test.go:99). The timeout below still leaves the job about three times its cold run.
-# setup-go caches nothing either
-# (`cache: false`), as in every job of ci.yaml.
+# setup-go caches nothing either (`cache: false`), as in every job of ci.yaml. What the job does
+# restore is go-fetch-text-checks, a module cache alone: what the infra fetch step below fetches
+# and nothing else, about 250 MB, which ci-caches.yaml's fetch-text-checks job fills, so that step
+# finds every module there and downloads none.
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -82,10 +85,21 @@ jobs:
           persist-credentials: false
       # All three modules pin the same Go in their go.mod, so one install serves the three
       # directories below; packages/envoy's is the one this reads.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # go-fetch-text-checks: the modules of the infra fetch step below, under the key
+      # .github/workflows/ci-caches.yaml's fetch-text-checks job fills: the runner's architecture,
+      # the Go version and the hash of the infra workspace's module files, which that fetch reads.
+      # A pull request that changes those files restores the newest entry by prefix, and the fetch
+      # then downloads only what moved.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: go-fetch-text-checks-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
+          restore-keys: ${{ format('go-fetch-text-checks-{0}-{1}-', runner.os, runner.arch) }}
       - name: Check the text packages/envoy pins
         run: go test -count=1 ./internal/textcheck/
         working-directory: packages/envoy
@@ -93,7 +107,7 @@ jobs:
       # import graph of ./core and ./gcp, which the test binary's own build does not load, with
       # GOPROXY=off: a fetch while a test runs fails it whenever the module proxy or the checksum
       # database does, on a change that touched nothing it checks. So this step fetches that
-      # graph's modules first, tried again on failure.
+      # graph's modules first, from the cache restored above, tried again on failure.
       - name: Fetch the modules the infra text checks list
         run: .github/scripts/go-fetch.sh deps packages/envoy/infra ./core ./gcp
       - name: Check the text packages/envoy/infra pins

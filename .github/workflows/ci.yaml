@@ -59,7 +59,7 @@ name: CI
 # save one too, and only in a dispatched run (setup-bun, and architecture-check and spec-check at
 # this paragraph's end).
 # setup-go caches nothing here (`cache: false` on every step, the two check actions'
-# included). The jobs that cache Go restore, in steps of their own, one of six families with
+# included). The jobs that cache Go restore, in steps of their own, one of eleven families with
 # actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 # internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
 # it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
@@ -70,8 +70,13 @@ name: CI
 # the fill fetches), go-envoy-test (envoy-go, which
 # builds the test binary of every package of the envoy module, and the binaries, multiprocess
 # and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
-# broker's commands out of that same set), go-envoy-infra (envoy-infra-go and envoy-smoke) and
-# go-notices (lint's notices step). Every family but go-docs is filled by
+# broker's commands out of that same set), go-envoy-infra (envoy-infra-go and envoy-smoke),
+# go-notices (lint, when its notices step runs), and five that hold no build cache, each the
+# modules one job's fetch step fetches and nothing else, for the five jobs with a fetch step that
+# restore no family above: go-fetch-text-checks, go-fetch-lint (lint, when its notices step does
+# not run: a second entry restored into ~/go/pkg/mod fails on every file the two share),
+# go-fetch-test, go-fetch-private-names-port and go-fetch-dispatch-two-builds, each restored by
+# the job it is named for before its fetch step. Every family but go-docs is filled by
 # .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
 # go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
 # entry per runner architecture, keyed on the runner's architecture and on the Go version its
@@ -81,12 +86,15 @@ name: CI
 # entry is
 # refreshed only when Go is bumped. A go.sum change downloads only the changed modules, and Go's
 # build cache is content-addressed, so a stale entry costs a run only what changed; a key on the
-# go.sum files left a whole entry, up to a gigabyte, per change for seven days. go-envoy and
-# go-envoy-infra are the exceptions. What changed under go-envoy-infra in eleven days cost its
-# linux vet 83 to 85% of what the same vet for darwin took with nothing cached; go-envoy's readers
-# build commands inside their tests that read the module cache alone (GOPROXY=off), after a fetch
-# step that downloads whatever the entry lacks. So both keys carry the hash of their module files
-# too, and ci-caches.yaml deletes the entry each fill replaces (its superseded job says how). The
+# go.sum files left a whole entry, up to a gigabyte, per change for seven days. go-envoy,
+# go-envoy-infra and the five go-fetch families are the exceptions. What changed under
+# go-envoy-infra in eleven days cost its linux vet 83 to 85% of what the same vet for darwin took
+# with nothing cached; go-envoy's readers build commands inside their tests that read the module
+# cache alone (GOPROXY=off), after a fetch step that downloads whatever the entry lacks; and a
+# go-fetch entry is what its reader's fetch step fetches, so one keyed on the Go version alone
+# would leave that step downloading on every run whatever moved since the push that filled it. So
+# those keys carry the hash of their module files too, and ci-caches.yaml deletes the entry each
+# fill replaces (its superseded job says how). The
 # fallback by
 # prefix, when the exact key misses, now applies on every run, a dispatched one on main
 # included: it was held off main so that the entry a run saved after a Go bump held nothing the
@@ -101,9 +109,9 @@ name: CI
 # (.github/actions/setup-bun), which of this workflow's events is the dispatched run alone, and
 # not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
 # job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
-# stand in for the install each of their cases is a reading of. A seventh family,
+# stand in for the install each of their cases is a reading of. A twelfth family,
 # architecture-check-<os>-<arch>-go<version>-<hash>, is the composite action
-# .github/actions/architecture-check's own, and an eighth,
+# .github/actions/architecture-check's own, and a thirteenth,
 # spec-check-<os>-<arch>-go<version>-<hash>, is .github/actions/spec-check's; envoy-go-checks runs
 # both. Each action restores its family and saves it itself, from $RUNNER_TEMP/architecture-check
 # or $RUNNER_TEMP/spec-check and not from the Go caches above, keyed on the Go version its own

@@ -555,24 +555,33 @@ jobs:
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
 
-      # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
-      # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
-      # that compiled it. What runs go here is the held-port build of the envoy listener and the
-      # pin scanner's build of natsfloor below, the CI-filter check's go list over a scratch
-      # module and the build-tag lister, none of which that entry is filled for. The daemon's
-      # go.mod is still the one Go pin of this repository's three modules that a job without one
-      # of its own reads.
+      # Go, and no build cache: the go-daemon entry holds what compiling packages/daemon leaves
+      # behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps that
+      # compiled it. What runs go here is the held-port build of the envoy listener and the pin
+      # scanner's build of natsfloor below, the CI-filter check's go list over a scratch module and
+      # the build-tag lister, none of which that entry is filled for. The daemon's go.mod is still
+      # the one Go pin of this repository's three modules that a job without one of its own reads.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
           cache: false
+      # go-fetch-test: the modules of the fetch below, about 70 MB and no build cache, under the
+      # key .github/workflows/ci-caches.yaml's fetch-test job fills: the runner's architecture, the
+      # Go version and the hash of the module files that fetch reads in the root workspace. A pull
+      # request that changes those files restores the newest entry by prefix, and the fetch then
+      # downloads only what moved.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: go-fetch-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
+          restore-keys: ${{ format('go-fetch-test-{0}-{1}-', runner.os, runner.arch) }}
 
       # held-port.test.ts and nats-image.test.ts build the listener and natsfloor while they run,
       # with GOPROXY=off (@legion/test-fixtures/go-command): a fetch inside a test fails it
       # whenever the module proxy does, on a change that touched nothing it tests. This step
-      # fetches those builds' modules first, tried again on failure, and the builds then read
-      # them from the module cache alone.
+      # fetches those builds' modules first, from the cache restored above, tried again on
+      # failure, and the builds then read them from the module cache alone.
       - name: Fetch the modules of the envoy commands the e2e library tests build
         run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/listener ./natsversion/cmd/natsfloor
 
