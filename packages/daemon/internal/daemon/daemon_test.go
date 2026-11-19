@@ -48,6 +48,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -80,7 +81,10 @@ func shortTempDir(t *testing.T) string {
 
 // testConfig is a daemon of its own: its project name is unique, so the boots and claims it
 // records are its own, its port is one nothing else holds, and its state directory is its alone.
-// Every limit and timeout is the shipped default.
+// Every limit and timeout is the shipped default. Its store's pool holds testpg.PoolConns
+// connections, a CI runner's default, rather than one per CPU of the host running the test: a
+// boot that serves two hundred hellos at once opened one each on a 288-CPU host, past a server's
+// default max_connections of 100.
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	stateDir := shortTempDir(t)
@@ -99,7 +103,7 @@ func testConfig(t *testing.T) config.Config {
 		Project:                                 "TEST" + randomSuffix(t),
 		Port:                                    port,
 		Bind:                                    "127.0.0.1",
-		PostgresDSN:                             testDSN(t),
+		PostgresDSN:                             testpg.PoolDSN(t, testDSN(t)),
 		StateDir:                                stateDir,
 		Runtime:                                 config.Runtime{Name: "tmux"},
 		AdmissionCap:                            4,

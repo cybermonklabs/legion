@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -591,8 +592,10 @@ func builtShapedComments(comments []model.Comment, trees bool) []shapedComment {
 }
 
 // The parallel reading answers exactly what reading each text where it stands answered: the same
-// trees, each against its own row, in the order the rows came in (buildDisplayTrees).
+// trees, each against its own row, in the order the rows came in (buildDisplayTrees). The reading
+// runs on as many workers as GOMAXPROCS, so the test sets it, to four (fillProcs).
 func TestTheParallelFillAnswersTheTreeOfEveryRowInOrder(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(fillProcs))
 	comments := commentsToFill()
 	reads := builtShapedComments(comments, true)
 	if len(reads) != len(comments) {
@@ -620,8 +623,10 @@ func TestAListWithoutTheHeaderCarriesNoTree(t *testing.T) {
 
 // Several readers of one list at once are answered the same trees: each reader's goroutines
 // write only their own text's slot, and one text is built once however many readers want it
-// (displayTreeBuilds). Run under -race, this is the check that the reading is safe.
+// (displayTreeBuilds). Run under -race, this is the check that the reading is safe. GOMAXPROCS is
+// set as the test above sets it (fillProcs).
 func TestReadersOfOneListAtOnceAreAnsweredTheSameTrees(t *testing.T) {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(fillProcs))
 	comments := commentsToFill()
 	want := builtShapedComments(comments, true)
 	answers := make([][]shapedComment, 8)
@@ -642,3 +647,10 @@ func TestReadersOfOneListAtOnceAreAnsweredTheSameTrees(t *testing.T) {
 		}
 	}
 }
+
+// fillProcs is the GOMAXPROCS the parallel reading's tests run at. The reading takes one worker
+// per processor (buildDisplayTrees), and a host's own count would decide what these tests cover:
+// one processor reads every text where it stands, so the parallel branch would go untested, and a
+// 288-CPU host would run 64 workers for each of eight readers. Four is a CI runner's count, and
+// runs the parallel branch with fewer workers than texts.
+const fillProcs = 4

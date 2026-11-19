@@ -86,8 +86,10 @@ waitAll() {
 }
 
 # engineRead <in> <out> <field>...: the engine's reading of each field, over one shard of the
-# lines per process, joined back in order. Its own messages go to <out>.log.
-shards=${PMDOC_DIFF_SHARDS:-$(( $(nproc) / 4 > 0 ? $(nproc) / 4 : 1 ))}
+# lines per process, joined back in order. Its own messages go to <out>.log. The shards are four
+# unless PMDOC_DIFF_SHARDS says otherwise, whatever the host: two reads run at once below, and a
+# count taken from nproc ran 144 engines of about 40 threads each on a 288-CPU host.
+shards=${PMDOC_DIFF_SHARDS:-4}
 engineRead() {
   local in=$1 result=$2
   shift 2

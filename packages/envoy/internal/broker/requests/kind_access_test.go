@@ -79,9 +79,11 @@ func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
 }
 
 // TestConcurrentReleasesOfOneTypeSecretAllMint: many releases of one grant at once each mint and
-// each succeeds, and none sees another's token.
+// each succeeds, and none sees another's token. The store's pool holds a connection for each
+// release, so all of them run at once on any host (newFixtureOfPool).
 func TestConcurrentReleasesOfOneTypeSecretAllMint(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	const releases = 16
+	machine, enrollmentID, key, _ := newFixtureOfPool(t, releases)
 	retag(t, machine, requestTypeSecret("BUSY_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var calls atomic.Int32
 	machine.Minters = map[string]Minter{
@@ -93,7 +95,6 @@ func TestConcurrentReleasesOfOneTypeSecretAllMint(t *testing.T) {
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", request, err)
 	}
-	const releases = 16
 	tokens := make([]string, releases)
 	errs := make([]error, releases)
 	var wg sync.WaitGroup
