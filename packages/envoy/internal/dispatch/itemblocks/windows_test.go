@@ -49,7 +49,7 @@ func TestWindowsCutALongBlockIntoOverlappingPieces(t *testing.T) {
 		covered = append(covered, body[max(n*WindowTextChars, 0):to]...)
 	}
 	if string(covered) != string(body) {
-		t.Errorf("the pieces, each less its overlap, hold %d characters of the block's %d", len(covered), len(body))
+		t.Errorf("the pieces, each less its overlap, hold %d code points of the block's %d", len(covered), len(body))
 	}
 }
 

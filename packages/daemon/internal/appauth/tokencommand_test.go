@@ -330,7 +330,7 @@ func TestTokenModeReleaseKeysAreGitHubLogins(t *testing.T) {
 		{"a slash", "a/b"},
 		{"a leading hyphen", "-acme"},
 		{"a leading underscore", "_acme"},
-		{"40 characters, past GitHub's 39", strings.Repeat("a", 40)},
+		{"40 ASCII letters, past GitHub's limit of 39", strings.Repeat("a", 40)},
 		{"the empty key", ""},
 		{"a fine-grained token's form, shorter than a real one", "github_pat_0123456789abcdef"},
 	} {

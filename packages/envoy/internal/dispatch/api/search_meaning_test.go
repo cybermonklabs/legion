@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -678,7 +679,7 @@ func TestACommentAndMessageOfOneLongestBlockReachTheEmbedderWhole(t *testing.T) 
 	}
 	for owner, body := range bodies {
 		if len(body) != contracts.DispatchBlockUnits {
-			t.Fatalf("%s body is %d characters, want %d", owner, len(body), contracts.DispatchBlockUnits)
+			t.Fatalf("%s body is %d bytes, want %d", owner, len(body), contracts.DispatchBlockUnits)
 		}
 		requireEveryStretchEmbedded(t, owner, body, embedded)
 	}
@@ -704,7 +705,7 @@ func requireEveryStretchEmbedded(t *testing.T, owner, body string, embedded []st
 	for start := 0; start < len(runes); start += stretch {
 		want := string(runes[start:min(start+stretch, len(runes))])
 		if !slices.ContainsFunc(embedded, func(text string) bool { return strings.Contains(text, want) }) {
-			t.Errorf("the %d characters of %s from %d reached no window the embedder was given", len(want), owner, start)
+			t.Errorf("the %d characters of %s from %d reached no window the embedder was given", utf8.RuneCountInString(want), owner, start)
 			return
 		}
 	}
@@ -893,8 +894,8 @@ func TestALongBlocksTailIsFoundByMeaning(t *testing.T) {
 	artifact := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact
-	if len(body) <= embed.MaxInputRunes {
-		t.Fatalf("the document is %d characters, want more than embed.MaxInputRunes (%d)", len(body), embed.MaxInputRunes)
+	if utf8.RuneCountInString(body) <= embed.MaxInputRunes {
+		t.Fatalf("the document is %d characters, want more than embed.MaxInputRunes (%d)", utf8.RuneCountInString(body), embed.MaxInputRunes)
 	}
 
 	// The upload records the document's blocks and leaves their windows to the tick.

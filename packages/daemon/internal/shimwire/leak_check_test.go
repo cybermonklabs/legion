@@ -85,7 +85,7 @@ func TestALauncherHelloWithALongLeakCheckTagFitsTheHelloBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(line)+1 > MaxHelloBytes {
-		t.Fatalf("a launcher_hello with a 64-character tag is %d bytes; MaxHelloBytes is %d", len(line)+1, MaxHelloBytes)
+		t.Fatalf("a launcher_hello with a 64-byte tag is %d bytes; MaxHelloBytes is %d", len(line)+1, MaxHelloBytes)
 	}
 }
 

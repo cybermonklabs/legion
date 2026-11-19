@@ -183,7 +183,7 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "-ada/example-repo" })}, names: "-ada/example-repo"},
 		{name: "a repository whose owner starts with an underscore, which no login does",
 			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = "_ada/example-repo" })}, names: "_ada/example-repo"},
-		{name: "a repository whose owner is 40 characters, past GitHub's 39",
+		{name: "a repository whose owner is 40 ASCII letters, past GitHub's limit of 39",
 			workflows: []exchange.WorkflowEntry{withFlow(func(e *exchange.WorkflowEntry) { e.Repository = strings.Repeat("a", 40) + "/example-repo" })},
 			names:     strings.Repeat("a", 40) + "/example-repo"},
 		{name: "a repository with no owner",

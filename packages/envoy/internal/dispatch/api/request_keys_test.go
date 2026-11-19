@@ -466,7 +466,7 @@ func TestAMalformedKeyIsRefusedBeforeAnythingRuns(t *testing.T) {
 	for name, values := range map[string][]string{
 		"a space":              {"press 1"},
 		"a slash":              {"press/1"},
-		"past 128 characters":  {strings.Repeat("k", contracts.IdempotencyKeyMax+1)},
+		"129 ASCII letters":    {strings.Repeat("k", contracts.IdempotencyKeyMax+1)},
 		"empty":                {""},
 		"empty quotes":         {`""`},
 		"an unclosed quote":    {`"press-1`},

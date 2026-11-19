@@ -68,7 +68,7 @@ func TestANewArtifactNamePastTheBoundIsRefused(t *testing.T) {
 			// exactly the bound.
 			atBound := randomBlockID(t, maxNewArtifactKeyBytes-len(target.owner+"/"))
 			before := stored(t)
-			refused(t, "a name of 3000 characters", target.upload(t, handler, target.base, randomBlockID(t, 3000)))
+			refused(t, "a name of 3000 hex characters", target.upload(t, handler, target.base, randomBlockID(t, 3000)))
 			refused(t, "a name one byte past the bound", target.upload(t, handler, target.base, randomBlockID(t, maxNewArtifactKeyBytes+1)))
 			refused(t, "a name whose key is one byte past the bound", target.upload(t, handler, target.base, atBound+"a"))
 			assertUnchanged(t, "a refused name", before, stored(t))
