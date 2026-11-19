@@ -35,11 +35,20 @@ import (
 // is no head, so the run is never one on the current head, and an empty Conclusion is no
 // conclusion, so it never makes its name red. The names of such a row come to what the stored
 // Failing and Cancelled lists say of them, which is what they came to before.
+//
+// GitHubConclusion is the word GitHub gave the run (success, neutral, skipped, timed_out, or one
+// GitHub adds later), as the listener's settlement carried it, and only once intake's decoder
+// took it for a word (decodeChecks). It decides nothing: every decision reads Conclusion, so two
+// runs that differ only in their word decide alike. It is kept so the texts the roles read name a
+// run by GitHub's own word rather than by the coarser conclusion. It is optional in the stored
+// JSON too: a row written before dispatch://INFRA-4135 added it carries no word and reads as it
+// did, a run named by its conclusion, and a daemon of the release before this one ignores it.
 type AttemptRun struct {
-	Name       string        `json:"name"`
-	ID         int64         `json:"id"`
-	Head       string        `json:"head,omitempty"`
-	Conclusion RunConclusion `json:"conclusion,omitempty"`
+	Name             string        `json:"name"`
+	ID               int64         `json:"id"`
+	Head             string        `json:"head,omitempty"`
+	Conclusion       RunConclusion `json:"conclusion,omitempty"`
+	GitHubConclusion string        `json:"githubConclusion,omitempty"`
 }
 
 // RunConclusion is what one check run concluded, as the settlement reporting it said: the

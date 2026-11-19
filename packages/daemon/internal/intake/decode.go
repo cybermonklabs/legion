@@ -805,10 +805,20 @@ func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (F
 
 // decodeChecks decodes a checks settlement of the pull request its subject names. A settlement
 // that lacks any field the daemon orders or judges it by - its head, check runs, generation,
-// snapshot, failed or cancelled - is no fact. Its commit statuses are read last and cost the rest
-// nothing (rawStatuses): a list that cannot be read is named in the unread list the consumer logs,
-// and the fact is marked so (PullRequestChecks.StatusesUnread), rather than the settlement's
-// check runs being lost with it.
+// snapshot, failed or cancelled - is no fact. What it says beyond those costs the rest nothing:
+// each part the decoder cannot read is taken as absent and named in the unread list the consumer
+// logs, every such part rather than the first. A run's word that is no word (rawCheckRuns) is
+// dropped from that run alone, which is then named by its conclusion. A skipped group that cannot
+// be read names no run skipped. Its commit statuses are read last (rawStatuses): a list that
+// cannot be read marks the fact so (PullRequestChecks.StatusesUnread), rather than the
+// settlement's check runs being lost with it.
+//
+// Each run the skipped group names is skipped (record.RunSkipped), the one conclusion the decoder
+// puts on a run: the failed and cancelled groups are read into the lists, from which classify
+// concludes every other run (stampedRuns), and those lists come first there, so a name the
+// listener put in both (which it never does) is still failed or cancelled. A name the group gives
+// with no run in check_runs changes nothing, and a settlement without the group names no run
+// skipped.
 func decodeChecks(subject string, repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, []string, error) {
 	number, ok := rawNumber(raw, "number")
 	if !ok || subject != githubRepositoryPrefix(repository)+".pr."+strconv.Itoa(number)+".checks" {
@@ -818,7 +828,7 @@ func decodeChecks(subject string, repository ghrepo.Repository, raw map[string]j
 	if !ok || headSHA == "" {
 		return nil, nil, nil
 	}
-	runs, ok := rawCheckRuns(raw["check_runs"])
+	runs, unread, ok := rawCheckRuns(raw["check_runs"])
 	if !ok {
 		return nil, nil, nil
 	}
@@ -830,22 +840,35 @@ func decodeChecks(subject string, repository ghrepo.Repository, raw map[string]j
 	if !ok || snapshot == "" {
 		return nil, nil, nil
 	}
-	failed, ok := rawStatusGroup(raw, "failed")
-	if !ok {
+	failed, defect := rawStatusGroup(raw["failed"])
+	if defect != "" {
 		return nil, nil, nil
 	}
-	cancelled, ok := rawStatusGroup(raw, "cancelled")
-	if !ok {
+	cancelled, defect := rawStatusGroup(raw["cancelled"])
+	if defect != "" {
 		return nil, nil, nil
+	}
+	if value, present := raw["skipped"]; present {
+		skipped, unreadable := rawStatusGroup(value)
+		if unreadable != "" {
+			unread = append(unread, "skipped "+unreadable+": no check run of "+headSHA+" is read as skipped")
+		}
+		for _, name := range skipped {
+			if i, found := slices.BinarySearchFunc(runs, name, func(run record.AttemptRun, name string) int {
+				return strings.Compare(run.Name, name)
+			}); found {
+				runs[i].Conclusion = record.RunSkipped
+			}
+		}
 	}
 	checks := PullRequestChecks{Repo: repository.String(), Number: number, HeadSHA: headSHA, CheckRuns: runs, Generation: generation, Snapshot: snapshot, Failing: failed, Cancelled: cancelled}
 	statuses, defect := rawStatuses(raw["statuses"])
 	if defect != "" {
 		checks.StatusesUnread = true
-		return checks, []string{"statuses " + defect + ": the pull request keeps the statuses it holds for " + headSHA}, nil
+		return checks, append(unread, "statuses "+defect+": the pull request keeps the statuses it holds for "+headSHA), nil
 	}
 	checks.Statuses = statuses
-	return checks, nil, nil
+	return checks, unread, nil
 }
 
 func githubIdentity(raw map[string]json.RawMessage) (int, string, bool) {
@@ -854,44 +877,88 @@ func githubIdentity(raw map[string]json.RawMessage) (int, string, bool) {
 	return number, action, numberOK && actionOK
 }
 
-func rawCheckRuns(value json.RawMessage) ([]record.AttemptRun, bool) {
+// rawCheckRuns reads a settlement's check runs, sorted by name: each entry's name and id, which
+// every run must carry, unique by name, or the list is not read at all, and the word GitHub gave
+// the run (rawConclusionWord), which is optional and read apart from them, so a word that is not
+// one costs its run nothing but the word. unread names each word dropped.
+func rawCheckRuns(value json.RawMessage) ([]record.AttemptRun, []string, bool) {
 	var incoming []struct {
-		Name string `json:"name"`
-		ID   int64  `json:"id"`
+		Name       string          `json:"name"`
+		ID         int64           `json:"id"`
+		Conclusion json.RawMessage `json:"conclusion"`
 	}
 	if err := json.Unmarshal(value, &incoming); err != nil || len(incoming) == 0 {
-		return nil, false
+		return nil, nil, false
 	}
 	seen := make(map[string]struct{}, len(incoming))
 	runs := make([]record.AttemptRun, 0, len(incoming))
+	var unread []string
 	for _, item := range incoming {
 		if item.Name == "" || item.ID <= 0 {
-			return nil, false
+			return nil, nil, false
 		}
 		if _, duplicate := seen[item.Name]; duplicate {
-			return nil, false
+			return nil, nil, false
 		}
 		seen[item.Name] = struct{}{}
-		runs = append(runs, record.AttemptRun{Name: item.Name, ID: item.ID})
+		word, defect := rawConclusionWord(item.Conclusion)
+		if defect != "" {
+			unread = append(unread, "check_runs["+item.Name+"].conclusion "+defect+": the run is named by its conclusion")
+		}
+		runs = append(runs, record.AttemptRun{Name: item.Name, ID: item.ID, GitHubConclusion: word})
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].Name < runs[j].Name })
-	return runs, true
+	return runs, unread, true
 }
 
-func rawStatusGroup(raw map[string]json.RawMessage, key string) ([]string, bool) {
+// conclusionWord is the form of a word the daemon keeps as the one GitHub gave a check run:
+// lower-case letters and underscores, one to 32 of them, which every conclusion GitHub names has
+// (success, timed_out, action_required, startup_failure, ...) and which leaves room for a word it
+// adds later. The word is read into the texts the roles read (workflow's settledChecks), so
+// nothing else a settlement could carry there, such as markup, a line break or an instruction,
+// reaches a role: a run whose word is not of this form is named by its conclusion, as a run with
+// no word is.
+var conclusionWord = regexp.MustCompile(`^[a-z_]{1,32}$`)
+
+// rawConclusionWord reads one check run's optional conclusion word. An absent or null word is no
+// word and no defect. Anything but a string of conclusionWord's form is dropped, and defect says
+// what it was: it quotes a string no longer than a word, and only counts the bytes of a longer
+// one, since the consumer logs it.
+func rawConclusionWord(value json.RawMessage) (string, string) {
+	if value == nil || string(value) == "null" {
+		return "", ""
+	}
+	var word string
+	if err := json.Unmarshal(value, &word); err != nil {
+		return "", "is not a string"
+	}
+	if len(word) > 32 {
+		return "", fmt.Sprintf("is a string of %d bytes, longer than a word's 32", len(word))
+	}
+	if !conclusionWord.MatchString(word) {
+		return "", fmt.Sprintf("is %q, not a word of lower-case letters and underscores", word)
+	}
+	return word, ""
+}
+
+// rawStatusGroup reads one of a settlement's groups of check names, {count, checks}: the names,
+// none of them empty, as many as the count says. defect says why the group could not be read, ""
+// when it was. A null group is an empty one.
+func rawStatusGroup(value json.RawMessage) ([]string, string) {
 	var group struct {
 		Count  int      `json:"count"`
 		Checks []string `json:"checks"`
 	}
-	if err := json.Unmarshal(raw[key], &group); err != nil || group.Count < 0 || len(group.Checks) != group.Count {
-		return nil, false
+	if err := json.Unmarshal(value, &group); err != nil {
+		return nil, "is not a group of check names"
 	}
-	for _, check := range group.Checks {
-		if check == "" {
-			return nil, false
-		}
+	if group.Count < 0 || len(group.Checks) != group.Count {
+		return nil, fmt.Sprintf("counts %d checks and names %d", group.Count, len(group.Checks))
 	}
-	return group.Checks, true
+	if slices.Contains(group.Checks, "") {
+		return nil, "names a check with no name"
+	}
+	return group.Checks, ""
 }
 
 func rawString(raw map[string]json.RawMessage, key string) (string, bool) {
