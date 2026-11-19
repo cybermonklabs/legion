@@ -260,10 +260,11 @@ An agent's name, on its Agents row (**↗** beside the title) and everywhere els
 links to its conversation as it happens, at `/agents/<session>/live`.
 
 - The header holds a link back to **Agents**, the session's name with its
-  [running mark](#how-dispatch-shows-an-agent), whether this Dispatch is connected to the
-  session's conversation, and a pin.
+  [running mark](#how-dispatch-shows-an-agent), a pin, and a word on the session: whether this
+  Dispatch is connected to the session's conversation, or, while that connection stands, what the
+  session list says when it marks the session as missing its heartbeats or no longer holds it.
   When the session does not answer the live view, the header reads **Not answering**, and a line
-  above the conversation says what can cause that.
+  says what can cause that: in the empty transcript, or above the messages Dispatch keeps for it.
   When the session list marks the session as missing its heartbeats, the header reads
   **Unresponsive** with when it was last seen, and the line says that the session has not ended.
   When the session leaves the list while you look at it, the header reads **Not in the session
