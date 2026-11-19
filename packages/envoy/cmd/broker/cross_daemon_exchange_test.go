@@ -7,8 +7,10 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -25,8 +27,10 @@ const secondRegistrarAccount = "system:serviceaccount:example-ns:example-daemon-
 // the test then says nothing of the rule it is about. A then registers a second pod, a-2, for S, as
 // a relaunch does, and a-2 trades for a token read back live under S. Daemon B
 // (secondRegistrarAccount), listed for the same pod account and logging in as a service of its
-// own, registering its pod b-1 for S is refused, and b-1's trade under S is refused with no access
-// token. All three pods run as podAccount, one principal at the exchange, so the claim on the name
+// own, registering its pod b-1 for S is refused 409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR, so it
+// writes nothing, and b-1's trade under S is refused as the trade of a pod no registration names:
+// 400 invalid_grant, its description beginning pod_session_not_registered:, with no access token.
+// All three pods run as podAccount, one principal at the exchange, so the claim on the name
 // refuses none of them: what refuses b-1 is that S is A's. Every failure names S.
 func TestAPodAnotherDaemonRegisteredCannotTradeForASessionThisDaemonsPodHolds(t *testing.T) {
 	const session = "example-cross-daemon-session"
@@ -37,7 +41,7 @@ func TestAPodAnotherDaemonRegisteredCannotTradeForASessionThisDaemonsPodHolds(t 
 	// os/exec keeps the last value of a key given twice, so these two override exchangeEnv's
 	// own, which list registrarAccount alone.
 	env := append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
-		"BROKER_SERVICE_LOGINS=legion-daemon="+registrarAccount+" legion-daemon-b="+secondRegistrarAccount,
+		"BROKER_SERVICE_LOGINS="+registrarService+"="+registrarAccount+" legion-daemon-b="+secondRegistrarAccount,
 		"BROKER_POD_REGISTRARS="+registrarAccount+"="+podAccount+" "+secondRegistrarAccount+"="+podAccount)
 	broker := startBroker(t, brokerOptions{Env: env})
 	broker.Await(t, "token exchange")
@@ -87,12 +91,14 @@ func TestAPodAnotherDaemonRegisteredCannotTradeForASessionThisDaemonsPodHolds(t 
 	// its pod then trades.
 	status, body := live.registerPodSession(t, enrolment("b-1"), session, daemonB)
 	t.Logf("%s's registration of b-1 for %s = %d %v", secondRegistrarAccount, session, status, body)
-	if status == http.StatusOK {
-		t.Errorf("%s, listed for %s, registering b-1 for %s, which %s's pods trade under = %d %v; want it refused: %s is %s's", secondRegistrarAccount, podAccount, session, registrarAccount, status, body, session, registrarAccount)
+	if status != http.StatusConflict || body["code"] != "SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR" {
+		t.Errorf("%s, listed for %s, registering b-1 for %s, which %s's pods trade under = %d %v; want 409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR: %s is %s's",
+			secondRegistrarAccount, podAccount, session, registrarAccount, status, body, session, registrarAccount)
 	}
 	status, body = live.exchange(t, exchangeForm(subject("b-1"), session))
-	if status == http.StatusOK || body["access_token"] != nil {
-		t.Errorf("b-1's trade under %s, a name %s holds, after %s tried to register it = %d %v %q with an access token %t; want it refused with no access token",
-			session, registrarAccount, secondRegistrarAccount, status, body["error"], body["error_description"], body["access_token"] != nil)
+	description, _ := body["error_description"].(string)
+	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || !strings.HasPrefix(description, oauthwire.PodSessionNotRegistered+":") || body["access_token"] != nil {
+		t.Errorf("b-1's trade under %s, a name %s holds, after %s was refused its registration = %d %v %q with an access token %t; want 400 invalid_grant, its description beginning %s:, and no access token",
+			session, registrarAccount, secondRegistrarAccount, status, body["error"], body["error_description"], body["access_token"] != nil, oauthwire.PodSessionNotRegistered)
 	}
 }
