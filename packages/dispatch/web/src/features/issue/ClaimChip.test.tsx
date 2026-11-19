@@ -51,11 +51,13 @@ const base: Issue = {
   updated_at: "2026-09-24T06:00:00Z",
 };
 
-/** These rows are about the claim chip, not the priority: the header's write never runs. */
+/** These rows are about the claim chip, not the priority: the header's write never runs, and it
+ *  draws no priority, as `base` has none. */
 const idlePriorityWrite: IssuePriorityWrite = {
   failed: false,
   pending: false,
   retry: () => undefined,
+  shown: null,
   submit: () => undefined,
 };
 

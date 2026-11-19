@@ -31,6 +31,9 @@ export interface IssueFieldWrite<Value> {
    *  (`retriesUnderItsKey`). Undefined while nothing is refused, and for a refused pick with a
    *  newer live write of its field, which the screen shows and Dispatch stores last. */
   retry: (() => void) | undefined;
+  /** The field as the picker draws it: `drawn`, the value its host reads from the issue's caches,
+   *  or from a pick here until `drawn` moves off the value it had at the press, that pick. */
+  shown: Value;
   /** Picks `value`: one write of the page's store on the issue's line, which takes out every
    *  other pick of the field still waiting there unsent, so the newest is the one saved. */
   submit: (value: Value) => void;
@@ -44,6 +47,13 @@ interface Refused<Value> {
   readonly retryable: boolean;
   readonly value: Value;
   readonly write: Write<IssueFieldPick>;
+}
+
+/** A pick made here as the picker draws it: the value picked, and the value drawn at its press,
+ *  which the host's caches move off once they draw the pick. */
+interface Held<Value> {
+  readonly over: Value;
+  readonly value: Value;
 }
 
 /** Every pick in `writes` of `field` of `issueKey`. */
@@ -80,16 +90,29 @@ function picksOf(writes: Writes, of: Pick<IssueFieldPick, "field" | "issueKey">)
  * refused or discarded - since the refused pick then has no newer live write of its field. A pick
  * of the value the reader stopped is that press made again under its key, so Dispatch answers it
  * with what it did.
+ *
+ * The picker draws `shown`: `drawn`, the value of the field its host reads from the issue's
+ * caches, or from a pick here until `drawn` moves off the value it had at the press, that pick.
+ * A pick reaches the caches in a microtask of its press, and the host only once TanStack Query
+ * tells the caches' observers, in a timer after that: a picker that drew `drawn` from the press
+ * would draw the value its pick replaces until then, a frame a browser can paint. A pick
+ * refused, taken out or discarded ends its hold at once, and the picker draws what the write put
+ * back; so does a landing whose answer holds the value drawn at the press, which moves nothing
+ * the host draws. A newer pick here holds the picker in its place.
  */
 export function useIssueFieldWrite<F extends IssueField>(
   issueKey: string,
-  field: F
+  field: F,
+  drawn: IssueFieldValues[F]
 ): IssueFieldWrite<IssueFieldValues[F]> {
   type Value = IssueFieldValues[F];
   const client = useQueryClient();
   const writes = useWrites();
   const [out, setOut] = useState(0);
   const [refused, setRefused] = useState<Refused<Value> | undefined>(undefined);
+  const [held, setHeld] = useState<Held<Value> | undefined>(undefined);
+  // The host draws the pick now, or whatever has come after it: the pick is held no longer.
+  if (held !== undefined && !Object.is(held.over, drawn)) setHeld(undefined);
   /** The report shown, for the listener of the issue's line below, which outlives a render. */
   const reported = useRef<Refused<Value> | undefined>(undefined);
   /** Notes the writes of the field while a refusal reported with no Retry stands (the listener
@@ -103,8 +126,8 @@ export function useIssueFieldWrite<F extends IssueField>(
   /** The last pick here the reader stopped, which a pick of the same value makes again. */
   const stopped = useRef<{ readonly key: string; readonly value: Value } | undefined>(undefined);
   /** Joins `pick` to its line under `key`, takes out the picks of its field it replaces, and
-   *  reports what becomes of it. */
-  const join = (pick: IssueFieldPick, key: string, value: Value): void => {
+   *  reports what becomes of it, and of `hold`, which draws it. */
+  const join = (pick: IssueFieldPick, key: string, value: Value, hold: Held<Value>): void => {
     const press = writes.run({
       detail: pick,
       inline: true,
@@ -125,9 +148,17 @@ export function useIssueFieldWrite<F extends IssueField>(
       if (other.id !== joined.id && waitingToSend(other)) writes.discard(other.id);
     }
     press.then(
-      () => setOut((count) => count - 1),
+      (answer) => {
+        setOut((count) => count - 1);
+        // Dispatch stored the value drawn at the press, which the host draws still. A newer pick
+        // here holds the picker in this one's place, and keeps it.
+        if (answer !== null && Object.is(answer[field], hold.over)) {
+          setHeld((current) => (current === hold ? undefined : current));
+        }
+      },
       (error: unknown) => {
         setOut((count) => count - 1);
+        setHeld((current) => (current === hold ? undefined : current));
         // Taken out - by a newer pick here, or by the reader's Discard in the Pending changes
         // list: no refusal of Dispatch's.
         if (error instanceof WriteDiscardedError) return;
@@ -151,13 +182,15 @@ export function useIssueFieldWrite<F extends IssueField>(
     // `value` is the value of `field`, which the type checker cannot pair across the union of
     // fields: the one pick the two make together.
     const pick = { field, issueKey, value } as IssueFieldPick;
+    const hold: Held<Value> = { over: drawn, value };
+    setHeld(hold);
     report(undefined);
     setOut((count) => count + 1);
     // The pick joins its line in a microtask of the press - before anything else can happen, a
     // reload included - so the picker renders the press as pending before the pick shows: a
     // surface that keeps its control while its write is live (the Inbox's Assign to me, whose row
     // the pick moves out of the Unassigned filter) has said so by then.
-    queueMicrotask(() => join(pick, key, value));
+    queueMicrotask(() => join(pick, key, value, hold));
   };
   // A refusal reported with no Retry stands for the newer writes of its field the screen shows,
   // until one of them lands or the person picks the field again, here or in any other picker of
@@ -231,6 +264,7 @@ export function useIssueFieldWrite<F extends IssueField>(
     failed: refused !== undefined,
     pending: out > 0,
     retry: refused?.retryable === true ? () => submit(refused.value) : undefined,
+    shown: held !== undefined && Object.is(held.over, drawn) ? held.value : drawn,
     submit,
   };
 }

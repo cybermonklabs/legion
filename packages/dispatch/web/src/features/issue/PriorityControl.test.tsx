@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { Profiler, type ProfilerOnRenderCallback, type ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -125,8 +125,10 @@ const detailKey = ["issue", issue.key] as const;
 const listKey = ["issues", "project", issue.project] as const;
 const inboxKey = ["inbox"] as const;
 
-/** Renders the control the way every surface does: with the priority it reads from the cache. */
-function CachedControl(): ReactNode {
+/** Renders the control the way every surface does: with the priority it reads from the cache.
+ *  Given `onCommit`, each commit of the control is told under that priority, the profiler's id,
+ *  so a case can set what the host passed beside what the control drew. */
+function CachedControl({ onCommit }: { onCommit?: ProfilerOnRenderCallback }): ReactNode {
   const cached = useQuery<IssueDetails>({
     queryKey: detailKey,
     queryFn: () => Promise.reject(new Error("the test seeds this query")),
@@ -135,12 +137,19 @@ function CachedControl(): ReactNode {
   if (cached.data === undefined) {
     return null;
   }
-  return (
+  const control = (
     <PriorityControl issueKey={cached.data.key} priority={issuePriority(cached.data.priority)} />
+  );
+  return onCommit === undefined ? (
+    control
+  ) : (
+    <Profiler id={String(cached.data.priority)} onRender={onCommit}>
+      {control}
+    </Profiler>
   );
 }
 
-function renderControl() {
+function renderControl({ onCommit }: { onCommit?: ProfilerOnRenderCallback } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -150,7 +159,7 @@ function renderControl() {
   const user = userEvent.setup();
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <CachedControl />
+      <CachedControl onCommit={onCommit} />
     </QueryClientProvider>
   );
   return { queryClient, unmount: view.unmount, user };
@@ -201,6 +210,57 @@ test("PriorityControl saves the picked priority, shows it before the server answ
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.priority).toBe(2)
     );
     expect(select()).toHaveFocus();
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A pick shows from its press on, in every commit. The pick reaches the issue's cache a moment
+// after the press (`useIssueFieldWrite` joins it in a microtask), and the control's host later
+// still in a browser, where TanStack Query tells a query's observers in a timer. The select that
+// showed the pick as it was made is put back to its `value` within the press, so a commit before
+// then that drew the priority the pick replaces is a frame of it on screen (INFRA-3904).
+test("PriorityControl draws the pick in every commit from the pick on, while its host still passes the priority it replaces", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const commits: { drawn: string; host: string }[] = [];
+  const { queryClient, unmount, user } = renderControl({
+    onCommit: (host) =>
+      commits.push({
+        drawn: `${select().value} ${select().previousElementSibling?.textContent}`,
+        host,
+      }),
+  });
+  try {
+    // The record from the change on: user-event's pointer and focus ahead of it are no pick. A
+    // listener on the select itself hears the change before the root's that React reads.
+    let fromPick = -1;
+    select().addEventListener(
+      "change",
+      () => {
+        fromPick = commits.length;
+      },
+      { capture: true, once: true }
+    );
+    await user.selectOptions(select(), "2");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    // The host passes the pick once the cache has told it.
+    await waitFor(() => expect(commits.at(-1)?.host).toBe("2"));
+    await act(async () => {
+      save.resolve({ ...issue, priority: 2, last_seq: 2 });
+      await save.promise;
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
+    );
+    expect(fromPick).toBeGreaterThanOrEqual(0);
+    const picked = commits.slice(fromPick);
+    // The pick's own commit, made while the host still passed the priority the pick replaces.
+    expect(picked[0]?.host).toBe("1");
+    expect(picked.map(({ drawn }) => drawn)).toEqual(picked.map(() => "2 P2"));
   } finally {
     unmount();
     patchIssue.mockRestore();

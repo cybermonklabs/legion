@@ -5,8 +5,12 @@ import { type IssueFieldWrite, useIssueFieldWrite } from "./useIssueFieldWrite";
  * parent's or the project's default). The pick's write shows it on the issue detail and every
  * list of issues until it lands; an own repository is also what the issue resolves to, while an
  * Inherit pick leaves the repository the issue showed before, marked as not its own, until
- * Dispatch's answer names the one it inherits (see `useIssueFieldWrite`).
+ * Dispatch's answer names the one it inherits (see `useIssueFieldWrite`). `drawn` is the issue's
+ * own repository as the caller reads it from the cache, and `shown` what to draw in its place.
  */
-export function useIssueRepo(issueKey: string): IssueFieldWrite<string | null> {
-  return useIssueFieldWrite(issueKey, "repo");
+export function useIssueRepo(
+  issueKey: string,
+  drawn: string | null
+): IssueFieldWrite<string | null> {
+  return useIssueFieldWrite(issueKey, "repo", drawn);
 }

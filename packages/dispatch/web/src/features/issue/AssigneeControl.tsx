@@ -50,7 +50,7 @@ export function assigneeControlName(issueKey: string): string {
  * grey. The select over it is the same either way.
  */
 export function AssigneeControl({
-  assignee,
+  assignee: drawn,
   disabled = false,
   issueKey,
   variant = "badge",
@@ -64,7 +64,10 @@ export function AssigneeControl({
   const [wanted, setWanted] = useState(false);
   const users = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
-  const write = useIssueAssignee(issueKey);
+  const write = useIssueAssignee(issueKey, drawn);
+  /** The assignee as the badge and the select draw it: from a pick here until the host passes
+   *  the assignee picked, that one (`useIssueFieldWrite`'s `shown`). */
+  const assignee = write.shown;
   const logins = (users.data ?? []).map((user) => user.login);
   // An assignee the list does not carry still names who holds the issue; keep it selectable
   // so the control never shows a value its options lack.

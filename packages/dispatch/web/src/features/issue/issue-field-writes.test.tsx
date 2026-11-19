@@ -376,7 +376,9 @@ test("a pick takes out no waiting write of the issue but a pick of its own field
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
   const board = renderHook(() => useBoardMoves(issue.project), { wrapper });
-  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee"), { wrapper });
+  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee", issue.assignee), {
+    wrapper,
+  });
   const plain = (label: string, input: UpdateIssueInput) =>
     act(() => {
       void writesOf(client)
@@ -1269,11 +1271,14 @@ test("a pick refused after a lapse and the same person's sign-in puts back the p
   const client = signedIn();
   const writes = writesOf(client);
   act(() => writes.signedIn("alice"));
-  const picker = renderHook(() => useIssueFieldWrite(issue.key, "priority"), {
-    wrapper: ({ children }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    ),
-  });
+  const picker = renderHook(
+    () => useIssueFieldWrite(issue.key, "priority", issuePriority(issue.priority)),
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
   let surfaces: RenderResult | undefined;
   try {
     await act(async () => {
@@ -2026,7 +2031,9 @@ test("a pick refused after a read older than the cached issue answered puts back
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee"), { wrapper });
+  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee", issue.assignee), {
+    wrapper,
+  });
   const user = userEvent.setup();
   const landedAt = "2026-09-09T00:01:00Z";
   const seen: string[] = [];
@@ -2206,7 +2213,9 @@ test("a refused priority pick puts back the priority an assignee pick that lande
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee"), { wrapper });
+  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee", issue.assignee), {
+    wrapper,
+  });
   const user = userEvent.setup();
   const seen: string[] = [];
   const see = (step: string) => {
@@ -2412,7 +2421,9 @@ test("a refused assignee pick puts back the person an Inbox row waited on in Dis
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
   // The page's write store is made before any read, as the app's shell makes it.
-  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee"), { wrapper });
+  const assignee = renderHook(() => useIssueFieldWrite(issue.key, "assignee", issue.assignee), {
+    wrapper,
+  });
   const inbox = renderIn(client, <Inbox />);
   let detail: RenderResult | undefined;
   const seen: string[] = [];

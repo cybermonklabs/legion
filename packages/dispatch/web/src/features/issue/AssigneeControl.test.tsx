@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of who has signed in, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { Profiler, type ProfilerOnRenderCallback, type ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -126,7 +126,10 @@ const detailKey = ["issue", issue.key] as const;
 const listKey = ["issues", "project", issue.project] as const;
 const inboxKey = ["inbox"] as const;
 
-function CachedControl(): ReactNode {
+/** The control with the assignee its host reads from the cache. Given `onCommit`, each commit of
+ *  the control is told under that assignee, the profiler's id, so a case can set what the host
+ *  passed beside what the control drew. */
+function CachedControl({ onCommit }: { onCommit?: ProfilerOnRenderCallback }): ReactNode {
   const cached = useQuery<IssueDetails>({
     queryKey: detailKey,
     queryFn: () => Promise.reject(new Error("the test seeds this query")),
@@ -135,10 +138,17 @@ function CachedControl(): ReactNode {
   if (cached.data === undefined) {
     return null;
   }
-  return <AssigneeControl assignee={cached.data.assignee} issueKey={cached.data.key} />;
+  const control = <AssigneeControl assignee={cached.data.assignee} issueKey={cached.data.key} />;
+  return onCommit === undefined ? (
+    control
+  ) : (
+    <Profiler id={String(cached.data.assignee)} onRender={onCommit}>
+      {control}
+    </Profiler>
+  );
 }
 
-function renderControl() {
+function renderControl({ onCommit }: { onCommit?: ProfilerOnRenderCallback } = {}) {
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },
     { login: "bob" },
@@ -152,7 +162,7 @@ function renderControl() {
   const user = userEvent.setup();
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <CachedControl />
+      <CachedControl onCommit={onCommit} />
     </QueryClientProvider>
   );
   return {
@@ -217,6 +227,60 @@ test("AssigneeControl reassigns optimistically on every surface and merges the s
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
     );
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A pick shows from its press on, in every commit. The pick reaches the issue's cache a moment
+// after the press (`useIssueFieldWrite` joins it in a microtask), and the control's host later
+// still in a browser, where TanStack Query tells a query's observers in a timer. The select that
+// showed the pick as it was made is put back to its `value` within the press, so a commit before
+// then that drew the assignee the pick replaces is a frame of it on screen (INFRA-3904).
+test("AssigneeControl draws the pick in every commit from the pick on, while its host still passes the assignee it replaces", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const commits: { drawn: string; host: string }[] = [];
+  const { queryClient, unmount, user } = renderControl({
+    onCommit: (host) =>
+      commits.push({
+        drawn: `${select().value} ${select().previousElementSibling?.textContent}`,
+        host,
+      }),
+  });
+  try {
+    // A focus with no press before it: user-event has no form for a bare focus.
+    fireEvent.focus(select());
+    await waitFor(() => expect(select().options.length).toBe(3));
+    // The record from the change on: user-event's pointer and focus ahead of it are no pick. A
+    // listener on the select itself hears the change before the root's that React reads.
+    let fromPick = -1;
+    select().addEventListener(
+      "change",
+      () => {
+        fromPick = commits.length;
+      },
+      { capture: true, once: true }
+    );
+    await user.selectOptions(select(), "bob");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)
+    );
+    // The host passes the pick once the cache has told it.
+    await waitFor(() => expect(commits.at(-1)?.host).toBe("bob"));
+    await act(async () => {
+      save.resolve({ ...issue, assignee: "bob", last_seq: 2 });
+      await save.promise;
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
+    );
+    expect(fromPick).toBeGreaterThanOrEqual(0);
+    const picked = commits.slice(fromPick);
+    // The pick's own commit, made while the host still passed the assignee the pick replaces.
+    expect(picked[0]?.host).toBe("alice");
+    expect(picked.map(({ drawn }) => drawn)).toEqual(picked.map(() => "bob bob"));
   } finally {
     unmount();
     patchIssue.mockRestore();

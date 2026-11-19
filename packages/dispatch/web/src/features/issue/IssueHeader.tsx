@@ -73,7 +73,6 @@ import { GitHubLink } from "./GitHubLink";
 import { gatedStepEntries } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
-import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
 import { stateForIssue } from "./pins";
@@ -116,7 +115,8 @@ export function IssueHeader({
   isClosed: boolean;
   issue: IssueDetails;
   /** The page's one priority write, shared with the keyboard's `0`–`3` and the palette's Set
-   *  priority rows, so a refusal of any of them is reported once and by this header. */
+   *  priority rows, so a refusal of any of them is reported once and by this header, which draws
+   *  its `shown` priority, so a pick from any of them shows from its press. */
   priorityWrite: IssuePriorityWrite;
   state: UserIssueState;
 }): ReactNode {
@@ -524,7 +524,7 @@ export function IssueHeader({
           <PriorityEditor
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
-            priority={issuePriority(issue.priority)}
+            priority={priorityWrite.shown}
             write={priorityWrite}
           />
           <AssigneeControl

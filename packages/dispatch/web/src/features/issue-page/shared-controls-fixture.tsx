@@ -401,6 +401,7 @@ export const idlePriorityWrite: IssuePriorityWrite = {
   failed: false,
   pending: false,
   retry: () => undefined,
+  shown: null,
   submit: () => undefined,
 };
 

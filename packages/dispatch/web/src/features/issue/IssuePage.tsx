@@ -37,6 +37,7 @@ import { DecisionsPanel } from "./DecisionsPanel";
 import { IssueHeader } from "./IssueHeader";
 import { IssueTabs } from "./IssueTabs";
 import { ItemMatchList } from "./ItemMatchList";
+import { issuePriority } from "./issue-priority";
 import { stateForIssue } from "./pins";
 import { SpecRequirements } from "./SpecRequirements";
 import { SpecToolbar } from "./SpecToolbar";
@@ -257,9 +258,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // The scope is the issue page itself, and every binding drives the header control or the tab
   // its label names - the same handler a click reaches, offered while that control is. The
   // digits go through `useIssuePriority` on the route's key, the query key this page reads, so
-  // a keyed priority lands in the same cache the picker writes. `IssueHeader` registers the
-  // palette-only issue actions into this same scope; it never pushes one of its own.
-  const priorityWrite = useIssuePriority(route.key);
+  // a keyed priority lands in the same cache the picker writes; the header draws its `shown`, so
+  // a pick from either shows from its press. `IssueHeader` registers the palette-only issue
+  // actions into this same scope; it never pushes one of its own.
+  const priorityWrite = useIssuePriority(route.key, issuePriority(issue.data?.priority));
   useKeymapScope("issue");
   useKeymap("issue", [
     {

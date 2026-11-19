@@ -42,9 +42,9 @@ export function PriorityControl({
   issueKey: string;
   priority: IssuePriority | null;
 }): ReactNode {
-  const write = useIssuePriority(issueKey);
+  const write = useIssuePriority(issueKey, priority);
   return (
-    <PriorityEditor disabled={disabled} issueKey={issueKey} priority={priority} write={write} />
+    <PriorityEditor disabled={disabled} issueKey={issueKey} priority={write.shown} write={write} />
   );
 }
 
