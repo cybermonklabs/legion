@@ -63,6 +63,7 @@ var registeredPatterns = []string{
 	"POST /legion/v1/operator/claims/{token}/retry",
 	"POST /legion/v1/operator/claims/{token}/compact",
 	"POST /legion/v1/operator/claims/{token}/forget-session",
+	"POST /legion/v1/operator/claims/{token}/release-names",
 	"POST /legion/v1/operator/claims/{token}/close",
 	"/",
 }

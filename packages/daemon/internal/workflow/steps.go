@@ -208,7 +208,7 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, en
 	if end.Report != "" {
 		write.Report = new(end.Report)
 	}
-	read := e.readAgent(agent)
+	read := e.readAgent(ctx, tx, agent)
 	if read.Session != "" {
 		write.Session = new(read.Session)
 	}
@@ -379,13 +379,13 @@ func stepWrite(issue record.Issue, place record.StepPlace, role stepRole, typ st
 		Step: place.Place, Kind: place.Kind, Role: string(role), Type: string(typ), Agent: agent, Generation: issue.Generation}
 }
 
-// readAgent is what the daemon reads of agent now (Config.StepAgent): nothing for no agent or no
-// reader.
-func (e *Engine) readAgent(agent claim.Token) StepAgent {
+// readAgent is what the daemon reads of agent now (Config.StepAgent), in the fact's transaction
+// tx: nothing for no agent or no reader.
+func (e *Engine) readAgent(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent {
 	if agent == "" || e.cfg.StepAgent == nil {
 		return StepAgent{}
 	}
-	return e.cfg.StepAgent(agent)
+	return e.cfg.StepAgent(ctx, tx, agent)
 }
 
 // endOfTransition is how a transition on trigger ends the step from, where the issue stood, moving

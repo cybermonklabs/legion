@@ -89,11 +89,12 @@ var routesWithNoPluginBody = map[string]string{
 // no body needs a record. The census of the bodies this run decoded holds each such route to it
 // (requestDecodedProblems): a route of this set that decodes a body is a problem.
 var routesReadingNoBody = map[string]bool{
-	"POST /legion/v1/operator/claims/{token}/suspend": true,
-	"POST /legion/v1/operator/claims/{token}/resume":  true,
-	"POST /legion/v1/operator/claims/{token}/stop":    true,
-	"POST /legion/v1/operator/claims/{token}/compact": true,
-	"POST /legion/v1/operator/claims/{token}/close":   true,
+	"POST /legion/v1/operator/claims/{token}/suspend":       true,
+	"POST /legion/v1/operator/claims/{token}/resume":        true,
+	"POST /legion/v1/operator/claims/{token}/stop":          true,
+	"POST /legion/v1/operator/claims/{token}/compact":       true,
+	"POST /legion/v1/operator/claims/{token}/release-names": true,
+	"POST /legion/v1/operator/claims/{token}/close":         true,
 }
 
 // requestFieldPaths is every field path typ declares, read from its json tags as an answer's key

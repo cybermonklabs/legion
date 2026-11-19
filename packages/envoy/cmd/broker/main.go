@@ -458,7 +458,8 @@ func main() {
 
 	lease, sweep := time.Duration(cfg.LeaseSeconds)*time.Second, time.Duration(cfg.SweepSeconds)*time.Second
 	enr := &enroll.Service{
-		Store: st, Lease: lease, Pod: pod, ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
+		Store: st, Lease: lease, Carry: time.Duration(cfg.SessionCarrySeconds) * time.Second, Pod: pod,
+		ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
@@ -594,7 +595,7 @@ func main() {
 	}
 	sweeper := &requests.Sweeper{
 		Enrollments: enr, Machine: reqMachine, MachineLogins: mach, OAuth: oauthStore,
-		Interval: sweep, SessionCarry: time.Duration(cfg.SessionCarrySeconds) * time.Second, Wake: waker,
+		Interval: sweep, Wake: waker,
 	}
 	go sweeper.Run(ctx)
 	// The client check, beside the sweeper and on the same context: at boot and every hour
