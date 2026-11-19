@@ -27,6 +27,24 @@ import (
 // nobody gave rows to fails this test instead of passing it.
 func sealed(t *testing.T) (events []string, states []ClaimState, timers []TimerKind) {
 	t.Helper()
+	set := sealedSource(t)
+	for _, value := range set.states {
+		states = append(states, ClaimState(value))
+	}
+	for _, value := range set.timers {
+		timers = append(timers, TimerKind(value))
+	}
+	events = set.events
+	if len(events) == 0 || len(states) == 0 || len(timers) == 0 {
+		t.Fatalf("read no sealed set from the source: events %v, states %v, timers %v", events, states, timers)
+	}
+	return events, states, timers
+}
+
+// sealedSource parses every file of the package but its tests, and reads the sealed set from
+// them (sealedSet).
+func sealedSource(t *testing.T) sealedSets {
+	t.Helper()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
@@ -44,30 +62,20 @@ func sealed(t *testing.T) (events []string, states []ClaimState, timers []TimerK
 		}
 		parsed = append(parsed, file)
 	}
-	set := sealedSet(t, files, parsed)
-	for _, value := range set.states {
-		states = append(states, ClaimState(value))
-	}
-	for _, value := range set.timers {
-		timers = append(timers, TimerKind(value))
-	}
-	events = set.events
-	if len(events) == 0 || len(states) == 0 || len(timers) == 0 {
-		t.Fatalf("read no sealed set from the source: events %v, states %v, timers %v", events, states, timers)
-	}
-	return events, states, timers
+	return sealedSet(t, files, parsed)
 }
 
 // sealedSet is what the compiler sees of this package: every type that implements Event, and the
-// value of every ClaimState and TimerKind constant. It is read as the compiler sees it rather
-// than as the source spells it — a type that inherits isEvent by embedding, or declares it on a
-// pointer receiver, is an event a scan of isEvent declarations would not see, and a state or
-// timer whose value is not a plain literal is one a scan of literals would not read. Either could
-// be mapped onto an existing kind and inherit every row that kind has.
+// value of every ClaimState, TimerKind and SuspendSource constant. It is read as the compiler
+// sees it rather than as the source spells it — a type that inherits isEvent by embedding, or
+// declares it on a pointer receiver, is an event a scan of isEvent declarations would not see,
+// and a state or timer whose value is not a plain literal is one a scan of literals would not
+// read. Either could be mapped onto an existing kind and inherit every row that kind has.
 type sealedSets struct {
-	events []string
-	states []string
-	timers []string
+	events  []string
+	states  []string
+	timers  []string
+	sources []string
 }
 
 func sealedSet(t *testing.T, files *token.FileSet, parsed []*ast.File) sealedSets {
@@ -130,6 +138,8 @@ func readSealedSet(files *token.FileSet, parsed []*ast.File) (sealedSets, error)
 				set.states = append(set.states, value)
 			case "TimerKind":
 				set.timers = append(set.timers, value)
+			case "SuspendSource":
+				set.sources = append(set.sources, value)
 			}
 		}
 	}
@@ -253,6 +263,28 @@ func TestStatesIsEveryDeclaredStateOnce(t *testing.T) {
 	listed := States()
 	if got, want := slices.Sorted(slices.Values(listed)), slices.Sorted(slices.Values(declared)); !slices.Equal(got, want) {
 		t.Fatalf("States() = %v, want each declared ClaimState once: %v", listed, want)
+	}
+}
+
+// SuspendSources is the one list of every suspension source that a test outside this package
+// walks, such as internal/daemon's test that every claim shape is in both sets of an update round
+// or in neither. That test cannot read this package's source, so this test holds the list to the
+// SuspendSource constants the compiler sees here (sealedSource), as
+// TestStatesIsEveryDeclaredStateOnce holds States: a source added to the const block and left out
+// of the list fails here, rather than passing every walk of the list. Each source is in the list
+// once.
+func TestSuspendSourcesIsEveryDeclaredSourceOnce(t *testing.T) {
+	declared := sealedSource(t).sources
+	if len(declared) == 0 {
+		t.Fatal("read no SuspendSource constant from the source")
+	}
+	listed := SuspendSources()
+	got := make([]string, len(listed))
+	for i, source := range listed {
+		got[i] = string(source)
+	}
+	if got, want := slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(declared)); !slices.Equal(got, want) {
+		t.Fatalf("SuspendSources() = %v, want each declared SuspendSource once: %v", listed, want)
 	}
 }
 

@@ -117,6 +117,22 @@ const (
 	SuspendedByReleased SuspendSource = "released"
 )
 
+// allSuspendSources is every SuspendSource, in the order the constants above declare them.
+// TestSuspendSourcesIsEveryDeclaredSourceOnce holds it to the constants the compiler sees in this
+// package, so a source added above and left out here fails that test.
+var allSuspendSources = []SuspendSource{
+	SuspendedByUnknown, SuspendedByOperator, SuspendedByDaemon, SuspendedByExit, SuspendedByReleased,
+}
+
+// SuspendSources is every source a suspended claim can record, in the order they are declared:
+// the one list a test outside this package walks to cover each source. They are the values the
+// store's check constraint allows beside the empty source of a claim that is not suspended
+// (internal/store/migrations/20261101201850_claim_suspended_by_released.up.sql). It is a copy, so
+// no caller changes the package's own list.
+func SuspendSources() []SuspendSource {
+	return slices.Clone(allSuspendSources)
+}
+
 // ByRule is whether the source is one the daemon itself recorded as a stop of its own — its own
 // suspend, or a root's exit: the sources a daemon rule resumes with no operator, and the only
 // suspended phase workers the stranded report leaves out. A release is not one of them. It is a
@@ -674,6 +690,24 @@ func (c Claim) LeftPodRound(round string) bool {
 // operator's, which holds until an operator resumes the claim.
 func (c Claim) RuleMayResume() bool {
 	return c.State == StateSuspended && c.SuspendedBy != SuspendedByOperator
+}
+
+// PassedOverByRound is whether a pod update round passes over this claim. The round does not ask
+// the claim, does not wait for it, and does not wake or resume it (dispatch://INFRA-4109 R1). It
+// is every suspension the rule may resume (RuleMayResume): a suspension by the daemon, by a root's
+// exit, by an idle release, or by an unknown source. Such a claim runs no process and no turn in
+// the pod, so an ask reaches no session. A wake or a resume for the ask would override the reason
+// the daemon stopped the claim. For a released claim that reason is the approved decision of
+// dispatch://INFRA-2981: an idle-released pod is not woken to be asked, because it holds no turn
+// to interrupt.
+//
+// An operator's suspension is not passed over. A person's suspend route, the boot's
+// session-conflict suspension and fresh_session record it, and it holds the round until the
+// operator acts (dispatch://INFRA-2981 R5, RuleHolds). internal/daemon's roundAsks and
+// PublishUpdateAsk both read this method, so the ask, the wait and the publish state the rule
+// once.
+func (c Claim) PassedOverByRound() bool {
+	return c.RuleMayResume()
 }
 
 // Released is whether the claim is the one suspension a wake brings back: the daemon released its
@@ -1707,6 +1741,10 @@ const (
 	UpdateAskAlreadyDelivered
 	// UpdateAskOutOfRound is an ask of a round the claim is not in: nothing is published.
 	UpdateAskOutOfRound
+	// UpdateAskSuspended is an ask of a claim the round passes over, one the daemon suspended
+	// (Claim.PassedOverByRound): nothing is published and nothing is marked. The sweep asks no
+	// such claim (internal/daemon's roundAsks), so the row was enqueued before the suspension.
+	UpdateAskSuspended
 )
 
 // PublishUpdateAsk publishes one ask of the claim's update round through publish, and marks the
@@ -1731,7 +1769,13 @@ const (
 //  2. The claim is read under the lock: a claim no longer in round is published nothing, and so
 //     is one an earlier ask of round already reached. Two rows of one round — a row left by an
 //     older daemon beside the sweep's own — therefore deliver one ask between them, whichever
-//     order they run in and whichever of them finds a holder.
+//     order they run in and whichever of them finds a holder. A claim the daemon suspended
+//     (PassedOverByRound) is published nothing either, and the call answers UpdateAskSuspended:
+//     the round does not ask such a claim (dispatch://INFRA-4109 R1). The sweep can enqueue a
+//     row before the suspension and the row can run after it, an idle release's included. Its
+//     publish would then go to a role with no holder, and the Envoy listener raises a role wake
+//     for every publish to a role with no holder (packages/envoy/cmd/listener/confirmed.go,
+//     roleSend.noHolder). That wake would bring back the pod the release took.
 //  3. The publish runs under the lock, so nothing else of this claim reads or writes the mark
 //     between the publish and the mark. The section holds the lock for at most the owed write's
 //     repair, the publish and the mark's write: the claim-write deadline twice and notify's
@@ -1772,6 +1816,8 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 		return UpdateAskAlreadyDelivered, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
 	case m.claim.UpdateTaskedAt != nil:
 		return UpdateAskAlreadyDelivered, nil
+	case m.claim.PassedOverByRound():
+		return UpdateAskSuspended, nil
 	}
 	delivered, err := publish(ctx)
 	if err != nil {
