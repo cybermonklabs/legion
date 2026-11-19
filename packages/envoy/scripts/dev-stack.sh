@@ -320,6 +320,11 @@ LISTENER_TOKEN_FILE="$WORK_DIR/listener-token"
 EXCHANGE_TOKEN_FILE="$WORK_DIR/exchange-token"
 REGISTRAR_TOKEN_FILE="$WORK_DIR/registrar-token"
 POD_TOKEN_FILE="$WORK_DIR/pod-token"
+# Dispatch's identity at the listener: its own account's token for the listener's audience, which
+# the listener verifies to take a send's role mark from Dispatch alone (ENVOY_DISPATCH_PRINCIPAL),
+# as the cluster's projected token is; without it Dispatch refuses every send for a `role:` route.
+LISTENER_AUDIENCE="legion-envoy-listener"
+DISPATCH_LISTENER_TOKEN_FILE="$WORK_DIR/dispatch-listener-token"
 APPROVER_LOGIN="ada@example.com"
 OPERATOR_FILE="$WORK_DIR/operator"
 FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
@@ -592,6 +597,7 @@ env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" "${callout_issuer_args[@]}" \
   --token "$EXCHANGE_AUDIENCE=$EXCHANGE_ACCOUNT=$EXCHANGE_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$EXCHANGE_ACCOUNT=$POD_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$REGISTRAR_ACCOUNT=$REGISTRAR_TOKEN_FILE" \
+  --token "$LISTENER_AUDIENCE=$API_ACCOUNT=$DISPATCH_LISTENER_TOKEN_FILE" \
   --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE" \
   --device-flow "$DEVICE_CLIENT_ID=$DEVICE_SECRET_FILE" \
   --device-flow "$MACHINE_CLIENT_ID=$MACHINE_SECRET_FILE" \

@@ -130,7 +130,7 @@ func (r *Registry) SetRole(sessionID, machineID, role string, soft bool, superse
 // Each bucket call waits no longer than ctx (bus.Bounded): POST /v1/roles/set passes its request's
 // own context. A call ctx abandoned may still land after this answer. Every claim writes with the
 // revision of the record it read (a create where it read none), so the record it writes over is
-// the one it read. A hard claim that names no IfClaimRevision has no refusal: on a conflict it
+// the one it read. A hard claim that names no IfClaimRevision is not refused for a conflict: it
 // reads the record again and writes again, until ctx ends, and the last write still wins, so two
 // honest concurrent claimants both land, the later write holding the role; one that meets a
 // conflict at every try until ctx ends writes nothing and is ErrRoleClaimContended. A soft
@@ -252,14 +252,13 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 			break
 		}
 		if answered && !req.Soft && req.IfClaimRevision == nil && errors.Is(err, nats.ErrKeyExists) {
-			if tries.Err() != nil {
-				r.rollBackClaimTopic(ctx, req, roleTopic)
-				return Interest{}, fmt.Errorf("%w: role %s: %w", ErrRoleClaimContended, req.Role, err)
-			}
-			next, readErr := r.RoleClaim(tries, req.Role)
-			if readErr == nil {
-				oldClaim = next
-				continue
+			var readErr error
+			if tries.Err() == nil {
+				var next RoleClaim
+				if next, readErr = r.RoleClaim(tries, req.Role); readErr == nil {
+					oldClaim = next
+					continue
+				}
 			}
 			if tries.Err() != nil {
 				r.rollBackClaimTopic(ctx, req, roleTopic)
@@ -273,7 +272,16 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		// below returns, so the cleanup context is the loop's last.
 		cleanup, cancelCleanup := claimCleanupContext(ctx)
 		defer cancelCleanup()
-		current, holderErr := r.RoleClaim(cleanup, req.Role)
+		// The topic goes back only where the role did not end up with this session, which is
+		// the session's and not the process's: one interest record serves every process
+		// running under one session id, so a claim refused because the claim that won names
+		// this session - the claimant's own process's, another process's, or a claim that
+		// names none - leaves that record alone. It carries the lane topic of the role that
+		// session now holds, the interest half of the claim that stands (rollBackUnlessHeld).
+		current, holderErr, rollbackErr := r.rollBackUnlessHeld(cleanup, req, roleTopic)
+		if rollbackErr != nil {
+			return Interest{}, errors.Join(err, holderErr, rollbackErr)
+		}
 		holder := current.HolderSessionID
 		// A conditional claim that lost the write's own compare-and-swap (nats.ErrKeyExists)
 		// lost it to a claim that landed after the read this call weighed its precondition on:
@@ -299,18 +307,6 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		conditionalLoss := req.IfClaimRevision != nil && holderErr == nil && errors.Is(err, nats.ErrKeyExists)
 		if heldByClaimant && !conditionalLoss {
 			return item, nil
-		}
-		// The topic goes back only where the role did not end up with this session, which is
-		// the session's and not the process's: one interest record serves every process
-		// running under one session id, so a claim refused because the claim that won names
-		// this session - the claimant's own process's, another process's, or a claim that
-		// names none - leaves that record alone. It carries the lane topic of the role that
-		// session now holds, the interest half of the claim that stands.
-		if !heldBySession {
-			if rollbackErr := r.removeInterestTopics(cleanup, req.SessionID, []string{roleTopic}); rollbackErr != nil {
-				return Interest{}, errors.Join(err, holderErr, rollbackErr)
-			}
-			r.restoreClaimTopic(cleanup, req, roleTopic)
 		}
 		if holderErr != nil {
 			return Interest{}, errors.Join(err, holderErr)
@@ -410,27 +406,37 @@ func claimCleanupContext(ctx context.Context) (context.Context, context.CancelFu
 	return context.WithTimeout(detached, claimCleanupWindow)
 }
 
-// rollBackClaimTopic takes the role's lane topic back off the claimant's interest record, for a
-// claim that wrote nothing because its BeforeTry refused a try or every try met a conflict until
-// its tries ended: unless the claim record that stands names the claimant's session, whose record
-// then keeps the topic of the role it holds, as SetRoleWithPrevious's own rollback rule reads. It
-// runs in the reserve of ctx's budget (claimCleanupContext), since a claim whose tries ended still
-// owes it, and a rollback that fails is logged at WARN and changes nothing the claim answers: a
-// topic it leaves gives nobody the role.
+// rollBackClaimTopic is rollBackUnlessHeld for a claim that wrote nothing because its BeforeTry
+// refused a try or every try met a conflict until its tries ended. It runs in the reserve of ctx's
+// budget (claimCleanupContext), since a claim whose tries ended still owes it, and a rollback that
+// fails is logged at WARN and changes nothing the claim answers: a topic it leaves gives nobody the
+// role.
 func (r *Registry) rollBackClaimTopic(ctx context.Context, req RoleClaimRequest, roleTopic string) {
 	cleanup, cancel := claimCleanupContext(ctx)
 	defer cancel()
-	if current, err := r.RoleClaim(cleanup, req.Role); err == nil && current.HolderSessionID == req.SessionID {
-		return
-	}
-	if err := r.removeInterestTopics(cleanup, req.SessionID, []string{roleTopic}); err != nil {
+	if _, _, err := r.rollBackUnlessHeld(cleanup, req, roleTopic); err != nil {
 		r.logger().Warn("registry role claim that wrote nothing left its claimant's role topic",
 			slog.String("role", req.Role),
 			slog.String("session_id", req.SessionID),
 			slog.String("error", err.Error()))
-		return
+	}
+}
+
+// rollBackUnlessHeld is the one rollback rule of a claim that wrote nothing: it reads the role's
+// claim within cleanup and, unless that claim names the claimant's session - whose interest record
+// then keeps the topic of the role it holds - takes the role's lane topic back off that record and
+// merges it back if a claim of the session landed meanwhile (restoreClaimTopic). It answers the
+// claim it read, the read's error, and the removal's.
+func (r *Registry) rollBackUnlessHeld(cleanup context.Context, req RoleClaimRequest, roleTopic string) (RoleClaim, error, error) {
+	current, holderErr := r.RoleClaim(cleanup, req.Role)
+	if holderErr == nil && current.HolderSessionID == req.SessionID {
+		return current, nil, nil
+	}
+	if err := r.removeInterestTopics(cleanup, req.SessionID, []string{roleTopic}); err != nil {
+		return current, holderErr, err
 	}
 	r.restoreClaimTopic(cleanup, req, roleTopic)
+	return current, holderErr, nil
 }
 
 // restoreClaimTopic merges the role's lane topic back into the claimant's interest record after a

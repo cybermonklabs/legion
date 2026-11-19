@@ -225,6 +225,12 @@ type DepsInput struct {
 	// reads and presents in EnvoyToken's place (envoy.WithAccountTokenFile); empty presents
 	// EnvoyToken. It is the one credential the listener takes a send's role mark from.
 	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is the audience of the identity token the metadata server mints for
+	// Dispatch's Google Cloud machine (cmd/dispatch: ENVOY_ACCOUNT_GOOGLE_AUDIENCE), which every
+	// listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); empty presents none.
+	// With neither it nor EnvoyAccountTokenFile, Dispatch presents no identity and refuses every
+	// send for a role (envoy.ErrNoIdentity).
+	EnvoyGoogleAudience string
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.
 	EnvoyTimeout time.Duration
@@ -312,6 +318,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 		options := []envoy.Option{envoy.WithToken(input.EnvoyToken)}
 		if input.EnvoyAccountTokenFile != "" {
 			options = append(options, envoy.WithAccountTokenFile(input.EnvoyAccountTokenFile))
+		}
+		if input.EnvoyGoogleAudience != "" {
+			options = append(options, envoy.WithGoogleIdentity(input.EnvoyGoogleAudience))
 		}
 		if input.EnvoyTimeout > 0 {
 			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))

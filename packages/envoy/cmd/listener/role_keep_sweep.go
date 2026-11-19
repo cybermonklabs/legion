@@ -123,27 +123,10 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 			continue
 		}
 		records, takenRole := taken[role]
-		if !takenRole {
-			headCtx, cancelHead := context.WithTimeout(ctx, roleKeepDrainWindow)
-			head, err := readKeptLaneHead(headCtx, cfg.client, role)
-			cancelHead()
-			if err != nil {
-				release()
-				<-slots
-				cfg.logger.LogEvent(slog.LevelDebug, "listener kept role sweep could not read a role's kept lane",
-					slog.String("role", role),
-					slog.String("error", err.Error()))
-				continue
-			}
-			if !head.left {
-				release()
-				<-slots
-				continue
-			}
-			cfg.logger.LogEvent(slog.LevelDebug, "listener kept role sweep is handing over a role's kept lane",
-				slog.String("role", role),
-				slog.Uint64("kept", head.cursor.Kept),
-				slog.Uint64("last", head.last))
+		if !takenRole && !laneHasCopiesLeft(ctx, cfg, role) {
+			release()
+			<-slots
+			continue
 		}
 		go func() {
 			from := handOverSweptLane(ctx, cfg, role, records)
@@ -154,6 +137,30 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 			<-slots
 		}()
 	}
+}
+
+// laneHasCopiesLeft reports whether role's kept lane holds a copy past its drain cursor, which a
+// handover would offer its holder (readKeptLaneHead), read within roleKeepDrainWindow. A lane whose
+// head cannot be read is reported as holding none, logged at debug, and the sweep's next run reads
+// it again. A role with takeover records to pass is handed over whatever its lane holds, so the
+// sweep asks this of the other lanes alone.
+func laneHasCopiesLeft(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) bool {
+	headCtx, cancelHead := context.WithTimeout(ctx, roleKeepDrainWindow)
+	head, err := readKeptLaneHead(headCtx, cfg.client, role)
+	cancelHead()
+	if err != nil {
+		cfg.logger.LogEvent(slog.LevelDebug, "listener kept role sweep could not read a role's kept lane",
+			slog.String("role", role),
+			slog.String("error", err.Error()))
+		return false
+	}
+	if head.left {
+		cfg.logger.LogEvent(slog.LevelDebug, "listener kept role sweep is handing over a role's kept lane",
+			slog.String("role", role),
+			slog.Uint64("kept", head.cursor.Kept),
+			slog.Uint64("last", head.last))
+	}
+	return head.left
 }
 
 // handOverSweptLane is one handover the sweep started, for a caller holding role's guard: it hands

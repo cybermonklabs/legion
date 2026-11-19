@@ -539,14 +539,8 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	}
 	for {
 		published := cfg.now()
-		ack, err := publish(ctx, subject, item, msgID)
-		if errors.Is(err, bus.ErrDuplicateInProcess) {
-			ownSend = ownSend || errors.Is(err, bus.ErrUnacknowledged)
-			if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
-				return fail(fmt.Errorf("keep the role %s message under %s: %w (after %w)", role, msgID, waitErr, err))
-			}
-			continue
-		}
+		ack, refusedOwn, err := publishPastInProcess(ctx, publish, subject, item, msgID)
+		ownSend = ownSend || refusedOwn
 		if err != nil {
 			return fail(fmt.Errorf("keep the role %s message on its kept lane under %s: %w", role, msgID, err))
 		}
@@ -564,6 +558,26 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 		}
 		msgID = first + ":after:" + strconv.FormatUint(ack.Sequence, 10)
 		ownSend = false
+	}
+}
+
+// publishPastInProcess publishes item on subject under msgID through publish, and publishes it again
+// roleKeepInProcessPause later each time a clustered stream refuses the id as still in process
+// under another publish (bus.ErrDuplicateInProcess), since the next answer names the copy that
+// publish stored. ownSend reports whether a refused send went out unanswered first
+// (bus.ErrUnacknowledged), which may have stored the copy. A wait that ctx ends is the error, after
+// the last refusal. A keep (storeKeptRoleCopy) and a takeover's copy (keepTakenRoleFrame) both
+// publish through it.
+func publishPastInProcess(ctx context.Context, publish keptRolePublish, subject string, item contracts.Envelope, msgID string) (ack bus.StoredAck, ownSend bool, err error) {
+	for {
+		ack, err = publish(ctx, subject, item, msgID)
+		if !errors.Is(err, bus.ErrDuplicateInProcess) {
+			return ack, ownSend, err
+		}
+		ownSend = ownSend || errors.Is(err, bus.ErrUnacknowledged)
+		if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
+			return bus.StoredAck{}, ownSend, fmt.Errorf("%w (after %w)", waitErr, err)
+		}
 	}
 }
 

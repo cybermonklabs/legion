@@ -575,21 +575,27 @@ func TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole(t *testing.T)
 		}
 	})
 
-	t.Run("(7) Dispatch on the shared token marks no send, and its send to a role's holder is accepted as before", func(t *testing.T) {
-		const role = "route-shared"
-		holder := rig.register(t, "ses_route_shared", "Holder")
+	t.Run("(7) Dispatch with no identity refuses a send for R, naming the setting, and sends nothing unmarked; with its identity the same send is made", func(t *testing.T) {
+		const role = "route-no-identity"
+		holder := rig.register(t, "ses_route_no_identity", "Holder")
 		rig.claim(t, holder.id, role)
 		shared := roleRouteDispatchMux(t, rig.database, rig.url, rig.warm.client, func(input *dispatchapi.DepsInput) {
 			input.EnvoyToken = rigSharedToken
 		})
-		message := dispatchRoleMessage(t, shared, key, role, "Shared-token message")
-		if got := message.Deliveries[0]; got.State != "sent" || got.SessionID != holder.id || got.Error != nil {
-			t.Fatalf("the send on the shared token = %+v, want sent to %s", got, holder.id)
+		refused := dispatchRoleMessage(t, shared, key, role, "No-identity message")
+		got := refused.Deliveries[0]
+		if got.State != "failed" || got.Error == nil || !strings.Contains(*got.Error, "ENVOY_ACCOUNT_TOKEN_FILE") ||
+			!strings.Contains(*got.Error, "Dispatch's identity at the Envoy listener") {
+			t.Fatalf("the send for %s from a Dispatch with no identity = %+v, want failed, its reason naming ENVOY_ACCOUNT_TOKEN_FILE and the README section", role, got)
 		}
-		frames := received(holder, 20*time.Second, "Shared-token message")["Shared-token message"]
-		if len(frames) != 1 || frames[0].item.Role != "" {
-			t.Fatalf("the holder received %d copies, the first marked %q; want one copy with no role mark", len(frames), roleOf(frames))
+		if frames := received(holder, 3*time.Second, "No-identity message")["No-identity message"]; len(frames) != 0 {
+			t.Fatalf("the holder received %d copies of a send Dispatch refused, the first marked %q; want none", len(frames), roleOf(frames))
 		}
+		sent := dispatchRoleMessage(t, rig.dispatch, key, role, "Identity message")
+		if got := sent.Deliveries[0]; got.State != "sent" || got.SessionID != holder.id || got.Error != nil {
+			t.Fatalf("control: the send for %s from a Dispatch with its identity = %+v, want sent to %s", role, got, holder.id)
+		}
+		receivedOnce(t, holder, role, received(holder, 20*time.Second, "Identity message"), "Identity message")
 	})
 
 	t.Run("(8) Dispatch resolved holder A and R's claim is gone before the send arrives: it is kept for R, answered 202 kept, and R's wake is reported", func(t *testing.T) {

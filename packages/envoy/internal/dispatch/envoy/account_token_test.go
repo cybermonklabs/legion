@@ -123,10 +123,12 @@ func TestEachCallPresentsTheAccountTokenTheFileHoldsWhenTheCallIsMade(t *testing
 // The listener takes a send's role mark from Dispatch's own identity alone and refuses it from
 // every other credential (cmd/listener, sendHandler). So a client that presents that identity
 // marks a send for a role with the role, and a client that presents the shared token, or none,
-// marks no send: the mark could never be accepted from it, and every role route's send would be
-// refused. Such a client's send for a role is not silent: each writes one Error line naming the
-// role, since the session that takes the role from the target will not receive it.
-func TestASendForARoleCarriesTheRoleOnlyFromDispatchsOwnIdentity(t *testing.T) {
+// refuses a send for a role (ErrNoIdentity) rather than make it unmarked, since the session that
+// takes the role from the target would not receive an unmarked one: the refusal makes no listener
+// call, names the setting that gives Dispatch an identity and the README section, and writes one
+// Error line naming the role. The control is each client's send with no role, which every client
+// makes, unmarked.
+func TestASendForARoleIsMadeOnlyOnDispatchsOwnIdentity(t *testing.T) {
 	var mu sync.Mutex
 	var bodies []map[string]any
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -145,29 +147,37 @@ func TestASendForARoleCarriesTheRoleOnlyFromDispatchsOwnIdentity(t *testing.T) {
 	var logs bytes.Buffer
 	logger := WithLogger(slog.New(slog.NewJSONHandler(&logs, nil)))
 
-	for _, client := range []*Client{New(listener.URL, WithAccountTokenFile(path), logger), New(listener.URL, WithToken("shared"), logger), New(listener.URL, logger)} {
-		for _, role := range []string{"reviewer", ""} {
-			if _, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: role}); err != nil {
-				t.Fatalf("send: %v", err)
-			}
+	for i, client := range []*Client{New(listener.URL, WithAccountTokenFile(path), logger), New(listener.URL, WithToken("shared"), logger), New(listener.URL, logger)} {
+		_, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"})
+		if identity := i == 0; identity && err != nil {
+			t.Fatalf("the identity client's send for a role: %v", err)
+		} else if !identity && (!errors.Is(err, ErrNoIdentity) || errors.Is(err, ErrUnavailable) ||
+			!strings.Contains(err.Error(), "ENVOY_ACCOUNT_TOKEN_FILE") || !strings.Contains(err.Error(), "Dispatch's identity at the Envoy listener")) {
+			t.Fatalf("client %d's send for a role with no identity = %v, want ErrNoIdentity naming ENVOY_ACCOUNT_TOKEN_FILE and the README section, and not ErrUnavailable", i, err)
+		}
+		if _, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k"}); err != nil {
+			t.Fatalf("control: client %d's send with no role: %v", i, err)
 		}
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	if len(bodies) != 4 {
+		t.Fatalf("the listener was sent %d sends, want 4: the identity client's two and each other client's send with no role: %v", len(bodies), bodies)
+	}
 	for i, body := range bodies {
 		role, marked := body["role"]
 		if wantMarked := i == 0; marked != wantMarked || (marked && role != "reviewer") {
 			t.Fatalf("send %d carried role %v (present %t), want role reviewer on the identity client's role send alone: %v", i, role, marked, bodies)
 		}
 	}
-	if n := logLines(&logs, "ERROR", unmarkedRoleSendLine, map[string]any{"role": "reviewer"}); n != 2 {
-		t.Fatalf("the clients with no identity wrote %d Error lines %q for their two sends for a role, want two:\n%s", n, unmarkedRoleSendLine, logs.String())
+	if n := logLines(&logs, "ERROR", refusedRoleSendLine, map[string]any{"role": "reviewer"}); n != 2 {
+		t.Fatalf("the clients with no identity wrote %d Error lines %q for their two refused sends for a role, want two:\n%s", n, refusedRoleSendLine, logs.String())
 	}
 }
 
-// unmarkedRoleSendLine is the Error line a client with no identity writes for each send for a
-// role, which goes out unmarked (Send).
-const unmarkedRoleSendLine = "dispatch: a send for a role goes to its holder with no role mark, because this Dispatch presents no identity token to the Envoy listener (ENVOY_ACCOUNT_TOKEN_FILE): a session that takes the role from that holder will not receive it"
+// refusedRoleSendLine is the Error line a client with no identity writes for each send for a role
+// it refuses (Send).
+const refusedRoleSendLine = "dispatch: a send for a role is refused: this Dispatch presents no identity to the Envoy listener"
 
 // logLines counts the JSON log lines in logs at level whose msg is msg and whose fields include
 // each of fields.

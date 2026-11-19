@@ -636,10 +636,10 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 // rules (resolveCoreRoleHolder, beforeForward) with the dedupe and attempt caches as the record of
 // what the holder already took, reports a refusal with the lane's own lines, and returns the
 // forward to make, stamped with when its resolution started (roleForward.resolvedAt), and whether
-// to make one. The lane names its role in either form (contracts.CanonicalRole); the claim it
-// resolves is keyed by the bare role name either way (store.Registry.ClaimedRole).
+// to make one. The lane names its role in either form; the claim it resolves is keyed by the bare
+// role name either way (roleOfLaneTopic, store.Registry.ClaimedRole).
 func resolveRoleForward(cfg listenerDeliveryHandlerConfig, item contracts.Envelope) (roleForward, bool) {
-	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
+	role, _ := roleOfLaneTopic(item.Topic)
 	resolvedAt := cfg.now()
 	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)
 	if !ok {

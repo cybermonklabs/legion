@@ -38,7 +38,7 @@ import (
 // hours), which every pass's write of the record starts again, so no record a pass still needs ages
 // out of the stream; and a forward to the previous holder stored within it is copied (a forward
 // starts only on a resolution younger than roles.ForwardFenceAge, but one sent can be stored late).
-const takeoverRecordLife = 71 * time.Hour
+const takeoverRecordLife = contracts.DeliveryDuplicateWindow - time.Hour
 
 // takeoverRecordWindow bounds the write of a takeover record before a try of a claim's write. The
 // claim route writes it inside its own request budget (sendRequestBudget), and a record the stream
@@ -224,13 +224,20 @@ func handOverTakenRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // reads to the end of the previous holder's subject or copies nothing for the reason a pass gives
 // (runTakeoverPass), fails, or ctx ends. A pass reads at most roleKeepScanMax messages and writes
 // the record with the sequence it reached, so the next goes on from there, here or on any
-// listener.
+// listener. A failed pass is logged at WARN, except a read of the previous holder's floor that this
+// listener's NATS user may not make (bus.ErrConsumerNotGranted, as Dispatch's listener and the host
+// listeners hold no CONSUMER.INFO on session consumers), which is logged at debug: the record is
+// left to the listeners that hold the grant, and the line would repeat at every sweep.
 func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, records []bus.StoredTakeoverRecord) {
 	for _, stored := range records {
 		for !stored.Record.Finished && ctx.Err() == nil {
 			next, done, err := runTakeoverPass(ctx, cfg, stored)
 			if err != nil {
-				cfg.logger.Warn("listener takeover copy pass failed; the next pass goes on from its record",
+				level := slog.LevelWarn
+				if errors.Is(err, bus.ErrConsumerNotGranted) {
+					level = slog.LevelDebug
+				}
+				cfg.logger.LogEvent(level, "listener takeover copy pass failed; the next pass goes on from its record",
 					slog.String("role", stored.Record.Role),
 					slog.String("previous_session_id", stored.Record.Previous),
 					slog.String("record", stored.Subject),
@@ -446,13 +453,12 @@ type roleOfMessage struct {
 }
 
 // role is the role the frame is a role message of, and whether it is one: a frame whose topic is
-// a role's topic, which the listener or Dispatch's outbox forwarded to its holder as the role's
-// holder, or whose role mark names a role, which Dispatch's API sent for a route to that role. Each
-// is read in either form (contracts.CanonicalRole), as a claim is keyed by the bare name.
+// a role's topic (roleOfLaneTopic), which the listener or Dispatch's outbox forwarded to its holder
+// as the role's holder, or whose role mark names a role, which Dispatch's API sent for a route to
+// that role, read in either form (contracts.CanonicalRole), as a claim is keyed by the bare name.
 func (m roleOfMessage) role() (string, bool) {
-	if token, ok := strings.CutPrefix(m.Topic, contracts.RoleTopicPrefix); ok && token != "" {
-		_, role, _ := contracts.CanonicalRole(token)
-		return role, role != ""
+	if role, ok := roleOfLaneTopic(m.Topic); ok {
+		return role, true
 	}
 	if m.Role != "" {
 		_, role, _ := contracts.CanonicalRole(m.Role)
@@ -461,21 +467,44 @@ func (m roleOfMessage) role() (string, bool) {
 	return "", false
 }
 
-// takenRoleMessage decodes data and reports the envelope when it is a role message of role. A
-// message no read can decode is no role message, as the walk ends a copy no read can decode.
-func takenRoleMessage(data []byte, role string) (contracts.Envelope, bool) {
+// roleOfLaneTopic is the role a role lane's topic names, in its bare form, and whether topic is a
+// role's topic: the one rule the role lane's delivery (resolveRoleForward), the session relay and a
+// takeover pass read a role topic by, since the relay and the pass must read a frame's role as the
+// lane that forwarded it did. The topic names the role in either form (contracts.CanonicalRole);
+// a claim is keyed by the bare name.
+func roleOfLaneTopic(topic string) (string, bool) {
+	token, ok := strings.CutPrefix(topic, contracts.RoleTopicPrefix)
+	if !ok || token == "" {
+		return "", false
+	}
+	_, role, _ := contracts.CanonicalRole(token)
+	return role, role != ""
+}
+
+// decodeRoleMessage reads data's role mark (roleOfMessage) and, for a role message, its whole
+// envelope (decodeStoredEnvelope): the role, the envelope, the mark, and whether data is a role
+// message whose envelope decodes. The session relay and a takeover pass both read a frame by it.
+func decodeRoleMessage(data []byte) (string, contracts.Envelope, roleOfMessage, bool) {
 	var mark roleOfMessage
 	if err := json.Unmarshal(data, &mark); err != nil {
-		return contracts.Envelope{}, false
+		return "", contracts.Envelope{}, mark, false
 	}
-	if of, ok := mark.role(); !ok || of != role {
-		return contracts.Envelope{}, false
+	role, ok := mark.role()
+	if !ok {
+		return "", contracts.Envelope{}, mark, false
 	}
 	var item contracts.Envelope
 	if err := decodeStoredEnvelope(data, &item); err != nil {
-		return contracts.Envelope{}, false
+		return role, contracts.Envelope{}, mark, false
 	}
-	return item, true
+	return role, item, mark, true
+}
+
+// takenRoleMessage decodes data and reports the envelope when it is a role message of role. A
+// message no read can decode is no role message, as the walk ends a copy no read can decode.
+func takenRoleMessage(data []byte, role string) (contracts.Envelope, bool) {
+	of, item, _, ok := decodeRoleMessage(data)
+	return item, ok && of == role
 }
 
 // keepTakenRoleFrame copies item, the frame stored at seq on a session's own subject, to role's
@@ -492,19 +521,10 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 	kept := item
 	kept.DedupeKey = takenFrameDedupeKey(key, seq)
 	msgID := takenFrameMsgID(key, role, seq)
-	for {
-		_, err := cfg.client.PublishStoredAck(ctx, bus.KeptRoleSubject(role), kept, msgID)
-		if errors.Is(err, bus.ErrDuplicateInProcess) {
-			if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
-				return fmt.Errorf("copy role %s's message %s to its kept lane: %w (after %w)", role, item.EventID, waitErr, err)
-			}
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("copy role %s's message %s to its kept lane: %w", role, item.EventID, err)
-		}
-		return nil
+	if _, _, err := publishPastInProcess(ctx, cfg.client.PublishStoredAck, bus.KeptRoleSubject(role), kept, msgID); err != nil {
+		return fmt.Errorf("copy role %s's message %s to its kept lane: %w", role, item.EventID, err)
 	}
+	return nil
 }
 
 // takeOverFrame judges a frame of session sessionID's consumer before the relay sends it, and
@@ -523,11 +543,9 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 	if before := m.cfg.takeoverFaults.faults().relayOfReleaseBefore; before != nil && before(sessionID) {
 		return false
 	}
-	var mark roleOfMessage
-	if err := json.Unmarshal(msg.Data, &mark); err != nil {
-		return false
-	}
-	role, ok := mark.role()
+	// A frame that is no role message, and one no read decodes - which none of the role's holders
+	// could read either - goes to this session as every such frame does.
+	role, item, mark, ok := decodeRoleMessage(msg.Data)
 	if !ok {
 		return false
 	}
@@ -546,12 +564,6 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 		return giveBack("its role's claim could not be read", err)
 	}
 	if holder == sessionID {
-		return false
-	}
-	var item contracts.Envelope
-	if err := decodeStoredEnvelope(msg.Data, &item); err != nil {
-		// No copy can be made of a frame no read decodes, and none of the role's holders could
-		// read it either: it goes to this session as every such frame does.
 		return false
 	}
 	if err := relayCopyFrame(ctx, m.cfg, role, item, msg.StreamSeq); err != nil {

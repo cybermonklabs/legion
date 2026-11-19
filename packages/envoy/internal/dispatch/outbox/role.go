@@ -771,7 +771,8 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 // that holder's subject for the record's life (cmd/listener role_takeover.go), and a forward
 // started on a fresher resolution is stored where that copy reads it.
 func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envelope) <-chan error {
-	if age := time.Since(f.resolvedAt); !f.resolvedAt.IsZero() && age >= roles.ForwardFenceAge {
+	if now := time.Now(); roles.ResolutionTooOld(f.resolvedAt, now) {
+		age := now.Sub(f.resolvedAt)
 		stale := make(chan error, 1)
 		stale <- fmt.Errorf("forward to %s: %w (resolved %s ago)", f.holder, errStaleRoleResolution, age.Round(time.Second))
 		return stale

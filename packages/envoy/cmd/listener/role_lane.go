@@ -132,7 +132,7 @@ func (f *roleForwarder) publish(sessionID string) {
 		f.queues[sessionID] = queue[1:]
 		f.mu.Unlock()
 
-		if !forward.resolvedAt.IsZero() && f.cfg.now().Sub(forward.resolvedAt) >= roles.ForwardFenceAge {
+		if roles.ResolutionTooOld(forward.resolvedAt, f.cfg.now()) {
 			refreshed, ok := refreshStaleRoleForward(f.cfg, forward)
 			if !ok {
 				f.release()

@@ -105,6 +105,8 @@ pass() { printf 'ok %s\n' "$check"; }
 fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/workflow.sh
@@ -165,6 +167,7 @@ cleanup() {
   stop_pid "$daemon_pid"
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
+  stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$daemon_keeper_pid"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
@@ -200,7 +203,8 @@ start_listener() {
   ENVOY_API_TOKEN="$token" ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="legion-e2ecc-$$" NATS_URLS="nats://127.0.0.1:$port_nats" \
     start_held listener port_listener ENVOY_LISTEN_FD --env 'PORT={port}' -- \
-    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-listener"
+    env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
+    "${dispatch_identity_listener_env[@]}" "$work/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
     curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/sessions"
 }
@@ -222,7 +226,8 @@ start_dispatch() {
     start_held dispatch port_dispatch DISPATCH_LISTEN_FD \
     --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' -- \
     env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" \
-    HOME="$work/dispatch-home" XDG_CONFIG_HOME="$work/dispatch-home/.config" "$work/envoy-dispatch"
+    HOME="$work/dispatch-home" XDG_CONFIG_HOME="$work/dispatch-home/.config" "${dispatch_identity_dispatch_env[@]}" \
+    "$work/envoy-dispatch"
   await_start dispatch "$dispatch_pid" 60 "the scratch Dispatch server" \
     curl -fsS "http://127.0.0.1:$port_dispatch/api/v1"
   dispatch_base="http://127.0.0.1:$port_dispatch"
@@ -666,6 +671,7 @@ docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::422
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
+dispatch_identity_start
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Claude backend proof $project" '{key:$key,name:$name}')" >/dev/null

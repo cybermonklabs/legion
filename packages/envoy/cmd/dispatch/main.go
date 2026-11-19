@@ -240,6 +240,11 @@ type bootConfig struct {
 	// reads and presents in EnvoyToken's place. The file is read by the listener client on each
 	// call, never here: a projected token rotates.
 	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is ENVOY_ACCOUNT_GOOGLE_AUDIENCE: on Google Cloud, the audience of the
+	// identity token the metadata server mints for Dispatch's machine's service account, which
+	// every listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); the listener's
+	// ENVOY_OIDC_GOOGLE_AUDIENCE. At most one of it and EnvoyAccountTokenFile is set.
+	EnvoyGoogleAudience string
 	// RoleHolderWindows are the session windows a role route's holder is judged by
 	// (ENVOY_SESSION_LIVE_WINDOW and ENVOY_SESSION_GONE_HORIZON, roleHolderWindows): what the
 	// outbox's reader of the role and session buckets carries (roles.NewBuckets).
@@ -1289,9 +1294,13 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		InsecureCookie:        env.get("DISPATCH_INSECURE_COOKIE") != "",
 		EnvoyToken:            env.get("ENVOY_TOKEN"),
 		EnvoyAccountTokenFile: strings.TrimSpace(env.get("ENVOY_ACCOUNT_TOKEN_FILE")),
+		EnvoyGoogleAudience:   strings.TrimSpace(env.get("ENVOY_ACCOUNT_GOOGLE_AUDIENCE")),
 	}
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
+	}
+	if boot.EnvoyAccountTokenFile != "" && boot.EnvoyGoogleAudience != "" {
+		return bootConfig{}, errors.New("ENVOY_ACCOUNT_TOKEN_FILE and ENVOY_ACCOUNT_GOOGLE_AUDIENCE each name Dispatch's identity at the Envoy listener; set one of them")
 	}
 	agentTokens := env.get("DISPATCH_AGENT_TOKEN")
 	if strings.TrimSpace(agentTokens) == "" {
@@ -1785,6 +1794,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
 	built.EnvoyAccountTokenFile = boot.EnvoyAccountTokenFile
+	built.EnvoyGoogleAudience = boot.EnvoyGoogleAudience
 	built.GitHubAPIBase = boot.GitHubAPIBase
 	built.AgentSecretsURL = boot.AgentSecretsURL
 	built.AgentSecretsTokenFile = boot.AgentSecretsTokenFile

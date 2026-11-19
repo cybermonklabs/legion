@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -208,6 +209,20 @@ func newTestHandlerWithDefaultProject(t *testing.T) (http.Handler, *store.Store)
 	return handler, database
 }
 
+// testEnvoyAccountTokenFile is a file holding a stand-in for Dispatch's projected token at the
+// listener, for a server whose Envoy client is configured (envoyURL set), and "" otherwise.
+func testEnvoyAccountTokenFile(t testing.TB, envoyURL string) string {
+	t.Helper()
+	if envoyURL == "" {
+		return ""
+	}
+	path := filepath.Join(t.TempDir(), "envoy-account-token")
+	if err := os.WriteFile(path, []byte("dispatch-test-account-token\n"), 0o600); err != nil {
+		t.Fatalf("write Dispatch's test account token: %v", err)
+	}
+	return path
+}
+
 // newTestServer builds the mux an API test drives and hands back the store behind it and the
 // dependencies it runs on, so a test that also calls a handler or a delivery step directly
 // (directServer) shares this server's broker and document service instead of standing up a
@@ -265,21 +280,25 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		agentPublisher = NewAgentPublishRecorder()
 	}
 	deps, err := NewDeps(DepsInput{
-		Store:                  database,
-		Identity:               people,
-		AgentTokens:            sharedAgentTokens(t, "agent-token"),
-		DefaultProject:         options.defaultProject,
-		NewIssueLabel:          options.newIssueLabel,
-		NewIssueSession:        options.newIssueSession,
-		ServerURL:              testServerURL,
-		Docs:                   documentService,
-		Events:                 broker,
-		App:                    options.app,
-		GitHubAPIBase:          options.githubAPIBase,
-		TestHooksEnabled:       options.testHooks,
-		StreamHeartbeat:        options.streamHeartbeat,
-		EnvoyURL:               options.envoyURL,
-		EnvoyTimeout:           options.envoyTimeout,
+		Store:            database,
+		Identity:         people,
+		AgentTokens:      sharedAgentTokens(t, "agent-token"),
+		DefaultProject:   options.defaultProject,
+		NewIssueLabel:    options.newIssueLabel,
+		NewIssueSession:  options.newIssueSession,
+		ServerURL:        testServerURL,
+		Docs:             documentService,
+		Events:           broker,
+		App:              options.app,
+		GitHubAPIBase:    options.githubAPIBase,
+		TestHooksEnabled: options.testHooks,
+		StreamHeartbeat:  options.streamHeartbeat,
+		EnvoyURL:         options.envoyURL,
+		EnvoyTimeout:     options.envoyTimeout,
+		// Dispatch presents an identity of its own to the listener, as a deployment does: without
+		// one it refuses every send for a role (envoy.ErrNoIdentity). The tests' stand-in listeners
+		// check no bearer.
+		EnvoyAccountTokenFile:  testEnvoyAccountTokenFile(t, options.envoyURL),
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the

@@ -192,6 +192,15 @@ func Valid(role string) bool {
 // fenced so is stored inside the hour the copy reads from the takeover on.
 const ForwardFenceAge = 55 * time.Minute
 
+// ResolutionTooOld reports whether a forward whose holder was resolved at resolvedAt must resolve
+// the holder again before its publish starts at now: the resolution is ForwardFenceAge old or
+// older. A zero resolvedAt - a forward that read the claim itself just before, such as the kept
+// lane's walk - is never too old. The role lane, the publish route and Dispatch's outbox each ask
+// it, so the fence is one rule.
+func ResolutionTooOld(resolvedAt, now time.Time) bool {
+	return !resolvedAt.IsZero() && now.Sub(resolvedAt) >= ForwardFenceAge
+}
+
 // ResolveHolder resolves role's holder within ctx. It reads the role's claim record from claims
 // (Unclaimed when there is none), then that holder's session record through sessions, and judges
 // the record by the state it puts its session in (SessionLookup.EntryState): Live when it reads

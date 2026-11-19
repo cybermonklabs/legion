@@ -414,7 +414,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	forwarded.DedupeKey = roleForwardDedupePrefix + item.DedupeKey
 	resolved := first
 	for pass := 0; ; pass++ {
-		if pass > 0 || !sessionIsLive(first.HolderState) || d.delivery.now().Sub(resolvedAt) >= roles.ForwardFenceAge {
+		if pass > 0 || !sessionIsLive(first.HolderState) || roles.ResolutionTooOld(resolvedAt, d.delivery.now()) {
 			resolvedAt = d.delivery.now()
 			resolved, err = roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
 			if err != nil && ctx.Err() != nil {
