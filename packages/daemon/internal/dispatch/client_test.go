@@ -120,36 +120,6 @@ func TestListAndDetailCarryTheResolvedRepository(t *testing.T) {
 	}
 }
 
-// The repository mapping is every project's (GET /api/v1/settings/repo-projects), each mapping
-// with its project and whether it is that project's default; the daemon keeps its own project's.
-func TestListRepoProjectsReadsEveryMappingWithItsDefault(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/settings/repo-projects" {
-			t.Fatalf("request = %s %s, want GET /api/v1/settings/repo-projects", r.Method, r.URL.Path)
-		}
-		assertBearer(t, r)
-		writeJSON(t, w, []map[string]any{
-			{"repo": "acme/gadgets", "project": "LEGION", "default": false, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
-			{"repo": "acme/widgets", "project": "LEGION", "default": true, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
-			{"repo": "other/thing", "project": "OTHER", "default": true, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
-		})
-	}))
-	defer server.Close()
-
-	mappings, err := New(server.URL, dispatchToken).ListRepoProjects(context.Background())
-	if err != nil {
-		t.Fatalf("list repo projects: %v", err)
-	}
-	want := []RepoProject{
-		{Repo: "acme/gadgets", Project: "LEGION"},
-		{Repo: "acme/widgets", Project: "LEGION", Default: true},
-		{Repo: "other/thing", Project: "OTHER", Default: true},
-	}
-	if !reflect.DeepEqual(mappings, want) {
-		t.Fatalf("mappings = %#v, want %#v", mappings, want)
-	}
-}
-
 // Whether Dispatch's GitHub App is installed on a repository is its app-installation route's
 // answer; a Dispatch older than the route answers 404, which the caller tells apart (Missing).
 func TestWebhookAppInstalledReadsDispatchsAnswer(t *testing.T) {

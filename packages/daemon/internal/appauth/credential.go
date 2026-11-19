@@ -20,7 +20,7 @@ import (
 // default owner whose directory the review App's bundle does not hold: an owner that App is
 // installed on none of, and that no configured rename moved a repository away from. A bundle's
 // directories are the owners the App is installed on (bundleDirs), so the refusal says "not
-// installed" and the project's repository mapping has no part in it. The API answers it as
+// installed", and no repository the project works has a part in it. The API answers it as
 // DEFAULT_OWNER_NOT_INSTALLED (internal/api's controllerGitHubCredential).
 var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App is installed on")
 
@@ -106,11 +106,11 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // A Manager holds every lease and re-mints it as it nears its expiry, so a launch and every
 // refresh ask GitHub only when a lease turns over, and one lease is minted per scope however many
 // directories carry it: a configured rename's two owner directories hold the one lease.
-func GitHubCredential(source Source, repos func() []ghrepo.Repository, renames ghrepo.Renames,
+func GitHubCredential(source Source, served func(ghrepo.Repository) bool, renames ghrepo.Renames,
 	installed *Installed, left *LeftOut, log *slog.Logger) runtime.GitHubCredential {
 	return func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		appRole := AppRoleFor(role)
-		layout, err := installedLayout(ctx, source, appRole, role, repos, renames, installed, repo)
+		layout, err := installedLayout(ctx, source, appRole, role, served, renames, installed, repo)
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
@@ -191,11 +191,11 @@ func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repos
 // refused the lease — since the controller's GH_CONFIG_DIR names that directory and nothing else.
 // An owner whose name is no directory's is left out in the same way (bundleDirs), and fails the
 // bundle in the same way where it is the owner asked for.
-func ControllerCredential(source Source, repos func() []ghrepo.Repository, renames ghrepo.Renames,
+func ControllerCredential(source Source, served func(ghrepo.Repository) bool, renames ghrepo.Renames,
 	installed *Installed, left *LeftOut, log *slog.Logger) runtime.ControllerCredential {
 	return func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
 		appRole := AppRoleFor(claim.RoleController)
-		layout, err := installedLayout(ctx, source, appRole, claim.RoleController, repos, renames, installed, ghrepo.Repository{})
+		layout, err := installedLayout(ctx, source, appRole, claim.RoleController, served, renames, installed, ghrepo.Repository{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
@@ -215,13 +215,13 @@ func ControllerCredential(source Source, repos func() []ghrepo.Repository, renam
 // describes the bundle those owners make for repo (bundleDirs). A read that fails fails the
 // bundle, naming the App and role, the role the bundle is for.
 func installedLayout(ctx context.Context, installations OwnerInstallations, appRole AppRole, role claim.Role,
-	repos func() []ghrepo.Repository, renames ghrepo.Renames, installed *Installed, repo ghrepo.Repository) (bundleLayout, error) {
+	served func(ghrepo.Repository) bool, renames ghrepo.Renames, installed *Installed, repo ghrepo.Repository) (bundleLayout, error) {
 	owners, err := installations.InstalledOwners(ctx, appRole)
 	if err != nil {
 		return bundleLayout{}, fmt.Errorf("read the owners the %s App is installed on for %s: %w", appRole, role, err)
 	}
-	installed.record(appRole, owners)
-	return bundleDirs(owners, repos, renames, repo)
+	installed.Record(appRole, owners)
+	return bundleDirs(owners, served, renames, repo)
 }
 
 // LeftOut is the daemon's record of the gh bundle directories a mint could not fill, its lease
@@ -254,8 +254,7 @@ type LeftOut struct {
 	dirs map[AppRole]map[string]bool
 }
 
-// NewLeftOut is a record of nothing: every directory the mapping names is served until a mint
-// of it fails.
+// NewLeftOut is a record of nothing: every directory is served until a mint of it fails.
 func NewLeftOut() *LeftOut { return &LeftOut{dirs: map[AppRole]map[string]bool{}} }
 
 // record holds what role's mint of the directory dir found: left, that the directory's lease
@@ -326,10 +325,12 @@ type Installed struct {
 // anything until the first bundle of its Apps is built.
 func NewInstalled() *Installed { return &Installed{owners: map[AppRole][]string{}} }
 
-// record holds the owners role's App was read installed on, replacing what an earlier bundle
-// read: an account that removed the App is gone from the answer at once, as it is from the
-// bundle that read it.
-func (i *Installed) record(role AppRole, owners []string) {
+// Record holds the owners role's App was read installed on, replacing what an earlier read held:
+// an account that removed the App is gone from the answer at once, as it is from the bundle that
+// read it. The two readers that write it are a bundle's build (installedLayout) and the daemon's
+// boot, whose proof of each App's key reads the same installations (internal/daemon's
+// proveAppKeys), so a launch's addressing has its App's owners from the first launch on.
+func (i *Installed) Record(role AppRole, owners []string) {
 	if i == nil {
 		return
 	}
@@ -402,20 +403,20 @@ func (i *Installed) shared(roles []AppRole) ([]string, bool) {
 // every pod, so a call to GitHub here would be one per pod per sweep — which is what the
 // Installed record is for: a bundle reads the installations itself, and this answers from what
 // the last bundle of those Apps read. Beside that it reads the same inputs a bundle does, the
-// configured renames and the repositories Dispatch maps to the project, through the same one
-// description (bundleDirs), so the set a pod is compared against and the set a pod would be
-// handed cannot drift apart.
+// configured renames and which repositories both role Apps answered installed on (served),
+// through the same one description (bundleDirs), so the set a pod is compared against and the
+// set a pod would be handed cannot drift apart.
 //
 // Two answers are no set at all, and leave every pod where it is: an App no bundle has read the
 // installations of yet (Installed.shared), and a bundle no launch could write — a default
 // directory ghconfig refuses a name for, which is what GitHubCredential fails on. Any other
 // owner ghconfig refuses a name for is in no bundle and so in no answer here (bundleDirs).
-func GitHubDirs(repos func() []ghrepo.Repository, renames ghrepo.Renames, installed *Installed, left *LeftOut, roles []AppRole, repo ghrepo.Repository) []string {
+func GitHubDirs(served func(ghrepo.Repository) bool, renames ghrepo.Renames, installed *Installed, left *LeftOut, roles []AppRole, repo ghrepo.Repository) []string {
 	owners, read := installed.shared(roles)
 	if !read {
 		return nil
 	}
-	layout, err := bundleDirs(owners, repos, renames, repo)
+	layout, err := bundleDirs(owners, served, renames, repo)
 	if err != nil {
 		return nil
 	}
@@ -496,10 +497,12 @@ func (l bundleLayout) mintOwner(name string) string {
 // It takes two inputs rather than one. installed is the owner accounts the role's App is
 // installed on, which decides the directories: a lease reaches every repository its
 // installation holds and names no repository at all (INFRA-2543), so the installation is the
-// whole of a role's reach and there is nothing smaller for a directory to stand for. repos is
-// the repositories Dispatch maps to the project, which the rename rule reads and nothing else
-// does: a pair resolves on whether the project serves each of its two repositories, never on
-// where an App is installed, which is the production failure the paragraph below records.
+// whole of a role's reach and there is nothing smaller for a directory to stand for. served is
+// whether both role Apps answered installed on a repository, as the daemon's repository state
+// holds GitHub's answers (internal/daemon's repositories.servesRepository), which the rename rule
+// reads and nothing else does: a pair resolves on whether each of its two repositories is served,
+// never on which owners an App is installed on, which is the production failure the paragraph
+// below records.
 //
 // The directories are one per installed owner, every owner a configured rename moved a
 // repository away from (ghrepo.Renames.OwnerAliases) beside them, and the directory repo routes
@@ -524,8 +527,8 @@ func (l bundleLayout) mintOwner(name string) string {
 // owner whose installation holds it now — the name every GitHub call the daemon makes for such
 // a tree already uses (internal/daemon's repositories.serving).
 //
-// The rename rule is asked one question of the served set — does the project serve this
-// repository (ghrepo.Serves) — and never whether it serves any repository of a pair's owners.
+// The rename rule is asked one question of each repository — is it served (served) — and never
+// whether any repository of a pair's owners is.
 // An owner test is the wrong question and was the production failure this rule replaces: a
 // project that serves one more repository of the owner a pair moved a repository away from
 // serves no more of the moved repository, yet an owner test reads that as the old owner being
@@ -553,13 +556,11 @@ func (l bundleLayout) mintOwner(name string) string {
 // for it. The one name that cannot be left out is the default's: a bundle with no directory for
 // its issue's own repository is no bundle to launch a role on, so that name is an error, as a
 // controller's asked-for owner is (ControllerCredential).
-func bundleDirs(installed []string, repos func() []ghrepo.Repository, renames ghrepo.Renames, repo ghrepo.Repository) (bundleLayout, error) {
-	serves := repos()
-	// The rename rule is read per repository: a pair resolves exactly when the project serves
-	// its `to` and not its `from`, which is asked of the two repositories themselves.
-	servesRepository := func(candidate ghrepo.Repository) bool { return ghrepo.Serves(serves, candidate) }
-	aliases := renames.OwnerAliases(servesRepository)
-	moving := renames.Moving(servesRepository)
+func bundleDirs(installed []string, served func(ghrepo.Repository) bool, renames ghrepo.Renames, repo ghrepo.Repository) (bundleLayout, error) {
+	// The rename rule is read per repository: a pair resolves exactly when its `to` is served and
+	// its `from` is not, which is asked of the two repositories themselves.
+	aliases := renames.OwnerAliases(served)
+	moving := renames.Moving(served)
 	owners := make(map[string]bool, len(installed))
 	for _, owner := range installed {
 		owners[strings.ToLower(owner)] = true

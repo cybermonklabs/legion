@@ -186,12 +186,6 @@ type ConsumerSpec struct {
 	// failed ReviewPermission read is. No resolver (a test, or a daemon without one) leaves every
 	// truncated review's body capped.
 	ReviewBody func(ctx context.Context, review PullRequestReview) (string, error)
-	// RepositoryMapping reads the project's repository mapping again, for Dispatch's
-	// settings.repo_project.updated on the project (RepoMappingChanged): it runs before the event
-	// is acknowledged, within AckWait, which bounds this read alone (ReviewPermission), and in no
-	// transaction, and a failed read is retried after NakDelay. No reader (a test) acknowledges the
-	// event.
-	RepositoryMapping func(ctx context.Context) error
 	// PrepareRepository readies what the workflow reads in memory of the repository a Dispatch
 	// issue event resolves to (DispatchIssue.ResolvedRepo), before the fact is applied, within
 	// AckWait, which bounds this one preparation rather than the delivery (ReviewPermission), and
@@ -260,9 +254,9 @@ type Consumers struct {
 //
 // A NATS server that can skip a message on a consumer filtering on a wildcard and a literal at the
 // same token is refused before any consumer is opened, naming its version and the fixed releases
-// (envoy's natsversion.ConnectedRefusal, the rule the listener refuses one by): the Dispatch
-// consumer filters on the issue family beside this project's mapping subject, and the stream is the
-// listener's, whose session consumers need such a server too. The daemon's boot ends on the error.
+// (envoy's natsversion.ConnectedRefusal, the rule the listener refuses one by): the stream is the
+// listener's, whose session consumers filter so and need such a server. The daemon's boot ends on
+// the error.
 // The version is decided on one the connection reports: a connection reconnecting or draining when
 // the boot reaches this is looked at again, within ctx (the boot attempt's 30 s bootTimeout, the
 // bound the stream lookup after this has), and is never read as a server of no version.
@@ -284,7 +278,7 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 
 	dispatch, err := openConsumer(ctx, stream, pool, spec.Logger, jetstream.ConsumerConfig{
 		Durable:        dispatchConsumerName(spec.Project),
-		FilterSubjects: []string{"notifications.dispatch.issue.>", mappingSubject(spec.Project)},
+		FilterSubjects: []string{"notifications.dispatch.issue.>"},
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		AckWait:        spec.AckWait,
 	})
@@ -868,12 +862,6 @@ func nakOutcome(what, nakWhat string, err error) messageOutcome {
 func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool Pool, decoded decodedMessage, handlers []Handler) messageOutcome {
 	// decoded.Fact is never nil here: consumeMessage acknowledges a message that decodes to none
 	// before it starts the keeper this work runs under.
-	if _, ok := decoded.Fact.(RepoMappingChanged); ok {
-		if err := readMapping(work, spec); err != nil {
-			return nakOutcome("read the project's repository mapping again", "nak the mapping read", err)
-		}
-		return ackOutcome()
-	}
 	recorded, err := recordedPullRequest(work, spec, pool, decoded.Fact)
 	if err != nil {
 		return nakOutcome("read whether the pull request is recorded", "nak the pull request read", err)
@@ -987,16 +975,6 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact
 	return ghrepo.Under(spec.Renames, repo, func(name string) (bool, error) {
 		return record.PullRequestRecorded(read, pool, name, number)
 	})
-}
-
-// readMapping runs ConsumerSpec.RepositoryMapping within AckWait; no reader reads nothing.
-func readMapping(ctx context.Context, spec ConsumerSpec) error {
-	if spec.RepositoryMapping == nil {
-		return nil
-	}
-	read, cancel := context.WithTimeout(ctx, spec.AckWait)
-	defer cancel()
-	return spec.RepositoryMapping(read)
 }
 
 // prepareRepository runs ConsumerSpec.PrepareRepository for a Dispatch issue fact, within AckWait,

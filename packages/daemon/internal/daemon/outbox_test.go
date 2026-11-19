@@ -187,9 +187,6 @@ func (d *outboxDispatch) Approval(context.Context, string) (dispatch.Approval, e
 func (d *outboxDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *outboxDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *outboxDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *outboxDispatch) PutGatedSteps(_ context.Context, project string, steps []string) error {
 	d.gatedStepsOf = append(d.gatedStepsOf, project)

@@ -192,9 +192,6 @@ func (d *postingDispatch) Approval(context.Context, string) (dispatch.Approval, 
 func (d *postingDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *postingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *postingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
@@ -263,9 +260,6 @@ func (d *laneBoard) Approval(context.Context, string) (dispatch.Approval, error)
 }
 func (d *laneBoard) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
-}
-func (d *laneBoard) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
 }
 func (d *laneBoard) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error     { return nil }

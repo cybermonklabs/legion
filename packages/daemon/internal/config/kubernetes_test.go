@@ -1157,7 +1157,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "projects absent",
 			body: kubernetesWith("projects:\n  LEGSMOKE: {}\n", ""),
-			want: "projects is required when runtime is kubernetes: every pod's workspace is a repository Dispatch maps to the daemon's project",
+			want: "projects is required when runtime is kubernetes: every pod works one issue of a configured project",
 		},
 		{
 			name: "omp_invocation set",

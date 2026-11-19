@@ -82,11 +82,6 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
 		}
 		fact, unread, legacy, err = decodeDispatchFact(subject, project, envelope.Payload)
-	case strings.HasPrefix(subject, dispatchProjectPrefix):
-		if envelope.Source != "dispatch" {
-			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
-		}
-		fact, err = decodeDispatchProjectFact(subject, project, envelope.Payload)
 	case strings.HasPrefix(subject, "notifications.github."):
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)
@@ -576,44 +571,6 @@ func askKind(kind string, unread *[]string) string {
 	}
 	*unread = append(*unread, fmt.Sprintf("ask kind %q is not one the daemon knows", kind))
 	return ""
-}
-
-// dispatchProjectPrefix begins every Dispatch event of a project rather than an issue
-// (packages/envoy/internal/dispatch/outbox/publisher.go envelope): notifications.dispatch.project.
-// <KEY>.<type>.
-const dispatchProjectPrefix = "notifications.dispatch.project."
-
-// repoMappingType is the project event Dispatch emits when a repository's mapping to a project
-// changes, on the project it changed for (a move emits on the project left and the one joined).
-const repoMappingType = "settings.repo_project.updated"
-
-// mappingSubject is the subject Dispatch publishes project's mapping changes on, which the
-// Dispatch consumer hears beside every issue event.
-func mappingSubject(project string) string {
-	return dispatchProjectPrefix + project + "." + repoMappingType
-}
-
-// decodeDispatchProjectFact decodes one Dispatch project event: the mapping change of project is a
-// RepoMappingChanged, and any other project's event, or another type, is no fact.
-func decodeDispatchProjectFact(subject, project, payload string) (Fact, error) {
-	subjectProject, eventType, ok := strings.Cut(strings.TrimPrefix(subject, dispatchProjectPrefix), ".")
-	if !ok || subjectProject == "" {
-		return nil, fmt.Errorf("Dispatch project subject has no project key: %s", subject)
-	}
-	if subjectProject != project || eventType != repoMappingType {
-		return nil, nil
-	}
-	var event struct {
-		Project string `json:"project"`
-		Type    string `json:"type"`
-	}
-	if err := json.Unmarshal([]byte(payload), &event); err != nil {
-		return nil, fmt.Errorf("decode Dispatch project event: %w", err)
-	}
-	if event.Project != subjectProject || event.Type != eventType {
-		return nil, fmt.Errorf("Dispatch project event %s of %s disagrees with its subject %s", event.Type, event.Project, subject)
-	}
-	return RepoMappingChanged{Project: project}, nil
 }
 
 func deref(value *string) string {

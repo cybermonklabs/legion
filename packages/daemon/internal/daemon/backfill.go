@@ -11,58 +11,87 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// backfillRepositories brings every record of project to carry its repository, its default branch
-// and GitHub's spelling of the repository before the boot subscribes to any repository's events,
-// reading GitHub and Dispatch outside every fact transaction: fillRepositories fills the records
-// written before the record carried its repository, and nameRepositories the records written
-// before it carried GitHub's spelling.
-func backfillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
-	if err := fillRepositories(ctx, pool, records, client, project, stateDir, named, renames, log); err != nil {
-		return err
+// backfillRepositories brings each record of project to carry its repository, its default branch
+// and GitHub's spelling of the repository, reading GitHub and Dispatch outside every fact
+// transaction: fillRepositories fills the records written before the record carried its
+// repository, and nameRepositories the records written before it carried GitHub's spelling. The
+// boot runs it before it subscribes to any repository's events, and the refresher runs it again
+// while a record is left (backfillLater).
+//
+// A record whose repository the backfill cannot settle — Dispatch resolving none for it, a read of
+// GitHub that fails, a shared clone or a pull request that names another repository — is left as
+// it is, and the issue, the repository and the cause are logged: one record's repository never
+// stops the boot, and the record is tried again by the refresher on installReadRetry and at the
+// next boot. Until it is filled, nothing hears or caches its repository (heardRepositories,
+// refreshCacheRepositories, which pass a record with no GitHub spelling by), and each launch of its
+// issue refuses, naming the cause (record.Issue.Repository). It answers whether a record was
+// filled or named (filled), whether one is left (left), and an error only where a read or a write
+// of the store, or Dispatch's listing, failed.
+func backfillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) (filled, left bool, err error) {
+	filled, left, err = fillRepositories(ctx, pool, records, client, project, stateDir, named, renames, log)
+	if err != nil {
+		return filled, left, err
 	}
-	return nameRepositories(ctx, pool, records, project, named, renames, log)
+	wrote, unnamed, err := nameRepositories(ctx, pool, records, project, named, renames, log)
+	return filled || wrote, left || unnamed, err
 }
 
-// fillRepositories fills every record of project written before the record carried its
+// leaveUnfilled says that key's record is left without its repository columns, naming the
+// repository the backfill read for it and why it was left.
+func leaveUnfilled(log *slog.Logger, key, repo, why string) {
+	log.Warn("workflow backfill: a record is left as it is, without its repository columns, and the backfill tries it again",
+		"issue", key, "repo", repo, "cause", why, "retryIn", installReadRetry.Initial.String())
+}
+
+// writeBackfill runs write in one transaction under the lock every fact applies under
+// (intake.SerializeFacts), so no fact applies with a copy of a record read before the backfill
+// wrote it.
+func writeBackfill(ctx context.Context, pool *store.Pool, write func(pgx.Tx) error) error {
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("serialize the backfill with every fact: %w", err)
+		}
+		return write(tx)
+	})
+}
+
+// fillRepositories fills each record of project written before the record carried its
 // repository (record.Store.UnfilledIssues) with the repository Dispatch resolves the issue to now
 // (its own, an ancestor's, or the project's default), that repository's default branch and GitHub's
-// spelling of it, both from one read of GitHub per repository. One read of Dispatch's listing
-// serves every record. A record Dispatch resolves to no repository, or does not list, refuses the
-// boot, naming each one, before any is filled: the operator sets the project's default repository
-// in Dispatch and restarts. So does a record whose pull request, or failing one, whose workspace (a
-// tmux daemon's, issueWorkspaces), is in another repository than the one Dispatch resolves, as
-// GitHub names either: it names the repository the issue worked in, and a record on another would
-// create its branch there, disarm a stranger's pull request, and strand the workspace's unpushed
-// work; the operator sets the issue's repository in Dispatch to that one.
+// spelling of it, both from one read of GitHub per repository (backfillRead). One read of
+// Dispatch's listing serves every record. A record Dispatch resolves to no repository, or does not
+// list, is left, as is one whose pull request, or failing one, whose workspace (a tmux daemon's,
+// issueWorkspaces), is in another repository than the one Dispatch resolves, as GitHub names
+// either: it names the repository the issue worked in, and a record on another would create its
+// branch there, disarm a stranger's pull request, and strand the workspace's unpushed work; the
+// log says to set the issue's repository in Dispatch to that one.
 //
 // The record keeps the spelling of the shared clone under stateDir that spells the repository
 // case-insensitively, since the issue's workspace and its sessions were made under that spelling
 // (a tmux daemon's; Kubernetes pods provision their own and leave none), and otherwise takes
-// GitHub's. Two clones that spell one repository leave no spelling to keep, and refuse the boot,
-// naming both. GitHub's own spelling is kept beside it either way. A repository GitHub renamed,
-// which Dispatch still resolves under its old name, takes GitHub's new name, unless a shared
-// clone keeps the old one: that refuses the boot, naming the clone, since the record's spelling
-// and GitHub's would name two repositories; the operator maps the new name in Dispatch or removes
-// the clone. A rename the deployment configures (renames) names one repository, so a transfer the
-// pair already covers refuses no boot. The read of GitHub is made of the repository the mapping
-// serves Dispatch's resolution as (named, which maps every read through repositories.serving):
-// after the transfer only the new owner's installation covers the repository, so a read minted
-// for the resolved name's owner would be refused and would refuse the boot. What that read
+// GitHub's. Two clones that spell one repository leave no spelling to keep, and the record is
+// left, naming both. GitHub's own spelling is kept beside it either way. A repository GitHub
+// renamed, which Dispatch still resolves under its old name, takes GitHub's new name, unless a
+// shared clone keeps the old one: the record is left, naming the clone, since the record's
+// spelling and GitHub's would name two repositories; the log says to set the issue's repository in
+// Dispatch to the new name or remove the clone. A rename the deployment configures (renames) names
+// one repository, so a transfer the pair already covers leaves nothing. The read of GitHub is made
+// of the repository the rename rule serves Dispatch's resolution as (named, which maps every read
+// through repositories.serving): after the transfer only the new owner's installation covers the
+// repository, so a read minted for the resolved name's owner would be refused. What that read
 // answers is the name GitHub holds, the pair's other side, and the record is filled with the name
 // its clone keeps and with the pair's spelling of that same name as GitHub's spelling, never with
 // the name the repository moved to, since a record's two repository columns must name one
 // repository (record.Store.FillIssueRepository). The record keeps the name it was recorded under
 // for its whole life, and heardRepositories hears the pair's other name too, so the events GitHub
 // now publishes under the name it moved to still reach it.
-//
-// The one exception is GitHub's rate limit, or a read GitHub does not answer: backfillRead waits
-// it out and reads again until GitHub answers, so the boot waits rather than exits, and every record
-// is filled.
-func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
+func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) (filled, left bool, err error) {
 	var unfilled []record.Issue
 	pulls := map[string]record.PullRequest{}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -81,81 +110,49 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 		}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("read the records with no repository: %w", err)
+		return false, false, fmt.Errorf("read the records with no repository: %w", err)
 	}
 	if len(unfilled) == 0 {
-		return nil
+		return false, false, nil
 	}
 	listed, err := client.ListIssues(ctx, project, nil)
 	if err != nil {
-		return fmt.Errorf("list Dispatch issues to fill the records with no repository: %w", err)
+		return false, true, fmt.Errorf("list Dispatch issues to fill the records with no repository: %w", err)
 	}
 	resolved := make(map[string]string, len(listed))
 	for _, summary := range listed {
 		resolved[summary.Key] = summary.ResolvedRepo
 	}
-	var none []string
-	for _, issue := range unfilled {
-		if resolved[issue.Key] == "" {
-			none = append(none, issue.Key)
-		}
-	}
-	if len(none) > 0 {
-		return fmt.Errorf("%d issue records have no repository and Dispatch resolves none for them (%s): set the project's default repository in Dispatch (Settings → Repositories → Projects) and restart",
-			len(none), strings.Join(none, ", "))
-	}
 	clones, err := sharedClones(stateDir)
 	if err != nil {
-		return err
+		return false, true, err
 	}
-	type filled struct{ key, repo, branch, github string }
-	fills := make([]filled, 0, len(unfilled))
-	var elsewhere []string
+	type fill struct{ key, repo, branch, github string }
+	fills := make([]fill, 0, len(unfilled))
 	for _, issue := range unfilled {
+		if resolved[issue.Key] == "" {
+			leaveUnfilled(log, issue.Key, "", "Dispatch resolves no repository for it: set its repository in Dispatch")
+			left = true
+			continue
+		}
 		repo, err := ghrepo.Parse("the repository Dispatch resolves "+issue.Key+" to", resolved[issue.Key])
 		if err != nil {
-			return err
-		}
-		read, err := backfillRead(ctx, named, repo, issue.Key, log)
-		if err != nil {
-			return fmt.Errorf("fill the repository of %s: %w", issue.Key, err)
-		}
-		spelling := read.Name.String()
-		var spelled []string
-		for _, clone := range clones {
-			if strings.EqualFold(clone.Repo.String(), repo.String()) {
-				spelling = clone.Repo.String()
-				spelled = append(spelled, clone.Clone)
-			}
-		}
-		if len(spelled) > 1 {
-			return fmt.Errorf("fill the repository of %s: two shared clones spell %s (%s); remove the one no issue works in and restart",
-				issue.Key, repo, strings.Join(spelled, ", "))
-		}
-		if !renames.Same(spelling, read.Name.String()) {
-			return fmt.Errorf("fill the repository of %s: GitHub renamed %s to %s, and the shared clone %s still has the old name: map %s in Dispatch (Settings → Repositories → Projects), or remove that clone if no issue works in it, and restart",
-				issue.Key, repo, read.Name, spelled[0], read.Name)
-		}
-		if pull, ok := pulls[issue.Key]; ok && !renames.Same(pull.Repo, repo.String()) && !renames.Same(pull.Repo, read.Name.String()) {
-			elsewhere = append(elsewhere, fmt.Sprintf("%s: Dispatch resolves it to %s, but its pull request #%d is on %s: set the issue's repository in Dispatch to %s (dispatch issue-update --issue %s --repo %s)",
-				issue.Key, repo, pull.Number, pull.Repo, pull.Repo, issue.Key, pull.Repo))
+			leaveUnfilled(log, issue.Key, resolved[issue.Key], err.Error())
+			left = true
 			continue
 		}
-		workspaces, err := issueWorkspaces(stateDir, issue.Key)
-		if err != nil {
-			return fmt.Errorf("fill the repository of %s: %w", issue.Key, err)
-		}
-		if dir, in, ok := workspaceElsewhere(workspaces, repo, read.Name, renames); ok {
-			elsewhere = append(elsewhere, fmt.Sprintf("%s: Dispatch resolves it to %s, but its workspace %s is in %s: set the issue's repository in Dispatch to %s (dispatch issue-update --issue %s --repo %s)",
-				issue.Key, repo, dir, in, in, issue.Key, in))
+		why, values := fillOf(ctx, issue, repo, pulls, clones, stateDir, named, renames)
+		if why != "" {
+			leaveUnfilled(log, issue.Key, repo.String(), why)
+			left = true
 			continue
 		}
-		fills = append(fills, filled{issue.Key, spelling, read.DefaultBranch, recordedSpelling(renames, spelling, read.Name)})
+		fills = append(fills, fill{issue.Key, values.repo, values.branch, values.github})
 	}
-	if len(elsewhere) > 0 {
-		return fmt.Errorf("fill the repository of %s and restart", strings.Join(elsewhere, "; "))
+	if len(fills) == 0 {
+		return false, left, nil
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := writeBackfill(ctx, pool, func(tx pgx.Tx) error {
 		for _, fill := range fills {
 			if err := records.FillIssueRepository(ctx, tx, fill.key, fill.repo, fill.branch, fill.github); err != nil {
 				return err
@@ -163,13 +160,79 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 		}
 		return nil
 	}); err != nil {
-		return err
+		return false, true, err
 	}
 	for _, fill := range fills {
 		log.Info("legion workflow backfill filled "+fill.key+" with "+fill.repo+"@"+fill.branch, "issue", fill.key, "repo", fill.repo,
 			"defaultBranch", fill.branch, "githubRepo", fill.github)
 	}
-	return nil
+	return true, left, nil
+}
+
+// filling is what fillRepositories writes into one record: its repository, as the shared clone or
+// GitHub spells it, its default branch and GitHub's spelling beside it (recordedSpelling).
+type filling struct{ repo, branch, github string }
+
+// fillOf is what issue's record is filled with from repo, the repository Dispatch resolves it to,
+// as fillRepositories says, or why it is left, naming the step that settles it.
+func fillOf(ctx context.Context, issue record.Issue, repo ghrepo.Repository, pulls map[string]record.PullRequest, clones []workspace.Workspace,
+	stateDir string, named *defaultBranches, renames ghrepo.Renames) (string, filling) {
+	read, err := backfillRead(ctx, named, repo)
+	if err != nil {
+		return fmt.Sprintf("the read of %s from GitHub failed: %v", repo, err), filling{}
+	}
+	spelling := read.Name.String()
+	var spelled []string
+	for _, clone := range clones {
+		if strings.EqualFold(clone.Repo.String(), repo.String()) {
+			spelling = clone.Repo.String()
+			spelled = append(spelled, clone.Clone)
+		}
+	}
+	if len(spelled) > 1 {
+		return fmt.Sprintf("two shared clones spell %s (%s): remove the one no issue works in", repo, strings.Join(spelled, ", ")), filling{}
+	}
+	if !renames.Same(spelling, read.Name.String()) {
+		return fmt.Sprintf("GitHub renamed %s to %s, and the shared clone %s still has the old name: set the repository of %s in Dispatch to %s, or remove that clone if no issue works in it",
+			repo, read.Name, spelled[0], issue.Key, read.Name), filling{}
+	}
+	if pull, ok := pulls[issue.Key]; ok && !renames.Same(pull.Repo, repo.String()) && !renames.Same(pull.Repo, read.Name.String()) {
+		return fmt.Sprintf("Dispatch resolves it to %s, but its pull request #%d is on %s: set the issue's repository in Dispatch to %s (dispatch issue-update --issue %s --repo %s)",
+			repo, pull.Number, pull.Repo, pull.Repo, issue.Key, pull.Repo), filling{}
+	}
+	workspaces, err := issueWorkspaces(stateDir, issue.Key)
+	if err != nil {
+		return err.Error(), filling{}
+	}
+	if dir, in, ok := workspaceElsewhere(workspaces, repo, read.Name, renames); ok {
+		return fmt.Sprintf("Dispatch resolves it to %s, but its workspace %s is in %s: set the issue's repository in Dispatch to %s (dispatch issue-update --issue %s --repo %s)",
+			repo, dir, in, in, issue.Key, in), filling{}
+	}
+	return "", filling{repo: spelling, branch: read.DefaultBranch, github: recordedSpelling(renames, spelling, read.Name)}
+}
+
+// backfillLater is the backfill the refresher's second job tries again while a record is left
+// without its repository columns (backfillPending, rereadBadAnswers): backfillRepositories as the
+// boot runs it, whose writes take the lock every fact applies under, so no fact applies with a
+// copy of a record read before the fill. A fill that succeeds has the refresher publish the heard
+// set again and read the live records again (republishHeard, refreshLive), so the filled record's
+// repository is heard and cached; a failure of the store or of Dispatch's listing is logged and
+// tried again on the job's backoff.
+func (w *workflowRuntime) backfillLater(ctx context.Context) {
+	filled, left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, w.dispatchProject, w.stateDir, w.defaultBranches, w.repositories.renames, w.log)
+	if err != nil {
+		if ctx.Err() == nil {
+			w.log.Warn("workflow backfill: the records without their repository columns were not read, listed or written, so the backfill tries them again",
+				"retryIn", installReadRetry.Initial.String(), "error", err)
+		}
+		return
+	}
+	w.backfillPending.Store(left)
+	if filled {
+		w.heardPending.Store(true)
+		wake(w.heardWake)
+		w.wakeLive()
+	}
 }
 
 // issueWorkspaces is every workspace a tmux daemon provisioned for issue under stateDir, by the
@@ -220,61 +283,69 @@ func recordedSpelling(renames ghrepo.Renames, recorded string, github ghrepo.Rep
 	return github.String()
 }
 
-// nameRepositories names every record of project that carries its repository but was written
+// nameRepositories names each record of project that carries its repository but was written
 // before the record carried GitHub's spelling of it (record.Store.UnnamedIssues) with that
-// spelling, read from GitHub once per repository: SQL cannot know it, since a record may keep a
-// clone's spelling that differs from GitHub's in case. A read GitHub refuses refuses the boot,
-// naming the record, so the boot never subscribes to a repository in a spelling its events are not
-// published under. So does a repository GitHub renamed, since the record's repository never
-// changes; only a pre-release build of this daemon left records with no GitHub spelling. A rename
-// the deployment configures (renames) is no such rename: the read is made of the repository the
-// mapping serves the record's one as (named, which maps every read through
-// repositories.serving), since after the transfer only the new owner's installation covers it,
-// and GitHub answers with the pair's other name. The record is then named with the pair's
-// spelling of its own name (recordedSpelling), which keeps it one repository and lets the boot
-// go on.
-//
-// The one exception is GitHub's rate limit, or a read GitHub does not answer: backfillRead waits
-// it out and reads again until GitHub answers, so the boot waits rather than exits, and every record
-// is named.
-func nameRepositories(ctx context.Context, pool *store.Pool, records record.Store, project string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
+// spelling, read from GitHub once per repository (backfillRead): SQL cannot know it, since a record
+// may keep a clone's spelling that differs from GitHub's in case. A read GitHub refuses or does not
+// answer leaves the record unnamed, naming it, so nothing subscribes to a repository in a spelling
+// its events are not published under; so does a repository GitHub renamed, since the record's
+// repository never changes, and only a pre-release build of this daemon left records with no
+// GitHub spelling. A rename the deployment configures (renames) is no such rename: the read is
+// made of the repository the rename rule serves the record's one as (named, which maps every read
+// through repositories.serving), since after the transfer only the new owner's installation covers
+// it, and GitHub answers with the pair's other name. The record is then named with the pair's
+// spelling of its own name (recordedSpelling), which keeps it one repository.
+func nameRepositories(ctx context.Context, pool *store.Pool, records record.Store, project string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) (wrote, left bool, err error) {
 	var unnamed []record.Issue
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error
 		unnamed, err = records.UnnamedIssues(ctx, tx, project)
 		return err
 	}); err != nil {
-		return fmt.Errorf("read the records with no GitHub spelling of their repository: %w", err)
+		return false, false, fmt.Errorf("read the records with no GitHub spelling of their repository: %w", err)
 	}
 	names := make(map[string]string, len(unnamed))
 	for _, issue := range unnamed {
 		repo, err := issue.Repository()
 		if err != nil {
-			return err
+			leaveUnfilled(log, issue.Key, issue.Repo, err.Error())
+			left = true
+			continue
 		}
-		read, err := backfillRead(ctx, named, repo, issue.Key, log)
+		read, err := backfillRead(ctx, named, repo)
 		if err != nil {
-			return fmt.Errorf("name the repository of %s: %w", issue.Key, err)
+			leaveUnfilled(log, issue.Key, issue.Repo, fmt.Sprintf("the read of %s from GitHub failed: %v", repo, err))
+			left = true
+			continue
 		}
 		if !renames.Same(read.Name.String(), issue.Repo) {
-			return fmt.Errorf("name the repository of %s: GitHub renamed %s to %s, and a record's repository never changes; only a pre-release build of this daemon leaves a record with no GitHub spelling, so recreate that build's database",
-				issue.Key, issue.Repo, read.Name)
+			leaveUnfilled(log, issue.Key, issue.Repo, fmt.Sprintf("GitHub renamed %s to %s, and a record's repository never changes; only a pre-release build of this daemon leaves a record with no GitHub spelling, so recreate that build's database",
+				issue.Repo, read.Name))
+			left = true
+			continue
 		}
 		names[issue.Key] = recordedSpelling(renames, issue.Repo, read.Name)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if len(names) == 0 {
+		return false, left, nil
+	}
+	if err := writeBackfill(ctx, pool, func(tx pgx.Tx) error {
 		for _, issue := range unnamed {
-			if err := records.NameIssueRepository(ctx, tx, issue.Key, issue.Repo, names[issue.Key]); err != nil {
-				return err
+			if name, ok := names[issue.Key]; ok {
+				if err := records.NameIssueRepository(ctx, tx, issue.Key, issue.Repo, name); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
 	}); err != nil {
-		return err
+		return false, true, err
 	}
 	for _, issue := range unnamed {
-		log.Info("legion workflow backfill named "+issue.Key+"'s repository "+issue.Repo+" as GitHub spells it, "+names[issue.Key],
-			"issue", issue.Key, "repo", issue.Repo, "githubRepo", names[issue.Key])
+		if name, ok := names[issue.Key]; ok {
+			log.Info("legion workflow backfill named "+issue.Key+"'s repository "+issue.Repo+" as GitHub spells it, "+name,
+				"issue", issue.Key, "repo", issue.Repo, "githubRepo", name)
+		}
 	}
-	return nil
+	return true, left, nil
 }

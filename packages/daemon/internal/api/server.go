@@ -160,10 +160,12 @@ type Options struct {
 	// answers the owners each App is installed on, which the controller's gh bundle holds one
 	// directory per owner of (appauth.Source, appauth.ControllerCredential).
 	Tokens appauth.Source
-	// GitHubRepositories are the project's repositories as the daemon serves them
-	// (daemon's repositories.Accepted): the controller's gh bundle holds a read-only token per
-	// owner of them, each narrowed to that owner's repositories (appauth.ControllerCredential).
-	GitHubRepositories func() []ghrepo.Repository
+	// Served is whether both role Apps answered installed on a repository (daemon's
+	// repositories.servesRepository), the one question the rename rule asks of a repository: the
+	// controller's gh bundle holds a directory for each owner a configured rename moved a served
+	// repository away from (appauth.ControllerCredential). Nil serves no repository, which leaves
+	// every configured rename unresolved.
+	Served func(ghrepo.Repository) bool
 	// RepositoryRenames is the deployment's repository equivalence
 	// (config.Config.RepositoryRenames): the controller's gh bundle holds one entry for a
 	// configured rename's two owners (appauth.ControllerCredential). The zero value configures none.
@@ -171,9 +173,9 @@ type Options struct {
 	// Serving is the repository GitHub holds a recorded one under now, which every GitHub call
 	// this server makes is minted for and addressed to (serving): the daemon's one rule
 	// (daemon's repositories.serving, which the Sandbox runtime's own token source is handed
-	// too), so the mapping and the configured renames are read in one place and no caller here
-	// writes a second copy of it. Nil serves a recorded repository under its own name, which a
-	// test that configures no rename and a daemon with no GitHub Apps both want.
+	// too), so the installation answers and the configured renames are read in one place and no
+	// caller here writes a second copy of it. Nil serves a recorded repository under its own name,
+	// which a test that configures no rename and a daemon with no GitHub Apps both want.
 	Serving func(recorded ghrepo.Repository) ghrepo.Repository
 	// Releaser releases what the runtime holds for a tree whose operator close reserved and
 	// finished its cleanup: the daemon's runtime.
@@ -332,9 +334,11 @@ type server struct {
 	backend func(role claim.Role) runtime.Backend
 	// controllerMu orders a capability mint against a registration and a controller grant, so a
 	// grant the replaced registration authorised is never recorded after the mint revoked them.
-	controllerMu       sync.Mutex
-	tokens             appauth.Source
-	githubRepositories func() []ghrepo.Repository
+	controllerMu sync.Mutex
+	tokens       appauth.Source
+	// served is Options.Served, never nil here: NewServer serves no repository where the caller
+	// hands none.
+	served func(ghrepo.Repository) bool
 	// renames is the deployment's repository equivalence (Options.RepositoryRenames): the rule
 	// that says which owner's installation holds a repository recorded under the name a transfer
 	// moved it away from, which the controller's gh bundle reads (appauth.ControllerCredential).
@@ -398,6 +402,10 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	if serving == nil {
 		serving = func(recorded ghrepo.Repository) ghrepo.Repository { return recorded }
 	}
+	served := opts.Served
+	if served == nil {
+		served = func(ghrepo.Repository) bool { return false }
+	}
 	s := &server{
 		state:              opts.State,
 		stateTransactions:  opts.StateTransactions,
@@ -416,7 +424,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		noPluginInstall:    opts.NoPluginInstall,
 		backend:            opts.Backend,
 		tokens:             opts.Tokens,
-		githubRepositories: opts.GitHubRepositories,
+		served:             served,
 		renames:            opts.RepositoryRenames,
 		serving:            serving,
 		githubAPI:          opts.GitHubAPI,

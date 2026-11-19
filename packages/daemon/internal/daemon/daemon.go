@@ -233,8 +233,8 @@ type overrides struct {
 // ctx decides one thing: how long the daemon serves. The boot record and its stamp are the
 // daemon's own bookkeeping and run on a context the shutdown did not cancel, so a signal that
 // arrives mid-startup still leaves a recorded, stamped boot rather than a row with no end. A
-// signal that arrives while the plugin gate, the repository mapping read, the GitHub App tokens'
-// mint, or the image probe waits ends the daemon there, cleanly: it has served nothing and records
+// signal that arrives while the plugin gate, the GitHub Apps' logins and key proof, or the image
+// probe waits ends the daemon there, cleanly: it has served nothing and records
 // nothing.
 //
 // listener, when not nil, is the API listener the daemon serves on in place of binding cfg's bind
@@ -344,17 +344,17 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// It is built at every rate, the pacing off included, where it grants every request: one
 	// gate to hand the machines and the refresh pass, and one place that reads a rate of zero.
 	refreshGate := supervise.NewRefreshGate(cfg.WorkerWakesPerMinute)
-	// The mapping read waits out an unreachable Dispatch without limit, and the App mint waits out
-	// GitHub's transient failures within appMintRetry; a repository whose installation read fails
-	// is left out and read again, and one whose default-branch read GitHub's rate limit refuses is
-	// served on the default branch the daemon holds or waited out (nameMapping), never a refused
-	// boot. The boot budget bounds none of them, as it does not bound the plugin gate or the image
-	// probe: the work after them has a budget of its own.
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
+	// The Apps' logins and the proof of each App's key wait out GitHub's transient failures within
+	// appMintRetry; nothing of the boot reads GitHub for a repository, which the refresher
+	// prepares once the API serves (prepareAtStart), and a record whose repository the backfill
+	// cannot fill is left for the refresher rather than refusing the boot. The boot budget bounds
+	// none of them, as it does not bound the plugin gate or the image probe: the work after them
+	// has a budget of its own.
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
-			log.Info("legion daemon stopped before it read its repository mapping and minted its GitHub App tokens", "project", cfg.Project)
+			log.Info("legion daemon stopped before it proved its GitHub Apps' keys", "project", cfg.Project)
 			return nil
 		}
 		return err
@@ -362,12 +362,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if workflow != nil {
 		var cancelAfterMint context.CancelFunc
 		// A fresh budget for the rest of the boot, since the boot budget bounds neither the
-		// mapping read nor the App mint above.
+		// Apps' logins nor their key proof above.
 		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
 		plan.identity = workflow.identity
-		plan.repository = workflow.issueRepository
+		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
 		plan.owner = workflow.owningArchitect
 		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
@@ -474,8 +474,8 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// only what is published after it, so everything earlier is the listing's, and what the
 		// listing misses (a move published while it is read) the consumer delivers. Both wait out
 		// an unreachable dependency on ctx, not the bounded boot budget just spent on everything
-		// before them, through the same bootprobe.Run mechanism mintAtBoot already uses, here with
-		// Attempts left at its unbounded zero. natsauth.Unreachable and dispatch.Unreachable each
+		// before them, through the same bootprobe.Run mechanism the Apps' key proof uses, here
+		// with Attempts left at its unbounded zero. natsauth.Unreachable and dispatch.Unreachable each
 		// judge their own dependency; their own docs are the record of what each one waits on and
 		// what it still refuses loud. reconcile's own Postgres transaction is judged by neither: a
 		// design choice, not an inability to tell its failures apart from NATS's or Dispatch's — an
@@ -702,9 +702,14 @@ type plan struct {
 	// the record's repository to the one GitHub serves); nil without one.
 	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
 	// repository is the repository an issue works and its default branch
-	// (workflowRuntime.issueRepository: its record's, or the project's default for an issue the
-	// workflow does not record); nil without a workflow.
-	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
+	// (workflowRuntime.issueRepository: its record's, or, for an issue the workflow does not
+	// record, the one Dispatch resolves it to, read at the first launch and kept while the issue
+	// holds its workspace), which a working copy's adoption and a tmux pane's credential refresh
+	// read; launchRepository is the same as every launch reads it (workflowRuntime.launchRepository,
+	// which prepares a recorded issue's repository the cache set does not hold). Both nil without
+	// a workflow.
+	repository       func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
+	launchRepository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
 	// ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 	// missing or not checked out (workflowRuntime.ensureWorkspace); nil without a workflow.
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
@@ -712,19 +717,18 @@ type plan struct {
 	// the claims the store records at each launch (workflowRuntime.owningArchitect), which the
 	// launch's addressing names; nil without a workflow.
 	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
-	// repositories is the project's repository mapping as the workflow serves it, empty until the
-	// workflow reads it at boot: the rename rule every gh bundle resolves a configured pair
-	// against (appauth.GitHubCredential), the owners the boot mints each App's token on, and,
-	// under the Kubernetes runtime, the mapping a provisioning mint reads the rename rule from
-	// (sandboxRuntime, repositories.serving).
+	// repositories is the repository state the workflow fills, empty until its preparations read
+	// GitHub: the rename rule every gh bundle resolves a configured pair against
+	// (repositories.servesRepository, appauth.GitHubCredential) and, under the Kubernetes runtime,
+	// the rule a provisioning mint reads (sandboxRuntime, repositories.serving).
 	repositories *repositories
-	// installed is the record of the owner accounts each App's last gh bundle read from GitHub,
-	// made here rather than inside a runtime factory because two readers share it: the
-	// credentials the factory builds write it (appauth.GitHubCredential, with the LeftOut record
-	// beside it), and every launch's addressing reads its own App's owners out of it
-	// (appOwners, daemon.RepositoriesClause). Never nil: a daemon with no GitHub Apps builds no
-	// bundle, so nothing is ever recorded in it and every addressing falls back to the mapping's
-	// owners.
+	// installed is the record of the owner accounts each App was last read installed on, made here
+	// rather than inside a runtime factory because more than one reader shares it: the boot's proof
+	// of each App's key writes it first (proveAppKeys), the credentials the factory builds write it
+	// at every bundle (appauth.GitHubCredential, with the LeftOut record beside it), and every
+	// launch's addressing reads its own App's owners out of it (appOwners,
+	// daemon.RepositoriesClause). Never nil: a daemon with no GitHub Apps proves no key and builds
+	// no bundle, so nothing is ever recorded in it and its addressing names no owner.
 	installed *appauth.Installed
 	// left is the record of the gh bundle directories a mint could not fill (appauth.LeftOut),
 	// made here beside installed, and not inside a runtime factory, for the same reason: more
@@ -733,7 +737,7 @@ type plan struct {
 	// (appauth.GitHubDirs): the Kubernetes runtime's drift check reads that, and a launch's
 	// addressing can read it here (appOwners), so that it names no owner the role's bundle
 	// holds no directory for. A record each factory made for itself would be one the plan
-	// could not reach. The configured renames that rule also reads are the mapping's own
+	// could not reach. The configured renames that rule also reads are the repository state's own
 	// (repositories.renames, which is cfg.RepositoryRenames). Never nil, as installed is not.
 	left *appauth.LeftOut
 	// phaseHolds, rootHears, rootTask and treeClosable are the workflow's answers to the
@@ -743,9 +747,9 @@ type plan struct {
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
-	// cacheRepositories is the repositories the runtime keeps a repository cache of: the
-	// mapping's and those of the project's live issue records (workflowRuntime.cacheRepositories).
-	// A daemon with no workflow keeps the mapping's alone, which is what it serves.
+	// cacheRepositories is the repositories the runtime keeps a repository cache of: those of the
+	// project's live issue records and of the launches since their last read
+	// (workflowRuntime.cacheRepositories). A daemon with no workflow keeps none.
 	cacheRepositories func() []ghrepo.Repository
 	// memoryGuardKills is the memory guards' kill holder (memoryGuardKills); nil under tmux, and
 	// for a replaced runtime, where no launcher reports.
@@ -843,11 +847,10 @@ type plan struct {
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
 // of a role names as the ones its own GitHub App is installed on and its token reaches
-// (specs.appOwners, daemon.RepositoriesClause): the owners the last gh bundle of that App read
-// from GitHub (appauth.Installed), which costs the launch no read of its own, less every one
-// the role's container holds no directory for, and the owners of the repositories Dispatch maps
-// to the project while no bundle has been read for the Apps that container's directories come
-// from.
+// (specs.appOwners, daemon.RepositoriesClause): the owners that App was last read installed on
+// (appauth.Installed: the boot's proof of its key first, then the last gh bundle of it), which
+// costs the launch no read of its own, less every one the role's container holds no directory
+// for.
 //
 // An installed owner is not always one the role's container holds a directory for. A mint GitHub
 // answers definitively about the owner's installation — not installed there after all,
@@ -866,14 +869,9 @@ type plan struct {
 // the installed ones it names. It names one more directory for each owner a configured rename
 // moved a repository away from, which is no installed owner and so is never one of these.
 //
-// The fallback is the honest answer there rather than a silence: a bundle is built by the
-// runtime, after the specs the launch is composed from, so the first launch of a daemon that
-// has built none has no read to report; and the mapping's owners are accounts both role Apps
-// are installed on (checkMapping), so the clause names a true part of the App's reach and
-// never more than it. Every launch after a bundle of each of those Apps names the App's own
-// owners, which is what an agent is owed: the Kubernetes runtime builds one of each App for
-// every live issue pod at its minute tick (sandbox's refreshGitHubCredentials), and the tmux
-// runtime one for every tracked pane.
+// The boot's proof of each App's key records its owners before any launch (proveAppKeys), so
+// every launch of a daemon with a workflow has an answer to name; a daemon with no GitHub Apps has
+// none, and its addressing names no owner.
 func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
 	return func(role claim.Role) []string {
 		app := appauth.AppRoleFor(role)
@@ -888,9 +886,9 @@ func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
 			}
 		}
 		if !read {
-			return p.repositories.Owners()
+			return nil
 		}
-		held := appauth.GitHubDirs(p.repositories.Accepted, p.repositories.renames, p.installed, p.left, apps, ghrepo.Repository{})
+		held := appauth.GitHubDirs(p.repositories.servesRepository, p.repositories.renames, p.installed, p.left, apps, ghrepo.Repository{})
 		return slices.DeleteFunc(owners, func(owner string) bool { return !slices.Contains(held, owner) })
 	}
 }
@@ -898,15 +896,15 @@ func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
 // listener the stream listener, address the one every agent's shim dials (shimAddress), tokens the
 // workflow's App tokens and repository the workflow's repository of an issue (issueRepository;
-// both nil without a workflow), st the store the runtime reads, and mapped the repositories the
-// Sandbox runtime keeps a repository cache of: the repositories Dispatch's mapping names and the
-// repositories of the project's live issue records (workflowRuntime.cacheRepositories; the
-// mapping alone without a workflow). The set every role's gh bundle is built over, and the set a
-// configured rename is resolved against one repository at a time (appauth.GitHubCredential), is
-// the mapping's own and is given to the factory where it is built. openSupervision hands it the
-// plan the workflow completed, so no factory reads a field the workflow sets after prepare.
+// both nil without a workflow), st the store the runtime reads, and cached the repositories the
+// Sandbox runtime keeps a repository cache of: the repositories of the project's live issue
+// records and of the launches since their last read (workflowRuntime.cacheRepositories; none
+// without a workflow). The rename rule every role's gh bundle resolves a configured pair by, one
+// repository at a time (appauth.GitHubCredential, repositories.servesRepository), is the repository
+// state's own and is given to the factory where it is built. openSupervision hands it the plan the
+// workflow completed, so no factory reads a field the workflow sets after prepare.
 type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source,
-	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error)
+	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error)
 
 // prepare is every refusal that needs nothing but the configuration and the machine (readBoot's,
 // then what writes or runs something: the state directory, the instructions copy, and what the
@@ -1057,7 +1055,7 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 			}
 			return state
 		}
-		p.newRuntime = tmuxRuntime(cfg, p.project, launchers, providerEnvDir, dispatchTokenFile, p.tools["gh"], p.repositories.Accepted, p.installed, p.left, log)
+		p.newRuntime = tmuxRuntime(cfg, p.project, launchers, providerEnvDir, dispatchTokenFile, p.tools["gh"], p.repositories.servesRepository, p.installed, p.left, log)
 	}
 	return nil
 }
@@ -1152,13 +1150,14 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 // controller pane's own (appauth.ControllerCredential), which its refresh asks by the default
 // owner its launch recorded, both built over the
 // owner accounts each App is installed on, which the bundle reads from GitHub at every build and
-// no repository list bounds, with gh, the real gh boot resolved
+// no repository list bounds, and over served, the rename rule's answer of whether a repository is
+// served (repositories.servesRepository), with gh, the real gh boot resolved
 // (daemonTools), the one each pane's `legion gh` runs, and the repository each claim's issue
 // works (claimRepository over the workflow's repository), which a pane adopted after a restart
 // holds its write token for; a daemon with no GitHub Apps hands the runtime none, and its panes
 // hold no gh files. The private server's environment is scrubbed before anything is launched on
 // it.
-func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, repos func() []ghrepo.Repository, installed *appauth.Installed, left *appauth.LeftOut, log *slog.Logger) runtimeFactory {
+func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, served func(ghrepo.Repository) bool, installed *appauth.Installed, left *appauth.LeftOut, log *slog.Logger) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, streamAddress string, tokens appauth.Source,
 		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
@@ -1171,8 +1170,8 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			// projects nothing and nothing compares one against left — a directory left out
 			// of one pane's bundle is left out of the next pane's by the mint, not by a
 			// record — so the addressing is this runtime's one reader of it.
-			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, repos, cfg.RepositoryRenames, installed, left, log), gh
-			opts.ControllerCredential = appauth.ControllerCredential(tokens, repos, cfg.RepositoryRenames, installed, left, log)
+			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, log), gh
+			opts.ControllerCredential = appauth.ControllerCredential(tokens, served, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
 		}
 		rt, err := tmux.New(opts)
@@ -1192,10 +1191,10 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 
 // claimRepository is the repository a claim's issue works: the claim's issue (issueOf, the
 // daemon's own claims; a token spells its issue lowercased), then the repository it works
-// (repository, the workflow's issueRepository: its record's, or the project's default for an
-// issue the workflow does not record). It is what a tmux pane adopted after a restart holds its
-// write token for (tmux.Options.ClaimRepository), the repository its launch was minted for, read
-// from the daemon's own state and nothing a pane can write.
+// (repository, the workflow's issueRepository: its record's, or, for an issue the workflow does
+// not record, the one kept for it at its first launch). It is what a tmux pane adopted after a
+// restart holds its write token for (tmux.Options.ClaimRepository), the repository its launch was
+// minted for, read from the daemon's own state and nothing a pane can write.
 func claimRepository(issueOf func(context.Context, claim.Token) (string, error),
 	repository func(context.Context, string) (ghrepo.Repository, string, error)) func(context.Context, claim.Token) (ghrepo.Repository, error) {
 	return func(ctx context.Context, token claim.Token) (ghrepo.Repository, error) {
@@ -1533,8 +1532,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	}
 	cached := p.cacheRepositories
 	if cached == nil {
-		// A daemon with no workflow has no records to read, so the mapping is the whole set.
-		cached = p.repositories.Accepted
+		// A daemon with no workflow has no records to read, so it keeps no repository cache.
+		cached = func() []ghrepo.Repository { return nil }
 	}
 	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, cached)
 	if err != nil {
@@ -1551,7 +1550,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
-			identity: p.identity, repository: p.repository, owner: p.owner,
+			identity: p.identity, repository: p.launchRepository, owner: p.owner,
 			appOwners:   p.appOwners(cfg.Runtime.Name),
 			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
@@ -2569,7 +2568,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Record:             records,
 		Dispatch:           client,
 		Tokens:             tokens,
-		GitHubRepositories: p.repositories.Accepted,
+		Served:             p.repositories.servesRepository,
 		RepositoryRenames:  cfg.RepositoryRenames,
 		Serving:            p.repositories.serving,
 		GitHubAPI:          githubAPI,
@@ -2697,8 +2696,8 @@ type source struct {
 	// wakes is every wake the daemon's machines hold, as each machine last published it
 	// (supervision.waitingWakes); nil for a daemon that supervises nothing.
 	wakes func() []supervise.WaitingWake
-	// repositories is the project's repository mapping as the workflow serves it, empty for a
-	// daemon with no workflow, whose state serves no repository.
+	// repositories is the repository state the workflow fills, empty for a daemon with no
+	// workflow, whose state serves no repository.
 	repositories *repositories
 	// caches is the Kubernetes runtime's repository caches with their last health reads
 	// (sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps none.
@@ -2740,12 +2739,58 @@ type source struct {
 // the transaction's commit hooks (intake.OnCommit), so no lane runs a row it cannot yet read, and
 // no lane polls for one. wake is nil where there is no workflow to wake: the API-only daemon, the
 // state route's reads and the stranded report.
+//
+// And it is where the refresher learns that the live records may have changed: each write that can
+// add a record to the live set or take one out of it — PutIssue, which writes an issue's phase and
+// status, and ReleaseSlot and ReleaseSlotForWait, which take an issue's slot away, the tree's
+// close among them — asks for one read of the live records once its transaction commits (live,
+// the workflow's wakeLive, which holds one request at most), so the repository caches and legion
+// state follow the records without a timer. live is nil where no refresher runs.
 type projectRecords struct {
 	record.Store
 	project string
 	wake    func(issue string, kind record.OutboxKind)
+	live    func()
 	// log says when a row was written outside a commit scope; nil is the default logger.
 	log *slog.Logger
+}
+
+func (s projectRecords) PutIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	if err := s.Store.PutIssue(ctx, tx, issue); err != nil {
+		return err
+	}
+	s.liveOnCommit(ctx)
+	return nil
+}
+
+func (s projectRecords) ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error {
+	if err := s.Store.ReleaseSlot(ctx, tx, issue); err != nil {
+		return err
+	}
+	s.liveOnCommit(ctx)
+	return nil
+}
+
+func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue string, at time.Time) error {
+	if err := s.Store.ReleaseSlotForWait(ctx, tx, issue, at); err != nil {
+		return err
+	}
+	s.liveOnCommit(ctx)
+	return nil
+}
+
+// liveOnCommit asks for a read of the live records once the transaction that wrote one commits
+// (intake.OnCommit), and at once for a write outside a commit scope, whose read then finds the
+// write or a later one does.
+func (s projectRecords) liveOnCommit(ctx context.Context) {
+	if s.live == nil {
+		return
+	}
+	if intake.CommitScoped(ctx) {
+		intake.OnCommit(ctx, s.live)
+		return
+	}
+	s.live()
 }
 
 func (s projectRecords) Issues(ctx context.Context, tx pgx.Tx) ([]record.Issue, error) {
@@ -2964,8 +3009,9 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 }
 
 // adoptIdentity is the supervisor's identity for a working copy's adoption (supervise.Deps.Identity)
-// over identity, for the repository the claim's issue works (repository): its record's, or the
-// project's default repository for an issue the workflow does not record. The owner the lease is
+// over identity, for the repository the claim's issue works (repository): its record's, or, for an
+// issue the workflow does not record, the one kept for it at its first launch, or read from
+// Dispatch where none is (workflowRuntime.issueRepository). The owner the lease is
 // minted for is identity's own to decide, since a record written before a transfer names an owner
 // whose installation no longer holds the repository. nil without a workflow.
 func adoptIdentity(identity func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error), repository func(context.Context, string) (ghrepo.Repository, string, error)) func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {

@@ -159,12 +159,6 @@ func (d *mappingDispatch) webhookChecks() []string {
 	return asked
 }
 
-func (d *mappingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return append([]dispatch.RepoProject{}, d.mappings...), d.err
-}
-
 func (d *mappingDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -431,13 +425,6 @@ type unreadyDispatch struct {
 	mappingDispatch
 	refusals int64
 	reads    atomic.Int64
-}
-
-func (d *unreadyDispatch) ListRepoProjects(ctx context.Context) ([]dispatch.RepoProject, error) {
-	if d.reads.Add(1) <= d.refusals {
-		return nil, &dispatch.TransientError{Err: &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}}
-	}
-	return d.mappingDispatch.ListRepoProjects(ctx)
 }
 
 // A Dispatch with no ready endpoint refuses every dial for as long as it has none. The boot's read

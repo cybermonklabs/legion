@@ -54,8 +54,8 @@ type specs struct {
 	// commits a pane stamps with its issue key (runtime.SpawnSpec.IssueTrailer); nil for a
 	// project that names none, whose panes stamp nothing.
 	commitIssueTrailerRepos []ghrepo.Repository
-	// same is whether two repository names name one repository: the daemon's one equivalence,
-	// the project's mapping's (repositories.same) — the same name compared without case, or the
+	// same is whether two repository names name one repository: the daemon's one equivalence
+	// (repositories.same) — the same name compared without case, or the
 	// two names of a configured rename (repository_renames) — which issueTrailer compares
 	// commit_issue_trailer_repos against, so a launch on the name a transfer moved a repository
 	// away from stamps exactly as one on the name the project wrote. Boot always sets it; it is
@@ -67,9 +67,10 @@ type specs struct {
 	// mint's owner its serving one (workflowRuntime.identity); nil for a daemon with no GitHub
 	// Apps.
 	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
-	// repository is the repository an issue works and its default branch
-	// (workflowRuntime.issueRepository: its record's, or the project's default for an issue the
-	// workflow does not record); nil for a daemon with no workflow, whose launches work no
+	// repository is the repository an issue works and its default branch, as every launch reads it
+	// (workflowRuntime.launchRepository: its record's, or, for an issue the workflow does not
+	// record, the one Dispatch resolves it to, read and prepared at its first launch and kept while
+	// the issue holds its workspace); nil for a daemon with no workflow, whose launches work no
 	// repository.
 	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
 	// appOwners is the owner accounts the role's own GitHub App is installed on AND the role's gh
@@ -324,7 +325,7 @@ func passthrough(env map[string]string, names ...string) {
 // (runtime.SpawnSpec.IssueTrailer, which each runtime tells its agent as LEGION_ISSUE_TRAILER):
 // the claim's own issue when the project names that repository in commit_issue_trailer_repos, and
 // "" for every other repository and for a launch that works none. The two names are compared as
-// every repository comparison of the daemon is, the mapping's own equivalence (s.same): without
+// every repository comparison of the daemon is, by the daemon's one equivalence (s.same): without
 // case and through the deployment's configured renames, so a claim on the name a transfer moved
 // a repository away from stamps exactly as one on the name the project wrote. A specs with no
 // equivalence stamps nothing.
@@ -472,9 +473,9 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 // AddressingFragment is addressingFragment for a claim whose owner is its tree's architect, a pane
 // on its tree's root: it names the tree's architect, spelled from project and c.Tree. It is
 // exported for the rigs under packages/pi-legion/scripts, which tell a worker what a pane is told.
-// Its last parameter became the owners the role's App reaches with INFRA-2543, where it was the
-// project's mapping view before, so a label checked out before that change does not build against
-// a rig that passes owners.
+// Its last parameter became the owners the role's App reaches with INFRA-2543, where it was a view
+// of the project's repositories before, so a label checked out before that change does not build
+// against a rig that passes owners.
 func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repository, defaultBranch string, owners []string) (string, error) {
 	architect, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
 	if err != nil {
@@ -521,9 +522,9 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 // full stop and starts in lower case, to follow a worker's `; `: "your role's GitHub App is
 // installed on the owners a, b, and its token reaches every repository of those owners." owners
 // are the owner accounts of the role's own App, lowercased and sorted (specs.appOwners), and not
-// the owners of the repositories the project is mapped: since INFRA-2543 a role's reach is its
-// App's installations and the mapping bounds none of it, so naming the mapping's owners told an
-// agent its reach was smaller than it is wherever the App reaches an owner the project maps
+// the owners of any list of the project's repositories: since INFRA-2543 a role's reach is its
+// App's installations and no repository list bounds any of it, so naming such a list's owners
+// told an agent its reach was smaller than it is wherever the App reaches an owner the list held
 // nothing of — the case cmd/legion's own gh tests pin, where a repository of such an owner is
 // answered from that owner's directory.
 //

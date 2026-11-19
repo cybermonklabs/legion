@@ -271,14 +271,15 @@ func (w *workflowRuntime) pushReadEventID(pr record.PullRequest, before, after s
 	return readEventID("push-read", w.dispatchProject, pr.Repo, pr.Number, before+"..."+after)
 }
 
-// heardSpelling is repo as GitHub intake hears it, the spelling a webhook's fact names it by and a
-// pull request is recorded and looked up under: a served repository as the mapping names it, and
-// any other as its record keeps GitHub's spelling (heardRepositories).
+// heardSpelling is repo, the GitHub spelling a record keeps (record.Issue.GitHubRepo), as GitHub
+// intake hears it, the spelling a webhook's fact names it by and a pull request is recorded and
+// looked up under: as the held heard set names it (heard, heardRepositories), and repo itself, the
+// record's own GitHub spelling, where the set does not name it yet.
 func (w *workflowRuntime) heardSpelling(repo string) string {
-	if w.repositories != nil {
-		for _, served := range w.repositories.Accepted() {
-			if strings.EqualFold(served.String(), repo) {
-				return served.String()
+	if held := w.heard.Load(); held != nil {
+		for _, heard := range *held {
+			if strings.EqualFold(heard.String(), repo) {
+				return heard.String()
 			}
 		}
 	}
