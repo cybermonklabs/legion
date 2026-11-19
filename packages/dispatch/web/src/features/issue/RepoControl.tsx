@@ -19,6 +19,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { focusOnDocument } from "../shell/roving";
+import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
 
 /** The grammar a repository GitHub could hold is written in, which is the grammar the server
@@ -155,8 +156,8 @@ export function RepoControl({
   inRow = false,
   issueKey,
   project,
-  repo,
-  resolvedRepo,
+  repo: hostRepo,
+  resolvedRepo: hostResolvedRepo,
 }: {
   disabled?: boolean;
   /** Whether the control is the value of a row of the new issue page's Details. It acts inside
@@ -180,6 +181,17 @@ export function RepoControl({
    *  row's text - "None" or the repository - and has not since left it and its clear control,
    *  pressed Escape in it or made a write from it. */
   const [opened, setOpened] = useState(false);
+  const write = useIssueRepo(issueKey, hostRepo);
+  // The issue's own repository and the one it resolves to, as every part of the control draws
+  // them: the write's `shown` (`IssueFieldWrite.shown`), and while that is a pick the host does
+  // not pass, the repository the pick resolves to as the caches draw it (`pickLook`), which for
+  // an inherited one is the host's until Dispatch answers.
+  const repo = write.shown;
+  const resolvedRepo =
+    repo === hostRepo
+      ? hostResolvedRepo
+      : (pickLook({ field: "repo", issueKey, value: repo }).fields.resolved_repo ??
+        hostResolvedRepo);
   const mappings = useQuery({
     enabled: wanted || resolvedRepo === null,
     queryKey: ["repo-projects"],
@@ -191,10 +203,6 @@ export function RepoControl({
   // Inside `NoTooltips` the clear control's description, named after the box's own so that the
   // control asks React for no id `main` does not.
   const clearDescriptionId = `${descriptionId}clear`;
-  const write = useIssueRepo(issueKey, repo);
-  /** The issue's own repository as the box and its clear control draw it: from a write made here
-   *  until the host passes the repository written, that one (`useIssueFieldWrite`'s `shown`). */
-  const own = write.shown;
   const mapped = (mappings.data ?? [])
     .filter((mapping) => mapping.project === project)
     .map((mapping) => mapping.repo)
@@ -225,9 +233,9 @@ export function RepoControl({
     setDraft(null);
     setRefused(false);
   };
-  // The draft goes back to the issue's own repository as it is written: the box draws the
-  // repository written from the press on (`own`), and a rollback puts the previous one back under
-  // it. A refused draft stays in the box: it is what the reader has to correct.
+  // The draft goes back to the issue's own repository as it is written: the control draws the
+  // repository written from the press on (`repo`), and a rollback puts the previous one back
+  // under it. A refused draft stays in the box: it is what the reader has to correct.
   const commit = () => {
     if (draft === null) {
       return;
@@ -240,7 +248,7 @@ export function RepoControl({
       return;
     }
     restore();
-    if (typed !== (own ?? "")) {
+    if (typed !== (repo ?? "")) {
       write.submit(typed === "" ? null : typed);
       setOpened(false);
     }
@@ -402,7 +410,7 @@ export function RepoControl({
                 aria-invalid={refused || undefined}
                 aria-label={repoControlName(issueKey)}
                 autoComplete="off"
-                className={`min-h-11 ${boxWidth} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${own === null || inDetails ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
+                className={`min-h-11 ${boxWidth} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null || inDetails ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
                 disabled={disabled}
                 list={suggestionsId}
                 onBlur={(event) => {
@@ -453,9 +461,9 @@ export function RepoControl({
                 placeholder={resolvedRepo ?? "owner/name"}
                 ref={box}
                 spellCheck={false}
-                value={draft ?? own ?? ""}
+                value={draft ?? repo ?? ""}
               />
-              {own === null ? null : (
+              {repo === null ? null : (
                 <button
                   aria-describedby={page === null ? undefined : clearDescriptionId}
                   aria-label={`Clear the repository of ${issueKey}`}
@@ -518,7 +526,7 @@ export function RepoControl({
           <span className="sr-only" id={descriptionId} {...page?.pageChrome}>
             {shownDescription}
           </span>
-          {page === null || own === null || showsText ? null : (
+          {page === null || repo === null || showsText ? null : (
             <span className="sr-only" id={clearDescriptionId} {...page.pageChrome}>
               {CLEAR_EXPLAINS}
             </span>

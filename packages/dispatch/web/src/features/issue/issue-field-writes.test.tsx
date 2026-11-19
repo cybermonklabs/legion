@@ -12,6 +12,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { type Commits, recordCommits } from "../../__tests__/commits";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import {
   bodies,
@@ -2769,8 +2770,15 @@ function storedPriority(patchIssue: { mock: { calls: unknown[][] } }): IssuePrio
 
 /** The project's board as the Board reads it (`projectIssuesQuery`, whose read waits until every
  *  board move on the project is answered), showing the priority of CORE-1's card, and, with
- *  `picker`, the card's own priority picker, as each card of the board draws one. */
-function BoardCard({ picker = false }: { picker?: boolean }): ReactNode {
+ *  `picker`, the card's own priority picker, as each card of the board draws one, each commit of
+ *  it recorded in `commits` with the card's priority. */
+function BoardCard({
+  commits,
+  picker = false,
+}: {
+  commits: Commits<IssuePriority | null>;
+  picker?: boolean;
+}): ReactNode {
   const board = useQuery({
     ...projectIssuesQuery(issue.project, []),
     staleTime: Number.POSITIVE_INFINITY,
@@ -2780,7 +2788,9 @@ function BoardCard({ picker = false }: { picker?: boolean }): ReactNode {
     <>
       <p data-testid="board-priority">P{card?.priority}</p>
       {picker && card !== undefined ? (
-        <PriorityControl issueKey={card.key} priority={issuePriority(card.priority)} />
+        <commits.Recorded host={issuePriority(card.priority)}>
+          <PriorityControl issueKey={card.key} priority={issuePriority(card.priority)} />
+        </commits.Recorded>
       ) : null}
     </>
   );
@@ -2790,7 +2800,8 @@ function BoardCard({ picker = false }: { picker?: boolean }): ReactNode {
  *  alone, as the board page draws it - with `others` on it besides CORE-1, whose list and detail
  *  Dispatch answers with the priority it stores as each read reaches it (`stored`), once the row
  *  lets the reads it holds go (`hold`). The client holds the list as Dispatch last answered it,
- *  or, `unread`, holds none yet, so the board reads it. */
+ *  or, `unread`, holds none yet, so the board reads it. `commits` records each commit of the
+ *  card's picker: what its select holds and what its badge says. */
 function renderBoard(
   client: DispatchQueryClient,
   stored: () => IssuePriority | null,
@@ -2816,14 +2827,18 @@ function renderBoard(
     ...dispatchReads(),
     detail: read(() => ({ ...details, priority: stored() })),
   };
+  const commits = recordCommits<IssuePriority | null>(() => {
+    const [select] = prioritySelects();
+    return `${select?.value} ${select?.previousElementSibling?.textContent}`;
+  });
   const view = renderIn(
     client,
     onCard ? (
-      <BoardCard picker />
+      <BoardCard commits={commits} picker />
     ) : (
       <>
         <CachedPriority reads={reads} />
-        <BoardCard />
+        <BoardCard commits={commits} />
       </>
     )
   );
@@ -2833,6 +2848,7 @@ function renderBoard(
     ),
   });
   return {
+    commits,
     /** Holds every read of the board and the issue that starts from now on until the returned
      *  function lets them answer. */
     hold: () => {
@@ -3224,6 +3240,82 @@ test("a pick refused while a later drag of its card still waits behind another c
     patchIssue.mockRestore();
   }
 });
+
+// A pick made on a card while a drag of that card still waits its turn behind another card's
+// move is older than the drag (`fieldWritesOf`): the pick goes out first, Dispatch stores the
+// drag's lane last, and the card shows that lane. The card's picker draws the card's own priority
+// in every commit from the pick on, never the pick, which the card does not show, and the drag's
+// lane once every write has landed - whichever of the pick and the other card's move Dispatch
+// answers first, with no picker drawn again.
+for (const first of ["the pick", "the other card's move"] as const) {
+  test(`a pick made on a card while a drag of it waits behind another card's move draws the card's priority in every commit, never the pick, when ${first} lands first`, async () => {
+    const other = Promise.withResolvers<Issue>();
+    const pick = Promise.withResolvers<Issue>();
+    const drag = Promise.withResolvers<Issue>();
+    const patchIssue = answerIssuePatches()
+      .mockImplementationOnce(() => other.promise)
+      .mockImplementationOnce(() => pick.promise)
+      .mockImplementationOnce(() => drag.promise);
+    const client = signedIn();
+    const board = renderBoard(client, () => storedPriority(patchIssue), {
+      onCard: true,
+      others: [neighbour],
+    });
+    const user = userEvent.setup();
+    const land = async (
+      save: { readonly promise: Promise<Issue>; readonly resolve: (answer: Issue) => void },
+      answer: Issue
+    ) => {
+      await act(async () => {
+        save.resolve(answer);
+        await save.promise;
+      });
+    };
+    try {
+      act(() => {
+        void board.moves().moveCardToLane(neighbour.key, "todo", 2, 0);
+      });
+      await waitFor(() => expect(bodies(patchIssue)).toHaveLength(1));
+      act(() => {
+        void board.moves().moveCardToLane(issue.key, "todo", 3, 0);
+      });
+      // The drag waits in the board's scope, out of the store.
+      expect(
+        writesOf(client)
+          .rows()
+          .map((row) => row.label)
+      ).toEqual(["CORE-2 moved on the board"]);
+      expect(board.shown()).toBe("P3");
+      const [picker] = prioritySelects();
+      const fromPick = board.commits.markAt(picker as HTMLSelectElement, "change");
+      await user.selectOptions(picker as HTMLSelectElement, "2");
+      await waitFor(() => expect(bodies(patchIssue)).toHaveLength(2));
+      if (first === "the pick") {
+        await land(pick, { ...issue, priority: 2 });
+        await land(other, { ...issue, key: neighbour.key });
+      } else {
+        await land(other, { ...issue, key: neighbour.key });
+        await land(pick, { ...issue, priority: 2 });
+      }
+      await waitFor(() => expect(bodies(patchIssue)).toHaveLength(3));
+      await land(drag, { ...issue, priority: 3 });
+      await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+      await waitFor(() => expect(client.isFetching()).toBe(0));
+
+      expect(bodies(patchIssue).map((body) => (body as UpdateIssueInput).priority)).toEqual([
+        2, 2, 3,
+      ]);
+      expect(board.shown()).toBe("P3");
+      expect(fromPick().map(({ drawn }) => drawn)).toEqual(
+        fromPick().map(({ host }) => `${host} P${host}`)
+      );
+      expect(fromPick().at(-1)?.drawn).toBe("3 P3");
+    } finally {
+      board.unmount();
+      patchIssue.mockRestore();
+    }
+  });
+}
 
 // R2, for drags of a card that still wait their turn on the board: a pick of P2 is out, and so
 // is another card's move, so two drags of this card - to P3, then to P0 - both wait behind that

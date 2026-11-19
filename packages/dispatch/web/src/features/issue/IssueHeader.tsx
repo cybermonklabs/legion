@@ -115,8 +115,7 @@ export function IssueHeader({
   isClosed: boolean;
   issue: IssueDetails;
   /** The page's one priority write, shared with the keyboard's `0`–`3` and the palette's Set
-   *  priority rows, so a refusal of any of them is reported once and by this header, which draws
-   *  its `shown` priority, so a pick from any of them shows from its press. */
+   *  priority rows, so a refusal of any of them is reported once and by this header. */
   priorityWrite: IssuePriorityWrite;
   state: UserIssueState;
 }): ReactNode {
@@ -524,7 +523,6 @@ export function IssueHeader({
           <PriorityEditor
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
-            priority={priorityWrite.shown}
             write={priorityWrite}
           />
           <AssigneeControl

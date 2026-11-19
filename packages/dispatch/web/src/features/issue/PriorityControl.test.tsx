@@ -3,12 +3,20 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Profiler, type ProfilerOnRenderCallback, type ReactNode } from "react";
+import type { ReactNode } from "react";
+import {
+  type Commits,
+  type HeldNotifications,
+  holdNotifications,
+  recordCommits,
+} from "../../__tests__/commits";
+import { bodies } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import type { InboxRow, Issue, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
 import { issuePriority } from "./issue-priority";
-import { PriorityControl } from "./PriorityControl";
+import { PriorityControl, PriorityEditor } from "./PriorityControl";
+import { useIssuePriority } from "./useIssuePriority";
 
 const issue: Issue = {
   advances: [],
@@ -125,10 +133,9 @@ const detailKey = ["issue", issue.key] as const;
 const listKey = ["issues", "project", issue.project] as const;
 const inboxKey = ["inbox"] as const;
 
-/** Renders the control the way every surface does: with the priority it reads from the cache.
- *  Given `onCommit`, each commit of the control is told under that priority, the profiler's id,
- *  so a case can set what the host passed beside what the control drew. */
-function CachedControl({ onCommit }: { onCommit?: ProfilerOnRenderCallback }): ReactNode {
+/** Renders the control the way every surface does: with the priority it reads from the cache,
+ *  each commit of it recorded with that priority. */
+function CachedControl({ commits }: { commits: Commits<IssuePriority | null> }): ReactNode {
   const cached = useQuery<IssueDetails>({
     queryKey: detailKey,
     queryFn: () => Promise.reject(new Error("the test seeds this query")),
@@ -137,19 +144,33 @@ function CachedControl({ onCommit }: { onCommit?: ProfilerOnRenderCallback }): R
   if (cached.data === undefined) {
     return null;
   }
-  const control = (
-    <PriorityControl issueKey={cached.data.key} priority={issuePriority(cached.data.priority)} />
-  );
-  return onCommit === undefined ? (
-    control
-  ) : (
-    <Profiler id={String(cached.data.priority)} onRender={onCommit}>
-      {control}
-    </Profiler>
+  const host = issuePriority(cached.data.priority);
+  return (
+    <commits.Recorded host={host}>
+      <PriorityControl issueKey={cached.data.key} priority={host} />
+    </commits.Recorded>
   );
 }
 
-function renderControl({ onCommit }: { onCommit?: ProfilerOnRenderCallback } = {}) {
+/** The priority as the issue page draws it: the page reads the issue and makes the write in one
+ *  component, and the header's editor draws the write (`IssuePage`, `IssueHeader`), each commit
+ *  of it recorded with the priority the page read. */
+function PageControl({ commits }: { commits: Commits<IssuePriority | null> }): ReactNode {
+  const cached = useQuery<IssueDetails>({
+    queryKey: detailKey,
+    queryFn: () => Promise.reject(new Error("the test seeds this query")),
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const host = issuePriority(cached.data?.priority);
+  const write = useIssuePriority(issue.key, host);
+  return (
+    <commits.Recorded host={host}>
+      <PriorityEditor issueKey={issue.key} write={write} />
+    </commits.Recorded>
+  );
+}
+
+function renderControl({ page = false }: { page?: boolean } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -157,12 +178,16 @@ function renderControl({ onCommit }: { onCommit?: ProfilerOnRenderCallback } = {
   queryClient.setQueryData(listKey, [summary, otherSummary]);
   queryClient.setQueryData(inboxKey, [inboxRow]);
   const user = userEvent.setup();
+  // What the select holds and what its badge says.
+  const commits = recordCommits<IssuePriority | null>(
+    () => `${select().value} ${select().previousElementSibling?.textContent}`
+  );
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <CachedControl onCommit={onCommit} />
+      {page ? <PageControl commits={commits} /> : <CachedControl commits={commits} />}
     </QueryClientProvider>
   );
-  return { queryClient, unmount: view.unmount, user };
+  return { commits, queryClient, unmount: view.unmount, user };
 }
 
 function select(): HTMLSelectElement {
@@ -216,39 +241,28 @@ test("PriorityControl saves the picked priority, shows it before the server answ
   }
 });
 
-// A pick shows from its press on, in every commit. The pick reaches the issue's cache a moment
-// after the press (`useIssueFieldWrite` joins it in a microtask), and the control's host later
-// still in a browser, where TanStack Query tells a query's observers in a timer. The select that
-// showed the pick as it was made is put back to its `value` within the press, so a commit before
-// then that drew the priority the pick replaces is a frame of it on screen (INFRA-3904).
+// A pick shows from its press on, in every commit. The pick reaches the issue's cache in a
+// microtask of the press, and the control's host only when TanStack Query tells the cache's
+// observers, in a browser a timer later, which the row holds back. The select that showed the
+// pick as it was made is put back to its `value` within the press, so a commit before that timer
+// that drew the priority the pick replaces is a frame of it on screen (INFRA-3904).
 test("PriorityControl draws the pick in every commit from the pick on, while its host still passes the priority it replaces", async () => {
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const commits: { drawn: string; host: string }[] = [];
-  const { queryClient, unmount, user } = renderControl({
-    onCommit: (host) =>
-      commits.push({
-        drawn: `${select().value} ${select().previousElementSibling?.textContent}`,
-        host,
-      }),
-  });
+  const { commits, queryClient, unmount, user } = renderControl();
+  let notifications: HeldNotifications | undefined;
   try {
-    // The record from the change on: user-event's pointer and focus ahead of it are no pick. A
-    // listener on the select itself hears the change before the root's that React reads.
-    let fromPick = -1;
-    select().addEventListener(
-      "change",
-      () => {
-        fromPick = commits.length;
-      },
-      { capture: true, once: true }
-    );
+    const fromPick = commits.markAt(select(), "change");
+    notifications = holdNotifications();
     await user.selectOptions(select(), "2");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
     );
-    // The host passes the pick once the cache has told it.
-    await waitFor(() => expect(commits.at(-1)?.host).toBe("2"));
+    // The cache draws the pick, and its host has not been told.
+    expect(queryClient.getQueryData<IssueDetails>(detailKey)?.priority).toBe(2);
+    expect(new Set(fromPick().map(({ host }) => host))).toEqual(new Set([1]));
+    notifications.tell();
+    expect(fromPick().at(-1)?.host).toBe(2);
     await act(async () => {
       save.resolve({ ...issue, priority: 2, last_seq: 2 });
       await save.promise;
@@ -256,12 +270,53 @@ test("PriorityControl draws the pick in every commit from the pick on, while its
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
     );
-    expect(fromPick).toBeGreaterThanOrEqual(0);
-    const picked = commits.slice(fromPick);
-    // The pick's own commit, made while the host still passed the priority the pick replaces.
-    expect(picked[0]?.host).toBe("1");
-    expect(picked.map(({ drawn }) => drawn)).toEqual(picked.map(() => "2 P2"));
+    expect(fromPick().map(({ drawn }) => drawn)).toEqual(fromPick().map(() => "2 P2"));
   } finally {
+    notifications?.tell();
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// On the issue page the page reads the issue and makes the write in one component, so each
+// render of it reads the cache as it is then, though TanStack Query has not told it of the cache
+// yet. A second pick made before that telling is drawn from its press, as the first was, and
+// never the first pick it replaces; each pick is drawn through both saves.
+test("the issue page's priority editor draws each of two picks made before its host is told, from each press on", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockResolvedValue({ ...issue, priority: 3, last_seq: 3 });
+  const { commits, queryClient, unmount, user } = renderControl({ page: true });
+  let notifications: HeldNotifications | undefined;
+  try {
+    const fromFirst = commits.markAt(select(), "change");
+    notifications = holdNotifications();
+    await user.selectOptions(select(), "2");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    const fromSecond = commits.markAt(select(), "change");
+    await user.selectOptions(select(), "3");
+    // The second pick waits behind the first, and the cache draws it.
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.priority).toBe(3)
+    );
+    notifications.tell();
+    await act(async () => {
+      first.resolve({ ...issue, priority: 2, last_seq: 2 });
+      await first.promise;
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(3)
+    );
+    expect(bodies(patchIssue)).toEqual([{ priority: 2 }, { priority: 3 }]);
+    const betweenPresses = fromFirst().slice(0, fromFirst().length - fromSecond().length);
+    expect(betweenPresses.length).toBeGreaterThan(0);
+    expect(betweenPresses.map(({ drawn }) => drawn)).toEqual(betweenPresses.map(() => "2 P2"));
+    expect(fromSecond().map(({ drawn }) => drawn)).toEqual(fromSecond().map(() => "3 P3"));
+  } finally {
+    notifications?.tell();
     unmount();
     patchIssue.mockRestore();
   }

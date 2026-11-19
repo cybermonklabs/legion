@@ -12,9 +12,9 @@ export type IssueAssigneeWrite = IssueFieldWrite<string | null>;
  * answer until it lands, and puts back the assignee Dispatch last confirmed if it is refused (see
  * `useIssueFieldWrite`). An inbox row nobody handed on waits on the new assignee, or on an
  * unassign on its project's default assignee where the client holds the defaults read
- * (`showOnInboxRow` in `issue-field-looks.ts`). `drawn` is the assignee as the caller reads it
- * from the cache, and `shown` what to draw in its place.
+ * (`showOnInboxRow` in `issue-field-looks.ts`). `host` is the assignee as the caller reads it
+ * from the issue's caches; draw `shown`.
  */
-export function useIssueAssignee(issueKey: string, drawn: string | null): IssueAssigneeWrite {
-  return useIssueFieldWrite(issueKey, "assignee", drawn);
+export function useIssueAssignee(issueKey: string, host: string | null): IssueAssigneeWrite {
+  return useIssueFieldWrite(issueKey, "assignee", host);
 }

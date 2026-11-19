@@ -1,9 +1,15 @@
 import { expect, spyOn, test } from "bun:test";
-import { notifyManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { Profiler, type ProfilerOnRenderCallback, type ReactNode } from "react";
+import type { ReactNode } from "react";
+import {
+  type Commits,
+  type HeldNotifications,
+  holdNotifications,
+  recordCommits,
+} from "../../__tests__/commits";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -99,10 +105,9 @@ const mappings: RepoProject[] = [
 const detailKey = ["issue", issue.key] as const;
 const listKey = ["issues", "project", issue.project] as const;
 
-/** The control as the issue page draws it: with the repository its host reads from the cache.
- *  Given `onCommit`, each commit of the control is told under that repository, the profiler's
- *  id, so a case can set what the host passed beside what the box drew. */
-function CachedControl({ onCommit }: { onCommit?: ProfilerOnRenderCallback }): ReactNode {
+/** The control as the issue page draws it: with the repository its host reads from the cache,
+ *  each commit of it recorded with that repository. */
+function CachedControl({ commits }: { commits: Commits<string | null> }): ReactNode {
   const cached = useQuery<IssueDetails>({
     queryKey: detailKey,
     queryFn: () => Promise.reject(new Error("the test seeds this query")),
@@ -111,30 +116,22 @@ function CachedControl({ onCommit }: { onCommit?: ProfilerOnRenderCallback }): R
   if (cached.data === undefined) {
     return null;
   }
-  const control = (
-    <RepoControl
-      issueKey={cached.data.key}
-      project={cached.data.project}
-      repo={cached.data.repo}
-      resolvedRepo={cached.data.resolved_repo}
-    />
-  );
-  return onCommit === undefined ? (
-    control
-  ) : (
-    <Profiler id={String(cached.data.repo)} onRender={onCommit}>
-      {control}
-    </Profiler>
+  return (
+    <commits.Recorded host={cached.data.repo}>
+      <RepoControl
+        issueKey={cached.data.key}
+        project={cached.data.project}
+        repo={cached.data.repo}
+        resolvedRepo={cached.data.resolved_repo}
+      />
+    </commits.Recorded>
   );
 }
 
 function renderControl(
   own: { repo: string | null; resolvedRepo: string | null },
   mapped: RepoProject[] = mappings,
-  {
-    failFirstRead = false,
-    onCommit,
-  }: { failFirstRead?: boolean; onCommit?: ProfilerOnRenderCallback } = {}
+  { failFirstRead = false }: { failFirstRead?: boolean } = {}
 ) {
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mapped);
   if (failFirstRead) {
@@ -164,12 +161,19 @@ function renderControl(
     { ...summary, repo: own.repo, resolved_repo: own.resolvedRepo },
   ]);
   const user = userEvent.setup();
+  // What the box holds, the repository its placeholder names, and its description.
+  const commits = recordCommits<string | null>(() => {
+    const drawn = box();
+    const description = document.getElementById(drawn.getAttribute("aria-describedby") ?? "");
+    return `${drawn.value} | ${drawn.placeholder} | ${description?.textContent}`;
+  });
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <CachedControl onCommit={onCommit} />
+      <CachedControl commits={commits} />
     </QueryClientProvider>
   );
   return {
+    commits,
     user,
     listRepoProjects,
     queryClient,
@@ -594,31 +598,34 @@ test("RepoControl rolls back and shows the server's refusal", async () => {
   }
 });
 
-// Enter writes what the box holds, and from that press on the box draws it in every commit. The
-// pick reaches the issue's cache a moment after the press (`useIssueFieldWrite` joins it in a
-// microtask), and the box's host later still in a browser, where TanStack Query tells a query's
-// observers in a timer; a browser can paint before either, so a commit there that drew the
-// repository the pick replaces is a frame of it on screen (INFRA-3904).
-test("RepoControl draws the pick in every commit from Enter on, while its host still passes the repository it replaces", async () => {
+// Enter writes what the box holds, and from that press on the control draws it in every commit,
+// with the repository the issue then resolves to: the box, its placeholder and its description.
+// The pick reaches the issue's cache in a microtask of the press, and the control's host only
+// when TanStack Query tells the cache's observers, in a browser a timer later, which the row
+// holds back: a commit before that timer that drew the repository the pick replaces is a frame
+// of it on screen (INFRA-3904).
+test("RepoControl draws the pick, and the repository it resolves to, in every commit from Enter on, while its host still passes the inherited repository it replaces", async () => {
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const commits: { drawn: string; host: string }[] = [];
-  const { queryClient, unmount, user } = renderControl(
-    { repo: "acme/widgets", resolvedRepo: "acme/widgets" },
-    mappings,
-    { onCommit: (host) => commits.push({ drawn: box().value, host }) }
-  );
+  const { commits, queryClient, unmount, user } = renderControl({
+    repo: null,
+    resolvedRepo: "acme/widgets",
+  });
+  let notifications: HeldNotifications | undefined;
   try {
-    await user.clear(box());
     await user.click(box());
     await user.paste("acme/gadgets");
-    const fromPress = commits.length;
+    const fromPress = commits.markAt(box(), "keydown");
+    notifications = holdNotifications();
     await user.keyboard("{Enter}");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
     );
-    // The host passes the pick once the cache has told it.
-    await waitFor(() => expect(commits.at(-1)?.host).toBe("acme/gadgets"));
+    // The cache draws the pick, and its host has not been told.
+    expect(queryClient.getQueryData<IssueDetails>(detailKey)?.repo).toBe("acme/gadgets");
+    expect(new Set(fromPress().map(({ host }) => host))).toEqual(new Set([null]));
+    notifications.tell();
+    expect(fromPress().at(-1)?.host).toBe("acme/gadgets");
     await act(async () => {
       save.resolve({ ...issue, repo: "acme/gadgets", resolved_repo: "acme/gadgets", last_seq: 2 });
       await save.promise;
@@ -626,22 +633,22 @@ test("RepoControl draws the pick in every commit from Enter on, while its host s
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
     );
-    const pressed = commits.slice(fromPress);
-    // The press's own commit, made while the host still passed the repository the pick replaces.
-    expect(pressed[0]?.host).toBe("acme/widgets");
-    expect(pressed.map(({ drawn }) => drawn)).toEqual(pressed.map(() => "acme/gadgets"));
+    expect(fromPress().map(({ drawn }) => drawn)).toEqual(
+      fromPress().map(() => "acme/gadgets | acme/gadgets | acme/gadgets")
+    );
   } finally {
+    notifications?.tell();
     unmount();
     patchIssue.mockRestore();
   }
 });
 
-// TanStack Query tells a query's observers in a timer, which a background tab holds back while a
-// request's answer still lands, so a pick can land before the box's host has drawn it. Dispatch
-// drops a `.git` suffix before it stores a repository (canonicalRepo): a pick of
-// `acme/widgets.git` on an issue that holds `acme/widgets` lands as the repository the box drew at
-// the press, which moves nothing its host draws, and the box draws it from the landing on.
-test("RepoControl draws what Dispatch stored when a pick lands, before its host was told of it, as the repository the box drew at the press", async () => {
+// A pick can land before TanStack Query has told the box's host of it: a background tab holds
+// that timer back while a request's answer still lands. Dispatch drops a `.git` suffix before it
+// stores a repository (canonicalRepo), so a pick of `acme/widgets.git` on an issue that holds
+// `acme/widgets` lands as the repository the host passed at the press, and passes still. The box
+// draws what Dispatch stored once the host is told, and keeps no pick Dispatch did not store.
+test("RepoControl draws what Dispatch stored once its host is told, when the pick landed first as the repository its host passed at the press", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
     repo: "acme/widgets",
@@ -652,31 +659,23 @@ test("RepoControl draws what Dispatch stored when a pick lands, before its host 
     repo: "acme/widgets",
     resolvedRepo: "acme/widgets",
   });
-  // What TanStack Query has to tell the host, held as a background tab holds its timer.
-  const untold: (() => void)[] = [];
+  let notifications: HeldNotifications | undefined;
   try {
     await user.clear(box());
     await user.click(box());
     await user.paste("acme/widgets.git");
-    notifyManager.setScheduler((tell) => {
-      untold.push(tell);
-    });
+    notifications = holdNotifications();
     await user.keyboard("{Enter}");
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
     );
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/widgets.git" }, keyedAttempt);
-    await waitFor(() => expect(box().value).toBe("acme/widgets"));
-    // The host was told of nothing yet.
-    expect(untold.length).toBeGreaterThan(0);
-    act(() => {
-      notifyManager.setScheduler((tell) => tell());
-      for (const tell of untold.splice(0)) tell();
-    });
+    // The pick landed, and its host has been told of nothing.
+    expect(notifications.held()).toBeGreaterThan(0);
+    notifications.tell();
     expect(box().value).toBe("acme/widgets");
   } finally {
-    // As `setup.ts` sets it for every case.
-    notifyManager.setScheduler((tell) => tell());
+    notifications?.tell();
     unmount();
     patchIssue.mockRestore();
   }
