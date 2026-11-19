@@ -100,9 +100,10 @@ var directoryOpen = Openat
 
 // OpenDirectory is a descriptor of the directory name under dirfd (unix.AT_FDCWD for a path),
 // path being name as the errors print it, for a caller that writes or removes under it: a symlink
-// at name is refused in words rather than followed (O_NOFOLLOW, which answers ELOOP), and anything
-// at name but a directory, a fifo or a device among them, is opened without a wait (O_NONBLOCK,
-// O_NOCTTY) and refused by what its descriptor is, an error errors.Is matches to ENOTDIR.
+// at name is refused in words rather than followed (O_NOFOLLOW, which answers ELOOP), a socket,
+// which open answers with ENXIO, is refused as "<path> is a socket", and anything else at name but
+// a directory, a fifo or a device among them, is opened without a wait (O_NONBLOCK, O_NOCTTY) and
+// refused by what its descriptor is, an error errors.Is matches to ENOTDIR.
 // O_DIRECTORY is deliberately not asked for: gVisor, the kernel this tree's pods run under, has
 // releases that follow a link at name when O_DIRECTORY and O_NOFOLLOW are both set (measured: the
 // open succeeds through the link under the pods' gVisor in 2026-11 and under runsc 20260112;
@@ -241,8 +242,11 @@ type walkError struct {
 // unlinked outright when it can be, a link or anything else that is no directory among it, and is
 // opened and walked only when that fails and it is a directory. Each pass over the directory reads
 // at most a batch of names, removes them, and opens the directory again, since removing entries
-// can make a read already under way skip some. It answers the first failure it met, which the walk
-// goes on past. The entry's own node is made only once its unlink fails: most entries go at once.
+// can make a read already under way skip some. It answers the first failure it went on past, an
+// entry it could not remove or a directory it could not open, unless the directory's own removal
+// then succeeds (an empty directory it could not open), which answers nil; a failed read of a
+// directory's names ends that walk and is answered at once. The entry's own node is made only once
+// its unlink fails: most entries go at once.
 func removeAt(parent int, dir *node, name string) *walkError {
 	unlinkErr := unlinkat(parent, name, 0)
 	if unlinkErr == nil || errors.Is(unlinkErr, unix.ENOENT) {

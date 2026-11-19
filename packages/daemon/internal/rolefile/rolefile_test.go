@@ -111,8 +111,8 @@ func TestReadRefusesAnythingButARegularFileWithinItsBound(t *testing.T) {
 
 // RemoveTree answers a path whose parent is a fifo rather than waiting on it: os.RemoveAll opens
 // the parent of a path it cannot unlink outright with a plain open, which a fifo nobody writes
-// holds for ever, and every caller of RemoveTree removes something under a directory a role can
-// swap for a fifo.
+// holds for ever, and the workspace's and the leak-check install's calls of RemoveTree remove
+// something under a directory a role can swap for a fifo.
 func TestRemoveTreeAnswersAParentThatIsAFifo(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "worktrees")
 	if err := syscall.Mkfifo(parent, 0o644); err != nil {
@@ -366,8 +366,8 @@ func TestRemoveTreeAnswersTheUnlinkForAFileItCanNeitherUnlinkNorRead(t *testing.
 // A chain of directories a role nests under a directory PID 1 removes is removed holding each
 // level's name, not its whole path: what the removal allocates grows with the chain's size. A walk
 // that joins each level's path allocates about the square of the depth, over 400 MB at this depth.
-// The bound is on the bytes the removal allocates (TotalAlloc), which bounds the most it can hold
-// at once.
+// The bound is on the heap bytes the removal allocates (TotalAlloc), which bounds the most heap it
+// can hold at once; the stack its recursion grows, about 4 MB at this depth, is not in that count.
 func TestRemoveTreeOfADeepTreeHoldsItsMemoryBound(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and removes 20,000 directories: 12.5 s in an issue pod under gVisor")
