@@ -1087,7 +1087,8 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// Each send carries the take-over pacing its mention's resolution started
 	// (resolveCommentDeliveries), so a comment waits about one listener take-over window in all,
 	// here as it did when the request itself sent: a resolution that already waited that window
-	// out settles with its outcome on the lane's first try.
+	// out settles with its outcome on the lane's first try. A send that waits on a held lane
+	// first starts a window of its own at its delivery (mentionSend.takeover).
 	sending := context.WithoutCancel(r.Context())
 	for i, mention := range resolvedMentions {
 		s.mentions.enqueue(sending, mentionSend{

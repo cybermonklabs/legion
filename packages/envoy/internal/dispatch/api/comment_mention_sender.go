@@ -78,10 +78,11 @@ type mentionSend struct {
 	// resolution and the send share one window; a send a keyed repeat queues starts a window of
 	// its own, as its resolution is the sender's own (replayComment), and so does a send handed to
 	// the sender held (mentionHeldForOrder.send). A send taken from a held lane starts its window
-	// again when its whole delivery starts (sendCommentMention): it waited there behind an earlier
-	// event, or a read of the rule that failed, for as long as that took, which has no bound, so a
-	// window that started before the wait would have closed before the try it paces, and the
-	// first take-over answer would settle the attempt failed with no try again.
+	// again when its whole delivery starts (sendCommentMention): it waited there - behind an
+	// earlier event, a failed read of the rule or of its claim, or a send of its owner ahead of it
+	// on the lane - for as long as that took, which has no bound, so a window that started before
+	// the wait would have closed before the try it paces, and the first take-over answer would
+	// settle the attempt failed with no try again.
 	takeover takeoverRetry
 	// fromHeldLane is that the lane this send was last taken from is a held lane (next), so its
 	// whole delivery starts its take-over window again (takeover).
@@ -453,8 +454,8 @@ func (m *mentionSender) serve(lane laneKey) {
 // claims the refresh writes again until the send ends (claimedDuring): a try that reads the rule
 // alone writes no claim, so the claim its row carries is still that one, and a refresh that writes
 // the row while the try is in flight records the claim it wrote (held). It carries too whether
-// lane is a held lane, where it waited (mentionSend.fromHeldLane). ok is false when the goroutine
-// is done: the sender stopped, or no lane has a send left for it.
+// the lane it takes the send from is a held lane, where the send waited (mentionSend.fromHeldLane).
+// ok is false when the goroutine is done: the sender stopped, or no lane has a send left for it.
 func (m *mentionSender) next(lane laneKey) (mentionSend, laneKey, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -663,7 +664,7 @@ func (m *mentionSender) wait() {
 // owner, or whose read of that rule failed (mentionHeldForOrder), answers the send to take up
 // again, which its lane parks (park) on a held lane: the same attempt, under the claim that send
 // renewed. A send taken from a held lane starts its take-over window when its whole delivery
-// starts (mentionSend.takeover), since it waited there for as long as the earlier event took.
+// starts (mentionSend.takeover), since its wait there has no bound.
 //
 // A send that waited before - behind an earlier event, or behind none because its read of the rule
 // failed - reads the rule alone first, for the session it waited to reach (mentionCopyHolderFor),
