@@ -318,8 +318,10 @@ elif [ -n "$cutoff" ]; then
 # digits, with an ASCII character that is no letter or digit (or the line's edge) on either side.
 # Every other character, a non-ASCII letter or mark among them, counts as a letter, so this finds
 # a word only where the sixth rule's locale-aware [^[:alnum:]] boundary finds a key too: a removed
-# word that rule would not read as a key never carries an added one it would. A link is the
-# scheme, in ASCII letters of any case, and what follows it up to a blank, a quote or a bracket.
+# word that rule would not read as a key never carries an added one it would. The cost runs the
+# safe way: a key beside non-ASCII punctuation (a curly quote, a no-break space) is no word here,
+# so it is never carried and rule 6 reads it as new. A link is the scheme, in ASCII letters of any
+# case, and what follows it up to a blank, a quote or a bracket.
 function scan(line, collect,    out, i, n, c, prev, j, k, tok, sl) {
   out = ""; n = length(line); i = 1; sl = length(scheme)
   while (i <= n) {
@@ -452,8 +454,10 @@ AWK
   stage_git() {
     local from=$1 to=$2 stage=$3 i=0 code old name file_status sections
     rm -rf "$stage" && mkdir "$stage"
-    git -C "$history" diff --no-color --no-ext-diff -M -U0 "$from" "$to" > "$work/whole.patch" \
-      2> "$work/git-error" || return 1
+    # A NUL byte is dropped, as the REST path drops it: git reads a file as text when its first
+    # NUL comes past byte 8000, and the check's grep -I would skip a staged file that kept it.
+    git -C "$history" diff --no-color --no-ext-diff -M -U0 "$from" "$to" 2> "$work/git-error" |
+      tr -d '\000' > "$work/whole.patch" || return 1
     git -C "$history" diff -M -z --name-status "$from" "$to" > "$work/name-status" 2> "$work/git-error" ||
       return 1
     # Inside a hunk every line starts with " ", "+", "-" or "\", so a line that starts with

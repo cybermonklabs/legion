@@ -823,6 +823,31 @@ mv "$work/commit.next" "$work/commit.$pr_sha"
 key_run
 check "a key moved from a file into the directory that replaces it, read from git, passes" "$(is "$status" 0)"
 check "and git read the commit" "$(contains "$out" 'so git reads that commit instead')"
+# A file whose first NUL byte comes past byte 8000, which git reads as text: the key on the line
+# after the NUL is read, as the REST path reads it, and not skipped as binary.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+git_fixture "$src" checkout -q -B pr main
+mkdir -p "$src/docs"
+{
+  for n in $(seq 1 200); do printf 'filler line %03d of neutral text, long enough\n' "$n"; done
+  printf 'a line with a NUL \000 byte\n'
+  printf 'Tracked as %s.\n' "$planted_key"
+} > "$src/docs/nul.md"
+git_fixture "$src" add docs/nul.md
+git_fixture "$src" commit -q -m "docs: a file with a late NUL"
+pr_sha=$(git_fixture "$src" rev-parse HEAD)
+git_fixture "$src" push -q --force "$work/remote/example/repo" HEAD:refs/pull/7/head
+git_fixture "$src" checkout -q main
+commits "$pr_sha" 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file "$pr_sha" added docs/nul.md -
+jq -c '.files[0].additions = 202 | .files[0].changes = 202 | .stats.total = 202' "$work/commit.$pr_sha" \
+  > "$work/commit.next"
+mv "$work/commit.next" "$work/commit.$pr_sha"
+key_run
+check "a key after a NUL past byte 8000, read from git, fails" "$(is "$status" 1)"
+check "names its line" "$(contains "$out" "commit:${pr_sha:0:12}:docs/nul.md:202: $key_refused")"
 
 echo "case: a key or a link the same diff also removes is carried over, not new"
 # carry_commit <status> <path> <patch>: a pull request opened after the cutoff whose one commit is
