@@ -147,7 +147,7 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 			}
 			engine := testEngine(config.DesignGateRootIssues, nil)
 
-			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				return tc.leave(ctx, tx, engine, root, child)
 			})
 
@@ -170,10 +170,20 @@ func withRelease(park map[string]int) map[string]int {
 	return kinds
 }
 
-// applyInTx runs one of the engine's departures in a transaction of its own and commits it, with
-// the commit scope the engine's deferred logging needs (intake.WithCommitHooks), as a fact's
-// application gives it.
-func applyInTx(t *testing.T, pool *pgxpool.Pool, apply func(ctx context.Context, tx pgx.Tx) error) {
+// applyInTx runs one of engine's departures as a fact applies it (factTx), after the boot's open
+// of each run no start counted (bootBefore), which comes before any fact the daemon applies.
+func applyInTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx context.Context, tx pgx.Tx) error) {
+	t.Helper()
+	bootBefore(t, pool, engine)
+	factTx(t, pool, engine, apply)
+}
+
+// factTx runs apply in a transaction of its own and commits it, with the commit scope the
+// engine's deferred logging needs (intake.WithCommitHooks) and the settle of the runs its writes
+// end (Engine.OpenFact, Engine.SettleFact), as a fact's application gives them, and keeps what it
+// left for the next boot pass's check (factLeft). It runs no boot pass before it: a test that
+// writes what the store held before the daemon booted calls it alone.
+func factTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
 	tx, err := pool.Begin(t.Context())
 	if err != nil {
@@ -181,13 +191,18 @@ func applyInTx(t *testing.T, pool *pgxpool.Pool, apply func(ctx context.Context,
 	}
 	defer tx.Rollback(t.Context())
 	ctx, committed := intake.WithCommitHooks(t.Context())
+	ctx = engine.OpenFact(ctx)
 	if err := apply(ctx, tx); err != nil {
 		t.Fatalf("leave: %v", err)
+	}
+	if err := engine.SettleFact(ctx, tx); err != nil {
+		t.Fatalf("settle: %v", err)
 	}
 	if err := tx.Commit(t.Context()); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
 	committed()
+	factLeft(t, pool)
 }
 
 // seedOperatorTree opens key's tree lifecycle under the operator's authority, as an operator root
@@ -233,10 +248,12 @@ func claimReleases(t *testing.T, pool *pgxpool.Pool) []string {
 // queuedKinds counts every queued row by kind, with no start passed over. In this package a phase
 // worker's start is one row and carries its task (StartOrOwe); a child's own architect's plain
 // start carries none (gateOpened, reviveArchitect), and the task-less starts admission brings back
-// are written in internal/admit, never here.
+// are written in internal/admit, never here. A step record is left out: the tests of the step sites
+// (step_sites_test.go, step_sites_linger_test.go) read those rows exactly (stepWrites), so every
+// row of any other kind is still counted here.
 func queuedKinds(t *testing.T, pool *pgxpool.Pool) map[string]int {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select kind from outbox`)
+	rows, err := pool.Query(t.Context(), `select kind from outbox where kind <> $1`, string(record.OutboxKindStepRecord))
 	if err != nil {
 		t.Fatalf("read the outbox: %v", err)
 	}

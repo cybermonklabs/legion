@@ -22,7 +22,7 @@ import (
 func judgedGrant(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, lifetime int, names ...string) string {
 	t.Helper()
 	req := pendingJudgeable(t, m, enrollmentID, key, "INFRA-1353 wants it", lifetime, names...)
-	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve", "issue": "INFRA-1353"})
+	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant", "issue": "ACME-1353"})
 	if err != nil || dec.GrantID == "" {
 		t.Fatalf("ApplyJudgeDecision(%v) = %+v, %v; want a grant", names, dec, err)
 	}
@@ -100,6 +100,7 @@ func TestAJudgedGrantLivesByItsRulesEntryAndNotByAnOwner(t *testing.T) {
 			// approved themselves, which every assertion below answers for too.
 			own, ownKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
 			pending := pendingJudgeable(t, m, own, ownKey, "INFRA-1353 wants it on the other box", 600, "DEEL_API_KEY")
+			handOver(t, m, *pending.RecordID)
 			byOwner, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, fixtureOperator)
 			if err != nil || byOwner.GrantID == "" {
 				t.Fatalf("ApplyDecision by the owner = %+v, %v; want a grant", byOwner, err)
@@ -164,6 +165,7 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 		// approved themselves, which every assertion below answers for too.
 		own, ownKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
 		pending := pendingJudgeable(t, m, own, ownKey, "INFRA-1353 wants it on the other box", 600, "DEEL_API_KEY")
+		handOver(t, m, *pending.RecordID)
 		byOwner, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, fixtureOperator)
 		if err != nil || byOwner.GrantID == "" {
 			t.Fatalf("ApplyDecision by the owner = %+v, %v; want a grant", byOwner, err)

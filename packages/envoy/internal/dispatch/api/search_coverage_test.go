@@ -6,10 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // searchCoverageResponse reads GET /api/v1/search/coverage as alice and holds its body to
@@ -196,5 +200,98 @@ func TestSearchCoverageAuthentication(t *testing.T) {
 	handler.ServeHTTP(wrongBearer, wrongBearerRequest)
 	if wrongBearer.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong bearer coverage: status=%d body=%s", wrongBearer.Code, wrongBearer.Body.String())
+	}
+}
+
+// The route answers a coverage statement Postgres ended at its bound 503 SEARCH_COVERAGE_TIMEOUT,
+// at about that bound, and frees what it held: the pool's connection is back and the statement no
+// longer runs in the database. The bound is shortened to a second
+// (embedqueue.ShortenCoverageBoundForTest), and components is locked in another connection, so
+// the statement, whose uncovered count of components reads that table, waits however fast it
+// would run, and the bound is what ends it.
+//
+// While the request waits, pg_stat_activity must show its statement blocked by that lock: that is
+// the control that a later count of 0 means the statement ended, not that the read cannot see it.
+// The read counts the backends of this test's database that another backend blocks
+// (pg_blocking_pids), but for its own: the lock's holder, idle in its transaction, blocks and is
+// not blocked, and nothing but the coverage statement waits on components, so the count is 1
+// while the request waits and 0 once the bound has ended the statement. It reads this test's
+// database alone, since another test's database on the same server may hold locks of its own, and
+// a backend's state can lag the answer by a moment, so it is read again for a while before it
+// fails.
+func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: &fakeEmbedder{}})
+	ctx := context.Background()
+	const bound = time.Second
+	t.Cleanup(embedqueue.ShortenCoverageBoundForTest(bound.String()))
+	holdLock(t, database, "lock table components in access exclusive mode")
+	blocked := func() int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(ctx, `
+			select count(*) from pg_stat_activity
+			where pid <> pg_backend_pid() and cardinality(pg_blocking_pids(pid)) > 0
+			  and datname = current_database()`).Scan(&count); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		return count
+	}
+	if count := blocked(); count != 0 {
+		t.Fatalf("%d backends of the test's database wait on a lock before the request, want none", count)
+	}
+	acquired := database.Pool.Stat().AcquiredConns()
+
+	type answer struct {
+		response *httptest.ResponseRecorder
+		took     time.Duration
+	}
+	answered := make(chan answer, 1)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/search/coverage", nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	started := time.Now()
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		answered <- answer{response, time.Since(started)}
+	}()
+	showed := testwait.Holds(5*time.Second, testwait.Poll, func() bool {
+		select {
+		case early := <-answered:
+			t.Fatalf("the route answered (status=%d body=%s after %s) before pg_stat_activity showed its statement blocked",
+				early.response.Code, early.response.Body.String(), early.took)
+		default:
+		}
+		return blocked() == 1
+	})
+	if !showed {
+		t.Fatal("pg_stat_activity never showed the coverage statement blocked by the lock on components while the request waited")
+	}
+	var got answer
+	select {
+	case got = <-answered:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the route had not answered 10s after the request, with its statement bound to %s", bound)
+	}
+
+	if got.response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("coverage past its bound: status=%d body=%s, want 503", got.response.Code, got.response.Body.String())
+	}
+	if refusal := decodeBody[apiErrorBody](t, got.response); refusal.Code != "SEARCH_COVERAGE_TIMEOUT" || !strings.Contains(refusal.Error, bound.String()) {
+		t.Errorf("coverage past its bound answered %s, want the code SEARCH_COVERAGE_TIMEOUT and an error naming the %s bound", got.response.Body.String(), bound)
+	}
+	if got.took < bound || got.took > 5*time.Second {
+		t.Errorf("coverage past its bound answered after %s, want at least its %s bound and well under production's 10s", got.took, bound)
+	}
+	var conns int32
+	var statements int
+	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
+		conns, statements = database.Pool.Stat().AcquiredConns(), blocked()
+		return conns == acquired && statements == 0
+	})
+	if conns != acquired {
+		t.Errorf("the pool holds %d acquired connections after the answer, want the %d it held before the request", conns, acquired)
+	}
+	if statements != 0 {
+		t.Errorf("pg_stat_activity shows %d backends blocked after the answer, want none: the bound frees the coverage statement's backend", statements)
 	}
 }

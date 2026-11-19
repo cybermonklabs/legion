@@ -576,11 +576,10 @@ func TestNearCopyChecksARowHeldUpPastItsSecondIsWrittenOnceTheLockIsReleased(t *
 func TestNearCopyChecksAWriteThatFindsItsOwnRowHasLanded(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "TEST")
-	row := nearCopyCheckRow{
-		id: "8b3c4d5e-6f7a-4b2c-8d3e-4f5a6b7c8d9e", project: "TEST", actor: model.Actor{Kind: "user", ID: "alice"},
-		title: "Orchard pickers cannot log a crate", spec: duplicateSpecHarvest, issue: "TEST-9",
-	}
 	passed := &nearCopyCheck{outcome: nearCopyPassed}
+	row := newNearCopyCheckRow("8b3c4d5e-6f7a-4b2c-8d3e-4f5a6b7c8d9e", "TEST", model.Actor{Kind: "user", ID: "alice"},
+		"Orchard pickers cannot log a crate", duplicateSpecHarvest, "", passed)
+	row.issue = "TEST-9"
 	for attempt := 1; attempt <= 2; attempt++ {
 		if err := served.writeNearCopyCheck(context.Background(), database.Pool, row, passed); err != nil {
 			t.Fatalf("attempt %d of one write: %v", attempt, err)

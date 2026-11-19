@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A project's default repository is the `owner/name` an issue of the project resolves to when
@@ -70,6 +71,15 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The project's owner lock before its row's update, as every projects writer takes them
+	// (createIssue, putProjectGatedSteps, lockEventOwner): taking the row first and the lock at
+	// the append below would wait, holding the row, on an issue create that holds the lock in its
+	// read phase and waits for the row to number the issue. The lock assigns no transaction id;
+	// the update is the first statement that writes.
+	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(r.PathValue("key"))); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	written, err := tx.Exec(r.Context(), `
 		update projects set default_repo = $2
 		where key = $1 and default_repo is distinct from $2

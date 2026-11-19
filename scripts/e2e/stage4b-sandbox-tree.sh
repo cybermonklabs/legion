@@ -291,7 +291,7 @@ run_pods_at_once=$admission_cap
 # defaults — while staying within the defaults' 3 CPU and 19 GiB. The controller's default is data
 # for the checks alone: the file names the controller only while controller_cpu is set
 # (daemon-controller-liveness, under `controller: daemon`), and the image probe pod carries its own
-# fixed 250m / 1Gi (internal/daemon/kubernetes.go probeReservation), never the controller's — so
+# fixed 500m / 1Gi (internal/daemon/kubernetes.go probeReservation), never the controller's — so
 # that checkpoint's restart with the controller at 100000 CPU still places its probe pod.
 declare -A default_issue=([cpu]=3 [memory]=19Gi [ephemeral_storage]=80Gi [ephemeral_storage_request]=6Gi)
 declare -A default_controller=([cpu]=1 [memory]=4Gi [ephemeral_storage]=10Gi [ephemeral_storage_request]=1Gi)

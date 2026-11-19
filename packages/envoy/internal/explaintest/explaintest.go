@@ -1,11 +1,13 @@
 // Package explaintest reads an `EXPLAIN (FORMAT JSON)` plan tree for the things every
 // index-pinning test in this module asks it: whether a named relation is sequentially scanned
 // anywhere in the plan, whether any scan in it reads a relation without an index condition,
-// which index each index scan reads through, under which condition, and which relations the
-// plan reads at all, how often each and under which subplan (Scans). It also answers, from the
-// catalog, the first key column of a named index and whether a scan's condition names it, which
-// is what tells a read served by an index from one that reads the whole index and filters it,
-// and it holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a prepared
+// which index each index scan reads through, under which condition, which relations the plan
+// reads at all, how often each and under which subplan (Scans), every node with the conditions
+// it tests and what an analyzed plan measured of it (Nodes), and each bitmap heap scan with the
+// bitmap it reads its rows through (BitmapHeapScans). It also answers, from the catalog, the
+// first key column of a named index and whether a scan's condition names it, which is what
+// tells a read served by an index from one that reads the whole index and filters it, and it
+// holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a prepared
 // statement settles on (GenericPlan), which is the plan an index is lost in.
 // dispatch/api, dispatch/refs and broker/requests each pin an index's reach with these checks,
 // so they live here once rather than as a second (or third) hand copy of the same recursive
@@ -31,24 +33,47 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 
 // planNode is what the checks below read of one "Plan" node of `EXPLAIN (FORMAT JSON)`: its
 // type, the relation and index it names, the index condition it carries - nil when it carries
-// none, which is not the same as an empty one - the name of the subplan it begins and its place
-// under its own parent, what an analyzed plan measured of it (its loops and the rows each
-// answered, both 0 in a plan explained without ANALYZE), the CTE it scans, and its children.
+// none, which is not the same as an empty one - the condition it tests every row it reads by
+// (Filter) and the one a bitmap heap scan rechecks a row by, the name of the subplan it begins
+// and its place under its own parent, what an analyzed plan measured of it (its loops and the
+// rows each answered, and the rows an index-only scan fetched from the heap, all 0 in a plan
+// explained without ANALYZE), the CTE it scans, and its children.
 type planNode struct {
 	NodeType           string            `json:"Node Type"`
 	RelationName       string            `json:"Relation Name"`
 	IndexName          string            `json:"Index Name"`
 	IndexCond          *string           `json:"Index Cond"`
+	Filter             string            `json:"Filter"`
+	RecheckCond        string            `json:"Recheck Cond"`
 	SubplanName        string            `json:"Subplan Name"`
 	ParentRelationship string            `json:"Parent Relationship"`
 	ActualLoops        float64           `json:"Actual Loops"`
 	ActualRows         float64           `json:"Actual Rows"`
+	HeapFetches        float64           `json:"Heap Fetches"`
 	CTEName            string            `json:"CTE Name"`
 	Plans              []json.RawMessage `json:"Plans"`
 
 	// subplan is the subplan this node runs under, which the walk carries down from the node
 	// that began it (nodesUnder), and so is no field of the plan's own JSON.
 	subplan string
+	// parent is the position in the walk of the node this one is directly under, -1 for the
+	// root, which the walk records as it descends (nodesUnder).
+	parent int
+}
+
+// asNode is n as the exported checks answer it, its index condition empty where it carries none.
+func (n planNode) asNode() Node {
+	found := Node{
+		Type: n.NodeType, Relation: n.RelationName, Index: n.IndexName,
+		CTE: n.CTEName, Subplan: n.subplan,
+		Loops: n.ActualLoops, Rows: n.ActualRows,
+		Filter: n.Filter, RecheckCond: n.RecheckCond,
+		HeapFetches: n.HeapFetches,
+	}
+	if n.IndexCond != nil {
+		found.IndexCond = *n.IndexCond
+	}
+	return found
 }
 
 // OnePlan is the one "Plan" node of raw, an `EXPLAIN (FORMAT JSON)` answer, which is what every
@@ -71,17 +96,18 @@ func OnePlan(t testing.TB, raw []byte) json.RawMessage {
 
 // planNodes flattens planJSON - one "Plan" node of `EXPLAIN (FORMAT JSON)`'s top-level array -
 // into every node of the tree under it, each node before its children and each carrying the
-// subplan it runs under. Every check this package exports is a filter over this one walk, so
-// the tree is descended in one place rather than once per check.
+// subplan it runs under and the position of its parent. Every check this package exports is a
+// filter over this one walk, so the tree is descended in one place rather than once per check.
 func planNodes(t testing.TB, planJSON json.RawMessage) []planNode {
 	t.Helper()
-	return nodesUnder(t, planJSON, "")
+	return nodesUnder(t, planJSON, "", -1, nil)
 }
 
-// nodesUnder is that walk of one node and the tree below it: a node whose parent relationship
-// is SubPlan begins a subplan, and every node under it belongs to that one, since a plan under
-// a subplan runs as often as the subplan does.
-func nodesUnder(t testing.TB, planJSON json.RawMessage, subplan string) []planNode {
+// nodesUnder is that walk of one node and the tree below it, appended to nodes, the walk so far,
+// whose node at position parent the node is directly under (-1 for the root): a node whose
+// parent relationship is SubPlan begins a subplan, and every node under it belongs to that one,
+// since a plan under a subplan runs as often as the subplan does.
+func nodesUnder(t testing.TB, planJSON json.RawMessage, subplan string, parent int, nodes []planNode) []planNode {
 	t.Helper()
 	var node planNode
 	if err := json.Unmarshal(planJSON, &node); err != nil {
@@ -94,9 +120,11 @@ func nodesUnder(t testing.TB, planJSON json.RawMessage, subplan string) []planNo
 		}
 	}
 	node.subplan = subplan
-	nodes := []planNode{node}
+	node.parent = parent
+	position := len(nodes)
+	nodes = append(nodes, node)
 	for _, child := range node.Plans {
-		nodes = append(nodes, nodesUnder(t, child, subplan)...)
+		nodes = nodesUnder(t, child, subplan, position, nodes)
 	}
 	return nodes
 }
@@ -203,11 +231,21 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 
 // Node is one node of a plan, whatever that node reads: its type, the relation, index and CTE
 // it names (each empty when the node names none), the subplan it runs under (empty: none, so
-// it runs with the plan rather than once per row of what drives it) and what
-// `EXPLAIN (ANALYZE)` measured of it, 0 in a plan explained without ANALYZE.
+// it runs with the plan rather than once per row of what drives it), the conditions it tests,
+// and what `EXPLAIN (ANALYZE)` measured of it, 0 in a plan explained without ANALYZE.
+//
+// Filter is the condition the node tests every row it reads by, IndexCond the one an index scan
+// reads its index by, and RecheckCond the one a bitmap heap scan tests a row by where its bitmap
+// cannot vouch for the row (a page the bitmap holds lossily, or an index that answers lossily);
+// each is the plan's own text, empty when the node carries none. Loops is how many times the
+// node ran and Rows how many rows it answered each time; HeapFetches is how many rows an
+// index-only scan fetched from the heap, since the visibility map did not mark their pages
+// all-visible.
 type Node struct {
 	Type, Relation, Index, CTE, Subplan string
 	Loops, Rows                         float64
+	Filter, IndexCond, RecheckCond      string
+	HeapFetches                         float64
 }
 
 // String names the node as a failure message cites it: its type, and whichever of the relation,
@@ -230,13 +268,76 @@ func Nodes(t testing.TB, planJSON json.RawMessage) []Node {
 	t.Helper()
 	var nodes []Node
 	for _, node := range planNodes(t, planJSON) {
-		nodes = append(nodes, Node{
-			Type: node.NodeType, Relation: node.RelationName, Index: node.IndexName,
-			CTE: node.CTEName, Subplan: node.subplan,
-			Loops: node.ActualLoops, Rows: node.ActualRows,
-		})
+		nodes = append(nodes, node.asNode())
 	}
 	return nodes
+}
+
+// BitmapHeapScan is one "Bitmap Heap Scan" of a plan with the bitmap it reads its rows through:
+// the scan itself; Bitmap, the node directly under it that builds the bitmap, a "Bitmap Index
+// Scan" of one index or a "BitmapOr" or "BitmapAnd" that combines the bitmaps under it; and
+// BitmapIndexScans, every "Bitmap Index Scan" that bitmap is built from, in the order the walk
+// meets them.
+type BitmapHeapScan struct {
+	Scan, Bitmap     Node
+	BitmapIndexScans []Node
+}
+
+// OrOf reports whether s reads its rows through a BitmapOr whose Bitmap Index Scans read each of
+// indexes, among any others.
+func (s BitmapHeapScan) OrOf(indexes ...string) bool {
+	if s.Bitmap.Type != "BitmapOr" {
+		return false
+	}
+	for _, index := range indexes {
+		if !slices.ContainsFunc(s.BitmapIndexScans, func(scan Node) bool { return scan.Index == index }) {
+			return false
+		}
+	}
+	return true
+}
+
+// BitmapHeapScans is every "Bitmap Heap Scan" of relation in planJSON — one "Plan" node of
+// `EXPLAIN (FORMAT JSON)`'s top-level array — at any depth, in the order the walk meets them,
+// each with its bitmap. A statement written to read a relation by one bitmap over several
+// indexes is held to that by these: which node builds each scan's bitmap, and which indexes it
+// reads. A scan's bitmap is its one child of parent relationship Outer, any other child being a
+// subplan its conditions run; a "BitmapOr" or "BitmapAnd" holds the bitmaps it combines as its
+// children of parent relationship Member, so the bitmap's index scans are the Bitmap Index Scans
+// reached from the scan's Outer child through Member children alone.
+func BitmapHeapScans(t testing.TB, planJSON json.RawMessage, relation string) []BitmapHeapScan {
+	t.Helper()
+	nodes := planNodes(t, planJSON)
+	var scans []BitmapHeapScan
+	// scanAt is the place in scans of the Bitmap Heap Scan at each position of the walk that
+	// holds one of relation. The walk meets a node before its children, so a scan is in it before
+	// any node of its bitmap is read.
+	scanAt := map[int]int{}
+	for position, node := range nodes {
+		if node.NodeType == "Bitmap Heap Scan" && node.RelationName == relation {
+			scanAt[position] = len(scans)
+			scans = append(scans, BitmapHeapScan{Scan: node.asNode()})
+			continue
+		}
+		if node.ParentRelationship == "Outer" {
+			if at, ok := scanAt[node.parent]; ok {
+				scans[at].Bitmap = node.asNode()
+			}
+		}
+		if node.NodeType != "Bitmap Index Scan" {
+			continue
+		}
+		top := position
+		for nodes[top].ParentRelationship == "Member" {
+			top = nodes[top].parent
+		}
+		if nodes[top].ParentRelationship == "Outer" {
+			if at, ok := scanAt[nodes[top].parent]; ok {
+				scans[at].BitmapIndexScans = append(scans[at].BitmapIndexScans, node.asNode())
+			}
+		}
+	}
+	return scans
 }
 
 // describeScan names one scan node as a failure message cites it. A Bitmap Index Scan reports no

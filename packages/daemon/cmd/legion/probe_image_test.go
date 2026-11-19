@@ -163,7 +163,7 @@ const capabilityMarks = " capabilities=checked model-fallback=off daemon-api-ver
 func probeImage(args ...string) (int, string, string) {
 	previousClients, previousControls := newImageTLSClients, newTLSPositiveControls
 	newImageTLSClients = passingImageTLSClients
-	newTLSPositiveControls = func(context.Context, []string, string) error { return nil }
+	newTLSPositiveControls = func(context.Context, []string) error { return nil }
 	defer func() {
 		newImageTLSClients, newTLSPositiveControls = previousClients, previousControls
 	}()

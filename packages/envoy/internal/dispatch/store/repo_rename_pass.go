@@ -45,7 +45,8 @@ import (
 // takes ("RNAM"), with 0 as its second key. Two processes that boot at once take turns on each
 // line, and the second finds nothing left to write. It is the two-key form, which Postgres keeps
 // apart from the single-key locks. The other first keys of the two-key space are the copy locks'
-// (docs.copiedAsksLockNamespace), the loop leases' (duty.leaseNamespace), the test hooks' (the api
+// (docs.copiedAsksLockNamespace), the owner locks' (OwnerLockNamespace), the owner lock gate's
+// (OwnerLockGateNamespace), the loop leases' (duty.leaseNamespace), the test hooks' (the api
 // package's testHookLockNamespace), a conditional edit's admission's
 // (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
 // lockProjectIssueDependencies) and the deployment's own issue dependencies' (api's

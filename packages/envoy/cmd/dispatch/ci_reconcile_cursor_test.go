@@ -354,8 +354,9 @@ func startCIReconcileCursorGitHub(t *testing.T) *cursorGitHub {
 		// This App may not read the repository's Checks through GraphQL, which GitHub answers
 		// with a null repository and a FORBIDDEN entry rather than with an HTTP error. The
 		// pass then reads that repository's open pull requests and every head of it over REST,
-		// two requests a head, which is the read this test's cursor walks: a pass every query
-		// of which answered would cover ten heads in one query and leave no cursor to prove.
+		// two requests a head, since the token above carries no Commit statuses and so no status
+		// read follows, which is the read this test's cursor walks: a pass every query of which
+		// answered would cover ten heads in one query and leave no cursor to prove.
 		write(w, http.StatusOK, map[string]any{
 			"data": map[string]any{
 				"rateLimit":  map[string]any{"cost": 1, "remaining": 4999, "resetAt": time.Now().Add(time.Hour).Format(time.RFC3339)},

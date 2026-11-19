@@ -195,7 +195,7 @@ func TestTheMovedSessionFindsItsPendingRequestAndTheBoxItLeftDoesNot(t *testing.
 	if err != nil || again.ID != req.ID || !again.Coalesced {
 		t.Fatalf("Create on the box the session moved to = %+v, %v; want it coalesced onto the pending request %s that moved with it", again, err, req.ID)
 	}
-	if listed, err := m.PendingForApprover(ctx, approver); err != nil || len(listed) != 1 || listed[0].RecordID != *req.RecordID {
+	if listed, err := m.PendingForApprover(ctx, approver, PendingStates{}); err != nil || len(listed) != 1 || listed[0].RecordID != *req.RecordID {
 		t.Fatalf("PendingForApprover(%s) = %+v, %v; want the moved request's one record %s", approver, listed, err, *req.RecordID)
 	}
 
@@ -209,9 +209,10 @@ func TestTheMovedSessionFindsItsPendingRequestAndTheBoxItLeftDoesNot(t *testing.
 }
 
 // TestTheMovedSessionCancelsItsMovedPendingRequestAndTheBoxItLeftCannot pins Cancel's owner
-// check after a move: it compares the caller against the requests row's own enrollment_id, which
-// the move rewrote, so the session cancels its card from the box it runs on now and the box it
-// left is ErrNotYours.
+// check after a move: it compares the caller's owner with the owner of the enrollment the request
+// hangs off now, which the move rewrote. Neither box records an owner here, so each is its own
+// (enrollment:<id>): the session cancels its card from the box it runs on now and the box it left
+// is ErrNotYours.
 func TestTheMovedSessionCancelsItsMovedPendingRequestAndTheBoxItLeftCannot(t *testing.T) {
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()

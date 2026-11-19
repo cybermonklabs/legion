@@ -145,20 +145,7 @@ func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsL
 	if proof.project, err = claim.ProjectToken(proof.cfg.Project); err != nil {
 		t.Fatal(err)
 	}
-	// testbuild.RootEnv names the checkout the script runs from, whose packages/envoy the driver
-	// builds Dispatch from and whose packages/envoy-client holds the CLI. The script exports it:
-	// the driver binary runs from the caller's directory, not the package's. Unset (a plain `go
-	// test -tags e2e`, which runs in the package directory), the checkout is four directories up.
-	root := os.Getenv(testbuild.RootEnv)
-	if root == "" {
-		root = filepath.Join("..", "..", "..", "..")
-	}
-	if root, err = filepath.Abs(root); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := exec.LookPath("bun"); err != nil {
-		t.Fatalf("bun is not on PATH, and the dispatch CLI runs under it: %v", err)
-	}
+	root := liveCLICheckout(t)
 	r := &handoffRecordsLive{
 		liveProof: proof, rt: fake.NewRuntime(), built: &built{}, root: root,
 		cliHome: t.TempDir(), claimants: map[claim.Token]*handoffClaimant{},
@@ -735,35 +722,77 @@ func (r *handoffRecordsLive) cli(session string, args ...string) (string, int) {
 // `dispatch`.
 func (r *handoffRecordsLive) cliOut(session string, args ...string) (cliOutput, int) {
 	r.t.Helper()
-	return r.bun(session, nil, filepath.Join(r.root, "packages", "envoy-client", "bin", "dispatch.ts"), args...)
+	return r.bun(session, nil, dispatchCLI(r.root), args...)
 }
 
-// bun runs `bun program args...` as an omp session's shell runs a program of its pane's:
-// DISPATCH_HOST omp, DISPATCH_SESSION_ID the session, Dispatch named by DISPATCH_URL and
-// DISPATCH_TOKEN, and extra after them. Nothing else of the caller's environment reaches it but
-// PATH: its home, its configuration file (absent, so the variables are the whole of its Dispatch
-// settings) and its session state are the run's own, so no operator's file or session is read.
+// bun runs `bun program args...` as an omp session's shell runs a program of its pane's, with the
+// run's Dispatch and its agent token (cliShell), and extra after the shell's own variables.
 func (r *handoffRecordsLive) bun(session string, extra []string, program string, args ...string) (cliOutput, int) {
 	r.t.Helper()
-	home := filepath.Join(r.cliHome, "home")
+	return cliShell{t: r.t, dir: r.cliHome, session: session, base: r.dispatch.base, token: r.dispatch.token}.bun(extra, program, args...)
+}
+
+// liveCLICheckout is the checkout whose packages/envoy-client holds the dispatch CLI a live proof
+// runs under bun, and whose packages/envoy its driver builds Dispatch from. testbuild.RootEnv
+// names it, and the proof's script exports it, because the driver binary runs from the caller's
+// directory, not the package's. Unset (a plain `go test -tags e2e`, which runs in the package
+// directory), the checkout is four directories up. It fails the test when bun is not on PATH.
+func liveCLICheckout(t *testing.T) string {
+	t.Helper()
+	root := os.Getenv(testbuild.RootEnv)
+	if root == "" {
+		root = filepath.Join("..", "..", "..", "..")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.LookPath("bun"); err != nil {
+		t.Fatalf("bun is not on PATH, and the dispatch CLI runs under it: %v", err)
+	}
+	return root
+}
+
+// dispatchCLI is the dispatch CLI's entry under root, a checkout liveCLICheckout answers, which
+// bun runs.
+func dispatchCLI(root string) string {
+	return filepath.Join(root, "packages", "envoy-client", "bin", "dispatch.ts")
+}
+
+// cliShell is an omp session's shell as it runs a program of its pane's: DISPATCH_HOST omp,
+// DISPATCH_SESSION_ID the session, Dispatch named by DISPATCH_URL (base) and DISPATCH_TOKEN
+// (token). Nothing else of the caller's environment reaches the program but PATH: its working
+// directory, its home, its configuration file (absent, so the variables are the whole of its
+// Dispatch settings) and its session state are under dir, the run's own, so no operator's file or
+// session is read.
+type cliShell struct {
+	t                         *testing.T
+	dir, session, base, token string
+}
+
+// bun runs `bun program args...` in the shell, with extra after the shell's own variables, and
+// answers both streams and the exit code.
+func (s cliShell) bun(extra []string, program string, args ...string) (cliOutput, int) {
+	s.t.Helper()
+	home := filepath.Join(s.dir, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
-		r.t.Fatal(err)
+		s.t.Fatal(err)
 	}
 	command := exec.Command("bun", append([]string{program}, args...)...)
-	command.Dir = r.cliHome
+	command.Dir = s.dir
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + home,
-		"TMPDIR=" + r.cliHome,
-		"XDG_CONFIG_HOME=" + filepath.Join(r.cliHome, "config"),
-		"XDG_STATE_HOME=" + filepath.Join(r.cliHome, "state"),
-		"XDG_CACHE_HOME=" + filepath.Join(r.cliHome, "cache"),
-		"ENVOY_CONFIG_FILE=" + filepath.Join(r.cliHome, "envoy.json"),
-		"DISPATCH_STATE_DIR=" + filepath.Join(r.cliHome, "dispatch-state"),
+		"TMPDIR=" + s.dir,
+		"XDG_CONFIG_HOME=" + filepath.Join(s.dir, "config"),
+		"XDG_STATE_HOME=" + filepath.Join(s.dir, "state"),
+		"XDG_CACHE_HOME=" + filepath.Join(s.dir, "cache"),
+		"ENVOY_CONFIG_FILE=" + filepath.Join(s.dir, "envoy.json"),
+		"DISPATCH_STATE_DIR=" + filepath.Join(s.dir, "dispatch-state"),
 		"DISPATCH_HOST=omp",
-		"DISPATCH_SESSION_ID=" + session,
-		"DISPATCH_URL=" + r.dispatch.base,
-		"DISPATCH_TOKEN=" + r.dispatch.token,
+		"DISPATCH_SESSION_ID=" + s.session,
+		"DISPATCH_URL=" + s.base,
+		"DISPATCH_TOKEN=" + s.token,
 	}
 	command.Env = append(command.Env, extra...)
 	var stdout, stderr bytes.Buffer
@@ -773,7 +802,7 @@ func (r *handoffRecordsLive) bun(session string, extra []string, program string,
 	if err != nil {
 		exit, ok := err.(*exec.ExitError)
 		if !ok {
-			r.t.Fatalf("run %s under bun: %v", program, err)
+			s.t.Fatalf("run %s under bun: %v", program, err)
 		}
 		code = exit.ExitCode()
 	}

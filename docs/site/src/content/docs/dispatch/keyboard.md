@@ -131,6 +131,7 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `t s` | Spec tab |
 | `t k` | Verification tab |
 | `t p` | Plan tab |
+| `t e` | Steps tab |
 | `t c` | Conversation tab |
 | `t h` | Children tab |
 | `t a` | Artifacts tab |

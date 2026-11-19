@@ -237,7 +237,7 @@ async function createIssueWithComponents(
       if (source === "several") {
         return response([
           architectureSource("LEGION"),
-          architectureSource("LEGION", "theorem-labs/agent-infra"),
+          architectureSource("LEGION", "example-org/deployment"),
         ]);
       }
       if (source === "none") return noSources();
@@ -2112,7 +2112,7 @@ describe("executeDispatchTool", () => {
           key: "CORE",
           name: "Core",
           open_asks: 0,
-          default_assignee: "alice@theorem.dev",
+          default_assignee: "alice@example.com",
           created_at: "2026-10-11T00:00:00Z",
         },
         201
@@ -2139,13 +2139,13 @@ describe("executeDispatchTool", () => {
     });
     expect(result.text).toBe(
       "Created project CORE (Core) at 2026-10-11T00:00:00Z: http://dispatch.test/projects/CORE\n" +
-        "Its unowned work lands on alice@theorem.dev: a question on an issue nobody holds reaches them."
+        "Its unowned work lands on alice@example.com: a question on an issue nobody holds reaches them."
     );
     expect(result.details).toEqual({
       project: "CORE",
       name: "Core",
       created_at: "2026-10-11T00:00:00Z",
-      default_assignee: "alice@theorem.dev",
+      default_assignee: "alice@example.com",
     });
   });
 
@@ -2251,7 +2251,7 @@ describe("executeDispatchTool", () => {
             human_replied: false,
             last_reply: null,
             waiting_on: "human",
-            waiting_on_person: "alice@theorem.dev",
+            waiting_on_person: "alice@example.com",
           },
           {
             id: "ask-2",
@@ -2269,7 +2269,7 @@ describe("executeDispatchTool", () => {
               created_at: "2026-09-13T00:00:00Z",
             },
             waiting_on: "agent",
-            waiting_on_person: "dana@theorem.dev",
+            waiting_on_person: "dana@example.com",
           },
         ],
       });
@@ -2292,10 +2292,10 @@ describe("executeDispatchTool", () => {
         "2 unanswered asks you authored on active issues and project documents.",
         "",
         "Waiting on human (1):",
-        `- 1m 5s · P0 · LEGION-1: Reminder · asked of alice@theorem.dev · ${releaseQuestion} · http://dispatch.test/issues/LEGION-1/asks/ask-1`,
+        `- 1m 5s · P0 · LEGION-1: Reminder · asked of alice@example.com · ${releaseQuestion} · http://dispatch.test/issues/LEGION-1/asks/ask-1`,
         "",
         "Waiting on agent (1):",
-        "- 2h · OPS / Runbook · asked of dana@theorem.dev · Which region? · http://dispatch.test/projects/OPS/documents/runbook?ask=ask-2",
+        "- 2h · OPS / Runbook · asked of dana@example.com · Which region? · http://dispatch.test/projects/OPS/documents/runbook?ask=ask-2",
       ].join("\n"),
       details: {
         session_id: "session-1",
@@ -7898,6 +7898,42 @@ describe("executeDispatchTool", () => {
     // A Verification document that holds no check block is the other sentence.
     expect((await results("artifact-9")).text).toBe(
       "DSP-42's Verification document holds no check blocks."
+    );
+  });
+
+  // CHECK_CONTENDED means the write found the check reworded at both of its attempts and
+  // recorded nothing, so the same call again is the whole remedy. Unwrapped it reached the
+  // caller as the server's prose with its code hidden, which reads as a failure to work out
+  // rather than a write to repeat.
+  test("a contended dispatch_result says the check moved and to run the command again", async () => {
+    const refusal =
+      "check k1 was reworded at each of 2 attempts while this request waited to lock its issues, so nothing was recorded: read the check and retry";
+    const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
+      new Response(JSON.stringify({ code: "CHECK_CONTENDED", error: refusal }), {
+        status: 409,
+        headers: { "Content-Type": "application/json", "Retry-After": "1" },
+      });
+
+    await expect(
+      executeDispatchTool({
+        tool: "dispatch_result",
+        args: {
+          issue: "DSP-42",
+          check: "k1",
+          role: "implementer",
+          verdict: "pass",
+          commit: "1".repeat(40),
+        },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        sessionId: "session-one",
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      })
+    ).rejects.toThrow(
+      `CHECK_CONTENDED: ${refusal}; the check moved twice while this result was being written, and nothing was recorded: run the same dispatch result command again`
     );
   });
 

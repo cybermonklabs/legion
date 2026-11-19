@@ -223,12 +223,13 @@ type uploadHold struct {
 	hold *roomHold
 }
 
-// capturePendingAuthors reads R in tx, which holds the document's advisory lock, with the
+// capturePendingAuthors reads R in tx, which holds the document's advisory lock, as tx sees it -
+// the rows the table holds and the rows tx has queued (transactionPendingAuthors) - with the
 // document's latest person sender (readLastPerson), and takes whom a version lists
 // (captureAuthors), with the in-flight credits observed through `through`, under room's state
 // lock.
 func (s *Service) capturePendingAuthors(ctx context.Context, tx pgx.Tx, room string, write *liveWrite, actor *model.Actor, through uint64) (authorCapture, error) {
-	owed, err := readPendingAuthors(ctx, tx, room)
+	owed, err := transactionPendingAuthors(ctx, tx, room)
 	if err != nil {
 		return authorCapture{}, err
 	}
@@ -440,156 +441,6 @@ func deleteCapturedPendingAuthors(ctx context.Context, tx pgx.Tx, room string, c
 	return deletePendingAuthors(ctx, tx, room, capture.rAuthors)
 }
 
-// pendingAuthor is one author's R row: the author, and the version of the update whose write
-// recorded it.
-type pendingAuthor struct {
-	actor          model.Actor
-	writtenThrough persistence.Version
-}
-
-// pendingAuthorsOf is each of authors with the version of the update whose write recorded it,
-// which writtenThrough names for each author's key. authors is keyed by actorKey, so no author
-// appears twice.
-func pendingAuthorsOf(authors map[string]model.Actor, writtenThrough func(key string) persistence.Version) []pendingAuthor {
-	pending := make([]pendingAuthor, 0, len(authors))
-	for _, actor := range actorSlice(authors) {
-		pending = append(pending, pendingAuthor{actor: actor, writtenThrough: writtenThrough(actorKey(actor))})
-	}
-	return pending
-}
-
-// pendingAuthorsAt is each of authors as recorded by the update stored at version.
-func pendingAuthorsAt(authors map[string]model.Actor, version persistence.Version) []pendingAuthor {
-	return pendingAuthorsOf(authors, func(string) persistence.Version { return version })
-}
-
-// upsertPendingAuthors writes authors to R in tx, which holds the document's advisory lock, in one
-// statement (pendingAuthorsStatement).
-func upsertPendingAuthors(ctx context.Context, tx pgx.Tx, room string, authors []pendingAuthor) error {
-	if len(authors) == 0 {
-		return nil
-	}
-	statement, err := pendingAuthorsStatement(room, authors)
-	if err != nil {
-		return err
-	}
-	return statement.exec(ctx, tx)
-}
-
-// pendingAuthorsStatement is the one statement that writes authors, at least one, to R, each as
-// recorded by its own update: an append transaction's authors at every credited update's own
-// version, or a transaction's upsertPendingAuthors. An author keeps one row per update that
-// recorded it, so an upload that holds one of those updates and not another deletes only the
-// first. authors must name each author at most once per update: one statement cannot write one
-// row twice, so a repeated author and version is refused, naming it, before anything is written.
-// A row written again keeps its Proven mark only when both writes carried it (mergeAuthor), so
-// a claimed write is not lifted to proven by the row a proven one rewrites.
-func pendingAuthorsStatement(room string, authors []pendingAuthor) (writeStatement, error) {
-	type row struct {
-		key     string
-		version persistence.Version
-	}
-	seen := make(map[row]struct{}, len(authors))
-	kinds := make([]string, 0, len(authors))
-	ids := make([]string, 0, len(authors))
-	encoded := make([]string, 0, len(authors))
-	versions := make([]int64, 0, len(authors))
-	for _, author := range authors {
-		pair := row{key: actorKey(author.actor), version: author.writtenThrough}
-		if _, repeated := seen[pair]; repeated {
-			return writeStatement{}, fmt.Errorf("record the document's pending authors: %s/%s at update %d is named twice", author.actor.Kind, author.actor.ID, author.writtenThrough)
-		}
-		seen[pair] = struct{}{}
-		raw, err := json.Marshal(author.actor)
-		if err != nil {
-			return writeStatement{}, fmt.Errorf("encode the document's pending authors: %w", err)
-		}
-		kinds = append(kinds, author.actor.Kind)
-		ids = append(ids, author.actor.ID)
-		encoded = append(encoded, string(raw))
-		versions = append(versions, int64(author.writtenThrough))
-	}
-	return writeStatement{
-		sql: `
-		insert into doc_pending_authors (artifact_id, actor_kind, actor_id, actor, written_through)
-		select $1::uuid, kind, id, actor, version
-		from unnest($2::text[], $3::text[], $4::jsonb[], $5::bigint[]) as author(kind, id, actor, version)
-		on conflict (artifact_id, actor_kind, actor_id, written_through) do update set actor = case
-			when doc_pending_authors.actor @> '{"proven": true}'::jsonb then excluded.actor
-			else excluded.actor - 'proven'
-		end
-	`,
-		args: []any{room, kinds, ids, encoded, versions},
-		what: "record the document's pending authors",
-	}, nil
-}
-
-// readPendingAuthors is R for room, keyed by actorKey. It says nothing about who edited last: the
-// rows of one update are every peer that was connected when it landed, which is a set of names and
-// not an order (latestEditSource reads the sender instead). A version reads R in its own
-// transaction under the document's advisory lock, so no append or write changes it until that
-// version ends. An author R holds rows of from several updates is one author, Proven only when
-// every row is (mergeAuthor).
-func readPendingAuthors(ctx context.Context, q Queryer, room string) (map[string]model.Actor, error) {
-	rows, err := q.Query(ctx, `
-		select actor from doc_pending_authors where artifact_id = $1
-	`, room)
-	if err != nil {
-		return nil, fmt.Errorf("read the document's pending authors: %w", err)
-	}
-	defer rows.Close()
-	owed := make(map[string]model.Actor)
-	for rows.Next() {
-		var encoded []byte
-		if err := rows.Scan(&encoded); err != nil {
-			return nil, fmt.Errorf("read the document's pending authors: %w", err)
-		}
-		var actor model.Actor
-		if err := json.Unmarshal(encoded, &actor); err != nil {
-			return nil, fmt.Errorf("decode a pending author of the document: %w", err)
-		}
-		mergeAuthor(owed, actor)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the document's pending authors: %w", err)
-	}
-	return owed, nil
-}
-
-// deletePendingAuthors deletes the R rows of authors in tx, the transaction of the version that
-// lists them.
-func deletePendingAuthors(ctx context.Context, tx pgx.Tx, room string, authors []model.Actor) error {
-	if len(authors) == 0 {
-		return nil
-	}
-	kinds := make([]string, 0, len(authors))
-	ids := make([]string, 0, len(authors))
-	for _, actor := range authors {
-		kinds = append(kinds, actor.Kind)
-		ids = append(ids, actor.ID)
-	}
-	if _, err := tx.Exec(ctx, `
-		delete from doc_pending_authors
-		where artifact_id = $1 and (actor_kind, actor_id) in (select * from unnest($2::text[], $3::text[]))
-	`, room, kinds, ids); err != nil {
-		return fmt.Errorf("delete the document's listed pending authors: %w", err)
-	}
-	return nil
-}
-
-// deleteHeldPendingAuthors deletes, in an upload's transaction, every R row of room whose writing
-// update the upload's room instance held: written through the head it loaded, or by an update it
-// took since.
-func deleteHeldPendingAuthors(ctx context.Context, tx pgx.Tx, room string, held heldUpdates) error {
-	if _, err := tx.Exec(ctx, `
-		delete from doc_pending_authors
-		where artifact_id = $1 and (written_through <= $2 or written_through = any($3::bigint[]))
-	`, room, held.through, held.since); err != nil {
-		return fmt.Errorf("delete the pending authors an upload's room held: %w", err)
-	}
-	return nil
-}
-
 // recordLatestEditSource records lastActor as the latest edit source on room's pending-settlement
 // row in tx, which holds the document's advisory lock, without moving the row's age: a committed
 // write, a seed, or a rebuild names who made the document's latest change. A person as lastActor
@@ -634,13 +485,14 @@ func updateOwedStatement(room string, owed owedUpdates) (writeStatement, error) 
 }
 
 // markSettlementPending records, in tx, that each document of rooms owes a settlement
-// (settlementPendingStatement).
+// (settlementPendingStatement). It goes through write, so a transaction whose writes are queued
+// runs it in its write phase.
 func markSettlementPending(ctx context.Context, tx pgx.Tx, rooms []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) error {
 	statement, err := settlementPendingStatement(rooms, lastActor, setLastActor, updateMarkedAt, person, setPerson)
 	if err != nil {
 		return err
 	}
-	return statement.exec(ctx, tx)
+	return statement.write(ctx, tx)
 }
 
 // latestPersonOf is what an edit does to the document's latest person sender

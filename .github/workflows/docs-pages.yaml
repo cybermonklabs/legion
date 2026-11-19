@@ -135,12 +135,14 @@ on:
       - 'packages/envoy/internal/dispatch/pmdoc/**'
       - 'packages/envoy/internal/dispatch/text/*'
       - 'packages/envoy/internal/googleidentity/*'
+      - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'
       - 'packages/envoy/migrationid/*'
       - 'packages/envoy/roleholder/*'
       - 'packages/envoy/sessiontiming/*'
       - 'packages/envoy/subjectforms/*'
       - 'packages/envoy/natsversion/*'
+      - 'packages/envoy/steprecord/*'
       # ci.yaml's *dispatch_server:
       - 'packages/envoy/cmd/dispatch/*'
       - 'packages/envoy/going/*'
@@ -191,6 +193,7 @@ on:
       - 'packages/envoy/internal/dispatch/text/*'
       - 'packages/envoy/internal/dispatch/texttreefill/*'
       - 'packages/envoy/internal/dispatch/texttrees/*'
+      - 'packages/envoy/internal/dispatch/workflowstore/*'
       - 'packages/envoy/internal/envconf/*'
       - 'packages/envoy/internal/fold/*'
       - 'packages/envoy/internal/githubappjwt/*'
@@ -210,6 +213,7 @@ on:
       - 'packages/envoy/internal/serverwait/*'
       - 'packages/envoy/internal/session/*'
       - 'packages/envoy/internal/store/*'
+      - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'
       # The docs filter's own:
       # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
