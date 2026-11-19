@@ -366,9 +366,8 @@ func noLineABoundServicesBytesReachHoldsAValueOrPlaceholder(t *testing.T) {
 	// unsolicitedClosed hears once from each connection whose answer ended in bytes after it, when
 	// the proxy's transport closes that connection: net/http's transport writes the unsolicited
 	// line before it closes the connection (readLoopPeekFailLocked), so a row that has heard from
-	// every such connection reads every such line. Each of those answers is one write, so its
-	// bytes after the answer are on the connection when the transport reads the answer's end,
-	// before the next request could take the connection up.
+	// a connection reads its line. Each of those answers is one write, so its bytes after the
+	// answer are on the connection when the transport reads the answer's end.
 	unsolicitedClosed := make(chan string, 8)
 	go func() {
 		for {
@@ -423,6 +422,15 @@ func noLineABoundServicesBytesReachHoldsAValueOrPlaceholder(t *testing.T) {
 	bound.dialTo[net.JoinHostPort(boundHost, "443")] = answers.Addr().String()
 	boundClient := bound.client(workerPlaceholder)
 	paths := []string{"/v1/trailer", "/v1/unsolicited", "/v1/" + workerPlaceholder, "/v1/echo-value", "/v1/echo-json", "/v1/echo-status"}
+	// The four answers that end in bytes after them. The proxy's transport puts a connection back
+	// idle once it has read an answer to its end, and only then peeks for bytes after it
+	// (persistConn.readLoop): bytes it finds while no request waits on the connection are the ones
+	// it writes the unsolicited line about, but a next request that has taken the connection up by
+	// then reads them as its own answer, a malformed one, and no line is written. A runner whose
+	// CPUs are all busy can hold the transport's goroutine between the two for as long as that
+	// next request takes, so each of these requests waits to hear its connection closed before the
+	// next one is sent; the deadline only bounds a run that would otherwise hang.
+	endsInBytes := map[string]bool{"/v1/unsolicited": true, "/v1/" + workerPlaceholder: true, "/v1/echo-value": true, "/v1/echo-json": true}
 	answered := map[string]string{}
 	for _, path := range paths {
 		request, err := http.NewRequest(http.MethodGet, "https://"+boundHost+path, nil)
@@ -437,15 +445,16 @@ func noLineABoundServicesBytesReachHoldsAValueOrPlaceholder(t *testing.T) {
 			answer.Body.Close()
 			answered[path] = string(body)
 		}
-	}
-	// The four answers that end in bytes after them, each heard from as its connection closes;
-	// the deadline only bounds a run that would otherwise hang.
-	for heard := map[string]bool{}; len(heard) < 4; {
+		if !endsInBytes[path] {
+			continue
+		}
 		select {
-		case path := <-unsolicitedClosed:
-			heard[path] = true
+		case closed := <-unsolicitedClosed:
+			if closed != path {
+				t.Fatalf("the connection the proxy's transport closed after the answer to %s ended in bytes after it is the one whose last answer was to %s (standard logger: %q)", path, closed, stdlog.String())
+			}
 		case <-time.After(2 * time.Minute):
-			t.Fatalf("the proxy's transport closed %d of the four connections whose answers ended in bytes after them: %v (standard logger: %q)", len(heard), heard, stdlog.String())
+			t.Fatalf("the proxy's transport did not close the connection whose answer to %s ended in bytes after it (standard logger: %q)", path, stdlog.String())
 		}
 	}
 
