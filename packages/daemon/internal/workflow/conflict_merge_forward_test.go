@@ -817,3 +817,85 @@ func TestTheMergeStateFollowsGitHubWhenABasePushReadsAnIssueInReview(t *testing.
 		}
 	})
 }
+
+// A read GitHub answered before the first CONFLICTING read of a head is no second read of it
+// (dispatch://INFRA-4374 R2: the second read is made at least a minute after the first), however
+// late it is applied. The per-issue read dates its answer before it follows the head, which waits
+// on the fact lock (daemon's readIssuePullRequest), so a MERGEABLE answer it had before a push to
+// the base can be applied after the ladder's CONFLICTING answer made since. That older answer
+// must leave the first read standing: released, the second read's row finds no first read and
+// finishes without a read (daemon's conflictReadLeft), and the conflict GitHub still answers is
+// read again only at the issue's next fact. The second read a minute after the first acts.
+func TestAConflictSecondReadIsNeverOneMadeBeforeTheFirst(t *testing.T) {
+	unread := &record.BaseRules{Unread: "HTTP 502"}
+	pool := seedConflictIssue(t, phase.Testing, "testing", record.PullRequest{})
+	first := conflictingRead(unread)
+	first.ReadAt = firstConflictRead
+	applyRefusingNothing(t, pool, readsAfter(0), first)
+	older := intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: conflictHead,
+		Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean, ReadAt: firstConflictRead.Add(-5 * time.Second)}
+	applyRefusingNothing(t, pool, readsAfter(2*time.Second), older)
+	if got := recordedPR(t, pool, "LEGION-208").ConflictRead; got == nil || got.Head != conflictHead || !got.At.Equal(firstConflictRead) {
+		t.Fatalf("after a MERGEABLE read made 5s before the first CONFLICTING read and applied after it, the first read = %+v, want the first read of %s at %s still held: a read older than the first is no second read",
+			got, conflictHead, firstConflictRead)
+	}
+	second := conflictingRead(unread)
+	second.ReadAt = firstConflictRead.Add(time.Minute)
+	applyRefusingNothing(t, pool, readsAfter(time.Minute), second)
+	askedOnce(t, pool, phase.Testing, "testing", classify.ConflictRulesUnread, claim.RoleTester)
+}
+
+// A completion made for a head a merge forward replaced does not advance the issue
+// (dispatch://INFRA-4374 R1), whichever merge forward replaced it. The base can move again while
+// the issue stands in testing, so the head the first merge forward left can conflict in its turn
+// and be merged forward again: the tester's completion at the head the first merge replaced is
+// refused HANDOFF_HEAD_MERGED_FORWARD while the second merge forward is asked and after it lands,
+// and records and moves nothing.
+func TestAConflictKeepsPhaseAndRefusesACompletionAtAHeadAnEarlierMergeReplaced(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	secondMergeForward := func(t *testing.T) *pgxpool.Pool {
+		t.Helper()
+		pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+		confirmsConflict(t, pool, requiresCI)
+		landsMergeForward(t, pool)
+		again := conflictingRead(requiresCI)
+		again.HeadSHA = forwardHead
+		applyRefusingNothing(t, pool, readsAfter(4*time.Minute), again)
+		applyRefusingNothing(t, pool, readsAfter(5*time.Minute), again)
+		if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != forwardHead {
+			t.Fatalf("the record's merge forward = %+v, want the second ask, of %s", asked, forwardHead)
+		}
+		return pool
+	}
+	refusedAtTheFirstReplacedHead := func(t *testing.T, pool *pgxpool.Pool) {
+		t.Helper()
+		row := entryRow(t, pool, claim.RoleTester)
+		result := applyFacts(t, pool, readsAfter(7*time.Minute))("at the head the first merge replaced", intake.HandoffComplete{Generation: 1,
+			Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass",
+			Commit: conflictHead, HandoffRecord: "handoff-1", HandoffVersion: 1})
+		if got := issuePhase(t, pool); got != phase.Testing {
+			t.Fatalf("the tester's pass at %s, the head the first merge forward replaced, moved the issue to %s (answered %q), want it refused and the issue still in testing",
+				conflictHead, got, refusalCode(result))
+		}
+		if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
+			t.Fatalf("the completion at %s was answered %q, want HANDOFF_HEAD_MERGED_FORWARD", conflictHead, code)
+		}
+		if after := entryRow(t, pool, claim.RoleTester); !reflect.DeepEqual(after, row) {
+			t.Fatalf("the tester's row went from %+v to %+v, want nothing recorded", row, after)
+		}
+	}
+
+	t.Run("while the second merge forward is asked", func(t *testing.T) {
+		refusedAtTheFirstReplacedHead(t, secondMergeForward(t))
+	})
+
+	t.Run("after the second merge forward lands", func(t *testing.T) {
+		pool := secondMergeForward(t)
+		applyRefusingNothing(t, pool, readsAfter(6*time.Minute), intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
+			Branch: "legion/LEGION-208", Base: "main", HeadSHA: headThree, Before: forwardHead, Sender: "legion-implementer[bot]"})
+		if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Landed != headThree {
+			t.Fatalf("the record's merge forward = %+v, want the second ask landed as %s", asked, headThree)
+		}
+		refusedAtTheFirstReplacedHead(t, pool)
+	})
+}
