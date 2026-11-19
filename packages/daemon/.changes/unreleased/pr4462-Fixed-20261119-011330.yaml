@@ -1,5 +1,5 @@
 kind: Fixed
-body: 'A leak-guard read of a push''s records that git fails no longer quotes the push''s content (the diff, a commit''s message) in its setup failure: it quotes only what git wrote on its standard error, and at most 4096 bytes of that.'
+body: 'A leak-guard read of a push''s records that git fails no longer quotes the push''s content (the diff, a commit''s message) in its setup failure: it quotes only what git wrote on its standard error, and at most its last 4096 bytes, which hold git''s reason.'
 time: 2026-11-19T01:13:30.681224049Z
 custom:
     Issue: pr4462
