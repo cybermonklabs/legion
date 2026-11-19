@@ -432,22 +432,23 @@ mv "$work/commit.next" "$work/commit.$pr_sha"
 key_run
 check "a key after a NUL past byte 8000, read from git, fails" "$(is "$status" 1)"
 check "names its line" "$(contains "$out" "commit:${pr_sha:0:12}:docs/nul.md:202: $key_refused")"
-# typechange_head <big.md content>: a commit that adds docs/big.md, which GitHub answers with no
-# patch, and turns docs/link.md from a file into a symlink: git's diff gives that typechange two
-# sections and its name list one entry.
+# typechange_head <big.md content> [link path]: a commit that adds docs/big.md, which GitHub
+# answers with no patch, and turns <link path> (docs/link.md by default) from a file into a
+# symlink: git's diff gives that typechange two sections and its name list one entry.
 typechange_head() {
+  local link=${2:-docs/link.md}
   write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
   key_rule_on
   opened_at 2026-11-21T00:00:00Z
   git_fixture "$src" checkout -q -B pr main
   mkdir -p "$src/docs"
-  printf 'a plain file\n' > "$src/docs/link.md"
-  git_fixture "$src" add docs/link.md
+  printf 'a plain file\n' > "$src/$link"
+  git_fixture "$src" add "$link"
   git_fixture "$src" commit -q -m "docs: a plain file"
-  rm "$src/docs/link.md"
-  ln -s notes.md "$src/docs/link.md"
+  rm "$src/$link"
+  ln -s notes.md "$src/$link"
   printf '%s\n' "$1" > "$src/docs/big.md"
-  git_fixture "$src" add docs/link.md docs/big.md
+  git_fixture "$src" add "$link" docs/big.md
   git_fixture "$src" commit -q -m "docs: a link and a big file"
   pr_sha=$(git_fixture "$src" rev-parse HEAD)
   git_fixture "$src" push -q --force "$work/remote/example/repo" HEAD:refs/pull/7/head
@@ -466,6 +467,11 @@ typechange_head "$(printf 'line one\nline two, as %s said' "$planted_key")"
 key_run
 check "the same commit with a key in the big file fails" "$(is "$status" 1)"
 check "names that line" "$(contains "$out" "commit:${pr_sha:0:12}:docs/big.md:2: $key_refused")"
+# A path the typechange keeps is no new text: each section of its patch starts afresh, so the
+# second section's `+++ b/<path>` header is no added line, though that path holds a key.
+typechange_head "$(printf 'line one\nline two')" "docs/$planted_key-link.md"
+key_run
+check "a file whose path holds a key, turned into a symlink, passes: the path is no new text" "$(is "$status" 0)"
 
 echo "case: a key or a link the same diff also removes is carried over, not new"
 # carry_commit <status> <path> <patch>: a pull request opened after the cutoff whose one commit is

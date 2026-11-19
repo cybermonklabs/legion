@@ -456,9 +456,9 @@ AWK
   # stage_git <from> <to> <stage>: stages the diff between two commits as git reads it, renames
   # found as GitHub finds them (-M): one whole diff, which fetches every blob at once, split at its
   # `diff --git` headers into sections and paired, in order, with the entries --name-status lists:
-  # one section an entry, but two for a typechange (T, a file turned into a symlink or back), whose
-  # patch is the old file removed and the new one added. A count that differs, or a split that
-  # fails, is refused rather than paired wrong.
+  # one section an entry, but two for a typechange (T, a change between a regular file, a symlink
+  # and a submodule entry), whose patch is the old one removed and the new one added. A count that
+  # differs, or a split or a copy that fails, is refused rather than paired wrong.
   stage_git() {
     local from=$1 to=$2 stage=$3 i=0 s=0 take code old name file_status sections
     rm -rf "$stage" && mkdir -p "$stage/sections"
@@ -496,7 +496,7 @@ AWK
       : > "$stage/$i.patch"
       while [ "$take" -gt 0 ]; do
         s=$((s + 1))
-        [ ! -e "$stage/sections/$s" ] || cat "$stage/sections/$s" >> "$stage/$i.patch"
+        if [ -e "$stage/sections/$s" ]; then cat "$stage/sections/$s" >> "$stage/$i.patch" || return 1; fi
         take=$((take - 1))
       done
     done < "$work/name-status"
