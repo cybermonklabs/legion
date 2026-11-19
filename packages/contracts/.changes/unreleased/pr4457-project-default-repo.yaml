@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `Project` has an optional `default_repo`: the project's default repository as `owner/name`, which a project with none does not carry. `ProjectDefaultRepositoryInput` (`{repo}`, an `owner/name` or `null`) and `ProjectDefaultRepository` (`{project, repo}`) are the body and the answer of the new `PUT /api/v1/projects/{key}/default-repository`.
+
+  `PutRepoProjectInput` is gone, because Dispatch removes the `PUT` and `DELETE` routes of `/api/v1/settings/repo-projects/{owner}/{repo}`. `RepoProject` stays for the read route `GET /api/v1/settings/repo-projects` alone. `RepoProjectUpdatedEventPayload` and the `settings.repo_project.updated` event type stay as a retained event that no build writes.
+
+  `CreateIssueInput.project` is required, also on a create that names `external`. The `dispatch_issue` tool refuses an empty `project` before it sends a request.
+
+  A Legion daemon that still reads the repository mapping (`GET /api/v1/settings/repo-projects`) sees the rows as this release's migration left them. It sees no default that is set after the migration, and no new row. The next release removes that read route. Before you deploy that release, run the Legion daemon release that reads no repository mapping, or a later one.
+time: 2026-11-19T05:16:38.000000000Z
+custom:
+  Issue: pr4457

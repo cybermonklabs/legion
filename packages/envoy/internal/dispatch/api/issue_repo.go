@@ -28,12 +28,12 @@ var (
 )
 
 // githubCouldHoldRepo answers whether GitHub could hold a repository at this canonical
-// `owner/name`. Since migration 20261112004945 no repo_projects row stands behind an issue's own
-// repository, so this grammar is the whole gate on the value, and the value goes on to GitHub
-// reads of its own: the CI repair asks GitHub about every distinct repository an issue names
-// (cireconcile's covered), once a pass, and the Legion daemon prepares a working copy from it. A
-// name GitHub's grammar refuses can only answer "no such repository" there, every pass, so it is
-// refused at the write instead.
+// `owner/name`. It is the whole gate on an issue's own repository, which is any `owner/name` since
+// migration 20261112004945, and on a project's default repository. The value goes on to GitHub
+// reads of its own: the CI repair asks GitHub about every distinct repository an issue names or a
+// project has as its default (cireconcile's covered), once a pass, and the Legion daemon prepares
+// a working copy from it. A name GitHub's grammar refuses can only answer "no such repository"
+// there, every pass, so it is refused at the write instead.
 func githubCouldHoldRepo(canonical string) bool {
 	owner, name, found := strings.Cut(canonical, "/")
 	if !found || !repoOwnerPattern.MatchString(owner) {

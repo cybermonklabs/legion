@@ -550,9 +550,9 @@ func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey strin
 // repoFull is the canonical name of the repository (refs.Renames.Canonical), compared without
 // case, as every other comparison of a repository here is: a row written from a `pull_request`
 // envelope carries GitHub's own spelling of the repository (`Acme/Widgets`), while the results
-// read is passed the lowercased spelling the repository-to-project mapping stores (api's
-// canonicalRepo), so an exact comparison would answer "no row" for a repository
-// whose owner writes their name with capitals. The read is one index lookup on
+// read is passed the lowercased spelling an issue's own repository and a project's default
+// repository are stored under (api's canonicalRepo), so an exact comparison would answer "no row"
+// for a repository whose owner writes their name with capitals. The read is one index lookup on
 // pull_request_heads_repo_head (migration 20261105112616), which is built on
 // `(lower(repo), head_sha)` for that reason: pull_request_heads_issue_head is partial on
 // `issue_key is not null` and keyed on the issue, so it serves no lookup by repository and head

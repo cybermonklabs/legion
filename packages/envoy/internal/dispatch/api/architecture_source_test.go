@@ -400,7 +400,7 @@ func TestArchitectureSourcesListAddAndChangeBranch(t *testing.T) {
 		t.Fatalf("list for a project that does not exist: status=%d body=%s", absent.Code, absent.Body.String())
 	}
 
-	// The repository in the path is stored as repository mappings are: lowercase, .git trimmed.
+	// The repository in the path is stored as an issue's own repository is: lowercase, .git trimmed.
 	saved := putSource(t, handler, "CORE", "Legion/Arch.git", "main")
 	if got, want := saved.String(), "CORE legion/arch@main enabled=true commit=- error=- components=0"; got != want {
 		t.Fatalf("saved source = %s, want %s", got, want)

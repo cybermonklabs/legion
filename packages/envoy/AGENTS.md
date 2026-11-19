@@ -57,7 +57,8 @@ Each item below names a task and where its code is, then notes on it.
   This list and the Legion daemon's `repository_renames` in `legion.yaml` (`packages/daemon/internal/ghrepo/renames.go`) are two lists an operator keeps in step:
   they are separate Go modules, and the listener's pod mounts no `legion.yaml`.
   The daemon's list is read-side only and two-way, while this one is publish-side and one-way.
-  Dispatch keeps a third list of its own, `repo_projects.renamed_to`, the name a mapping's repository is called today, which an operator sets through `PUT /api/v1/settings/repo-projects/{owner}/{repo}` and every comparison Dispatch makes of a repository canonicalises through (`packages/envoy/cmd/dispatch/README.md`, migration `20261105075455_repo_projects_renamed_to`).
+  Dispatch reads a third list, the `renamed_to` pairs of `repo_projects`, which no route writes now (`packages/envoy/cmd/dispatch/README.md`, migrations `20261105075455_repo_projects_renamed_to` and `20261119000230_projects_default_repo`).
+  Its server reads the pairs once at boot (`store.ReadRepoRenames`, into `refs.Renames`), writes each new name in place of the old one in every stored repository field (`store.RewriteRenamedRepositories`), stores the new name on every write of such a field, and compares every repository under the name it is called today.
   A pair can be removed once no live session names the former repository in a topic, which Envoy's session list answers in one read (`GET /v1/sessions`).
 
 - **Listener behavior**: `cmd/listener/main.go`
@@ -444,8 +445,10 @@ Each item below names a task and where its code is, then notes on it.
   a title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`headInOwnRepository`).
   The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms` through `attributionCandidatesQuery`), so an attribution can never disagree with the issue page;
   one pull request's best 25 candidates are the ones read (`attributionCandidateBound`).
-  Two names of one repository are one repository: six sites go through the canonical name the repository is called today (`refs.CanonicalRepo`, `refs.CanonicalRepoSQL`), which is the `renamed_to` of the old name's `repo_projects` row — both sides of that hold, the repository the results read asks GitHub about, the key every writer of a `pull_request_heads` row uses, the settings route's refusal of a target that is itself renamed, and the CI reconcile, which reads every mapping under the name its repository has now (`internal/dispatch/cireconcile`, `Reconciler.covered`), so no pass asks GitHub about a name it cannot read;
-  an operator declares that pair through `PUT /api/v1/settings/repo-projects/{owner}/{repo}`, and Dispatch never reads it from GitHub, which answers 404 for the installation of a name a repository was renamed away from.
+  Two names of one repository are one repository.
+  These sites go through the canonical name the repository is called today (`refs.Renames`, `refs.CanonicalRepoSQL`): both sides of that hold, the repository the results read asks GitHub about, the key every writer of a `pull_request_heads` row uses, the issue reference read (`resolveIssueRef`), and the CI reconcile, which reads every repository it covers under the name it has now (`internal/dispatch/cireconcile`, `Reconciler.covered`), so no pass asks GitHub about a name it cannot read.
+  The pairs are the `renamed_to` of `repo_projects` rows, which no route writes and the server reads once at boot.
+  Dispatch never reads a pair from GitHub, which answers 404 for the installation of a name a repository was renamed away from.
   The read of an issue's results also teaches Dispatch a pull request nothing ever told it of:
   a `before_merge` result whose commit heads no attributed row sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `comparisonReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stands at that head once the pull request opens at its commit.
   `GET /api/v1/issues/{key}/coverage` answers what each `requirement` block of the issue's spec lacks, counting the `check` and `plan_task` blocks of the issue and of its descendants;
@@ -2774,19 +2777,23 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `issue.claimed` and `issue.released` carry `IssueClaimEventPayload {key, status, repo, resolved_repo, claim, previous_claim?, reason}` (`repo` and `resolved_repo` as on every issue event);
   the outbox publishes both to the previous claimant's own `notifications.agent.<session_id>` topic (`publishPreviousClaimant`), whatever the issue's route and regardless of `notify`, so a session learns it no longer holds the work.
 
-- Every issue has a nullable `repo`: its own repository, `owner/name` (`issues.repo`, migration `0113`), any repository at all — one its project maps, one another project maps, one no project maps.
-  Migration `20261112004945` dropped the composite foreign key `issues_repo_mapped_to_project` that held it to a mapping of its project, and the unique constraint on `repo_projects (repo, project)` that backed only that key, because a project works wherever its issues say (INFRA-2543).
+- Every issue has a nullable `repo`: its own repository, `owner/name` (`issues.repo`, migration `0113`), any repository at all.
+  Migration `20261112004945` dropped the composite foreign key that held it to a repository of its project, because a project works wherever its issues say (INFRA-2543).
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` take it (`api/issue_repo.go`:
-  absent leaves it, `null` clears it, a string is canonicalised as a mapping's path is;
+  absent leaves it, `null` clears it, a string is lower-cased with any `.git` dropped and stored under its new name where a rename pair renames it away;
   not `owner/name` is `400 INVALID_ISSUE`;
   a closed issue refuses it, `409 ISSUE_CLOSED`).
   Every issue read and every issue event carries `repo` and `resolved_repo`, resolved on read by `refs.IssueRepoTerms`, the server's one repository-resolution rule (`internal/dispatch/refs/issues.go`, spliced by `api`'s issue reads with `refs.IssueRepoJoin` and `refs.IssueRepoColumns`):
-  one walk climbs the parent chains of every issue the read answers for at once — its `subjects` term, which is a listing's page, a listing's whole match or the one issue a read names — and each issue takes the nearest issue on its chain (itself first) whose own `repo` is set, else its project's default mapping (`repo_projects.is_default`, at most one per project by the partial unique index `repo_projects_default_per_project`, read for every project of the read in one join), else null.
+  one walk climbs the parent chains of every issue the read answers for at once — its `subjects` term, which is a listing's page, a listing's whole match or the one issue a read names — and each issue takes the nearest issue on its chain (itself first) whose own `repo` is set, else its project's default repository (`projects.default_repo`, one or none for each project, read for every project of the read in one join), else null.
   A chain stops at the first issue that names a repository or at `refs.IssueDepthCap` (32) links, the most any issue sits below its root (`api`'s `parentDepthCap` is that same number), so it costs at most 33 rows per issue;
   a chain still going at the cap (a loop, or one a direct database write or an earlier release's API built) fails the read (500) rather than answer with the default, and a paged listing walks its own page alone, so such a chain fails the page it is on and no other.
   `refs.IssueRepository` runs those same terms over a `subjects` term of one key, which the results route reads for the issue of a check, so it starts from the repository the issue page shows;
-  the route then takes that repository's canonical name before it asks GitHub anything (`refs.CanonicalRepo`, `comparisonReader.repositoryOf`), so an issue recorded under a name its repository was renamed away from is read under the name GitHub answers for.
-  Delivery's pull-request attribution splices those terms over one pull request's candidate keys instead (`attributionCandidatesQuery`), holding a candidate only where the walk finished and `refs.IssueRepoResolved` is the repository the pull request is in, each side put through that same renaming rule first (`attributionHeld`, `refs.IssueRepoTooDeep`, `refs.CanonicalRepoSQL`), so one walk resolves every candidate and that attribution parts from the page only where an operator has recorded that two names are one repository.
+  the route then takes that repository's canonical name before it asks GitHub anything (`refs.Renames.Canonical`, `comparisonReader.repositoryOf`), so an issue recorded under a name its repository was renamed away from is read under the name GitHub answers for.
+  Delivery's pull-request attribution splices those terms over one pull request's candidate keys instead (`attributionCandidatesQuery`), holding a candidate only where the walk finished and `refs.IssueRepoResolved` is the repository the pull request is in, each side put through that same renaming rule first (`attributionHeld`, `refs.IssueRepoTooDeep`, `refs.CanonicalRepoSQL`), so one walk resolves every candidate and that attribution parts from the page only where a rename pair makes two names one repository.
+  `PUT /api/v1/projects/{key}/default-repository` alone sets and clears a project's default repository (`api/project_default_repository.go`).
+  It reads `repo` by `parseIssueRepo` and stores it under its new name where a rename pair renames it away.
+  A change appends `project.updated` with the project row, and a write of the value the project holds already writes nothing and appends nothing.
+  Migration `20261119000230` created the column and copied into it each project's default from `repo_projects`, which it left as it was.
 
 - An earlier release's API could build a chain of any depth, so migration `0113` refuses to apply while any issue sits more than 32 links below its root or in a parent loop:
   its census counts them for the pre-deploy gate, and the migration, holding `repo_projects` and `issues` in ACCESS EXCLUSIVE from before its count to its commit so no earlier release's write commits in between, names up to 20 and the repair (`PATCH` an ancestor with `{"parent": null}` on the release still running).
@@ -2797,12 +2804,6 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A chain built anyway, by an earlier release or by direct SQL, fails every read of its issues (500).
   The API repairs an acyclic one: `PATCH` an ancestor that still reads (its `GET` answers 200) with `{"parent": null}`.
   The `PATCH` reads the issue it changes first (`issue_patch.go`), so a parent loop none of whose members reads, which only direct SQL can write, needs a database repair (`update issues set parent_key = null` on one member).
-  A mapping's `PUT` takes `default` and moves the project's default in one transaction;
-  a mapping that issues name as their repository is deleted and moved like any other, since an issue's own repository needs no mapping;
-  and a moved mapping emits `settings.repo_project.updated` on the project it left (`deleted: true`) as well as the one it joined.
-  Every writer of a mapping, the `PUT`, the `DELETE` and the boot seed of `DISPATCH_REPO_PROJECTS` (`api.SeedRepoProjects`), takes `lockRepoProjectWrite`'s locks in one order:
-  an advisory lock on the repository, the event owners of every project it touches, then the row.
-  So two writes to one repository serialize, even while it has no row yet, and the seed's own additions are announced like any other.
 
 - A closed issue (`closed_at` set) still takes its conversation: a new comment - issue-level, a thread reply, a reply on an ask, one anchored to a quote of one of its documents, and that thread's replies - and a new message, from a person or an agent, with their deliveries, retries and the mentioned or targeted agent's reply.
   A reply still reopens a resolved root there, as it does on an open issue.
@@ -3157,12 +3158,13 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A subscription with no resume, a resume past either bound (replayed nothing), and a resume above the newest id (an id of a log that was reset) each say `false` and start at the relay's published cursor, which is the page's cue to refresh what it shows once;
   a subscription that finds the relay still on a reset log's cursor waits for the relay's reset before it starts.
 
-- Project creation, repository mappings, and architecture sources own project-scoped events (`project.created`, `project.updated`, `settings.repo_project.updated`, `settings.architecture_source.updated`, and the importer's `architecture.synced` `{repo, branch, commit, components}` / `architecture.sync_failed` `{repo, branch, error}`, each naming the one source it judges (`components` is that source's count;
+- Project creation, a project's gated steps and default repository, and architecture sources own project-scoped events (`project.created`, `project.updated`, `settings.architecture_source.updated`, and the importer's `architecture.synced` `{repo, branch, commit, components}` / `architecture.sync_failed` `{repo, branch, error}`, each naming the one source it judges (`components` is that source's count;
   events retained from before migration `0117` carry no `repo` or `branch`), authored by the system actor `{kind: "system", id: "architecture-importer"}` and emitted only on that source's state change:
   a new commit, a recovery, or an error whose text first appears or changes);
   per-user issue-state writes, and a person's snooze or un-snooze of an Inbox row, emit project-owned `user_state.updated` (`{login, state, changed}`;
   a snooze's is only `{login, changed: ["snoozed"]}`, owned by its ask's issue's or document's project) and do not advance an issue unread sequence.
   These events are retained on `notifications.dispatch.project.<PROJECT>.<type>` but never wake agents or take a direct agent/role route.
+  `settings.repo_project.updated` is a retained type of the same family: the events an earlier build wrote stay as history, and no build writes one now.
 
 - The architecture importer (`internal/dispatch/architecture`, migrations `0037` and `0117`) imports each architecture source of a project on its own:
   a project has any number of sources, one per repository (`architecture_sources` keyed `(project_key, id)`, unique on `(project_key, repo)`;
@@ -4140,7 +4142,7 @@ without that test an agent its person narrowed to `person` alone could carry an 
 A credential that names one project writes that project and nothing else, and every write is decided in one place.
 Each mutating row of the route table declares what its write belongs to (`api/routes_table.go`'s `writeClasses`, stamped onto `apiRoute.Scope`;
 a `GET` row declares nothing, and a mutating row that declares nothing fails `TestEveryMutatingRouteIsClassed` and panics `Register` rather than being served unjudged).
-The four classes are *a project's* (the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue), *a project the body names* (the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled), *the calling session's* (an agent conversation's own artifact and messages, the two routes a session answers its own delivery on, and the caller-private `me` rows) and *the deployment's* (the project create, the repository-to-project map, the delivery settings and session groups, the Legion setting, the broadcast, and the credential and machine-login decisions).
+The four classes are *a project's* (the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue), *a project the body names* (the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled), *the calling session's* (an agent conversation's own artifact and messages, the two routes a session answers its own delivery on, and the caller-private `me` rows) and *the deployment's* (the project create, a project's default repository, the delivery settings and session groups, the Legion setting, the broadcast, and the credential and machine-login decisions).
 `Register` wraps every mutating route in `api.withinProjectScope`, `api.withinSessionScope` and `api.writeNeedsASignedInPerson` (`api/project_scope.go`), which run after the caller is resolved and before the handler, outside the keyed-write layer and the upload's spool, so a refused write claims no idempotency key and costs no body.
 
 The project check resolves the project the addressed object belongs to
@@ -4156,7 +4158,7 @@ A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT`, naming that project a
 A pre-handler read decides the write because nothing moves an object between projects:
 `project_key` is written at insert and no route updates it, and the writes that read another issue's project (a parent, a rank neighbour) refuse one outside the issue's own project rather than move anything.
 `POST /api/v1/issues` is the one project row whose address names no object
-— its project is in the body, or in the repository an external ref names
+— its project is in the body, also for an import (`external`), which must name one
 — so `createIssue` makes the same check itself the moment that project is settled, before it resolves the ref to an issue already imported (`respondWithExistingExternalIssue`, which would otherwise answer another project's issue and record a related-check outcome on it) and before anything is written.
 
 The session check holds every row classed *the calling session's* whose pattern names a session

@@ -37,8 +37,8 @@
 # attributed to the issue, read just now, so the delivery reconcile has no reason to read it
 # again. The fake GitHub is given one repository holding the same pull requests and each head's
 # check runs, replacing every repository it served. That repository is PROJECT's default where
-# PROJECT maps one, since every issue then resolves to it and a recorded result's commit must be
-# one it holds, and otherwise one of this run's own, which nothing maps.
+# PROJECT has one, since every issue then resolves to it and a recorded result's commit must be
+# one it holds, and otherwise one of this run's own, which is no project's default.
 #
 # It writes nine issues in PROJECT and closes every one of them, also when a check fails; on exit
 # it deletes the pull_request_heads rows it staged and empties the fake GitHub. Nothing it writes

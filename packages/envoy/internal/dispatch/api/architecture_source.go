@@ -16,9 +16,9 @@ import (
 )
 
 // A project imports its component model from any number of sources, one per repository, and a
-// source is addressed by its project and repository, as a repository mapping is. Every route here
-// is authAny: agents save, remove and refresh sources as people do, and a bearer save or removal
-// names its session in actor.
+// source is addressed by its project and repository. Every route here is authAny: agents save,
+// remove and refresh sources as people do, and a bearer save or removal names its session in
+// actor.
 
 // listArchitectureSources answers every source of every project, by project and then in the
 // order each project's sources were added.
@@ -397,7 +397,7 @@ func (s *server) renamedOwnerName(owner, name string) (string, string) {
 var sourceRepoNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // parseSourceRepo validates and canonicalizes an owner/name repository input
-// the same way repository mappings are stored (lowercase, .git trimmed). The
+// the same way an issue's own repository is stored (lowercase, .git trimmed). The
 // owner is read by the grammar an issue's own repository is (repoOwnerPattern,
 // the daemon's ghrepo ownerName): a login as GitHub serves it, which is wider
 // than GitHub's sign-up charset, since a managed user's login ends in

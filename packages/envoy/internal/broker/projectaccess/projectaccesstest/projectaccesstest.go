@@ -29,7 +29,7 @@ const (
 )
 
 // Row is one project as Dispatch holds it: whether it is public or private, its owner, the
-// people its access list names, and the repositories Dispatch maps to it.
+// people its access list names, and the repositories Dispatch names for it.
 type Row struct {
 	// Visibility is "public" or "private".
 	Visibility string
@@ -37,7 +37,7 @@ type Row struct {
 	Owner string
 	// Listed are the lowercase logins the project's access list names.
 	Listed []string
-	// Repositories are the "owner/name" repositories Dispatch maps to the project.
+	// Repositories are the "owner/name" repositories Dispatch names for the project.
 	Repositories []string
 }
 

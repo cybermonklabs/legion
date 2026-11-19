@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// An issue's own repository is any `owner/name` GitHub could hold, and nothing else. Since no
-// mapping row stands behind an issue's repository (migration 20261112004945), the shape check in
+// An issue's own repository is any `owner/name` GitHub could hold, and nothing else. Since
+// migration 20261112004945 no rule of the schema holds it to its project, so the shape check in
 // parseIssueRepo is the whole gate on the value, and the value goes on to the CI repair
 // (cireconcile's covered), which asks GitHub about every distinct repository an issue names, and
 // to the Legion daemon's preparation. A name GitHub's own grammar refuses — an owner that starts

@@ -38,8 +38,8 @@ func seedHeadIssue(t *testing.T, ctx context.Context, pool *store.Pool, number i
 }
 
 // gadgetsRepo is the repository project GDGT owns and gadgetsOldRepo the name GitHub knew it by
-// before it was renamed: the pair INFRA-1240 is about, where Dispatch maps both names to one
-// project and the App can read only the new one.
+// before it was renamed: the pair INFRA-1240 is about, where Dispatch reads the two names as one
+// repository and the App can read only the new one.
 const (
 	gadgetsRepo    = "acme/gadgets"
 	gadgetsOldRepo = "oldco/gadgets"
@@ -292,8 +292,8 @@ func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.
 
 // HeadStoredAt compares the repository without case, and the two spellings meet here: a row the
 // intake writes carries GitHub's own spelling of the repository, from the envelope's
-// `full_name` (`Acme/Widgets`), while the results read passes the lowercase spelling the
-// repository-to-project mapping stores (api/results_comparison.go, comparisonReader.repositoryOf).
+// `full_name` (`Acme/Widgets`), while the results read passes the lowercase spelling an issue's
+// repository is stored under (api/results_comparison.go, comparisonReader.repositoryOf).
 // An exact comparison would answer "no row" for every repository whose owner writes their name
 // with capitals, and the read would spend a GitHub call on each commit Dispatch already holds
 // the pull request for. Another repository's row is still another repository's: the case is all
@@ -1455,12 +1455,12 @@ func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
 
 // A merge recorded under GitHub's own spelling of a repository is answered for the lowercased
 // name the results read asks under. GitHub spells an owner and a repository as their owners do
-// (`Acme/Widgets`) and refs.CanonicalRepo hands a caller's own spelling back where no rename is
-// recorded, while the results read asks under the name repo_projects stores (api's
-// canonicalRepo); branch_commits is keyed by one lowercased name so that the two meet
-// (readBranchCommit). Without it, every result of a squash-merged issue of a repository whose
-// owner writes their name with capitals would stand at no basis for good once its base branch
-// was deleted, which is the case the seed exists for.
+// (`Acme/Widgets`) and refs.Renames.Canonical hands a caller's own spelling back where no rename
+// is recorded, while the results read asks under the lowercased name an issue's repository is
+// stored under (api's canonicalRepo); branch_commits is keyed by one lowercased name so that the
+// two meet (readBranchCommit). Without it, every result of a squash-merged issue of a repository
+// whose owner writes their name with capitals would stand at no basis for good once its base
+// branch was deleted, which is the case the seed exists for.
 func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	const base = "integration/138"

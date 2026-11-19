@@ -288,8 +288,8 @@ func headBasis(head delivery.AttributedHead) model.CheckBasis {
 // here before any branch is chosen, for either of the two ways it can name none.
 //
 // An issue that resolves to no repository is the first. delivery.BaseBranchMergedFor reads
-// `base_ref` by issue key alone, so an issue whose project mapping was deleted after its
-// merge, or whose parent moved, keeps a merged row naming a branch of a repository it no
+// `base_ref` by issue key alone, so an issue whose project's default repository was cleared after
+// its merge, or whose parent moved, keeps a merged row naming a branch of a repository it no
 // longer resolves to; walking that name would reach onNamedBranch with no repository to ask
 // GitHub or the stored rows about and answer unknown for every result of the check. There is
 // nothing to compare with and nothing left to read, which is a fact about the work and not a

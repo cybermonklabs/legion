@@ -260,14 +260,17 @@ either, the server logs that meaning search is unavailable and serves everything
 Sign in, then open **Settings**:
 
 - **Projects**: create your first project, with a key such as `CORE` and a name.
-- **Repositories → Projects**: choose which project issues from each GitHub repository land in.
-  `DISPATCH_DEFAULT_PROJECT` catches repositories with no mapping; that project must already exist.
 - **Projects → Default assignee**: name the person each project's unowned work lands on, in the
   projects table's own column. An issue created with no assignee, by an agent on the shared token
   and under no parent that names one, goes to that person, and so does every question on an issue
   nobody holds. Every project names one, so the page moves a default from one person to another
   and clears none. A person moves it here, and an agent names a project's first one in the call
   that creates the project.
+- **Projects → Default repository**: name the repository each project's work is done in, in the
+  projects table's own column, as `owner/name`. An issue that names no repository, under no parent
+  that names one, takes it. **Save** sets it, **Clear** removes it, and a project with none reads
+  **None**. An import of a GitHub issue names its project, since Dispatch chooses no project from
+  a repository.
 - **Architecture sources**: add each repository branch holding part of a project's architecture
   model. A project can have several, one per repository, and its model is all of their components
   together. Saving checks that the GitHub App can read the repository.

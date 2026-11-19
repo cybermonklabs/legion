@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+  Dispatch no longer writes its repository mapping (`repo_projects`), and it no longer reads the mapping to find a project or a project's default repository. `PUT` and `DELETE` under `/api/v1/settings/repo-projects/{owner}/{repo}` answer `404 NOT_FOUND`, and Settings has no Repositories → Projects section. No build writes the `settings.repo_project.updated` event now, and the events stored before stay as history. The boot seed `DISPATCH_REPO_PROJECTS` is gone. The import rule is gone too: Dispatch chooses no project from the repository of an imported issue, so `DISPATCH_DEFAULT_PROJECT`, `PROJECT_UNMAPPED` and the `repo:` label are gone with it.
+
+  `DISPATCH_REPO_PROJECTS` and `DISPATCH_DEFAULT_PROJECT` now refuse a boot: a server that finds either one set stops, names it and says what replaced it. Unset both before you deploy this release.
+
+  An import names its project. `POST /api/v1/issues` with `external` and no `project`, or an empty one, answers `400 INVALID_ISSUE` (`project is required when external is set`) and writes nothing.
+
+  A project has one default repository or none, the `default_repo` of each project that `GET /api/v1/projects` lists. An issue resolves to it when neither the issue nor an issue above it names a repository. `PUT /api/v1/projects/{key}/default-repository` with `{"repo": "owner/name"}` sets it, and `{"repo": null}` clears it. The route answers `{project, repo}`, takes the deployment's scope, and appends `project.updated` when the value changes. Settings → Projects shows and edits it in a Default repository column. Migration `20261119000230_projects_default_repo` copies each project's default from the mapping, so every issue resolves to the repository it resolved to before.
+
+  A boot rewrites a renamed repository's old name. The server reads the rename pairs of `repo_projects` once, at boot. Before it serves, it writes each pair's new name in place of the old name in every stored repository field of Dispatch. The first boot of this release makes those writes, and a later boot finds nothing left to write. Every boot logs one summary line, `dispatch: rewrote renamed repositories' old names`, with the counts `pairs`, `rows`, `deleted`, `failures` and `left`. The line is at INFO when `failures` and `left` are 0, and at ERROR otherwise, with `left=unknown` where nothing counted the rows. A failure does not stop the boot, and the next boot tries again. Every write that names an old name now stores the new name.
+
+  The CI reconcile pass covers every project's default repository and every repository an issue names as its own. Its `ci reconcile pass` line counts `defaults_skipped` in place of `mappings_skipped`.
+
+  A Legion daemon that still reads the mapping (`GET /api/v1/settings/repo-projects`) sees the rows as this release's migration left them. It sees no default that is set after the migration, and no new row. The next release removes that read route. Before you deploy that release, run the Legion daemon release that reads no repository mapping, or a later one.
+
+  In a deployment that runs more than one replica, edit no repository mapping while this release rolls. A server of the earlier release can still take such a write, and this release does not read it.
+time: 2026-11-19T05:16:37.000000000Z
+custom:
+  Issue: pr4457

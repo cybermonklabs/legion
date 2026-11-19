@@ -62,7 +62,7 @@ The work goes to whoever already owns that code. You file an issue only when nob
    Once the root leaves `admission.trees`, no running tree owns the code, and step 4 files it.
    File nothing while a tree owns it: a second issue splits the work.
 4. No running tree owns that code: file it on the repository where the fix belongs, in the
-   project that repository maps to:
+   project whose default repository it is (`GET /api/v1/projects` names each `default_repo`):
 
    ```text
    dispatch issue --project <KEY> --repo <owner/name> --title '<the defect, as a title>' --label legion --spec-file -

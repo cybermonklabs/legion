@@ -125,8 +125,8 @@ type Answer struct {
 	// Visible is whether the person may see the project, or, for a question naming no person,
 	// whether it is public.
 	Visible bool `json:"visible"`
-	// Repositories is every "owner/name" repository Dispatch maps to the project, renames
-	// included, nil when the answer carries none.
+	// Repositories is every "owner/name" repository Dispatch's answer names for the project,
+	// renames included, nil when the answer carries none.
 	Repositories []string `json:"repositories"`
 	// AskedAt is when the question this answers was asked, read before it was sent, so an
 	// answer's age is never less than it truly is. *Client always sets it; a zero AskedAt is an

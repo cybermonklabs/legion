@@ -43,12 +43,12 @@ import (
 // it has merged, so those inputs (AttributionInputs) are read from GitHub once and stored on its
 // row. Sources 1 and 2 also read Dispatch's external links, which change whenever someone links an
 // issue, every source reads whether the issue it names exists, and the holding reads where that
-// issue sits — a reparent, or a project's repository mapping, moves it — so a stored row's issue is
-// resolved again from the database alone (AttributePullRequests), a batch of rows a pass, the rows
-// checked longest ago first: an issue that links a pull request tomorrow credits it within one walk
-// of the table, with no GitHub call. Nothing in the schema says which rows a change could affect (a
-// link carries no time, and adding or removing one leaves its issue's updated_at alone), so the
-// walk visits them all in turn.
+// issue sits — a reparent, or a change of its project's default repository, moves it — so a
+// stored row's issue is resolved again from the database alone (AttributePullRequests), a batch of
+// rows a pass, the rows checked longest ago first: an issue that links a pull request tomorrow
+// credits it within one walk of the table, with no GitHub call. Nothing in the schema says which
+// rows a change could affect (a link carries no time, and adding or removing one leaves its
+// issue's updated_at alone), so the walk visits them all in turn.
 
 // AttributionRuleVersion names the rule this build judges a pull request by: the first
 // candidate, of the five sources above, whose issue resolves to the repository the pull request
