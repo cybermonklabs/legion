@@ -103,12 +103,15 @@ func (l launch) keepsVolume() bool { return keptVolume(l.kind, l.microVM) }
 // that write sets the label, so only an issue Sandbox owns such a template. The controller's
 // `issue` template and the one of an issue Sandbox of the release before the pod-owned disk carry
 // no such label, so neither reads as kept. Every reader of a stored Sandbox asks it, through
-// ownsKeptVolume or storedOwnsKeptVolume.
+// holdsKeptVolume (ownsKeptVolume) or storedOwnsKeptVolume.
 func keptTemplate(name, volume string) bool { return name == issueVolume && volume == volumeKept }
 
 // ownsKeptVolume is whether the decoded Sandbox s owns an issue's kept volume (keptTemplate).
-func ownsKeptVolume(s *sandbox) bool {
-	return slices.ContainsFunc(s.Spec.VolumeClaimTemplates, func(t volumeClaimTemplate) bool {
+func ownsKeptVolume(s *sandbox) bool { return holdsKeptVolume(s.Spec.VolumeClaimTemplates) }
+
+// holdsKeptVolume is whether one of the claim templates is an issue's kept volume (keptTemplate).
+func holdsKeptVolume(templates []volumeClaimTemplate) bool {
+	return slices.ContainsFunc(templates, func(t volumeClaimTemplate) bool {
 		return keptTemplate(t.Metadata.Name, t.Metadata.Labels[labelVolume])
 	})
 }
@@ -197,31 +200,39 @@ func (issuePod) labels(project string, l launch) map[string]string {
 // without a word (TestManifestMatchesTheSandboxCRD).
 //
 // A launch that keeps a volume (a microVM pod under keep_volume) gets what controllerPod.disk
-// gives: the one `issue` template, which the issue's Sandbox owns, and the claim that the Agent
-// Sandbox controller makes from it (IssueClaimName), which the pod mounts. The claim outlives the
-// pod and goes with the Sandbox. The template's labels are the project, the issue and
-// labelVolume=volumeKept, which marks the volume as kept (keptTemplate). They are not the pod's
-// own labels (labels), which carry the tree: a launch relabels the Sandbox for a new tree
-// (ensureSandbox), and the daemon's restricted identity has no PVC verb to relabel the claim. The
-// Sandbox CRD keeps the labels of a Sandbox's own claim template.
+// gives: the one `issue` template (keptVolumeTemplates), which the issue's Sandbox owns, and the
+// claim that the Agent Sandbox controller makes from it (IssueClaimName), which the pod mounts.
+// The claim outlives the pod and goes with the Sandbox.
 //
 // Either claim is on the launch's class (diskSpec: a microVM pod's is the microVM block's).
 func (issuePod) disk(r *Runtime, l launch) ([]volumeClaimTemplate, corev1.VolumeSource) {
 	if l.keepsVolume() {
-		templates := []volumeClaimTemplate{{
-			Metadata: volumeClaimMetadata{Name: issueVolume, Labels: map[string]string{
-				labelProject: r.project,
-				labelIssue:   labelValue(l.spec.Issue),
-				labelVolume:  volumeKept,
-			}},
-			Spec: r.diskSpec(l),
-		}}
+		templates := keptVolumeTemplates(r.project, labelValue(l.spec.Issue), r.diskSpec(l))
 		return templates, corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 			ClaimName: IssueClaimName(l.spec.Claim),
 		}}
 	}
 	return nil, corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{
 		VolumeClaimTemplate: &corev1.PersistentVolumeClaimTemplate{Spec: r.diskSpec(l)},
+	}}
+}
+
+// keptVolumeTemplates are the claim templates of an issue's kept volume, with spec as its claim:
+// the one `issue` template, labelled with project, the issue (issueLabel, the issue key as
+// labelValue writes it) and labelVolume=volumeKept, which marks the volume as kept
+// (keptTemplate). They are not the pod's own labels (labels), which carry the tree: a launch
+// relabels the Sandbox for a new tree (ensureSandbox), and the daemon's restricted identity has no
+// PVC verb to relabel the claim. The Sandbox CRD keeps the labels of a Sandbox's own claim
+// template. A launch writes them (issuePod.disk), and the boot census renders them
+// (IssueDisks.templates).
+func keptVolumeTemplates(project, issueLabel string, spec corev1.PersistentVolumeClaimSpec) []volumeClaimTemplate {
+	return []volumeClaimTemplate{{
+		Metadata: volumeClaimMetadata{Name: issueVolume, Labels: map[string]string{
+			labelProject: project,
+			labelIssue:   issueLabel,
+			labelVolume:  volumeKept,
+		}},
+		Spec: spec,
 	}}
 }
 

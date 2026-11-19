@@ -766,24 +766,30 @@ func (l launch) claudeArgv() []string {
 // labels are the pod's resource labels, as its kind gives them (podKind.labels).
 func (r *Runtime) labels(l launch) map[string]string { return l.kind.labels(r.project, l) }
 
-// diskSpec is the claim of a pod's disk, wherever it is declared: ReadWriteOnce on the launch's
-// StorageClass at the operator's size (runtime.kubernetes.issue_volume). The class is the microVM
-// block's for a microVM pod (MicroVM.StorageClass) and the operator's
-// runtime.kubernetes.storage_class for every other, the controller's included, so whatever
-// declares an issue's disk takes its class from here. The controller's Sandbox declares it as the
-// claim template it owns, and so does the Sandbox of an issue whose pod keeps its volume
-// (keptVolume). Every other issue pod declares it as the template of its own ephemeral volume. So
-// the disks are provisioned alike and differ only in who deletes them.
+// diskSpec is the claim of l's pod's disk, wherever it is declared: claimSpec of the runtime's
+// storage class and volume size, for the launch's microVM block (nil for a gVisor pod). The
+// controller's Sandbox declares it as the claim template it owns, and so does the Sandbox of an
+// issue whose pod keeps its volume (keptVolume). Every other issue pod declares it as the template
+// of its own ephemeral volume. So the disks are provisioned alike and differ only in who deletes
+// them.
 func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
-	storageClass := r.storageClass
-	if l.microVM != nil {
-		storageClass = l.microVM.StorageClass
+	return claimSpec(r.storageClass, r.volumeSize, l.microVM)
+}
+
+// claimSpec is the claim of a pod's disk: ReadWriteOnce at size (runtime.kubernetes.issue_volume),
+// on the microVM block's StorageClass for a microVM pod (MicroVM.StorageClass, microVM not nil)
+// and on storageClass (runtime.kubernetes.storage_class) for every other, the controller's
+// included. Whatever declares an issue's disk takes its class from here: a launch (diskSpec) and
+// the boot census, which runs before any runtime is built (IssueDisks.templates).
+func claimSpec(storageClass string, size resource.Quantity, microVM *MicroVM) corev1.PersistentVolumeClaimSpec {
+	if microVM != nil {
+		storageClass = microVM.StorageClass
 	}
 	return corev1.PersistentVolumeClaimSpec{
 		AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 		StorageClassName: &storageClass,
 		Resources: corev1.VolumeResourceRequirements{
-			Requests: corev1.ResourceList{corev1.ResourceStorage: r.volumeSize},
+			Requests: corev1.ResourceList{corev1.ResourceStorage: size},
 		},
 	}
 }

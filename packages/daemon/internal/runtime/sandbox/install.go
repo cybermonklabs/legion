@@ -17,8 +17,6 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // crdGVR is CustomResourceDefinitions, read through the dynamic client: the typed
@@ -113,19 +111,27 @@ type IssueDisks struct {
 	Volume resource.Quantity
 }
 
+// IssueDisks is the configuration that the issues' disks of a runtime built from o are rendered
+// from, which the daemon hands the boot census (CensusLegacyIssueSandboxes).
+func (o Options) IssueDisks() IssueDisks {
+	return IssueDisks{Sandbox: o.Sandbox, StorageClass: o.StorageClass, Volume: o.IssueVolume}
+}
+
 // templates are the claim templates that the launch of the issue whose legion.dev/issue label
 // holds label renders (issuePod.disk), with the sandbox that prepare decides for that issue
-// (SandboxConfig.ofIssueLabel). The census runs before any runtime is built, so it asks the kind
-// through a runtime that holds only the values that issuePod.disk and diskSpec read: the project,
-// the storage class and the volume size.
+// (SandboxConfig.ofIssueLabel): the kept volume's (keptVolumeTemplates) where that launch keeps
+// its volume (keptVolume), on the class and at the size claimSpec gives, and none otherwise. The
+// census runs before any runtime is built, so it renders them from the configuration alone. The
+// stored label is already a label value, so it labels the template as it is.
 func (d IssueDisks) templates(project, label string) []volumeClaimTemplate {
-	r := &Runtime{project: project, storageClass: d.StorageClass, volumeSize: d.Volume}
-	l := launch{kind: issuePod{}, spec: runtime.SpawnSpec{Issue: label}}
+	var microVM *MicroVM
 	if d.Sandbox.ofIssueLabel(label) == SandboxMicroVM {
-		l.microVM = d.Sandbox.MicroVM
+		microVM = d.Sandbox.MicroVM
 	}
-	templates, _ := l.kind.disk(r, l)
-	return templates
+	if !keptVolume(issuePod{}, microVM) {
+		return nil
+	}
+	return keptVolumeTemplates(project, label, claimSpec(d.StorageClass, d.Volume, microVM))
 }
 
 // rejectLegacyIssueSandboxes refuses the project's Sandboxes whose pod is not one this runtime
@@ -227,7 +233,7 @@ func treeVolumeLayout(object unstructured.Unstructured, kind podKind, project st
 	if !issue && (!found || len(templates) == 0) {
 		return " owns no volume" + upgrade, ""
 	}
-	held := make([]volumeClaimTemplate, 0, len(templates))
+	var held []volumeClaimTemplate
 	for _, raw := range templates {
 		template, ok := raw.(map[string]any)
 		if !ok {
@@ -237,14 +243,13 @@ func treeVolumeLayout(object unstructured.Unstructured, kind podKind, project st
 		if name != issueVolume {
 			return fmt.Sprintf(" owns a volume claim template named %q, not %q", name, issueVolume) + upgrade, ""
 		}
-		if !issue {
-			continue
+		if issue {
+			var decoded volumeClaimTemplate
+			if err := k8sruntime.DefaultUnstructuredConverter.FromUnstructured(template, &decoded); err != nil {
+				return unreadable, ""
+			}
+			held = append(held, decoded)
 		}
-		var decoded volumeClaimTemplate
-		if err := k8sruntime.DefaultUnstructuredConverter.FromUnstructured(template, &decoded); err != nil {
-			return unreadable, ""
-		}
-		held = append(held, decoded)
 	}
 	if !issue {
 		return "", ""

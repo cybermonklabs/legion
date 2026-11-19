@@ -247,8 +247,7 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 		if err := sandbox.CheckInstalled(checking, reads.client, agentSandbox); err != nil {
 			return err
 		}
-		disks := sandbox.IssueDisks{Sandbox: reads.opts.Sandbox, StorageClass: reads.opts.StorageClass, Volume: reads.opts.IssueVolume}
-		return sandbox.CensusLegacyIssueSandboxes(ctx, reads.client, reads.opts.Namespace, reads.opts.Project, disks, reads.opts.Log)
+		return sandbox.CensusLegacyIssueSandboxes(ctx, reads.client, reads.opts.Namespace, reads.opts.Project, reads.opts.IssueDisks(), reads.opts.Log)
 	}
 	return sandboxBoot{clusterCheck: clusterCheck, probe: probe}, nil
 }

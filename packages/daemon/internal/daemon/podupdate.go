@@ -169,11 +169,13 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	if open != "" && open != round {
 		// The pod went without the round: it was replaced where it stood for a failure of its
 		// own — a terminal pod, a failed init container, a superseded disk, a lost launcher
-		// binding — and its disk went with it while a worker still had work to push, unless that
-		// disk is a kept volume, which stays with the issue's Sandbox (podWentWithoutItsRound). The
-		// claims record the pod that replaced it, which is the evidence. A round that lost nothing —
-		// every member of it pushed its work before the pod went — is written on no issue, and
-		// ends below.
+		// binding — while a worker still had work to push. Its work stays only where the issue's
+		// Sandbox still holds the kept volume that it held when the round opened
+		// (podWentWithoutItsRound, roundKeptVolume). An ephemeral disk went with the pod. A reset
+		// of a kept volume or a change of the disk's shape made a new Sandbox, which holds a new,
+		// empty volume. The claims record the pod that replaced the round's pod, which is the
+		// evidence. A round that lost nothing — every member of it pushed its work before the pod
+		// went — is written on no issue, and ends below.
 		//
 		// What was lost is counted here exactly as the message counts it (lostClaims), so the
 		// message is written when, and only when, there is a role to name. Counted as the claims
@@ -964,10 +966,13 @@ func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group 
 
 // podWentWithoutItsRound is the round's pod gone before the round could finish: the message the
 // issue's spec requires is written on the issue, naming what was lost, and the round ends.
-// Nothing here can bring the work back, so the message is the whole of it. An ephemeral disk went
-// with the pod, and the work on it with it. A kept volume did not: it is the issue's Sandbox's
-// own, and the issue's next pod mounts it (roundKeptVolume), so the message says where that work
-// is.
+// Nothing here can bring the work back, so the message is the whole of it. The work stays only
+// where the issue's Sandbox still holds the kept volume that it held when the round opened
+// (roundKeptVolume, which compares when the Sandbox was made with when the round opened). The
+// issue's next pod mounts that volume, so the message says where the work is. An ephemeral disk
+// went with the pod, and the work on it with it. A reset of a kept volume or a change of the
+// disk's shape made a new Sandbox, which holds a new, empty volume, so the work is lost there
+// too.
 //
 // Three readings say the pod went. The claims recording a pod other than the round's own is one
 // (reconcileIssuePodUpdate), which calls this with the claims it decided from; the runtime

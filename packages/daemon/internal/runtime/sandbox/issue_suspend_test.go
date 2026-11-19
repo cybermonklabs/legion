@@ -264,23 +264,6 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			t.Fatalf("after %s the issue's pod mounts %+v at %s, want its %s volume", step, mount, TreeRoot, issueVolume)
 		}
 	}
-	// relaunch is the issue's next launch of spec's role, at its next generation and resumed on its
-	// session, as the supervisor starts a role again once its pod ended.
-	relaunch := func(t *testing.T, g *rig, prev runtime.Locator, spec *runtime.SpawnSpec) runtime.Locator {
-		t.Helper()
-		spec.Generation++
-		spec.BootToken = fmt.Sprintf("boot-%s-g%d", spec.Claim, spec.Generation)
-		resumed := *spec
-		resumed.ResumeSessionFile = resumeSession
-		next, err := g.r.Resume(g.ctx, &prev, resumed)
-		if err != nil {
-			t.Fatalf("relaunch at generation %d: %v", spec.Generation, err)
-		}
-		if next.Sandbox.PodUID == prev.Sandbox.PodUID {
-			t.Fatalf("the relaunch kept the pod %s, want a pod of its own", prev.Sandbox.PodUID)
-		}
-		return next
-	}
 	for project, config := range map[string]func(*Options){
 		"a microVM issue of a microvm project": keptVolumes(SandboxMicroVM),
 		"a canary of a gvisor project":         keptVolumes(SandboxGVisor, childIssue),
@@ -320,6 +303,11 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			if g.r.IssueKeepsVolume(childIssue, created) {
 				t.Fatal("IssueKeepsVolume = true for a round opened when the Sandbox was made, want false: such a Sandbox holds a new volume")
 			}
+			// The API server records the Sandbox's creation to the second alone. A round that
+			// opened in that same second may have opened before the Sandbox was made.
+			if g.r.IssueKeepsVolume(childIssue, created.Add(time.Second/2)) {
+				t.Fatal("IssueKeepsVolume = true for a round opened in the second the Sandbox was made, want false: such a Sandbox may hold a new volume")
+			}
 
 			// An eviction deletes the pod and leaves the Sandbox Running. The next launch reads the
 			// pod store, so it starts once that store has lost the evicted pod.
@@ -330,14 +318,14 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 				pod := g.r.storedPod(name)
 				return pod == nil || string(pod.UID) != loc.Sandbox.PodUID
 			})
-			loc = relaunch(t, g, loc, &spec)
+			loc = g.relaunchOnNewPod(loc, &spec)
 			keeps(t, g, "an eviction", loc, uid, template)
 
 			// The update round ends the pod once every role in it has answered.
 			if err := g.r.ReplacePod(g.ctx, runtime.Known{Claim: childToken, Locator: &loc}, stillDue); err != nil {
 				t.Fatalf("ReplacePod: %v", err)
 			}
-			loc = relaunch(t, g, loc, &spec)
+			loc = g.relaunchOnNewPod(loc, &spec)
 			keeps(t, g, "the round's ReplacePod", loc, uid, template)
 
 			// A launch that fails once its Running patch is sent: the server applies the patch and
@@ -371,7 +359,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 				t.Fatalf("after the failed launch the issue's Sandbox is %+v, want %s kept, Suspended", s, uid)
 			}
 			g.hold.Store(false)
-			loc = relaunch(t, g, loc, &spec)
+			loc = g.relaunchOnNewPod(loc, &spec)
 			keeps(t, g, "a launch that failed after its Running patch", loc, uid, template)
 
 			// The release of the idle pod keeps the Sandbox, Suspended, and deletes its Secrets.
@@ -408,7 +396,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			if !g.r.IssueKeepsVolume(childIssue, created.Add(time.Second)) {
 				t.Fatal("IssueKeepsVolume of the released kept Sandbox = false, want true: its volume is still there")
 			}
-			loc = relaunch(t, g, loc, &spec)
+			loc = g.relaunchOnNewPod(loc, &spec)
 			keeps(t, g, "the release of the idle pod", loc, uid, template)
 			if s := g.sandbox(name); s.mode() != modeRunning {
 				t.Fatalf("the launch after the release left the Sandbox %s, want Running", s.mode())

@@ -56,9 +56,10 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // Sandbox owns a kept volume. Under the turn, authorize is asked first and false acts on nothing.
 // A Sandbox already gone is done. One labelled with another project, issue or tree is refused. The
 // Sandbox is set Suspended, in the one write of its mode here, and its pod is waited out. That
-// write is setMode's JSON patch, which sends nothing for a Sandbox already Suspended. A release
-// whose pod failed on the kept volume (volumeFault) sends one merge patch of the mode and the reset
-// mark in its place (suspendAnnotating), also for a Sandbox already Suspended.
+// write is setMode's JSON patch, which endIssuePod sends only when the Sandbox it read is not
+// Suspended yet. A release whose pod failed on the kept volume (volumeFault) sends one merge patch
+// of the mode and the reset mark in its place (suspendAnnotating), also for a Sandbox already
+// Suspended.
 func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error), keep bool) error {
 	act := "suspend"
 	if keep {
@@ -114,9 +115,8 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 		if err := r.deleteIssueSecrets(ctx, name); err != nil {
 			return fmt.Errorf("%s issue %s: %w", act, issue, err)
 		}
-		// The claim's name is IssueClaimName's, which the Sandbox's name gives.
 		r.log.Info("sandbox runtime: released the issue's pod and kept its Sandbox, which owns the issue's kept volume, Suspended; deleted the Secrets that the next launch writes again",
-			"issue", issue, "sandbox", name, "uid", s.UID, "claim", issueVolume+"-"+name)
+			"issue", issue, "sandbox", name, "uid", s.UID, "claim", issueClaimName(name))
 		return nil
 	}
 	if err := r.deleteStoredSandbox(ctx, name); err != nil {

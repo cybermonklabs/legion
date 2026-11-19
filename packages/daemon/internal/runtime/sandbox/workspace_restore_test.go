@@ -498,24 +498,6 @@ func TestAKeptVolumeTakesNoSavedWorkItHolds(t *testing.T) {
 		}
 		return read, true
 	}
-	// relaunch is the issue's next launch of spec's role, at its next generation and resumed on
-	// its session, as the supervisor starts a role again once its pod ended. Its start is where
-	// the runtime carries saved work to the new pod (launchers.start).
-	relaunch := func(t *testing.T, g *rig, prev runtime.Locator, spec *runtime.SpawnSpec) runtime.Locator {
-		t.Helper()
-		spec.Generation++
-		spec.BootToken = fmt.Sprintf("boot-%s-g%d", spec.Claim, spec.Generation)
-		resumed := *spec
-		resumed.ResumeSessionFile = resumeSession
-		next, err := g.r.Resume(g.ctx, &prev, resumed)
-		if err != nil {
-			t.Fatalf("relaunch at generation %d: %v", spec.Generation, err)
-		}
-		if next.Sandbox.PodUID == prev.Sandbox.PodUID {
-			t.Fatalf("the relaunch kept the pod %s, want a pod of its own", prev.Sandbox.PodUID)
-		}
-		return next
-	}
 	// accepted is the Sandbox creation that the resolver hands the session of the tester's
 	// launcher on the pod of loc, read off the informer's Sandbox as for any hello.
 	accepted := func(t *testing.T, g *rig, loc runtime.Locator) time.Time {
@@ -561,7 +543,7 @@ func TestAKeptVolumeTakesNoSavedWorkItHolds(t *testing.T) {
 
 		// The wake's launch brings the next pod of the same Sandbox, and its role starts.
 		before := len(g.sent(spec.Claim))
-		loc = relaunch(t, g, loc, &spec)
+		loc = g.relaunchOnNewPod(loc, &spec)
 		frames := g.sent(spec.Claim)[before:]
 		if !slices.ContainsFunc(frames, func(f shimwire.Frame) bool { _, ok := f.(shimwire.LauncherStart); return ok }) {
 			t.Fatalf("the next pod's launcher was sent %v, want the role's start", frameTypes(frames))
@@ -576,12 +558,7 @@ func TestAKeptVolumeTakesNoSavedWorkItHolds(t *testing.T) {
 		if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
 			t.Fatalf("after the drop the store holds a bundle for %s = %t (%v), want none", testTree, held, err)
 		}
-		var lines []string
-		for line := range strings.Lines(logs.String()) {
-			if strings.Contains(line, "kept volume holds") {
-				lines = append(lines, line)
-			}
-		}
+		lines := linesHolding(logs.String(), "kept volume holds")
 		if len(lines) != 1 || !strings.Contains(lines[0], "level=INFO") || !strings.Contains(lines[0], "issue="+testTree) ||
 			!strings.Contains(lines[0], fmt.Sprintf("release=%d", testRelease)) {
 			t.Fatalf("the runtime logged %q of the drop, want one Info line naming %s and release %d", lines, testTree, testRelease)
@@ -649,7 +626,7 @@ func TestAKeptVolumeTakesNoSavedWorkItHolds(t *testing.T) {
 			return pod == nil || string(pod.UID) != loc.Sandbox.PodUID
 		})
 		before := len(g.sent(spec.Claim))
-		loc = relaunch(t, g, loc, &spec)
+		loc = g.relaunchOnNewPod(loc, &spec)
 		if kept := g.sandbox(loc.Sandbox.Name); kept == nil || kept.UID != s.UID {
 			t.Fatalf("after the eviction the issue's Sandbox is %+v, want %s kept", kept, s.UID)
 		}

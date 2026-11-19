@@ -449,12 +449,16 @@ func cacheSecretName(sandbox string) string { return sandbox + "-token" }
 // Sandbox's cacheVolume template.
 func cacheClaimName(sandbox string) string { return cacheVolume + "-" + sandbox }
 
+// issueClaimName is the volume claim the controller makes from the `issue` template of the
+// Sandbox named sandbox (IssueClaimName).
+func issueClaimName(sandbox string) string { return issueVolume + "-" + sandbox }
+
 // IssueClaimName is the volume claim that the Agent Sandbox controller makes from a Sandbox's
 // `issue` template, by the name it gives that claim: the project controller's claim, and the kept
 // volume of an issue whose microVM pod keeps its volume (issuePod.disk). Every other issue's
 // Sandbox owns no template and so no claim of this name: its pod's disk is an ephemeral volume
 // that the pod owns. The token is cut to the Sandbox's name as SandboxName cuts it.
-func IssueClaimName(t claim.Token) string { return issueVolume + "-" + SandboxName(t) }
+func IssueClaimName(t claim.Token) string { return issueClaimName(SandboxName(t)) }
 
 // secretName is the claim's Secret, which its Sandbox owns.
 func secretName(sandbox string) string { return sandbox + "-boot" }

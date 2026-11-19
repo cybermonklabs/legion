@@ -220,8 +220,8 @@ func (r *Runtime) ScriptIssuePod(issue, pod string) {
 
 // ScriptKeptVolume makes every later IssueKeepsVolume of issue answer as the Sandbox runtime
 // answers an issue Sandbox that owns a kept volume and was made at created: true for a since
-// after created, false for any other. A zero created clears it. An issue no call named keeps no
-// volume, which is every pod's case but a microVM pod's under keep_volume.
+// whose second is after created, false for any other. A zero created clears it. An issue no call
+// named keeps no volume, which is every pod's case but a microVM pod's under keep_volume.
 func (r *Runtime) ScriptKeptVolume(issue string, created time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -546,13 +546,14 @@ func (r *Runtime) IssuePod(issue string) (string, bool) {
 }
 
 // IssueKeepsVolume answers what ScriptKeptVolume set for the issue: true where its kept Sandbox
-// was made before since. It records no call: the daemon asks it only for the words of a message,
-// which a test reads instead.
+// was made before since, cut to the second as the Sandbox runtime cuts it, since the API server
+// records a creation time to the second. It records no call: the daemon asks it only for the
+// words of a message, which a test reads instead.
 func (r *Runtime) IssueKeepsVolume(issue string, since time.Time) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	created, kept := r.keptVolumes[issue]
-	return kept && created.Before(since)
+	return kept && created.Before(since.Truncate(time.Second))
 }
 
 // ReplacePod plays the Sandbox runtime's own order: it waits where that runtime waits for the

@@ -2042,9 +2042,10 @@ func assertNothingFilledTheFeed(t *testing.T, run *recordingRunner, req FetchReq
 // is not a regular file or directory, the cache's own configuration, an alternates file, a loose
 // object — or whose history does not verify — a pack with a damaged object, a pack index damaged
 // or belonging to another pack, a history missing an object it reaches — fails the fetch, naming
-// the entry or the check: nothing of it reaches the feed, and nothing is cloned from GitHub. Such
-// a failure is not outside the issue's volume (ErrOutsideVolume): the write of what the cache
-// streamed is a write to the volume.
+// the entry or the check: nothing of it reaches the feed, and nothing is cloned from GitHub. None
+// of these failures is a failed write: each is an entry that unpackEntry refuses by its name or
+// its type, or a failure of verifyCache. Fetch does not wrap either kind in ErrOutsideVolume, by
+// its own rule (Fetch), so none of them reads as a failure outside the issue's volume.
 func TestFetchRefusesARepositoryCacheItCannotUse(t *testing.T) {
 	const pack = "objects/pack/pack-1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d"
 	for _, tc := range []struct {

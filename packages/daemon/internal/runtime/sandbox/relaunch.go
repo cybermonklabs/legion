@@ -208,9 +208,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// A kept volume on which an init container failed for a cause local to it is reset: the launch
 	// replaces its Sandbox as it replaces one of the other disk shape (volumeReset). A change of
 	// the disk shape replaces the Sandbox too, so its reason comes first.
-	migrate := r.supersededDisk(s, l)
-	if migrate == "" {
-		migrate = volumeReset(s, pod)
+	replacement := r.supersededDisk(s, l)
+	if replacement == "" {
+		replacement = volumeReset(s, pod)
 	}
 	covered := roundCovers(l.kind)
 	// A live pod no round covers is this launch's to replace for every kind of drift: every facet
@@ -226,16 +226,17 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// drift, and that round, which has every worker in it push its work first, is what replaces
 	// it.
 	//
-	// A Sandbox of the other disk shape (migrate) ends a live pod only where the pod's shape record
-	// does not drift, the cutover from the release before the pod-owned disk. A drifted record
+	// A Sandbox of the other disk shape (replacement) ends a live pod only where the pod's shape
+	// record does not drift, the cutover from the release before the pod-owned disk. A drifted record
 	// opens the pod's update round, which ends the pod once every role in it has pushed its work
 	// (ReplacePod). A pod that this launch replaces for any other reason takes such a Sandbox with
 	// it below. A reset comes with a pod that is not live: a pod whose init container failed, or
 	// no pod after ReplacePod or the release.
+	drifted := len(r.shapeDrift(s, l.shapeKey())) > 0
 	replace := !live || (accountDrifted && !covered) ||
-		(migrate != "" && len(r.shapeDrift(s, l.shapeKey())) == 0) ||
+		(replacement != "" && !drifted) ||
 		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
-		(!installing && !covered && len(r.shapeDrift(s, l.shapeKey())) > 0)
+		(!installing && !covered && drifted)
 	if !replace {
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {
@@ -272,8 +273,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 				return fail("suspend its sandbox", err)
 			}
 			// The patch's own copy, which carries the annotation naming the replaced pod: a
-			// migrating launch reads it from here onto the Sandbox it creates
-			// (replaceSupersededSandbox).
+			// launch that replaces the Sandbox (replacement) reads it from here onto the Sandbox
+			// it creates (replaceSupersededSandbox).
 			s = suspended
 		case s.mode() != modeSuspended:
 			if err := r.suspendRecordingEnd(bounded, s, pod); err != nil {
@@ -284,9 +285,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		if err != nil {
 			return fail("wait out its previous pod", err)
 		}
-		if migrate != "" {
-			if s, err = r.replaceSupersededSandbox(bounded, l, s, migrate); err != nil {
-				return fail("replace its sandbox ("+string(migrate)+")", err)
+		if replacement != "" {
+			if s, err = r.replaceSupersededSandbox(bounded, l, s, replacement); err != nil {
+				return fail("replace its sandbox ("+string(replacement)+")", err)
 			}
 		}
 		if err := l.kind.provision(bounded, r, &l, s); err != nil {
@@ -803,9 +804,7 @@ func diskShapeChange(held, want []volumeClaimTemplate) sandboxReplacement {
 	if slices.EqualFunc(held, want, sameClaimTemplate) {
 		return ""
 	}
-	kept := slices.ContainsFunc(held, func(t volumeClaimTemplate) bool {
-		return keptTemplate(t.Metadata.Name, t.Metadata.Labels[labelVolume])
-	})
+	kept := holdsKeptVolume(held)
 	switch {
 	case len(held) == 0:
 		return replacedToKeepVolume

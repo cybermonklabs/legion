@@ -818,6 +818,17 @@ func (g *rig) writes() []action {
 	return out
 }
 
+// sandboxRemakes are the deletes and creates of the Sandbox name among g's writes, in order.
+func sandboxRemakes(g *rig, name string) []string {
+	var made []string
+	for _, w := range g.writes() {
+		if w.resource == "sandboxes" && w.name == name && (w.verb == "delete" || w.verb == "create") {
+			made = append(made, w.verb)
+		}
+	}
+	return made
+}
+
 // requests are every request the runtime made, reads included, in order; the informers' lists and
 // watches are never among them (record).
 func (g *rig) requests() []action {
@@ -1050,6 +1061,25 @@ func (g *rig) spawn(spec runtime.SpawnSpec) runtime.Locator {
 		g.t.Fatalf("spawn %s: %v", spec.Claim, err)
 	}
 	return loc
+}
+
+// relaunchOnNewPod is the issue's next launch of spec's role, at its next generation and resumed
+// on its session, as the supervisor starts a role again once its pod ended. It fails the test
+// unless the launch runs in a pod other than the one prev records.
+func (g *rig) relaunchOnNewPod(prev runtime.Locator, spec *runtime.SpawnSpec) runtime.Locator {
+	g.t.Helper()
+	spec.Generation++
+	spec.BootToken = fmt.Sprintf("boot-%s-g%d", spec.Claim, spec.Generation)
+	resumed := *spec
+	resumed.ResumeSessionFile = resumeSession
+	next, err := g.r.Resume(g.ctx, &prev, resumed)
+	if err != nil {
+		g.t.Fatalf("relaunch at generation %d: %v", spec.Generation, err)
+	}
+	if next.Sandbox.PodUID == prev.Sandbox.PodUID {
+		g.t.Fatalf("the relaunch kept the pod %s, want a pod of its own", prev.Sandbox.PodUID)
+	}
+	return next
 }
 
 // launcher is the test rig's role-private launcher connection. It models only the launcher

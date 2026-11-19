@@ -77,17 +77,7 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(reopened.Close)
-		rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), sandbox.Options{
-			Namespace: "legion", Project: "legion", Store: reopened, Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
-			StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
-			SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
-			Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
-			BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-			Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
-			ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
-			GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),
-			RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
-		})
+		rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), issueSandboxOptions(t, reopened, quietLogger()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -175,27 +165,34 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 	}
 }
 
+// issueSandboxOptions are the options these tests build the real Sandbox runtime of project legion
+// from, reading st and logging to log.
+func issueSandboxOptions(t *testing.T, st sandbox.Store, log *slog.Logger) sandbox.Options {
+	t.Helper()
+	return sandbox.Options{
+		Namespace: "legion", Project: "legion", Store: st, Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
+		StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
+		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
+		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
+		BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
+		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, log),
+		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, log),
+		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: log,
+		RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
+	}
+}
+
 // issueSandboxRuntime is the real Sandbox runtime of project legion over api, which it serves,
-// reading st, built with the options TestIssueCloseDeletesTheSandboxAfterARestart gives its own.
-// The runtime stops when the test ends, before the server closes: a server closed while the
-// runtime's watches are open waits for them, and they never end.
+// reading st, built with the options TestIssueCloseDeletesTheSandboxAfterARestart gives its own
+// (issueSandboxOptions). The runtime stops when the test ends, before the server closes: a server
+// closed while the runtime's watches are open waits for them, and they never end.
 func issueSandboxRuntime(t *testing.T, api *issueSandboxAPI, st sandbox.Store) *sandbox.Runtime {
 	t.Helper()
 	url := api.serve(t)
 	// Cleanups run last first, so this one, registered after the server's, runs before it.
 	ctx, stop := context.WithCancel(context.Background())
 	t.Cleanup(stop)
-	rt, err := sandbox.New(ctx, sandboxRESTConfig(url), sandbox.Options{
-		Namespace: "legion", Project: "legion", Store: st, Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
-		StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
-		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
-		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
-		BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
-		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
-		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),
-		RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
-	})
+	rt, err := sandbox.New(ctx, sandboxRESTConfig(url), issueSandboxOptions(t, st, quietLogger()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,17 +567,9 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	runtimeCtx, stopRuntime := context.WithCancel(ctx)
 	t.Cleanup(stopRuntime)
-	rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), sandbox.Options{
-		Namespace: "legion", Project: "legion", Store: st, Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
-		StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
-		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
-		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
-		BootTimeout:  300 * time.Millisecond, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: 100 * time.Millisecond, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, logger),
-		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, logger),
-		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: logger,
-		RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
-	})
+	opts := issueSandboxOptions(t, st, logger)
+	opts.BootTimeout, opts.TerminationGrace = 300*time.Millisecond, 100*time.Millisecond
+	rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), opts)
 	if err != nil {
 		t.Fatal(err)
 	}

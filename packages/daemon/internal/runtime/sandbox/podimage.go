@@ -88,6 +88,11 @@ func (r *Runtime) IssueSandbox(issue string) (string, bool) {
 // round's pod. It reads the object as the informer holds it, without a decode, as IssueSandbox
 // does. Anything that leaves the Sandbox unread answers false, and the issue is then told what
 // the issue of a pod on an ephemeral disk is told: the work its roles did not push is lost.
+//
+// The API server records a creation time to the second, and since has a finer resolution. So the
+// comparison cuts since to the second too, and a Sandbox made in the second the round opened
+// answers false, made before or after since in that second. The comparison errs toward a new
+// volume: a Sandbox made after since never reads as made before it.
 func (r *Runtime) IssueKeepsVolume(issue string, since time.Time) bool {
 	name, err := issueSandboxName(r.project, issue)
 	if err != nil {
@@ -97,7 +102,7 @@ func (r *Runtime) IssueKeepsVolume(issue string, since time.Time) bool {
 	if err != nil || u == nil {
 		return false
 	}
-	return storedOwnsKeptVolume(u) && u.GetCreationTimestamp().Time.Before(since)
+	return storedOwnsKeptVolume(u) && u.GetCreationTimestamp().Time.Before(since.Truncate(time.Second))
 }
 
 // IssuePod satisfies runtime.IssuePodReader: the uid of the pod issue's Sandbox holds now, ""

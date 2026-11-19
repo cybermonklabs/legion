@@ -109,7 +109,8 @@ type sandboxMetadataShape struct {
 // operator's volumes and mounts, the size of the pod's disk, and, for a pod that runs in a
 // microVM, where that microVM runs and whether the pod keeps its volume (microVM, launch.microVM;
 // nil for a gVisor pod, which records no sandbox). An encoding failure is unreachable — every field
-// is an API object or a string — and is logged and recorded as no shape, compared by image alone.
+// is an API object, a string or a bool — and is logged and recorded as no shape, compared by image
+// alone.
 //
 // Every field is settled when the runtime is built and never written again, so the runtime calls
 // this once per kind and sandbox, as it is built, and keeps what it answers (podShapes,

@@ -2254,7 +2254,7 @@ func TestAnIssuePodOwnsItsDiskAndItsSandboxOwnsNoVolume(t *testing.T) {
 			if l.kind == (controllerPod{}) {
 				t.Skip("the controller's Sandbox owns its volume")
 			}
-			if block := tc.sandbox.MicroVM; block != nil && block.KeepVolume {
+			if keptVolume(issuePod{}, tc.sandbox.MicroVM) {
 				t.Skip("a microVM pod's Sandbox owns its kept volume (TestOnlyAMicroVMPodKeepsItsVolume)")
 			}
 			if got := r.sandboxManifest(l).Spec.VolumeClaimTemplates; len(got) != 0 {

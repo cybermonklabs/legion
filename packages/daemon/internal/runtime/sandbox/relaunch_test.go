@@ -420,16 +420,6 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 			o.Log = slog.New(slog.NewTextHandler(log, &slog.HandlerOptions{Level: slog.LevelInfo}))
 		}
 	}
-	// remakes are the deletes and creates of the issue's Sandbox among g's writes, in order.
-	remakes := func(g *rig) []string {
-		var made []string
-		for _, w := range g.writes() {
-			if w.resource == "sandboxes" && w.name == name && (w.verb == "delete" || w.verb == "create") {
-				made = append(made, w.verb)
-			}
-		}
-		return made
-	}
 	// mountsKept fails the test unless the pod of the issue mounts the claim of its kept volume.
 	mountsKept := func(t *testing.T, g *rig) {
 		t.Helper()
@@ -445,7 +435,7 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 	// claim and reason.
 	remade := func(t *testing.T, g *rig, next runtime.Locator, old types.UID, oldPod string, kept bool, log *logBuffer, reason sandboxReplacement) {
 		t.Helper()
-		if made := remakes(g); !slices.Equal(made, []string{"delete", "create"}) {
+		if made := sandboxRemakes(g, name); !slices.Equal(made, []string{"delete", "create"}) {
 			t.Fatalf("the launch wrote %v of the issue's Sandbox, want it deleted and then created", made)
 		}
 		s := g.sandbox(name)
@@ -471,12 +461,7 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 		if named := s.Annotations[displacedAnnotation]; named != oldPod {
 			t.Fatalf("the Sandbox the launch created names %q as the pod the daemon replaced, want %s", named, oldPod)
 		}
-		var lines []string
-		for line := range strings.Lines(log.String()) {
-			if strings.Contains(line, "replacing the issue's Sandbox") {
-				lines = append(lines, line)
-			}
-		}
+		lines := linesHolding(log.String(), "replacing the issue's Sandbox")
 		if len(lines) != 1 {
 			t.Fatalf("the launch logged %d replacements of the issue's Sandbox, want one: %q", len(lines), log.String())
 		}
@@ -576,7 +561,7 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 			if next.Sandbox.PodUID != loc.Sandbox.PodUID {
 				t.Fatalf("the launch replaced the live pod %s with %s, want it kept for its update round", loc.Sandbox.PodUID, next.Sandbox.PodUID)
 			}
-			if made := remakes(g); len(made) > 0 {
+			if made := sandboxRemakes(g, name); len(made) > 0 {
 				t.Fatalf("the launch wrote %v of the issue's Sandbox, want it kept with its live pod", made)
 			}
 			if s := g.sandbox(name); s == nil || s.UID != old {
@@ -607,7 +592,7 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 				withKeptTemplate(t, sandboxObject(t, name, "uid-sandbox-kept", modeSuspended, labels), true),
 			}, withOptions(config))
 			g.spawn(workerSpec(t))
-			if made := remakes(g); len(made) > 0 {
+			if made := sandboxRemakes(g, name); len(made) > 0 {
 				t.Fatalf("the launch wrote %v of the issue's Sandbox, want it kept: it has the shape the launch renders", made)
 			}
 			if s := g.sandbox(name); s == nil || s.UID != "uid-sandbox-kept" || !ownsKeptVolume(s) {
@@ -631,7 +616,7 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 		if next.Sandbox.PodUID == loc.Sandbox.PodUID {
 			t.Fatalf("the launch kept the pod %s, whose launchers dial a stream this daemon does not serve", loc.Sandbox.PodUID)
 		}
-		if made := remakes(g); len(made) > 0 {
+		if made := sandboxRemakes(g, name); len(made) > 0 {
 			t.Fatalf("the launch wrote %v of the issue's Sandbox, want it kept with its kept volume", made)
 		}
 		s := g.sandbox(name)

@@ -135,25 +135,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 		return g.spawn(spec)
 	}
 	// replacements are the lines of log that a replacement of the issue's Sandbox wrote.
-	replacements := func(log *logBuffer) []string {
-		var lines []string
-		for line := range strings.Lines(log.String()) {
-			if strings.Contains(line, "replacing the issue's Sandbox") {
-				lines = append(lines, line)
-			}
-		}
-		return lines
-	}
-	// remakes are the deletes and creates of the issue's Sandbox among g's writes, in order.
-	remakes := func(g *rig) []string {
-		var made []string
-		for _, w := range g.writes() {
-			if w.resource == "sandboxes" && w.name == name && (w.verb == "delete" || w.verb == "create") {
-				made = append(made, w.verb)
-			}
-		}
-		return made
-	}
+	replacements := func(log *logBuffer) []string { return linesHolding(log.String(), "replacing the issue's Sandbox") }
 	// patches are the bodies of g's patches of the issue's Sandbox.
 	patches := func(g *rig) []string {
 		var bodies []string
@@ -241,7 +223,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 	// Where podReplaced is set, the launch runs in a new pod in place of oldPod.
 	keeps := func(t *testing.T, g *rig, log *logBuffer, loc runtime.Locator, before *sandbox, oldPod string, podReplaced bool) {
 		t.Helper()
-		if made := remakes(g); len(made) > 0 {
+		if made := sandboxRemakes(g, name); len(made) > 0 {
 			t.Fatalf("the launch wrote %v of the issue's Sandbox, want it kept", made)
 		}
 		if s := g.sandbox(name); s == nil || s.UID != before.UID {

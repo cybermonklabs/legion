@@ -291,7 +291,7 @@ func configureProber(opts Options) (*Runtime, error) {
 	// keeps an issue pod's volume and that bound is longer than the boot timeout, and the boot
 	// timeout otherwise.
 	longestStart := opts.BootTimeout
-	if microVM := opts.Sandbox.MicroVM; microVM != nil && microVM.KeepVolume {
+	if keptVolume(issuePod{}, opts.Sandbox.MicroVM) {
 		longestStart = max(longestStart, keptVolumeAttachWait)
 	}
 	refuse := func(format string, args ...any) (*Runtime, error) {

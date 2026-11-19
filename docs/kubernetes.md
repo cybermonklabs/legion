@@ -3226,8 +3226,14 @@ In every row of 90 GiB an hour or more, the sweeps of the 75 minutes after the s
 
 When the trimmer cannot bring the volume down, there are two remedies a person makes, and the quick one destroys work:
 restart the issue, and its next pod brings an empty disk of its own, taking the turn's unpushed changes and every cache the pod had built with the old one ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
-On a kept volume, a new pod alone mounts the same full volume, and only the issue's move out of the workflow and back gives it an empty one ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-The other leaves the turn where it is, and is the one that follows.
+On a kept volume, a new pod mounts the same full volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+The issue's move out of the workflow and back gives the issue a new, empty volume.
+A change of `issue_volume` gives the issue a new, empty volume after the update round of the issue's pod.
+A reset gives the issue a new, empty volume too.
+An init container can fail on the full volume.
+For example, a write of the fetch fails with curl 23, and the fetch exits 1.
+The issue's next launch then resets the volume.
+The other remedy leaves the turn where it is, and is the one that follows.
 The remedy for a volume the trimmer cannot bring down is manual, and it accounts for every directory this layout creates:
 each is on the delete list or among the exemptions under it, and a test holds the two lists to what the runtime renders (`TestTheReclaimParagraphNamesEveryDirectoryTheRendererPutsOnTheIssueVolume`).
 
@@ -3749,9 +3755,9 @@ It is on the pod template alone, so on the pod, and never on the Sandbox or its 
 A Sandbox is kept across its pods, and each of them can run in either sandbox, while the daemon builds the template again for each pod.
 
 **The disk.**
-A microVM pod's workspace volume, its generic ephemeral volume, is of `microvm.storage_class`, else of `storage_class`, at `issue_volume` (`diskSpec`, `manifest.go`).
-`diskSpec` is the one place an issue disk's claim takes its class from, so a source of the issue disk added later takes its class from the same place.
-The kept volume is such a source: with `microvm.keep_volume: true`, the volume is a claim that the issue's Sandbox owns and that outlives the pod, of the class and size that `diskSpec` gives ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+A microVM pod's workspace volume, its generic ephemeral volume, is of `microvm.storage_class`, else of `storage_class`, at `issue_volume` (`claimSpec`, `manifest.go`).
+`claimSpec` is the one place an issue disk's claim takes its class from, for a launch (`diskSpec`) and for the boot census, so a source of the issue disk added later takes its class from the same place.
+The kept volume is such a source: with `microvm.keep_volume: true`, the volume is a claim that the issue's Sandbox owns and that outlives the pod, of the class and size that `claimSpec` gives ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 The controller's disk is always of `storage_class`.
 
 **What stays in gVisor.**
@@ -6382,6 +6388,11 @@ Some causes outside the volume exit 1, so they still reset it:
 - A cause line that the fetch does not recognise.
 
 - On a volume whose feed was refused, a cache stream that breaks or fails to verify.
+
+- A failed write of the fetch's one-time credential file, or of a renewed token into that file.
+  The file is in the fetch container's own `TMPDIR`, an in-memory volume, and not on the issue's volume.
+
+- A fetch whose time runs out before its transfer from GitHub starts (`remaining` in `transferWithRetries`, `fetch.go`).
 
 A fault on a kept volume that fails neither init container stays until the issue leaves the workflow, or until a person's reset.
 So does a local fault that the fetch reports in words that read as GitHub's.

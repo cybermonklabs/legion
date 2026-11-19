@@ -19,14 +19,14 @@ func TestTheBootCensusRefusesLegacyIssueSandboxesOnly(t *testing.T) {
 	g := newRig(t, nil)
 	g.spawn(rootSpec(t))
 	sandboxes := g.dyn.Resource(sandboxGVR).Namespace(testNamespace)
-	if err := rejectLegacyIssueSandboxes(g.ctx, sandboxes, testProject, issueDisksOf(g.opts), slogTo(io.Discard)); err != nil {
+	if err := rejectLegacyIssueSandboxes(g.ctx, sandboxes, testProject, g.opts.IssueDisks(), slogTo(io.Discard)); err != nil {
 		t.Fatalf("census of a current issue pod = %v, want none", err)
 	}
 	legacy := sandboxObject(t, "legion-legion-legion-208-tester", "uid-legacy", modeRunning, claimLabels(workerSpec(t).Role))
 	if err := g.dyn.Tracker().Create(sandboxGVR, legacy, testNamespace); err != nil {
 		t.Fatal(err)
 	}
-	err := rejectLegacyIssueSandboxes(g.ctx, sandboxes, testProject, issueDisksOf(g.opts), slogTo(io.Discard))
+	err := rejectLegacyIssueSandboxes(g.ctx, sandboxes, testProject, g.opts.IssueDisks(), slogTo(io.Discard))
 	if err == nil || !strings.Contains(err.Error(), "legacy issue Sandbox") || !strings.Contains(err.Error(), legacy.GetName()) {
 		t.Fatalf("legacy object census = %v", err)
 	}
@@ -42,7 +42,7 @@ func TestTheBootCensusHoldsEverySandboxToTheLaunchersItsLabelsName(t *testing.T)
 	g := newRig(t, nil)
 	g.spawn(controllerSpec(t))
 	g.spawn(rootSpec(t))
-	if err := rejectLegacyIssueSandboxes(g.ctx, g.dyn.Resource(sandboxGVR).Namespace(testNamespace), testProject, issueDisksOf(g.opts), slogTo(io.Discard)); err != nil {
+	if err := rejectLegacyIssueSandboxes(g.ctx, g.dyn.Resource(sandboxGVR).Namespace(testNamespace), testProject, g.opts.IssueDisks(), slogTo(io.Discard)); err != nil {
 		t.Fatalf("census of a current controller pod and issue pod = %v, want none", err)
 	}
 
@@ -65,7 +65,7 @@ func TestTheBootCensusHoldsEverySandboxToTheLaunchersItsLabelsName(t *testing.T)
 	} {
 		t.Run(label, func(t *testing.T) {
 			sandboxes := newDynamic(t, sandboxRunning(t, tc.name, tc.labels, tc.containers...)).Resource(sandboxGVR).Namespace(testNamespace)
-			err := rejectLegacyIssueSandboxes(context.Background(), sandboxes, testProject, issueDisksOf(testOptions()), slogTo(io.Discard))
+			err := rejectLegacyIssueSandboxes(context.Background(), sandboxes, testProject, testOptions().IssueDisks(), slogTo(io.Discard))
 			if err == nil || !strings.Contains(err.Error(), tc.name) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("census = %v, want a refusal naming %s: %q", err, tc.name, tc.want)
 			}
@@ -96,7 +96,7 @@ func TestTheBootCensusNamesEveryRefusedSandboxAndHowMany(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	err := rejectLegacyIssueSandboxes(g.ctx, g.dyn.Resource(sandboxGVR).Namespace(testNamespace), testProject, issueDisksOf(g.opts), slogTo(io.Discard))
+	err := rejectLegacyIssueSandboxes(g.ctx, g.dyn.Resource(sandboxGVR).Namespace(testNamespace), testProject, g.opts.IssueDisks(), slogTo(io.Discard))
 	if err == nil {
 		t.Fatal("census = nil, want a refusal naming every legacy Sandbox")
 	}
@@ -130,7 +130,7 @@ func TestTheBootCensusRefusesEverySandboxOfTheTreeVolumeLayout(t *testing.T) {
 	g := newRig(t, nil)
 	g.spawn(controllerSpec(t))
 	g.spawn(rootSpec(t))
-	if err := rejectLegacyIssueSandboxes(g.ctx, g.dyn.Resource(sandboxGVR).Namespace(testNamespace), testProject, issueDisksOf(g.opts), slogTo(io.Discard)); err != nil {
+	if err := rejectLegacyIssueSandboxes(g.ctx, g.dyn.Resource(sandboxGVR).Namespace(testNamespace), testProject, g.opts.IssueDisks(), slogTo(io.Discard)); err != nil {
 		t.Fatalf("census of a current issue pod and controller pod = %v, want none", err)
 	}
 
@@ -154,7 +154,7 @@ func TestTheBootCensusRefusesEverySandboxOfTheTreeVolumeLayout(t *testing.T) {
 	} {
 		t.Run(label, func(t *testing.T) {
 			sandboxes := newDynamic(t, tc.object).Resource(sandboxGVR).Namespace(testNamespace)
-			err := rejectLegacyIssueSandboxes(context.Background(), sandboxes, testProject, issueDisksOf(testOptions()), slogTo(io.Discard))
+			err := rejectLegacyIssueSandboxes(context.Background(), sandboxes, testProject, testOptions().IssueDisks(), slogTo(io.Discard))
 			if err == nil {
 				t.Fatalf("census = nil, want a refusal naming %s", tc.object.GetName())
 			}
@@ -202,7 +202,7 @@ func TestTheBootCensusPassesAnIssueSandboxOfEitherDiskShape(t *testing.T) {
 	under := func(config func(*Options)) IssueDisks {
 		o := testOptions()
 		config(&o)
-		return issueDisksOf(o)
+		return o.IssueDisks()
 	}
 	canaries := []string{"LEGION-211", "LEGION-212"}
 	for row, tc := range map[string]struct {
@@ -222,7 +222,7 @@ func TestTheBootCensusPassesAnIssueSandboxOfEitherDiskShape(t *testing.T) {
 			},
 		},
 		"a configuration that names no sandbox": {
-			issueDisksOf(g.opts),
+			g.opts.IssueDisks(),
 			map[string]sandboxReplacement{
 				before.GetName(): replacedFromPreviousRelease, kept.GetName(): replacedToKeepNone, keptBefore.GetName(): replacedFromPreviousRelease,
 			},
@@ -234,12 +234,7 @@ func TestTheBootCensusPassesAnIssueSandboxOfEitherDiskShape(t *testing.T) {
 				t.Fatalf("census of an issue Sandbox of each disk shape = %v, want none", err)
 			}
 			for _, name := range []string{before.GetName(), now.GetName(), kept.GetName(), keptBefore.GetName(), SandboxName(rootToken), SandboxName(controllerToken)} {
-				var lines []string
-				for line := range strings.Lines(logs.String()) {
-					if strings.Contains(line, "sandbox="+name+" ") {
-						lines = append(lines, line)
-					}
-				}
+				lines := linesHolding(logs.String(), "sandbox="+name+" ")
 				reason, replaced := tc.replaced[name]
 				switch {
 				case !replaced && len(lines) > 0:
@@ -278,7 +273,7 @@ func TestTheBootCensusNamesEveryTreeVolumeLayoutSandboxInOneRefusal(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	err := rejectLegacyIssueSandboxes(g.ctx, g.dyn.Resource(sandboxGVR).Namespace(testNamespace), testProject, issueDisksOf(g.opts), slogTo(io.Discard))
+	err := rejectLegacyIssueSandboxes(g.ctx, g.dyn.Resource(sandboxGVR).Namespace(testNamespace), testProject, g.opts.IssueDisks(), slogTo(io.Discard))
 	if err == nil {
 		t.Fatal("census = nil, want a refusal naming every tree-volume-layout Sandbox")
 	}
@@ -310,12 +305,6 @@ func workflowContainers() []string {
 		containers = append(containers, string(role))
 	}
 	return containers
-}
-
-// issueDisksOf is the configuration that the daemon hands the boot census under o: the issue
-// disks that daemon/kubernetes.go builds from the runtime's Options (CensusLegacyIssueSandboxes).
-func issueDisksOf(o Options) IssueDisks {
-	return IssueDisks{Sandbox: o.Sandbox, StorageClass: o.StorageClass, Volume: o.IssueVolume}
 }
 
 // withTreeVolume is u in the tree-volume layout's root or controller shape: its one claim template
