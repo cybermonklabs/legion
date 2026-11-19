@@ -162,6 +162,14 @@ on:
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
+    inputs:
+      # The commit main pointed at before the push the bypass check read: envoy-go-checks compares
+      # every migration it holds with this run's tree, the range the push landed. A dispatch
+      # without it fails that check, which cannot tell what the run lands.
+      migration-base:
+        description: The commit main pointed at before the push this run tests.
+        type: string
+        required: false
 
 # A newer push to a pull request cancels its older run, waiting or running. On pull_request the key
 # is the pull request's number: tests-closed.yaml joins this same group when the pull request
@@ -2945,6 +2953,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_harness_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_messages_test.go'
+              - '!packages/envoy/cmd/dispatch/twobuild_migrations_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
               - '!packages/envoy/going/**/*_test.go'
@@ -2983,6 +2992,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_harness_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_messages_test.go'
+              - '!packages/envoy/cmd/dispatch/twobuild_migrations_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
               - '!packages/envoy/going/**/*_test.go'
@@ -5452,6 +5462,7 @@ jobs:
     uses: ./.github/workflows/ci-job-envoy-go-checks.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+      migration-base: ${{ inputs.migration-base }}
 
   # The slow half: the unit tests of every package of the envoy module, the container-backed NATS
   # matrix and the integration suite, all against this job's Postgres. Its format, generated-code,
