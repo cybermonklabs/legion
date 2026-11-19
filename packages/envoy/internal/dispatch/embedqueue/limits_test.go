@@ -67,6 +67,14 @@ func (f *azureFake) take() [][]string {
 	return requests
 }
 
+// seen is how many requests the fake has answered, for a test that waits for one to arrive and
+// then reads the record take holds.
+func (f *azureFake) seen() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.requests)
+}
+
 // An Azure 429, through the real AzureClient, is a throttle: the whole batch is retried as one
 // request - never bisected, never confirmed with a canary - however many times it recurs, and
 // nothing is dead-lettered; once Azure answers, the batch is embedded under the Azure identity.

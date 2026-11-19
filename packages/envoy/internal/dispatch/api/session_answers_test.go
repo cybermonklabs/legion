@@ -19,6 +19,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -29,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The session whose list each test reads, and another session beside it.
@@ -51,11 +53,21 @@ type answersFixture struct {
 
 func newAnswersFixture(t *testing.T) *answersFixture {
 	t.Helper()
+	return newAnswersFixtureOn(t, nil)
+}
+
+// newAnswersFixtureOn is newAnswersFixture on a server whose clock is clock (nil is the real one).
+func newAnswersFixtureOn(t *testing.T, clock *clocktest.Fake) *answersFixture {
+	t.Helper()
 	listener, _ := newBroadcastListener(t, `[
 		{"session_id":"`+answersSession+`","title":"Answers","capabilities":["aside","btw","steer"],"last_seen":200},
 		{"session_id":"`+answersOther+`","title":"Other","capabilities":["aside","btw","steer"],"last_seen":100}
 	]`)
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	options := testServerOptions{envoyURL: listener.URL}
+	if clock != nil {
+		options.clock = clock
+	}
+	handler, database, deps := newTestServer(t, options)
 	const title = "Session answers"
 	issue := createInteractionIssue(t, handler, "ANS", title, "The issue's spec.")
 	return &answersFixture{handler: handler, database: database, deps: deps, issue: issue.Key, title: title}
@@ -218,8 +230,7 @@ func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Pub
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, "the outbox to publish every event", func() (int, bool) {
 		var unpublished int
 		if err := f.database.Pool.QueryRow(context.Background(), `
 			select count(*) from events
@@ -229,14 +240,8 @@ func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Pub
 		`).Scan(&unpublished); err != nil {
 			t.Fatalf("count unpublished events: %v", err)
 		}
-		if unpublished == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d events unpublished", unpublished)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return unpublished, unpublished == 0
+	})
 }
 
 // destinations is the published_destinations of the one eventType event about id.
@@ -324,18 +329,20 @@ var answersAlice = model.Actor{Kind: "user", ID: "alice"}
 var answersAliceProven = model.Actor{Kind: "user", ID: "alice", Proven: true}
 
 func TestSessionAnswersListsAPersonsAnswerToTheSessionsAsk(t *testing.T) {
-	f := newAnswersFixture(t)
+	// The server reads its now from a fake standing where the test put it, so the window's start
+	// is exactly 72 hours before it.
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	f := newAnswersFixtureOn(t, clocktest.New(now))
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	answered := f.answer(t, askID, []string{"Postgres"}, "Postgres, for the pool.", nil)
 	f.publishOutbox(t)
 
-	before := time.Now().UTC()
 	listed := f.list(t, answersSession, "")
 	if listed.SessionID != answersSession || listed.Total != 1 || len(listed.Items) != 1 {
 		t.Fatalf("answers = %+v, want one item for %s", listed, answersSession)
 	}
-	if window := before.Sub(listed.Since); window < 72*time.Hour-time.Minute || window > 72*time.Hour+time.Minute {
-		t.Fatalf("since = %s, want 72 hours before the read (%s)", listed.Since, before)
+	if want := now.Add(-72 * time.Hour); !listed.Since.Equal(want) {
+		t.Fatalf("since = %s, want 72 hours before the read (%s)", listed.Since, want)
 	}
 	item := listed.Items[0]
 	if item.Kind != model.SessionAnswerKindAnswer || item.Relation != model.SessionAnswerRelationAnsweredYourAsk || item.ID != askID {

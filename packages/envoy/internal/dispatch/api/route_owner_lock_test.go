@@ -656,13 +656,7 @@ func TestADeliverySettleWaitsForItsReceiptOwnersLockHoldingNoTransactionID(t *te
 		answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
 			map[string]any{"body": "Did this ship?", "target": "session:s1", "delivery": "btw"}, "alice")
 	}()
-	select {
-	case <-entered:
-	case response := <-answered:
-		t.Fatalf("the message answered %d %s before its send reached the listener", response.Code, response.Body.String())
-	case <-time.After(30 * time.Second):
-		t.Fatal("the message's send never reached the listener")
-	}
+	awaitEntered(t, "the listener with its send", entered, answered)
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the holder: %v", err)

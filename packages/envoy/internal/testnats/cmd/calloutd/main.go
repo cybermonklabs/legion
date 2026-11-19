@@ -32,12 +32,14 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 )
 
-// readyTimeout bounds the wait for the service's subscription to reach the server, so a server
-// that never answers ends this command instead of leaving its caller waiting.
-const readyTimeout = 10 * time.Second
-
-// introspectTimeout bounds one introspection, under the service's own bound on a decision.
-const introspectTimeout = 2 * time.Second
+// The wait for the service's subscription to reach the server has no bound of its own, as natsd's
+// wait for its server has none: a server that is slow to answer, as on a loaded machine, is waited
+// for for as long as it takes, and the caller's own wait for the "calloutd: ready" line, which is
+// bounded by its test's deadline alone, decides when that is too long. A signal ends the wait.
+//
+// An introspection has no bound of its own either: the service hands each one the context of its
+// decision, whose deadline is the request's budget (natscallout's deliver), so a route that does
+// not answer is refused at that budget as the deployed service refuses it.
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -78,10 +80,9 @@ func run(args []string) error {
 		return err
 	}
 	defer service.Close()
-	ready, cancel := context.WithTimeout(ctx, readyTimeout)
-	defer cancel()
-	if err := service.Ready(ready); err != nil {
-		return fmt.Errorf("the service did not reach %s within %s: %w", *server, readyTimeout, err)
+	if err := service.Ready(ctx); err != nil {
+		// Only the signal ends Ready before the subscription reaches the server.
+		return fmt.Errorf("stopped before the service reached %s: %w", *server, err)
 	}
 	fmt.Println("calloutd: ready")
 	<-ctx.Done()
@@ -92,7 +93,7 @@ func run(args []string) error {
 // the broker's own wire (oauthwire.Introspection). A route that does not answer 200 with that
 // shape is an error, which the service refuses the connection over as a broker it cannot reach.
 func introspector(route string) func(context.Context, string) (oauthwire.Introspection, error) {
-	client := &http.Client{Timeout: introspectTimeout}
+	client := &http.Client{}
 	return func(ctx context.Context, token string) (oauthwire.Introspection, error) {
 		form := url.Values{"token": {token}}.Encode()
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, route, strings.NewReader(form))

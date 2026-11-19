@@ -23,10 +23,13 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -37,9 +40,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/collabtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain drops the databases the package's tests clone (storetest.Main). contract_test.go's
+// broker store is the broker's storetest's, whose database each test's own cleanup drops. The xid
+// window rows judge their windows' gaps only in the timing lane (storetest.JudgeXidGaps).
+func TestMain(m *testing.M) {
+	storetest.JudgeXidGaps(os.Getenv(benchtime.TimingEnv) != "")
+	os.Exit(storetest.Main(m.Run))
+}
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
 func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
@@ -88,9 +99,6 @@ type testServerOptions struct {
 	// envoyURL points the Envoy listener client at a fake listener; empty leaves the client
 	// unconfigured, which is every test that never asks whether a session is live.
 	envoyURL string
-	// envoyTimeout shortens that client's window, so a test can exercise a receipt timeout
-	// without holding a stand-in listener for the production five seconds.
-	envoyTimeout time.Duration
 	// persistence is an optional document-store seam for API handlers that need the document
 	// service to observe a persistence boundary condition.
 	persistence func(*store.Store) docs.VersionedStore
@@ -104,9 +112,6 @@ type testServerOptions struct {
 	// queues none.
 	agentPublisher   AgentPublisher
 	noAgentPublisher bool
-	// agentWatchInterval replaces how often an agent view re-arms its session (ten seconds), so a
-	// test of the re-arm need not wait one out.
-	agentWatchInterval time.Duration
 	// embedder wires meaning search (LEGION-549); nil (every test but the meaning search tests'
 	// own) is the deployment with no embedder configured, where search answers keyword-only.
 	embedder embed.Embedder
@@ -123,15 +128,11 @@ type testServerOptions struct {
 	// goroutines out; a test that stops the server before it ends (the socket's) passes one it
 	// can cancel itself. It must end by the test's end, so derive it from t.Context().
 	lifetime context.Context
+	// clock is the server's Deps.Clock, which its timers and the listener client's window run
+	// on: nil is clock.Real(), and a test that drives a timer passes a clocktest.Fake.
+	clock clock.Clock
 	// streamHeartbeat replaces the sockets' fifteen-second heartbeat.
 	streamHeartbeat time.Duration
-	// takeoverWindow replaces the listener take-over window (Deps.ListenerTakeoverWindow); zero is
-	// testTakeoverWindow. A test proving the window itself passes its own, listenerTakeoverWindow
-	// for the production twelve seconds.
-	takeoverWindow time.Duration
-	// testHookTimeout replaces the test hooks' acknowledgement timeout (Deps.TestHookTimeout);
-	// zero keeps the production ten seconds.
-	testHookTimeout time.Duration
 	// tracer is installed on every connection of the server's pool (storetest.Traced), so a test
 	// sees each statement the server runs; nil leaves the pool untraced. The xid window tests
 	// (xid_window_test.go) pass a storetest.XidTracer.
@@ -148,18 +149,17 @@ type testServerOptions struct {
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
-	// duplicateBound is the near-copy gate's bound (server.duplicateBound); zero keeps
-	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
-	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
-	duplicateBound time.Duration
 }
 
-// testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
-// a session that is gone, or a listener that refuses, waits the window out before it settles, and
-// the production twelve seconds made every such test sleep that long. 750 ms leaves exactly one
-// retry: the first, after takeoverFirstBackoff (250 ms), still starts inside it whenever the first
-// try took under half a second, which a test whose take-over answers on the second try relies on,
-// and the second, 500 ms later, never does, so a window run out costs about a quarter second.
+// testTakeoverWindow is the listener take-over window of a server a test runs on the real clock.
+// A send to a session that is gone, or to a listener that refuses, waits the window out before it
+// settles, and the production twelve seconds made every such test sleep that long. It shortens
+// only a wait no verdict reads: a test whose outcome turns on the window - on which try of a
+// take-over still starts inside it - runs the production window on a fake clock instead, where
+// the test moves time itself (newRegisteredTestServer passes listenerTakeoverWindow for such a
+// server). 750 ms leaves exactly one retry: the first, after takeoverFirstBackoff (250 ms), still
+// starts inside it whenever the first try took under half a second, and the second, 500 ms later,
+// never does, so a window run out costs about a quarter second.
 const testTakeoverWindow = 750 * time.Millisecond
 
 // testServerURL is the public origin every test server serves under: what a link a handler
@@ -257,12 +257,35 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.identity != nil {
 		people = options.identity
 	}
+	// A server on a fake clock runs the production take-over window: it costs no wall clock
+	// there, and the test moves the clock through it itself, so the window a verdict reads is
+	// the one the deployment runs. A server on the real clock takes the short one.
+	takeoverWindow := listenerTakeoverWindow
+	if options.clock == nil {
+		takeoverWindow = testTakeoverWindow
+	}
 	agentPublisher := options.agentPublisher
 	switch {
 	case options.noAgentPublisher:
 		agentPublisher = nil
 	case agentPublisher == nil:
 		agentPublisher = NewAgentPublishRecorder()
+	}
+	var documents docs.API = documentService
+	agentStream, embedder, answerer, fileStore, verifier := options.agentStream, options.embedder, options.answerer, options.files, options.oidc
+	var collaboratorHTTP *http.Client
+	// An xid window rig checks every call the server makes to a collaborator (collabtest): none
+	// may run inside a transaction's xid window, after its first write batch (store.SentWriteBatch).
+	if _, windowRig := options.tracer.(*storetest.XidTracer); windowRig {
+		documents = checkedDocs(t, documents)
+		people = checkedIdentity(t, people)
+		agentPublisher = checkedAgentPublisher(t, agentPublisher)
+		embedder = checkedEmbedder(t, embedder)
+		answerer = checkedAnswerer(t, answerer)
+		fileStore = checkedFiles(t, fileStore)
+		agentStream = checkedAgentStream(t, agentStream)
+		verifier = checkedTokenVerifier(t, verifier)
+		collaboratorHTTP = collabtest.HTTPClient(t)
 	}
 	deps, err := NewDeps(DepsInput{
 		Store:                  database,
@@ -272,30 +295,31 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		NewIssueLabel:          options.newIssueLabel,
 		NewIssueSession:        options.newIssueSession,
 		ServerURL:              testServerURL,
-		Docs:                   documentService,
+		Docs:                   documents,
 		Events:                 broker,
 		App:                    options.app,
 		GitHubAPIBase:          options.githubAPIBase,
 		TestHooksEnabled:       options.testHooks,
 		StreamHeartbeat:        options.streamHeartbeat,
 		EnvoyURL:               options.envoyURL,
-		EnvoyTimeout:           options.envoyTimeout,
-		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
-		TestHookTimeout:        options.testHookTimeout,
-		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
-		// warning must arrive inside that wait's patience rather than at the production five and
-		// thirty seconds.
-		HorizonStallAfter: horizontest.StallWarning,
-		HorizonWarnEvery:  horizontest.StallWarning,
-		OIDC:              options.oidc,
-		BrokerTokens:      brokerTokens,
-		AgentStream:       options.agentStream,
-		AgentPublisher:    agentPublisher,
-		Embedder:          options.embedder,
-		Answerer:          options.answerer,
-		Files:             options.files,
-		DashboardEntry:    options.dashboardEntry,
-		BuildCommit:       options.buildCommit,
+		ListenerTakeoverWindow: takeoverWindow,
+		// A wait on the event horizon (internal/dispatch/horizontest) reads its stall warnings for
+		// the own-hold rule and for the account a wait that gave up prints, so the horizon warns
+		// within a fraction of a second of a hold rather than at the production five and thirty
+		// seconds.
+		HorizonStallAfter:      horizontest.StallWarning,
+		HorizonWarnEvery:       horizontest.StallWarning,
+		OIDC:                   verifier,
+		BrokerTokens:           brokerTokens,
+		AgentStream:            agentStream,
+		AgentPublisher:         agentPublisher,
+		Embedder:               embedder,
+		Answerer:               answerer,
+		Files:                  fileStore,
+		DashboardEntry:         options.dashboardEntry,
+		BuildCommit:            options.buildCommit,
+		Clock:                  options.clock,
+		CollaboratorHTTPClient: collaboratorHTTP,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -304,10 +328,14 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
 	maps.Copy(served.liveKinds, options.liveKinds)
-	if options.agentWatchInterval != 0 {
-		served.agentWatchInterval = options.agentWatchInterval
-	}
-	served.duplicateBound = options.duplicateBound
+	// Every create this server answers runs the near-copy gate, and production's bound for it
+	// (duplicateGateTimeout, 2 s, on the gate's context and as its read's own
+	// statement_timeout) is one a loaded machine misses: a row would then read an unchecked
+	// create as a verdict about the gate. So the gate here is given a bound past any read of a
+	// test project, as the take-over window above is shortened, and a row whose outcome is that
+	// no check was made spends its bound instead (spentGateBound). The deployment's own bound is
+	// pinned by TestTheDeploymentsNearCopyGateBoundIsTheDocumentedOne.
+	served.duplicateBound = gateBoundPastEveryRead
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,
@@ -316,25 +344,18 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	return mux, database, deps, served
 }
 
-// waitBackgroundOf waits out served's background work at a test's end. A test that has already
-// failed may have left a handler held on something only a later cleanup releases - one its own
-// heldUntilReleased registered before this server - so for it the wait is bounded and the cleanup
-// carries on, letting that release run, rather than hanging the package until its deadline.
+// waitBackgroundOf waits out served's background work at a test's end. A handler may be held on a
+// release only a later cleanup runs - one its test's heldUntilReleased registered before this
+// server, as a test that failed while the handler waited leaves it - so the test's releases run
+// first (releaseHeld): the test is over, and they would run next anyway.
 func waitBackgroundOf(t testing.TB, served *server) {
-	if !t.Failed() {
-		served.waitBackground()
-		return
-	}
+	releaseHeld(t)
 	waited := make(chan struct{})
 	go func() {
 		served.waitBackground()
 		close(waited)
 	}()
-	select {
-	case <-waited:
-	case <-time.After(5 * time.Second):
-		t.Log("the failed test left background work running; its later cleanups release it")
-	}
+	testwait.Receive(t, "the server's background work to end", waited)
 }
 
 // directServer is a server a test calls a handler or a delivery step on directly, without the
@@ -343,7 +364,18 @@ func waitBackgroundOf(t testing.TB, served *server) {
 // lifetime is context.Background(): a related-item check it runs starts a statistics refresh and
 // may retry its record on that lifetime, which nothing here cancels.
 func directServer(deps Deps) *server {
-	return &server{deps: deps, lifetime: context.Background()}
+	return &server{deps: deps, lifetime: context.Background(), clock: cmp.Or[clock.Clock](deps.Clock, clock.Real())}
+}
+
+// awaitArmedAt waits until a timer for at is pending on fake, the server's clock, and fails naming
+// what and the deadlines it last saw when none ever is. It looks for the one deadline rather than a
+// count, since the server's other timers on the same fake may be pending beside it.
+func awaitArmedAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time) {
+	t.Helper()
+	testwait.Until(t, what+" armed for "+at.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, at.Equal)
+	})
 }
 
 // writeSessionRecord answers GET /v1/registry/{session_id} from the rows a stub listener also
@@ -382,24 +414,16 @@ func writeSessionRecord(t *testing.T, w http.ResponseWriter, sessionsJSON, sessi
 	_, _ = w.Write([]byte(`{"error":"no live session ` + sessionID + `"}`))
 }
 
-// waitForDatabaseLocks waits up to 2 s for want backends to queue behind a lock that holder's
-// transaction owns (storetest.WaitForLockWaiters), and fails the test when they never do.
+// waitForDatabaseLocks waits for want backends to queue behind a lock that holder's transaction
+// owns (storetest.WaitForLockWaiters), and fails the test when they never do.
 func waitForDatabaseLocks(t *testing.T, holder pgx.Tx, want int) {
 	t.Helper()
-	if queued := storetest.WaitForLockWaiters(t, holder, want, 2*time.Second); queued < want {
-		t.Fatalf("waiting database locks: wanted at least %d operations queued behind the held lock, saw %d", want, queued)
-	}
+	storetest.WaitForLockWaiters(t, holder, want)
 }
 
 func awaitResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	t.Helper()
-	select {
-	case response := <-responses:
-		return response
-	case <-time.After(2 * time.Second):
-		t.Fatal("concurrent request did not complete")
-		return nil
-	}
+	return testwait.Receive(t, "the concurrent request to complete", responses)
 }
 
 func dispatchRequest(t *testing.T, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {
@@ -520,11 +544,7 @@ func awaitBackgroundWrites(t *testing.T, srv *server) {
 		srv.detached.wait()
 		close(idle)
 	}()
-	select {
-	case <-idle:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the server's detached work did not end")
-	}
+	testwait.Receive(t, "the server's detached work to end", idle)
 }
 
 // assertRefusal checks an answer is 400 with code and an error naming field first.

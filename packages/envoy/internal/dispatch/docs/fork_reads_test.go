@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests here hold a write transaction's reads of its fork (forkTreeCounts) to what reading the
@@ -556,7 +557,7 @@ func runForkSteps(t *testing.T, service *Service, artifactID string, checks *ren
 	}
 	calls, found := checks.take()
 	failures = append(failures, found...)
-	if want := map[string]int{"publish": 1}; !maps.Equal(calls, want) {
+	if want := map[string]int{"commit": 1}; !maps.Equal(calls, want) {
 		t.Errorf("the commit checked the rendering at %v, want %v", calls, want)
 	}
 	for _, failure := range failures {
@@ -754,4 +755,82 @@ func TestForkReadsEveryReuseOfAWritesRenderingDescribesItsFork(t *testing.T) {
 			t.Errorf("version %d records %d bytes of markdown, not the %d bytes the write's own state renders to", number, len(stored), len(want))
 		}
 	})
+}
+
+// A committed write hands its fork to its room's shadow (newShadow), and the room's durable
+// writers apply to that document the browser commits the room made after the write's read as they
+// store them (roomShadow.measure), so the write's rendering describes its fork up to the commit
+// and no state of the write's after it. Here a browser commits after the write's read, and the
+// room stores that commit while the write is parked after its commit, before its publish: the
+// order comes from the commit pause, not from load. The rendering is checked where the fork is
+// last the write's own, at the commit ("commit"), and describes it there. Checked at the publish,
+// after the room had stored the browser's commit, it read the shadow's document, which holds that
+// commit (INFRA-3149: this row's "a browser commit between operations" failed so under load).
+func TestForkReadsAWritesRenderingDescribesItsForkAtTheCommitThatHandsItToTheRoomsShadow(t *testing.T) {
+	service, artifactID := newForkReadsRoom(t)
+	service.hooks = newTestHooks()
+	checks := checkRenderings(service)
+	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
+		t.Fatalf("load the document's room: %v", err)
+	}
+	if err := service.ArmLiveWritePause(artifactID, PauseAfterCommit); err != nil {
+		t.Fatalf("arm the pause after the commit: %v", err)
+	}
+	t.Cleanup(func() { _, _ = service.ReleaseLiveWritePause(artifactID, PauseAfterCommit) })
+	var markErr error
+	operated, commit, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		done <- joinedWrite(service, func(ctx context.Context) error {
+			_, markErr = service.MarkQuote(ctx, artifactID, MarkSpec{Kind: MarkSuggestion, ID: "s-stored", By: reuseAlice}, "Step 44 one is taken first", nil)
+			close(operated)
+			if markErr != nil {
+				return markErr
+			}
+			<-commit
+			return nil
+		})
+	}()
+	testwait.Receive(t, "the write's operation", operated)
+	if markErr != nil {
+		t.Fatalf("mark the quote: %v", markErr)
+	}
+	editAsConnectedPeer(t, service, artifactID, 2, reuseBob, replaceRun("Paragraph 44 opens", "Paragraph 44 then opens"))
+	close(commit)
+	parked := make(chan error, 1)
+	go func() { parked <- service.AwaitLiveWriteParked(testwait.Context(t), artifactID, PauseAfterCommit) }()
+	ended := testwait.Until(t, "the write to park after its commit, or to end", func() (string, bool) {
+		select {
+		case err := <-parked:
+			if err != nil {
+				return fmt.Sprintf("the wait for the park ended: %v", err), true
+			}
+			return "", true
+		case err := <-done:
+			return fmt.Sprintf("the write ended before it parked: %v", err), true
+		default:
+			return "neither yet", false
+		}
+	})
+	if ended != "" {
+		t.Fatal(ended)
+	}
+	// The write's commit let the document's lock go, so the room stores the browser's commit now
+	// and measures its class on the room's shadow, the write's fork (Ledger.flushThrough).
+	waitForLandedAppends(t, service, artifactID)
+	if _, err := service.ReleaseLiveWritePause(artifactID, PauseAfterCommit); err != nil {
+		t.Fatalf("release the write: %v", err)
+	}
+	if err := testwait.Receive(t, "the write's publish", done); err != nil {
+		t.Fatalf("commit the write: %v", err)
+	}
+	calls, failures := checks.take()
+	if want := map[string]int{"fork": 1, "commit": 1}; !maps.Equal(calls, want) {
+		t.Errorf("the write checked its rendering at %v, want %v", calls, want)
+	}
+	for _, failure := range failures {
+		t.Errorf("a write's rendering is not its fork's at %s", failure)
+	}
+	if stored := documentText(t, service, artifactID); !strings.Contains(stored, "Paragraph 44 then opens") {
+		t.Error("the document does not hold the browser's commit the room stored after the write")
+	}
 }

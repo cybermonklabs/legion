@@ -4,6 +4,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A server of this rig answers a request through each service export of its system account that a
@@ -36,7 +38,7 @@ func TestTheSystemAccountsExportsOutliveEveryTestAndStillAnswer(t *testing.T) {
 		defer conn.Close()
 		system := grant.srv.natsServer().SystemAccount()
 		for _, e := range exports {
-			if _, err := conn.Request(e.request, nil, connectTimeout); err != nil {
+			if _, err := conn.RequestWithContext(testwait.Context(t), e.request, nil); err != nil {
 				t.Fatalf("%s: %s got no answer through the system account's export %q: %v", when, e.request, e.export, err)
 			}
 			got, err := system.ServiceExportResponseThreshold(e.export)

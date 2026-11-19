@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestExtractRecognizesDispatchAndServerReferences(t *testing.T) {
@@ -584,9 +583,9 @@ func TestEveryReferenceIsBoundedByItsTargetID(t *testing.T) {
 
 // A body near the 1 MiB request cap that trails a reference with a run of closing parentheses,
 // alone or between the emphasis delimiters the trim also drops, or with a run of square brackets
-// after a dashboard URL, still cites that reference, in one pass over the run. The bound is
-// generous for a loaded machine; a trim that recounts the parentheses for every character it drops
-// takes tens of seconds on these bodies.
+// after a dashboard URL, still cites that reference, in one pass over the run: the trim reads the
+// body's bytes no more than three times over (trimWork), where a trim that recounts the
+// parentheses for every character it drops reads them once for each.
 func TestExtractTrimsALongClosingRunInLinearTime(t *testing.T) {
 	const server = "https://dispatch.example"
 	const size = 1 << 20
@@ -601,10 +600,11 @@ func TestExtractTrimsALongClosingRunInLinearTime(t *testing.T) {
 		{"square brackets after a dashboard URL", server + "/issues/CORE-1" + strings.Repeat("]", size)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			start := time.Now()
+			before := trimWork()
 			got := Extract(test.body, server)
-			if elapsed := time.Since(start); elapsed > 3*time.Second {
-				t.Errorf("Extract() took %s on a %d-byte body; want one pass", elapsed, len(test.body))
+			if read := trimWork() - before; read > 3*uint64(len(test.body)) {
+				t.Errorf("Extract() trimmed %d bytes of a %d-byte body; want one pass: two parenthesis counts and one walk back",
+					read, len(test.body))
 			}
 			if !reflect.DeepEqual(got, issue) {
 				t.Errorf("Extract() = %#v; want %#v", got, issue)

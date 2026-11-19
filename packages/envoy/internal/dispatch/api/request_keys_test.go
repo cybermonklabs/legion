@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // keyedRequest sends body to target as login, under key when key is not empty, as the dashboard
@@ -69,7 +70,13 @@ func newKeyedRig(t *testing.T, answer func(run int32, w http.ResponseWriter, r *
 // upload's larger body limit - can be driven too.
 func newKeyedRigAt(t *testing.T, pattern string, answer func(run int32, w http.ResponseWriter, r *http.Request)) *keyedRig {
 	t.Helper()
-	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	return newKeyedRigWith(t, testServerOptions{}, pattern, answer)
+}
+
+// newKeyedRigWith is newKeyedRigAt on a server built with options, such as a clock the test moves.
+func newKeyedRigWith(t *testing.T, options testServerOptions, pattern string, answer func(run int32, w http.ResponseWriter, r *http.Request)) *keyedRig {
+	t.Helper()
+	_, database, _, served := newRegisteredTestServer(t, options)
 	rig := &keyedRig{database: database, server: served}
 	mux := http.NewServeMux()
 	mux.HandleFunc(http.MethodPost+" "+pattern, trackTransactions(served.keyedWrites(
@@ -122,13 +129,40 @@ func refusalOf(t *testing.T, response *httptest.ResponseRecorder) (code, text st
 }
 
 // heldUntilReleased is a channel a held handler waits on, and its one release, which the test's
-// cleanup runs too, so a test that fails while a handler waits never leaves it waiting.
+// cleanup runs too, so a test that fails while a handler waits never leaves it waiting. A server
+// built after the release was made waits out its background work in a cleanup that runs before
+// the release's own, so that wait runs the test's releases first (releaseHeld).
 func heldUntilReleased(t *testing.T) (<-chan struct{}, func()) {
 	t.Helper()
 	release := make(chan struct{})
 	once := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(once)
+	heldReleases.Lock()
+	heldReleases.byTest[t] = append(heldReleases.byTest[t], once)
+	heldReleases.Unlock()
+	t.Cleanup(func() {
+		once()
+		heldReleases.Lock()
+		delete(heldReleases.byTest, t)
+		heldReleases.Unlock()
+	})
 	return release, once
+}
+
+// heldReleases is every release heldUntilReleased handed a test that has not yet ended, by test.
+var heldReleases = struct {
+	sync.Mutex
+	byTest map[testing.TB][]func()
+}{byTest: map[testing.TB][]func(){}}
+
+// releaseHeld runs every release heldUntilReleased handed t. A cleanup calls it once the test is
+// over, when each release would run at the latest anyway.
+func releaseHeld(t testing.TB) {
+	heldReleases.Lock()
+	releases := heldReleases.byTest[t]
+	heldReleases.Unlock()
+	for _, release := range releases {
+		release()
+	}
 }
 
 // INFRA-258. A repeat under a key - a retry after a lost answer, a double press - is answered the
@@ -218,10 +252,12 @@ func TestARepeatWhileTheFirstRunsIsInFlight(t *testing.T) {
 }
 
 // Many attempts under one key at once: one runs, and every other is told it is in flight or, once
-// the one has answered, given its answer.
+// the one has answered, given its answer. The one that runs is held until every other has been
+// answered, so all of them arrive while it is in flight.
 func TestConcurrentAttemptsUnderOneKeyRunOnce(t *testing.T) {
+	running, release := heldUntilReleased(t)
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
-		time.Sleep(50 * time.Millisecond)
+		<-running
 		answerRun(run, w, r)
 	})
 	const attempts = 8
@@ -230,6 +266,8 @@ func TestConcurrentAttemptsUnderOneKeyRunOnce(t *testing.T) {
 	for range attempts {
 		wait.Go(func() { responses <- rig.send(t, "a", map[string]any{"n": 1}, "alice", "race") })
 	}
+	testwait.Eventually(t, "every attempt but the running one to be answered", func() bool { return len(responses) == attempts-1 })
+	release()
 	wait.Wait()
 	close(responses)
 	fresh := 0
@@ -751,13 +789,8 @@ func TestAWriteDetachedPastTheAnswerCommits(t *testing.T) {
 		t.Fatalf("first: status=%d", first.Code)
 	}
 	close(answeredSignal)
-	select {
-	case err := <-detached:
-		if err != nil {
-			t.Fatalf("the detached write after the answer = %v, want it committed", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the detached write never finished")
+	if err := testwait.Receive(t, "the detached write to finish", detached); err != nil {
+		t.Fatalf("the detached write after the answer = %v, want it committed", err)
 	}
 	if writes := rig.writes(t); len(writes) != 1 {
 		t.Fatalf("the rig's writes = %v, want the detached one", writes)

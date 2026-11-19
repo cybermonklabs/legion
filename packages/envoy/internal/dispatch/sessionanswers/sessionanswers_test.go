@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // A message the listener stored for a session that is not running (state 'queued') is a person's
 // words the session owes an answer for exactly as a sent one is: it reaches that session when it

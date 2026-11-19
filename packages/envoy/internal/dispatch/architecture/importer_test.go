@@ -20,10 +20,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -32,6 +35,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // archRepo is the repository newImporterFixture's source of CORE reads.
@@ -150,11 +155,7 @@ func (h *releasableHold) channels(t *testing.T) (held, release chan struct{}) {
 func (h *releasableHold) waitHeld(t *testing.T) {
 	t.Helper()
 	held, _ := h.channels(t)
-	select {
-	case <-held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("no read reached the hold within 10s")
-	}
+	testwait.Receive(t, "a read to reach the hold", held)
 }
 
 // releaseHeld lets every held read answer.
@@ -350,7 +351,7 @@ func writeStatus(w http.ResponseWriter, status int) {
 	fmt.Fprintf(w, `{"message":%q,"status":"%d"}`, http.StatusText(status), status)
 }
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // newGitHubClient serves handler as the GitHub API and returns an App client
 // pointed at it.
@@ -375,6 +376,14 @@ func newGitHubClient(t *testing.T, handler http.Handler) *githubapp.Client {
 // does not outlive the pool it writes to.
 func newImporterFixture(t *testing.T, fake *fakeSource) (*Importer, *store.Store) {
 	t.Helper()
+	importer, database, _ := newImporterFixtureOn(t, fake)
+	return importer, database
+}
+
+// newImporterFixtureOn is newImporterFixture with the importer's flight deadlines on a fake
+// clock the test moves (NewImporterOn), which it answers beside the importer and the database.
+func newImporterFixtureOn(t *testing.T, fake *fakeSource) (*Importer, *store.Store, *clocktest.Fake) {
+	t.Helper()
 	if fake.installationID == 0 {
 		fake.installationID = 11
 	}
@@ -394,11 +403,12 @@ func newImporterFixture(t *testing.T, fake *fakeSource) (*Importer, *store.Store
 	`, fake.installationID); err != nil {
 		t.Fatalf("seed source: %v", err)
 	}
-	importer := NewImporter(database, client, events.NewBroker())
+	clock := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
+	importer := NewImporterOn(clock, database, client, events.NewBroker())
 	// Cleanups run last registered first, and the pool's is storetest.Open's
 	// above, so this one ends the flights before the pool closes under them.
 	t.Cleanup(importer.Close)
-	return importer, database
+	return importer, database, clock
 }
 
 func projectEvents(t *testing.T, database *store.Store) []string {
@@ -706,7 +716,7 @@ func TestTwoConcurrentImportsOfOneSourceShareOneGitHubSync(t *testing.T) {
 
 	started := syncInBackground(importer)
 	fake.installations.waitHeld(t)
-	joined := joinInBackground(importer, archRepo)
+	joined := joinInBackground(t, importer, archRepo)
 	fake.installations.releaseHeld(t)
 
 	for _, caller := range []struct {
@@ -785,31 +795,39 @@ func TestASlowSourceDoesNotBlockAnotherSourceOfItsProject(t *testing.T) {
 // WaitGroup forbids. The counter holds stop open while a flight is
 // outstanding, returns once the last one ends, and refuses every flight that
 // begins after it, so a goroutine that starts late does nothing.
+//
+// The counter is memory and channels alone, with no I/O, so the test runs in a synctest bubble,
+// whose Wait returns once every goroutine in it is blocked: a stop still waiting is then blocked
+// where the test reads it.
 func TestTheFlightCounterWaitsForEveryFlightAndThenRefusesMore(t *testing.T) {
-	var flights syncCount
-	if !flights.begin() {
-		t.Fatal("the first flight was refused by a counter nobody has stopped")
-	}
-	stopped := make(chan struct{})
-	go func() {
-		flights.stop()
-		close(stopped)
-	}()
-	select {
-	case <-stopped:
-		t.Fatal("stop returned while a flight was still outstanding")
-	case <-time.After(200 * time.Millisecond):
-	}
+	synctest.Test(t, func(t *testing.T) {
+		var flights syncCount
+		if !flights.begin() {
+			t.Fatal("the first flight was refused by a counter nobody has stopped")
+		}
+		stopped := make(chan struct{})
+		go func() {
+			flights.stop()
+			close(stopped)
+		}()
+		// stop is blocked on the outstanding flight, which is the state the counter holds: every
+		// goroutine of this test is then blocked, which synctest.Wait reports, and a stop that
+		// returned early would have closed stopped before it.
+		synctest.Wait()
+		select {
+		case <-stopped:
+			t.Fatal("stop returned while a flight was still outstanding")
+		default:
+		}
 
-	flights.done()
-	select {
-	case <-stopped:
-	case <-time.After(10 * time.Second):
-		t.Fatal("stop did not return once the last flight ended")
-	}
-	if flights.begin() {
-		t.Fatal("a flight that began after stop was admitted; want it refused, so a goroutine starting late does nothing")
-	}
+		flights.done()
+		// A plain receive: inside the bubble a wait takes no bound from t.Deadline, and a stop that
+		// never returns leaves every goroutine blocked, which synctest reports as a deadlock.
+		<-stopped
+		if flights.begin() {
+			t.Fatal("a flight that began after stop was admitted; want it refused, so a goroutine starting late does nothing")
+		}
+	})
 }
 
 // The process stopping ends the flight it left running and waits for it: the
@@ -827,11 +845,7 @@ func TestCloseWaitsForTheSyncItLeftRunning(t *testing.T) {
 		importer.Close()
 		close(closed)
 	}()
-	select {
-	case <-closed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("Close did not return within 30s of a flight held in its blob read; want it to end the flight and wait for it")
-	}
+	testwait.Receive(t, "Close to return, ending the flight held in its blob read and waiting for it", closed)
 
 	answer := waitForSync(t, answered, "the caller whose flight Close ended")
 	if answer.err == nil {
@@ -1426,19 +1440,25 @@ func TestComponentFactsRecordWhenAComponentWasMadeAndChanged(t *testing.T) {
 // row and the ticker's next tick both see why nothing imported. Only the
 // process stopping suppresses the record.
 func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
-	previous := syncTimeout
-	syncTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { syncTimeout = previous })
-
 	fake := &fakeSource{t: t, files: validFiles(), holdArchBlobs: true}
-	importer, database := newImporterFixture(t, fake)
+	importer, database, clock := newImporterFixtureOn(t, fake)
 
-	source, err := importer.Sync(context.Background(), "CORE", archRepo)
-	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("held blob: err=%v, want the deadline", err)
+	// The flight's deadline is armed on the clock once its blob read is held; the test moves the
+	// clock there and nowhere else, so the sync ends on its own bound and on nothing's timing.
+	answered := syncInBackground(importer)
+	fake.blobs.waitHeld(t)
+	began := clock.Now()
+	armed := clock.AwaitArmed(t, "the flight's deadline", 1)
+	if want := began.Add(syncTimeout); len(armed) != 1 || !armed[0].Equal(want) {
+		t.Fatalf("the flight armed %v, want its deadline alone at %s, syncTimeout from its start", armed, want)
 	}
-	if source.LastError == nil || !strings.Contains(*source.LastError, "deadline") {
-		t.Fatalf("last_error = %v, want the deadline on the row", source.LastError)
+	clock.Set(armed[0])
+	answer := waitForSync(t, answered, "the caller whose flight met its deadline")
+	if answer.err == nil || !errors.Is(answer.err, context.DeadlineExceeded) {
+		t.Fatalf("held blob: err=%v, want the deadline", answer.err)
+	}
+	if answer.source.LastError == nil || !strings.Contains(*answer.source.LastError, "deadline") {
+		t.Fatalf("last_error = %v, want the deadline on the row", answer.source.LastError)
 	}
 	if got := projectEvents(t, database); len(got) != 1 || !strings.HasPrefix(got[0], "architecture.sync_failed") {
 		t.Fatalf("events = %#v, want one sync_failed", got)
@@ -1447,32 +1467,34 @@ func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
 	// A caller that goes away is answered at once with its own cancellation,
 	// and the flight it left behind still records the deadline it meets.
 	fake2 := &fakeSource{t: t, files: validFiles(), holdArchBlobs: true}
-	importer2, database2 := newImporterFixture(t, fake2)
+	importer2, database2, clock2 := newImporterFixtureOn(t, fake2)
 	ctx, cancel := context.WithCancel(context.Background())
-	cancelled := make(chan time.Time, 1)
+	left := make(chan syncAnswer, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-		cancelled <- time.Now()
+		source, err := importer2.Sync(ctx, "CORE", archRepo)
+		left <- syncAnswer{source: source, err: err}
 	}()
-	_, err = importer2.Sync(ctx, "CORE", archRepo)
-	returned := time.Now()
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled caller: err=%v, want its own cancellation", err)
-	}
-	if waited := returned.Sub(<-cancelled); waited > time.Second {
-		t.Fatalf("the cancelled caller returned %v after the cancel; want it answered at once", waited)
+	// The caller is cancelled while its flight is held in the blob read, so nothing but the
+	// cancellation can answer it: the flight's own deadline is armed on a clock the test has
+	// not moved.
+	fake2.blobs.waitHeld(t)
+	armed2 := clock2.AwaitArmed(t, "the abandoned flight's deadline", 1)
+	cancel()
+	if answer := testwait.Receive(t, "the cancelled caller's answer", left); !errors.Is(answer.err, context.Canceled) {
+		t.Fatalf("cancelled caller: err=%v, want its own cancellation", answer.err)
 	}
 	// Close would cancel the flight, which is the one thing that suppresses
-	// the record, so wait for the record first and let Close wait the flight
-	// out before reading what it wrote.
+	// the record, so the flight meets its deadline first, and Close waits it
+	// out before the row is read.
+	clock2.Set(armed2[0])
 	var lastError *string
-	for until := time.Now().Add(10 * time.Second); lastError == nil && time.Now().Before(until); time.Sleep(10 * time.Millisecond) {
+	testwait.Eventually(t, "the abandoned flight to record the deadline it met", func() bool {
 		if err := database2.Pool.QueryRow(context.Background(),
 			`select last_error from architecture_sources where project_key = 'CORE'`).Scan(&lastError); err != nil {
 			t.Fatalf("read row: %v", err)
 		}
-	}
+		return lastError != nil
+	})
 	importer2.Close()
 	if err := database2.Pool.QueryRow(context.Background(),
 		`select last_error from architecture_sources where project_key = 'CORE'`).Scan(&lastError); err != nil {
@@ -1954,13 +1976,19 @@ func TestTheLegacySourceResyncsThroughTheUnchangedHeadShortcut(t *testing.T) {
 	}
 	importer := NewImporter(database, client, events.NewBroker())
 	before := componentRows(t, database)
+	// The moment of the database's own clock the stamp is judged against: the sync stamps the
+	// row from that clock, so a stamp at or after this one is the sync's own.
+	var beforeSync time.Time
+	if err := database.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&beforeSync); err != nil {
+		t.Fatalf("read the database's clock before the sync: %v", err)
+	}
 
 	source, err := importer.Sync(ctx, "CORE", archRepo)
 	if err != nil {
 		t.Fatalf("sync the legacy source: %v", err)
 	}
 	if source.ID != 0 || source.LastCommit == nil || *source.LastCommit != commitOne || source.LastError != nil ||
-		source.LastSyncAt == nil || time.Since(*source.LastSyncAt) > time.Minute || source.Components != 2 {
+		source.LastSyncAt == nil || source.LastSyncAt.Before(beforeSync) || source.Components != 2 {
 		t.Fatalf("legacy source after sync = %+v, want id 0 at %s, freshly stamped, projecting 2", source, commitOne)
 	}
 	if trees, blobs := fake.reads(); trees != 0 || blobs != 0 {
@@ -2148,6 +2176,13 @@ func (b *movingBranch) handler() http.Handler {
 // so a flight a cancelled caller left behind does not outlive the pool it writes to.
 func twoProcesses(t *testing.T, branch *movingBranch) (a, b *Importer, database *store.Store) {
 	t.Helper()
+	return twoProcessesOn(t, branch, clock.Real())
+}
+
+// twoProcessesOn is twoProcesses with both importers' flight deadlines on c (NewImporterOn), for a
+// test that ends a flight on its own bound by moving a clocktest.Fake to it.
+func twoProcessesOn(t *testing.T, branch *movingBranch, c clock.Clock) (a, b *Importer, database *store.Store) {
+	t.Helper()
 	client := newGitHubClient(t, branch.handler())
 	database = storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -2157,7 +2192,7 @@ func twoProcesses(t *testing.T, branch *movingBranch) (a, b *Importer, database 
 	`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	a, b = NewImporter(database, client, events.NewBroker()), NewImporter(database, client, events.NewBroker())
+	a, b = NewImporterOn(c, database, client, events.NewBroker()), NewImporterOn(c, database, client, events.NewBroker())
 	// Cleanups run last registered first, and the pool's is storetest.Open's above, so these end
 	// the flights before the pool closes under them.
 	t.Cleanup(a.Close)
@@ -2189,27 +2224,40 @@ func syncRepoInBackground(process *Importer, repo string) <-chan syncAnswer {
 }
 
 // joinInBackground starts a caller of repo's sync meant to join the flight already running, and
-// gives it the moment it needs to reach that flight. A caller that joins a flight makes no call
-// of its own — no GitHub read, no query, nothing a test can wait for — so this settle is what
-// keeps the test about one shared flight; the flight cannot end underneath it meanwhile, because
-// the caller returns while the test still holds the read that flight is stopped at.
-func joinInBackground(process *Importer, repo string) <-chan syncAnswer {
+// waits until it has. A caller that joins a flight makes no call of its own — no GitHub read, no
+// query, nothing a product reports — so what shows the join is the caller's own goroutine parked
+// in Sync's wait for the flight's answer (callersAwaitingAFlight); the flight cannot end
+// underneath it meanwhile, because the caller joins while the test still holds the read that
+// flight is stopped at.
+func joinInBackground(t *testing.T, process *Importer, repo string) <-chan syncAnswer {
+	t.Helper()
+	awaiting := callersAwaitingAFlight()
 	answer := syncRepoInBackground(process, repo)
-	time.Sleep(500 * time.Millisecond)
+	testwait.Until(t, "the caller to join the flight already running", func() (int, bool) {
+		now := callersAwaitingAFlight()
+		return now, now > awaiting
+	})
 	return answer
+}
+
+// callersAwaitingAFlight counts the goroutines parked in Sync's wait for a flight's answer: the
+// caller that started a flight and every caller that joined it. This package's tests run one at a
+// time, so each such goroutine is the running test's.
+func callersAwaitingAFlight() int {
+	awaiting := 0
+	for _, trace := range goroutinetest.Traces() {
+		if header, _, _ := strings.Cut(trace, "\n"); strings.Contains(header, "[select") && strings.Contains(trace, ".(*Importer).Sync(") {
+			awaiting++
+		}
+	}
+	return awaiting
 }
 
 // waitForSync answers what a background sync returned, failing the test rather than hanging when
 // it never does: a caller left waiting on a flight is the regression these tests are about.
 func waitForSync(t *testing.T, answered <-chan syncAnswer, who string) syncAnswer {
 	t.Helper()
-	select {
-	case answer := <-answered:
-		return answer
-	case <-time.After(30 * time.Second):
-		t.Fatalf("%s did not return within 30s", who)
-		return syncAnswer{}
-	}
+	return testwait.Receive(t, who+"'s sync to answer", answered)
 }
 
 // requireSettledAtTheNewerHead checks the held process's answer and the stored state once both
@@ -2328,7 +2376,7 @@ func TestACallerAfterTheHeadWasReadIsNotToldTheOlderHead(t *testing.T) {
 	beforeThePush := syncInBackground(process)
 	branch.waitHeld(t)
 	branch.moveHead(commitTwo)
-	afterThePush := joinInBackground(process, archRepo)
+	afterThePush := joinInBackground(t, process, archRepo)
 	branch.releaseHeld()
 
 	older := waitForSync(t, beforeThePush, "the caller that asked before the push")

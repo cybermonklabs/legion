@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // iapSocketAudience is the audience IAP signs for the test's load balancer backend service.
@@ -87,13 +89,15 @@ func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T
 	short := rig.dial(t, expiring)
 	long := rig.dial(t, iap.assertion(t, time.Now().Add(9*time.Minute)))
 
-	closed := short.closeError(t, 6*time.Second)
+	closed := short.closeError(t)
 	if closed.Code != contracts.LiveSocketMaxAgeClose || closed.Text != liveSocketCredentialExpiredReason {
 		t.Fatalf("the socket whose upgrade's assertion expired closed with %d %q, want %d %q, which a page answers by reopening at once",
 			closed.Code, closed.Text, contracts.LiveSocketMaxAgeClose, liveSocketCredentialExpiredReason)
 	}
 	// A few more heartbeats: the control is re-checked on each and stays open.
-	time.Sleep(3 * heartbeat)
+	testwait.Span(t, 3*heartbeat, "the heartbeat is the server's own ticker (streamHeartbeat), whose ticks the test "+
+		"cannot count, and the control's verdict is that it stays open across them: no state, no synctest bubble "+
+		"(real sockets) and no later action shows the control's heartbeats ran")
 	select {
 	case <-long.ended:
 		t.Fatalf("control: the socket on a nine-minute assertion ended: %v", long.err)
@@ -104,7 +108,7 @@ func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T
 	}
 	reopened := rig.dial(t, iap.assertion(t, time.Now().Add(9*time.Minute)))
 	reopened.send(t, LiveUnsubscribe{Type: "unsubscribe"})
-	reopened.refusal(t, 3*time.Second, "", "INVALID_FRAME")
+	reopened.refusal(t, "", "INVALID_FRAME")
 }
 
 // switchedIdentity is a Dispatch's IAP identity, which a test swaps while sockets are open, so a
@@ -161,7 +165,7 @@ func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing
 			rig := newLiveSocketRig(t, testServerOptions{store: database, streamHeartbeat: 3 * time.Second, identity: switched}, nil)
 			socket := rig.dial(t, iap.expiring(t, time.Second))
 			switched.swap(change.apply(t, iap))
-			if closed := socket.closeError(t, 8*time.Second); closed.Code != gws.ClosePolicyViolation {
+			if closed := socket.closeError(t); closed.Code != gws.ClosePolicyViolation {
 				t.Fatalf("the socket whose upgrade's assertion expired, %s, closed with %d %q, want %d: it is refused, not rotated",
 					change.name, closed.Code, closed.Text, gws.ClosePolicyViolation)
 			}
@@ -256,16 +260,14 @@ func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testi
 	short := rig.openDocument(t, rig.iap.expiring(t, 3*time.Second))
 	long := rig.openDocument(t, rig.iap.assertion(t, time.Now().Add(9*time.Minute)))
 
-	select {
-	case <-short.connection().Ended:
-	case <-time.After(8 * time.Second):
-		t.Fatal("the document socket whose upgrade's assertion expired is still open after 8 s")
-	}
+	testwait.Receive(t, "the document socket whose upgrade's assertion expired to close", short.connection().Ended)
 	if code := short.connection().CloseCode(); code != contracts.DocumentAdmissionRevokedCloseCode {
 		t.Fatalf("the document socket whose upgrade's assertion expired closed with %d, want %d, on which the provider reconnects",
 			code, contracts.DocumentAdmissionRevokedCloseCode)
 	}
-	time.Sleep(3 * heartbeat)
+	testwait.Span(t, 3*heartbeat, "the heartbeat is the document socket's own ticker, whose ticks the test cannot "+
+		"count, and the control's verdict is that it stays open across them: no state, no synctest bubble (real "+
+		"sockets) and no later action shows the control's heartbeats ran; the barrier below then shows it still answers")
 	select {
 	case <-long.connection().Ended:
 		t.Fatalf("control: the document socket on a nine-minute assertion ended with %d", long.connection().CloseCode())
@@ -285,11 +287,7 @@ func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *tes
 			rig := newIAPDocumentRig(t, 4*time.Second)
 			peer := rig.openDocument(t, rig.iap.expiring(t, 2*time.Second))
 			rig.switched.swap(change.apply(t, rig.iap))
-			select {
-			case <-peer.connection().Ended:
-			case <-time.After(10 * time.Second):
-				t.Fatalf("the document socket whose upgrade's assertion expired, %s, is still open after 10 s", change.name)
-			}
+			testwait.Receive(t, fmt.Sprintf("the document socket whose upgrade's assertion expired, %s, to close", change.name), peer.connection().Ended)
 			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {
 				t.Fatalf("the document socket whose upgrade's assertion expired, %s, closed with %d, want %d: it is refused, not rotated",
 					change.name, code, gws.CloseAbnormalClosure)

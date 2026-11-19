@@ -230,6 +230,11 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	if err != nil {
 		return settle.stoppedShort(fmt.Errorf("begin document transaction: %w", err))
 	}
+	// Registered ahead of the rollback, so it runs once the transaction has ended: committed below
+	// or rolled back by the deferred call that follows.
+	if s.afterSettleTransaction != nil {
+		defer s.afterSettleTransaction(room)
+	}
 	defer tx.Rollback(ctx)
 	// Settlement decides everything before it writes anything: every write of the stages below
 	// goes through write and queues on this ledger, and the queue runs back to back right before

@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // A text's tree is stored once and read back as the bytes pmdoc.DisplayJSON answers, which is what
 // a response carries: a read serves the stored bytes rather than reading the markdown again.

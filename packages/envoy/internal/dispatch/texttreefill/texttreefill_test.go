@@ -11,13 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // openFill is a migrated database of this test's own and the pool the pass works through.
 func openFill(t *testing.T) (*store.Store, *store.Pool) {
@@ -409,6 +410,12 @@ const (
 	corpusBound = 24 * time.Hour
 )
 
+// One pass over a seeded corpus of corpusMix's shape takes every text, in batches, and leaves the
+// table one tree for each.
+func TestTheFillStoresOneTreeForEveryTextOfASeededCorpus(t *testing.T) {
+	fillSeededCorpus(t)
+}
+
 // The pass gets through the whole corpus well inside a day at two workers. What is measured is a
 // pass over a seeded corpus of corpusMix's shape - every batch, every reading, every insert the
 // real pass makes - and what is extrapolated from it is the time the same pass takes over
@@ -419,8 +426,40 @@ const (
 //
 // Seeding a corpus of 5.8 GB to measure the same rate would take an hour of a CI run and a disk
 // to put it on; the rate per byte and per text is what the bound needs, and that is measured
-// here.
+// here. The rate is the machine's as much as the pass's, so the row runs only in the timing lane
+// (benchtime.Timing), on a quiet machine; TestTheFillStoresOneTreeForEveryTextOfASeededCorpus
+// holds what the pass does in every run.
 func TestTheFillGetsThroughTheCorpusWellWithinADayAtTwoWorkers(t *testing.T) {
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	fill := fillSeededCorpus(t)
+
+	byText := time.Duration(float64(fill.elapsed) * corpusTexts / float64(fill.texts))
+	byByte := time.Duration(float64(fill.elapsed) * corpusBytes / float64(fill.bytes))
+	scans := time.Duration(float64(fill.scan)*corpusTexts/float64(fill.texts)) * 2 * (corpusTexts/time.Duration(fillBatch) + 1)
+	projected := max(byText, byByte) + scans
+	t.Logf("measured rate: %.1f texts a second, %.2f MB of markdown a second",
+		float64(fill.texts)/fill.elapsed.Seconds(), float64(fill.bytes)/fill.elapsed.Seconds()/(1<<20))
+	t.Logf("extrapolated to %d texts and %.1f GB: %s by text, %s by byte, %s of candidate scans, %s in all",
+		corpusTexts, corpusBytes/1e9, byText.Round(time.Second), byByte.Round(time.Second),
+		scans.Round(time.Second), projected.Round(time.Second))
+	if projected >= corpusBound {
+		t.Errorf("the pass projects to %s over the whole corpus, want under %s", projected, corpusBound)
+	}
+}
+
+// seededFill is one pass over a seeded corpus: how many texts and bytes of markdown were seeded,
+// how long the pass took over them, and how long one round of every kind's head took over them.
+type seededFill struct {
+	texts, bytes  int
+	elapsed, scan time.Duration
+}
+
+// fillSeededCorpus seeds a corpus of corpusMix's shape, runs the fill over it, and requires that
+// the pass finished, took every text and left the table one tree for each. It also times the pass
+// and one round of every kind's head, the cost a batch pays twice - once to choose its cut and
+// once to take its range - however few texts it takes, which the timing row extrapolates from.
+func fillSeededCorpus(t *testing.T) seededFill {
+	t.Helper()
 	ctx := context.Background()
 	database, fill := openFill(t)
 	texts, bytes := seedCorpus(t, database)
@@ -436,18 +475,11 @@ func TestTheFillGetsThroughTheCorpusWellWithinADayAtTwoWorkers(t *testing.T) {
 			done.texts, done.batches, done.finished, texts)
 	}
 
-	// One round of every kind's head over the seeded corpus, which is the cost a batch pays
-	// twice - once to choose its cut and once to take its range - however few texts it takes.
 	scanned := time.Now()
 	if _, err := headMoments(ctx, fill, time.Now()); err != nil {
 		t.Fatalf("time a candidate scan: %v", err)
 	}
 	scan := time.Since(scanned)
-
-	byText := time.Duration(float64(elapsed) * corpusTexts / float64(texts))
-	byByte := time.Duration(float64(elapsed) * corpusBytes / float64(bytes))
-	scans := time.Duration(float64(scan)*corpusTexts/float64(texts)) * 2 * (corpusTexts/time.Duration(fillBatch) + 1)
-	projected := max(byText, byByte) + scans
 
 	rows, trees, total, relation := tableSize(t, database)
 	if rows != texts {
@@ -455,16 +487,9 @@ func TestTheFillGetsThroughTheCorpusWellWithinADayAtTwoWorkers(t *testing.T) {
 	}
 	t.Logf("seeded %d texts, %d bytes of markdown; the pass stored them in %s with %d workers in %d batches",
 		texts, bytes, elapsed.Round(time.Millisecond), fillWorkers, done.batches)
-	t.Logf("measured rate: %.1f texts a second, %.2f MB of markdown a second",
-		float64(texts)/elapsed.Seconds(), float64(bytes)/elapsed.Seconds()/(1<<20))
 	t.Logf("text_trees after the pass: %d rows holding %d bytes of tree, %d bytes on disk in all, %d bytes of table",
 		rows, trees, total, relation)
-	t.Logf("extrapolated to %d texts and %.1f GB: %s by text, %s by byte, %s of candidate scans, %s in all",
-		corpusTexts, corpusBytes/1e9, byText.Round(time.Second), byByte.Round(time.Second),
-		scans.Round(time.Second), projected.Round(time.Second))
-	if projected >= corpusBound {
-		t.Errorf("the pass projects to %s over the whole corpus, want under %s", projected, corpusBound)
-	}
+	return seededFill{texts: texts, bytes: bytes, elapsed: elapsed, scan: scan}
 }
 
 // seedCorpus writes broadcasts of corpusMix's shape, newest first, and answers how many texts and

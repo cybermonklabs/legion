@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // day is the fixture corpus's first moment, and `after` a whole number of hours past it.
 var day = time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)

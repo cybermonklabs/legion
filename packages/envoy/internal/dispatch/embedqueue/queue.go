@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
@@ -64,10 +65,10 @@ const (
 // renewClaimInterval is how often a claimRenewal re-extends its claim on every row it still
 // protects - between bisection's own embed attempts, and during a single reservation's wait
 // longer than this - comfortably inside claimWindow so a renewal always lands before the claim
-// it is refreshing could lapse. A var, not a const alongside claimWindow above, so a test can
-// shrink it well below claimWindow's own 2 minutes and observe a renewal firing in milliseconds
-// rather than needing to wait out the real interval.
-var renewClaimInterval = claimWindow / 2
+// it is refreshing could lapse. A test that wants a renewal in milliseconds rather than a
+// minute hands Deps a fake clock and moves it (Deps.Clock), so this is the one interval the
+// product runs under, in a test as in the server.
+const renewClaimInterval = claimWindow / 2
 
 // Deps are the durable state and embedding dependencies for the queue.
 type Deps struct {
@@ -80,6 +81,13 @@ type Deps struct {
 	// loop does not wait for it to start: it scans at start whatever the listener's state. Nil
 	// leaves the loop with its start, its own due times and the coverage pass's rows.
 	Wake <-chan struct{}
+	// Clock is what the queue's own waits and ages run on: the coverage loop's wait for the next
+	// identity recheck, the pauses between batches and after a throttle, a reservation's wait on
+	// the shared token budget, and a claim renewal's age. clock.Real when nil, and a test's
+	// clocktest.Fake, whose timers fire only where the test moves it. The queue's other times -
+	// a row's next_attempt_at, pending_since, embedded_at - are the database's own clock, which
+	// no fake reaches.
+	Clock clock.Clock
 	// proven records that an Embed call this process's queue made has succeeded (embedDocuments
 	// records it), which is what lets Cover act on rows another identity left with no canary of
 	// its own, and what wakes Run's coverage loop to run the identity steps a pass skipped. Run
@@ -91,6 +99,14 @@ type Deps struct {
 	// itself rather than through embeddings_enqueue, so no notification announces what it makes
 	// pending, and Run's scan loop wakes on this instead. Nil for a caller that builds Deps itself.
 	enqueued chan struct{}
+}
+
+// clock is what Deps' waits and ages run on: Clock, or the real clock.
+func (d Deps) clock() clock.Clock {
+	if d.Clock == nil {
+		return clock.Real()
+	}
+	return d.Clock
 }
 
 // proof is a record, set once, that an Embed call this process's queue made has succeeded.
@@ -260,7 +276,7 @@ func scan(ctx context.Context, deps Deps) {
 		}
 		if throttled {
 			consecutiveThrottles++
-			if !pauseFor(ctx, retryInterval+batchBackoff(consecutiveThrottles)) {
+			if !pauseFor(ctx, deps.clock(), retryInterval+batchBackoff(consecutiveThrottles)) {
 				return
 			}
 			continue
@@ -269,7 +285,7 @@ func scan(ctx context.Context, deps Deps) {
 		if succeeded+failed < deps.Embedder.Limits().MaxBatchTexts || blocked {
 			return
 		}
-		if !pauseFor(ctx, batchPause) {
+		if !pauseFor(ctx, deps.clock(), batchPause) {
 			return
 		}
 	}
@@ -283,15 +299,15 @@ func batchBackoff(consecutiveThrottles int) time.Duration {
 	return base + time.Duration(rand.Int64N(int64(base)/2+1))
 }
 
-// pauseFor waits d, or returns false without waiting out the rest of it if ctx ends first - a
-// cancelled Run should stop promptly, not finish out its pacing delay.
-func pauseFor(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
+// pauseFor waits d on c, or returns false without waiting out the rest of it if ctx ends first -
+// a cancelled Run should stop promptly, not finish out its pacing delay.
+func pauseFor(ctx context.Context, c clock.Clock, d time.Duration) bool {
+	timer := c.NewTimer(d)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
-	case <-timer.C:
+	case <-timer.C():
 		return true
 	}
 }
@@ -561,19 +577,22 @@ func chunkForBudget(rows []pendingRow, limits embed.Limits) []budgetedGroup {
 // alone) is a safe no-op.
 type claimRenewal struct {
 	deps Deps
-	rows []pendingRow
-	last time.Time
+	// clock is deps' own (Deps.Clock, or the real one), the one this renewal's age is read on.
+	clock clock.Clock
+	rows  []pendingRow
+	last  time.Time
 }
 
 func newClaimRenewal(deps Deps, rows []pendingRow) *claimRenewal {
-	return &claimRenewal{deps: deps, rows: rows, last: time.Now()}
+	c := deps.clock()
+	return &claimRenewal{deps: deps, clock: c, rows: rows, last: c.Now()}
 }
 
 func (c *claimRenewal) renew(ctx context.Context) {
-	if c == nil || ctx.Err() != nil || time.Since(c.last) < renewClaimInterval {
+	if c == nil || ctx.Err() != nil || c.clock.Now().Sub(c.last) < renewClaimInterval {
 		return
 	}
-	c.last = time.Now()
+	c.last = c.clock.Now()
 	kinds := make([]string, len(c.rows))
 	ids := make([]string, len(c.rows))
 	hashes := make([]string, len(c.rows))
@@ -692,20 +711,21 @@ func reserveTokens(ctx context.Context, deps Deps, tokens, ceilingPerMinute int,
 		return
 	}
 	wait := time.Duration(-available / (float64(ceilingPerMinute) / 60.0) * float64(time.Second))
-	waitOutDebt(ctx, wait, renewal, renewClaimInterval)
+	waitOutDebt(ctx, deps.clock(), wait, renewal, renewClaimInterval)
 }
 
-// waitOutDebt is reserveTokens' own wait loop, pulled out so a test can drive it with a tiny
-// segment instead of renewClaimInterval's real one minute: it sleeps out wait in slices of at
-// most segment, calling renewal.renew between every slice (not only before or after the whole
-// wait), so a wait longer than segment still renews partway through rather than only at the end.
-func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal, segment time.Duration) {
+// waitOutDebt is reserveTokens' own wait loop, pulled out so a test can drive it with a segment
+// of its own instead of renewClaimInterval's real one minute: it waits wait out on c in slices
+// of at most segment, calling renewal.renew between every slice (not only before or after the
+// whole wait), so a wait longer than segment still renews partway through rather than only at
+// the end.
+func waitOutDebt(ctx context.Context, c clock.Clock, wait time.Duration, renewal *claimRenewal, segment time.Duration) {
 	for wait > 0 {
 		s := wait
 		if s > segment {
 			s = segment
 		}
-		if !pauseFor(ctx, s) {
+		if !pauseFor(ctx, c, s) {
 			return
 		}
 		wait -= s

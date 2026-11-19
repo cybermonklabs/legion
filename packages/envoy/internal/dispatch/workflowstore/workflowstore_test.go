@@ -18,9 +18,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // daemon is the one writer of a step record: the session of the project's Legion daemon.
 var daemon = model.Actor{Kind: "session", ID: "legion-daemon:LEG"}
@@ -567,13 +568,13 @@ func TestTwoEndsOfAStartedRunAtOneTimeKeepTheFirst(t *testing.T) {
 	if pid == 0 {
 		t.Fatalf("begin the second end: %v", <-answered)
 	}
-	if err, early := storetest.WaitForQueuedBehind(t, first, pid, answered, 30*time.Second); early {
+	if err, early := storetest.WaitForQueuedBehind(t, first, pid, answered); early {
 		t.Fatalf("the second end answered %v before it waited for the first", err)
 	}
 	if err := first.Commit(ctx); err != nil {
 		t.Fatalf("commit the first end: %v", err)
 	}
-	if err := <-answered; err != nil {
+	if err := testwait.Receive(t, "the second end to answer once the first committed", answered); err != nil {
 		t.Fatalf("the second end answered %v, want it taken", err)
 	}
 

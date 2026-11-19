@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -24,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/fixtureenv"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func createArtifactIssue(t *testing.T, handler http.Handler) model.Issue {
@@ -1165,11 +1165,7 @@ func TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses(t *te
 	before := issueArtifactCount(t, database, issue.Key)
 	answered := make(chan sentUpload, 1)
 	go func() { answered <- sendBigUpload(t, handler, issue.Key, "running-upload") }()
-	select {
-	case <-held.reached:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first upload never reached the file store")
-	}
+	testwait.Receive(t, "the first upload to reach the file store", held.reached)
 	closeArtifactIssue(t, handler, issue.Key)
 
 	// The first upload has parsed its spooled body already: it reaches nothing more of the
@@ -1184,12 +1180,7 @@ func TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses(t *te
 	})
 
 	releaseOnce()
-	var first sentUpload
-	select {
-	case first = <-answered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first upload never answered once released")
-	}
+	first := testwait.Receive(t, "the first upload to answer once released", answered)
 	if code, _ := refusalOf(t, first.ResponseRecorder); first.Code != http.StatusConflict || code != "ISSUE_CLOSED" {
 		t.Fatalf("the first upload, which reached its issue after the close: status=%d body=%s, want 409 ISSUE_CLOSED",
 			first.Code, first.Body.String())

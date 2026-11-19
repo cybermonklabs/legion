@@ -22,6 +22,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The Hocuspocus message kinds a Peer reads and writes: the outer type after the document's name.
@@ -72,8 +73,6 @@ type Peer struct {
 	// awareness is every client the room has sent a state of, a client that left included, as
 	// y-protocols folds the updates (foldAwareness).
 	awareness map[uint64]AwarenessEntry
-	// awarenessChanged is closed, and replaced, each time awareness changes.
-	awarenessChanged chan struct{}
 	// clocks is the clock of the last state SetAwareness sent for each client.
 	clocks map[uint64]uint64
 	scope  string
@@ -131,7 +130,7 @@ func DialContext(ctx context.Context, url string, header http.Header, artifactID
 	peer := &Peer{
 		Doc: doc, Answers: answers, Awareness: awareness, Ended: ended, UpgradeHeader: response.Header,
 		artifactID: artifactID, connection: connection, auth: make(chan authReply, 4),
-		awareness: make(map[uint64]AwarenessEntry), awarenessChanged: make(chan struct{}), clocks: make(map[uint64]uint64),
+		awareness: make(map[uint64]AwarenessEntry), clocks: make(map[uint64]uint64),
 	}
 	go func() {
 		peer.read(answers, awareness)
@@ -219,30 +218,27 @@ func (p *Peer) awarenessStatesLocked() map[uint64]json.RawMessage {
 	return states
 }
 
-// WaitForAwareness waits up to within for the awareness states the room has sent this peer
-// (AwarenessStates) to satisfy holds, which it calls each time they change. It fails naming the
-// states it last saw when they do not, or when the connection ends first.
-func (p *Peer) WaitForAwareness(within time.Duration, holds func(map[uint64]json.RawMessage) bool) error {
-	deadline := time.NewTimer(within)
-	defer deadline.Stop()
-	for {
-		p.mu.Lock()
-		states, changed := p.awarenessStatesLocked(), p.awarenessChanged
-		p.mu.Unlock()
-		if holds(states) {
-			return nil
-		}
+// WaitForAwareness waits, through the shared wait, for the awareness states the room has sent this
+// peer (AwarenessStates) to satisfy holds, and fails t naming the states it last read when they
+// never do. It returns an error naming them when the connection ends first.
+func (p *Peer) WaitForAwareness(t testing.TB, holds func(map[uint64]json.RawMessage) bool) error {
+	t.Helper()
+	var ended error
+	testwait.Until(t, "the awareness states the room sent the peer to hold what was awaited", func() (string, bool) {
 		select {
-		case <-changed:
 		case <-p.Ended:
-			if final := p.AwarenessStates(); holds(final) {
-				return nil
+			// The reader has stopped, so these states are the last.
+			final := p.AwarenessStates()
+			if !holds(final) {
+				ended = fmt.Errorf("the peer's connection closed before its awareness states held what was awaited; they hold %s", describeStates(final))
 			}
-			return fmt.Errorf("the peer's connection closed before its awareness states held what was awaited; they hold %s", describeStates(p.AwarenessStates()))
-		case <-deadline.C:
-			return fmt.Errorf("the peer's awareness states did not hold what was awaited within %v; they hold %s", within, describeStates(p.AwarenessStates()))
+			return describeStates(final), true
+		default:
 		}
-	}
+		states := p.AwarenessStates()
+		return describeStates(states), holds(states)
+	})
+	return ended
 }
 
 func describeStates(states map[uint64]json.RawMessage) string {
@@ -254,49 +250,77 @@ func describeStates(states map[uint64]json.RawMessage) string {
 }
 
 // WaitForText asks the room for its document until render, which renders the peer's copy, answers
-// want, and fails when it does not within that time or the connection ends first. render is the
-// caller's, since this package imports no document renderer (see the package comment).
-func (p *Peer) WaitForText(render func(*Peer) string, want string, within time.Duration) error {
-	deadline := time.NewTimer(within)
-	defer deadline.Stop()
-	for render(p) != want {
-		if err := p.AskForDocument(); err != nil {
-			return fmt.Errorf("ask the room for the document: %w", err)
+// want, asking again each time the room has answered. It waits through the shared wait, and fails
+// t naming the copy's last render when the room never sends want; it returns an error when the
+// connection ends first. render is the caller's, since this package imports no document renderer
+// (see the package comment).
+func (p *Peer) WaitForText(t testing.TB, render func(*Peer) string, want string) error {
+	t.Helper()
+	var failed error
+	got, asked := render(p), false
+	testwait.Until(t, fmt.Sprintf("the peer's copy of the document to render %q", want), func() (string, bool) {
+		select {
+		case <-p.Ended:
+			// The reader has stopped, so this render is the last.
+			if got = render(p); got != want {
+				failed = fmt.Errorf("the peer's connection closed before the room sent the document: its copy renders %q, want %q", got, want)
+			}
+			return got, true
+		default:
 		}
 		select {
 		case <-p.Answers:
-		case <-p.Ended:
-			return fmt.Errorf("the peer's connection closed before the room sent the document: its copy renders %q, want %q", render(p), want)
-		case <-deadline.C:
-			return fmt.Errorf("the peer's copy renders %q, want %q, after %v", render(p), want, within)
+			got, asked = render(p), false
+		default:
 		}
-	}
-	return nil
+		if got == want {
+			return got, true
+		}
+		if asked {
+			return got, false
+		}
+		if err := p.AskForDocument(); err != nil {
+			failed = fmt.Errorf("ask the room for the document: %w", err)
+			return got, true
+		}
+		asked = true
+		return got, false
+	})
+	return failed
 }
 
 // Authenticate sends the room token, as a Hocuspocus provider authenticates (the document room
-// reads it as the editor's schema version), and waits up to within for the answer: the scope the
-// room granted, "read-write" or "readonly", or an error naming its refusal.
-func (p *Peer) Authenticate(token string, within time.Duration) (string, error) {
+// reads it as the editor's schema version), and waits through the shared wait for the answer: the
+// scope the room granted, "read-write" or "readonly", or an error naming its refusal. It fails t
+// when the room never answers, and returns an error when the connection ends first.
+func (p *Peer) Authenticate(t testing.TB, token string) (string, error) {
+	t.Helper()
 	if err := p.writeFrame(messageAuth, func(encoder *encoding.Encoder) {
 		encoder.WriteVarUint(authToken)
 		encoder.WriteVarString(token)
 	}); err != nil {
 		return "", fmt.Errorf("send the auth token: %w", err)
 	}
-	deadline := time.NewTimer(within)
-	defer deadline.Stop()
-	select {
-	case reply := <-p.auth:
-		if !reply.granted {
-			return "", fmt.Errorf("the room refused the auth token: %s", reply.text)
+	var reply authReply
+	ended := false
+	testwait.Eventually(t, "the room's answer to the auth token", func() bool {
+		select {
+		case reply = <-p.auth:
+			return true
+		case <-p.Ended:
+			ended = true
+			return true
+		default:
+			return false
 		}
-		return reply.text, nil
-	case <-p.Ended:
+	})
+	if ended {
 		return "", errors.New("the peer's connection closed before the room answered the auth token")
-	case <-deadline.C:
-		return "", fmt.Errorf("the room did not answer the auth token within %v", within)
 	}
+	if !reply.granted {
+		return "", fmt.Errorf("the room refused the auth token: %s", reply.text)
+	}
+	return reply.text, nil
 }
 
 // Scope is the scope the room's last authenticated answer granted, "read-write" or "readonly", or
@@ -458,18 +482,12 @@ func decodeAwareness(update []byte) ([]AwarenessEntry, error) {
 func (p *Peer) foldAwareness(entries []AwarenessEntry) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	changed := false
 	for _, entry := range entries {
 		current, known := p.awareness[entry.Client]
 		present := known && !current.Removed()
 		if current.Clock < entry.Clock || (current.Clock == entry.Clock && entry.Removed() && present) {
 			p.awareness[entry.Client] = entry
-			changed = true
 		}
-	}
-	if changed {
-		close(p.awarenessChanged)
-		p.awarenessChanged = make(chan struct{})
 	}
 }
 

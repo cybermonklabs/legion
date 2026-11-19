@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  The live delivery hub arms a pull request's leaving of a view one microsecond past its window
+  rather than one nanosecond, a moment PostgreSQL can store, so at that instant the hub's view and a
+  GET over the same window name the same pull requests.

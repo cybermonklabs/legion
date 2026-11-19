@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestApplyOpsEditsLiveDocumentAndSettlesVersion(t *testing.T) {
@@ -227,13 +228,8 @@ func TestCheckTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing
 	if err := tx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the document owner's lock: %v", err)
 	}
-	select {
-	case err := <-updateDone:
-		if err != nil {
-			t.Fatalf("comment body update: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("comment body update remained blocked after the edit transaction released the owner's lock")
+	if err := testwait.Receive(t, "the comment body update to finish once the edit transaction released the owner's lock", updateDone); err != nil {
+		t.Fatalf("comment body update: %v", err)
 	}
 }
 
@@ -260,14 +256,11 @@ func TestConditionalEditAdmissionBoundsQueuedRequests(t *testing.T) {
 	}
 	gate := gateValue.(*conditionalEditGate)
 	// Each admission is a short transaction under the queue's advisory lock (admitConditionalEdit),
-	// so 31 of them queue one after another; the wait is the room wait, not a fixed second.
-	deadline := time.Now().Add(roomWait(t))
-	for queueDepth(gate) != maxQueuedConditionalEdits && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if got := queueDepth(gate); got != maxQueuedConditionalEdits {
-		t.Fatalf("queued conditional edits = %d, want %d", got, maxQueuedConditionalEdits)
-	}
+	// so 31 of them queue one after another.
+	testwait.Until(t, fmt.Sprintf("%d conditional edits to be queued", maxQueuedConditionalEdits), func() (int, bool) {
+		depth := queueDepth(gate)
+		return depth, depth == maxQueuedConditionalEdits
+	})
 	if _, err := service.AcquireConditionalEdit(context.Background(), artifactID); !errors.Is(err, ErrPreconditionBusy) {
 		t.Fatalf("overflow conditional edit = %v, want ErrPreconditionBusy", err)
 	}

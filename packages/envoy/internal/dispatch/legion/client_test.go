@@ -1,12 +1,18 @@
 package legion
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // stateServer is a daemon stand-in answering GET /legion/v1/state with body, and anything else
@@ -25,35 +31,49 @@ func stateServer(t *testing.T, body string) *httptest.Server {
 	return server
 }
 
-// TestTheStateReadIsBoundedByTheRequestTimeout: the window is the plan's D14, twenty seconds, and
-// New gives it to every client it builds, so a daemon that accepts a connection and never answers
-// ends one pass rather than holding the minute's loop for good.
+// TestTheStateReadIsBoundedByTheRequestTimeout: the window is the plan's D14, twenty seconds, on
+// the client's clock, which New makes the real one, so a daemon that accepts a connection and never
+// answers ends one pass rather than holding the minute's loop for good. The clock here is the
+// test's: the read arms its window at RequestTimeout from its start, and the test moves the clock
+// there once it is armed, so it is that window, and no other bound, that ends the read. The
+// caller's own context has no deadline, so the read's "context deadline exceeded" is the window's.
 func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
 	if RequestTimeout != 20*time.Second {
 		t.Fatalf("RequestTimeout = %s, want the 20s of the plan's D14", RequestTimeout)
 	}
-	if window := New("http://daemon.internal.example").http.Timeout; window != RequestTimeout {
-		t.Fatalf("New gives a client a %s window, want RequestTimeout (%s)", window, RequestTimeout)
+	if made := New("http://daemon.internal.example").clock; made != clock.Real() {
+		t.Fatalf("New gives a client the clock %T, want clock.Real, which production's window runs on", made)
 	}
 	silent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
 	defer silent.Close()
 
-	// The client's window is what ends the read, shrunk here so the test does not wait the
-	// production twenty seconds out.
-	client := New(silent.URL, WithTimeout(150*time.Millisecond))
-
-	started := time.Now()
-	_, bytes, err := client.State(t.Context())
-	if !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("a read of a daemon that never answers: err = %v, want one wrapping ErrUnavailable", err)
+	start := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	client := New(silent.URL, WithClock(fake))
+	type answer struct {
+		bytes int
+		err   error
 	}
-	if waited := time.Since(started); waited > 5*time.Second {
-		t.Fatalf("the read waited %s, want the client's own window", waited)
+	answered := make(chan answer, 1)
+	go func() {
+		_, bytes, err := client.State(t.Context())
+		answered <- answer{bytes, err}
+	}()
+	if armed, want := fake.AwaitArmed(t, "the read's window", 1), start.Add(RequestTimeout); !slices.Equal(armed, []time.Time{want}) {
+		t.Fatalf("the armed deadlines are %v, want the read's window alone at %v", armed, want)
 	}
-	if bytes != 0 {
-		t.Errorf("bytes = %d, want none: nothing was read", bytes)
+	fake.Advance(RequestTimeout)
+	got := testwait.Receive(t, "the read's answer once its window ran out", answered)
+	if !errors.Is(got.err, ErrUnavailable) {
+		t.Fatalf("a read of a daemon that never answers: err = %v, want one wrapping ErrUnavailable", got.err)
+	}
+	if !strings.Contains(got.err.Error(), context.DeadlineExceeded.Error()) {
+		t.Errorf("the read failed with %q, want the window's %q", got.err, context.DeadlineExceeded)
+	}
+	if got.bytes != 0 {
+		t.Errorf("bytes = %d, want none: nothing was read", got.bytes)
 	}
 }
 

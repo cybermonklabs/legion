@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An edit a browser makes after a settlement has read the document it versions is not in that
@@ -379,21 +380,12 @@ func holdObserver(t *testing.T, service *Service, artifactID string, hook *func(
 	}
 	done := make(chan error, 1)
 	go func() { done <- write() }()
-	select {
-	case <-held:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the held write never reached its observer hook")
-	}
+	testwait.Receive(t, "the held write to reach its observer hook", held)
 	return func() {
 		t.Helper()
 		let()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("held write: %v", err)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatal("the held write never finished applying")
+		if err := testwait.Receive(t, "the held write to finish applying once its observer was let go", done); err != nil {
+			t.Fatalf("held write: %v", err)
 		}
 	}
 }
@@ -812,7 +804,7 @@ func TestACopiedAskBlocksAuthorIsKeptForTheAskItOpensOnceItsSourceIsRetracted(t 
 	// The ask row is visible once the copy's settlement commits, and that settlement forgets the
 	// room's owed author as it commits, under the room's lock (consumeAskAuthorsLocked); the room
 	// is read once the settlement has ended, so its count is read after the forgetting.
-	waitFor(t, 10*time.Second, "the copy's settlement that opened its ask to end", func() bool {
+	waitFor(t, "the copy's settlement that opened its ask to end", func() bool {
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		return state.settling == 0

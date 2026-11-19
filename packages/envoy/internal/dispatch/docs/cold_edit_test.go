@@ -107,7 +107,7 @@ func TestColdWritesSettledOneAfterAnotherLoadTheDocumentOnce(t *testing.T) {
 		if _, err := joinedReplaceText(service, artifactID, fmt.Sprintf("Write %d of an agent, with no browser open.\n", i), model.Actor{Kind: "user", ID: "alice"}); err != nil {
 			t.Fatalf("write %d: %v", i, err)
 		}
-		waitFor(t, roomWait(t), fmt.Sprintf("write %d to settle and its settlement to end", i), func() bool {
+		waitFor(t, fmt.Sprintf("write %d to settle and its settlement to end", i), func() bool {
 			owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 			return err == nil && !owed && !settlementUnderway(service, artifactID)
 		})

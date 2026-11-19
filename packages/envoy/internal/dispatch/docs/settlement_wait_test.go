@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Shutdown's drain waits for each room's appends to land before it settles the room, and a
@@ -61,24 +63,15 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 	counting.Store(true)
 	appends.armed.Store(true)
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	select {
-	case <-appends.entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's append never reached the store")
-	}
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancelShutdown()
+	testwait.Receive(t, "the room's append to reach the store", appends.entered)
 	shutdown := make(chan error, 1)
-	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
-	time.Sleep(held)
+	go func() { shutdown <- service.Shutdown(testwait.Context(t)) }()
+	// The claim is the drain's wakes over the span the append is held for: a drain that polls
+	// wakes inside it, one woken by the append's landing does not.
+	testwait.Span(t, held, "the drain's wakes over a held append's span are what is counted: a poll that has not happened leaves no state to read, no later action shows it, and synctest does not reach the real database connections")
 	appends.let()
-	select {
-	case err := <-shutdown:
-		if err != nil {
-			t.Fatalf("shutdown: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("Shutdown never returned once the room's append was let go")
+	if err := testwait.Receive(t, "Shutdown to return once the room's append was let go", shutdown); err != nil {
+		t.Fatalf("shutdown: %v", err)
 	}
 	counting.Store(false)
 
@@ -120,17 +113,24 @@ func TestShutdownsSettlementLockWaitIsOneStatement(t *testing.T) {
 	versioned, _, _ := latestDocumentVersion(t, observer, artifactID)
 	unlock := holdDocumentLock(t, observer, artifactID)
 	since := tracer.mark()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	started := time.Now()
-	if err := service.Shutdown(ctx); err != nil {
+	if err := service.Shutdown(testwait.Context(t)); err != nil {
 		t.Errorf("Shutdown with the document's lock held elsewhere: %v", err)
 	}
-	took := time.Since(started)
 	unlock()
 
-	if locks := tracer.statements(artifactID, "advisory_xact_lock(hashtext(", since); locks != 1 {
-		t.Errorf("the shutdown's settlement sent %d lock statements for the document, want 1", locks)
+	// pg_advisory_xact_lock is the lock that waits; pg_try_advisory_xact_lock, which gives up at
+	// once, is not it, and the shutdown's settlement sends none.
+	if locks := tracer.statements(artifactID, "pg_advisory_xact_lock(hashtext(", since); locks != 1 {
+		t.Errorf("the shutdown's settlement sent %d waiting lock statements for the document, want 1", locks)
+	}
+	if tries := tracer.statements(artifactID, "pg_try_advisory_xact_lock(hashtext(", since); tries != 0 {
+		t.Errorf("the shutdown's settlement sent %d try-locks for the document, want none: a try-lock waits for nothing", tries)
+	}
+	// The wait's bound is Postgres's own: the lock statement goes out in the pipeline that first
+	// sets lock_timeout to 100 ms, so the database ends the wait there - not a try-lock that waits
+	// for nothing, and not a wait for the shutdown's whole budget.
+	if !tracer.lockWaitsUnder(artifactID, "100ms", since) {
+		t.Errorf("the shutdown's settlement took the document's lock outside a pipeline that sets lock_timeout to 100ms first")
 	}
 	if owed, err := settlementPending(context.Background(), observer.Pool, artifactID); err != nil || !owed {
 		t.Errorf("the document owes no settlement (%v) after a shutdown whose settlement could not lock it, want it left to resume", err)
@@ -138,7 +138,24 @@ func TestShutdownsSettlementLockWaitIsOneStatement(t *testing.T) {
 	if number, _, _ := latestDocumentVersion(t, observer, artifactID); number != versioned {
 		t.Errorf("the document's latest version is %d, want %d: the settlement left it", number, versioned)
 	}
-	if took < 100*time.Millisecond || took > 5*time.Second {
-		t.Errorf("Shutdown took %s, want the settlement to give up on the lock after about 100ms", took.Round(time.Millisecond))
+}
+
+// lockWaitsUnder reports whether a pipeline recorded since sets lock_timeout to timeout and then,
+// in that pipeline, takes room's transaction-level advisory lock with the statement that waits for
+// it (pg_advisory_xact_lock, not pg_try_advisory_xact_lock).
+func (t *statementTracer) lockWaitsUnder(room, timeout string, since int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, trip := range t.trips[since:] {
+		set := false
+		for _, statement := range trip.statements {
+			if strings.Contains(statement.sql, "set_config('lock_timeout', '"+timeout+"'") {
+				set = true
+			}
+			if set && strings.Contains(statement.sql, "pg_advisory_xact_lock(hashtext(") && statement.names(room) {
+				return true
+			}
+		}
 	}
+	return false
 }

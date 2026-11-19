@@ -19,37 +19,45 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// fleetDepartureSlack is what the wait below allows a loaded runner on top of the registry's own
-// window, and fleetPollInterval how often it reads the registry. The wait is never slept through:
-// a process stopped as a deploy stops it deletes its row at the end of its HTTP drain, so the
-// row is usually gone by the first read.
-const (
-	fleetDepartureSlack = 5 * time.Second
-	fleetPollInterval   = 200 * time.Millisecond
-)
-
-// fleetDepartureBound is how long a stopped process's row may still count as live: a live window
-// after its last heartbeat (processes.LiveWindow), which may itself have been one heartbeat
-// before it stopped (processes.HeartbeatInterval), and the slack above. A process that
-// deregisters leaves at once and is well inside it; one killed without deregistering spends it.
-func fleetDepartureBound() time.Duration {
-	return processes.LiveWindow + processes.HeartbeatInterval + fleetDepartureSlack
-}
 
 // readOnlyEditSettle is how long an edit sent through a read-only socket is given to appear
 // anywhere before the row reads the document again: past the document service's own settle delay
-// (two seconds), so an edit the server took would be in the text by then.
+// (two seconds), so an edit the server took would be in the text by then. It is a span of the
+// row's own (readOnlyEditWhy).
 const readOnlyEditSettle = 4 * time.Second
+
+// readOnlyEditWhy is why the transition row holds readOnlyEditSettle as a span: the server drops
+// an edit a read-only socket sends with no answer the editor reads and no state the row can, both
+// builds are child processes so synctest does not reach them, and a later edit through a writable
+// path would change the very text the row reads unchanged.
+const readOnlyEditWhy = "the server drops a read-only socket's edit with no answer the editor reads and no state the " +
+	"row can read, both builds are child processes so synctest does not reach them, and a later edit through a " +
+	"writable path would change the very text the row reads unchanged"
 
 // admissionRecheck is how long a writable socket is held open while the previous build is live
 // before the row asks whether it is still open: a live window, which is how often each process
 // checks its writable sockets against the fleet again and closes each one the fleet no longer
-// admits (docs.Service.RunSchemaAdmission), and the slack above.
+// admits (docs.Service.RunSchemaAdmission), and admissionRecheckSlack on top. It is a span of the
+// row's own (admissionRecheckWhy).
 func admissionRecheck() time.Duration {
-	return processes.LiveWindow + fleetDepartureSlack
+	return processes.LiveWindow + admissionRecheckSlack
 }
+
+// admissionRecheckSlack is what the span above allows a loaded runner past the live window for
+// the pass that window brings, and the close it would send, to have run.
+const admissionRecheckSlack = 5 * time.Second
+
+// admissionRecheckWhy is why the transition row holds admissionRecheck as a span: each process
+// checks its writable sockets against the fleet on a ticker of its own and records a pass only
+// when it closes a socket, both builds are child processes so synctest does not reach them, and a
+// later message on the socket is answered by the document's room, which says nothing of a pass
+// still to come.
+const admissionRecheckWhy = "each process checks its writable sockets against the fleet on a ticker of its own and " +
+	"records a pass only when it closes a socket, both builds are child processes so synctest does not reach " +
+	"them, and a later message on the socket is answered by the document's room, which says nothing of a pass " +
+	"still to come"
 
 // transitionSeed is the document the row seeds, one paragraph a replacement is made over
 // (replaceText), and transitionRender what a build renders it as.
@@ -66,18 +74,8 @@ func openPageEditor(t *testing.T, server *dispatchProcess, artifactID string, pa
 	t.Helper()
 	address := "ws://127.0.0.1:" + strconv.Itoa(server.port) + "/ws/doc/" + artifactID + "?" + page.query.Encode()
 	editor := docstest.Dial(t, address, http.Header{"X-Dispatch-User": {dispatchTestLogin}}, artifactID, crdt.New())
-	deadline := time.After(10 * time.Second)
-	for markdown(editor) != want {
-		if err := editor.AskForDocument(); err != nil {
-			t.Fatalf("ask the room for the document: %v", err)
-		}
-		select {
-		case <-editor.Answers:
-		case <-editor.Ended:
-			t.Fatalf("the editor's connection closed before the room sent the document:\n%s", server.Output.String())
-		case <-deadline:
-			t.Fatalf("the room never sent the editor the document:\n%s", server.Output.String())
-		}
+	if err := editor.WaitForText(t, markdown, want); err != nil {
+		t.Fatalf("%v:\n%s", err, server.Output.String())
 	}
 	return editor
 }
@@ -85,20 +83,15 @@ func openPageEditor(t *testing.T, server *dispatchProcess, artifactID string, pa
 // waitForThePreviousBuildToLeaveTheFleet reads the registry until the current build's process is
 // the only live row, and returns how long that took. It counts rows rather than reading their
 // numbers, since a previous build that registers this build's own numbers leaves the fleet's
-// numbers as they were. It polls rather than sleeps, and gives up at fleetDepartureBound.
+// numbers as they were.
 func waitForThePreviousBuildToLeaveTheFleet(t *testing.T, builds *twoBuilds) time.Duration {
 	t.Helper()
 	started := time.Now()
-	for deadline := started.Add(fleetDepartureBound()); ; time.Sleep(fleetPollInterval) {
+	testwait.Until(t, "the "+builds.previousName()+"'s row to leave the registry, so the current build's process is the only live row", func() (int, bool) {
 		fleet := builds.fleet(t)
-		if fleet.live == 1 {
-			return time.Since(started)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the %s still counts as live %s after it stopped: the registry still holds %d live rows, past a live window (%s), a heartbeat (%s) and %s of slack",
-				builds.previousName(), time.Since(started), fleet.live, processes.LiveWindow, processes.HeartbeatInterval, fleetDepartureSlack)
-		}
-	}
+		return fleet.live, fleet.live == 1
+	})
+	return time.Since(started)
 }
 
 // requireDocumentUnchanged fails unless both builds still render the document as want, and names
@@ -112,21 +105,14 @@ func requireDocumentUnchanged(t *testing.T, builds *twoBuilds, artifactID, want,
 	}
 }
 
-// requireEditLands waits until server renders the document as want, and fails at 30 seconds,
-// naming what it renders instead and when the edit was made.
+// requireEditLands waits until server renders the document as want; a failure names what it
+// renders instead and when the edit was made.
 func requireEditLands(t *testing.T, server *dispatchProcess, artifactID, want, when string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	testwait.Until(t, "the edit made through the writable socket "+when+" to land on the current build as "+strconv.Quote(want), func() (string, bool) {
 		got := server.documentText(t, artifactID)
-		if got == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the edit made through the writable socket %s never landed: the current build renders\n%q\nwant\n%q", when, got, want)
-		}
-		time.Sleep(fleetPollInterval)
-	}
+		return got, got == want
+	})
 }
 
 // requirePageAcrossTheDeparture drives the transition a rolling release makes, with a process of
@@ -137,9 +123,9 @@ func requireEditLands(t *testing.T, server *dispatchProcess, artifactID, want, w
 // the registry, the socket a reload opens - the same page, the same numbers - is admitted
 // writable, and an edit through it lands on this build's server.
 //
-// The wait for the row to leave is bounded by the registry's own numbers (fleetDepartureBound)
-// and polled: a process stopped as a deploy stops it deletes its row at the end of its HTTP
-// drain, so it leaves at once, and only a process killed without deregistering spends the window.
+// The wait for the row to leave reads the registry until it has: a process stopped as a deploy
+// stops it deletes its row at the end of its HTTP drain, so it leaves at once, and only a process
+// killed without deregistering spends a live window (processes.LiveWindow) and a heartbeat.
 func requirePageAcrossTheDeparture(t *testing.T, builds *twoBuilds, page pageParameters, whileLive string) {
 	t.Helper()
 	current := builds.current()
@@ -158,7 +144,7 @@ func requirePageAcrossTheDeparture(t *testing.T, builds *twoBuilds, page pagePar
 	if whileLive == readOnlyScope {
 		const refused = "typed while the previous build was live"
 		replaceText(t, editor, transitionSeed, refused)
-		time.Sleep(readOnlyEditSettle)
+		testwait.Span(t, readOnlyEditSettle, readOnlyEditWhy)
 		requireDocumentUnchanged(t, builds, artifactID, transitionRender, "an edit sent through the read-only socket")
 	} else {
 		text = "typed while the previous build was live"
@@ -167,7 +153,7 @@ func requirePageAcrossTheDeparture(t *testing.T, builds *twoBuilds, page pagePar
 		// A window that wrongly closes shows as this socket's close: each process checks its
 		// writable sockets against the fleet once a live window and closes each one it no longer
 		// admits.
-		time.Sleep(admissionRecheck())
+		testwait.Span(t, admissionRecheck(), admissionRecheckWhy)
 	}
 	if socket.closed() {
 		t.Errorf("the current build closed the socket it admitted %s while the %s was live: %v", whileLive, builds.previousName(), socket.endErr)
@@ -176,8 +162,7 @@ func requirePageAcrossTheDeparture(t *testing.T, builds *twoBuilds, page pagePar
 
 	stop(t, builds.previous())
 	waited := waitForThePreviousBuildToLeaveTheFleet(t, builds)
-	t.Logf("the %s left the fleet %s after its stop, inside the bound of %s (a live window, a heartbeat and %s of slack)",
-		builds.previousName(), waited.Round(time.Millisecond), fleetDepartureBound(), fleetDepartureSlack)
+	t.Logf("the %s left the fleet %s after its stop", builds.previousName(), waited.Round(time.Millisecond))
 
 	reloaded := openDocumentSocket(t, current, artifactID, page)
 	if reloaded.scope != writableScope {

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdIt is the spec's second callout, written with its id, hold-it.
@@ -586,21 +587,19 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 // spec's ask blocks, and until it has the issue holds none.
 func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want int) (issueDecisions, []string) {
 	t.Helper()
-	var view issueDecisions
-	questions := []string{}
-	for range 200 {
-		view = readIssueDecisions(t, handler, key)
-		questions = questions[:0]
+	type read struct {
+		view      issueDecisions
+		questions []string
+	}
+	got := testwait.Until(t, fmt.Sprintf("the issue's decisions to hold %d open questions", want), func() (read, bool) {
+		view := readIssueDecisions(t, handler, key)
+		questions := []string{}
 		for _, question := range view.OpenQuestions {
 			questions = append(questions, question.Question)
 		}
-		if len(questions) == want {
-			return view, questions
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Fatalf("open_questions = %v, want %d of them", questions, want)
-	return view, questions
+		return read{view, questions}, len(questions) == want
+	})
+	return got.view, got.questions
 }
 func mustJSON(t *testing.T, value any) string {
 	t.Helper()

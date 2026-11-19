@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -46,7 +47,10 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A clock that stands still: the comment's lookup of s1 is answered as the listener answers
+	// it and is never left unanswered by its bound (mentionLookupTimeout), so the comment answers
+	// its mention resolved, which this row reads.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Comment mentions", "before")
 
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{

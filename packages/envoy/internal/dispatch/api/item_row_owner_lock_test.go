@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The item-writer census (item_writer_census_test.go) is a map of names: it catches a writer of a
@@ -49,16 +49,6 @@ import (
 // it decides on the row as the lock froze it, or on a row it read before it - shows only where the
 // row changed underneath it while it waited. The anchor-block backfill is driven that way, and why
 // is written at readyAnchorBlockBackfill.
-
-// itemRowOwnerLockQueued bounds the wait for a writer's backend to queue behind the held lock. A
-// writer reaches its owner lock in milliseconds - the reads before it are the request's own - so
-// this bound is reached only by a call stuck somewhere other than that lock, and the failure then
-// names the backend rather than hanging the package until go test's -timeout.
-const itemRowOwnerLockQueued = 30 * time.Second
-
-// itemRowOwnerLockFinish bounds the wait for the writer to answer once the lock is given back. A
-// writer that queued has only its own work left, so this is far longer than any row takes.
-const itemRowOwnerLockFinish = 60 * time.Second
 
 // lockedItemWrite is one writer readied to run against a held owner lock.
 type lockedItemWrite struct {
@@ -254,7 +244,7 @@ func holdWriterBehindOwnerLock(t *testing.T, writer string, write lockedItemWrit
 
 	answered := make(chan string, 1)
 	go func() { answered <- write.call() }()
-	if answer, early := storetest.WaitForQueuedBehind(t, holder, write.pid, answered, itemRowOwnerLockQueued); early {
+	if answer, early := storetest.WaitForQueuedBehind(t, holder, write.pid, answered); early {
 		t.Fatalf("%s answered %s while this test held %s, the owner lock of %s: it writes that "+
 			"row under no owner lock, so a writer holding the owner does not exclude it, and "+
 			"main's row lock did. Take the owner's lock (store.LockOwner, refs.LockItemOwner) "+
@@ -277,12 +267,7 @@ func holdWriterBehindOwnerLock(t *testing.T, writer string, write lockedItemWrit
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("release the owner lock: %v", err)
 	}
-	select {
-	case <-answered:
-	case <-time.After(itemRowOwnerLockFinish):
-		t.Fatalf("%s never answered within %s of the owner lock being released",
-			writer, itemRowOwnerLockFinish)
-	}
+	testwait.Receive(t, writer+" to answer once the owner lock was released", answered)
 	write.wrote(t)
 }
 

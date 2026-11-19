@@ -12,13 +12,19 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain drops the databases the package's tests clone (storetest.Main). The xid window row
+// judges its windows' gaps only in the timing lane (storetest.JudgeXidGaps).
+func TestMain(m *testing.M) {
+	storetest.JudgeXidGaps(os.Getenv(benchtime.TimingEnv) != "")
+	os.Exit(storetest.Main(m.Run))
+}
 
 func createReferenceProject(t *testing.T, tx pgx.Tx, key string) {
 	t.Helper()
@@ -428,7 +434,12 @@ func TestReplaceReconcilesAndStampPreservesSurvivingProvenance(t *testing.T) {
 		t.Fatalf("first rows = %#v; want ask/keep sorted first", first)
 	}
 
-	time.Sleep(5 * time.Millisecond)
+	// A moment of the database's own clock between the two writes: the survivor was stamped
+	// before it, and the edge the second write adds after it.
+	var between time.Time
+	if err := database.Pool.QueryRow(context.Background(), `select clock_timestamp()`).Scan(&between); err != nil {
+		t.Fatalf("read the database's clock between the writes: %v", err)
+	}
 	replaceAndStamp(t, database, "comment", "c1", "now dispatch://CORE-1/ask/keep and dispatch://OPS-2/spec", 9)
 	second := readProvenance(t, database, "comment", "c1")
 	if len(second) != 2 {
@@ -438,8 +449,12 @@ func TestReplaceReconcilesAndStampPreservesSurvivingProvenance(t *testing.T) {
 	if kept.ToKind != "ask" || kept.ToID != "keep" || !kept.CreatedAt.Equal(survivor.CreatedAt) || kept.SourceSeq == nil || *kept.SourceSeq != 7 {
 		t.Fatalf("surviving edge = %#v; want created_at %v and source_seq 7 preserved", kept, survivor.CreatedAt)
 	}
-	if added.ToKind != "artifact" || added.ToID != "OPS-2/spec" || added.SourceSeq == nil || *added.SourceSeq != 9 || !added.CreatedAt.After(survivor.CreatedAt) {
-		t.Fatalf("new edge = %#v; want artifact OPS-2/spec stamped with event 9 and created after %v", added, survivor.CreatedAt)
+	if !survivor.CreatedAt.Before(between) {
+		t.Fatalf("the first write stamped its edges %v, not before the database's clock read after it, %v", survivor.CreatedAt, between)
+	}
+	if added.ToKind != "artifact" || added.ToID != "OPS-2/spec" || added.SourceSeq == nil || *added.SourceSeq != 9 || added.CreatedAt.Before(between) {
+		t.Fatalf("new edge = %#v; want artifact OPS-2/spec stamped with event 9 and created at or after %v, after the survivor's %v",
+			added, between, survivor.CreatedAt)
 	}
 }
 

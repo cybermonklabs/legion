@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The deploy recorder takes its issue's owner lock before it marks the pull request's row
@@ -60,13 +61,8 @@ func TestTheDeployRecorderWaitsForTheIssuesOwnerLockHoldingNoTransactionID(t *te
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the issue's owner lock: %v", err)
 	}
-	select {
-	case pass := <-passes:
-		if pass.err != nil || pass.written != 1 {
-			t.Fatalf("the pass once the lock was released wrote %d issue.deployed events (err %v), want 1", pass.written, pass.err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the deploy recorder never finished once the lock was released")
+	if pass := testwait.Receive(t, "the deploy recorder to finish once the lock was released", passes); pass.err != nil || pass.written != 1 {
+		t.Fatalf("the pass once the lock was released wrote %d issue.deployed events (err %v), want 1", pass.written, pass.err)
 	}
 	requireDeployedEvent(t, ctx, pool, deployedIssue, "acme/widgets", 601, 910, "2024-01-01T02:10:00Z")
 }

@@ -11,17 +11,20 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // sendWholeBodyThenRead posts body to target over a connection of its own, sending all of it
@@ -39,10 +42,13 @@ type heldBackBody struct {
 	t          *testing.T
 	connection net.Conn
 	reader     *bufio.Reader
+	// sent is how many bytes of the request, head and body, the client has sent.
+	sent int
 }
 
 // sendPartOfBody posts a body of size bytes to target, sending its head and first, and none of
-// the rest. The connection gives up on the server after 30 s.
+// the rest. The connection gives up on the server at the shared wait's bound (testwait.Context),
+// so an answer that never comes fails its read by name rather than hanging the binary.
 func sendPartOfBody(t *testing.T, address, target string, header http.Header, size int, first []byte) *heldBackBody {
 	t.Helper()
 	connection, err := net.Dial("tcp", address)
@@ -50,7 +56,8 @@ func sendPartOfBody(t *testing.T, address, target string, header http.Header, si
 		t.Fatalf("dial %s: %v", address, err)
 	}
 	t.Cleanup(func() { connection.Close() })
-	if err := connection.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	bound, _ := testwait.Context(t).Deadline()
+	if err := connection.SetDeadline(bound); err != nil {
 		t.Fatal(err)
 	}
 	var head bytes.Buffer
@@ -65,7 +72,7 @@ func sendPartOfBody(t *testing.T, address, target string, header http.Header, si
 	if _, err := connection.Write(first); err != nil {
 		t.Fatalf("send %d bytes of the %d-byte body before reading the answer: %v", len(first), size, err)
 	}
-	return &heldBackBody{t: t, connection: connection, reader: bufio.NewReader(connection)}
+	return &heldBackBody{t: t, connection: connection, reader: bufio.NewReader(connection), sent: head.Len() + len(first)}
 }
 
 // finish sends the rest of the body and reads the answer.
@@ -92,15 +99,125 @@ func (b *heldBackBody) answer() (*http.Response, []byte) {
 	return response, answer
 }
 
-// closedByServer reports whether the server closed the connection within wait of the call: the
-// next read meets the connection's end.
-func (b *heldBackBody) closedByServer(wait time.Duration) bool {
+// closedByServer reports whether the server closed the connection: the next read meets the
+// connection's end, rather than a byte or the shared wait's bound.
+func (b *heldBackBody) closedByServer() bool {
 	b.t.Helper()
-	if err := b.connection.SetReadDeadline(time.Now().Add(wait)); err != nil {
+	bound, _ := testwait.Context(b.t).Deadline()
+	if err := b.connection.SetReadDeadline(bound); err != nil {
 		b.t.Fatal(err)
 	}
 	_, err := b.reader.ReadByte()
 	return errors.Is(err, io.EOF) || errors.Is(err, syscall.ECONNRESET)
+}
+
+// drainListener is a test server's listener whose connections record each read deadline the
+// server sets and keep it off the socket until the test says the server's clock has reached it
+// (drainConn.reach): the deadline is computed from the server's clock, which the test drives, and a
+// socket's deadline runs on the wall clock, which no test drives.
+type drainListener struct {
+	net.Listener
+	mu    sync.Mutex
+	conns map[string]*drainConn
+}
+
+func (l *drainListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	held := &drainConn{Conn: conn}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.conns == nil {
+		l.conns = map[string]*drainConn{}
+	}
+	l.conns[conn.RemoteAddr().String()] = held
+	return held, nil
+}
+
+// of is the server's end of the connection whose client end is at local, once it is accepted.
+func (l *drainListener) of(t *testing.T, local net.Addr) *drainConn {
+	t.Helper()
+	return testwait.Until(t, "the server to accept the connection from "+local.String(), func() (*drainConn, bool) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		conn, accepted := l.conns[local.String()]
+		return conn, accepted
+	})
+}
+
+// drainConn is a server connection that records the read deadlines the server sets, and keeps each
+// off the socket until reach.
+type drainConn struct {
+	net.Conn
+	mu sync.Mutex
+	// set is every read deadline but the zero one that the server has set, deadline the last.
+	set      []time.Time
+	deadline time.Time
+	// read is how many bytes the server has read; reached says reach has run, for a client that
+	// sent sent bytes.
+	read, sent int
+	reached    bool
+}
+
+func (c *drainConn) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	c.passLocked()
+	c.mu.Unlock()
+	n, err := c.Conn.Read(p)
+	c.mu.Lock()
+	c.read += n
+	c.mu.Unlock()
+	return n, err
+}
+
+func (c *drainConn) SetReadDeadline(at time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deadline = at
+	if at.IsZero() {
+		return c.Conn.SetReadDeadline(at)
+	}
+	c.set = append(c.set, at)
+	c.passLocked()
+	return nil
+}
+
+func (c *drainConn) SetDeadline(at time.Time) error {
+	if err := c.SetReadDeadline(at); err != nil {
+		return err
+	}
+	return c.Conn.SetWriteDeadline(at)
+}
+
+// passLocked puts a deadline the clock has reached on the socket as one already passed, once the
+// server has read every byte the client sent: from there its next read would wait for bytes that
+// do not come, and fails at once instead.
+func (c *drainConn) passLocked() {
+	if c.reached && !c.deadline.IsZero() && c.read >= c.sent {
+		_ = c.Conn.SetReadDeadline(time.Now())
+	}
+}
+
+// deadlines waits until the server has set a read deadline on the connection, and answers every
+// one it has set.
+func (c *drainConn) deadlines(t *testing.T) []time.Time {
+	t.Helper()
+	return testwait.Until(t, "the server to set a read deadline on the connection", func() ([]time.Time, bool) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return slices.Clone(c.set), len(c.set) > 0
+	})
+}
+
+// reach is the server's clock reaching the connection's read deadline while the client, which has
+// sent sent bytes, sends nothing more: a read that would wait for the next byte fails at once.
+func (c *drainConn) reach(sent int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reached, c.sent = true, sent
+	c.passLocked()
 }
 
 // refusalCode is the code of a JSON refusal's body, or "" for any other body.
@@ -147,18 +264,10 @@ func TestAnEarlyAnswerToAnUploadReachesAClientThatSendsItsWholeBodyFirst(t *test
 	file := bytes.Repeat([]byte("a"), 24<<20)
 	first := make(chan sentUpload, 1)
 	go func() { first <- sendUpload(t, handler, running.Key, "running-upload", file) }()
-	select {
-	case <-held.reached:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first upload never reached the file store")
-	}
+	testwait.Receive(t, "the first upload to reach the file store", held.reached)
 	t.Cleanup(func() {
 		releaseOnce()
-		select {
-		case <-first:
-		case <-time.After(10 * time.Second):
-			t.Error("the first upload never answered once released")
-		}
+		testwait.Receive(t, "the first upload to answer once released", first)
 	})
 
 	body, bodyType, err := apitest.MultipartUpload(map[string]string{"name": "big.bin"}, "big.bin",
@@ -441,38 +550,26 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 			release := sync.OnceFunc(func() { close(first.release) })
 			t.Cleanup(release)
 			firstAnswer := make(chan keyedAnswered, 1)
+			ctx := testwait.Context(t)
 			go func() {
-				status, body, _, err := keyedPost(server, path, `{"n":1}`, judged.key, 30*time.Second)
+				status, body, _, err := keyedPost(ctx, server, path, `{"n":1}`, judged.key)
 				firstAnswer <- keyedAnswered{status: status, body: body, err: err}
 			}()
-			select {
-			case <-first.running:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the first request never ran")
-			}
+			testwait.Receive(t, "the first request to run", first.running)
 			header := http.Header{}
 			header.Set("Content-Type", "application/json")
 			header.Set("X-Dispatch-User", "alice")
 			header.Set(contracts.IdempotencyKeyHeader, judged.key)
 			repeat := sendPartOfBody(t, server.Listener.Addr().String(), path, header, len(judged.repeat), []byte(judged.repeat[:5]))
-			select {
-			case <-found:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the repeat never found its key in flight")
-			}
+			testwait.Receive(t, "the repeat to find its key in flight", found)
 			finishFirst := func() keyedAnswered {
 				t.Helper()
 				release()
-				select {
-				case answered := <-firstAnswer:
-					if answered.err != nil {
-						t.Fatalf("the first request: %v", answered.err)
-					}
-					return answered
-				case <-time.After(10 * time.Second):
-					t.Fatal("the first request never answered once released")
+				answered := testwait.Receive(t, "the first request to answer once released", firstAnswer)
+				if answered.err != nil {
+					t.Fatalf("the first request: %v", answered.err)
 				}
-				return keyedAnswered{}
+				return answered
 			}
 			var firstGot keyedAnswered
 			if judged.finishFirst {
@@ -501,7 +598,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 				if firstGot.status != http.StatusServiceUnavailable {
 					t.Fatalf("the first request answered %d %s, want its 503", firstGot.status, firstGot.body)
 				}
-				status, again, header, err := keyedPost(server, path, judged.repeat, judged.key, 10*time.Second)
+				status, again, header, err := keyedPost(ctx, server, path, judged.repeat, judged.key)
 				if err != nil || status != http.StatusCreated || header.Get(contracts.IdempotencyReplayedHeader) != "" {
 					t.Fatalf("the ask after the 409: %d %s replayed=%q (%v), want the request run",
 						status, again, header.Get(contracts.IdempotencyReplayedHeader), err)
@@ -516,6 +613,9 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 // after it, rather than the request held open for as long as its client cares to. Both drains: the
 // one every early answer waits behind (drainBeforeAnswer), here an upload to a closed issue and a
 // message pressed by another login, and the keyed layer's reading of a repeat found in flight.
+// The drain's deadline is bodyDrainLimit from the moment it begins on the server's clock, which
+// stands still here: the test reads the deadline the server set on its connection, then moves the
+// clock to it (drainConn.reach).
 //
 // The drain's deadline stays on the connection once a drain ends short of the body's end, whether
 // its read failed or the body ran past the route's limit: net/http itself reads on after the
@@ -526,10 +626,12 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 // soon as its answer is out, and a body that stalls just past the limit is answered 413 within the
 // deadline and closed after it, as a 4 MiB body, of which net/http reads nothing more, always was.
 func TestADrainStopsWaitingForABodyThatStalls(t *testing.T) {
-	const drainLimit = time.Second
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{files: filestest.NewMemory()})
-	served.drainReadLimit = drainLimit
-	server := httptest.NewServer(handler)
+	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory(), clock: clocktest.New(start)})
+	server := httptest.NewUnstartedServer(handler)
+	listener := &drainListener{Listener: server.Listener}
+	server.Listener = listener
+	server.Start()
 	t.Cleanup(server.Close)
 	open := createArtifactIssue(t, handler)
 	closed := createClosedIssue(t, handler)
@@ -586,24 +688,23 @@ func TestADrainStopsWaitingForABodyThatStalls(t *testing.T) {
 			if stalled.login != "" {
 				header.Set(contracts.DispatchLoginHeader, stalled.login)
 			}
-			started := time.Now()
 			body := sendPartOfBody(t, server.Listener.Addr().String(), stalled.target, header, stalled.size, stalled.sent)
+			conn := listener.of(t, body.connection.LocalAddr())
+			// The server's clock stands at start, so a drain that waits its whole limit sets the
+			// deadline bodyDrainLimit past it; a drain that waits for nothing sets none.
+			if set, want := conn.deadlines(t), start.Add(bodyDrainLimit); !slices.Contains(set, want) {
+				t.Fatalf("the server set read deadlines %v on the stalled body's connection, want the drain's %v", set, want)
+			}
+			conn.reach(body.sent)
 			response, answer := body.answer()
-			elapsed := time.Since(started)
 			if response.StatusCode != stalled.status || refusalCode(answer) != stalled.code {
 				t.Fatalf("status=%d body=%s, want %d %s", response.StatusCode, answer, stalled.status, stalled.code)
-			}
-			if elapsed > 10*time.Second {
-				t.Fatalf("answered %v after the body stalled, want once the drain's second was up", elapsed)
-			}
-			if stalled.status == http.StatusConflict && elapsed < drainLimit {
-				t.Fatalf("answered %v after the body stalled, want once the drain's second was up", elapsed)
 			}
 			if !response.Close {
 				t.Fatal("the answer to a stalled body did not say Connection: close")
 			}
-			if !body.closedByServer(drainLimit) {
-				t.Fatalf("the connection was still open %v after the answer to a stalled %d-byte body", drainLimit, stalled.size)
+			if !body.closedByServer() {
+				t.Fatalf("the connection stayed open after the answer to a stalled %d-byte body", stalled.size)
 			}
 		})
 	}
@@ -658,7 +759,7 @@ func TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody(t *testing.T) {
 			if response.StatusCode != http.StatusConflict || refusalCode(answer) != early.code {
 				t.Fatalf("status=%d body=%s, want 409 %s", response.StatusCode, answer, early.code)
 			}
-			if !response.Close || !body.closedByServer(5*time.Second) {
+			if !response.Close || !body.closedByServer() {
 				t.Fatalf("the refusal left open a connection whose body was never sent (Connection: %q)", response.Header.Get("Connection"))
 			}
 		})

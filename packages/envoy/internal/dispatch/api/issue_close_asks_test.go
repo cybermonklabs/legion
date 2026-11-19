@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -20,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Closing an issue withdraws every open ask it holds, whoever closes it: each is recorded resolved
@@ -850,20 +852,15 @@ func requireLiveText(t *testing.T, handler http.Handler, document string, parts 
 // awaitSettled waits until none of documents owes a settlement.
 func awaitSettled(t *testing.T, database *store.Store, documents ...string) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	testwait.Until(t, fmt.Sprintf("documents %v to owe no settlement", documents), func() (int, bool) {
 		var pending int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from doc_settlements_pending where artifact_id = any($1::uuid[])
 		`, documents).Scan(&pending); err != nil {
 			t.Fatalf("read pending settlements: %v", err)
 		}
-		if pending == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("documents %v still owe %d settlements", documents, pending)
-		}
-	}
+		return pending, pending == 0
+	})
 }
 
 // askRowTexts is each ask's whole row as the database stores it.
@@ -1031,13 +1028,8 @@ func TestACloseSweepThatWaitedOutAReopenWritesNothing(t *testing.T) {
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the reopen: %v", err)
 	}
-	select {
-	case err := <-swept:
-		if err != nil {
-			t.Fatalf("the sweep: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the sweep never returned once the reopen committed")
+	if err := testwait.Receive(t, "the sweep to return once the reopen committed", swept); err != nil {
+		t.Fatalf("the sweep: %v", err)
 	}
 	if writes := counted.writes.Load(); writes != 0 {
 		t.Fatalf("the sweep wrote the ask states of %s %d time(s) after a reopen committed while it waited: it "+

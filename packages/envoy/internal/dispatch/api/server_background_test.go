@@ -4,10 +4,11 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The background wait holds for the work a request left running past its client (detached): a
@@ -15,31 +16,42 @@ import (
 // it closes the database pool, so a wait that skipped them would close the pool under a worker
 // still writing.
 func TestTheBackgroundWaitHoldsForWorkARequestLeftRunning(t *testing.T) {
-	served := register(http.NewServeMux(), t.Context(), Deps{})
-	started, release := make(chan struct{}), make(chan struct{})
-	served.detached.goDetached(func() {
-		close(started)
-		<-release
-	})
-	<-started
+	// A server with no store runs nothing but the detached worker, all of it in the bubble.
+	synctest.Test(t, func(t *testing.T) {
+		served := register(http.NewServeMux(), t.Context(), Deps{})
+		started, release := make(chan struct{}), make(chan struct{})
+		served.detached.goDetached(func() {
+			close(started)
+			<-release
+		})
+		<-started
 
-	waited := make(chan struct{})
-	go func() {
-		defer close(waited)
-		served.waitBackground()
-	}()
-	select {
-	case <-waited:
-		t.Fatal("the background wait returned while a detached worker was still running")
-	case <-time.After(200 * time.Millisecond):
-	}
-	close(release)
-	select {
-	case <-waited:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the background wait never returned once the detached worker ended")
-	}
+		waited := make(chan struct{})
+		go func() {
+			defer close(waited)
+			served.waitBackground()
+		}()
+		synctest.Wait()
+		select {
+		case <-waited:
+			t.Fatal("the background wait returned while a detached worker was still running")
+		default:
+		}
+		close(release)
+		synctest.Wait()
+		select {
+		case <-waited:
+		default:
+			t.Fatal("the background wait never returned once the detached worker ended")
+		}
+	})
 }
+
+// backgroundWaitWhy is why a test holds the background wait quiet for a span: the wait returns on
+// its own goroutine once the last piece of work it waits for ends.
+const backgroundWaitWhy = "the background wait returns on its own goroutine, and no state says it is still blocked " +
+	"rather than about to return, the socket and the database are real I/O (no synctest), and no later action of " +
+	"the test is ordered after a return that should not come"
 
 // The background wait holds for every live socket's handler, and so every subscription it ran,
 // until the socket ends: production shutdown waits for it before it closes the database pool,
@@ -54,24 +66,16 @@ func TestTheBackgroundWaitHoldsForAnOpenLiveSocket(t *testing.T) {
 		defer close(waited)
 		rig.served.waitBackground()
 	}()
-	select {
-	case <-waited:
-		t.Fatal("the background wait returned while a live socket's handler was still running")
-	case <-time.After(200 * time.Millisecond):
-	}
+	testwait.Quiet(t, "the background wait's return while a live socket's handler still runs", waited, 200*time.Millisecond, backgroundWaitWhy)
 	_ = client.conn.Close()
-	select {
-	case <-waited:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the background wait never returned once the live socket closed")
-	}
+	testwait.Receive(t, "the background wait's return once the live socket closed", waited)
 }
 
 // The background wait holds for the event stream relay while an events subscription reads it, and
 // returns once that subscription leaves: the relay's generation stops with its last subscriber,
 // so nothing of it is left for the lifetime to end.
 func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
-	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
 	if err != nil {
 		t.Fatalf("mark the subscription's context for the pool: %v", err)
@@ -80,12 +84,12 @@ func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
 	close(stream.gate)
 	running := served.startEventsSubscription(ctx, stream, "feed", nil)
 	t.Cleanup(running.stop)
-	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool {
+	testwait.Eventually(t, "the subscription subscribes to the relay", func() bool {
 		return relaySubscribers(served.eventRelay) == 1
 	})
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the event stream relay", func() {
 		running.stop()
-		pollUntil(t, 5*time.Second, "the stopped subscription leaves the relay", func() bool {
+		testwait.Eventually(t, "the stopped subscription leaves the relay", func() bool {
 			return relaySubscribers(served.eventRelay) == 0
 		})
 	})
@@ -100,7 +104,7 @@ func TestTheBackgroundWaitHoldsForTheDeliveryHub(t *testing.T) {
 	if !served.deliveryHub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 7, ""))) {
 		t.Fatal("the hub refused the view")
 	}
-	pollUntil(t, 10*time.Second, "the hub answers the view", func() bool { return len(conn.frames) > 0 })
+	testwait.Eventually(t, "the hub answers the view", func() bool { return len(conn.frames) > 0 })
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the delivery hub", func() {
 		served.deliveryHub.Close(conn)
 	})
@@ -116,17 +120,9 @@ func requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t *testing.T, served *se
 		defer close(waited)
 		served.waitBackground()
 	}()
-	select {
-	case <-waited:
-		t.Fatalf("the background wait returned while %s still ran for an open subscription", what)
-	case <-time.After(200 * time.Millisecond):
-	}
+	testwait.Quiet(t, "the background wait's return while "+what+" still runs for an open subscription", waited, 200*time.Millisecond, backgroundWaitWhy)
 	leave()
-	select {
-	case <-waited:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the background wait never returned once %s's last subscriber left", what)
-	}
+	testwait.Receive(t, "the background wait's return once "+what+"'s last subscriber left", waited)
 }
 
 // A server with no lifetime is refused where it is built, not left running the hub, the relay and

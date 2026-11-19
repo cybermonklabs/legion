@@ -82,18 +82,19 @@ func (s *server) slowedByTestHook(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// waitSlowWrite waits delay out on ctx - the handler's own context - and counts this run against
-// route, answering whether the wait ran out. False is a context that ended inside the delay, whose
-// run never reaches its handler. The run is counted either way, and the time it spent waiting is
-// added either way too: a run cut off inside the delay entered the branch just as one that waited
-// it out did, and a test that drove the hook into that branch should see it.
+// waitSlowWrite waits delay out on the server's clock and ctx - the handler's own context - and
+// counts this run against route, answering whether the wait ran out. False is a context that ended
+// inside the delay, whose run never reaches its handler. The run is counted either way, and the
+// time it spent waiting, on the same clock, is added either way too: a run cut off inside the delay
+// entered the branch just as one that waited it out did, and a test that drove the hook into that
+// branch should see it.
 func (s *server) waitSlowWrite(ctx context.Context, route string, delay time.Duration) bool {
 	held, _ := s.slowWriteRuns.LoadOrStore(route, &slowWriteRecord{})
 	record := held.(*slowWriteRecord)
-	entered := time.Now()
-	waited := waitFor(ctx, delay)
+	entered := s.clock.Now()
+	waited := s.clock.Sleep(ctx, delay) == nil
 	record.runs.Add(1)
-	record.waited.Add(int64(time.Since(entered)))
+	record.waited.Add(int64(s.clock.Now().Sub(entered)))
 	return waited
 }
 

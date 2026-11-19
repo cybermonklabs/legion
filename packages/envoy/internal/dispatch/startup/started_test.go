@@ -10,14 +10,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // The two builds the fleet rolls between.
 const (
@@ -268,8 +270,7 @@ func TestTwoAnnouncersAtOnceAnnounceAndPublishOnce(t *testing.T) {
 	}
 	// Ends the passes only if a regression keeps them from ever overlapping the publish: a pass
 	// takes milliseconds, and the overlap comes within a few of them.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
+	ctx := testwait.Context(t)
 	start := make(chan struct{})
 	finished := make(chan struct{}, len(announcers))
 	var passes sync.WaitGroup
@@ -343,17 +344,29 @@ func TestAnAnnouncementIsPublishedOnceAPublishSucceeds(t *testing.T) {
 // of it runs on once its pass has given up and moved on: the announcement stays unpublished, and
 // a later pass whose publish answers publishes it.
 func TestAPublishThatOutlivesItsBoundIsAbandoned(t *testing.T) {
-	before := publishTimeout
-	publishTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { publishTimeout = before })
 	database := storetest.Open(t)
 	register(t, database, c1)
 	ctx := context.Background()
 
 	publisher := &recordingPublisher{}
 	publisher.hang(true)
-	announcer := New(Deps{Pool: database.Pool, Publisher: publisher})
-	announcer.pass(ctx)
+	// The bound runs on this clock, which stands until the test moves it: the publish is
+	// abandoned where the test moves it past publishTimeout and nowhere else.
+	fake := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
+	announcer := New(Deps{Pool: database.Pool, Publisher: publisher, Clock: fake})
+	began := fake.Now()
+	passed := make(chan struct{})
+	go func() {
+		defer close(passed)
+		announcer.pass(ctx)
+	}()
+	armed := fake.AwaitArmed(t, "the publish's bound", 1)
+	if want := began.Add(publishTimeout); len(armed) != 1 || !armed[0].Equal(want) {
+		t.Fatalf("the publish armed %v, want its bound alone at %s, publishTimeout from the pass's start", armed, want)
+	}
+	fake.Set(armed[0])
+	testwait.Receive(t, "the pass to end once the publish outlived its bound", passed)
+
 	if running := publisher.inFlight(); running != 0 {
 		t.Fatalf("%d publishes still running after the pass that gave up on them", running)
 	}

@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build (ownerlock_fleet_test.go): the earlier build's mark, as
@@ -98,19 +100,16 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 				_, err := raceWriter(ctx, s, rowFirstWriter, []Owner{issue}, []Owner{issue})
 				wrote <- err
 			}()
-			ended := false
-			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			type earlierWrite struct {
+				Ended  bool
+				Err    error
+				Queued bool
+			}
+			got := testwait.Until(t, "the earlier build's write to go through or to queue behind this build's write", func() (earlierWrite, bool) {
 				select {
 				case err := <-wrote:
-					if err != nil {
-						t.Fatalf("the earlier build's write: %v", err)
-					}
-					t.Errorf("the earlier build's write went through while this build's write was between its owner lock and its write phase; want it to wait for the owner's row")
-					ended = true
+					return earlierWrite{Ended: true, Err: err}, true
 				default:
-				}
-				if ended {
-					break
 				}
 				var queued bool
 				if err := s.Pool.QueryRow(ctx, `
@@ -118,12 +117,13 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 					writerPID).Scan(&queued); err != nil {
 					t.Fatal(err)
 				}
-				if queued {
-					break
+				return earlierWrite{Queued: queued}, queued
+			})
+			if got.Ended {
+				if got.Err != nil {
+					t.Fatalf("the earlier build's write: %v", got.Err)
 				}
-				if time.Now().After(deadline) {
-					t.Fatal("the earlier build's write neither went through nor queued behind this build's write within 10s")
-				}
+				t.Errorf("the earlier build's write went through while this build's write was between its owner lock and its write phase; want it to wait for the owner's row")
 			}
 			if _, err := writer.Exec(ctx, ownerLock, OwnerLockNamespace, issue.LockKey()); err != nil {
 				t.Fatal(err)
@@ -137,14 +137,9 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 			if err := writer.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if !ended {
-				select {
-				case err := <-wrote:
-					if err != nil {
-						t.Fatalf("the earlier build's write after this build's committed: %v", err)
-					}
-				case <-time.After(10 * time.Second):
-					t.Fatal("the earlier build's write did not end within 10s of this build's commit")
+			if !got.Ended {
+				if err := testwait.Receive(t, "the earlier build's write to end once this build's committed", wrote); err != nil {
+					t.Fatalf("the earlier build's write after this build's committed: %v", err)
 				}
 			}
 			if got := ownerSeqs(t, s, []Owner{issue})[issue]; got != seq+2 {
@@ -166,7 +161,10 @@ const markExpiryWindow = 2 * time.Second
 // that still writes past the mark is in the fleet only by its registration, and "What the fleet
 // does not see" (cmd/dispatch/README.md) names the three cases where it is not. No update is
 // lost, nothing deadlocks and nothing else fails, and this build's writers commit in both modes.
-// The mark's window is shortened to markExpiryWindow so that it expires inside the run.
+// The mark's window is shortened to markExpiryWindow so that it expires inside the run. The
+// mark's age is read by the database's clock, the clock the fleet read judges it by, and this
+// build's writers run until one of them has committed in the advisory mode, which only a fleet
+// read that no longer counts the mark answers.
 func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	s, owners := openFleetStore(t)
 	window := OwnerLockMarkWindow
@@ -177,24 +175,54 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	start := ownerSeqs(t, s, all)
 	ledger := newRaceLedger()
 	publishAsAnEarlierBuild(t, s)
-	stamped := time.Now()
+	// markYoung reports whether the database reads the mark as younger than half its window; a
+	// read that fails ends the earlier build's writers, and the failure is the test's.
+	markYoung := func() bool {
+		var young bool
+		if err := s.Pool.QueryRow(ctx, `select pg_catalog.now() - seen_at < make_interval(secs => $1) from owner_lock_legacy_mark`,
+			(markExpiryWindow / 2).Seconds()).Scan(&young); err != nil {
+			t.Errorf("read the earlier build's mark's age: %v", err)
+			return false
+		}
+		return young
+	}
 
+	stop := make(chan struct{})
+	stopped := func() bool {
+		select {
+		case <-stop:
+			return true
+		default:
+			return false
+		}
+	}
 	var writers sync.WaitGroup
+	// The writers stop and are joined however the wait below ends, so none outlives the test.
+	end := sync.OnceFunc(func() {
+		close(stop)
+		writers.Wait()
+	})
+	t.Cleanup(end)
 	for range gateRaceWriters {
 		writers.Go(func() {
-			for time.Since(stamped) < 2*markExpiryWindow {
+			for !stopped() {
 				ledger.write(ctx, t, s, fleetModeWriter, all)
 			}
 		})
 	}
 	for range 2 {
 		writers.Go(func() {
-			for time.Since(stamped) < markExpiryWindow/2 {
+			for !stopped() && markYoung() {
 				ledger.write(ctx, t, s, rowFirstWriter, all)
 			}
 		})
 	}
-	writers.Wait()
+	testwait.Eventually(t, "a writer of this build to commit in the advisory mode once the mark expired", func() bool {
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		return ledger.modes[false] > 0
+	})
+	end()
 
 	lost, deadlocks, failures := ledger.settle(t, s, all, start)
 	t.Logf("the mark expired %s after its stamp: this build's writers committed %d in the mode beside an earlier build and %d in the advisory mode; %d increments lost",

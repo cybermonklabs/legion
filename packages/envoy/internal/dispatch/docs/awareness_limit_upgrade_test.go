@@ -1,9 +1,6 @@
 package docs
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
 // The per-socket bound holds on a real websocket upgrade, not only on a connection a test hands
 // the filter: a socket that announces ten awareness clients reaches the other readers of its room,
@@ -19,21 +16,28 @@ func TestADocumentSocketHoldsItsAwarenessBoundThroughARealUpgrade(t *testing.T) 
 	bob := pair.openReader(t, pair.serverB, "bob")
 	mallory := pair.openReader(t, pair.serverA, "mallory")
 
-	const announced = 10
-	for client := uint64(500_000); client < 500_000+announced; client++ {
+	const first, announced = uint64(500_000), 10
+	for client := first; client < first+announced; client++ {
 		if err := mallory.SetAwareness(client, map[string]any{"user": map[string]any{"name": "mallory"}}); err != nil {
 			t.Fatalf("announce client %d: %v", client, err)
 		}
 	}
-	time.Sleep(2 * time.Second)
+	// The marker: the socket's first client, which the bound lets through, moved once more on the
+	// same socket. The socket's frames reach its room in order, and the room's changes reach carol
+	// on task A and, through the relay's one lane, bob on task B in order, so a reader holding the
+	// marker holds whatever the frames before it left there.
+	marker := map[string]any{"user": map[string]any{"name": "mallory"}, "cursor": map[string]any{"anchor": 1, "head": 1}}
+	setAwareness(t, mallory, first, marker)
+	requireAwareness(t, carol, holdsAwareness(first, marker), "mallory's marker, sent after her ten clients, reaching carol on task A")
+	requireAwareness(t, bob, holdsAwareness(first, marker), "mallory's marker, sent after her ten clients, reaching bob on task B")
 	onA, onB := 0, 0
 	for client := range carol.AwarenessStates() {
-		if client >= 500_000 && client < 500_000+announced {
+		if client >= first && client < first+announced {
 			onA++
 		}
 	}
 	for client := range bob.AwarenessStates() {
-		if client >= 500_000 && client < 500_000+announced {
+		if client >= first && client < first+announced {
 			onB++
 		}
 	}

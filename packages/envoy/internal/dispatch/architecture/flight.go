@@ -125,7 +125,7 @@ func (i *Importer) flight(ctx context.Context, project, repo string) (*syncFligh
 	defer stop()
 	// The deadline is the flight's own, counted from when it began rather than
 	// from when its first caller arrived.
-	syncCtx, cancel := context.WithTimeout(base, syncTimeout)
+	syncCtx, cancel := i.clock.WithTimeout(base, syncTimeout)
 	defer cancel()
 	// Each try runs in a held scope (githubreads.Hold) of the attempt syncCtx carries when a
 	// leased import started the flight, since syncCtx keeps the starter's values: a try another

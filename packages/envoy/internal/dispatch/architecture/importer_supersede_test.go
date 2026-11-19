@@ -17,11 +17,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // reSaveSource runs the settings PUT's own upsert (api/architecture_source.go's
@@ -88,12 +90,7 @@ func TestASettingsReSaveDuringTwoSyncsNeverLeavesTheEarlierHead(t *testing.T) {
 	reSaveSource(t, b)
 	branch.releaseHeld()
 
-	var answer syncAnswer
-	select {
-	case answer = <-held:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the held sync did not end within 30s of its release")
-	}
+	answer := testwait.Receive(t, "the held sync to end once it was released", held)
 	if answer.err != nil {
 		t.Fatalf("the held sync: %v", answer.err)
 	}
@@ -205,11 +202,7 @@ func TestALeasedImportPassRecordsTheRetryOfASupersededTryNotItsFailure(t *testin
 	branch.waitHeld(t)
 	reSaveSource(t, other)
 	branch.releaseHeld()
-	select {
-	case <-passed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the leased import pass did not end within 30s")
-	}
+	testwait.Receive(t, "the leased import pass to end", passed)
 
 	if got := reads.take(); len(got) != 1 || got[0].read != githubreads.ArchitectureImport || !got[0].succeeded || got[0].cause != "" {
 		t.Fatalf("the pass whose superseded try met a 503 and whose retry read the source recorded %+v, want one succeeded %s attempt with no cause",
@@ -241,14 +234,14 @@ func TestALeasedImportPassRecordsTheRetryOfASupersededTryNotItsFailure(t *testin
 // It is written, holding the row's lock, before the pass begins, so that load reads the row
 // without it, and it commits once the try's head lookup has arrived, after that load. The record
 // takes the row's lock (lockSourceRow), so it waits for the commit however late the commit comes,
-// and then finds the row written since the load.
+// and then finds the row written since the load. The flight's bound (syncTimeout) runs on a fake
+// clock, which the test moves to the deadline the flight armed once the save has committed, so
+// the held lookup ends on that bound and on nothing's timing.
 func TestALeasedImportPassKeepsASupersededTrysFailureWhenItsRetryAsksGitHubNothing(t *testing.T) {
-	previous := syncTimeout
-	syncTimeout = time.Second
-	t.Cleanup(func() { syncTimeout = previous })
 	branch := newMovingBranch(t, commitOne, map[string]map[string]string{commitOne: validFiles()})
 	branch.holdNextHeadLookup()
-	importer, other, database := twoProcesses(t, branch)
+	fake := clocktest.New(time.Date(2026, time.November, 19, 9, 0, 0, 0, time.UTC))
+	importer, other, database := twoProcessesOn(t, branch, fake)
 	pass, reads := leasedImports(t, importer, database)
 	save := beginReSave(t, other)
 
@@ -264,11 +257,9 @@ func TestALeasedImportPassKeepsASupersededTrysFailureWhenItsRetryAsksGitHubNothi
 	if err := save.Commit(context.Background()); err != nil {
 		t.Fatalf("commit the settings save: %v", err)
 	}
-	select {
-	case <-passed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the leased import pass did not end within 30s")
-	}
+	armed := fake.AwaitArmed(t, "the flight's deadline", 1)
+	fake.Set(armed[0])
+	testwait.Receive(t, "the leased import pass to end once its flight's deadline passed", passed)
 	branch.releaseHeld()
 
 	if got := reads.take(); len(got) != 1 || got[0].read != githubreads.ArchitectureImport || got[0].succeeded ||

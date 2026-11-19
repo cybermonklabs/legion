@@ -143,11 +143,6 @@ type rosterCache struct {
 	// Zero keeps nothing past the fetch, though the reads that arrive while it runs still share it.
 	ttl        time.Duration
 	silenceTTL time.Duration
-	// timeout overrides the bound on a fetch's listener read; zero, which every server the
-	// deployment builds leaves it, means routeRosterTimeout. Only a test that holds a fetch open
-	// while other reads arrive sets it, so how long it holds the fetch is its own choice rather
-	// than a race against two seconds of wall clock.
-	timeout time.Duration
 
 	mu sync.Mutex
 	// built is the roster this process last built from a stored answer, and builtSent that
@@ -412,10 +407,11 @@ func (s *server) storeRouteRoster(ctx context.Context, sent time.Time, own route
 	return own
 }
 
-// listRouteRoster asks the listener who is running, within routeRosterTimeout, and answers its
-// roster, unanswered with the listener client's error when it did not answer.
+// listRouteRoster asks the listener who is running, within routeRosterTimeout on the server's
+// clock, and answers its roster, unanswered with the listener client's error when it did not
+// answer.
 func (s *server) listRouteRoster(ctx context.Context) routeRoster {
-	ctx, cancel := context.WithTimeout(ctx, cmp.Or(s.rosters.timeout, routeRosterTimeout))
+	ctx, cancel := s.clock.WithTimeout(ctx, routeRosterTimeout)
 	defer cancel()
 	sessions, err := s.deps.Envoy.Sessions(ctx)
 	var refilling *envoy.RefillingError

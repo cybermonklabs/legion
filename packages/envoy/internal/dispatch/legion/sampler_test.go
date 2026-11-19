@@ -18,9 +18,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // fakeDaemon is a Legion daemon stand-in whose state document and status the test moves between
 // passes, counting the reads it served.
@@ -373,10 +374,16 @@ func TestAPassPrunesTheReadsPastTheirRetention(t *testing.T) {
 		`insert into projects (key, name, default_assignee) values ('LINUX', 'LINUX', 'alice')`); err != nil {
 		t.Fatalf("seed project LINUX: %v", err)
 	}
+	// Each aged read is stamped from the database's own now(), the clock PruneReads cuts off by,
+	// so the row a minute past the retention is past it by that clock whatever this process's
+	// clock says.
 	aged := func(project string, age time.Duration) {
 		t.Helper()
-		at := time.Now().UTC().Add(-age)
-		if _, err := RecordRead(t.Context(), database.Pool, project, at, 2048, nil); err != nil {
+		var now time.Time
+		if err := database.Pool.QueryRow(t.Context(), `select now()`).Scan(&now); err != nil {
+			t.Fatalf("read the database's clock: %v", err)
+		}
+		if _, err := RecordRead(t.Context(), database.Pool, project, now.UTC().Add(-age), 2048, nil); err != nil {
 			t.Fatalf("record a read of %s: %v", project, err)
 		}
 	}
@@ -422,11 +429,9 @@ func TestEachReadOfAPassIsAnnouncedToTheOpenBoards(t *testing.T) {
 	}
 	announced := func(what string) {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
-		notification, err := listener.Conn().WaitForNotification(ctx)
+		notification, err := listener.Conn().WaitForNotification(testwait.Context(t))
 		if err != nil {
-			t.Fatalf("%s: no announcement on %s within 5s (%v): an open board would never hear this read", what, StateChannel, err)
+			t.Fatalf("%s: no announcement on %s (%v): an open board would never hear this read", what, StateChannel, err)
 		}
 		if notification.Payload != "INFRA" {
 			t.Errorf("%s: announced %q, want the project INFRA", what, notification.Payload)

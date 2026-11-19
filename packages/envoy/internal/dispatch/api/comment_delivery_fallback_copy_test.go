@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"sync"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -19,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A listener that answers delivers the mention to the session the comment's route or its author
@@ -36,7 +40,7 @@ func TestALiveListenerLeavesTheMentionedSessionTheMentionsCopyAlone(t *testing.T
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener, state := newMentionListener(t)
-			handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Second})
+			handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
 			issue := createInteractionIssue(t, handler, "TEST", "A live listener", "before")
 			if tc.route != "" {
 				if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
@@ -76,7 +80,10 @@ func TestAFailedMentionOfASessionNothingSkippedLeavesTheCommentCreatedEventAlone
 	listener, state := newMentionListener(t)
 	// Never released: the send to s2 waits until its caller gives up, and the attempt fails.
 	_ = state.hold("s2")
-	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Second})
+	// The send to s2 is never answered, so what settles its attempt is the window the listener
+	// client gives the call, on this clock, which the wait below moves to each window's end.
+	clock := clocktest.New(time.Now())
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clock})
 	issue := createInteractionIssue(t, handler, "TEST", "A failed mention", "before")
 	root := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{"body": "Where should this go?"}))
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -95,7 +102,7 @@ func TestAFailedMentionOfASessionNothingSkippedLeavesTheCommentCreatedEventAlone
 		t.Fatalf("comment.created of %s is unpublished after the outbox published it", created.ID)
 	}
 
-	settled := settledCommentDeliveries(t, database, created.ID)
+	settled := settledCommentDeliveriesOn(t, database, created.ID, clock, &state.calls)
 	if len(settled) != 1 || settled[0].State != "failed" {
 		t.Fatalf("the mention whose send never answered = %#v, want its one attempt failed", settled)
 	}
@@ -133,8 +140,11 @@ func commentCreatedRow(t *testing.T, database *store.Store, commentID string) co
 func TestAClaimantWhoseResentMentionFailsStillHearsTheComment(t *testing.T) {
 	listener, state := newMentionListener(t)
 	stopping, stop := context.WithCancel(t.Context())
+	// The lookups of s1 below are never answered: their windows end on this clock, which the
+	// wait for the resend moves to each window's end.
+	clock := clocktest.New(time.Now())
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
-		envoyURL: listener.URL, envoyTimeout: time.Second, lifetime: stopping,
+		envoyURL: listener.URL, lifetime: stopping, clock: clock,
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "A claimed issue", "before")
 	if response := bearerRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/claim", map[string]any{
@@ -163,12 +173,17 @@ func TestAClaimantWhoseResentMentionFailsStillHearsTheComment(t *testing.T) {
 		t.Fatalf("comment.created deliveries = %#v, want the one event's, its claimant copy left to the resend", published)
 	}
 
-	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
-		t.Fatalf("resume the owed deliveries: %v", err)
-	}
+	// The resend's lookups of s1 are held unanswered, so the sweep runs on its own goroutine and
+	// the wait moves the clock to the end of each call's window until the attempt settles.
+	swept := make(chan error, 1)
+	go func() { swept <- served.resumeOwedDeliveries(context.Background()) }()
 	settled := waitForCommentDeliveries(t, database, claimed.ID, "the resend settled", func(attempts []model.CommentDelivery) bool {
+		stepListenerWaits(clock, &state.calls)
 		return len(attempts) == 1 && attempts[0].State != "pending"
 	})
+	if err := testwait.Receive(t, "the delivery sweep to finish", swept); err != nil {
+		t.Fatalf("resume the owed deliveries: %v", err)
+	}
 	if settled[0].State != "failed" {
 		t.Fatalf("the resend to a listener that answers nothing = %#v, want it failed", settled)
 	}
@@ -249,8 +264,7 @@ func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, 
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Eventually(t, "the outbox to publish every event of "+issueKey+" and settle every held copy of "+commentID, func() bool {
 		var unpublished, unsettled int
 		if err := deps.Store.Pool.QueryRow(context.Background(), `
 			select (select count(*) from events where issue_key = $1 and published_at is null),
@@ -258,14 +272,8 @@ func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, 
 		`, issueKey, commentID).Scan(&unpublished, &unsettled); err != nil {
 			t.Fatalf("count the outbox's work on %s: %v", issueKey, err)
 		}
-		if unpublished == 0 && unsettled == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d events of %s unpublished and %d copies of %s unsettled", unpublished, issueKey, unsettled, commentID)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return unpublished == 0 && unsettled == 0
+	})
 }
 
 // recordingOutboxPublisher takes every envelope the outbox publishes and records it, a role
@@ -336,7 +344,10 @@ func TestAFailedRetryOfAMentionSendsTheCommentToNoNewDestination(t *testing.T) {
 	listener, state := newMentionListener(t)
 	// Never released: every send to s2 waits until its caller gives up, and its attempt fails.
 	_ = state.hold("s2")
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Second})
+	// Every send to s2 is held unanswered, so what settles its attempt is the window the
+	// listener client gives the call, on this clock, which the waits below move it to.
+	clock := clocktest.New(time.Now())
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clock})
 	issue := createInteractionIssue(t, handler, "TEST", "A moved route", "before")
 	route := func(to string) {
 		t.Helper()
@@ -352,7 +363,7 @@ func TestAFailedRetryOfAMentionSendsTheCommentToNoNewDestination(t *testing.T) {
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Are you there?", "reply_to": root.ID, "mentions": []map[string]any{{"target": "session:s2"}},
 	}))
-	if settled := settledCommentDeliveries(t, database, created.ID); len(settled) != 1 || settled[0].State != "failed" {
+	if settled := settledCommentDeliveriesOn(t, database, created.ID, clock, &state.calls); len(settled) != 1 || settled[0].State != "failed" {
 		t.Fatalf("the mention whose send never answered = %#v, want its one attempt failed", settled)
 	}
 	published := eventDeliveries(t, database, "comment.created", created.ID)
@@ -362,9 +373,15 @@ func TestAFailedRetryOfAMentionSendsTheCommentToNoNewDestination(t *testing.T) {
 	before := commentCreatedRow(t, database, created.ID)
 
 	route("role:implementer")
-	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+created.ID+"/deliveries", map[string]any{
-		"delivery": "steer",
-	}, "alice")
+	// The retry's send to s2 is held unanswered, so it runs on its own goroutine and the clock
+	// is moved to the end of its window, where the receipt misses and the attempt fails.
+	retried := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		retried <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+created.ID+"/deliveries", map[string]any{
+			"delivery": "steer",
+		}, "alice")
+	}()
+	retry := answerWhileCallsAreHeld(t, clock, &state.calls, retried)
 	if retry.Code != http.StatusCreated {
 		t.Fatalf("retry the mention: status=%d body=%s", retry.Code, retry.Body.String())
 	}
@@ -415,38 +432,31 @@ func fallbackCopiesOf(t *testing.T, database *store.Store, commentID string) []h
 	return copies
 }
 
-// awaitFallbackCopies waits, for at most 10 s, until the comment has a fallback row for every
-// destination in want and each of them reads settled, and answers the rows then. want is the
-// copies the outbox is to hold; settled says whether to wait for a pass to decide them.
+// awaitFallbackCopies waits until the comment has a fallback row for every destination in want
+// and each of them reads settled, and answers the rows then. want is the copies the outbox is to
+// hold; settled says whether to wait for a pass to decide them.
 func awaitFallbackCopies(
 	t *testing.T, database *store.Store, commentID string, want []string, settled bool,
 ) []heldCopy {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		copies := fallbackCopiesOf(t, database, commentID)
-		destinations := make([]string, 0, len(copies))
-		decided := true
-		for _, row := range copies {
-			destinations = append(destinations, row.destination)
-			decided = decided && row.settled == settled
-		}
-		if slices.Equal(destinations, want) && decided {
-			return copies
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the fallback copies of %s are %#v, want one per %v, settled=%v", commentID, copies, want, settled)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	return testwait.Until(t, fmt.Sprintf("the fallback copies of %s to be one per %v, settled=%v", commentID, want, settled),
+		func() ([]heldCopy, bool) {
+			copies := fallbackCopiesOf(t, database, commentID)
+			destinations := make([]string, 0, len(copies))
+			decided := true
+			for _, row := range copies {
+				destinations = append(destinations, row.destination)
+				decided = decided && row.settled == settled
+			}
+			return copies, slices.Equal(destinations, want) && decided
+		})
 }
 
-// awaitPublishedCommentCreated waits, for at most 10 s, until the outbox has published the
-// comment.created event of commentID, and answers the destinations it reached.
+// awaitPublishedCommentCreated waits until the outbox has published the comment.created event of
+// commentID, and answers the destinations it reached.
 func awaitPublishedCommentCreated(t *testing.T, database *store.Store, commentID string) []string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	return testwait.Until(t, "the outbox to publish the comment.created of "+commentID, func() ([]string, bool) {
 		var destinations []string
 		var publishedAt *time.Time
 		if err := database.Pool.QueryRow(context.Background(), `
@@ -455,14 +465,8 @@ func awaitPublishedCommentCreated(t *testing.T, database *store.Store, commentID
 		`, commentID).Scan(&publishedAt, &destinations); err != nil {
 			t.Fatalf("read comment.created of %s: %v", commentID, err)
 		}
-		if publishedAt != nil {
-			return destinations
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left the comment.created of %s unpublished", commentID)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return destinations, publishedAt != nil
+	})
 }
 
 // heldLaneComment is a comment whose mention of s1 waits on a lane held longer than a claim
@@ -492,6 +496,9 @@ type queuedMention struct {
 	queued   string
 	release  func()
 	listener *mentionListener
+	// clock is the server's, a fake that stands still: a test that needs a send to miss the
+	// window the listener client gives it moves this clock past the window itself.
+	clock *clocktest.Fake
 }
 
 // aMentionQueuedBehindAStalledSend posts two comments mentioning s1 on an issue, the first send
@@ -500,22 +507,26 @@ type queuedMention struct {
 // outbox decides, and with no route the mention's own send is the only thing that can hand s1
 // the comment. The sender holds the queued attempt's claim throughout, writing it again every
 // mentionClaimRefresh: it is the live claim the outbox bounds its wait by however long the lane
-// is held. The listener client's send window is long enough that no send of this lane's misses
-// it; a test whose send must miss it names a shorter one (aMentionQueuedWithinASendWindow).
+// is held.
+//
+// The server runs on a fake clock that stands still, so no send of this lane's misses the window
+// the listener client gives it however long the test holds the lane; a test whose send must miss
+// it moves that clock past the window itself (envoy.CallWindow).
 func aMentionQueuedBehindAStalledSend(t *testing.T, route string) queuedMention {
 	t.Helper()
-	return aMentionQueuedWithinASendWindow(t, route, 30*time.Second)
+	return aMentionQueuedOnClock(t, route, clocktest.Held())
 }
 
-// aMentionQueuedWithinASendWindow is aMentionQueuedBehindAStalledSend with the window the
-// listener client gives a send named: past it a send is a receipt timeout, whose attempt is
-// failed while its frame may well have landed. A caller that names a short one releases the
-// stalled send well inside it, so the lane is held by the test rather than by that window.
-func aMentionQueuedWithinASendWindow(t *testing.T, route string, window time.Duration) queuedMention {
+// aMentionQueuedOnClock is aMentionQueuedBehindAStalledSend with the server's clock named. A test
+// that counts the tries a listener take-over allows passes a fake whose Now stands still
+// (clocktest.New): the take-over window is read on the server's clock (takeoverRetry.again), and a
+// Held fake's Now reads the wall clock as well, so the wall time a loaded machine spends between
+// the test's moves would count toward that window and decide how many tries start inside it.
+func aMentionQueuedOnClock(t *testing.T, route string, clock *clocktest.Fake) queuedMention {
 	t.Helper()
 	listener, state := newMentionListener(t)
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
-		envoyURL: listener.URL, envoyTimeout: window,
+		envoyURL: listener.URL, clock: clock,
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "A lane held past a lease", "before")
 	if route != "" {
@@ -528,14 +539,14 @@ func aMentionQueuedWithinASendWindow(t *testing.T, route string, window time.Dur
 	reached, release := state.stall("s1")
 	t.Cleanup(release)
 	sending := postMentionOfS1(t, handler, issue.Key, "first")
-	<-reached
+	testwait.Receive(t, "the first mention's send to reach the listener", reached)
 	queued := postMentionOfS1(t, handler, issue.Key, "second")
 	if !claimedPending(t, database, queued, "session:s1") {
 		t.Fatal("the attempt waiting on the held lane is not held by the sender")
 	}
 	return queuedMention{
 		handler: handler, database: database, deps: deps, served: served, issue: issue.Key,
-		sending: sending, queued: queued, release: release, listener: state,
+		sending: sending, queued: queued, release: release, listener: state, clock: clock,
 	}
 }
 

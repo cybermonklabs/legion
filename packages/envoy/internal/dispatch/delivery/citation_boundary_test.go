@@ -1,10 +1,10 @@
 package delivery
 
 import (
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestCitedIssuesReadsAURLAsAURL holds the whole citation decision, not the expression that
@@ -202,37 +202,52 @@ func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 // TestCitedIssuesCostsNoMoreForACitationFarFromASpace is the cost test, written so that it fails
 // on the shape it guards against rather than on a clock. Two bodies of the same length carry the
 // same 200 citations and differ only in what separates them: spaces, which end a word at once,
-// and commas, which do not. A reader that walks back to the nearest space pays the body's length
-// for every match and the comma body costs many times the space one; a reader that reads a
-// bounded run pays the same for both.
-//
-// The two bodies are timed in turn, three times each, and each keeps its quickest: the machine's
-// load only ever adds to a time, and in turn it reaches both bodies over the same stretch of the
-// run, where all three runs of one body and then all three of the other put whatever the load did
-// between them into the ratio.
-//
-// Measured in this pod at this head, best of three each: 5.83 ms and 5.05 ms, a ratio under one.
-// The same bodies against the walk this change replaced (ebb65528's reader): 5.74 ms and
-// 134.77 ms, a ratio of 23. The bound below is 8, which no linear reader approaches and no
-// walking one meets.
+// and commas, which do not. A reader that walks back to the nearest space reads the body's
+// length back for every match of the comma body; a reader that reads a bounded run reads the same
+// bytes back for both, since neither a space nor a comma is a host byte. The row counts two things
+// for each body: the bytes authorityBefore reads back (AuthorityReads), so a reading that differs
+// between the two bodies by a single byte fails it, and the bytes the whole reading allocates
+// (allocatedBy), which grow with what each match reads back wherever that reading is made: a
+// reader that took the span back to the nearest space and parsed it as a URL - ebb65528's, which
+// never calls authorityBefore - copies that span for each match, the body's length for each of
+// the comma body's.
 func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
 	const repo = "acme/widgets"
 	one := "github.com/acme/widgets/issues/7"
 	prose := strings.Repeat("a", 65536)
 	bySpace := prose + " " + strings.TrimSuffix(strings.Repeat(one+" ", 200), " ")
 	byComma := prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
-	timed := func(body string) time.Duration {
-		started := time.Now()
-		citedIssues(repo, body)
-		return time.Since(started)
+	// The least of three readings: another goroutine of the binary only ever adds to what a reading
+	// sees, and the reading's own allocations are the same each time.
+	readBack := func(body string) (read, allocated uint64) {
+		before := AuthorityReads()
+		allocated = allocatedBy(func() { citedIssues(repo, body) })
+		read = AuthorityReads() - before
+		for range 2 {
+			allocated = min(allocated, allocatedBy(func() { citedIssues(repo, body) }))
+		}
+		return read, allocated
 	}
-	space, comma := timed(bySpace), timed(byComma)
-	for range 2 {
-		space, comma = min(space, timed(bySpace)), min(comma, timed(byComma))
+	space, spaceAllocated := readBack(bySpace)
+	comma, commaAllocated := readBack(byComma)
+	if comma != space || space > 200*2*maxHostName {
+		t.Errorf("citing %d bytes read back %d bytes before the paths separated by commas and %d separated by spaces, want the same, and at most %d digits and %d host bytes for each of the 200: a match is reading back to the nearest space rather than a bounded run", len(byComma), comma, space, maxHostName, maxHostName)
 	}
-	if comma > 8*space {
-		t.Errorf("citing %d bytes separated by commas took %v against %v separated by spaces, more than 8 times as long: a match is reading back to the nearest space rather than a bounded run", len(byComma), comma, space)
+	if commaAllocated > 2*spaceAllocated {
+		t.Errorf("citing %d bytes allocated %d bytes with the paths separated by commas and %d separated by spaces, want about the same: a match is copying what it reads back to the nearest space", len(byComma), commaAllocated, spaceAllocated)
 	}
+	t.Logf("read back %d bytes for each body; allocated %d separated by spaces and %d by commas", space, spaceAllocated, commaAllocated)
+}
+
+// allocatedBy is the bytes the process allocated on the heap while op ran (runtime.MemStats's
+// TotalAlloc, which grows by each allocation's size and which no collection or load of the machine
+// moves). No test in this package calls t.Parallel, so what grows between the two readings is op's.
+func allocatedBy(op func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	op()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
 }
 
 // TestCitedIssuesReadsAHostNameOfAHostNamesLength holds the two ends of what a host may be. A

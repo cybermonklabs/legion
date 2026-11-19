@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -84,7 +86,7 @@ func (r *IssueAskRepair) add(other IssueAskRepair) {
 // logged and the pass goes on to the next; the returned error names how many failed. It reads
 // deps.Store, deps.Docs and deps.Events.
 func RepairIssueAsks(ctx context.Context, deps Deps, markedSince *time.Time) (IssueAskRepair, error) {
-	s := &server{deps: deps}
+	s := &server{deps: deps, clock: cmp.Or[clock.Clock](deps.Clock, clock.Real())}
 	repair, _, _, err := s.repairIssueAsks(ctx, markedSince, nil)
 	return repair, err
 }
@@ -113,7 +115,7 @@ func RepairIssueAsks(ctx context.Context, deps Deps, markedSince *time.Time) (Is
 // carried issues (no window on its first interval pass, so it sweeps every closed issue whose
 // documents owe a settlement) and never sees these.
 func RunIssueAskRepair(ctx context.Context, deps Deps, leases duty.Leases) {
-	s := &server{deps: deps}
+	s := &server{deps: deps, clock: cmp.Or[clock.Clock](deps.Clock, clock.Real())}
 	var markedSince *time.Time
 	var unrepaired []string
 	duty.RunLeased(ctx, leases, issueAskRepairLease, IssueAskRepairInterval, duty.TickAfterInterval, func(ctx context.Context) {

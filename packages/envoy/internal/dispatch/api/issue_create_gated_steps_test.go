@@ -9,29 +9,32 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // heldStatement is a tracer that holds the first statement containing match, once armed, after it
 // ran and before its caller reads on: the transaction that sent it keeps every lock the statement
 // took while the test starts the request it is to meet. reached closes when the statement is held;
-// release lets it go, and the test's end releases it whatever happened.
+// release lets it go, and the test's end lets it go whatever happened: ended is t.Context's, which
+// is cancelled before the test's cleanups run, so a row that failed while the statement was held
+// never leaves the server's shutdown waiting on it.
 type heldStatement struct {
 	match   string
 	armed   atomic.Bool
 	reached chan struct{}
 	release chan struct{}
+	ended   <-chan struct{}
 	once    sync.Once
 }
 
 type heldStatementKey struct{}
 
 func newHeldStatement(t *testing.T, match string) *heldStatement {
-	held := &heldStatement{match: match, reached: make(chan struct{}), release: make(chan struct{})}
+	held := &heldStatement{match: match, reached: make(chan struct{}), release: make(chan struct{}), ended: t.Context().Done()}
 	t.Cleanup(held.let)
 	return held
 }
@@ -52,7 +55,7 @@ func (h *heldStatement) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.Tr
 	close(h.reached)
 	select {
 	case <-h.release:
-	case <-time.After(10 * time.Second):
+	case <-h.ended:
 	}
 }
 
@@ -91,13 +94,7 @@ func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t 
 			map[string]any{"steps": []string{"spec"}, "actor": map[string]string{"kind": "session", "id": "legion-daemon:" + project}},
 			"agent-token")
 	}()
-	select {
-	case <-held.reached:
-	case response := <-published:
-		t.Fatalf("the publish answered before its update was held: status=%d body=%s", response.Code, response.Body.String())
-	case <-time.After(10 * time.Second):
-		t.Fatal("the publish never ran its update of the project's gated steps")
-	}
+	awaitEntered(t, "its update of the project's gated steps", held.reached, published)
 
 	created := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -109,14 +106,13 @@ func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t 
 			"actor":   sessionActor(),
 		})
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, "the create to wait on a lock the publish's transaction holds", func() (int, bool) {
 		waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if waiting > 0 {
-			break
+			return waiting, true
 		}
 		select {
 		case response := <-created:
@@ -124,11 +120,8 @@ func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t 
 				response.Code, response.Body.String())
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the create never waited on a lock the publish's transaction holds")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return waiting, false
+	})
 	held.let()
 
 	createResponse := awaitAnswer(t, created, "the session's create")

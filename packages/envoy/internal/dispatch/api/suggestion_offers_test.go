@@ -333,7 +333,7 @@ func TestSuggestionOfferBecomesActedOnWhenTheSourceCitesTheOfferedAsk(t *testing
 	if len(recorded) != 1 {
 		t.Fatalf("recorded %v, want the one offered question", recorded)
 	}
-	time.Sleep(10 * time.Millisecond) // the citation must postdate the row
+	awaitDatabaseClockPastSuggestions(t, fixture.database.Pool) // the citation must postdate the row
 
 	citation := "dispatch://" + fixture.owner + "/ask/" + fixture.offered[0]
 	postOutcomeMessage(t, fixture.handler, fixture.host, "alice", "XCITEO settled this already: "+citation)

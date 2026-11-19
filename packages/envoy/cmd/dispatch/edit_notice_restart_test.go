@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -29,11 +29,11 @@ func TestEditNoticeRestart(t *testing.T) {
 	// A close drops whatever the socket has not delivered - the read loop that would have taken
 	// the update breaks on the closed connection instead - so the room has to hold the edit before
 	// the browser leaves, and the process's own read of the document is where it shows.
-	waitForDocumentText(t, first, artifactID, "after\n", 10*time.Second)
+	waitForDocumentText(t, first, artifactID, "after\n")
 	// The last browser leaving settles the room at once (settleLastPeer), so the edit's version and
 	// its notice are written without waiting out the settle delay.
 	editor.Close()
-	waitForNotice(t, database, artifactID, 10*time.Second)
+	waitForNotice(t, database, artifactID)
 	if err := first.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill the first process: %v", err)
 	}
@@ -49,25 +49,20 @@ func TestEditNoticeRestart(t *testing.T) {
 
 	second := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	second.waitHealthy(t)
-	deadline := time.Now().Add(15 * time.Second)
-	for humanEditedEvents(t, second, key) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("no artifact.human_edited within 15 s of the second process's start:\n%s", second.Output.String())
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+	testwait.Until(t, "an artifact.human_edited event after the second process's start", func() (int, bool) {
+		count := humanEditedEvents(t, second, key)
+		return count, count > 0
+	})
 	if count := humanEditedEvents(t, second, key); count != 1 {
 		t.Fatalf("artifact.human_edited events = %d, want 1", count)
 	}
 }
 
-// waitForDocumentText waits up to within for the process to render artifactID's document as want:
-// the room has taken the editor's update, which is what the settlement the editor's close runs
-// settles.
-func waitForDocumentText(t *testing.T, process *dispatchProcess, artifactID, want string, within time.Duration) {
+// waitForDocumentText waits for the process to render artifactID's document as want: the room
+// has taken the editor's update, which is what the settlement the editor's close runs settles.
+func waitForDocumentText(t *testing.T, process *dispatchProcess, artifactID, want string) {
 	t.Helper()
-	var markdown string
-	if !testwait.Holds(within, 50*time.Millisecond, func() bool {
+	testwait.Until(t, fmt.Sprintf("the room to hold %q", want), func() (string, bool) {
 		answer := process.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", "", http.StatusOK)
 		var document struct {
 			Markdown string `json:"markdown"`
@@ -75,27 +70,21 @@ func waitForDocumentText(t *testing.T, process *dispatchProcess, artifactID, wan
 		if err := json.Unmarshal(answer, &document); err != nil {
 			t.Fatalf("decode the document's text: %v: %s", err, answer)
 		}
-		markdown = document.Markdown
-		return markdown == want
-	}) {
-		t.Fatalf("the room holds %q within %v of the editor's edit, want %q:\n%s",
-			markdown, within, want, process.Output.String())
-	}
+		return document.Markdown, document.Markdown == want
+	})
 }
 
-// waitForNotice waits up to within for artifactID's pending edit notice to be written.
-func waitForNotice(t *testing.T, database *store.Store, artifactID string, within time.Duration) {
+// waitForNotice waits for artifactID's pending edit notice to be written.
+func waitForNotice(t *testing.T, database *store.Store, artifactID string) {
 	t.Helper()
-	if !testwait.Holds(within, 50*time.Millisecond, func() bool {
+	testwait.Until(t, "the person's settled edit to write an edit notice", func() (int, bool) {
 		var pending int
 		if err := database.Pool.QueryRow(context.Background(),
 			`select count(*) from document_edit_notices where artifact_id = $1`, artifactID).Scan(&pending); err != nil {
 			t.Fatalf("read the document's edit notice: %v", err)
 		}
-		return pending == 1
-	}) {
-		t.Fatalf("the person's settled edit wrote no edit notice within %v", within)
-	}
+		return pending, pending == 1
+	})
 }
 
 // humanEditedEvents counts the artifact.human_edited events in the issue's event log, read through

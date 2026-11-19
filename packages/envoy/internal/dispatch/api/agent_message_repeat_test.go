@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // agentSessions is the registry the keyed-send tests' fake listener answers: two sessions that
@@ -208,26 +209,17 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- send() }()
-	select {
-	case <-held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the send never reached the listener")
-	}
+	testwait.Receive(t, "the send to reach the listener", held)
 	// The deploy's signal, while the listener holds the send. A send cut off by it ends its
 	// listener request at once; given that long, the listener then answers the send the drain
 	// waits for.
 	shutDown()
-	select {
-	case <-cut:
-	case <-time.After(500 * time.Millisecond):
-	}
+	testwait.Quiet(t, "the listener's request cut off by the deploy's signal", cut, 500*time.Millisecond,
+		"no state records that Dispatch gave the send up, the send is real HTTP to a listener (no synctest), "+
+			"and no later action of the test is ordered after a cancellation that reaches the listener on "+
+			"the HTTP client's own goroutine")
 	close(release)
-	var created *httptest.ResponseRecorder
-	select {
-	case created = <-answered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the send in flight at shutdown never answered")
-	}
+	created := testwait.Receive(t, "the send in flight at shutdown to answer", answered)
 
 	var messageID string
 	if err := database.Pool.QueryRow(context.Background(),
@@ -295,23 +287,19 @@ func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 	fresh := 0
 	ids := map[string]struct{}{}
 	for range senders {
-		select {
-		case response := <-responses:
-			switch {
-			case response.Code == http.StatusCreated:
-				if !replayed(response) {
-					fresh++
-				}
-				ids[decodeBody[model.Message](t, response).ID] = struct{}{}
-			case response.Code == http.StatusConflict:
-				if code, _ := refusalOf(t, response); code != contracts.IdempotencyKeyInFlight {
-					t.Errorf("409 %s, want %s", code, contracts.IdempotencyKeyInFlight)
-				}
-			default:
-				t.Errorf("status=%d body=%s", response.Code, response.Body.String())
+		response := testwait.Receive(t, "a concurrent send to answer", responses)
+		switch {
+		case response.Code == http.StatusCreated:
+			if !replayed(response) {
+				fresh++
 			}
-		case <-time.After(20 * time.Second):
-			t.Fatal("a concurrent send did not answer")
+			ids[decodeBody[model.Message](t, response).ID] = struct{}{}
+		case response.Code == http.StatusConflict:
+			if code, _ := refusalOf(t, response); code != contracts.IdempotencyKeyInFlight {
+				t.Errorf("409 %s, want %s", code, contracts.IdempotencyKeyInFlight)
+			}
+		default:
+			t.Errorf("status=%d body=%s", response.Code, response.Body.String())
 		}
 	}
 	if fresh != 1 || len(ids) != 1 {
@@ -362,18 +350,10 @@ func TestAClientAbortMidSendStillDeliversOnce(t *testing.T) {
 		defer close(answered)
 		handler.ServeHTTP(httptest.NewRecorder(), request)
 	}()
-	select {
-	case <-sending:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the send never reached the listener")
-	}
+	testwait.Receive(t, "the send to reach the listener", sending)
 	cancel()
 	close(release)
-	select {
-	case <-answered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the cut-off send never finished")
-	}
+	testwait.Receive(t, "the cut-off send to finish", answered)
 
 	var id string
 	if err := database.Pool.QueryRow(context.Background(),

@@ -14,11 +14,13 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // documentSocketTokenRig is a server whose people sign in with a session cookie, as
@@ -45,11 +47,12 @@ const documentSocketPerson = "alice@d.example"
 // issue whose spec she can open, on a server whose sockets resolve their caller every heartbeat.
 // The verifier is newBrokerTokenRig's, taken from that rig rather than built a second time, so it
 // is the one every broker-token test drives: the same stub broker, the replay table on this same
-// database, and the switches cmd/dispatch sets on it.
-func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration) *documentSocketTokenRig {
+// database, and the switches cmd/dispatch sets on it. The server's heartbeats and the verifier's
+// cache both run on fake, which the test moves (driveHeartbeats).
+func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, fake *clocktest.Fake) *documentSocketTokenRig {
 	t.Helper()
 	ctx := context.Background()
-	rig := &documentSocketTokenRig{tokens: newBrokerTokenRig(t)}
+	rig := &documentSocketTokenRig{tokens: newBrokerTokenRig(t, func(options *brokertoken.Options) { options.Now = fake.Now })}
 	database := rig.tokens.database
 	rig.sessions = store.NewPgSessionStore(database.Pool)
 	person := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions}
@@ -59,7 +62,7 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration) *documentS
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: testServerURL, Docs: documents, Events: broker,
-		BrokerTokens: rig.tokens.deps.BrokerTokens, StreamHeartbeat: heartbeat,
+		BrokerTokens: rig.tokens.deps.BrokerTokens, StreamHeartbeat: heartbeat, Clock: fake,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -132,14 +135,33 @@ func presentedHeaders(presented *http.Request) http.Header {
 	return headers
 }
 
+// driveHeartbeats moves fake through n of the server's heartbeats from first, each one heartbeat
+// after the one before, waiting before each move for it to be armed there, and answers the
+// heartbeat after them once it is armed. The server arms its next heartbeat before it resolves its
+// caller again and receives that heartbeat only once the check has returned, so each heartbeat
+// seen armed proves every check two or more heartbeats before it found the caller still resolving.
+func driveHeartbeats(t *testing.T, fake *clocktest.Fake, first time.Time, n int, every time.Duration) time.Time {
+	t.Helper()
+	at := first
+	for range n {
+		awaitArmedAt(t, fake, "the socket's heartbeat", at)
+		fake.Set(at)
+		at = at.Add(every)
+	}
+	awaitArmedAt(t, fake, "the socket's heartbeat after the ones the row moved through", at)
+	return at
+}
+
 // The document socket admits its caller by the sign-in cookie alone (docs.Service.requestActor),
 // so its heartbeat re-checks that cookie and nothing the request carries beside it
 // (signInStillResolves). A token sent beside the cookie admitted nothing, and the broker holding
 // it live must not keep the socket open once the cookie's session has ended: not a read-only
 // token, which the read list lets read no document at all, and not a token that writes, which is
 // its session's credential and still not what opened this socket. The socket stays open while
-// the cookie resolves, with the token beside it, and closes within a heartbeat of the session's
-// end, while the broker still holds the token live and has not once been asked about it.
+// the cookie resolves, with the token beside it, and closes at the first heartbeat after the
+// session's end, while the broker still holds the token live and has not once been asked about
+// it. The heartbeats are on the server's clock, a fake the row moves one heartbeat at a time, and
+// the close is awaited with the clock standing at the heartbeat after the sign-out.
 func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *testing.T) {
 	const heartbeat = 250 * time.Millisecond
 	for _, beside := range []struct {
@@ -150,7 +172,9 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 		{"a token that writes", liveNamedToken},
 	} {
 		t.Run(beside.name, func(t *testing.T) {
-			rig := newDocumentSocketTokenRig(t, heartbeat)
+			fake := clocktest.New(time.Now())
+			opened := fake.Now()
+			rig := newDocumentSocketTokenRig(t, heartbeat, fake)
 			caller := newBrokerCaller(t)
 			const token = "a-token-sent-beside-the-cookie"
 			rig.tokens.broker.Says(token, beside.answer(caller.jkt))
@@ -159,19 +183,15 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 
 			// While the cookie resolves the socket outlives several heartbeats and still
 			// answers its editor.
-			time.Sleep(4 * heartbeat)
+			next := driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat)
 			peer.barrier(t)
 
 			if err := rig.sessions.RevokeSessions(context.Background(), documentSocketPerson); err != nil {
 				t.Fatalf("sign out: %v", err)
 			}
-			ended := time.Now()
-			select {
-			case <-peer.connection().Ended:
-				t.Logf("the document socket closed %s after its cookie's session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
-			case <-time.After(heartbeat + time.Second):
-				t.Fatalf("the document socket stayed open %s after its cookie's session ended, kept by %s the broker holds live", time.Since(ended).Round(time.Millisecond), beside.name)
-			}
+			fake.Set(next)
+			testwait.Receive(t, "the document socket to close at the first heartbeat after its cookie's session ended, though "+
+				beside.name+" the broker holds live rides beside it", peer.connection().Ended)
 			// The heartbeat cancels the connection's context with no close code, so ygo drops
 			// the socket without a close frame.
 			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {
@@ -205,15 +225,12 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 		}},
 	} {
 		t.Run(beside.name, func(t *testing.T) {
-			rig := newDocumentSocketTokenRig(t, heartbeat)
+			fake := clocktest.New(time.Now())
+			opened := fake.Now()
+			rig := newDocumentSocketTokenRig(t, heartbeat, fake)
 			peer := rig.openDocument(t, beside.headers(t, rig))
 
-			time.Sleep(4 * heartbeat)
-			select {
-			case <-peer.connection().Ended:
-				t.Fatalf("the document socket closed (code %d) within four heartbeats while its cookie resolved", peer.connection().CloseCode())
-			default:
-			}
+			driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat)
 			peer.barrier(t)
 			if asked := rig.tokens.broker.Count(); asked != 0 {
 				t.Fatalf("the document socket's heartbeat asked the broker %d times, want 0", asked)
@@ -225,22 +242,32 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 // GET /ws/live keeps its own rule, which the document socket's does not change: it is admitted
 // by whichever credential the request carries, a broker-issued token here with no cookie at all,
 // and its heartbeat resolves that token again (callerStillResolves). The socket outlives several
-// heartbeats while the broker holds the token live, and closes with 1008 once the broker stops
-// holding it live and the answer it remembered has run out. The heartbeat is a second, so the
-// client's pong meets the pong deadline on a loaded runner.
+// heartbeats while the broker holds the token live, and closes with 1008 at the first heartbeat
+// once the broker stops holding it live and the answer it remembered has run out,
+// AffirmativeCacheTTL after it was remembered: the heartbeats and the verifier's cache are on one
+// fake clock the row moves. The heartbeat is a second, so the client's pong, which runs on the
+// real clock, meets the pong deadline on a loaded runner.
 func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *testing.T) {
 	const heartbeat = time.Second
-	rig := newDocumentSocketTokenRig(t, heartbeat)
+	fake := clocktest.New(time.Now())
+	opened := fake.Now()
+	rig := newDocumentSocketTokenRig(t, heartbeat, fake)
 	caller := newBrokerCaller(t)
 	const token = "a-token-holding-the-live-socket-open"
 	rig.tokens.broker.Says(token, liveNamedToken(caller.jkt))
 	presented := caller.presenting(t, http.MethodGet, "/ws/live", token, nil)
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(rig.server.URL, "http")+"/ws/live", presentedHeaders(presented)).read()
 
-	client.quiet(t, 3*heartbeat+heartbeat/2, "a live socket whose token the broker holds live")
+	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 3, heartbeat)
+	client.sentNothing(t, "a live socket whose token the broker holds live")
 
 	rig.tokens.broker.Says(token, brokertoken.Introspection{Active: false})
-	if closed := client.closeError(t, brokertoken.AffirmativeCacheTTL+2*heartbeat+time.Second); closed.Code != gws.ClosePolicyViolation {
-		t.Fatalf("the live socket closed with %d %q once the broker stopped holding its token live, want 1008", closed.Code, closed.Text)
+	lapsed := opened.Add(brokertoken.AffirmativeCacheTTL)
+	for next.Before(lapsed) {
+		next = driveHeartbeats(t, fake, next, 1, heartbeat)
+	}
+	fake.Set(next)
+	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
+		t.Fatalf("the live socket closed with %d %q at the first heartbeat once its remembered answer had lapsed, want 1008", closed.Code, closed.Text)
 	}
 }

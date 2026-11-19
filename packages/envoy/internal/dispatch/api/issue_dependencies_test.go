@@ -15,6 +15,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // blocked_by is an issue-to-issue dependency: create and PATCH replace its complete target
@@ -585,12 +587,18 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 	go func() {
 		reparents <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+moving, map[string]string{"parent": before}, "alice")
 	}()
-	select {
-	case response := <-reparents:
-		if response.Code != http.StatusOK {
-			t.Fatalf("reparent beside a waiting board move of the same issue: %d %s", response.Code, response.Body.String())
+	// The reparent must answer beside the waiting move rather than queue behind it: a reparent
+	// that waited would queue on the same row, where the gate's transaction counts it as a
+	// second waiter.
+	answered := testwait.Until(t, "the reparent to answer beside the waiting board move", func() (*httptest.ResponseRecorder, bool) {
+		select {
+		case response := <-reparents:
+			return response, true
+		default:
 		}
-	case <-time.After(2 * time.Second):
+		if storetest.LockWaiters(t, gate) < 2 {
+			return nil, false
+		}
 		// The reparent is waiting for the move. Open the gate and report how the two writes end.
 		if err := gate.Commit(context.Background()); err != nil {
 			t.Fatal(err)
@@ -598,6 +606,10 @@ func TestReparentDoesNotDeadlockWithABoardMoveOfTheSameIssue(t *testing.T) {
 		reparent, move := awaitResponse(t, reparents), awaitResponse(t, moves)
 		t.Fatalf("reparent waited for a board move of the same issue; once the gate opened the reparent answered %d %s and the move %d %s",
 			reparent.Code, reparent.Body.String(), move.Code, move.Body.String())
+		return nil, true
+	})
+	if answered.Code != http.StatusOK {
+		t.Fatalf("reparent beside a waiting board move of the same issue: %d %s", answered.Code, answered.Body.String())
 	}
 	if err := gate.Commit(context.Background()); err != nil {
 		t.Fatal(err)

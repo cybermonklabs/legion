@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -72,7 +74,7 @@ func sweepHorizon(pool *store.Pool) *events.Horizon {
 }
 
 // runSweep runs run on a goroutine until the test ends, and fails the test if it does not return
-// promptly once its context ends.
+// once its context ends.
 func runSweep(t *testing.T, run func(ctx context.Context)) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -83,20 +85,8 @@ func runSweep(t *testing.T, run func(ctx context.Context)) {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the suggestion outcome sweep did not return within 10s of its context ending")
-		}
+		testwait.Receive(t, "the suggestion outcome sweep's return once its context ended", done)
 	})
-}
-
-// waitUntil polls condition until it holds, failing the test after within.
-func waitUntil(t *testing.T, within time.Duration, what string, condition func() bool) {
-	t.Helper()
-	if !testwait.Holds(within, 10*time.Millisecond, condition) {
-		t.Fatalf("timed out after %v waiting for %s", within, what)
-	}
 }
 
 // Two envoy-dispatch processes sweep one database, each through the sweep's woken loop and each
@@ -128,19 +118,17 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 	}
 
 	runSweep(t, func(ctx context.Context) {
-		runSuggestionOutcomeSweep(ctx, firstPool, sweepHorizon(firstPool), nil, sweepRunnerSchedule)
+		runSuggestionOutcomeSweep(ctx, clock.Real(), firstPool, sweepHorizon(firstPool), nil, sweepRunnerSchedule)
 	})
 	runSweep(t, func(ctx context.Context) {
-		runSuggestionOutcomeSweep(ctx, secondPool, sweepHorizon(secondPool), nil, sweepRunnerSchedule)
+		runSuggestionOutcomeSweep(ctx, clock.Real(), secondPool, sweepHorizon(secondPool), nil, sweepRunnerSchedule)
 	})
-	if waiting := storetest.WaitForLockWaiters(t, gate, 2, 30*time.Second); waiting < 2 {
-		t.Fatalf("%d of the two runners' passes reached the cursor lock, want both: the cursor row, not a lease, is what serialises them", waiting)
-	}
+	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the cursor: %v", err)
 	}
 
-	waitUntil(t, 30*time.Second, "one runner to judge the page and the other to read the cursor it advanced", func() bool {
+	testwait.Eventually(t, "one runner to judge the page and the other to read the cursor it advanced", func() bool {
 		return countStatements(recorded(), firstPassRead) == 1 && countStatements(recorded(), laterPageRead) >= 1
 	})
 	var cursor *int64
@@ -165,25 +153,41 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 
 // One runner, nothing else on the database: every wake must earn a pass, each one gap after the
 // one before at the soonest, and no wake earns more than one. A pass is counted by the cursor row
-// it holds, one read per pass, since the loop takes no lease and logs nothing of its own.
+// it holds, one read per pass, since the loop takes no lease and logs nothing of its own. The loop
+// runs on a fake clock: it holds each pass a wake earns to its gap there, and the row moves the
+// clock to it. Once the last pass has run with no wake pending, the loop holds no timer on its
+// clock, its own record that nothing it holds can start another pass.
 func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
 	database := storetest.Open(t)
 	pool, statements := recordedPool(t, database)
 	wake := make(chan struct{}, 1)
+	fake := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
 	runSweep(t, func(ctx context.Context) {
-		runSuggestionOutcomeSweep(ctx, pool, sweepHorizon(pool), wake, sweepRunnerSchedule)
+		runSuggestionOutcomeSweep(ctx, fake, pool, sweepHorizon(pool), wake, sweepRunnerSchedule)
 	})
 	passes := func() int { return countStatements(statements.Statements(), cursorHeld) }
 
 	const wakes = 5
 	for woken := 0; woken <= wakes; woken++ {
-		waitUntil(t, 10*time.Second, "the pass the last wake earned", func() bool { return passes() == woken+1 })
+		testwait.Until(t, "the pass the last wake earned, moving the loop's clock to the gap it holds", func() ([]time.Time, bool) {
+			if passes() == woken+1 {
+				return nil, true
+			}
+			armed := fake.Armed()
+			if len(armed) > 0 {
+				fake.Set(armed[0])
+			}
+			return armed, false
+		})
 		if woken < wakes {
 			wake <- struct{}{}
 		}
 	}
-	time.Sleep(4 * sweepRunnerSchedule.minGap)
-	if ran := passes(); ran != wakes+1 {
-		t.Fatalf("a lone runner made %d passes for its start and %d wakes; want %d", ran, wakes, wakes+1)
+	armed := testwait.Until(t, "the loop to hold no timer once the last wake's pass has run", func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, len(armed) == 0
+	})
+	if ran := passes(); ran != wakes+1 || len(armed) != 0 {
+		t.Fatalf("a lone runner made %d passes for its start and %d wakes and holds timers for %v; want %d and none", ran, wakes, armed, wakes+1)
 	}
 }

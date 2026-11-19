@@ -30,7 +30,7 @@ func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks(t *testing.T)
 	t.Cleanup(server.Close)
 	alpha := connectPeer(t, server.URL, artifactID, "alice")
 	beta := connectPeer(t, server.URL, artifactID, "alice")
-	waitFor(t, 10*time.Second, "both peers to hold the room's document", func() bool {
+	waitFor(t, "both peers to hold the room's document", func() bool {
 		return strings.TrimSpace(peerMarkdown(alpha)) == "Seed." && strings.TrimSpace(peerMarkdown(beta)) == "Seed."
 	})
 
@@ -46,7 +46,7 @@ func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks(t *testing.T)
 	if err := alpha.Write(ygsync.EncodeUpdate(second)); err != nil {
 		t.Fatalf("send the second keystroke: %v", err)
 	}
-	waitFor(t, 10*time.Second, "the room to park the second keystroke", func() bool {
+	waitFor(t, "the room to park the second keystroke", func() bool {
 		live := service.srv.GetDoc(artifactID)
 		return live != nil && live.PendingStats().Items > 0
 	})
@@ -58,7 +58,7 @@ func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks(t *testing.T)
 	if err := alpha.Write(ygsync.EncodeUpdate(first)); err != nil {
 		t.Fatalf("send the first keystroke: %v", err)
 	}
-	waitFor(t, 10*time.Second, "the other peer to receive both keystrokes", func() bool {
+	waitFor(t, "the other peer to receive both keystrokes", func() bool {
 		return strings.HasPrefix(peerMarkdown(beta), "second\n\nfirst\n\nSeed.")
 	})
 	requireStoredRowsFoldToTheRoom(t, service, artifactID, "once the first keystroke landed")

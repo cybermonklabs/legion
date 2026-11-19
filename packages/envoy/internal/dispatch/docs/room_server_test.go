@@ -5,13 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A room's close gate leaves with the last close or repair that held it: the server keeps none
@@ -78,12 +81,8 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 		defer close(settled)
 		service.settleRoom(artifactID, generation)
 	}()
-	select {
-	case <-settled:
-	case <-time.After(10 * time.Second):
-		release()
-		t.Fatal("the settlement waited for the close under way instead of refusing its repair")
-	}
+	// The gate stays held until the settlement returns; the cleanup lets it go if it never does.
+	testwait.Receive(t, "the settlement to refuse its repair rather than wait for the close under way", settled)
 	release()
 	if repairs := pmdoc.BlockIDRepairCount(liveTree(t, service, artifactID)); repairs == 0 {
 		t.Fatal("the refused repair stamped the room")
@@ -139,6 +138,8 @@ func TestEvictWithACancelledContextLeavesTheRoomResident(t *testing.T) {
 
 func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 	server := websocket.NewServer()
+	// Only to keep ygo's idle sweep away from the room the test holds open: that sweep reads the
+	// wall clock inside ygo (provider/websocket/idle_sweep.go), so no clock of the test's reaches it.
 	server.RoomIdleTimeout = time.Hour
 	service := &Service{srv: newRoomServer(server)}
 	entered, release, applied := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -155,9 +156,7 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 		recoverRoom()
 		<-applied
 		service.evictWG.Wait()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
+		if err := server.Shutdown(testwait.Context(t)); err != nil {
 			t.Errorf("shutdown: %v", err)
 		}
 	})
@@ -177,9 +176,22 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 	done := state.failedDone
 	service.unlockState("room", state)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	// The eviction's context ends on a fake clock, which the test moves past its deadline once
+	// the eviction has tried the room the Apply above is inside and been refused.
+	var attempts atomic.Int32
+	service.srv.beforeClose = func(room string) {
+		if room == "room" {
+			attempts.Add(1)
+		}
+	}
+	evictClock := clocktest.New(time.Now())
+	ctx, cancel := evictClock.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	if err := service.Evict(ctx, "room"); !errors.Is(err, context.DeadlineExceeded) {
+	evictReturned := make(chan error, 1)
+	go func() { evictReturned <- service.Evict(ctx, "room") }()
+	waitFor(t, "the eviction to try the room the Apply is inside", func() bool { return attempts.Load() >= 1 })
+	evictClock.Advance(10 * time.Millisecond)
+	if err := testwait.Receive(t, "the eviction to return once its context ended", evictReturned); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("cancelled eviction = %v, want %v", err, context.DeadlineExceeded)
 	}
 	if !service.roomFailed("room") || server.GetDoc("room") == nil {
@@ -188,11 +200,7 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 	letGo()
 	<-applied
 	recoverRoom()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the failed room's eviction did not finish")
-	}
+	testwait.Receive(t, "the failed room's eviction to finish", done)
 	if server.GetDoc("room") != nil || service.roomFailed("room") {
 		t.Fatal("the failed room's eviction must close the room and clear its failure")
 	}

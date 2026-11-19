@@ -13,12 +13,12 @@ import (
 // just subscribed, and returns once it has arrived. events_start is the last thing a new
 // subscription sends: the relay awaits the event horizon and writes the frame only once Await has
 // returned, and the horizon's proof is instance-wide, so no fixed deadline bounds the wait. It is
-// on the server's own account of itself instead (internal/dispatch/horizontest, which carries the
-// bounds and their measurements): while the process keeps logging events.StallWarning the wait
-// goes on, and it fails - with the process's whole output, naming the newest warning - when the
-// process never said it was held, when it stopped saying so, or when the hold is one in the
-// process's own database. Every process these tests start warns at horizontest.StallWarning
-// (startDispatchProcessWith).
+// the shared wait (internal/dispatch/horizontest, through testwait), reading the server's own
+// account of itself as it goes: it fails at once when the hold the process's newest
+// events.StallWarning names is one in the process's own database that has stood
+// horizontest.OwnHoldBound, and otherwise only when the shared wait gives up, its last reading
+// naming how many warnings the process logged and the newest of them.
+// Every process these tests start warns at horizontest.StallWarning (startDispatchProcessWith).
 //
 // Nothing here touches the connection after this returns, because the caller reads it next
 // (socketEnd and watchAgent in shutdown_test.go, openEventFeed in multiprocess_test.go): the frame
@@ -26,7 +26,7 @@ import (
 func (p *dispatchProcess) waitEventsStart(t *testing.T, conn *gws.Conn, sub string) {
 	t.Helper()
 	result := horizontest.Wait(t, "the event feed's events_start", horizontest.ReadFirstFrame(conn), p.stallWarnings(), p.database,
-		horizontest.Dialed(p.databaseURL), p.Output.String)
+		p.Output.String)
 	switch {
 	case result.Err != nil:
 		t.Fatalf("read the event feed's events_start: %v\n%s", result.Err, p.Output.String())

@@ -127,7 +127,7 @@ func TestASettlementAfterACloseWakesNobody(t *testing.T) {
 	if err := service.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the closed issue's owed settlement: %v", err)
 	}
-	waitFor(t, roomWait(t), "the closed issue's document to settle", func() bool {
+	waitFor(t, "the closed issue's document to settle", func() bool {
 		owed, err := settlementPending(ctx, service.store.Pool, artifactID)
 		return err == nil && !owed
 	})
@@ -283,7 +283,7 @@ func TestAClosedIssuesDocumentStillRefusesAPersonsWrite(t *testing.T) {
 	if err := f.service.Evict(ctx, f.artifactID); err != nil {
 		t.Fatalf("evict a room the settlement of alice's keystroke may have loaded: %v", err)
 	}
-	waitFor(t, roomWait(t), "no room to hold the document", func() bool { return !roomResident(f.service, f.artifactID) })
+	waitFor(t, "no room to hold the document", func() bool { return !roomResident(f.service, f.artifactID) })
 	if _, err := f.database.Pool.Exec(ctx, `update doc_updates set update = '\xff'::bytea where artifact_id = $1`, f.artifactID); err != nil {
 		t.Fatalf("make the document's history one that does not load: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestAnAskBlockOnAServiceThatHasNotHeardTheCloseGetsNoRow(t *testing.T) {
 	editAsPeer(t, b, pair.artifactID, appendBlocks(t, ":::ask{#unheard-close urgency=\"med\" multiple=\"false\"}\nAsked where the close is not heard?\n:::\n"))
 	b.removeConnection(pair.artifactID, 1)
 	const resolved = `#unheard-close urgency="med" multiple="false" state="resolved"`
-	waitFor(t, roomWait(t), "task B's timer to settle the document on the closed issue", func() bool {
+	waitFor(t, "task B's timer to settle the document on the closed issue", func() bool {
 		_, markdown, _ := latestDocumentVersion(t, pair.database, pair.artifactID)
 		owed, err := settlementPending(ctx, pair.database.Pool, pair.artifactID)
 		return strings.Contains(markdown, "Asked where the close is not heard?") && err == nil && !owed
@@ -465,7 +465,7 @@ func settleReturnedAskBlockWhileClosed(t *testing.T) (*Service, string, model.Ac
 // what naming what the test waits for.
 func waitForNoPendingSettlement(t *testing.T, service *Service, artifactID, what string) {
 	t.Helper()
-	waitFor(t, roomWait(t), what, func() bool {
+	waitFor(t, what, func() bool {
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && !owed
 	})

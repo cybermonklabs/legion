@@ -10,12 +10,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -56,7 +56,7 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	})
 
 	var info *natsgo.ConsumerInfo
-	waitFor(t, 45*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info = deliveryConsumerInfo(t, natsClient)
 		return info.Delivered.Consumer-before >= 2
 	}, func() string {
@@ -92,10 +92,10 @@ type headWriteProcess struct {
 // startHeadWriteProcess runs a delivery intake as a process of its own on pool's database (a
 // pool of its own, storetest.SecondProcess) and natsURL's server, until the test ends. Its
 // GitHub answers the pull request's commit read with no commits, after counting it, and holds
-// the first one when hold is set until the row releases it or the handler making it is
-// abandoned. That read is where a handler can be held for this row: everything after it is the
-// head write, which is the failure under test.
-func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold bool) *headWriteProcess {
+// the first one until the row releases it or the handler making it is abandoned. That read is
+// where a handler can be held for this row: everything after it is the head write, which is the
+// failure under test.
+func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string) *headWriteProcess {
 	t.Helper()
 	second := storetest.SecondProcess(t, &store.Store{Pool: pool})
 	leasePool := storetest.Leases(t, second.Pool)
@@ -112,9 +112,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 	fake.handle("GET /repos/acme/widgets/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
 		process.reads.Add(1)
 		holding := false
-		if hold {
-			first.Do(func() { holding = true })
-		}
+		first.Do(func() { holding = true })
 		if holding {
 			select {
 			case <-held:
@@ -201,10 +199,14 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 // be a hand-back. The keeper's own acknowledgement is there to be read beside them, so a
 // recorder that saw nothing at all cannot pass the row by silence.
 //
-// The table is put back once the holder has stopped delivering and before the keeper is handed
-// anything, so the keeper's handling is the ordinary one: it writes the head row the holder
-// could not, acknowledges the envelope, and is handed it exactly once.
+// The table is put back once the holder has stopped delivering, and the keeper's own commit read
+// is held until then, so the keeper's handling is the ordinary one whenever its take-over lands:
+// it writes the head row the holder could not, acknowledges the envelope, and is handed it
+// exactly once. Its take-over can land as soon as the hold's row lapses, intakeHoldMargin after
+// the loss deadline that stops the holder, which is less than a loaded runner can take to stop
+// the holder and migrate the table back.
 func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelopeOnce(t *testing.T) {
+	ackWaitPastTheRun(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
@@ -213,9 +215,9 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	publisher := intakeTestClient(t)
 	answers := durableAnswers(t, publisher)
 
-	holder := startHeadWriteProcess(t, pool, natsURL, true)
+	holder := startHeadWriteProcess(t, pool, natsURL)
 	awaitBoundDurable(t, publisher)
-	keeper := startHeadWriteProcess(t, pool, natsURL, false)
+	keeper := startHeadWriteProcess(t, pool, natsURL)
 
 	// A merge, so the head row and its branch seed are written together and the write is the
 	// one that fails; its own head repository and a branch naming no issue, so the attribution
@@ -227,31 +229,32 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 		"head_sha":         "5555555555555555555555555555555555555555",
 		"merge_commit_sha": "6666666666666666666666666666666666666666",
 	})
-	waitFor(t, 30*time.Second, func() bool { return holder.reads.Load() == 1 }, func() string {
+	waitFor(t, func() bool { return holder.reads.Load() == 1 }, func() string {
 		return "the holder's handler never reached the read this row holds it in: " + consumerState(publisher)
 	})
 
 	// The cut takes the holder off the lease pool its hold is renewed on, as a network that
 	// took it off Postgres would: the hold lapses, and the holder stops delivering.
 	holder.leases.cut.Store(true)
-	waitFor(t, 30*time.Second, func() bool { return keyedRunnerStopped(holder.intake) }, func() string {
+	waitFor(t, func() bool { return keyedRunnerStopped(holder.intake) }, func() string {
 		return "the holder never began stopping, though its hold is no longer renewed: " + consumerState(publisher)
 	})
 	holder.release()
 
 	// The holder's subscription gone from the durable is its stop finished, so its handler has
 	// returned and whatever it was going to publish is behind it.
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && !info.PushBound
 	}, func() string {
 		return "the holder has not let the durable go: " + consumerState(publisher)
 	})
 	restoreBranchCommits()
+	keeper.release()
 
-	// 60 s: the hold's lapse (intakeHoldTTL, 15 s), the keeper's poll (durableBindInterval, 2 s)
-	// and its take-over's delete, subscribe and create under the consumer lease.
-	waitFor(t, 60*time.Second, func() bool { return keeper.reads.Load() >= 1 }, func() string {
+	// The hold's lapse (intakeHoldTTL, 15 s), the keeper's poll (durableBindInterval, 2 s) and its
+	// take-over's delete, subscribe and create under the consumer lease come first.
+	waitFor(t, func() bool { return keeper.reads.Load() >= 1 }, func() string {
 		return fmt.Sprintf("the keeper was never handed the envelope the holder left unanswered: holder %d read(s), keeper %d; %s",
 			holder.reads.Load(), keeper.reads.Load(), consumerState(publisher))
 	})
@@ -304,9 +307,9 @@ func TestADeliveryWhoseHoldHasLapsedAnswersNothingOfItsOwn(t *testing.T) {
 		t.Fatalf("take the hold this row lapses: %v", err)
 	}
 	if hold == nil {
-		t.Fatal("the hold this row lapses is held by another process, though the test's database is its own")
+		t.Fatal("the hold this row lapses is held by another process, though the row's database is its own")
 	}
-	delivery := &intakeDelivery{hold: hold, subject: natsgo.NewInbox()}
+	delivery := &intakeDelivery{hold: hold, holdClock: clock.Real(), subject: natsgo.NewInbox()}
 	if !delivery.mayAnswer() {
 		t.Fatal("a delivery under a live hold, with nothing stopped, reports that it may not answer the durable itself")
 	}

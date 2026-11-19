@@ -9,11 +9,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A restart loses the compaction queue, and nothing reopens the documents it held: the sweep of the
@@ -332,15 +334,12 @@ func docUpdatesTuplesRead(t *testing.T, database *store.Store) int64 {
 	}
 	// The flushes land as each connection goes idle; read until two reads agree.
 	last := read()
-	for range 20 {
-		time.Sleep(100 * time.Millisecond)
+	return testwait.Until(t, "two reads of doc_updates' statistics in a row to agree, every connection's flush landed", func() (int64, bool) {
 		now := read()
-		if now == last {
-			return now
-		}
+		agreed := now == last
 		last = now
-	}
-	return last
+		return now, agreed
+	})
 }
 
 // A document whose lock another holder has when the sweep reaches it is handed to the service's
@@ -348,10 +347,11 @@ func docUpdatesTuplesRead(t *testing.T, database *store.Store) int64 {
 // compacts the busy one once its lock is free.
 func TestTheCompactionSweepHandsABusyDocumentToTheQueue(t *testing.T) {
 	ctx := context.Background()
+	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
-	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
-	steps := quickCompactionQueue(service, 20*time.Millisecond)
+	steps := recordCompactionSteps(service)
 	busy := storeAgedRows(t, database, 3, 20*time.Minute)
 	free := storeAgedRows(t, database, 3, 20*time.Minute)
 	busyRows := storedRows(t, database, busy)
@@ -362,12 +362,14 @@ func TestTheCompactionSweepHandsABusyDocumentToTheQueue(t *testing.T) {
 	if got := storedRows(t, database, free); len(got) != 1 {
 		t.Fatalf("the free document holds rows %v after the sweep, want it folded into one", rowVersions(got))
 	}
+	stepWhenDue(t, fake, service, busy)
 	steps.await(t, busy, 0, "the queue to take the busy document", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionRetry
 	})
 	requireRowsAsStored(t, database, busy, busyRows)
 	from := steps.count()
 	unlock()
+	stepWhenDue(t, fake, service, busy)
 	steps.await(t, busy, from, "the queue to compact the document once its lock is free", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionAgain
 	})

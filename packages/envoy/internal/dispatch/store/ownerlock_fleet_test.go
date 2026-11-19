@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build (OwnerLockProtocol). A build before this one serialises
@@ -311,26 +313,22 @@ func arrive(ctx context.Context, s *Store, arrival earlierBuildArrival, key stri
 	return arriveOn(ctx, conn, arrival, key)
 }
 
-// awaitGateWait waits up to ten seconds for backend pid to wait for the owner lock gate
-// exclusively, as an earlier build's arrival waits for it, and fails the test when what it runs,
-// named what, ends first (ended).
+// awaitGateWait waits for backend pid to wait for the owner lock gate exclusively, as an earlier
+// build's arrival waits for it, and fails the test when what it runs, named what, ends first
+// (ended). The wait has no bound of its own (testwait.Eventually).
 func awaitGateWait(t *testing.T, s *Store, pid uint32, ended <-chan error, what string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Eventually(t, what+" to wait for the gate", func() bool {
 		if gate, granted := gateLock(t, s, pid); gate == "ExclusiveLock" && !granted {
-			return
+			return true
 		}
 		select {
 		case err := <-ended:
 			t.Fatalf("%s ended (%v) while a transaction held the gate shared; want it to wait for the gate", what, err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s did not wait for the gate within 10s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return false
+	})
 }
 
 // writerShape is how one writer of the owner lock's races (ownerlock_fleet_race_test.go,
@@ -643,15 +641,19 @@ func holdRowAsAnEarlierBuild(t *testing.T, s *Store, owner Owner) pgx.Tx {
 	return holder
 }
 
-// awaitRowLockWaiter waits up to ten seconds for a backend to wait on a row lock in a statement
-// of lockOwnerRows (an owner row's lock taken beside the advisory lock), or for answered.
+// awaitRowLockWaiter waits for a backend to wait on a row lock in a statement of lockOwnerRows
+// (an owner row's lock taken beside the advisory lock), or for answered. The wait has no bound of
+// its own (testwait.Until).
 func awaitRowLockWaiter(t *testing.T, s *Store, answered <-chan error) (error, bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	type outcome struct {
+		Err      error
+		Answered bool
+	}
+	got := testwait.Until(t, "an owner lock to wait on the owner's row, or to answer", func() (outcome, bool) {
 		select {
 		case err := <-answered:
-			return err, true
+			return outcome{Err: err, Answered: true}, true
 		default:
 		}
 		var waiting int
@@ -661,14 +663,9 @@ func awaitRowLockWaiter(t *testing.T, s *Store, answered <-chan error) (error, b
 			  and query like '%= any($1::%order by%for %'`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
-		if waiting > 0 {
-			return nil, false
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no owner lock waited on the owner's row within 10s")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return outcome{}, waiting > 0
+	})
+	return got.Err, got.Answered
 }
 
 // The read a lock guards sees what a writer of an earlier build committed while it held the row:

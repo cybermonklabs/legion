@@ -293,7 +293,7 @@ func TestNextExpiryIsTheOldestMergeLeaving(t *testing.T) {
 		{Repo: "acme/widgets", Number: 1, MergedAt: &oldest},
 		{Repo: "acme/widgets", Number: 2, MergedAt: new(now.Add(-time.Hour))},
 	}}
-	want := oldest.Add(n).Add(time.Nanosecond)
+	want := oldest.Add(n).Add(time.Microsecond)
 	if got := nextExpiry(pop, n, now); !got.Equal(want) {
 		t.Fatalf("nextExpiry = %v, want %v (the oldest merge leaving)", got, want)
 	}
@@ -325,7 +325,7 @@ func TestPipelineNextExpiryIsTheFailingWindowEdge(t *testing.T) {
 		{RunID: 1, StartedAt: completed.Add(-time.Hour), CompletedAt: &completed, Conclusion: new(delivery.DeliveryRunConclusionFailure)},
 		{RunID: 2, StartedAt: now.Add(-time.Hour), CompletedAt: new(now.Add(-30 * time.Minute)), Conclusion: new(delivery.DeliveryRunConclusionSuccess)},
 	}}}
-	want := completed.Add(measures.FailingWindow).Add(time.Nanosecond)
+	want := completed.Add(measures.FailingWindow).Add(time.Microsecond)
 	if got := pipelineNextExpiry(pop, now); !got.Equal(want) {
 		t.Fatalf("pipelineNextExpiry = %v, want %v (run 1 leaving the failing window)", got, want)
 	}

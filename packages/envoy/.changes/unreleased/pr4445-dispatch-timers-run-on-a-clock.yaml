@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The Dispatch server's product timers whose effect a test asserts take Envoy's one module clock
+  (the real clock in production): its periodic passes, the bounds of its related-item check and
+  near-copy gate, the live delivery hub's timers, the CI store's loop and the stores' scans. No
+  timer's length changes.

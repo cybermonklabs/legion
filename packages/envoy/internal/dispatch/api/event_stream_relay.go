@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -70,15 +71,17 @@ const EventsChannel = "dispatch_events"
 // first read after the gap is found held or the horizon moved: one that leaves the horizon where
 // it was sends the next back through the window.
 //
-// first is the fallback's first delay, zero for eventRelayGapMin (a test sets it); timer is the
-// fallback, nil while none is scheduled, and now an immediate re-read; wait the fallback's current
-// delay, zero while no gap is open; safe the horizon the read that scheduled it read through;
-// held whether that read found the gap held; eager whether the next notification reads without
-// the coalescing window. Its one generation's read goroutine alone touches it, and receives the
-// re-read from due.
+// first is the fallback's first delay, zero for eventRelayGapMin (a test sets it); clock is what
+// the fallback is armed on, the relay's (eventStreamRelay.clock), and the real clock where it is
+// nil; timer is the fallback, nil while none is scheduled, and now an immediate re-read; wait the
+// fallback's current delay, zero while no gap is open; safe the horizon the read that scheduled
+// it read through; held whether that read found the gap held; eager whether the next notification
+// reads without the coalescing window. Its one generation's read goroutine alone touches it, and
+// receives the re-read from due.
 type eventGapReread struct {
 	first time.Duration
-	timer *time.Timer
+	clock clock.Clock
+	timer clock.Timer
 	now   bool
 	wait  time.Duration
 	safe  int64
@@ -120,7 +123,11 @@ func (g *eventGapReread) schedule(safe int64, gap events.Gap) {
 		g.wait, g.eager = min(2*g.wait, max(eventRelayGapMax, first)), false
 	}
 	g.held = true
-	g.timer = time.NewTimer(g.wait)
+	timers := g.clock
+	if timers == nil {
+		timers = clock.Real()
+	}
+	g.timer = timers.NewTimer(g.wait)
 }
 
 // stop drops the scheduled re-read, if any; a stopped one delivers nothing on due afterwards.
@@ -139,7 +146,7 @@ func (g *eventGapReread) due() <-chan time.Time {
 	case g.now:
 		return gapRereadNow
 	case g.timer != nil:
-		return g.timer.C
+		return g.timer.C()
 	}
 	return nil
 }
@@ -183,9 +190,17 @@ type eventStreamRelay struct {
 	// gapFallback is the first delay of a held gap's fallback re-read (eventGapReread.first);
 	// zero is eventRelayGapMin.
 	coalesce, gapFallback time.Duration
+	// clock is what the coalescing window, the retry's wait and the gap's fallback run on; nil is
+	// the real clock. A test sets a fake it moves, so a verdict on the relay's cadence reads the
+	// timers it armed rather than how long it took.
+	clock clock.Clock
 	// readAfter reads one page of the committed events in (after, through]; nil is
 	// readEventsAfterID. A test counts the relay's reads of the event log through it.
 	readAfter func(ctx context.Context, after, through int64) ([]model.Event, error)
+	// afterRead is called by run once a read has returned and its re-read is scheduled, with the
+	// horizon it read through and the gap it left open. Nil outside tests, which wait on it for a
+	// read the relay's own goroutine makes and then read what the relay has armed on its clock.
+	afterRead func(safe int64, gap events.Gap)
 
 	// running counts every generation's goroutines. Add runs under mu and only while closed is
 	// false, so no Add can follow the Wait in wait.
@@ -427,7 +442,11 @@ func (g *relayGeneration) onConnected() { signal(g.wake) }
 // publish, so a gap held open by a long transaction costs no request a connection. A reset is
 // still caught at the next notification, which the refill's own inserts send.
 func (r *eventStreamRelay) run(ctx context.Context, g *relayGeneration) {
-	gaps := eventGapReread{first: r.gapFallback}
+	timers := r.clock
+	if timers == nil {
+		timers = clock.Real()
+	}
+	gaps := eventGapReread{first: r.gapFallback, clock: timers}
 	defer gaps.stop()
 	for {
 		checkReset := true
@@ -435,7 +454,7 @@ func (r *eventStreamRelay) run(ctx context.Context, g *relayGeneration) {
 		case <-ctx.Done():
 			return
 		case <-g.wake:
-			if !gaps.eager && !waitFor(ctx, r.window()) {
+			if !gaps.eager && timers.Sleep(ctx, r.window()) != nil {
 				return
 			}
 		case <-gaps.due():
@@ -456,12 +475,15 @@ func (r *eventStreamRelay) run(ctx context.Context, g *relayGeneration) {
 		gaps.stop()
 		safe, gap, ok := r.read(ctx, g, checkReset)
 		for !ok {
-			if !waitFor(ctx, eventRelayRetry) {
+			if timers.Sleep(ctx, eventRelayRetry) != nil {
 				return
 			}
 			safe, gap, ok = r.read(ctx, g, checkReset)
 		}
 		gaps.schedule(safe, gap)
+		if r.afterRead != nil {
+			r.afterRead(safe, gap)
+		}
 	}
 }
 
@@ -640,6 +662,7 @@ func (s *server) firstRelayCursor(ctx context.Context) (int64, time.Time, error)
 	if err != nil {
 		return 0, time.Time{}, err
 	}
+	s.relayStartReads.Add(1)
 	if _, err := s.horizon().Await(ctx); err != nil {
 		return 0, time.Time{}, err
 	}

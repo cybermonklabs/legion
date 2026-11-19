@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A writer of this build beside a writer of an earlier build. That build serialises an owner's
@@ -91,7 +92,7 @@ func runEarlierBuildRace(t *testing.T, fixture itemRowFixture, race earlierBuild
 	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- race.send(handler) }()
-	if answer, early := storetest.WaitForQueuedBehind(t, holder, pid, answered, 10*time.Second); early {
+	if answer, early := storetest.WaitForQueuedBehind(t, holder, pid, answered); early {
 		t.Fatalf("the request answered status=%d body=%s while the earlier build's writer held the issue's row; want it to wait for that row",
 			answer.Code, answer.Body.String())
 	}
@@ -103,12 +104,7 @@ func runEarlierBuildRace(t *testing.T, fixture itemRowFixture, race earlierBuild
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the earlier build's write: %v", err)
 	}
-	var answer *httptest.ResponseRecorder
-	select {
-	case answer = <-answered:
-	case <-time.After(itemRowOwnerLockFinish):
-		t.Fatalf("the request never answered within %s of the earlier build's commit", itemRowOwnerLockFinish)
-	}
+	answer := testwait.Receive(t, "the request to answer once the earlier build's write committed", answered)
 	return earlierBuildOutcome{answer: answer, waitingOn: waitingOn}
 }
 
@@ -304,7 +300,7 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 				answered <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey,
 					map[string]any{"labels_add": []string{"this-build"}}, "alice")
 			}()
-			if answer, early := storetest.WaitForQueuedBehind(t, pause, pid, answered, 10*time.Second); early {
+			if answer, early := storetest.WaitForQueuedBehind(t, pause, pid, answered); early {
 				t.Fatalf("the PATCH answered status=%d body=%s before it reached its write phase; want it to wait at its update of the labels there",
 					answer.Code, answer.Body.String())
 			}
@@ -324,27 +320,30 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 				_, err := arrivalConn.Exec(ctx, arrival.insert)
 				arrived <- err
 			}()
-			waited := false
-			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			type arrivalReading struct {
+				Arrived bool
+				Err     error
+				Waited  bool
+			}
+			got := testwait.Until(t, arrival.name+" to go through or to wait for the PATCH", func() (arrivalReading, bool) {
 				select {
 				case err := <-arrived:
-					if err != nil {
-						t.Fatalf("%s: %v", arrival.name, err)
-					}
-					t.Errorf("%s went through in %s while this build's PATCH, which read no earlier build in the fleet, was between its owner lock and its write; want it to wait for that PATCH (the owner lock gate)",
-						arrival.name, time.Since(began).Round(time.Millisecond))
+					return arrivalReading{Arrived: true, Err: err}, true
 				default:
-					if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(pg_blocking_pids($1))`, arrivalPID, pid).Scan(&waited); err != nil {
-						t.Fatal(err)
-					}
-					if !waited {
-						if time.Now().After(deadline) {
-							t.Fatalf("%s neither went through nor waited for the PATCH within 10s", arrival.name)
-						}
-						continue
-					}
 				}
-				break
+				var waiting bool
+				if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(pg_blocking_pids($1))`, arrivalPID, pid).Scan(&waiting); err != nil {
+					t.Fatal(err)
+				}
+				return arrivalReading{Waited: waiting}, waiting
+			})
+			waited := got.Waited
+			if got.Arrived {
+				if got.Err != nil {
+					t.Fatalf("%s: %v", arrival.name, got.Err)
+				}
+				t.Errorf("%s went through in %s while this build's PATCH, which read no earlier build in the fleet, was between its owner lock and its write; want it to wait for that PATCH (the owner lock gate)",
+					arrival.name, time.Since(began).Round(time.Millisecond))
 			}
 			earlierWrite := func() {
 				tx, err := fixture.database.Pool.Begin(ctx)
@@ -363,21 +362,19 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 				}
 			}
 			if waited {
+				// The arrival is queued behind the PATCH's backend (pg_blocking_pids, read just
+				// above), and that backend waits on this test's pause, so the arrival cannot end
+				// before the pause is let go: that state, not a span, is what this reads.
 				select {
 				case err := <-arrived:
 					t.Fatalf("%s ended (%v) while the PATCH it waited for was still under way", arrival.name, err)
-				case <-time.After(300 * time.Millisecond):
+				default:
 				}
 				if err := pause.Rollback(ctx); err != nil {
 					t.Fatal(err)
 				}
-				select {
-				case err := <-arrived:
-					if err != nil {
-						t.Fatalf("%s: %v", arrival.name, err)
-					}
-				case <-time.After(10 * time.Second):
-					t.Fatalf("%s did not go through within 10s of the PATCH's write phase", arrival.name)
+				if err := testwait.Receive(t, arrival.name+" to go through once the PATCH's write phase went on", arrived); err != nil {
+					t.Fatalf("%s: %v", arrival.name, err)
 				}
 				t.Logf("%s waited %s, until the PATCH committed", arrival.name, time.Since(began).Round(time.Millisecond))
 				earlierWrite()
@@ -387,13 +384,8 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 					t.Fatal(err)
 				}
 			}
-			select {
-			case answer := <-answered:
-				if answer.Code != http.StatusOK {
-					t.Fatalf("the PATCH answered status=%d body=%s", answer.Code, answer.Body.String())
-				}
-			case <-time.After(itemRowOwnerLockFinish):
-				t.Fatalf("the PATCH never answered within %s of its update of the labels being let go", itemRowOwnerLockFinish)
+			if answer := testwait.Receive(t, "the PATCH to answer once its update of the labels was let go", answered); answer.Code != http.StatusOK {
+				t.Fatalf("the PATCH answered status=%d body=%s", answer.Code, answer.Body.String())
 			}
 			if labels := issueLabels(t, fixture.database, fixture.issueKey); !slices.Contains(labels, "earlier-build") || !slices.Contains(labels, "this-build") {
 				t.Errorf("the issue's labels are %v, want both this build's and the earlier build's: the label the earlier build added once it had arrived was lost under the PATCH that read the labels before it", labels)

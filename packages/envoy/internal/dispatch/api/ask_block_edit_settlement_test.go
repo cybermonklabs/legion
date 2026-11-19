@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // blockAskHandlerWithDocuments is blockAskHandler plus the document service a browser peer
@@ -134,26 +135,21 @@ func documentVersions(t *testing.T, handler http.Handler, artifactID string) []m
 // stored version, the signal that settlement has finished.
 func awaitSettledVersion(t *testing.T, published <-chan model.Event, artifactID string, number int) {
 	t.Helper()
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case event, ok := <-published:
-			if !ok {
-				t.Fatalf("the broker's subscription closed before version %d of %s was published", number, artifactID)
-			}
-			if event.Type != "artifact.version" {
-				continue
-			}
-			payload, isMap := event.Payload.(map[string]any)
-			version, isVersion := payload["version"].(model.Version)
-			if !isMap || !isVersion {
-				t.Fatalf("artifact.version payload = %#v, want the map ArtifactVersionEventPayload builds", event.Payload)
-			}
-			if payload["artifact_id"] == artifactID && version.Number == number {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("settlement published no version %d of %s", number, artifactID)
+		event := testwait.Receive(t, fmt.Sprintf("settlement to publish version %d of %s", number, artifactID), published)
+		if event.Type == "" && event.Payload == nil {
+			t.Fatalf("the broker's subscription closed before version %d of %s was published", number, artifactID)
+		}
+		if event.Type != "artifact.version" {
+			continue
+		}
+		payload, isMap := event.Payload.(map[string]any)
+		version, isVersion := payload["version"].(model.Version)
+		if !isMap || !isVersion {
+			t.Fatalf("artifact.version payload = %#v, want the map ArtifactVersionEventPayload builds", event.Payload)
+		}
+		if payload["artifact_id"] == artifactID && version.Number == number {
+			return
 		}
 	}
 }
@@ -334,28 +330,23 @@ func TestAnEditedBlockAskPublishesItsDocumentEventsBeforeItsOwn(t *testing.T) {
 	}
 
 	var order []model.Event
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case event := <-published:
-			order = append(order, event)
-			if event.Type != "ask.edited" {
-				continue
-			}
-			if len(order) < 2 || order[len(order)-2].Type != "comment.anchor_refreshed" {
-				types := make([]string, 0, len(order))
-				for _, seen := range order {
-					types = append(types, seen.Type)
-				}
-				t.Fatalf("published %v, want comment.anchor_refreshed immediately before ask.edited", types)
-			}
-			if refreshed := order[len(order)-2]; refreshed.ID >= event.ID {
-				t.Fatalf("published the anchor refresh as event %d and ask.edited as %d, want the refresh appended first", refreshed.ID, event.ID)
-			}
-			return
-		case <-deadline:
-			t.Fatalf("the edit published %d events and no ask.edited", len(order))
+		event := testwait.Receive(t, fmt.Sprintf("the edit's ask.edited (after %d other events)", len(order)), published)
+		order = append(order, event)
+		if event.Type != "ask.edited" {
+			continue
 		}
+		if len(order) < 2 || order[len(order)-2].Type != "comment.anchor_refreshed" {
+			types := make([]string, 0, len(order))
+			for _, seen := range order {
+				types = append(types, seen.Type)
+			}
+			t.Fatalf("published %v, want comment.anchor_refreshed immediately before ask.edited", types)
+		}
+		if refreshed := order[len(order)-2]; refreshed.ID >= event.ID {
+			t.Fatalf("published the anchor refresh as event %d and ask.edited as %d, want the refresh appended first", refreshed.ID, event.ID)
+		}
+		return
 	}
 }
 
@@ -770,11 +761,7 @@ func TestConcurrentBlockAskEditsAndSettlementsDoNotDeadlock(t *testing.T) {
 			wg.Wait()
 		}
 	}()
-	select {
-	case <-done:
-	case <-time.After(60 * time.Second):
-		t.Fatal("concurrent block-ask edits and document settlements did not finish in 60s")
-	}
+	testwait.Receive(t, "concurrent block-ask edits and document settlements to finish", done)
 
 	settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-concurrency")
 	ask := readBlockAsk(t, handler, askID)

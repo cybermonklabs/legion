@@ -650,6 +650,7 @@ jobs:
               - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/clock/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/ctxlock/*'
               # internal/bus presents a service's NATS credential through natscred.
@@ -679,6 +680,8 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/testdb/*'
+              # internal/testpg/testdb's template waits through it.
+              - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/listenerwire/*'
               # testnats's Gate reserves its port with internal/testport.
               - 'packages/envoy/internal/testport/*'
@@ -728,6 +731,7 @@ jobs:
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
+              - 'packages/envoy/internal/clock/*'
               - 'packages/envoy/internal/contracts/*'
               # internal/session's repair lock (KnownSessions.repairMu).
               - 'packages/envoy/internal/ctxlock/*'
@@ -938,6 +942,7 @@ jobs:
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
+              - 'packages/envoy/internal/clock/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
               # internal/session's repair lock (KnownSessions.repairMu).
@@ -1123,6 +1128,8 @@ jobs:
               - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/testnats/*'
+              # internal/testnats above, which internal/daemon's tests compile, waits through it.
+              - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/sessiontiming/*'
               - 'packages/envoy/subjectforms/*'
@@ -2083,6 +2090,7 @@ jobs:
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
+              - 'packages/envoy/internal/clock/*'
               - 'packages/envoy/internal/contracts/*'
               # internal/session's repair lock (KnownSessions.repairMu).
               - 'packages/envoy/internal/ctxlock/*'
@@ -2169,6 +2177,7 @@ jobs:
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
+              - 'packages/envoy/internal/clock/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
               # internal/session's repair lock (KnownSessions.repairMu).
@@ -2227,6 +2236,8 @@ jobs:
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
+              - 'packages/envoy/internal/clock/*'
+              - 'packages/envoy/internal/clock/clocktest/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
               # internal/session's repair lock (KnownSessions.repairMu).
@@ -2256,6 +2267,9 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
+              # Both storetest packages clone each test's database from internal/testpg/testdb's
+              # template.
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testsocks5/*'
               - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/listenfd/*'
@@ -2766,6 +2780,8 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/testdb/*'
+              # internal/testpg/testdb's template waits through it.
+              - 'packages/envoy/internal/testwait/*'
               # cmd/broker's rules-host grammar is internal/broker/rulehost, which reads
               # weborigin's label rules; its log mask is internal/broker/logmask.
               - 'packages/envoy/internal/broker/rulehost/*'
@@ -3337,6 +3353,8 @@ jobs:
               - 'packages/envoy/internal/testnats/cmd/natsd/*'
               # natsd reads testnats, whose Gate reserves its port with internal/testport.
               - 'packages/envoy/internal/testport/*'
+              # testnats's callout fixture waits for its seed through internal/testwait.
+              - 'packages/envoy/internal/testwait/*'
               # The job reads no Markdown file: the listener, the renderer and the contracts
               # between them are its whole input, so a guide written under one of the directory
               # patterns above would start it for nothing.
@@ -3814,6 +3832,7 @@ jobs:
               - '!packages/envoy/internal/bus/session_consumer_scan_live_test.go'
               - '!packages/envoy/internal/bus/stream_max_consumers_live_test.go'
               - '!packages/envoy/internal/cistore/**/*_test.go'
+              - '!packages/envoy/internal/clock/**/*_test.go'
               - '!packages/envoy/internal/cmdtest/**/*_test.go'
               - '!packages/envoy/internal/config/**/*_test.go'
               - '!packages/envoy/internal/contracts/**/*_test.go'
@@ -3886,8 +3905,10 @@ jobs:
               - '!packages/envoy/internal/smoke/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/internal/testnats/**/*_test.go'
+              - '!packages/envoy/internal/testpg/**/*_test.go'
               - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/internal/testtmp/**/*_test.go'
+              - '!packages/envoy/internal/testwait/**/*_test.go'
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'
@@ -3952,8 +3973,9 @@ jobs:
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/brokertoken/brokertokentest/*'
               - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/clock/*'
+              - 'packages/envoy/internal/clock/clocktest/*'
               - 'packages/envoy/internal/contracts/*'
-              - 'packages/envoy/internal/cputest/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
@@ -4018,6 +4040,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/store/migrations/**'
               - 'packages/envoy/internal/dispatch/store/searchtest/*'
               - 'packages/envoy/internal/dispatch/store/storetest/*'
+              - 'packages/envoy/internal/dispatch/store/storetest/collabtest/*'
               - 'packages/envoy/internal/dispatch/testlimits/*'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
@@ -4075,6 +4098,7 @@ jobs:
               - '!packages/envoy/internal/brokerclient/**/*_test.go'
               - '!packages/envoy/internal/brokertoken/**/*_test.go'
               - '!packages/envoy/internal/bus/**/*_test.go'
+              - '!packages/envoy/internal/clock/**/*_test.go'
               - '!packages/envoy/internal/contracts/**/*_test.go'
               - '!packages/envoy/internal/ctxlock/**/*_test.go'
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
@@ -4141,7 +4165,9 @@ jobs:
               - '!packages/envoy/internal/serverwait/**/*_test.go'
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
+              - '!packages/envoy/internal/testpg/**/*_test.go'
               - '!packages/envoy/internal/testport/**/*_test.go'
+              - '!packages/envoy/internal/testwait/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
@@ -4167,6 +4193,8 @@ jobs:
               # internal/dispatch/store/cmd/connections (and so testlimits and the store, below).
               - '.github/scripts/pg-connection-ceiling.sh'
               - *go_workspace
+              - 'packages/envoy/internal/clock/*'
+              - 'packages/envoy/internal/clock/clocktest/*'
               - 'packages/envoy/internal/contracts/*'
               # internal/contracts mints an envelope's ids through it (message_envelope.go).
               - 'packages/envoy/internal/id/*'
@@ -4202,6 +4230,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/store/migrations/**'
               - 'packages/envoy/internal/dispatch/store/searchtest/*'
               - 'packages/envoy/internal/dispatch/store/storetest/*'
+              - 'packages/envoy/internal/dispatch/store/storetest/collabtest/*'
               - 'packages/envoy/internal/dispatch/testlimits/*'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
@@ -4215,6 +4244,8 @@ jobs:
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/stacktest/*'
+              # Dispatch's storetest clones each test's database from its template.
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/migrationid/*'
@@ -4222,6 +4253,7 @@ jobs:
               - 'packages/contracts/fixtures/decision-blocks/**'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+              - '!packages/envoy/internal/clock/**/*_test.go'
               - '!packages/envoy/internal/contracts/**/*_test.go'
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
               - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
@@ -4246,6 +4278,8 @@ jobs:
               - '!packages/envoy/internal/pglisten/**/*_test.go'
               - '!packages/envoy/internal/pgmigrate/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
+              - '!packages/envoy/internal/testpg/**/*_test.go'
+              - '!packages/envoy/internal/testwait/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               # END generated
@@ -4606,6 +4640,7 @@ jobs:
               - '!packages/envoy/internal/brokertoken/**/*_test.go'
               - '!packages/envoy/internal/bus/**/*_test.go'
               - '!packages/envoy/internal/cistore/**/*_test.go'
+              - '!packages/envoy/internal/clock/**/*_test.go'
               - '!packages/envoy/internal/cmdtest/**/*_test.go'
               - '!packages/envoy/internal/config/**/*_test.go'
               - '!packages/envoy/internal/contracts/**/*_test.go'
@@ -4637,8 +4672,10 @@ jobs:
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
               - '!packages/envoy/internal/testnats/**/*_test.go'
+              - '!packages/envoy/internal/testpg/**/*_test.go'
               - '!packages/envoy/internal/testport/**/*_test.go'
               - '!packages/envoy/internal/testtmp/**/*_test.go'
+              - '!packages/envoy/internal/testwait/**/*_test.go'
               - '!packages/envoy/internal/textcheck/**/*_test.go'
               - '!packages/envoy/internal/verify/**/*_test.go'
               - '!packages/envoy/internal/webhook/**/*_test.go'

@@ -22,11 +22,14 @@ import (
 // not, and a block of the approved version that no longer stands refuses the carry (carryVerdict);
 // askNodes, which both versions are read through, refuses a repeat as well, but the read-back
 // leaves it none to refuse. TestAVersionHoldingARepeatedBlockIDCarriesNothing's run without the
-// repeat is the control that carries. The service settles a second after a live write, wide
-// enough that settlement does not run between the steps and repair or version the repeat on its
-// own.
+// repeat is the control that carries. No settlement runs between the steps, to repair or version
+// the repeat on its own: the seed settles at once (seededRegionDocument), and every live write
+// after it arms its settlement an hour out. A second's delay was the window this row once relied
+// on, and under load the step that takes the peer's node out found no second node under the id
+// ("no changes produced"), 70 times in 200 beside whole runs of the package under 32 busy loops,
+// and once the answer's write met a deadlock ("deadlock detected").
 func TestAnApprovedVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
-	database, service, artifactID := seededRegionDocument(t, time.Second)
+	database, service, artifactID := seededRegionDocument(t, time.Hour)
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 
 	editLiveTree(t, service, artifactID, appendSecondRegionAsk(t))

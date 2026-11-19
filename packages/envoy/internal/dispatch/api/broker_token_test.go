@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -857,14 +858,19 @@ func TestTheOtherCredentialsAreUnaffectedByTheBrokerBranch(t *testing.T) {
 // resolves its caller again from a detached copy of that request, whose proof is already spent. A
 // second request carrying that proof is refused as the replay it is, while the re-resolution of
 // the connection it authenticated asks only whether the token is still live — which is what
-// whileCallerResolves calls on every heartbeat (callerStillResolves), driven here directly.
+// whileCallerResolves calls on every heartbeat (callerStillResolves), driven here directly. A
+// revocation reaches the open connection once the affirmative answer the verifier remembered has
+// lapsed, AffirmativeCacheTTL after it was remembered and not later: the cache reads the
+// verifier's clock (brokertoken.Options.Now), a fake here, so the row moves it to that moment.
 func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
-	rig := newBrokerTokenRig(t)
+	cacheClock := clocktest.New(time.Now())
+	rig := newBrokerTokenRig(t, func(options *brokertoken.Options) { options.Now = cacheClock.Now })
 	caller := newBrokerCaller(t)
 	const token = "a-token-holding-a-socket-open"
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	served := directServer(rig.deps)
 
+	remembered := cacheClock.Now()
 	admitted := caller.presenting(t, http.MethodGet, "/ws/live", token, nil)
 	actor, human, err := served.optionalActor(admitted)
 	if err != nil || human || actor.ID != brokerTestSession {
@@ -885,11 +891,17 @@ func TestABrokerTokensReresolutionIsNotProofCheckedAgain(t *testing.T) {
 	}
 
 	// Once the broker stops holding the token live, the re-resolution refuses and the connection
-	// closes. The affirmative answer is remembered for a few seconds, so this reads past it.
+	// closes. The affirmative answer is remembered for AffirmativeCacheTTL, so the refusal comes
+	// once that has lapsed on the cache's clock, and not a moment later.
 	rig.broker.Says(token, brokertoken.Introspection{Active: false})
-	time.Sleep(brokertoken.AffirmativeCacheTTL + 50*time.Millisecond)
+	cacheClock.Set(remembered.Add(brokertoken.AffirmativeCacheTTL - time.Nanosecond))
+	if err := served.callerStillResolves(admitted); err != nil {
+		t.Fatalf("the re-resolution refused (%v) before AffirmativeCacheTTL had passed since the answer was remembered; want the remembered answer", err)
+	}
+	cacheClock.Set(remembered.Add(brokertoken.AffirmativeCacheTTL))
 	if err := served.callerStillResolves(admitted); err == nil {
-		t.Fatal("a revoked token kept resolving on an open connection")
+		t.Fatalf("a revoked token kept resolving on an open connection %s after its answer was remembered; want the refusal once AffirmativeCacheTTL has passed",
+			brokertoken.AffirmativeCacheTTL)
 	}
 }
 

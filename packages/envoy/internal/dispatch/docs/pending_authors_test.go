@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // pendingAuthorRows is the document's durable pending authors (doc_pending_authors): every author
@@ -104,16 +105,16 @@ func editAsBrowserPeer(t *testing.T, service *Service, artifactID string, connec
 
 // resendUntilStored is what a browser's provider does after its room is closed under it: while the
 // store does not hold what peer, that browser's own document, has written, it waits for the room's
-// recovery and sends peer's state to the room that replaced it, as actor on connection.
+// recovery and sends peer's state to the room that replaced it, as actor on connection. Five
+// resends are more than any correct product needs, so a sixth fails the test.
 func resendUntilStored(t *testing.T, service *Service, artifactID string, connection uint64, actor model.Actor, peer *crdt.Doc) {
 	t.Helper()
 	ctx := context.Background()
 	state := crdt.EncodeStateAsUpdateV1(peer, nil)
+	quiet := testwait.Context(t)
 	for range 5 {
-		quiet, cancel := context.WithTimeout(ctx, roomWait(t))
 		_ = service.waitForPendingUpdates(quiet, artifactID)
 		_ = service.waitForDurableAppends(quiet, artifactID)
-		cancel()
 		if storedHoldsPeerEdit(t, service.store, artifactID, peer) {
 			return
 		}
@@ -164,8 +165,7 @@ func storedHoldsPeerEdit(t *testing.T, database *store.Store, artifactID string,
 // waitForLandedAppends waits until every update the room has recorded is durable.
 func waitForLandedAppends(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for the room's updates to reach persistence: %v", err)
 	}
@@ -180,15 +180,10 @@ func waitForLandedAppends(t *testing.T, service *Service, artifactID string) {
 func awaitAppendLandedOrQueued(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(roomWait(t))
-	for time.Now().Before(deadline) {
-		if !service.hasPendingUpdates(artifactID) &&
-			(!service.hasDurableAppend(artifactID) || lockWaits(t, ctx, service.store, "%pg_advisory_lock(hashtext%") > 0) {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatal("the room's update neither landed nor waited for the document lock")
+	testwait.Eventually(t, "the room's update to land or to wait for the document lock", func() bool {
+		return !service.hasPendingUpdates(artifactID) &&
+			(!service.hasDurableAppend(artifactID) || lockWaits(t, ctx, service.store, "%pg_advisory_lock(hashtext%") > 0)
+	})
 }
 
 // countVersionAuthor is how many non-fixture versions list actor. The test artifact's initial
@@ -410,7 +405,7 @@ func arrangeNoVersionSettlement(t *testing.T, service *Service, artifactID strin
 	waitForLandedAppends(t, service, artifactID)
 	service.settle = 20 * time.Millisecond
 	service.ScheduleSettlement(artifactID)
-	waitFor(t, 30*time.Second, "the no-version settlement to commit", func() bool {
+	waitFor(t, "the no-version settlement to commit", func() bool {
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && !owed
 	})
@@ -441,10 +436,10 @@ func TestARoomWhoseSettlementWroteNoVersionIsReleasedWhenIdle(t *testing.T) {
 	artifactID := createDocument(t, database, "# First")
 	arrangeNoVersionSettlement(t, service, artifactID, model.Actor{Kind: "user", ID: "alice"})
 
-	waitFor(t, 30*time.Second, "the idle room to be evicted", func() bool {
+	waitFor(t, "the idle room to be evicted", func() bool {
 		return service.srv.GetDoc(artifactID) == nil && !slices.Contains(service.srv.Rooms(), artifactID)
 	})
-	waitFor(t, 10*time.Second, "the evicted room's state to be released", func() bool {
+	waitFor(t, "the evicted room's state to be released", func() bool {
 		_, held := service.rooms.Load(artifactID)
 		return !held
 	})
@@ -503,14 +498,16 @@ func TestALoadNeverWaitsForTheDocumentLock(t *testing.T) {
 	if err := browser.AskForDocument(); err != nil {
 		t.Fatalf("ask the room for its document: %v", err)
 	}
-	const limit = 10 * time.Second
-	select {
-	case <-browser.Answers:
-	case <-browser.Ended:
-		t.Fatal("the socket closed before the room sent its document")
-	case <-time.After(limit):
-		t.Fatalf("the cold room did not load within %s while another transaction held the document lock", limit)
-	}
+	testwait.Eventually(t, "the cold room to send its document while another transaction holds the document lock", func() bool {
+		select {
+		case <-browser.Answers:
+			return true
+		case <-browser.Ended:
+			t.Fatal("the socket closed before the room sent its document")
+		default:
+		}
+		return false
+	})
 }
 
 // An upload clears only the edits its fork held: bob's, which landed before the fork, and not
@@ -1099,21 +1096,27 @@ func TestAnEvictionDuringAVersionsCommitListsItsAuthorOnce(t *testing.T) {
 	if !slices.Contains(named.Version.Authors, alice) {
 		t.Fatalf("the version lists %+v, want alice", named.Version.Authors)
 	}
+	// The commit runs once the eviction has reached the room's close, where the room server runs
+	// beforeClose, ahead of the close itself.
+	closing := make(chan struct{})
+	var reached atomic.Bool
+	beforeClose := service.srv.beforeClose
+	service.srv.beforeClose = func(room string) {
+		beforeClose(room)
+		if room == artifactID && reached.CompareAndSwap(false, true) {
+			close(closing)
+		}
+	}
 	evicted := make(chan error, 1)
 	go func() { evicted <- service.Evict(context.Background(), artifactID) }()
-	time.Sleep(50 * time.Millisecond) // let the eviction reach the room's close before the commit
+	testwait.Receive(t, "the eviction to reach the room's close", closing)
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the version: %v", err)
 	}
-	select {
-	case err := <-evicted:
-		if err != nil {
-			t.Fatalf("evict the room: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("the eviction did not finish")
+	if err := testwait.Receive(t, "the eviction to finish", evicted); err != nil {
+		t.Fatalf("evict the room: %v", err)
 	}
-	waitFor(t, 30*time.Second, "alice's append to land", func() bool {
+	waitFor(t, "alice's append to land", func() bool {
 		return !service.hasDurableAppend(artifactID) && !service.hasPendingUpdates(artifactID)
 	})
 	if owed := pendingAuthorRows(t, service.store, artifactID); len(owed) != 0 {
@@ -1158,11 +1161,7 @@ func TestTwoVersionsBeforeAnAppendAsksForTheLockListItsAuthorOnce(t *testing.T) 
 	second := model.Actor{Kind: "session", ID: "second-versioner"}
 
 	editAsConnectedPeer(t, service, artifactID, 1, bob, appendBlocks(t, "Bob's paragraph.\n"))
-	select {
-	case <-entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("bob's append never reached the store")
-	}
+	testwait.Receive(t, "bob's append to reach the store", entered)
 	v1 := commitNamedVersion(t, service, artifactID, first)
 	v2 := commitNamedVersion(t, service, artifactID, second)
 	if persistence.released.CompareAndSwap(false, true) {

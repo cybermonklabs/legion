@@ -62,8 +62,9 @@ var (
 // readAdvances false is the one listing text that answers no `advances` relation: it leaves out
 // the relation read, the inheritance walk it climbs and the columns' join, and answers the three
 // columns as the constants an issue with no relation reads as, so one scan and one argument list
-// serve both texts. Its one caller is the speed test that holds the relation read to twice the
-// time of the same page without it; every text the server runs passes true. The `advances`
+// serve both texts. Its one caller is priority_speed_test.go, which holds the relation read to
+// twice the shared buffers of the same page without it in every run (TestAdvancesListingWork)
+// and to twice its time in the timing lane; every text the server runs passes true. The `advances`
 // filter term stays in both, because it is a filter rather than a read: a request that names no
 // `advances` key leaves its seed gated off (issueAdvancesFilterTerms), so the text without the
 // read measures the read alone. The move into `backlog` or `icebox` stays in both for the same

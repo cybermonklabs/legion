@@ -6,9 +6,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // CalloutAuthTimeout is how long a server CalloutConfig describes waits for the auth service's
@@ -161,23 +162,20 @@ func calloutHost() string {
 	return fmt.Sprintf("127.%d.%d.%d", 1+rand.IntN(254), rand.IntN(256), 1+rand.IntN(254))
 }
 
-// awaitSeed waits, within connectTimeout, for the server at uri to admit the nkey user whose seed
-// is seed: the proof it speaks the client protocol and enforces its configured users. A server
-// with an auth callout cannot be probed with a client that has no credential, as awaitAuth probes
-// one, because the server holds such a client for its authorization timeout while it waits for an
-// answer no service gives yet.
+// awaitSeed waits for the server at uri to admit the nkey user whose seed is seed: the proof it
+// speaks the client protocol and enforces its configured users. A server with an auth callout
+// cannot be probed with a client that has no credential, as awaitAuth probes one, because the
+// server holds such a client for its authorization timeout while it waits for an answer no
+// service gives yet. A server can answer a dial before the NATS protocol handshake, so a refused
+// connect is tried again through the shared wait, whose reading is the last refusal.
 func awaitSeed(t testing.TB, uri, seed string) {
 	t.Helper()
-	deadline := time.Now().Add(connectTimeout)
-	var err error
-	for time.Now().Before(deadline) {
-		conn, connectErr := ConnectSeed(t, uri, seed)
-		if connectErr == nil {
-			conn.Close()
-			return
+	testwait.Until(t, fmt.Sprintf("NATS at %s to admit the auth service's user", uri), func() (error, bool) {
+		conn, err := ConnectSeed(t, uri, seed)
+		if err != nil {
+			return err, false
 		}
-		err = connectErr
-		time.Sleep(retryInterval)
-	}
-	t.Fatalf("NATS at %s did not admit the auth service's user within %s: %v", uri, connectTimeout, err)
+		conn.Close()
+		return nil, true
+	})
 }

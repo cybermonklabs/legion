@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const roleTopic = "notifications.role.reviewer"
@@ -101,7 +102,7 @@ func TestRunRetriesARoleForwardNATSDenies(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the outbox's first attempt at the event settled", func() bool {
+	testwait.Eventually(t, "the outbox's first attempt at the event settled", func() bool {
 		_, attempts := publishedDestinations(t, database, event.ID)
 		return attempts > 0 || publishedAt(t, database, event.ID) != nil
 	})
@@ -155,7 +156,7 @@ func TestRunDeliversTheGrantedRoutesOfAnEventWhoseRoleForwardNATSDenies(t *testi
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the outbox's first attempt at the event settled", func() bool {
+	testwait.Eventually(t, "the outbox's first attempt at the event settled", func() bool {
 		_, attempts := publishedDestinations(t, database, event.ID)
 		return attempts > 0 || publishedAt(t, database, event.ID) != nil
 	})
@@ -167,11 +168,7 @@ func TestRunDeliversTheGrantedRoutesOfAnEventWhoseRoleForwardNATSDenies(t *testi
 		t.Fatalf("published_destinations = %v, attempts %d, published %v: want the denied role route left for a retry",
 			destinations, attempts, publishedAt(t, database, event.ID))
 	}
-	select {
-	case <-authorReceived:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the author received nothing, though its route is granted")
-	}
+	testwait.Receive(t, "the author's delivery, its route being granted", authorReceived)
 	select {
 	case message := <-forwarded:
 		t.Fatalf("the role's holder received %q through a denied forward", message.Data)
@@ -194,12 +191,12 @@ func TestTheRetryAfterAGrantDeliversOnlyTheDeniedRoute(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the first attempt backed off", func() bool {
+	testwait.Eventually(t, "the first attempt backed off", func() bool {
 		_, attempts := publishedDestinations(t, database, event.ID)
 		return attempts > 0
 	})
 	grant.Grant(t, append(allow, holderSubject)...)
-	waitFor(t, 20*time.Second, "the retry after the grant", func() bool {
+	testwait.Eventually(t, "the retry after the grant", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 
@@ -208,11 +205,7 @@ func TestTheRetryAfterAGrantDeliversOnlyTheDeniedRoute(t *testing.T) {
 	if !slices.Equal(destinations, []string{issueTopic, authorTopic, roleTopic}) {
 		t.Fatalf("published_destinations = %v, want the issue topic, the author route, then the role route", destinations)
 	}
-	select {
-	case <-forwarded:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the role's holder received nothing after the grant")
-	}
+	testwait.Receive(t, "the role holder's forward after the grant", forwarded)
 	// Everything the two attempts published was answered before the event was marked published,
 	// so the server has queued it to the subscriber ahead of the PONG this flush waits for.
 	if err := subscriber.Flush(); err != nil {
@@ -245,24 +238,20 @@ func TestRunForwardsAGrantedRoleRoute(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	testwait.Eventually(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	destinations, attempts := publishedDestinations(t, database, event.ID)
 	if !slices.Contains(destinations, roleTopic) || attempts != 0 {
 		t.Fatalf("published_destinations = %v after %d retries, want the role topic on the first attempt", destinations, attempts)
 	}
-	select {
-	case message := <-forwarded:
-		var item contracts.Envelope
-		if err := json.Unmarshal(message.Data, &item); err != nil {
-			t.Fatalf("decode the forward: %v", err)
-		}
-		if item.Topic != roleTopic || item.SourceEventID == "" || !strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
-			t.Fatalf("the role's holder received %+v, want the event's role forward on %s", item, roleTopic)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the role's holder received nothing through a granted forward")
+	message := testwait.Receive(t, "the role holder's forward through the granted subject", forwarded)
+	var item contracts.Envelope
+	if err := json.Unmarshal(message.Data, &item); err != nil {
+		t.Fatalf("decode the forward: %v", err)
+	}
+	if item.Topic != roleTopic || item.SourceEventID == "" || !strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
+		t.Fatalf("the role's holder received %+v, want the event's role forward on %s", item, roleTopic)
 	}
 	select {
 	case message := <-received:
@@ -300,13 +289,13 @@ func TestRunRetriesAnIssueTopicNATSDenies(t *testing.T) {
 		Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener,
 		PublishFailures: registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
 			"Destinations of an outbox publish attempt that did not reach NATS"),
-	}, 10*time.Second)
+	})
 	defer stop()
 
 	// A denial the outbox counts settles the wait through attempt_count; one it reads as an
 	// outage instead releases the event with no attempt counted and nothing recorded, and only
 	// the log says so, so the outage line settles the wait too and the assertions below name it.
-	waitFor(t, 30*time.Second, "the outbox's first attempt at the event settled", func() bool {
+	testwait.Eventually(t, "the outbox's first attempt at the event settled", func() bool {
 		_, attempts := publishedDestinations(t, database, event.ID)
 		return attempts > 0 || publishedAt(t, database, event.ID) != nil ||
 			strings.Contains(logged.String(), bus.ErrUnavailable.Error())
@@ -552,12 +541,12 @@ func TestRunCountsADeniedSubjectOncePerRefusedMessage(t *testing.T) {
 		Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener,
 		PublishFailures: registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
 			"Destinations of an outbox publish attempt that did not reach NATS"),
-	}, 10*time.Second)
+	})
 	defer stop()
 
 	// An outage line settles the wait as a counted attempt does, so the assertions below name it
 	// rather than this timing out.
-	waitFor(t, 30*time.Second, "the outbox's first attempt at both events settled", func() bool {
+	testwait.Eventually(t, "the outbox's first attempt at both events settled", func() bool {
 		_, firstAttempts := publishedDestinations(t, database, first.ID)
 		_, secondAttempts := publishedDestinations(t, database, second.ID)
 		return (firstAttempts > 0 && secondAttempts > 0) ||

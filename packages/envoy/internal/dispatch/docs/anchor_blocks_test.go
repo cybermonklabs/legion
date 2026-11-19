@@ -3,11 +3,13 @@ package docs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
@@ -124,8 +126,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	// A content change is what makes the settlement write a version, and a version write is what
 	// refreshes the anchors.
 	editLiveTree(t, service, artifactID, replaceRun("Introduction.", "Intro."))
-	settleCtx, cancelSettle := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelSettle()
+	settleCtx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(settleCtx, artifactID); err != nil {
 		t.Fatalf("wait for live updates to reach persistence: %v", err)
 	}
@@ -173,16 +174,11 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	}
 	<-settled
 
-	var backfill AnchorBlockBackfill
-	select {
-	case result := <-backfilled:
-		if result.err != nil {
-			t.Fatalf("backfill anchor blocks after the settlement: %v", result.err)
-		}
-		backfill = result.report
-	case <-time.After(30 * time.Second):
-		t.Fatal("the backfill never finished after the settlement released the comment's owner lock")
+	result := testwait.Receive(t, "the backfill to finish once the settlement released the comment's owner lock", backfilled)
+	if result.err != nil {
+		t.Fatalf("backfill anchor blocks after the settlement: %v", result.err)
 	}
+	backfill := result.report
 	if backfill.Asks != 0 || backfill.Comments != 1 {
 		t.Fatalf("backfill after the settlement = %#v, want the comment alone", backfill)
 	}
@@ -208,8 +204,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 // position; nothing here assumes how long a step takes.
 func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, "the settlement to reach its anchor refresh, waiting on the advisory lock the test holds", func() bool {
 		var waiting int
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks
@@ -218,23 +213,18 @@ func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 		`, key).Scan(&waiting); err != nil {
 			t.Fatalf("read the anchor refresh hold: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("the settlement never reached its anchor refresh")
+		return waiting > 0
+	})
 }
 
 // waitForHeldOwnerLock returns once a transaction is waiting on owner's lock, which is where a
 // writer that takes it parks while another transaction holds it (store.LockOwner). The lock's own
 // wait queue is that writer's observable position, read as waitForHeldAnchorRefresh reads the
-// test's own key, so nothing here waits a fixed length for a step to happen; the deadline bounds
-// the wait and the failure names the lock it waited for.
+// test's own key, so nothing here waits a fixed length for a step to happen; the shared wait's
+// failure names the lock it waited for.
 func waitForHeldOwnerLock(t *testing.T, service *Service, owner store.Owner) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	waitFor(t, fmt.Sprintf("a transaction to wait on %s %s's owner lock", owner.Kind, owner.Key), func() bool {
 		var waiting int
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_locks
@@ -244,12 +234,8 @@ func waitForHeldOwnerLock(t *testing.T, service *Service, owner store.Owner) {
 		`, owner.LockKey(), int64(store.OwnerLockNamespace)).Scan(&waiting); err != nil {
 			t.Fatalf("read the waiters on %s %s's owner lock: %v", owner.Kind, owner.Key, err)
 		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("no transaction waited on %s %s's owner lock", owner.Kind, owner.Key)
+		return waiting > 0
+	})
 }
 
 func TestBlockForQuoteLeavesTopLevelCrossBlockAnchorsUnpinned(t *testing.T) {

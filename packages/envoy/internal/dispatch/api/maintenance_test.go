@@ -3,20 +3,23 @@ package api
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// maintenanceTestInterval is the pace both runners keep here, far shorter than the server's
-// minute so a handful of periods passes inside one test.
-const maintenanceTestInterval = 300 * time.Millisecond
 
 // keySweep is the statement a pass of the key sweep is recognised by (sweepRequestKeys).
 const keySweep = "delete from request_keys"
+
+// maintenanceSweepPeriod is the period the two runners below keep, the server's own: both tick on
+// one fake clock the test moves a period at a time, so its length costs the test nothing.
+const maintenanceSweepPeriod = time.Minute
 
 // startOfPeriodAfterNext is the start of the period after the one running now, as duty.Exclusive
 // buckets a tick's due time (periodBoundary: Unix nanoseconds less their remainder).
@@ -29,7 +32,8 @@ func startOfPeriodAfterNext(interval time.Duration) time.Time {
 // own (storetest.SecondProcess, as a second process has). The keys past their window and the
 // deliveries a dead process owed need one pass per period across the two, not one per process:
 // each pass records its period under the lease (duty.RunLeased), so the other process's tick
-// inside a period already served makes no statement of its own.
+// inside a period already served makes no statement of its own. Both runners tick on one fake
+// clock, which the test moves a period at a time.
 func TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -53,31 +57,39 @@ func TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners(t *testing.T) {
 		}
 		return nil
 	}
-	runners := make([]func(context.Context), 0, 2)
+	// Both runners start a quarter of a period past a boundary, so every tick of both falls well
+	// inside one bucket rather than straddling two: this row is about the two processes' ticks
+	// inside one period, not about which bucket a tick landed in.
+	start := startOfPeriodAfterNext(maintenanceSweepPeriod).Add(maintenanceSweepPeriod / 4)
+	fake := clocktest.New(start)
 	for _, process := range []*store.Store{database, second} {
 		recorder := &storetest.StatementRecorder{}
 		pool := storetest.Traced(t, process.Pool, recorder, nil)
 		leases := sweepLeases(t, &store.Store{Pool: pool})
 		recorders = append(recorders, recorder)
-		runners = append(runners, func(ctx context.Context) {
-			RunMaintenanceSweep(ctx, pool, maintenanceTestInterval, leases, resume)
+		runSweep(t, func(ctx context.Context) {
+			runMaintenanceSweepOn(ctx, fake, pool, maintenanceSweepPeriod, leases, resume)
+		})
+	}
+	// bothArmed waits until both runners have armed their tick due at due: each arms its next tick
+	// once the tick before it has returned, its pass or its refusal included.
+	bothArmed := func(due time.Time) {
+		t.Helper()
+		testwait.Until(t, "both runners' ticks armed for "+due.Format(time.RFC3339), func() ([]time.Time, bool) {
+			armed := fake.Armed()
+			return armed, len(slices.DeleteFunc(slices.Clone(armed), func(at time.Time) bool { return !at.Equal(due) })) >= 2
 		})
 	}
 
-	// Both runners start a quarter of a period past a boundary, so every tick of both falls well
-	// inside one bucket rather than straddling two: this row is about the two processes' ticks
-	// inside one period, not about which bucket a tick landed in.
-	started := startOfPeriodAfterNext(maintenanceTestInterval).Add(maintenanceTestInterval / 4)
-	time.Sleep(time.Until(started))
-	for _, run := range runners {
-		runSweep(t, run)
-	}
-
-	const passes = 6
-	waitUntil(t, 30*time.Second, "six completed passes across the two runners", func() bool { return resumes.Load() >= passes })
-	if elapsed, least := time.Since(started), (passes-1)*maintenanceTestInterval; elapsed < least {
-		t.Fatalf("%d passes over %v across the two runners; one pass per period of %v takes at least %v: both processes are sweeping every period",
-			resumes.Load(), elapsed, maintenanceTestInterval, least)
+	const periods = 6
+	for period := int64(1); period <= periods; period++ {
+		due := start.Add(time.Duration(period) * maintenanceSweepPeriod)
+		bothArmed(due)
+		fake.Set(due)
+		bothArmed(due.Add(maintenanceSweepPeriod))
+		if got := resumes.Load(); got != period {
+			t.Fatalf("%d passes across the two runners after %d periods of %v: one pass per period, want %d", got, period, maintenanceSweepPeriod, period)
+		}
 	}
 	if message := unpaired.Load(); message != nil {
 		t.Fatal(*message)

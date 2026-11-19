@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -459,7 +460,7 @@ func main() {
 		slog.Error("dispatch: load signing key", "error", err)
 		os.Exit(1)
 	}
-	retirePlainRefreshTokens(ctx, people, plainRefreshTokenRetireTimeout)
+	retirePlainRefreshTokens(ctx, people, clock.Real(), plainRefreshTokenRetireTimeout)
 	sessions := store.NewPgSessionStore(database.Pool)
 
 	if boot.IdentityHeader != "" {
@@ -1709,7 +1710,7 @@ const decidedWordingRestoreTimeout = 30 * time.Second
 // or runs out of time is logged and the start goes on, since each document's next settlement
 // restores its own asks.
 func restoreDecidedWordings(ctx context.Context, documents *docs.Service, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: restore decided asks' wordings", "dispatch: restored decided asks' wordings",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: restore decided asks' wordings", "dispatch: restored decided asks' wordings",
 		func(ctx context.Context) ([]any, error) {
 			restored, copies, err := documents.RestoreDecidedWordings(ctx)
 			if err != nil {
@@ -1723,7 +1724,7 @@ const reviewContentHashFillTimeout = 30 * time.Second
 
 // fillReviewContentHashes pins reviews from before the hash columns were added.
 func fillReviewContentHashes(ctx context.Context, pool *store.Pool, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: fill reviews' content hashes", "dispatch: filled reviews' content hashes",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: fill reviews' content hashes", "dispatch: filled reviews' content hashes",
 		func(ctx context.Context) ([]any, error) {
 			result, err := docs.FillReviewContentHashes(ctx, pool)
 			return []any{"filled", result.Filled, "unhashable", result.Unhashable}, err
@@ -1744,7 +1745,7 @@ const issueAskRepairBootTimeout = 30 * time.Second
 // runs out of time is logged and the start goes on, since api.RunIssueAskRepair repairs the rest
 // every api.IssueAskRepairInterval.
 func repairIssueAsks(ctx context.Context, deps api.Deps, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: repair the asks of closed and reopened issues", "dispatch: repaired the asks of closed and reopened issues",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: repair the asks of closed and reopened issues", "dispatch: repaired the asks of closed and reopened issues",
 		func(ctx context.Context) ([]any, error) {
 			markedSince := time.Now().Add(-api.IssueAskRepairInterval)
 			repair, err := api.RepairIssueAsks(ctx, deps, &markedSince)
@@ -1752,11 +1753,11 @@ func repairIssueAsks(ctx context.Context, deps api.Deps, timeout time.Duration) 
 		})
 }
 
-// bootTask runs task, a repair the boot makes before it serves, bounded by timeout, and logs what
-// it reports: the counts task returns under done at INFO, or, when task fails or runs out of time,
-// those counts and the error under failed at ERROR. Either way the start goes on.
-func bootTask(ctx context.Context, timeout time.Duration, failed, done string, task func(context.Context) ([]any, error)) {
-	taskCtx, cancel := context.WithTimeout(ctx, timeout)
+// bootTask runs task, a repair the boot makes before it serves, bounded by timeout on clk, and logs
+// what it reports: the counts task returns under done at INFO, or, when task fails or runs out of
+// time, those counts and the error under failed at ERROR. Either way the start goes on.
+func bootTask(ctx context.Context, clk bootClock, timeout time.Duration, failed, done string, task func(context.Context) ([]any, error)) {
+	taskCtx, cancel := clk.WithTimeout(ctx, timeout)
 	defer cancel()
 	counts, err := task(taskCtx)
 	if err != nil {
@@ -1764,6 +1765,12 @@ func bootTask(ctx context.Context, timeout time.Duration, failed, done string, t
 		return
 	}
 	slog.Info(done, counts...)
+}
+
+// bootClock is the clock a boot task's bound runs on, a narrowing of clock.Clock: clock.Real in
+// main, and a clocktest.Fake in the test that moves a bound.
+type bootClock interface {
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
 
 // appContextOptions is what main hands routes.BuildAppContext: built, what main made from the
@@ -2104,6 +2111,13 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
 func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+	return healthzHandlerOn(clock.Real(), database, natsClient, publisher, fileStore, commit, announcer, issuers, reads)
+}
+
+// healthzHandlerOn is healthzHandler with the database probe's bound armed on c: clock.Real from
+// healthzHandler, and a test's clocktest.Fake, which ends a probe the database never answers only
+// where the test moves it.
+func healthzHandlerOn(c clock.Clock, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2131,7 +2145,7 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			// pool, a deadline on a stalled link, an authentication failure and a refused
 			// dial are four incidents with four next steps, and the body distinguishes
 			// none of them. One line per failed poll, for as long as the outage lasts.
-			version, err := database.Pool.Healthy(req.Context())
+			version, err := database.Pool.HealthyOn(req.Context(), c)
 			if err != nil {
 				slog.Warn("dispatch: health probe failed", "error", err)
 				databaseOK = false

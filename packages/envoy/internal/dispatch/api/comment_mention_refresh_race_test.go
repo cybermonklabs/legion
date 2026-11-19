@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A refresh whose statement has committed but whose result is not yet recorded loses to a keyed
@@ -14,7 +17,9 @@ import (
 func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
+		// A clock that stands still: the send this test stalls is released by the test, and no
+		// window of the listener client's may settle it behind its back.
+		envoyURL: listener.URL, clock: clocktest.Held(),
 	})
 	withMentionClaimRefresh(t, served, time.Hour)
 	issue := createInteractionIssue(t, handler, "TEST", "A refresh racing a repeat", "before")
@@ -22,7 +27,7 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 	defer release()
 
 	postMentionOfS1(t, handler, issue.Key, "first")
-	<-reached
+	testwait.Receive(t, "the first mention's send to reach the listener", reached)
 	keyed := map[string]any{"body": "second", "mentions": []map[string]any{{"target": "session:s1"}}}
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
 	queued := decodeMentionedComment(t,
@@ -37,7 +42,6 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 	realRefresh := sender.refresh
 	sender.refresh = func(ctx context.Context, queued []mentionClaim) ([]mentionClaim, error) {
 		refreshed, err := realRefresh(ctx, queued)
-		time.Sleep(20 * time.Millisecond)
 		// What queueLocked records for a keyed repeat that claimed the attempt anew: a newer
 		// claim on the row and the same claim in the sender's map.
 		var newer time.Time

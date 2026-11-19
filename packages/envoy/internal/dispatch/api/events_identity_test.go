@@ -15,17 +15,19 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // endableIdentity names one person until their session ends.
@@ -40,20 +42,22 @@ func (i *endableIdentity) Login(*http.Request) (string, error) {
 
 // A person whose session ends (logout, a refresh the sign-in pool refuses, a lost group) stops
 // receiving the event feed they subscribed to while signed in: the live socket resolves them again
-// on each heartbeat (whileCallerResolves) and closes with 1008 once they no longer resolve. The
-// heartbeat is a second, so the client's pong meets the pong deadline on a loaded runner and the
-// socket lasts until the session ends.
+// on each heartbeat (whileCallerResolves) and closes with 1008 at the first heartbeat once they no
+// longer resolve. The heartbeats are on the server's clock, a fake the row moves to the first one
+// after the session ends and holds there. The heartbeat is a second, so the client's pong, which
+// runs on the real clock, meets the pong deadline on a loaded runner.
 func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
+	const heartbeat = time.Second
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	person := &endableIdentity{}
+	fake := clocktest.New(time.Now())
+	opened := fake.Now()
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
-		StreamHeartbeat: time.Second,
-		// The subscribe below waits on the event feed (eventFeedFrame).
-		HorizonStallAfter: horizontest.StallWarning, HorizonWarnEvery: horizontest.StallWarning,
+		StreamHeartbeat: heartbeat, Clock: fake,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -63,19 +67,22 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", nil).servedBy(database).read()
+	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", nil).read()
 	subscribeEvents(t, client, "events", nil)
+	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 0, heartbeat)
 
 	person.ended.Store(true)
-	if closed := client.closeError(t, 5*time.Second); closed.Code != gws.ClosePolicyViolation {
-		t.Fatalf("the event feed's socket closed with %d %q once its person stopped resolving, want 1008", closed.Code, closed.Text)
+	fake.Set(next)
+	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
+		t.Fatalf("the event feed's socket closed with %d %q at the first heartbeat once its person stopped resolving, want 1008", closed.Code, closed.Text)
 	}
 }
 
 // The same holds for a human watching an agent's live conversation: the socket that carries the
-// agent view resolves its person on each heartbeat and closes with 1008 once their session has
-// ended, so the view stops relaying.
+// agent view resolves its person on each heartbeat and closes with 1008 at the first heartbeat
+// once their session has ended, so the view stops relaying.
 func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
+	const heartbeat = time.Second
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
@@ -83,9 +90,11 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	person := &endableIdentity{}
 	source := agentstream.NewMemory()
 	source.SetResponder(plannerSessionID, true)
+	fake := clocktest.New(time.Now())
+	opened := fake.Now()
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
-		AgentStream: source, StreamHeartbeat: time.Second,
+		AgentStream: source, StreamHeartbeat: heartbeat, Clock: fake,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -100,19 +109,22 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	if data := client.agentFrame(t, "agent", "responder"); data != `{"v":1,"responding":true}` {
 		t.Fatalf("the agent view's first frame has data %s, want the session responding", data)
 	}
+	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 0, heartbeat)
 
 	person.ended.Store(true)
-	if closed := client.closeError(t, 5*time.Second); closed.Code != gws.ClosePolicyViolation {
-		t.Fatalf("the agent view's socket closed with %d %q once its viewer stopped resolving, want 1008", closed.Code, closed.Text)
+	fake.Set(next)
+	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {
+		t.Fatalf("the agent view's socket closed with %d %q at the first heartbeat once its viewer stopped resolving, want 1008", closed.Code, closed.Text)
 	}
-	pollUntil(t, 5*time.Second, "the closed socket's view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
+	testwait.Eventually(t, "the closed socket's view leaves the session's frames", func() bool { return source.Viewers(plannerSessionID) == 0 })
 }
 
 // A person whose session ends while their editor holds a document open loses the live document
 // too: the document socket resolves them again on every heartbeat, as the live socket does, and
-// closes once they no longer resolve, so the editor neither receives the document's edits nor
-// sends its own. Each case ends the session the way it ends in production: the hourly membership
-// check finding the person out of the group, and a sign-out.
+// closes at the first heartbeat once they no longer resolve, so the editor neither receives the
+// document's edits nor sends its own. Each case ends the session the way it ends in production:
+// the hourly membership check finding the person out of the group, and a sign-out. The
+// heartbeats are on the server's clock, a fake the row moves one heartbeat at a time.
 func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	const heartbeat = 250 * time.Millisecond
 	for name, end := range map[string]func(*testing.T, *documentSocketRig){
@@ -134,7 +146,9 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			rig := newDocumentSocketRig(t, heartbeat)
+			fake := clocktest.New(time.Now())
+			opened := fake.Now()
+			rig := newDocumentSocketRig(t, heartbeat, fake)
 			peer := &syncedPeer{
 				wsURL: "ws" + strings.TrimPrefix(rig.server.URL, "http") + "/ws/doc/" + rig.artifactID, sockets: rig.sockets,
 				headers: http.Header{"Cookie": []string{rig.cookie.Name + "=" + rig.cookie.Value}}, artifactID: rig.artifactID, doc: crdt.New(),
@@ -144,7 +158,7 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 
 			// While they are a member the socket outlives several heartbeats, each resolving them
 			// again, and stays writable: their edit reaches the room.
-			time.Sleep(4 * heartbeat)
+			next := driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat)
 			peer.appendParagraph(t, "typed while a member")
 			peer.barrier(t)
 			if refreshes := rig.pool.Refreshes(); refreshes != 0 {
@@ -152,13 +166,8 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 			}
 
 			end(t, rig)
-			ended := time.Now()
-			select {
-			case <-peer.connection().Ended:
-				t.Logf("the document socket closed %s after the session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
-			case <-time.After(heartbeat + time.Second):
-				t.Fatalf("the document socket stayed open %s after its person's session ended", time.Since(ended).Round(time.Millisecond))
-			}
+			fake.Set(next)
+			testwait.Receive(t, "the document socket to close at the first heartbeat after its person's session ended", peer.connection().Ended)
 			if generation, _, err := rig.sessions.CurrentSessionGeneration(context.Background(), rig.email); err != nil || generation != rig.generation+1 {
 				t.Fatalf("session generation after the session ended = %d (%v), want %d", generation, err, rig.generation+1)
 			}
@@ -201,7 +210,9 @@ type documentSocketRig struct {
 
 // newDocumentSocketRig signs alice@d.example in through a fake pool as a member of
 // dispatch-members, as the sign-in callback does, and gives her an issue whose spec she can open.
-func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocketRig {
+// The server's timers, its sockets' heartbeats among them, run on serverClock; nil is the real
+// clock.
+func newDocumentSocketRig(t *testing.T, heartbeat time.Duration, serverClock clock.Clock) *documentSocketRig {
 	t.Helper()
 	ctx := context.Background()
 	rig := &documentSocketRig{pool: oidctest.New(t), email: "alice@d.example"}
@@ -247,7 +258,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 	t.Cleanup(func() { _ = rig.documents.Shutdown(context.Background()) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: rig.documents, Events: broker,
-		StreamHeartbeat: heartbeat,
+		StreamHeartbeat: heartbeat, Clock: serverClock,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -289,7 +300,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 // signed in: their session generation and refresh token are kept, and once the issuer answers the
 // same cookie is served again after one refresh.
 func TestASignInIssuerOutageAnswersTheAPIAndTheDocumentSocket503AndKeepsTheSession(t *testing.T) {
-	rig := newDocumentSocketRig(t, time.Hour)
+	rig := newDocumentSocketRig(t, time.Hour, nil)
 	ctx := context.Background()
 	signedIn, found, err := rig.people.Membership(ctx, rig.email)
 	if err != nil || !found {

@@ -56,8 +56,9 @@ func (m ResolvedMention) mentionedSession() (string, bool) {
 // comment by one timeout however many mentions it carries.
 const mentionLookupTimeout = 250 * time.Millisecond
 
-// resolveMentionTarget resolves one mention target. timeout, when positive, bounds the lookup;
-// zero leaves it bounded by the listener client's own window. A lookup that timeout cut short,
+// resolveMentionTarget resolves one mention target. timeout, when positive, bounds the lookup on
+// the server's clock, so a test moves a fake to that bound rather than waiting it out; zero
+// leaves the lookup bounded by the listener client's own window. A lookup that timeout cut short,
 // while ctx itself is still live, yields the target unanswered, with no pinned session and no
 // resolve error: the listener has not answered, so nothing is known to refuse and nothing is
 // pinned. createCommentFor still counts the session a session:<id> target names
@@ -76,7 +77,7 @@ func (s *server) resolveMentionTarget(
 	lookup := ctx
 	if timeout > 0 {
 		var cancel context.CancelFunc
-		lookup, cancel = context.WithTimeout(ctx, timeout)
+		lookup, cancel = s.clock.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	sessionID, title, resolveError := s.resolveDeliveryTarget(lookup, route, delivery)

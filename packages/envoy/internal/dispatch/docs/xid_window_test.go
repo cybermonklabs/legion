@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The document service's own write transactions under storetest's xid rig (INFRA-636, plan test
@@ -29,17 +30,20 @@ import (
 // reaching it needs the reworded state an earlier release leaves.
 
 // xidService is a document service on a traced pool of a fresh database, settling after an hour so
-// only the settlement a test runs itself settles.
+// only the settlement a test runs itself settles. Its document store and its identity check every
+// call (checkedVersioned, checkedIdentity): none may run inside a transaction's xid window,
+// after its first write batch (store.SentWriteBatch).
 func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 	t.Helper()
 	tracer := storetest.NewXidTracer()
 	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Store:       database,
+		Persistence: checkedVersioned(t, NewPgVersioned(database)),
+		Events:      events.NewBroker(),
+		Identity:    checkedIdentity(t, headerIdentity(database)),
+		ServerURL:   "https://dispatch.example",
+		Settle:      time.Hour,
 	})
 	t.Cleanup(func() {
 		if err := service.Shutdown(context.Background()); err != nil {
@@ -77,11 +81,11 @@ func TestXidWindowRigPassesBackToBackStatementsAfterTheFirstWrite(t *testing.T) 
 // violation and would say so.
 const rigInjectedGap = storetest.XidFaultGap
 
-// skipWhereNoGapIsJudged skips the timing arm of a self-test in a build that judges no window's
-// time (storetest.XidJudgesGaps). Each of these tests spends its injected time in Go alone, so
-// it adds no statement and the shape rule cannot see it; under the race detector there is
-// nothing left for it to assert, and the plain lane, which runs this package's window tests, is
-// where it holds.
+// skipWhereNoGapIsJudged skips the timing arm of a self-test in a run that judges no window's
+// time (storetest.XidJudgesGaps): every run but the timing lane, which TestMain turns on from
+// benchtime.TimingEnv. Each of these tests spends its injected time in Go alone, so it adds no
+// statement and calls no collaborator, and neither the shape rule nor the collaborator check can
+// see it; outside the timing lane there is nothing left for it to assert.
 func skipWhereNoGapIsJudged(t *testing.T) {
 	t.Helper()
 	if !storetest.XidJudgesGaps() {
@@ -92,7 +96,7 @@ func skipWhereNoGapIsJudged(t *testing.T) {
 // The rig sees a gap inside the window: the same transaction with Go work between its write and
 // its commit breaks D6, and the report names the statement the gap follows. The gap is four
 // times the bound and is spent in Go, so this test is a reading of the bound alone and skips in
-// a build that judges no window's time.
+// a run that judges no window's time.
 func TestXidWindowRigCatchesAGapAfterTheFirstWrite(t *testing.T) {
 	skipWhereNoGapIsJudged(t)
 	_, database, tracer := xidService(t)
@@ -112,11 +116,12 @@ func TestXidWindowRigCatchesAGapAfterTheFirstWrite(t *testing.T) {
 // (parseInput), on a document the size of the load harness's large specs, and the sleep it
 // replaces is gone: nothing here waits. A build whose bound reached what that parse costs would
 // let the real fault through, so this is the test that would go red first were XidMaxGap ever
-// widened too far. The parse runs no statement of its own, so the window's shape is the same
-// with it as without it and only the bound can see it: under the race detector, which judges no
-// window's time, this test skips, and the plain lane is where it holds. A document call that
-// does run a statement inside the window is caught in either build, by the shape each window
-// test asserts.
+// widened too far. The parse runs no statement of its own and calls no collaborator, so the
+// window's shape is the same with it as without it and only the bound can see it: outside the
+// timing lane, which alone judges a window's time, this test skips. A document call that does run
+// a statement inside the window is caught in every run by the shape each window test asserts, and
+// one made through the document service while the transaction is open by the collaborator check
+// (storetest/collabtest).
 func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 	skipWhereNoGapIsJudged(t)
 	_, database, tracer := xidService(t)
@@ -302,8 +307,7 @@ func settlementFixture(t *testing.T, service *Service, database *store.Store, ed
 	editAsConnectedPeer(t, service, artifactID, 1, editor, replaceRun("Revision token r0", "Revision token r1"))
 	before := latestVersionNumber(t, service, artifactID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for live updates to reach persistence: %v", err)
 	}

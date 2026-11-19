@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // drainAnswer is what one drain of a comment off the test's goroutine answered: whether it indexed
@@ -220,17 +221,13 @@ func TestADrainOfACommentWaitsForItsOwnerLock(t *testing.T) {
 				t.Fatalf("commit the edit: %v", err)
 			}
 
-			select {
-			case answer := <-drained:
-				if answer.err != nil {
-					t.Fatalf("the drain failed: %v", answer.err)
-				}
-				if answer.indexed != drainer.wantIndexed {
-					t.Fatalf("the drain answered indexed %v after the edit, want %v: it reads the comment the edit indexed, never the body the edit wrote over",
-						answer.indexed, drainer.wantIndexed)
-				}
-			case <-time.After(30 * time.Second):
-				t.Fatal("the drain never finished after the edit released the owner lock")
+			answer = testwait.Receive(t, "the drain to finish after the edit released the owner lock", drained)
+			if answer.err != nil {
+				t.Fatalf("the drain failed: %v", answer.err)
+			}
+			if answer.indexed != drainer.wantIndexed {
+				t.Fatalf("the drain answered indexed %v after the edit, want %v: it reads the comment the edit indexed, never the body the edit wrote over",
+					answer.indexed, drainer.wantIndexed)
 			}
 
 			// What the index holds is the edited body at the edit's revision: one block, its one

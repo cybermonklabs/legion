@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // runDocumentRoomSync runs documentService's room sync on a listener hub of its own, as
@@ -32,11 +33,7 @@ import (
 func runDocumentRoomSync(t *testing.T, database *store.Store, documentService *docs.Service) {
 	t.Helper()
 	listening := runDocumentRoomSyncDialing(t, documentService, documentListenerDial(database, documentService))
-	select {
-	case <-listening:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the document service's listener hub never listened")
-	}
+	testwait.Receive(t, "the document service's listener hub to listen", listening)
 }
 
 // documentListenerDial is documentService's listener connection as cmd/dispatch dials it: a
@@ -178,22 +175,12 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 	}
 
-	select {
-	case <-peer.connection().Ended:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the close left the browser's room on the other process open")
-	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		stored := storedDocumentText(t, database, issue.PrimaryArtifactID)
-		if strings.Contains(stored, "typed during the close") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the keystroke typed while the close's write held the document's lock was dropped: the store holds %q", stored)
-		}
-	}
+	testwait.Receive(t, "the close to end the browser's room on the other process", peer.connection().Ended)
+	testwait.Eventually(t, "the keystroke typed while the close's write held the document's lock to be stored", func() bool {
+		return strings.Contains(storedDocumentText(t, database, issue.PrimaryArtifactID), "typed during the close")
+	})
 	peer.reconnect(t)
-	scope, err := peer.connection().Authenticate(strconv.Itoa(pmdoc.SchemaVersion()), 10*time.Second)
+	scope, err := peer.connection().Authenticate(t, strconv.Itoa(pmdoc.SchemaVersion()))
 	if err != nil {
 		t.Fatalf("authenticate the reconnected browser: %v", err)
 	}
@@ -202,22 +189,17 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 	}
 }
 
-// waitForDocumentLockWaiter returns once a session of database waits on a document's advisory lock
-// (a room's append, lockRoom), failing the test after ten seconds.
+// waitForDocumentLockWaiter returns once a session of database waits on a document's advisory
+// lock (a room's append, lockRoom).
 func waitForDocumentLockWaiter(t *testing.T, database *store.Store) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	testwait.Eventually(t, "an append to wait on the document's lock", func() bool {
 		waiting, err := storetest.CountLockWaits(context.Background(), database, "%pg_advisory%lock(hashtext($1))%")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if waiting > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no append came to wait on the document's lock")
-		}
-	}
+		return waiting > 0
+	})
 }
 
 // storedDocumentText renders every stored update of artifactID, as a room loading it would hold it.

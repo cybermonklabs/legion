@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // notePause holds a hub goroutine at a note: the one that makes the next note an armed point
@@ -65,13 +66,8 @@ func (p *notePause) at(match func(deliveryHubNote) bool) *pausePoint {
 // wait waits for the pause to hold a goroutine, and answers the note it holds it at.
 func (p *pausePoint) wait(t *testing.T, what string) deliveryHubNote {
 	t.Helper()
-	select {
-	case <-p.reached:
-		return p.note
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the hub made no note %s within 10s", what)
-		return deliveryHubNote{}
-	}
+	testwait.Receive(t, "the hub's note "+what, p.reached)
+	return p.note
 }
 
 // proceed lets the held goroutine go on.
@@ -107,7 +103,7 @@ func TestAMarkMadeBeforeAReadTakesItsPositionIsThatReadsToAnswer(t *testing.T) {
 			seedHubSettings(t, rig.database)
 			conn := newFakeLiveConn()
 			rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-			held := conn.snapshot(t, 5*time.Second, "t").Body
+			held := conn.snapshot(t, "t").Body
 			rig.settle(t)
 
 			start := rig.mark()
@@ -125,12 +121,12 @@ func TestAMarkMadeBeforeAReadTakesItsPositionIsThatReadsToAnswer(t *testing.T) {
 			}
 			point.proceed()
 
-			delta := conn.delta(t, 5*time.Second, "t")
+			delta := conn.delta(t, "t")
 			if got := slices.Sorted(slices.Values(liveUpsertIDs(t, delta, "prs"))); !slices.Equal(got, []string{"acme/widgets#1", "acme/widgets#2"}) {
 				t.Fatalf("the recompute's delta upserts %v, want both merges", got)
 			}
 			requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, held, delta, "")
-			rig.waitNoRecompute(t, 2*viewQuiet)
+			rig.settle(t)
 			holdsSecond := func(note deliveryHubNote) bool {
 				return note.what == "recompute position" && note.through >= second
 			}
@@ -153,7 +149,7 @@ func TestAChangeAfterAReadsPositionRecomputesTheViewAgain(t *testing.T) {
 	seedHubSettings(t, rig.database)
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-	held := conn.snapshot(t, 5*time.Second, "t").Body
+	held := conn.snapshot(t, "t").Body
 	rig.settle(t)
 
 	start := rig.mark()
@@ -168,14 +164,14 @@ func TestAChangeAfterAReadsPositionRecomputesTheViewAgain(t *testing.T) {
 	rig.hub.catchUpNow()
 	point.proceed()
 
-	first := conn.delta(t, 5*time.Second, "t")
+	first := conn.delta(t, "t")
 	if got := liveUpsertIDs(t, first, "prs"); !slices.Equal(got, []string{"acme/widgets#1"}) {
 		t.Fatalf("the first recompute's delta upserts %v, want only the merge its read held", got)
 	}
 	// The first answer is its read's, from before the write made while the read was held, so it
 	// lands on no GET made now; the second answer is checked against one.
 	held = applyLiveDelta(t, deliveryLiveTimeline, held, first)
-	again := conn.delta(t, 5*time.Second, "t")
+	again := conn.delta(t, "t")
 	if got := liveUpsertIDs(t, again, "prs"); !slices.Equal(got, []string{"acme/widgets#2"}) {
 		t.Fatalf("the second recompute's delta upserts %v, want the merge after the read", got)
 	}
@@ -196,7 +192,7 @@ func TestAChangeLogResetDuringAReadKeepsTheViewDirty(t *testing.T) {
 	seedHubSettings(t, rig.database)
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-	held := conn.snapshot(t, 5*time.Second, "t").Body
+	held := conn.snapshot(t, "t").Body
 	rig.settle(t)
 
 	start := rig.mark()
@@ -218,12 +214,12 @@ func TestAChangeLogResetDuringAReadKeepsTheViewDirty(t *testing.T) {
 	}
 	read.proceed()
 
-	first := conn.delta(t, 5*time.Second, "t")
+	first := conn.delta(t, "t")
 	if got := liveUpsertIDs(t, first, "prs"); !slices.Equal(got, []string{"acme/widgets#1"}) {
 		t.Fatalf("the first recompute's delta upserts %v, want only the merge its read held", got)
 	}
 	held = applyLiveDelta(t, deliveryLiveTimeline, held, first)
-	again := conn.delta(t, 5*time.Second, "t")
+	again := conn.delta(t, "t")
 	if got := liveUpsertIDs(t, again, "prs"); !slices.Equal(got, []string{"acme/widgets#2"}) {
 		t.Fatalf("the recompute after the reset's delta upserts %v, want the merge after the read", got)
 	}
@@ -245,7 +241,7 @@ func TestAnIssueTitleChangeDuringTheReadThatFirstNamesItRecomputesAgain(t *testi
 	issue := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-	held := conn.snapshot(t, 5*time.Second, "t").Body
+	held := conn.snapshot(t, "t").Body
 	rig.settle(t)
 
 	start := rig.mark()
@@ -256,12 +252,12 @@ func TestAnIssueTitleChangeDuringTheReadThatFirstNamesItRecomputesAgain(t *testi
 	rig.waitForEventCursor(t, eventHead(t, rig.database), "the retitle while the read is held")
 	point.proceed()
 
-	first := conn.delta(t, 5*time.Second, "t")
+	first := conn.delta(t, "t")
 	if got := liveMapValues(t, first, "issue_titles"); got[issue] != "Ship widgets" {
 		t.Fatalf("the first recompute's issue_titles = %v, want %s under the title its read saw", got, issue)
 	}
 	held = applyLiveDelta(t, deliveryLiveTimeline, held, first)
-	again := conn.delta(t, 5*time.Second, "t")
+	again := conn.delta(t, "t")
 	if got := liveMapValues(t, again, "issue_titles"); got[issue] != "Ship the widgets" {
 		t.Fatalf("the second recompute's issue_titles = %v, want %s retitled", got, issue)
 	}
@@ -282,7 +278,7 @@ func TestASessionTitleChangeDuringTheReadThatFirstNamesItRecomputesAgain(t *test
 	createHubIssue(t, rig.handler, map[string]any{"title": "Hold the project"})
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
-	held := conn.snapshot(t, 5*time.Second, "t").Body
+	held := conn.snapshot(t, "t").Body
 	rig.settle(t)
 
 	const session = "ses_hub_reader"
@@ -297,12 +293,12 @@ func TestASessionTitleChangeDuringTheReadThatFirstNamesItRecomputesAgain(t *test
 	rig.waitForEventCursor(t, eventHead(t, rig.database), "the session's titled event while the read is held")
 	point.proceed()
 
-	first := conn.delta(t, 5*time.Second, "t")
+	first := conn.delta(t, "t")
 	if got := liveMapValues(t, first, "session_titles"); got[session] != session {
 		t.Fatalf("the first recompute's session_titles = %v, want %s shown by its id", got, session)
 	}
 	held = applyLiveDelta(t, deliveryLiveTimeline, held, first)
-	again := conn.delta(t, 5*time.Second, "t")
+	again := conn.delta(t, "t")
 	if got := liveMapValues(t, again, "session_titles"); got[session] != "Hub reader" {
 		t.Fatalf("the second recompute's session_titles = %v, want %s titled", got, session)
 	}

@@ -428,7 +428,8 @@ It names the packages as `go list` does under the run's own flags, so a pattern 
 listed package, then `database_skips=N` and, for a run of its own, `go_test_exit=E`. The tests
 `EXPECTED_SKIPS` names in the script skip by their own design in every CI run, which sets the
 database variables and none of what those tests need (a corpus, a seeded database, a built
-Lean model), and are not counted; each line gives its reason, and a line without one
+Lean model, the timing lane's `DISPATCH_BENCH_TIMING`), and are not counted; each line gives
+its reason, and a line without one
 is refused. A report that is missing or empty, one in which a listed package with test files
 holds no test that passed or failed (its tests all skipped, or its `TestMain` returned before
 it ran them), and an `EXPECTED_SKIPS` line whose package is listed but whose test the report

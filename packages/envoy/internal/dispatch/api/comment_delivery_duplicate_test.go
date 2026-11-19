@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -23,6 +24,7 @@ import (
 // so the attempt is recorded failed only when every try of that window missed; this listener
 // misses every one until the comment's own request has answered.
 func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
+	var calls listenerCalls
 	var listenerState struct {
 		sync.Mutex
 		keys      []string
@@ -32,6 +34,7 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 	listenerState.delivered = map[string]struct{}{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer calls.took()()
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -53,8 +56,12 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 			listenerState.delivered[key] = struct{}{}
 			listenerState.Unlock()
 			if missing {
-				// The send lands; the answer misses the client's window.
-				time.Sleep(400 * time.Millisecond)
+				// The send lands; the answer misses the client's window, which ends on the
+				// server's clock where the test moves it (stepListenerWaits).
+				done := calls.holding()
+				<-r.Context().Done()
+				done()
+				return
 			}
 			if held {
 				_, _ = w.Write([]byte(`{"event_id":"mention-envelope-2","recipient":"s1","duplicate":true}`))
@@ -66,12 +73,13 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL, 150*time.Millisecond)
+	clock := clocktest.New(time.Now())
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A mention that landed then timed out", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "The mention landed; the answer did not.", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
-	deliveries := settledCommentDeliveries(t, database, comment.ID)
+	deliveries := settledCommentDeliveriesOn(t, database, comment.ID, clock, &calls)
 	if len(deliveries) != 1 || deliveries[0].State != "failed" {
 		t.Fatalf("first attempt = %#v, want it recorded failed once every try missed its receipt", deliveries)
 	}
@@ -117,9 +125,18 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 // own test rather than a line in the one above.
 func TestResolutionTimeoutDoesNotClaimTheMessageMayHaveLanded(t *testing.T) {
 	held := make(chan struct{})
+	var calls listenerCalls
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer calls.took()()
 		if r.Method == http.MethodGet && (r.URL.Path == "/v1/registry/s1" || r.URL.Path == "/v1/sessions") {
-			<-held
+			// The lookup is never answered: what ends it is the window the client gives the
+			// call, on the server's clock, which the test moves to the window's end once the
+			// lookup is held here (answerWhileCallsAreHeld).
+			defer calls.holding()()
+			select {
+			case <-held:
+			case <-r.Context().Done():
+			}
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -128,12 +145,17 @@ func TestResolutionTimeoutDoesNotClaimTheMessageMayHaveLanded(t *testing.T) {
 		close(held)
 		listener.Close()
 	}()
-	handler, _ := newTargetedMessageHandler(t, listener.URL, 150*time.Millisecond)
+	clock := clocktest.New(time.Now())
+	handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A resolution that timed out", "before")
 
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
-		"body": "The listener never answered the lookup.", "target": "session:s1", "delivery": "steer",
-	}, "alice")
+	sent := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		sent <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+			"body": "The listener never answered the lookup.", "target": "session:s1", "delivery": "steer",
+		}, "alice")
+	}()
+	created := answerWhileCallsAreHeld(t, clock, &calls, sent)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create targeted message: status=%d body=%s", created.Code, created.Body.String())
 	}

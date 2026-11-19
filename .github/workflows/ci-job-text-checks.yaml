@@ -108,9 +108,11 @@ jobs:
       # -run, named here and not in the list, or skipped from outside it, fails the ci-filters
       # job rather than running in no job or in both.
       # The package's other tests skip without DISPATCH_TEST_DATABASE_URL, and -run keeps this
-      # step from even building their fixtures' work.
+      # step from even building their fixtures' work. -timeout 1m against at most 10.660 s over
+      # the 19 of this job's green merge-group runs from #2945 to 2026-11-16T17:33Z whose logs
+      # GitHub still served (run 43878445080).
       - name: Test the Dispatch API's source guards (no database)
-        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyQueueReviewWritesReviews|TestOnlyTheBrokerInsertsEvents|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable)$' ./internal/dispatch/api
+        run: go test -count=1 -timeout 1m -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyQueueReviewWritesReviews|TestOnlyTheBrokerInsertsEvents|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable)$' ./internal/dispatch/api
         working-directory: packages/envoy
       # The two pure pins of packages/daemon's supervise table: they hold the table to the
       # package's own source — a row or a named ignore for every event in every state, and one

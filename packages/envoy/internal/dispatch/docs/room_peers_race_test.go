@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 
@@ -28,7 +27,7 @@ func TestThreeBrowsersAndTheAPIEditOneRoomAtOnce(t *testing.T) {
 	service, artifactID, serverURL := newPeeredService(t, seeded)
 	browsers := make([]crdt.ClientID, 3)
 	for index := range browsers {
-		browsers[index] = typeIntoDocument(t, service, serverURL, artifactID, 2*time.Millisecond)
+		browsers[index] = typeIntoDocument(t, service, serverURL, artifactID)
 	}
 	typed := func() uint64 {
 		var total uint64

@@ -3,10 +3,11 @@ package store
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // TestTheFleetReadPauseRoleLeavesNoRoleWhenItsGrantsCannotBeDroppedFirst holds the claim of
@@ -19,17 +20,15 @@ import (
 // database's own drop, and it drops any role it finds, so this test leaves nothing either way.
 func TestTheFleetReadPauseRoleLeavesNoRoleWhenItsGrantsCannotBeDroppedFirst(t *testing.T) {
 	ctx := context.Background()
-	server, err := url.Parse(testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
-	}
-	server.Path = "/postgres"
+	// The role spans the cluster, so it is looked for on the server's postgres database, which
+	// outlives the test's own.
+	adminURL := testdb.DispatchServer.AdminURL(t)
 	var role string
 	t.Cleanup(func() {
 		if role == "" {
 			return
 		}
-		conn, err := pgx.Connect(context.Background(), server.String())
+		conn, err := pgx.Connect(context.Background(), adminURL)
 		if err != nil {
 			t.Errorf("connect to the test server to look for the role %s: %v", role, err)
 			return

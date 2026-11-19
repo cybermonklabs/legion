@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
@@ -133,9 +132,9 @@ func (w *walk) stopped(at *stop) *ending {
 // (passes.go).
 //
 // The pass's loop belongs to its caller, which runs it under Lease every Interval. PassTimeout is
-// that same interval, and the pass is bound at it: a pass too big for one interval ends on that
-// bound rather than holding its loop's lease past the pass that is due next, and the pass after
-// it takes the cycle up where this one left it (reconcile).
+// that same interval, and the pass is bound at it on its clock: a pass too big for one interval
+// ends on that bound rather than holding its loop's lease past the pass that is due next, and the
+// pass after it takes the cycle up where this one left it (reconcile).
 //
 // Each pass is one attempt at reading GitHub (githubreads), recorded through GitHubReads when it
 // ends: the GitHub client notes on it each request and each failure no caller takes as data, and
@@ -144,7 +143,8 @@ func (w *walk) stopped(at *stop) *ending {
 // rate limit that ends the pass. A read the pass's own ending killed is none of those (cutShort),
 // and a pass its caller cancelled, which is this process shutting down, records nothing.
 func (r *Reconciler) Pass(ctx context.Context) {
-	started := time.Now()
+	clock := r.clock()
+	started := clock.Now()
 	var c counts
 	// The context the caller handed this pass, kept before the pass's own bound goes on it.
 	// Its cancellation is the process shutting down, which the row records apart from the
@@ -154,14 +154,11 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	caller := ctx
 	ctx, attempt := githubreads.Begin(ctx)
 	defer githubreads.Finish(caller, githubreads.CIReconcile, attempt, r.GitHubReads, r.Logger)
-	if r.PassTimeout > 0 {
-		// Every read of the pass is made within this, and so is every gap it leaves between two
-		// of them, so the pass ends whatever it is waiting for. Zero is unbounded, which is what
-		// a test that is not about the bound wants.
-		bounded, done := context.WithTimeout(ctx, r.PassTimeout)
-		defer done()
-		ctx = bounded
-	}
+	// Every read of the pass is made within this, and so is every gap it leaves between two of
+	// them, so the pass ends whatever it is waiting for.
+	bounded, done := clock.WithTimeout(ctx, r.bound())
+	defer done()
+	ctx = bounded
 	// The row this pass leaves behind, opened before it reads anything and closed on every way
 	// out below. at is the rate limit that ended the pass, read by the deferred close beside the
 	// caller's context: a pass that ends at a limit records that, one its caller cancelled
@@ -175,7 +172,7 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	// shared, and a process that waits out a limit another met is why it is recorded at all.
 	if at = r.limited(ctx, githubapp.AppScope); at != nil {
 		githubreads.NoteFailure(ctx, at.ended("before it read any repository"))
-		r.report(&c, at, time.Since(started))
+		r.report(&c, at, clock.Now().Sub(started))
 		return
 	}
 	// The writer is bound for this pass alone, never kept for the next: when nats.go gives up on
@@ -201,7 +198,7 @@ func (r *Reconciler) Pass(ctx context.Context) {
 		// a limit the pass read from the shared ledger is noted here alone.
 		githubreads.NoteFailure(ctx, at.ended("at "+r.resume.repository))
 	}
-	r.report(&c, at, time.Since(started))
+	r.report(&c, at, clock.Now().Sub(started))
 }
 
 // reconcile is one pass over the repositories covered() answers — the ones repo_projects maps and

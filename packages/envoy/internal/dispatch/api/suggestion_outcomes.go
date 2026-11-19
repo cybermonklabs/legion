@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -266,20 +267,19 @@ with swept as (
 update suggestion_outcome_cursor set event_id = coalesce($2::bigint, event_id)`
 
 // sweepSuggestionOutcomePages judges page after page up to safe, each in a transaction of its own
-// (judgeSuggestionPage), until one comes back short, and returns when what it held back for being
-// younger than settle is old enough to judge, or the zero time when it held back nothing.
-func sweepSuggestionOutcomePages(ctx context.Context, pool *store.Pool, safe int64, page int, settle time.Duration) (next time.Time, err error) {
+// (judgeSuggestionPage), until one comes back short, and returns how long until what it held back
+// for being younger than settle is old enough to judge, by the database's clock, or zero when it
+// held back nothing.
+func sweepSuggestionOutcomePages(ctx context.Context, pool *store.Pool, safe int64, page int, settle time.Duration) (settlesIn time.Duration, err error) {
 	for {
 		full, settlesIn, err := judgeSuggestionPageInTransaction(ctx, pool, safe, page, settle)
 		switch {
 		case err != nil:
-			return time.Time{}, err
+			return 0, err
 		case full:
 			continue
-		case settlesIn > 0:
-			return time.Now().Add(settlesIn), nil
 		}
-		return time.Time{}, nil
+		return max(settlesIn, 0), nil
 	}
 }
 
@@ -412,7 +412,7 @@ func runSuggestionRules(ctx context.Context, tx pgx.Tx, rules [3]string, args ..
 // relay, the delivery hub - proves that observation while this pass's pages run. Neither alone
 // covers the other: without the second, a pass whose gap closed under it would ask for nothing
 // and leave those events to the next commit's wake.
-func suggestionOutcomePass(ctx context.Context, pool *store.Pool, horizon *events.Horizon, schedule suggestionSchedule) (time.Time, error) {
+func suggestionOutcomePass(ctx context.Context, clk clock.Clock, pool *store.Pool, horizon *events.Horizon, schedule suggestionSchedule) (time.Time, error) {
 	safe, err := horizon.Safe(ctx)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("read the event log's safe horizon: %w", err)
@@ -422,14 +422,17 @@ func suggestionOutcomePass(ctx context.Context, pool *store.Pool, horizon *event
 			return time.Time{}, fmt.Errorf("await the event log's safe horizon: %w", err)
 		}
 	}
-	next, err := sweepSuggestionOutcomePages(ctx, pool, safe, schedule.page, schedule.settle)
+	settlesIn, err := sweepSuggestionOutcomePages(ctx, pool, safe, schedule.page, schedule.settle)
 	if err != nil {
 		return time.Time{}, err
 	}
 	if horizon.Gap() != events.GapNone || horizon.Proven() > safe {
-		return time.Now().Add(schedule.minGap), nil
+		return clk.Now().Add(schedule.minGap), nil
 	}
-	return next, nil
+	if settlesIn > 0 {
+		return clk.Now().Add(settlesIn), nil
+	}
+	return time.Time{}, nil
 }
 
 // RunSuggestionOutcomeSweep resolves LEGION-550's write_suggestions off the write path entirely:
@@ -469,19 +472,22 @@ func suggestionOutcomePass(ctx context.Context, pool *store.Pool, horizon *event
 // next event wakes the loop, which is no later than anything could resolve it, and is judged then
 // against all its events.
 func RunSuggestionOutcomeSweep(ctx context.Context, pool *store.Pool, horizon *events.Horizon, wake <-chan struct{}) {
-	runSuggestionOutcomeSweep(ctx, pool, horizon, wake, suggestionOutcomeSchedule)
+	runSuggestionOutcomeSweep(ctx, clock.Real(), pool, horizon, wake, suggestionOutcomeSchedule)
 }
 
-func runSuggestionOutcomeSweep(ctx context.Context, pool *store.Pool, horizon *events.Horizon, wake <-chan struct{}, schedule suggestionSchedule) {
+// runSuggestionOutcomeSweep is RunSuggestionOutcomeSweep at schedule, its gaps and due times on
+// clk; settle stays the database's own (judgeSuggestionPage).
+func runSuggestionOutcomeSweep(ctx context.Context, clk clock.Clock, pool *store.Pool, horizon *events.Horizon, wake <-chan struct{}, schedule suggestionSchedule) {
 	ctx = store.WithTransactionTracking(ctx)
 	duty.RunWoken(ctx, duty.WokenLoop{
 		Wake:   wake,
 		MinGap: schedule.minGap,
+		Clock:  clk,
 		Pass: func(ctx context.Context) time.Time {
-			next, err := suggestionOutcomePass(ctx, pool, horizon, schedule)
+			next, err := suggestionOutcomePass(ctx, clk, pool, horizon, schedule)
 			if err != nil && ctx.Err() == nil {
 				slog.Warn("dispatch: suggestion outcome sweep failed", "error", err)
-				next = time.Now().Add(schedule.minGap)
+				next = clk.Now().Add(schedule.minGap)
 			}
 			if ctx.Err() != nil {
 				return time.Time{}

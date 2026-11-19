@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // nodeFacts is a node's six facts as a test compares them: each actor as "kind:id", each time as
@@ -675,13 +676,9 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	succeeded(t, "answer the block ask", dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
 		"selected": []string{"Ship"}, "expected_edited_at": ask.EditedAt,
 	}, "alice"))
-	deadline := time.Now().Add(10 * time.Second)
-	for readNode(t, handler, blockRef).ChangedVersion <= before {
-		if time.Now().After(deadline) {
-			t.Fatalf("the answer never moved the block's changed version past %d", before)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, fmt.Sprintf("the answer to move the block's changed version past %d", before), func() bool {
+		return readNode(t, handler, blockRef).ChangedVersion > before
+	})
 	want("after its answer")
 }
 

@@ -2,6 +2,7 @@ package cireconcile
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The record each pass leaves in ci_reconcile_passes, and the reading of it the API answers
@@ -138,44 +140,32 @@ func holdLease(t *testing.T, pool *store.Pool, body func(ctx context.Context)) (
 	return release, held, ran
 }
 
-// waitForPass polls the recent passes until one answers want for id, and fails when it does not
-// within the bound. The pass it is waiting on runs in a goroutine of its own, so there is nothing
-// to wait on but the row.
+// waitForPass waits until the recent passes answer want for id. The pass it is waiting on runs
+// in a goroutine of its own, so there is nothing to wait on but the row.
 func waitForPass(t *testing.T, pool *store.Pool, id int64, want PassState) PassRecord {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	var last []PassRecord
-	for time.Now().Before(deadline) {
-		last = recent(t, pool)
-		for _, pass := range last {
+	return testwait.Until(t, fmt.Sprintf("pass %d to read as %q", id, want), func() (PassRecord, bool) {
+		for _, pass := range recent(t, pool) {
 			if pass.ID == id && pass.State == want {
-				return pass
+				return pass, true
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("pass %d never read as %q: %+v", id, want, last)
-	return PassRecord{}
+		return PassRecord{}, false
+	})
 }
 
-// waitForRow polls until the table holds a pass of this instance with no end time, which is the
+// waitForRow waits until the table holds a pass of this instance with no end time, which is the
 // row a pass writes when it starts, and answers its id.
 func waitForRow(t *testing.T, pool *store.Pool, instance string) int64 {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	return testwait.Until(t, "an open pass row of "+instance, func() (int64, bool) {
 		var id int64
 		err := pool.QueryRow(t.Context(), `
 			select id from ci_reconcile_passes where instance = $1 and ended_at is null
 			order by started_at desc, id desc limit 1
 		`, instance).Scan(&id)
-		if err == nil {
-			return id
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("no open pass row of %s was written", instance)
-	return 0
+		return id, err == nil
+	})
 }
 
 // A pass that is still reading GitHub reads as running: its row has no end time, its process is
@@ -192,12 +182,9 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
-	// The window the test reads the open row in is the whole of this bound, since GitHub never
-	// answers the second page: ten seconds is long enough that a loaded machine still has the
-	// pass running when the two reads below reach the row, and short enough that the wait for
-	// the end of the pass is a wait and not a hang.
-	h.reconciler.PassTimeout = 10 * time.Second
-	h.github.stallQuery(gitHubRepository, 1, time.Minute)
+	// GitHub never answers the second page, so the pass stays open, its row read as running,
+	// until the test moves the clock to its bound.
+	h.github.holdQuery(gitHubRepository, 1)
 
 	_, _, finished := holdLease(t, h.pool, h.reconciler.Pass)
 	id := waitForRow(t, h.pool, instance)
@@ -214,7 +201,7 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	}
 
 	// The pass ends on its own bound, and the same row then says so.
-	<-finished
+	h.cutAtTheHold(finished)
 	ended := passOf(t, recent(t, h.pool), id)
 	if ended.State != outcomeDeadline {
 		t.Fatalf("the pass ended %q, want %q: %+v", ended.State, outcomeDeadline, ended)
@@ -231,10 +218,9 @@ func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
-	h.reconciler.PassTimeout = 2 * time.Second
-	h.github.stallQuery(gitHubRepository, 1, time.Minute)
+	h.github.holdQuery(gitHubRepository, 1)
 
-	h.pass()
+	h.passCutByItsBound()
 
 	passes := recent(t, h.pool)
 	if len(passes) != 1 {
@@ -292,12 +278,11 @@ func TestThePassRecordNamesTheAddressTheNextPassTakesUp(t *testing.T) {
 	h.github.refusePage(gitHubRepository, 1)
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
-	h.reconciler.PassTimeout = 3 * time.Second
 	// GitHub is slower than the pass has left at the second head of that page.
 	cutAt := int64(pullsPerQuery) + 2
-	h.github.stall(runsOf(head(cutAt)), time.Minute)
+	h.github.hold(runsOf(head(cutAt)))
 
-	h.pass()
+	h.passCutByItsBound()
 
 	cut := recent(t, h.pool)[0]
 	if cut.State != outcomeDeadline {
@@ -312,8 +297,7 @@ func TestThePassRecordNamesTheAddressTheNextPassTakesUp(t *testing.T) {
 			*cut.Cursor, want)
 	}
 
-	h.github.stall(runsOf(head(cutAt)), 0)
-	h.reconciler.PassTimeout = 0
+	h.github.release(runsOf(head(cutAt)))
 	askedBefore := len(h.github.received())
 
 	h.pass()
@@ -342,28 +326,25 @@ func TestThePassRecordNamesTheAddressTheNextPassTakesUp(t *testing.T) {
 // running it. A row reading `complete` would have the reader take the heads the shutdown left
 // unread for heads a finished pass found nothing to do about.
 //
-// The pass is given no bound of its own, so nothing but the cancellation can end it, and GitHub
-// holds back the page it is reading until the test cancels the context the pass was handed,
-// which is what the loop's own context does when the process is told to stop.
+// The bound is the clock's, which nothing moves here, so nothing but the cancellation can end
+// the pass, and GitHub holds back the page it is reading until the test cancels the context the
+// pass was handed, which is what the loop's own context does when the process is told to stop.
 func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.mapRepository(rowRepository)
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
-	h.reconciler.PassTimeout = 0
-	h.github.stallQuery(gitHubRepository, 1, time.Minute)
+	h.github.holdQuery(gitHubRepository, 1)
 
 	shutting, shutdown := context.WithCancel(h.ctx)
-	ended := make(chan struct{})
-	go func() {
-		defer close(ended)
-		h.reconciler.Pass(shutting)
-	}()
-	// The row the pass opened, which says the pass has started; the stalled page holds it there.
+	ended := h.startPass(shutting)
+	// The row the pass opened, which says the pass has started, and the page GitHub holds,
+	// which holds the pass there.
 	id := waitForRow(t, h.pool, instance)
+	testwait.Next(t, "GitHub to hold the pass's query for the second page", &h.github.held, func(string) bool { return true })
 	shutdown()
-	<-ended
+	testwait.Receive(t, "the pass to end once its caller cancelled it", ended)
 
 	pass := passOf(t, recent(t, h.pool), id)
 	if pass.State != outcomeCancelled {
@@ -503,19 +484,15 @@ func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLeas
 // decide this row. Only the heartbeat can: the killed process's registry row is older than
 // processes.LiveWindow, so the pass is over whatever the lease says.
 //
-// LiveWindow is a variable so this test can shorten it rather than wait a real window out; the
-// heartbeat is written older than the shortened window, so the test waits for nothing at all.
+// The killed process's heartbeat is written older than the live window itself, on the database's
+// clock, so the test waits for nothing at all.
 //
 // The mutation this case exists to catch is "live while its row exists": read that way, the
 // killed process is live, the lease is held and the row is the newest, and the pass reads as
 // running for ever.
 func TestTheLivenessRuleEndsTheNewestPassOfAProcessThatStoppedHeartbeating(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	was := processes.LiveWindow
-	processes.LiveWindow = time.Second
-	t.Cleanup(func() { processes.LiveWindow = was })
-
-	killed := registerProcess(t, h.pool, 5*time.Second)
+	killed := registerProcess(t, h.pool, processes.LiveWindow+time.Second)
 	open := seedPass(t, h.pool, killed, time.Minute)
 	release, taken, _ := holdLease(t, h.pool, nil)
 	<-taken

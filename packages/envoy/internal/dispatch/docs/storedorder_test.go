@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // storedOrderRounds is how many rounds TestStoredOrderSoak runs. The default fits the package in
@@ -435,11 +436,7 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 // awaitHeldAppend returns once the held append has reached the store.
 func awaitHeldAppend(t *testing.T, entered <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("bob's append never reached the store")
-	}
+	testwait.Receive(t, "bob's append to reach the store", entered)
 }
 
 // onFirst returns a hook for room that runs do the first time it is called for it.
@@ -626,7 +623,7 @@ func TestStoredOrderTwoBrowsersOutOfOrder(t *testing.T) {
 	before := head()
 	releaseFirst := holdPeerEdit(t, service, artifactID, &service.beforeObserveUpdate, replaceRun("Second.", "Second, bob."))
 	editAsPeer(t, service, artifactID, replaceRun("bob", "bob and carol"))
-	waitFor(t, roomWait(t), "the second peer's update to be stored", func() bool { return head() > before })
+	waitFor(t, "the second peer's update to be stored", func() bool { return head() > before })
 	releaseFirst()
 	assertStoredOrder(t, service, artifactID)
 }
@@ -684,6 +681,12 @@ func TestStoredOrderRemeasuredClassMovesCreditAndSettlement(t *testing.T) {
 // lead of the room - that sends nothing while paused is set. Every stored row costs the check
 // more than the one before it, so a soak pauses its peers while it checks, and the rows a round
 // stores do not grow with the time its checks take.
+//
+// gap is the stand-in's own cadence, not a bound on any wait: it is how fast a person types into
+// the editor, as typeIntoDocument's typingGap is, and its caller passes the pace the soak wants
+// its rooms worked at. A paused peer looks again every millisecond for the same reason: it stands
+// in for a browser that is not typing, and nothing of the product reports when the soak's check
+// has finished.
 func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, gap time.Duration, paused *atomic.Bool) {
 	t.Helper()
 	peer := connectPeer(t, serverURL, artifactID, "alice")
@@ -746,7 +749,7 @@ func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, ga
 		done.Wait()
 		client := peer.Doc.ClientID()
 		sent := peer.Doc.StateVector().Clock(client)
-		waitFor(t, 30*time.Second, "the room to apply the peer's last update", func() bool {
+		waitFor(t, "the room to apply the peer's last update", func() bool {
 			room := service.srv.GetDoc(artifactID)
 			return room == nil || room.StateVector().Clock(client) >= sent
 		})
@@ -754,8 +757,7 @@ func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, ga
 			return
 		}
 		typists.Delete(artifactID)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 			t.Errorf("wait for the peer's updates to reach persistence: %v", err)
 		}
@@ -910,8 +912,16 @@ func TestStoredOrderSoak(t *testing.T) {
 	for round := range rounds {
 		watched.unstored.Store(false)
 		paused.Store(false)
-		// The peers' first keystrokes are in flight when the round's first write starts.
-		time.Sleep(5 * time.Millisecond)
+		// The peers' first keystrokes are in flight when the round's first write starts: the
+		// round waits for a keystroke the rooms hold unstored, which is what a write must meet.
+		waitFor(t, fmt.Sprintf("round %d: the peers' keystrokes to reach the rooms", round), func() bool {
+			for _, document := range documents {
+				if service.unstoredRoomUpdates(document.id) > 0 {
+					return true
+				}
+			}
+			return false
+		})
 		for index, document := range documents {
 			switch round % 4 {
 			case 0:

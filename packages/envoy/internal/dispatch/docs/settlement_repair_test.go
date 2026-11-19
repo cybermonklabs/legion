@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Settlement repairs an ask block's server-owned attributes into the document as it stands when
@@ -99,14 +100,9 @@ func TestSettlementWhoseRoomWasReplacedLeavesTheDocumentToTheReplacement(t *test
 		// This raw ygo close stands in for the idle sweep, which can evict the idle room between
 		// settlement's read and repair because no Server.Apply holds it then.
 		go func() { _ = service.srv.Server.CloseRoom(room, true) }()
-		deadline := time.Now().Add(5 * time.Second)
-		for service.srv.GetDoc(room) == held {
-			if time.Now().After(deadline) {
-				t.Error("the room was never closed")
-				return
-			}
-			time.Sleep(time.Millisecond)
-		}
+		waitFor(t, "the raw close to take the idle room out of ygo's map", func() bool {
+			return service.srv.GetDoc(room) != held
+		})
 	}
 	settleCurrentGeneration(t, service, artifactID)
 	if !replaced.Load() {
@@ -401,8 +397,7 @@ func TestBackfillStoresNothingForAStampTheDocumentNoLongerNeeds(t *testing.T) {
 		tree.Children[0].Attrs[pmdoc.BlockIDAttr] = "marker"
 		return tree
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for the room's updates to reach persistence: %v", err)
 	}
@@ -459,16 +454,18 @@ func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
 	// The eviction goes as far as the held commit lets it: it retires the room's persistence worker,
 	// whose exit compaction then waits for the document's lock, or it waits for the commit to reach
 	// the room's persistence first.
-	waitFor(t, 10*time.Second, "the failed room's eviction to retire its worker or wait for the repair's commit", func() bool {
+	waitFor(t, "the failed room's eviction to retire its worker or wait for the repair's commit", func() bool {
 		return closeWaitsForRepair() || lockWaits(t, context.Background(), service.store, "select pg_advisory_lock(%") > 0
 	})
 	pause.let()
-	select {
-	case <-settled:
-	case <-time.After(recoveryBound):
-		endRoomLockHolders(t, service)
-		t.Fatal("deadlock: the settlement never returned once its room failed under its commit")
-	}
+	// A settlement that never returns holds the document's lock, which the cleanups' shutdown
+	// would wait on for good: a failed test ends the room's lock holders first.
+	t.Cleanup(func() {
+		if t.Failed() {
+			endRoomLockHolders(t, service)
+		}
+	})
+	testwait.Receive(t, "the settlement to return once its room failed under its commit (it never does in a deadlock)", settled)
 	awaitRecovered(t, service, artifactID)
 
 	requireNextSettlementStamps(t, service, artifactID, "before\n\nadded\n")
@@ -540,7 +537,7 @@ func TestASecondWriterIntoARoomClosingUnderASettlementsRepairReturns(t *testing.
 			}()
 			// The room's persistence worker takes the second commit and waits there for the
 			// repair's slot, which the repair's commit, still held, has yet to reach.
-			waitFor(t, 10*time.Second, "the second writer's commit to reach the room's persistence", func() bool {
+			waitFor(t, "the second writer's commit to reach the room's persistence", func() bool {
 				return goroutinesIn("consumeSuppressedPersistence") > 0
 			})
 			pause.let()
@@ -548,13 +545,15 @@ func TestASecondWriterIntoARoomClosingUnderASettlementsRepairReturns(t *testing.
 				name string
 				done <-chan struct{}
 			}{{"the settlement", settled}, {"the second writer", written}, {"the room's close", closed}} {
-				select {
-				case <-step.done:
-				case <-time.After(10 * time.Second):
-					service.purgeSuppressedPersistence(artifactID)
-					endRoomLockHolders(t, service)
-					t.Fatalf("deadlock: %s never returned once the room closed under the settlement's repair commit", step.name)
-				}
+				// A step that never returns is a deadlock through the room's lock: the wait below
+				// gives up by name, and the cleanup frees what the test's shutdown would wait on.
+				t.Cleanup(func() {
+					if t.Failed() {
+						service.purgeSuppressedPersistence(artifactID)
+						endRoomLockHolders(t, service)
+					}
+				})
+				testwait.Receive(t, step.name+" to return once the room closed under the settlement's repair commit", step.done)
 			}
 			if closeErr != nil || writeErr != nil {
 				t.Fatalf("close = %v, second writer = %v", closeErr, writeErr)
@@ -580,8 +579,7 @@ func owedStamp(t *testing.T, service *Service, artifactID string) uint64 {
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	editLiveTree(t, service, artifactID, appendUnidentifiedBlocks(t, "added"))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for the edit to reach persistence: %v", err)
 	}
@@ -617,13 +615,16 @@ func settleUnderPause(t *testing.T, service *Service, pause *repairCommitPause, 
 		defer close(settled)
 		service.settleRoom(artifactID, generation)
 	}()
-	select {
-	case <-pause.held:
-	case <-settled:
-		t.Fatal("the settlement returned without committing into the room")
-	case <-time.After(10 * time.Second):
-		t.Fatal("the settlement never committed into the room")
-	}
+	testwait.Eventually(t, "the settlement to commit into the room", func() bool {
+		select {
+		case <-pause.held:
+			return true
+		case <-settled:
+			t.Fatal("the settlement returned without committing into the room")
+		default:
+		}
+		return false
+	})
 	return settled
 }
 
@@ -652,24 +653,25 @@ func closeWaitsForRepair() bool {
 }
 
 // awaitCloseWaitingForRepair blocks until a close the service makes of the room waits for the
-// paused repair's commit (closeWaitsForRepair), failing at once if the close returns first, and
-// otherwise only after a ceiling no ordering of the close's own waits reaches - Shutdown's close
-// comes after its own settlement of the room has waited, up to its drain budget, for the document
-// lock the paused repair holds. On the ceiling it reports where the service's goroutines stand and
-// what the database's sessions wait on, so a close held up elsewhere names what held it.
+// paused repair's commit (closeWaitsForRepair), failing at once if the close returns first. A
+// close that never reaches that wait ends the shared wait, which reports where the service's
+// goroutines stand and what the database's sessions wait on, so a close held up elsewhere names
+// what held it.
 func awaitCloseWaitingForRepair(t *testing.T, service *Service, closed <-chan struct{}) {
 	t.Helper()
-	ceiling := time.After(ShutdownDrainBudget + 2*time.Minute)
-	for !closeWaitsForRepair() {
+	t.Cleanup(func() {
+		if t.Failed() {
+			describeCloseWait(t, service)
+		}
+	})
+	testwait.Eventually(t, "the room's close to wait for the repair's commit", func() bool {
 		select {
 		case <-closed:
 			t.Fatal("the room's close returned without waiting for the repair's commit")
-		case <-ceiling:
-			describeCloseWait(t, service)
-			t.Fatal("the room's close never waited for the repair's commit")
-		case <-time.After(10 * time.Millisecond):
+		default:
 		}
-	}
+		return closeWaitsForRepair()
+	})
 }
 
 // describeCloseWait logs the stack of every goroutine standing in the service's close, shutdown
@@ -796,20 +798,17 @@ func appendUnidentifiedBlocks(t *testing.T, markdown string) func(*pmdoc.Node) *
 // so the worker it holds lets the test's shutdown finish.
 func requireNoSuppressedSlots(t *testing.T, service *Service, room, when string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		service.suppressMu.Lock()
-		queued := len(service.suppressed[room])
-		service.suppressMu.Unlock()
-		if queued == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
+	t.Cleanup(func() {
+		if t.Failed() {
 			service.purgeSuppressedPersistence(room)
-			t.Fatalf("%s: %d suppression slots still queued for the room", when, queued)
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	})
+	testwait.Until(t, when+": the room's persistence worker to consume every suppression slot", func() (int, bool) {
+		service.suppressMu.Lock()
+		defer service.suppressMu.Unlock()
+		queued := len(service.suppressed[room])
+		return queued, queued == 0
+	})
 }
 
 // editAsPeer writes a tree change as a browser's edit reaches the room: made in a document of its

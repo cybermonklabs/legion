@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // page is an index.html as Vite writes it, naming entry as its module script and a stylesheet
 // after it, with marker making two pages of one entry differ.

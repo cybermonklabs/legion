@@ -15,6 +15,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -28,6 +29,11 @@ const misreadWarning = "dispatch: a document's stored updates do not fold into a
 // PgVersioned persists a room's Yjs V1 updates in Dispatch's Postgres store.
 type PgVersioned struct {
 	store *store.Store
+	// clock is what the bounds of the statements on a room's own session-lock connection run on
+	// (duty.LeaseCall): a room append's rollback and the unlock after it (freeRoomLock). New's and
+	// NewPgVersioned's store use the real clock; a test sets a clocktest fake to see a bound armed
+	// and to end it.
+	clock clock.Clock
 	// locksMu guards locks: each room's in-process lock (lockRoom), kept while a caller holds it
 	// or waits for it and dropped with the last, so it holds only the rooms being written.
 	locksMu sync.Mutex
@@ -117,6 +123,7 @@ type roomLock struct {
 func NewPgVersioned(database *store.Store) *PgVersioned {
 	return &PgVersioned{
 		store:           database,
+		clock:           clock.Real(),
 		foldSlots:       make(chan struct{}, bufferedFolds),
 		maxPendingItems: maxUpdateItems,
 	}
@@ -899,7 +906,7 @@ func (p *PgVersioned) lockRoom(ctx context.Context, room string, wait bool, sour
 	// fn may send nothing on this connection (passRoomLock), so nothing else bounds the wait on a
 	// half-open connection, and this room's writers queue on lock until it ends: freeRoomLock
 	// bounds it and reads its answer.
-	defer freeRoomLock(conn, room)
+	defer p.freeRoomLock(conn, room)
 	return fn(conn)
 }
 
@@ -912,8 +919,8 @@ func (p *PgVersioned) lockRoom(ctx context.Context, room string, wait bool, sour
 // unlock it twice over. A connection a cancelled statement already closed cannot run an unlock:
 // Postgres drops its locks when the session ends, which is why ErrSessionClosed says nothing here
 // - that statement's caller has its error.
-func freeRoomLock(conn *pgxpool.Conn, room string) {
-	if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock(hashtext($1))`, room); err != nil && !errors.Is(err, duty.ErrSessionClosed) {
+func (p *PgVersioned) freeRoomLock(conn *pgxpool.Conn, room string) {
+	if err := duty.FreeSessionLock(p.clock, conn, `select pg_advisory_unlock(hashtext($1))`, room); err != nil && !errors.Is(err, duty.ErrSessionClosed) {
 		slog.Error("dispatch: free the document room lock", "room", room, "error", err)
 	}
 }

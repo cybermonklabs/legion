@@ -41,7 +41,8 @@ const BlockCap = contracts.DispatchBlockUnits
 // MaxNesting is how many blocks a markdown document may open inside one another, the bound the
 // refusals below quote. It is pmdoc's own maxNesting (internal/dispatch/pmdoc/nesting.go), copied
 // because this package may not import pmdoc; pmdoc's
-// TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime holds the two to each other.
+// TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinParseStepsPerCharacter holds the two to each
+// other.
 const MaxNesting = 100
 
 // Shape is one heavy body, at whatever length a caller asks of it.

@@ -32,7 +32,13 @@ env:
 jobs:
   dispatch-multiprocess:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    # The step's -timeout 35m is twice and more the package's slowest run over this job's 20 newest
+    # green merge-group runs up to 2026-11-18T07:39Z (runs 44136695614 to 44258870089), 940.253 s
+    # (run 44172328284), which the 25 minutes it had before held only 1.6 times. The limit is at
+    # least the job's sum over those runs: its other steps at their longest, 86 s, 6 s of its clock
+    # over them, and the step's longest 1004 s (run 44172328284) plus its 35 minutes: 3196 s, or
+    # 54 minutes.
+    timeout-minutes: 55
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -60,7 +66,7 @@ jobs:
       - name: Two-process tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/dispatch)
-          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/dispatch
+          go test -tags multiprocess -count=1 -timeout 35m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

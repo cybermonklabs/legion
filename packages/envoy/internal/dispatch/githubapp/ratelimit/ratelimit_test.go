@@ -8,7 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // scope is the one scope these tests strike. It is the webhook redelivery sweep's own name,
 // since that is the only caller Strike has.

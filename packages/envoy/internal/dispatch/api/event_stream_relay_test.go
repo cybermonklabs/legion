@@ -25,11 +25,12 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// secondProcessHandler mounts a second API stack on the database the first one is on, as the
-// second envoy-dispatch task of a deployment is: its own pool (storetest.SecondProcess), its own
-// broker, its own document service and its own event stream relay. The two share Postgres and
-// nothing else, which is the whole point -- an in-process fan-out cannot cross between them.
-func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
+// secondProcess mounts a second API stack on the database the first one is on, as the second
+// envoy-dispatch task of a deployment is: its own pool (storetest.SecondProcess), its own broker,
+// its own document service and its own event stream relay. The two share Postgres and nothing
+// else, which is the whole point -- an in-process fan-out cannot cross between them. It answers
+// the stack's handler and the server Register would mount, whose relay a test reads.
+func secondProcess(t *testing.T, database *store.Store) (http.Handler, *server) {
 	t.Helper()
 	second := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
@@ -54,8 +55,9 @@ func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
 		t.Fatalf("new API dependencies for the second process: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	return mux
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(served.waitBackground)
+	return mux, served
 }
 
 // TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed is what the live feed is for with two
@@ -66,9 +68,10 @@ func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
 func TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed(t *testing.T) {
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
-	second := httptest.NewServer(secondProcessHandler(t, database))
+	handler, _ := secondProcess(t, database)
+	second := httptest.NewServer(handler)
 	t.Cleanup(second.Close)
-	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).servedBy(database).read()
+	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).read()
 	subscribeEvents(t, client, "events", nil)
 
 	renameIssue(t, first, issue.Key, "Renamed on the other process")
@@ -113,34 +116,24 @@ func subscribeRelay(t *testing.T, relay *eventStreamRelay) (<-chan relayedEvent,
 	return subscription.events, subscription.cancel, subscription.head
 }
 
-// relayReceipt is one receive from a relay subscription: the event, or open false once it ended.
-type relayReceipt struct {
-	event relayedEvent
-	open  bool
-}
-
-// receiveRelayed is the subscription's next event. The relay publishes an event only once the
-// event horizon of database's server has passed it, so the wait is the horizon's.
-func receiveRelayed(t *testing.T, database *store.Store, subscription <-chan relayedEvent) relayedEvent {
+// receiveRelayed is the subscription's next event. The relay publishes up to the safe horizon, so
+// the wait is the horizon's (horizontest.WaitInProcess), which fails at once, naming the holder,
+// on a hold in database, the test's own, that has stood OwnHoldBound.
+func receiveRelayed(t *testing.T, subscription <-chan relayedEvent, database *store.Store) relayedEvent {
 	t.Helper()
-	received := make(chan relayReceipt, 1)
-	go func() {
-		event, open := <-subscription
-		received <- relayReceipt{event: event, open: open}
-	}()
-	receipt := horizontest.WaitInProcess(t, "the relay's next event", received, database)
-	if !receipt.open {
+	event := horizontest.WaitInProcess(t, "the relay's next event", subscription, database)
+	if event.Event.ID == 0 {
 		t.Fatal("the relay's subscription ended")
 	}
-	return receipt.event
+	return event
 }
 
 // receiveRelayedThrough reads the subscription until the event last, failing on an id out of
 // order or at or below after.
-func receiveRelayedThrough(t *testing.T, database *store.Store, subscription <-chan relayedEvent, after, last int64) {
+func receiveRelayedThrough(t *testing.T, subscription <-chan relayedEvent, database *store.Store, after, last int64) {
 	t.Helper()
 	for previous := after; previous != last; {
-		id := receiveRelayed(t, database, subscription).Event.ID
+		id := receiveRelayed(t, subscription, database).Event.ID
 		if id <= previous {
 			t.Fatalf("the relay published %d after %d; it publishes each event once, in id order", id, previous)
 		}
@@ -148,21 +141,18 @@ func receiveRelayedThrough(t *testing.T, database *store.Store, subscription <-c
 	}
 }
 
-// quietRelayReads drains every page read the relay has made and waits until it has made none for
-// 300 ms: a generation's start, its LISTEN catch-up and the re-reads a gap above the horizon
-// schedules all read on their own, so a count of the reads one commit costs is taken after them.
-func quietRelayReads(t *testing.T, reads <-chan int64) {
+// quietRelayReads waits until the relay has published through the event log's head - its
+// generation's start, its catch-up after the LISTEN and any re-read a gap above the horizon
+// scheduled are over by then - and drains the page reads they made, so a count of the reads one
+// commit costs counts that commit's alone.
+func quietRelayReads(t *testing.T, relay *eventStreamRelay, database *store.Store, reads <-chan int64) {
 	t.Helper()
-	deadline := time.Now().Add(eventFeedWait)
-	for quiet := time.Now(); time.Since(quiet) < 300*time.Millisecond; {
-		if time.Now().After(deadline) {
-			t.Fatalf("the relay was still reading the event log after %s", eventFeedWait)
-		}
-		select {
-		case <-reads:
-			quiet = time.Now()
-		case <-time.After(10 * time.Millisecond):
-		}
+	head := eventHead(t, database)
+	testwait.Eventually(t, fmt.Sprintf("the relay to have published through event %d, the log's head", head), func() bool {
+		return relayPublished(relay) >= head
+	})
+	for len(reads) > 0 {
+		<-reads
 	}
 }
 
@@ -176,6 +166,13 @@ func relayPublished(relay *eventStreamRelay) int64 {
 	}
 	return relay.generation.cursor
 }
+
+// relayGapRereadsWhy is why a test holds a span while a gap in the event log stands open: the
+// relay's re-reads of a gap run on its own goroutine, on a schedule of its own, and a re-read
+// that took no shared connection leaves no state of this test to read and no later action of
+// the test to wait on.
+const relayGapRereadsWhy = "the relay's gap re-reads run on its own goroutine on a schedule of its own, and a " +
+	"re-read that took no shared connection leaves no state of this test to read and no later action to wait on"
 
 // recordRelayDials has relay dial its listener connections on deps' pool, as it does by default,
 // and records each one (listenerDials), so a test reads the relay's own connections and their
@@ -283,7 +280,7 @@ func TestEventStreamRelayReadsNothingWithoutASubscriber(t *testing.T) {
 	subscription, cancel, head := subscribeRelay(t, relay)
 	waitListening(t, database, "the relay's listener holding a LISTEN", dials)
 	last := seedEvents(t, database, issue, 1, 0)
-	receiveRelayedThrough(t, database, subscription, head, last)
+	receiveRelayedThrough(t, subscription, database, head, last)
 	cancel()
 	waitRelayStopped(t, database, relay, dials, "after its last subscriber left")
 	for len(reads) > 0 {
@@ -309,12 +306,12 @@ func TestEventStreamRelayReadsEachCommitOnceForEverySubscriber(t *testing.T) {
 	// The generation's start, its catch-up after its LISTEN and any re-read a gap above the
 	// horizon scheduled, none of which this commit paid for.
 	waitListening(t, database, "the relay's listener holding a LISTEN", dials)
-	quietRelayReads(t, reads)
+	quietRelayReads(t, relay, database, reads)
 
 	committed := seedEvents(t, database, issue, 1, 0)
 	frames := make([][]byte, subscribers)
 	for index, subscription := range subscriptions {
-		event := receiveRelayed(t, database, subscription)
+		event := receiveRelayed(t, subscription, database)
 		if event.Event.ID != committed {
 			t.Fatalf("subscriber %d received event %d, want the committed %d", index, event.Event.ID, committed)
 		}
@@ -347,7 +344,7 @@ func TestEventStreamRelaySubscribeRacingTheLastCancelReceivesTheNextEvent(t *tes
 		subscription, cancelSecond, head := subscribeRelay(t, relay)
 		<-cancelled
 		committed := seedEvents(t, database, issue, 1, 0)
-		receiveRelayedThrough(t, database, subscription, head, committed)
+		receiveRelayedThrough(t, subscription, database, head, committed)
 		cancelSecond()
 	}
 }
@@ -364,14 +361,16 @@ func TestOutOfOrderCommitsOnAnotherProcessReachAnOpenSubscriptionInIDOrder(t *te
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, first, "OTHER", "Other issue", "A spec")
-	second := httptest.NewServer(secondProcessHandler(t, database))
+	handler, _ := secondProcess(t, database)
+	second := httptest.NewServer(handler)
 	t.Cleanup(second.Close)
-	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).servedBy(database).read()
+	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).read()
 	subscribeEvents(t, client, "events", nil)
 
 	// Appended through a broker of process A's own: B learns of them only from the rows.
 	low, high, commitLow := appendOutOfOrder(t, database, events.NewBroker(), issue.Key, other.Key)
-	expectNoEventAbove(t, client, "events", low-1, time.Second, "on process B while process A's lower id is open")
+	testwait.Span(t, time.Second, relayHoldWhy)
+	expectNoEventAbove(t, client, "events", low-1, "on process B while process A's lower id is open")
 	commitLow()
 	expectEventsInOrder(t, client, "events", low, high)
 }
@@ -392,18 +391,16 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 	dials := recordRelayDials(relay, deps)
 	subscription, _, opened := subscribeRelay(t, relay)
 	waitListening(t, database, "the relay's listener holding a LISTEN", dials)
-	quietRelayReads(t, reads)
+	quietRelayReads(t, relay, database, reads)
 
 	low, high, commitLow := appendOutOfOrder(t, database, deps.Events, issue.Key, other.Key)
-	// The higher id's commit notifies: that read checks for a reset, takes the horizon and leaves
-	// the gap open, publishing nothing.
-	select {
-	case event := <-subscription:
-		t.Fatalf("the relay published event %d while the lower id %d was still open", event.Event.ID, low)
-	case <-time.After(time.Second):
-	}
+	// The higher id's commit notifies: that read checks for a reset on the shared pool, takes the
+	// horizon and leaves the gap open, publishing nothing. Its reset check is the one shared
+	// connection the gap may cost, so the count starts after it, and the span after that covers
+	// the re-reads the relay makes while the lower id stays open.
+	testwait.Quiet(t, "the relay's subscription while the gap stands open", subscription, time.Second, relayHoldWhy)
 	before := acquires(deps.Store)
-	time.Sleep(time.Second)
+	testwait.Span(t, time.Second, relayGapRereadsWhy)
 	if got := acquires(deps.Store); got != before {
 		t.Fatalf("the relay's gap re-reads took %d shared-pool connections while %d stayed open, want none", got-before, low)
 	}
@@ -412,7 +409,7 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 	}
 
 	commitLow()
-	receiveRelayedThrough(t, database, subscription, opened, high)
+	receiveRelayedThrough(t, subscription, database, opened, high)
 }
 
 // TestEventStreamRelayCatchesUpWhenItsListenerReconnects covers the window a redial leaves: a
@@ -438,15 +435,15 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 	relay.backoff = func(int) time.Duration { return 5 * time.Millisecond }
 	subscription, _, opened := subscribeRelay(t, relay)
 
-	// Committed while the relay has no connection: its notification reaches nobody.
+	// Committed while the relay has no connection: its notification reaches nobody. The relay
+	// publishes from a goroutine of its own, woken by a notification this commit's never sent,
+	// so no state of this test and no later action of it stands for the frame that must not
+	// come; only the span does.
 	committed := seedEvents(t, database, issue, 1, 0)
-	select {
-	case event := <-subscription:
-		t.Fatalf("the relay published event %d with no listening connection", event.Event.ID)
-	case <-time.After(100 * time.Millisecond):
-	}
+	testwait.Quiet(t, "the relay's subscription while it has no listening connection", subscription,
+		100*time.Millisecond, relayHoldWhy)
 	down.Store(false)
-	receiveRelayedThrough(t, database, subscription, opened, committed)
+	receiveRelayedThrough(t, subscription, database, opened, committed)
 
 	// Every later LISTEN catches up the same way, from the cursor as it stands: a redial that
 	// reset it would send every open page the whole log again.
@@ -459,15 +456,11 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 	if err := database.Pool.QueryRow(context.Background(), `select pg_terminate_backend($1)`, int32(listening)).Scan(&terminated); err != nil || !terminated {
 		t.Fatalf("terminate the relay's LISTEN backend, pid %d: terminated %t (%v), want true", listening, terminated, err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for len(dials.dialed()) <= len(dialed) {
-		if time.Now().After(deadline) {
-			t.Fatal("the relay did not redial after its connection was terminated")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testwait.Eventually(t, "the relay to redial after its connection was terminated", func() bool {
+		return len(dials.dialed()) > len(dialed)
+	})
 	next := seedEvents(t, database, issue, 1, 0)
-	receiveRelayedThrough(t, database, subscription, committed, next)
+	receiveRelayedThrough(t, subscription, database, committed, next)
 }
 
 // TestEventStreamRelayRecoversWhenTheEventLogIsReset: the browser suite empties the event log
@@ -489,7 +482,7 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 
 	// A cursor well above the ids the reset log will hand out.
 	committed := seedEvents(t, database, issue, 1, 0)
-	receiveRelayedThrough(t, database, subscription, opened, committed)
+	receiveRelayedThrough(t, subscription, database, opened, committed)
 
 	if _, err := database.Pool.Exec(t.Context(), `truncate events restart identity cascade`); err != nil {
 		t.Fatalf("reset the event log: %v", err)
@@ -503,17 +496,12 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 
 	// The subscription open across the reset ends without a frame of the new log, whose ids
 	// stand for other events than the ones its reader was sent.
-	for open := true; open; {
-		select {
-		case event, more := <-subscription:
-			if !more {
-				open = false
-			} else {
-				t.Fatalf("the relay published event %d into a subscription whose log was reset under it", event.Event.ID)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("the subscription open across the reset was never ended: its reader waits on a stream whose next frame can only lie")
+	for {
+		event := testwait.Receive(t, "the end of the subscription open across the reset", subscription)
+		if event.Event.ID == 0 {
+			break
 		}
+		t.Fatalf("the relay published event %d into a subscription whose log was reset under it", event.Event.ID)
 	}
 	// The reset ended the generation: its LISTEN connection closes though its subscriber has not
 	// cancelled.
@@ -525,7 +513,7 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 		t.Fatalf("a subscription after the reset has head %d, want the new log's %d", head, refilled)
 	}
 	next := seedEvents(t, database, issue, 1, 0)
-	receiveRelayedThrough(t, database, reopened, head, next)
+	receiveRelayedThrough(t, reopened, database, head, next)
 }
 
 // TestEventLogResetClearsTheRelaysHorizon: a reset log (`truncate events restart identity`, what
@@ -539,17 +527,19 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 // head, above every new id, so its relay takes the new log's b for its cursor at once while a is
 // open, and a subscription made after that reset is never sent a when it commits, though it is sent
 // the event after it. With the horizon forgotten, the relay's new cursor waits for a to end. A
-// subscription made meanwhile finds the relay still on the old cursor, so it hands over only once
-// the relay has reset, and is sent a, which committed after it subscribed, below that new cursor.
+// subscription made meanwhile starts the relay's next generation, whose start reads the log with
+// a's id open below b's and then waits for a horizon a holds back (firstRelayCursor), and is sent
+// a, which committed after that read, below that new cursor.
 func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, first, "OTHER", "Other issue", "A spec")
-	second := httptest.NewServer(secondProcessHandler(t, database))
+	handler, processB := secondProcess(t, database)
+	second := httptest.NewServer(handler)
 	t.Cleanup(second.Close)
 	dial := func() *socketClient {
 		t.Helper()
-		return openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).servedBy(database).read()
+		return openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).read()
 	}
 
 	// B's relay publishes through the old log's head, so its cursor and horizon stand there.
@@ -566,20 +556,12 @@ func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 	if high >= head {
 		t.Fatalf("event %d committed after the reset is not below the pre-reset head %d: the reset reused no id, so this test proves nothing", high, head)
 	}
-	// Time for B's relay to hear the refill's commit and find the reset.
-	time.Sleep(500 * time.Millisecond)
-	// This subscription hands over only once the relay's reset, which waits for a, has run, so it
-	// subscribes first and a commits once it has had time to reach the relay.
-	waiting := dial()
-	sendEventsSubscribe(t, waiting, "events", nil)
-	time.Sleep(300 * time.Millisecond)
-	commitLow()
-	renameIssue(t, first, issue.Key, "Renamed after the reset")
-
-	// The subscription open across the reset ends without an event of the new log, whose ids it has
+	// B's relay finds the reset once it hears the refill's commit, and the finding ends its
+	// generation with every subscription on it (resetCursor): the subscription open across the
+	// reset ending is that finding, and it ends without an event of the new log, whose ids it has
 	// already seen stand for other events.
 	for ended := false; !ended; {
-		switch frame := across.next(t, eventFeedWait, "the end of the subscription open across the reset").(type) {
+		switch frame := across.next(t, "the end of the subscription open across the reset").(type) {
 		case LiveEventFrame:
 			if id := mustEventFrameID(t, frame); id <= head {
 				t.Fatalf("the subscription open across the reset was sent event %d of the new log", id)
@@ -593,9 +575,23 @@ func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 			t.Fatalf("frame = %+v, want the events subscription's end", frame)
 		}
 	}
+	// This subscription starts B's relay again, and its start reads the log once, finding a's id
+	// open below b's, before it waits for the horizon a holds back (firstRelayCursor). An event that
+	// commits before that read counts as committed before the subscription began, so a commits
+	// once the start has read: the count of starts that have read the log is the one fact the
+	// start leaves of that read (server.relayStartReads).
+	reads := processB.relayStartReads.Load()
+	waiting := dial()
+	sendEventsSubscribe(t, waiting, "events", nil)
+	testwait.Eventually(t, "the start of B's relay for the subscription made while a is open to read the log", func() bool {
+		return processB.relayStartReads.Load() > reads
+	})
+	commitLow()
+	renameIssue(t, first, issue.Key, "Renamed after the reset")
+
 	// The subscription made while a was open is sent it first.
 	eventsStartID(t, waiting, "events")
-	if id := mustEventFrameID(t, eventFeedEvent(t, waiting, "events")); id != low {
+	if id := mustEventFrameID(t, waiting.event(t, "events")); id != low {
 		t.Fatalf("the subscription made while %d was open was sent event %d first, want %d, which committed after it subscribed", low, id, low)
 	}
 

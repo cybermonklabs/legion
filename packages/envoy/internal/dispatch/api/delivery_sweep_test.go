@@ -16,10 +16,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdingListener is a fake Envoy listener that holds the first send of every idempotency key
@@ -146,11 +148,14 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 	for name, route := range sweepRoutes {
 		t.Run(name, func(t *testing.T) {
 			listener := newHoldingListener(t)
+			// The server's clock moves only where the test moves it: the held send's listener window
+			// never comes due, and the lease of a run that died is not renewed again (this test ages
+			// it itself).
+			start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+			clock := clocktest.New(start)
 			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-				envoyURL: listener.url, envoyTimeout: time.Minute,
+				envoyURL: listener.url, clock: clock,
 			})
-			// The lease of a run that died is not renewed again; this test ages it itself.
-			served.requestKeyRenewal = time.Hour
 			issue := createTestIssue(t, handler, "SWEEP", "Swept deliveries")
 			document := createProjectDocument(t, handler, "SWEEP", "Runbook", "# Runbook\n\nStep one.\n").ID
 			path := route.path(issue, document)
@@ -159,6 +164,22 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 			t.Cleanup(func() {
 				listener.release()
 				server.Close()
+			})
+			// A row that fails before its release leaves the write's sender held, and once the
+			// cleanup above releases it, waiting out a take-over's backoff on this clock, which
+			// nothing else moves: closing the server and the server's own cleanup would wait for that
+			// sender until the binary's deadline. So the first cleanup moves the clock past every
+			// timer armed on it and past the take-over window of every sender's first try: a held
+			// send's listener window runs out, and a try that fails after the move starts no backoff
+			// (takeoverRetry.again). A row that passed has no sender left waiting on it.
+			t.Cleanup(func() {
+				past := start.Add(listenerTakeoverWindow)
+				for _, at := range clock.Armed() {
+					if at.After(past) {
+						past = at
+					}
+				}
+				clock.Set(past)
 			})
 
 			ctx, abort := context.WithCancel(context.Background())
@@ -184,20 +205,15 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 				_ = response.Body.Close()
 				answered <- response.StatusCode
 			}()
-			var key string
-			select {
-			case key = <-listener.started:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the write never sent its attempt")
-			}
+			key := testwait.Receive(t, "the write to send its attempt", listener.started)
 			owner, _, _ := strings.Cut(key, ":")
 			if route.atCommit {
-				if status := <-answered; status != http.StatusCreated {
+				if status := testwait.Receive(t, "the write to answer at its commit", answered); status != http.StatusCreated {
 					t.Fatalf("the broadcast answered %d, want 201 at its commit", status)
 				}
 			} else {
 				abort()
-				if status := <-answered; status != 0 {
+				if status := testwait.Receive(t, "the aborted write's client to give up", answered); status != 0 {
 					t.Fatalf("the aborted write answered %d, want the client's own giving up", status)
 				}
 				// The dead process's key: no answer, its lease lapsed.
@@ -235,9 +251,24 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 				}
 			}
 
-			// The dead sender's own outcome, arriving late, is no longer its to record.
+			// The dead sender's own outcome, arriving late, is no longer its to record. The held send
+			// is answered 503 at last, a listener take-over's answer, so its sender waits out the
+			// take-over's first backoff on the server's clock before it tries again (takeoverRetry):
+			// the clock has not moved since that sender's first try, and the test moves it through
+			// the backoff once the sender has armed it. Its renewal then finds the claim the sweep
+			// took, so it settles nothing and sends nothing more.
 			listener.release()
+			backoff := start.Add(takeoverFirstBackoff)
+			awaitArmedAt(t, clock, "the dead sender's backoff after its held send's late 503", backoff)
+			clock.Set(backoff)
+			// The dead sender is the write's keyed handler or the broadcast's delivery, both the
+			// server's detached work, or a comment's lane on the mention sender, which this stops:
+			// the test writes nothing more.
 			served.detached.wait()
+			served.mentions.wait()
+			if sent := listener.answered(key); sent != 1 {
+				t.Fatalf("after the dead sender's late outcome the listener answered %d sends under %s, want the one resume", sent, key)
+			}
 			var attempts int
 			var state string
 			if err := database.Pool.QueryRow(context.Background(),
@@ -313,24 +344,20 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 			}()
 			// The comment is answered as soon as it commits, with its attempt pending; the send
 			// that reaches the listener is the mention sender's, behind that answer.
-			if err := <-gaveUp; err != nil {
+			if err := testwait.Receive(t, "the comment to be answered", gaveUp); err != nil {
 				t.Fatalf("the comment was not answered before its mention's send: %v", err)
 			}
-			<-sending
+			testwait.Receive(t, "the mention sender's send to reach the listener", sending)
 			abort()
 			letProceed()
-			deadline := time.Now().Add(10 * time.Second)
-			var state string
-			for time.Now().Before(deadline) {
+			state := testwait.Until(t, "the mention's attempt to settle sent", func() (string, bool) {
+				var state string
 				if err := database.Pool.QueryRow(context.Background(),
 					`select coalesce(min(state), '') from comment_deliveries`).Scan(&state); err != nil {
 					t.Fatal(err)
 				}
-				if state == "sent" {
-					break
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+				return state, state == "sent"
+			})
 			server.Close()
 			served.detached.wait()
 			if state != "sent" || len(keysOf(sends)) != 1 {
@@ -410,16 +437,19 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	ticks := clocktest.New(start)
 	go func() {
 		defer close(done)
-		RunMaintenanceSweep(ctx, database.Pool, 50*time.Millisecond, sweepLeases(t, database), served.resumeOwedDeliveries)
+		runMaintenanceSweepOn(ctx, ticks, database.Pool, MaintenanceSweepInterval, sweepLeases(t, database), served.resumeOwedDeliveries)
 	}()
-	deadline := time.Now().Add(30 * time.Second)
-	for len(keysOf(sends)) == 0 && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
+	// The loop's first pass is one interval after its start, on the clock the test moves.
+	first := start.Add(MaintenanceSweepInterval)
+	awaitArmedAt(t, ticks, "the maintenance loop's first tick", first)
+	ticks.Set(first)
+	testwait.Eventually(t, "the maintenance loop's pass to send the owed attempt", func() bool { return len(keysOf(sends)) > 0 })
 	stop()
-	<-done
+	testwait.Receive(t, "the maintenance loop to stop", done)
 	served.detached.wait()
 	if keys := keysOf(sends); !equalStrings(keys, []string{id + ":steer"}) {
 		t.Fatalf("the loop sent %v, want the owed attempt of %s", keys, id)
@@ -772,7 +802,7 @@ func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
 // whatever its indexes: the assertion is that the index serves the query, as the custom plan a
 // statement's first runs get and as the generic plan Postgres may cache for it afterwards.
 func TestTheSweepsKeyedSendReadUsesItsPartialIndex(t *testing.T) {
-	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	_, database, _, _ := newRegisteredTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -796,7 +826,7 @@ func TestTheSweepsKeyedSendReadUsesItsPartialIndex(t *testing.T) {
 		}
 		return plans[0].Plan
 	}
-	lease, ttl := served.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds()
+	lease, ttl := contracts.IdempotencyLease.Seconds(), contracts.IdempotencyKeyTTL.Seconds()
 	if custom := explain(owedKeyedSendsQuery, lease, ttl, deliverySweepBatch); !planReadsIndex(t, custom, "request_keys_owed_sends") {
 		t.Errorf("the custom plan reads no request_keys_owed_sends:\n%s", custom)
 	}
@@ -853,13 +883,8 @@ func TestTheSweepSettlesAnUndeliverableMentionBehindItsOwnersLockHoldingNoTransa
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the owner lock: %v", err)
 	}
-	select {
-	case got := <-settled:
-		if got.err != nil || !got.settled {
-			t.Fatalf("the settle once the lock was released = %v (%v), want the attempt settled", got.settled, got.err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the settle never answered once the owner lock was released")
+	if got := testwait.Receive(t, "the settle to answer once the owner lock was released", settled); got.err != nil || !got.settled {
+		t.Fatalf("the settle once the lock was released = %v (%v), want the attempt settled", got.settled, got.err)
 	}
 	if failed := rig.count(`select count(*) from comment_deliveries where comment_id = any($1::uuid[]) and state = 'failed'`, gone); failed != 1 {
 		t.Fatalf("%d attempts of the stranded mention are failed, want its one", failed)

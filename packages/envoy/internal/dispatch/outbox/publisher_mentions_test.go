@@ -420,14 +420,30 @@ func nextAttempt(t *testing.T, database *store.Store, eventID int64) (attempts i
 	return attempts, due
 }
 
-// waitsFromScan reports whether due is mentionPendingDelay after a moment between before and
-// after, the times read either side of the scan that wrote it: recordBatch writes a blocked
-// event's next_attempt_at as least(now() + delay, until), now() is read inside the scan, and a
-// blocker that waits on a mention is written in the same statement. A bound read from the
-// test's clock after the scan instead moves with the time the test takes to reach the check,
-// which a loaded machine can stretch past the whole wait.
-func waitsFromScan(due *time.Time, before, after time.Time) bool {
-	return due != nil && !due.Before(before.Add(mentionPendingDelay)) && !due.After(after.Add(mentionPendingDelay))
+// databaseNow is database's own clock at the call: clock_timestamp(), the moment the statement
+// reads it, not the start of a transaction. The outbox stamps next_attempt_at on that database,
+// with its now() plus the row's wait, in microseconds, so two readings of this clock around a pass
+// bracket the moment the pass stamped on the clock and at the precision the stamp was written
+// with, which a reading of the test process's own clock does not.
+func databaseNow(t *testing.T, database *store.Store) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := database.Pool.QueryRow(context.Background(), `select clock_timestamp()`).Scan(&now); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	return now
+}
+
+// requireBlockedByPass fails t unless due is mentionPendingDelay after the moment the pass that
+// blocked the event recorded it: a moment between before and after, read around that pass on the
+// database's own clock (databaseNow). Load can only widen the two, never put a correct due outside
+// them.
+func requireBlockedByPass(t *testing.T, what string, due *time.Time, before, after time.Time) {
+	t.Helper()
+	if due == nil || due.Before(before.Add(mentionPendingDelay)) || due.After(after.Add(mentionPendingDelay)) {
+		t.Fatalf("%s: next_attempt_at = %v, want mentionPendingDelay = %s after the pass that ran from %s to %s, the wait a blocked event takes",
+			what, due, mentionPendingDelay, before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+	}
 }
 
 // TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent drives the scan itself: a new comment
@@ -469,9 +485,9 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 			publisher := &recordingPublisher{}
 			outbox := holding(t, Deps{Store: database, Publisher: publisher})
 
-			before := time.Now()
+			before := databaseNow(t, database)
 			outbox.scan(ctx, unfenced{})
-			after := time.Now()
+			after := databaseNow(t, database)
 			if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, []string{issueTopic}) {
 				t.Fatalf("topics while the mention is pending = %#v, want the issue topic alone", got)
 			}
@@ -482,9 +498,7 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 			if attempts != 0 {
 				t.Fatalf("attempt_count = %d after a deferral, want 0", attempts)
 			}
-			if !waitsFromScan(due, before, after) {
-				t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan", due, mentionPendingDelay)
-			}
+			requireBlockedByPass(t, "the deferred event", due, before, after)
 			if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, []string{issueTopic}) {
 				t.Fatalf("published_destinations = %#v, want the issue topic alone", destinations)
 			}
@@ -548,9 +562,9 @@ func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing
 
 	publisher := &recordingPublisher{}
 	outbox := holding(t, Deps{Store: database, Publisher: publisher})
-	before := time.Now()
+	before := databaseNow(t, database)
 	outbox.scan(ctx, unfenced{})
-	after := time.Now()
+	after := databaseNow(t, database)
 
 	want := []string{issueTopic, claimantTopic}
 	if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, want) {
@@ -563,9 +577,7 @@ func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d after a deferral, want 0", attempts)
 	}
-	if !waitsFromScan(due, before, after) {
-		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan", due, mentionPendingDelay)
-	}
+	requireBlockedByPass(t, "the deferred event", due, before, after)
 	if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, want) {
 		t.Fatalf("published_destinations = %#v, want %#v", destinations, want)
 	}
@@ -697,9 +709,9 @@ func TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere(t *testing.T) {
 			seedMentionDelivery(t, database, commentID, "session-claimant", "pending")
 			publisher := &countingPublisher{failTopics: tc.failTopics}
 
-			before := time.Now()
+			before := databaseNow(t, database)
 			holding(t, withHeldRoles(Deps{Store: database, Publisher: publisher})).scan(ctx, unfenced{})
-			after := time.Now()
+			after := databaseNow(t, database)
 			if got := publisher.attempted(); !reflect.DeepEqual(got, []string{issueTopic, roleTopic, authorTopic}) {
 				t.Fatalf("topics sent = %#v, want every destination but the held-back claimant copy", got)
 			}
@@ -1181,9 +1193,9 @@ func TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitH
 		t.Fatalf("put the mention back in flight: %v", err)
 	}
 
-	before := time.Now()
+	before := databaseNow(t, database)
 	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-	after := time.Now()
+	after := databaseNow(t, database)
 	row := readHeldCopy(t, database, commentID, sessionTopic)
 	if row.attempts != 0 || row.settled || row.published || row.due == nil {
 		t.Fatalf("the held copy has attempts=%d settled=%v published=%v next_attempt_at=%v, want no attempt "+
@@ -1264,13 +1276,13 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 
 	denied := retry.DeadLetterAttempts + 2
 	for want := 1; want <= denied; want++ {
-		before := time.Now()
+		before := databaseNow(t, database)
 		if want == 1 {
 			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 		} else {
 			pass()
 		}
-		after := time.Now()
+		after := databaseNow(t, database)
 		row := readHeldCopy(t, database, commentID, sessionTopic)
 		if row.attempts != want || row.settled || row.published || row.due == nil {
 			t.Fatalf("after %d denied passes the held copy has attempts=%d settled=%v published=%v next_attempt_at=%v, "+
@@ -1355,9 +1367,9 @@ func TestAFallbackCopyOutlivesANATSOutageLongerThanTheDeadLetterThreshold(t *tes
 
 	outage := retry.DeadLetterAttempts + 2
 	for down := 1; down <= outage; down++ {
-		before := time.Now()
+		before := databaseNow(t, database)
 		pass()
-		after := time.Now()
+		after := databaseNow(t, database)
 		row := readHeldCopy(t, database, commentID, sessionTopic)
 		if row.attempts != 0 || row.settled || row.published || row.due == nil {
 			t.Fatalf("after %d passes with NATS unreachable the held copy has attempts=%d settled=%v published=%v "+

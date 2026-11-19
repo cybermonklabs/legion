@@ -10,6 +10,8 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Cluster is n nats-servers in this test process, routed to each other with JetStream clustered
@@ -132,8 +134,8 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 // anything that needs the meta group.
 //
 // A member that no other running member's meta group hears from within muteAfter is restarted, at
-// most muteRestarts times in one call. Each restart starts the listening, and the connectTimeout
-// wait, over for every member, since a restarted member has heard no one yet.
+// most muteRestarts times in one call. Each restart starts the listening over for every member,
+// since a restarted member has heard no one yet.
 //
 // nats-server 2.10.29, the server these tests linked before v2.15.1, could start a member whose
 // every Raft message is dropped: its setSystemAccount started the Raft send queue's goroutine
@@ -152,10 +154,10 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 	// listening is when AwaitReady began listening for the members: its call, or its last restart.
 	listening := time.Now()
 	restarts := 0
-	for {
+	testwait.Until(t, "the JetStream meta group to be ready on every running member", func() (error, bool) {
 		err := c.metaReady()
 		if err == nil {
-			break
+			return nil, true
 		}
 		if restarts < muteRestarts {
 			if i := c.mute(time.Since(listening)); i >= 0 {
@@ -164,14 +166,10 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 				c.Servers[i].launch(t)
 				restarts++
 				listening = time.Now()
-				continue
 			}
 		}
-		if time.Since(listening) >= connectTimeout {
-			t.Fatalf("JetStream was not ready within %s (%d members restarted): %v", connectTimeout, restarts, err)
-		}
-		time.Sleep(retryInterval)
-	}
+		return err, false
+	})
 	for _, server := range c.Servers {
 		if server.running() {
 			Connect(t, server.URL()).Close()

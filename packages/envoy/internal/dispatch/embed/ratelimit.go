@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"golang.org/x/time/rate"
 )
@@ -51,6 +52,9 @@ const (
 // get through even while background work is actively pacing itself near that ceiling.
 type RateLimitedEmbedder struct {
 	inner Embedder
+	// clock is what Embed waits a reservation's delay out on: clock.Real, and a test's
+	// clocktest.Fake, whose timer fires only where the test moves it.
+	clock clock.Clock
 
 	mu       sync.Mutex
 	interval time.Duration
@@ -62,6 +66,7 @@ type RateLimitedEmbedder struct {
 func NewRateLimitedEmbedder(inner Embedder) *RateLimitedEmbedder {
 	return &RateLimitedEmbedder{
 		inner:    inner,
+		clock:    clock.Real(),
 		interval: rateLimitFloor,
 		limiter:  rate.NewLimiter(rate.Every(rateLimitFloor), 1),
 	}
@@ -83,13 +88,13 @@ func NewRateLimitedEmbedder(inner Embedder) *RateLimitedEmbedder {
 func (r *RateLimitedEmbedder) Embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
 	reservation := r.limiter.Reserve()
 	if delay := reservation.Delay(); delay > 0 {
-		timer := time.NewTimer(delay)
+		timer := r.clock.NewTimer(delay)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
 			reservation.Cancel()
 			return nil, ctx.Err()
-		case <-timer.C:
+		case <-timer.C():
 		}
 	}
 	vectors, err := r.inner.Embed(ctx, texts, inputType)

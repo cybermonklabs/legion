@@ -16,14 +16,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An issue's close races the writers of its asks and documents. Each race below ends in one of
-// the orders the issue's row allows, never in a mixture of them, and never in a deadlock.
-
-// raceDeadline bounds every request a race starts: a deadlock fails the test here instead of
-// hanging it.
-const raceDeadline = 10 * time.Second
+// the orders the issue's row allows, never in a mixture of them, and never in a deadlock: a
+// deadlock answers nothing, and the wait each race ends on fails the test naming what it waited
+// for.
 
 // A resolution of an open ask and the close of its issue, released together, serialise on the
 // issue's row. Either the resolution commits first, so the ask keeps the resolver's record and the
@@ -412,11 +411,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write the decision block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	select {
-	case <-held:
-	case <-time.After(raceDeadline):
-		t.Fatal("the decision block's settlement never started")
-	}
+	testwait.Receive(t, "the decision block's settlement to start", held)
 	if id := findBlockAsk(t, handler, issue.Key, spec, "late-decision"); id != "" {
 		t.Fatalf("the decision block is ask %s while its settlement is held", id)
 	}
@@ -436,11 +431,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	default:
 	}
 	releaseSettlement()
-	select {
-	case <-closing:
-	case <-time.After(raceDeadline):
-		t.Fatalf("the close did not answer within %v of the settlement's release", raceDeadline)
-	}
+	testwait.Receive(t, "the close to answer once the settlement was released", closing)
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 	}
@@ -543,8 +534,8 @@ func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
 	awaitSettled(t, database, spec)
 }
 
-// awaitRequests releases start, then waits up to raceDeadline for requests, failing the test
-// when they do not all answer: a deadlock between them.
+// awaitRequests releases start and waits for requests, failing the test when they do not all
+// answer: a deadlock between them.
 func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, what string) {
 	t.Helper()
 	answered := make(chan struct{})
@@ -553,9 +544,5 @@ func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, 
 		close(answered)
 	}()
 	close(start)
-	select {
-	case <-answered:
-	case <-time.After(raceDeadline):
-		t.Fatalf("%s did not both answer within %v", what, raceDeadline)
-	}
+	testwait.Receive(t, what+" to both answer", answered)
 }

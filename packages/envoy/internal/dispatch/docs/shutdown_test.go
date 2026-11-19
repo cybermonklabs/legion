@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,8 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -24,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A deploy usually finds someone with a document open, its tab connected to the room with what it
@@ -40,22 +44,16 @@ func TestShutdownSettlesARoomWithAnEditorConnectedBeforeClosingIt(t *testing.T) 
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
-	if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+	if err := editor.WaitForText(t, peerMarkdown, "before\n"); err != nil {
 		t.Fatal(err)
 	}
 	typeOver(t, editor, "before", "after")
 	waitForSettlementOwed(t, service, artifactID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := service.Shutdown(ctx); err != nil {
+	if err := service.Shutdown(testwait.Context(t)); err != nil {
 		t.Fatalf("shutdown with an editor connected: %v", err)
 	}
-	select {
-	case <-editor.Ended:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the editor's connection was still open 5s after Shutdown returned")
-	}
+	testwait.Receive(t, "the editor's connection to end once Shutdown returned", editor.Ended)
 	if number, markdown, authors := latestDocumentVersion(t, database, artifactID); number != 2 || markdown != "after\n" ||
 		len(authors) != 1 || authors[0] != (model.Actor{Kind: "user", ID: "alice", Proven: true}) {
 		t.Fatalf("the document's latest version is %d holding %q by %v, want version 2 holding the editor's edit, %q, credited to alice",
@@ -86,9 +84,7 @@ func TestShutdownSettlesTheDocumentAColdWriteLeftOwing(t *testing.T) {
 	}
 	waitForSettlementOwed(t, service, artifactID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := service.Shutdown(ctx); err != nil {
+	if err := service.Shutdown(testwait.Context(t)); err != nil {
 		t.Fatalf("shutdown with a cold write's settlement owed: %v", err)
 	}
 	if number, markdown, authors := latestDocumentVersion(t, database, artifactID); number != 2 || markdown != "after\n" ||
@@ -104,11 +100,15 @@ func TestShutdownSettlesTheDocumentAColdWriteLeftOwing(t *testing.T) {
 // A browser leaving a room settles what it was owed at once (settleLastPeer), on ygo's disconnect
 // goroutine, in place of the timer it stops. Shutdown joins that settlement as it joins a timer's:
 // it reports which documents settled, and stops ygo, only once the settlement has returned, and the
-// process does not close the store under it.
+// process does not close the store under it. The departing browser's socket ends only once that
+// settlement has returned, so the drain's forced close of the room, which waits for each peer's
+// read loop, orders Shutdown after it too; TestShutdownJoinsATimersSettlementUnderWay is the row
+// where the join alone does.
 func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
-	service := newShutdownTestService(t, database, nil)
+	drainClock := clocktest.New(time.Now())
+	service := newShutdownTestServiceOn(t, database, nil, drainClock)
 	pause := pauseRepairCommits(service)
 	t.Cleanup(pause.let)
 	seedServiceText(t, service, artifactID, "before")
@@ -116,13 +116,12 @@ func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 	browser := connectPeer(t, httpServer.URL, artifactID, "alice")
-	if err := browser.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+	if err := browser.WaitForText(t, peerMarkdown, "before\n"); err != nil {
 		t.Fatal(err)
 	}
 	// A block with no id arms the room's settlement, which has to stamp one.
 	editLiveTree(t, service, artifactID, appendUnidentifiedBlocks(t, "added"))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for the edit to reach persistence: %v", err)
 	}
@@ -132,38 +131,128 @@ func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 
 	pause.armed.Store(true)
 	browser.Close()
-	select {
-	case <-pause.held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the settlement the browser's leaving owed never stamped the room")
-	}
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancelShutdown()
+	testwait.Receive(t, "the settlement the browser's leaving owed to stamp the room", pause.held)
+	// Shutdown's own settlement of the room waits on the owner row the held one holds, and its
+	// drain budget - which runs on the service's clock, so the test ends it - frees neither that
+	// wait nor the held settlement itself. The goroutine records whether the held settlement had
+	// been let go when Shutdown returned, which is the order this row is about: a Shutdown that
+	// returned while the stamp was still committing records false.
+	var released atomic.Bool
 	shutdown := make(chan error, 1)
-	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
-	// Shutdown's own settlement of the room waits on the owner row the held one holds until the
-	// drain budget ends; a Shutdown still running a little after that is waiting on the held
-	// settlement.
-	select {
-	case err := <-shutdown:
-		t.Errorf("Shutdown returned (%v) while the settlement the browser's leaving started was still committing its stamp", err)
+	var returnedAfterRelease bool
+	go func() {
+		err := service.Shutdown(testwait.Context(t))
+		returnedAfterRelease = released.Load()
 		shutdown <- err
-	case <-time.After(ShutdownDrainBudget + 2*time.Second):
-	}
+	}()
+	budget := drainClock.Now().Add(ShutdownDrainBudget)
+	waitFor(t, "Shutdown to arm its drain budget on the service's clock", func() bool {
+		return slices.Contains(drainClock.Armed(), budget)
+	})
+	drainClock.Advance(ShutdownDrainBudget)
+	released.Store(true)
 	pause.let()
-	select {
-	case err := <-shutdown:
-		if err != nil {
-			t.Fatalf("shutdown under the browser's settlement: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Shutdown never returned once the settlement the browser's leaving started could go on")
+	if err := testwait.Receive(t, "Shutdown to return once the settlement the browser's leaving started could go on", shutdown); err != nil {
+		t.Fatalf("shutdown under the browser's settlement: %v", err)
+	}
+	if !returnedAfterRelease {
+		t.Error("Shutdown returned while the settlement the browser's leaving started was still committing its stamp")
 	}
 	// The stamp went with the shutdown's gate, so the document is left to resume, its edit stored.
 	if owed, err := settlementPending(context.Background(), database.Pool, artifactID); err != nil || !owed {
 		t.Fatalf("the document owes no settlement (%v) after a shutdown that settled nothing", err)
 	}
 	waitForPersistedProofText(t, database, artifactID, "before\n\nadded\n")
+}
+
+// A settlement its timer started runs on the timer's goroutine under the timer's settleWG count.
+// Held once its transaction has ended, it holds no lock and no peer's read loop, and the document
+// it settled owes nothing, so Shutdown's drain neither settles the room nor waits on it, and a room
+// with no editor connected is not closed: Shutdown's join of the settlements under way
+// (waitSettles) is the one thing that keeps it from returning - stopping ygo, and leaving the store
+// to its caller to close - while that settlement still runs.
+func TestShutdownJoinsATimersSettlementUnderWay(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	drainClock := clocktest.New(time.Now())
+	service := newShutdownTestServiceOn(t, database, nil, drainClock)
+	hold := holdSettlementsPastTheirTransaction(service)
+	t.Cleanup(hold.let)
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	waitForSettlementOwed(t, service, artifactID)
+	if err := service.waitForDurableAppends(testwait.Context(t), artifactID); err != nil {
+		t.Fatalf("wait for the edit to be stored: %v", err)
+	}
+
+	// The edit armed the room's settlement on its hour-long timer; arming it again with no delay
+	// fires it now, so the settlement runs as the timer's own.
+	hold.armed.Store(true)
+	state := service.lockState(artifactID)
+	service.scheduleSettleAfterLocked(artifactID, state, 0)
+	service.unlockState(artifactID, state)
+	testwait.Receive(t, "the timer's settlement to end its transaction", hold.held)
+	var released atomic.Bool
+	shutdown := make(chan error, 1)
+	var returnedAfterRelease bool
+	go func() {
+		err := service.Shutdown(testwait.Context(t))
+		returnedAfterRelease = released.Load()
+		shutdown <- err
+	}()
+	// The drain budget runs on the service's clock, so the test ends it: that frees the join's
+	// first, budgeted wait, and leaves the wait after the gate closes.
+	budget := drainClock.Now().Add(ShutdownDrainBudget)
+	waitFor(t, "Shutdown to arm its drain budget on the service's clock", func() bool {
+		return slices.Contains(drainClock.Armed(), budget)
+	})
+	drainClock.Advance(ShutdownDrainBudget)
+	testwait.Quiet(t, "Shutdown returning while the timer's settlement is held", shutdown, 2*time.Second,
+		"no state shows Shutdown waiting in its join; a Shutdown that skips it has only its evictions, "+
+			"one database read and ygo's stop left once the budget ends, which take milliseconds")
+	released.Store(true)
+	hold.let()
+	if err := testwait.Receive(t, "Shutdown to return once the timer's settlement has returned", shutdown); err != nil {
+		t.Fatalf("shutdown under the timer's settlement: %v", err)
+	}
+	if !returnedAfterRelease {
+		t.Error("Shutdown returned while the timer's settlement was still under way")
+	}
+	// The settlement committed before Shutdown began, so the document owes nothing.
+	if owed, err := settlementPending(context.Background(), database.Pool, artifactID); err != nil || owed {
+		t.Fatalf("the document still owes its settlement (%v) after the timer's settlement committed", err)
+	}
+	if _, markdown, _ := latestDocumentVersion(t, database, artifactID); markdown != "after\n" {
+		t.Fatalf("the document's latest version holds %q, want the timer's settlement's %q", markdown, "after\n")
+	}
+}
+
+// settlementHold holds a room's next settlement once armed, after its transaction has ended and
+// before it returns (Service.afterSettleTransaction): the settlement has committed, holds no lock,
+// and still counts as under way.
+type settlementHold struct {
+	armed   atomic.Bool
+	held    chan struct{}
+	proceed chan struct{}
+	release sync.Once
+}
+
+// holdSettlementsPastTheirTransaction installs a settlementHold on service, whose settlements it
+// sees from now on.
+func holdSettlementsPastTheirTransaction(service *Service) *settlementHold {
+	hold := &settlementHold{held: make(chan struct{}), proceed: make(chan struct{})}
+	service.afterSettleTransaction = func(string) {
+		if hold.armed.CompareAndSwap(true, false) {
+			close(hold.held)
+			<-hold.proceed
+		}
+	}
+	return hold
+}
+
+func (hold *settlementHold) let() {
+	hold.release.Do(func() { close(hold.proceed) })
 }
 
 // An append a room queued before the signal can be slow to store - waiting on its document's lock
@@ -176,36 +265,36 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 	held := createIssueDocument(t, database, 2, "held")
 	appends := &heldStore{VersionedStore: NewPgVersioned(database), room: held, entered: make(chan struct{}), release: make(chan struct{})}
 	t.Cleanup(appends.let)
-	service := newShutdownTestService(t, database, appends)
+	drainClock := clocktest.New(time.Now())
+	service := newShutdownTestServiceOn(t, database, appends, drainClock)
 	seedServiceText(t, service, quiet, "quiet")
 	settleCurrentGeneration(t, service, quiet)
 	seedServiceText(t, service, held, "held")
 	settleCurrentGeneration(t, service, held)
 	editLiveTree(t, service, quiet, replaceRun("quiet", "quiet, edited"))
 	waitForSettlementOwed(t, service, quiet)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForDurableAppends(ctx, quiet); err != nil {
 		t.Fatalf("wait for the quiet document's edit to be stored: %v", err)
 	}
 	appends.armed.Store(true)
 	editLiveTree(t, service, held, replaceRun("held", "held, edited"))
-	select {
-	case <-appends.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the held room's append never reached the store")
-	}
+	testwait.Receive(t, "the held room's append to reach the store", appends.entered)
 
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancelShutdown()
 	shutdown := make(chan error, 1)
-	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
-	var shutdownErr error
-	select {
-	case shutdownErr = <-shutdown:
-	case <-time.After(ShutdownDrainBudget + 5*time.Second):
-		t.Fatal("Shutdown did not return once its drain budget ended")
-	}
+	go func() { shutdown <- service.Shutdown(testwait.Context(t)) }()
+	// The drain budget runs on the service's clock: the test ends it once the quiet room has
+	// settled inside it, while the held room's append is still outstanding.
+	budget := drainClock.Now().Add(ShutdownDrainBudget)
+	waitFor(t, "Shutdown to arm its drain budget on the service's clock", func() bool {
+		return slices.Contains(drainClock.Armed(), budget)
+	})
+	waitFor(t, "the quiet document's settlement to commit inside the drain budget", func() bool {
+		owed, err := settlementPending(context.Background(), database.Pool, quiet)
+		return err == nil && !owed
+	})
+	drainClock.Advance(ShutdownDrainBudget)
+	shutdownErr := testwait.Receive(t, "Shutdown to return once its drain budget ended", shutdown)
 	appends.let()
 	if number, markdown, _ := latestDocumentVersion(t, database, quiet); number != 2 || markdown != "quiet, edited\n" {
 		t.Errorf("the quiet document's latest version is %d holding %q, want version 2 holding %q: another room's held append spent its settlement's budget",
@@ -244,58 +333,49 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 		first.let()
 		second.let()
 	})
-	service := newShutdownTestService(t, database, appends)
+	drainClock := clocktest.New(time.Now())
+	service := newShutdownTestServiceOn(t, database, appends, drainClock)
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
-	if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+	if err := editor.WaitForText(t, peerMarkdown, "before\n"); err != nil {
 		t.Fatal(err)
 	}
 
 	appends.armed.Store(true)
 	editLiveTree(t, service, artifactID, replaceRun("before", "first"))
-	select {
-	case <-first.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first append never reached the store")
-	}
-	if err := editor.WaitForText(peerMarkdown, "first\n", 10*time.Second); err != nil {
+	testwait.Receive(t, "the first append to reach the store", first.entered)
+	if err := editor.WaitForText(t, peerMarkdown, "first\n"); err != nil {
 		t.Fatal(err)
 	}
 
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancelShutdown()
 	shutdown := make(chan error, 1)
-	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
-	waitFor(t, 10*time.Second, "Shutdown to have scanned the room", func() bool {
+	go func() { shutdown <- service.Shutdown(testwait.Context(t)) }()
+	waitFor(t, "Shutdown to have scanned the room", func() bool {
 		return service.shuttingDown(artifactID)
 	})
 
 	// Only now, deterministically after the scan, does a second write land - the already-connected
 	// editor's own keystroke, which Shutdown's inject refusal never reaches.
 	typeOver(t, editor, "first", "second")
-	waitFor(t, 10*time.Second, "both appends to be recorded as outstanding", func() bool {
+	waitFor(t, "both appends to be recorded as outstanding", func() bool {
 		return service.room(artifactID).durableAppends.Load() >= 2
 	})
 	// Both appends stay queued past the pre-fix 5 s drain budget, and land with time to spare
-	// inside the 9 s per-room budget this round widened it to.
-	time.Sleep(7 * time.Second)
+	// inside the 9 s per-room budget this round widened it to: the budget runs on the service's
+	// clock, which the test moves seven seconds before it lets the appends go.
+	budget := drainClock.Now().Add(ShutdownDrainBudget)
+	waitFor(t, "Shutdown to arm its drain budget on the service's clock", func() bool {
+		return slices.Contains(drainClock.Armed(), budget)
+	})
+	drainClock.Advance(7 * time.Second)
 	first.let()
-	select {
-	case <-second.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the second append never reached the store once the first let go")
-	}
+	testwait.Receive(t, "the second append to reach the store once the first let go", second.entered)
 	second.let()
 
-	var shutdownErr error
-	select {
-	case shutdownErr = <-shutdown:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Shutdown did not return once both appends landed")
-	}
+	shutdownErr := testwait.Receive(t, "Shutdown to return once both appends landed", shutdown)
 	if shutdownErr != nil {
 		t.Errorf("Shutdown returned %v, want nil: the burst should settle within the per-room drain budget", shutdownErr)
 	}
@@ -317,48 +397,48 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
-	service := newShutdownTestService(t, database, nil)
+	drainClock := clocktest.New(time.Now())
+	service := newShutdownTestServiceOn(t, database, nil, drainClock)
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
 	waitForSettlementOwed(t, service, artifactID)
-	appendCtx, cancelAppend := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelAppend()
+	appendCtx := testwait.Context(t)
 	if err := service.waitForDurableAppends(appendCtx, artifactID); err != nil {
 		t.Fatalf("wait for the edit to be stored: %v", err)
 	}
 
-	entered := make(chan struct{})
+	entered, overrun := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	service.afterSettleReconcile = func(room string) {
 		if room != artifactID {
 			return
 		}
 		once.Do(func() { close(entered) })
-		// Finish 3.4 s past the per-room drain budget - the measured overrun - with 1.6 s of the
-		// reserve still to spare. A plain sleep, not a context wait: a render or commit already
-		// running does not stop the instant drainCtx's deadline passes either.
-		time.Sleep(ShutdownDrainBudget + 3400*time.Millisecond)
+		// The render goes on until the test has moved the service's clock 3.4 s past the per-room
+		// drain budget - the measured overrun - with 1.6 s of the reserve still to spare. Not a
+		// context wait: a render or commit already running does not stop the instant drainCtx's
+		// deadline passes either.
+		<-overrun
 	}
+	t.Cleanup(func() {
+		select {
+		case <-overrun:
+		default:
+			close(overrun)
+		}
+	})
 
 	// The document service's own production deadline: ShutdownDrainBudget plus the 5 s reserve
-	// cmd/dispatch/shutdown.go's documentShutdownTimeout now adds past it.
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), ShutdownDrainBudget+5*time.Second)
+	// cmd/dispatch/shutdown.go's documentShutdownTimeout now adds past it, on the same clock.
+	shutdownCtx, cancelShutdown := drainClock.WithTimeout(context.Background(), ShutdownDrainBudget+5*time.Second)
 	defer cancelShutdown()
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the settlement never reached its reconcile hook")
-	}
-
-	var shutdownErr error
-	select {
-	case shutdownErr = <-shutdown:
-	case <-time.After(15 * time.Second):
-		t.Fatal("Shutdown did not return once the render finished")
-	}
+	testwait.Receive(t, "the settlement to reach its reconcile hook", entered)
+	drainClock.Advance(ShutdownDrainBudget + 3400*time.Millisecond)
+	close(overrun)
+	shutdownErr := testwait.Receive(t, "Shutdown to return once the render finished", shutdown)
 	if shutdownErr != nil {
 		t.Errorf("Shutdown returned %v, want nil: a render already running when the budget ends should still let its worker return in time", shutdownErr)
 	}
@@ -377,8 +457,7 @@ func TestShutdownLeavesASettlementThatMustWriteIntoItsRoomToResume(t *testing.T)
 	// A block with no id arms the room's settlement, which has to stamp one.
 	editLiveTree(t, service, artifactID, appendUnidentifiedBlocks(t, "added"))
 	waitForSettlementOwed(t, service, artifactID)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for the edit to reach persistence: %v", err)
 	}
@@ -415,15 +494,23 @@ func TestShutdownLeavesASettlementThatMustWriteIntoItsRoomToResume(t *testing.T)
 // appends, when set, stands in for the store's own document persistence.
 func newShutdownTestService(t *testing.T, database *store.Store, appends VersionedStore) *Service {
 	t.Helper()
+	return newShutdownTestServiceOn(t, database, appends, nil)
+}
+
+// newShutdownTestServiceOn is newShutdownTestService on serviceClock (Deps.Clock), which
+// Shutdown's drain budget runs on; the real clock when nil.
+func newShutdownTestServiceOn(t *testing.T, database *store.Store, appends VersionedStore, serviceClock clock.Clock) *Service {
+	t.Helper()
 	service := New(Deps{
 		Store: database, Persistence: appends, Events: events.NewBroker(),
 		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
 		Settle:   time.Hour,
+		Clock:    serviceClock,
 	})
 	// A test that already called Shutdown runs this one a second time; it logs its own
 	// "left to resume" line but does no second settlement attempt (settleRoomWithin's
 	// s.stopping guard returns it almost instantly), so it is a harmless no-op, not a race.
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	return service
 }
 
@@ -468,7 +555,7 @@ func typeOver(t *testing.T, peer *docstest.Peer, old, replacement string) {
 // waitForSettlementOwed waits for the document's pending-settlement row.
 func waitForSettlementOwed(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, "the document to owe a settlement", func() bool {
+	waitFor(t, "the document to owe a settlement", func() bool {
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && owed
 	})

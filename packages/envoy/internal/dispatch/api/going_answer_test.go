@@ -7,12 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // goingModelBearer is the bearer the chat client presents to the fake model. The client under
@@ -23,11 +24,6 @@ const goingModelBearer = "going-test-bearer"
 type goingModelTokens struct{}
 
 func (goingModelTokens) Token(context.Context) (string, error) { return goingModelBearer, nil }
-
-// goingFramePause is how long goingtest's model waits between the frames of one reply. It is what
-// makes a reply take a measurable time to write, so a reader can be shown the answer's first
-// words while the rest of it is still being written.
-const goingFramePause = 120 * time.Millisecond
 
 // newGoingModelAnswerer is the answerer a deployment runs - going.NewAnswerer over
 // going.NewHTTPClient - pointed at goingtest's chat-completions model over httptest. The model is
@@ -54,23 +50,29 @@ func newGoingModelAnswerer(t *testing.T, replies ...goingtest.Reply) (*going.Ans
 }
 
 // liveGoingFrame is one frame of a stream as a reader on a real connection saw it: the event's
-// name, the data it carried, and the moment its bytes became readable.
+// name and the data it carried.
 type liveGoingFrame struct {
 	name string
 	data string
-	at   time.Time
 }
 
-// readLiveGoingStream reads one run's stream from a real HTTP server, frame by frame as the server
-// flushes each, and answers every frame with the moment it arrived. It is a real connection and
-// not httptest.NewRecorder because a recorder buffers the whole response: nothing of when a frame
-// reached a reader survives it.
-func readLiveGoingStream(t *testing.T, server *httptest.Server, id, login string) []liveGoingFrame {
+// liveGoingStream is one run's stream on a real HTTP server, read frame by frame as the server
+// flushes each, so a test reads what had reached a reader by a point it chooses, such as while the
+// model is held (goingtest.Reply.HoldAfterFirstFrame). It is a real connection and not
+// httptest.NewRecorder because a recorder buffers the whole response: nothing of what reached a
+// reader before the run ended survives it.
+type liveGoingStream struct {
+	reader *bufio.Reader
+	// frames is every frame read so far, in order.
+	frames []liveGoingFrame
+}
+
+// openLiveGoingStream opens run id's stream as login; its body closes with the test.
+func openLiveGoingStream(t *testing.T, server *httptest.Server, id, login string) *liveGoingStream {
 	t.Helper()
-	// Longer than one run's window (contracts.GoingRunWindow) and its grace, so a stream that
-	// never ends fails this read rather than hanging the package.
-	ctx, stop := context.WithTimeout(context.Background(), contracts.GoingRunWindow+2*goingStreamGrace)
-	defer stop()
+	// The shared wait's bound (testwait.Context), so a stream that never sends the frame a test
+	// reads for fails that read rather than hanging the package.
+	ctx := testwait.Context(t)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/going/requests/"+id+"/stream", nil)
 	if err != nil {
 		t.Fatalf("build the stream request: %v", err)
@@ -80,36 +82,61 @@ func readLiveGoingStream(t *testing.T, server *httptest.Server, id, login string
 	if err != nil {
 		t.Fatalf("open the stream: %v", err)
 	}
-	defer response.Body.Close()
+	t.Cleanup(func() { _ = response.Body.Close() })
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("stream: status=%d", response.StatusCode)
 	}
-	var frames []liveGoingFrame
+	return &liveGoingStream{reader: bufio.NewReader(response.Body)}
+}
+
+// next reads the stream's next frame, or answers the read's error once the stream stops.
+func (s *liveGoingStream) next() (liveGoingFrame, error) {
 	var frame liveGoingFrame
-	reader := bufio.NewReader(response.Body)
 	for {
-		line, err := reader.ReadString('\n')
-		arrived := time.Now()
+		line, err := s.reader.ReadString('\n')
 		if err != nil {
-			if len(frames) == 0 || !(going.Event{Name: frames[len(frames)-1].name}).Terminal() {
-				t.Fatalf("the stream stopped after %d frames (%v), want it to end on its terminal frame", len(frames), err)
-			}
-			return frames
+			return liveGoingFrame{}, err
 		}
 		switch line = strings.TrimSuffix(line, "\n"); {
 		case line == "":
 			if frame.name != "" {
-				frames = append(frames, frame)
+				s.frames = append(s.frames, frame)
+				return frame, nil
 			}
 			frame = liveGoingFrame{}
-		case strings.HasPrefix(line, "id: "):
-			// The first line of a frame: the server flushes each frame whole, so this is when it
-			// became readable.
-			frame.at = arrived
 		case strings.HasPrefix(line, "event: "):
 			frame.name = strings.TrimPrefix(line, "event: ")
 		case strings.HasPrefix(line, "data: "):
 			frame.data = strings.TrimPrefix(line, "data: ")
+		}
+	}
+}
+
+// until reads frames up to the first one named name and answers it. A stream that stops first
+// fails the test, naming what it was read for.
+func (s *liveGoingStream) until(t *testing.T, name, what string) liveGoingFrame {
+	t.Helper()
+	for {
+		frame, err := s.next()
+		if err != nil {
+			t.Fatalf("the stream stopped after %d frames %v (%v) before %s", len(s.frames), goingFrameNames(s.frames), err, what)
+		}
+		if frame.name == name {
+			return frame
+		}
+	}
+}
+
+// rest reads the stream to its end and answers every frame it carried, those read before
+// included. A stream that does not end on its terminal frame fails the test.
+func (s *liveGoingStream) rest(t *testing.T) []liveGoingFrame {
+	t.Helper()
+	for {
+		if _, err := s.next(); err != nil {
+			if len(s.frames) == 0 || !(going.Event{Name: s.frames[len(s.frames)-1].name}).Terminal() {
+				t.Fatalf("the stream stopped after %d frames (%v), want it to end on its terminal frame", len(s.frames), err)
+			}
+			return s.frames
 		}
 	}
 }
@@ -167,10 +194,11 @@ func goingFrameNames(frames []liveGoingFrame) []string {
 // text the model was given is the item's own stored text - goingItemText's, the text search
 // ranked.
 //
-// The reader here is a real connection, because what it proves is a matter of time and not of
-// bytes: the model pauses goingFramePause between the frames of its reply, so the reply takes
-// about three seconds to write, and the first words of it are readable long before the last. A
-// recorder would buffer the whole response and say nothing about when anything arrived.
+// The reader here is a real connection, because what it proves is a matter of order and not only
+// of bytes: the model is held after the first frame of its reply until this test has read the
+// answer's first words from the stream, so those words were readable while the model still had the
+// rest to write. A recorder would buffer the whole response and say nothing about what reached a
+// reader before the run ended.
 func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing.T) {
 	const project = "GOA"
 	// The project's first issue, as seedGoingProject creates it: the reply the fake model is built
@@ -180,12 +208,16 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 	const href = "/issues/" + issueKey
 	const linkText = "The pelican migration"
 	link := "[" + linkText + "](" + href + ")"
+	// rest holds the model after the first frame of its reply until the test has read that frame's
+	// words from the stream (release), so no clock decides whether they came before the end.
+	rest := make(chan struct{})
+	release := sync.OnceFunc(func() { close(rest) })
 	answerer, model := newGoingModelAnswerer(t, goingtest.Reply{
 		Text: "The pelicans arrive in spring, and the note Dispatch holds says so: " + link + ".",
 		// Four runes a frame over that reply is twenty-seven frames, each a stored text frame of
-		// the run's own, so the answer is written over about 27 * goingFramePause.
-		Chunk: 4,
-		Pause: goingFramePause,
+		// the run's own; the model holds after the first of them.
+		Chunk:               4,
+		HoldAfterFirstFrame: rest,
 	})
 	rig := newGoingRoutesRig(t, answerer)
 	seededKey, issueTitle := seedGoingProject(t, rig.handler, project)
@@ -194,6 +226,10 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 	}
 	server := httptest.NewServer(rig.handler)
 	t.Cleanup(server.Close)
+	// Registered after the model, the rig and this server, so it runs before their cleanups: the
+	// rig's wait for its background work and the model's server both wait on the held reply, so a
+	// row that fails before it releases the model still ends.
+	t.Cleanup(release)
 
 	// Every word of the question that is not a stopword is one the seeded issue is indexed under,
 	// so search ranks the issue itself - the item with a body and an href the answer can link -
@@ -205,8 +241,14 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 	}
 	run := decodeBody[askedRun](t, response)
 
-	opened := time.Now()
-	frames := readLiveGoingStream(t, server, run.ID, "alice")
+	// When it arrived, and not only what: the first text frame is readable while the model is
+	// still held with the rest of its reply unwritten. A stream that handed its reader the answer
+	// only once the reply had ended would send no text here, and this read would wait until the
+	// shared wait gave up.
+	stream := openLiveGoingStream(t, server, run.ID, "alice")
+	stream.until(t, contracts.GoingEventText, "the first text frame, while the model holds the rest of its reply")
+	release()
+	frames := stream.rest(t)
 	ended := frames[len(frames)-1]
 	if ended.name != contracts.GoingEventEnd {
 		t.Fatalf("the stream ended with %s %s, want %s: %v", ended.name, ended.data, contracts.GoingEventEnd, goingFrameNames(frames))
@@ -269,22 +311,6 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 	}
 	if !strings.Contains(asked, text) {
 		t.Errorf("the model was given %q, want the issue's own stored text %q within it", asked, text)
-	}
-
-	// When it arrived, and not only what: the first text frame is readable while the model still
-	// has frames to come. The reply is written over about 3.3 s - twenty-seven frames at
-	// goingFramePause, which are the model's own sleeps, so nothing makes it faster - and the
-	// stream polls the record every goingStreamPoll (200 ms), so the first words are readable
-	// within a fraction of a second: measured here, the first text frame arrives 56-250 ms in and
-	// the stream ends at 3.49 s, a lead of 3.24-3.45 s. The margins asserted are the run lasting
-	// at least 2 s and at least 1.5 s of it after the first words, better than twice the slack:
-	// failing the second needs the first text frame to be held back past 2 s, ten polls.
-	first := firstGoingFrame(t, frames, contracts.GoingEventText)
-	if whole := ended.at.Sub(opened); whole < 2*time.Second {
-		t.Fatalf("the stream was over in %v, want the model's paced reply to take at least 2s: nothing was proved about streaming", whole)
-	}
-	if lead := ended.at.Sub(first.at); lead < 1500*time.Millisecond {
-		t.Errorf("the first words arrived %v before the answer ended, want at least 1.5s: the reader waited for the whole reply", lead)
 	}
 }
 

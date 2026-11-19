@@ -12,17 +12,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// How the corpus the two speed tests are measured over is built, and what is in it. It is a file
-// of its own because none of it is a measurement: a reader asking what each number is held to
-// reads api/priority_speed_test.go, and a reader asking what was in the database when it was
-// taken reads this one.
+// How the corpus the four reading tests of api/priority_speed_test.go read is built, and what is
+// in it. It is a file of its own because none of it is a reading: a reader asking what each
+// number is held to reads api/priority_speed_test.go, and a reader asking what was in the
+// database when it was taken reads this one.
 //
 // The whole corpus is five COPY statements into the database storetest.Open cloned from this
 // package's migrated template (priority_fixture_test.go): 2,500 open issues over 18 projects,
 // two events on every one of them, 20 priorities and 400 `advances` relations, one chain as deep
 // as the parent-depth cap, and the cap of 20 relations on one issue. Written through the routes
-// it would be some 8,000 requests and the minutes they cost, which is time the measurement would
-// then be taken against.
+// it would be some 8,000 requests and the minutes they cost.
 //
 // Twenty priorities rather than the sixteen the work is spread over: one issue carries the most
 // relations a write allows (contracts.MaxIssueAdvances, 20), and an issue cannot hold twenty
@@ -42,7 +41,7 @@ const (
 	// speedCorpusFanout is how many children an issue of the trees below takes, so the corpus
 	// is trees an inheritance walk climbs rather than 2,500 roots.
 	speedCorpusFanout = 4
-	// speedCorpusPage is the page the listing is measured over, the most issues one page holds
+	// speedCorpusPage is the page the listing is read over, the most issues one page holds
 	// (contracts.MaxIssuePageLimit).
 	speedCorpusPage = 250
 )
@@ -51,19 +50,43 @@ const (
 // lifecycle work is open in. None of them is `done`, because every issue of the corpus is open.
 var speedCorpusStatuses = []string{"triage", "icebox", "backlog", "todo", "in_progress", "testing", "needs_review", "retro"}
 
-// speedCorpusShape is the corpus as the measurements address it: the server over it, the issue
-// carrying the most relations, and the chain as deep as the cap.
+// speedCorpusShape is the corpus as the readings address it: the server over it, the issue
+// carrying the most relations, the chain as deep as the cap, and the parent of every issue that
+// has one, as the corpus was written; the database under the server, which the counts explain
+// each statement on and settle the statistics of, and the trace of what the server sends for a
+// counted read. The server reads through a traced pool of that database, and the caller's
+// identity is resolved on the untraced one, so a count is the read's own statements and not the
+// sign-in lookup every request makes.
 type speedCorpusShape struct {
 	handler  http.Handler
 	server   *server
 	heaviest string
 	chain    []string
+	parents  map[string]string
+	database *store.Store
+	trace    *speedTrace
+}
+
+// walkRows is the rows the relation read's inheritance walk climbs for page, the keys a page of
+// the listing holds: one for each of them and one for each issue above it, which is what
+// issueAdvancesTerms' advances_chain answers, counted here from the parents the corpus was
+// written with rather than read back through SQL of the same shape. The walk stops at the
+// parent-depth cap, and the deepest chain of the corpus is exactly as deep as that cap, so the
+// whole of every chain counts.
+func (corpus speedCorpusShape) walkRows(page []string) int {
+	rows := 0
+	for _, key := range page {
+		for at, above := key, true; above; at, above = corpus.parents[at] {
+			rows++
+		}
+	}
+	return rows
 }
 
 // seedSpeedCorpus writes the corpus and answers the server over it. Every issue of the first
-// page the measurements read stands in `triage` with the lowest board keys, so that page is the
+// page the readings take stands in `triage` with the lowest board keys, so that page is the
 // chain as deep as the cap, the issue carrying twenty relations and the issues below them —
-// the heaviest page the corpus holds, which is the one worth timing.
+// the heaviest page the corpus holds, which is the one worth reading.
 func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	t.Helper()
 	database := storetest.Open(t)
@@ -80,6 +103,7 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	events := make([][]any, 0, speedCorpusEvents)
 	keys := make([]string, 0, speedCorpusIssues)
 	chain := make([]string, 0, speedCorpusChain)
+	parents := make(map[string]string, speedCorpusIssues)
 	for index := range speedCorpusIssues {
 		project := 0
 		if index >= speedCorpusChain {
@@ -117,6 +141,9 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 			seededEvent(key, 1, "issue.created", `{"seeded":true}`, written),
 			seededEvent(key, 2, "comment.created", `{"seeded":true}`, written.Add(time.Second)))
 		keys = append(keys, key)
+		if parent != nil {
+			parents[key] = *parent
+		}
 		if index < speedCorpusChain {
 			chain = append(chain, key)
 		}
@@ -157,12 +184,17 @@ func seedSpeedCorpus(t *testing.T) speedCorpusShape {
 	copySeededRows(t, database, "priority_tuples", seededTupleColumns, tuples)
 	assertSpeedCorpus(t, database)
 
-	handler, _, _, srv := newRegisteredTestServer(t, testServerOptions{store: database})
-	return speedCorpusShape{handler: handler, server: srv, heaviest: heaviest, chain: chain}
+	trace := &speedTrace{}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, trace, nil)}
+	handler, _, _, srv := newRegisteredTestServer(t, testServerOptions{store: traced, identity: headerIdentity(database)})
+	return speedCorpusShape{
+		handler: handler, server: srv, heaviest: heaviest, chain: chain, parents: parents,
+		database: database, trace: trace,
+	}
 }
 
-// assertSpeedCorpus holds the corpus to its own counts before anything is timed: a measurement
-// over a corpus that landed short is a measurement of a corpus nobody meant to build.
+// assertSpeedCorpus holds the corpus to its own counts before anything is counted or timed: a
+// reading over a corpus that landed short is a reading of a corpus nobody meant to build.
 func assertSpeedCorpus(t *testing.T, database *store.Store) {
 	t.Helper()
 	for _, counted := range []struct {

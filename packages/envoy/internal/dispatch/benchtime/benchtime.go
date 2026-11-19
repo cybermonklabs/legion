@@ -51,6 +51,24 @@ import (
 // template their databases from, whose durability is off and whose cache is 128 MB.
 const DatabaseURLEnv = "DISPATCH_BENCH_DATABASE_URL"
 
+// TimingEnv opens the lane to a service level the product promises about time that no database
+// statement carries: a body read within a second of processor time, a standby taking over within
+// its bound. A suite row that once held such a bound keeps its correctness assertion and holds no
+// clock; the bound itself is a row of its own, gated by Timing, which a person runs on a quiet
+// machine and CI never does, since a reading of a shared runner's clock is the runner's load as
+// much as the product's work.
+const TimingEnv = "DISPATCH_BENCH_TIMING"
+
+// Timing skips t unless value, what TimingEnv names, is set. As with Open, the caller reads the
+// variable and passes it in (os.Getenv(benchtime.TimingEnv)), since a non-test file of
+// internal/dispatch may not read the process environment, and the gate's sentence stays here.
+func Timing(t testing.TB, value string) {
+	t.Helper()
+	if value == "" {
+		t.Skip(TimingEnv + " is unset: a service level's time is read on a quiet machine, never in CI")
+	}
+}
+
 const (
 	// runs is how many times each side of a pair is explained, and discarded how many of those
 	// the median leaves out: runs 2 to 12, eleven readings, the first paying whatever of the

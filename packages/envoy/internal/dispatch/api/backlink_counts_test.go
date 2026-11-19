@@ -8,9 +8,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type askBacklinkCount struct {
@@ -582,36 +582,31 @@ func TestAnOpenedAskPublishesWhatItsQuestionCites(t *testing.T) {
 		t.Fatalf("open a citing ask: status=%d body=%s", opened.Code, opened.Body.String())
 	}
 	askID := decodeBody[writtenRecord](t, opened).ID
-	deadline := time.After(5 * time.Second)
 	for {
-		select {
-		case event := <-published:
-			if event.Type != "ask.opened" {
-				continue
-			}
-			encoded, err := json.Marshal(event.Payload)
-			if err != nil {
-				t.Fatalf("encode published payload: %v", err)
-			}
-			var payload struct {
-				ID                string                   `json:"id"`
-				OpenedEventID     *int64                   `json:"opened_event_id"`
-				ReferencesChanged []model.ChangedReference `json:"references_changed"`
-			}
-			if err := json.Unmarshal(encoded, &payload); err != nil {
-				t.Fatalf("decode published payload: %v", err)
-			}
-			want := []model.ChangedReference{{Kind: "issue", ID: target.Key}}
-			if payload.ID != askID || !reflect.DeepEqual(payload.ReferencesChanged, want) {
-				t.Fatalf("published ask.opened = %s, want ask %s naming %#v", encoded, askID, want)
-			}
-			if payload.OpenedEventID == nil || *payload.OpenedEventID != event.ID {
-				t.Fatalf("published ask.opened opened_event_id = %v, want the event's own id %d", payload.OpenedEventID, event.ID)
-			}
-			return
-		case <-deadline:
-			t.Fatal("no ask.opened event was published")
+		event := testwait.Receive(t, "an ask.opened event to be published", published)
+		if event.Type != "ask.opened" {
+			continue
 		}
+		encoded, err := json.Marshal(event.Payload)
+		if err != nil {
+			t.Fatalf("encode published payload: %v", err)
+		}
+		var payload struct {
+			ID                string                   `json:"id"`
+			OpenedEventID     *int64                   `json:"opened_event_id"`
+			ReferencesChanged []model.ChangedReference `json:"references_changed"`
+		}
+		if err := json.Unmarshal(encoded, &payload); err != nil {
+			t.Fatalf("decode published payload: %v", err)
+		}
+		want := []model.ChangedReference{{Kind: "issue", ID: target.Key}}
+		if payload.ID != askID || !reflect.DeepEqual(payload.ReferencesChanged, want) {
+			t.Fatalf("published ask.opened = %s, want ask %s naming %#v", encoded, askID, want)
+		}
+		if payload.OpenedEventID == nil || *payload.OpenedEventID != event.ID {
+			t.Fatalf("published ask.opened opened_event_id = %v, want the event's own id %d", payload.OpenedEventID, event.ID)
+		}
+		return
 	}
 }
 

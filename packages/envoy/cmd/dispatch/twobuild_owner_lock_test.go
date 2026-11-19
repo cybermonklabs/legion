@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // ───── one owner's writers across the two builds ───────────────────────────
@@ -192,23 +193,27 @@ func (b *twoBuilds) startNamed(t *testing.T, previous bool, application string) 
 	return b.b
 }
 
-// queuedBackend waits up to within for a backend whose connections carry application, and whose
-// current statement matches statement, to queue behind a lock holder holds (storetest.QueuedBehind),
-// and answers its process id and statement.
-func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, application string, statement *regexp.Regexp, within time.Duration) (uint32, string) {
+// queuedBackend waits for a backend whose connections carry application, and whose current
+// statement matches statement, to queue behind a lock holder holds (storetest.QueuedBehind), and
+// answers its process id and statement. The wait has no bound of its own (testwait.Until); its
+// failure names the application's backends waiting on a lock at its last read.
+func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, application string, statement *regexp.Regexp) (uint32, string) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(within)
-	for {
+	type backend struct {
+		PID   uint32
+		Query string
+	}
+	type reading struct {
+		Queued  backend
+		Waiting []backend
+	}
+	got := testwait.Until(t, fmt.Sprintf("a backend of %s running a statement matching %s to queue behind the lock the test holds", application, statement), func() (reading, bool) {
 		rows, err := database.Pool.Query(ctx, `
 			select pid, query from pg_stat_activity
 			where datname = current_database() and application_name = $1 and wait_event_type = 'Lock'`, application)
 		if err != nil {
 			t.Fatal(err)
-		}
-		type backend struct {
-			PID   uint32
-			Query string
 		}
 		backends, err := pgx.CollectRows(rows, pgx.RowToStructByPos[backend])
 		if err != nil {
@@ -221,15 +226,12 @@ func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, applicati
 			if queued, err := storetest.QueuedBehind(ctx, holder, candidate.PID); err != nil {
 				t.Fatal(err)
 			} else if queued {
-				return candidate.PID, candidate.Query
+				return reading{Queued: candidate, Waiting: backends}, true
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no backend of %s running a statement matching %s queued behind the lock the test holds within %s; its backends waiting on a lock: %+v",
-				application, statement, within, backends)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return reading{Waiting: backends}, false
+	})
+	return got.Queued.PID, got.Queued.Query
 }
 
 // crossBuildWrite is one HTTP request a race sends.
@@ -240,7 +242,7 @@ type crossBuildWrite struct {
 }
 
 // send sends w on another goroutine and delivers its answer. Nothing bounds the request
-// (trySend), so a row receives the answer with answerWithin.
+// (trySend), so a row receives the answer with awaitHTTPAnswer.
 func (w crossBuildWrite) send() <-chan httpAnswer {
 	answered := make(chan httpAnswer, 1)
 	go func() {
@@ -253,23 +255,12 @@ func (w crossBuildWrite) send() <-chan httpAnswer {
 	return answered
 }
 
-// answerBound is how long a row waits for a write's answer: far longer than any write takes once
-// nothing the test holds keeps it waiting, and far shorter than the suite's -timeout of 30
-// minutes, so a write that never answers fails its row rather than hanging the test binary.
-const answerBound = 60 * time.Second
-
-// answerWithin waits up to within for the answer on answered, and fails the test naming what, the
-// write that never answered, when within passes first. The failure ends the test, so its deferred
+// awaitHTTPAnswer waits for the answer on answered, and fails the test naming what, the write
+// that never answered, at the shared wait's end. The failure ends the test, so its deferred
 // rollbacks let go of what the test holds and its cleanups stop each process.
-func answerWithin(t *testing.T, answered <-chan httpAnswer, within time.Duration, what string) httpAnswer {
+func awaitHTTPAnswer(t *testing.T, answered <-chan httpAnswer, what string) httpAnswer {
 	t.Helper()
-	select {
-	case answer := <-answered:
-		return answer
-	case <-time.After(within):
-		t.Fatalf("%s never answered within %s", what, within)
-		return httpAnswer{}
-	}
+	return testwait.Receive(t, what+" to answer", answered)
 }
 
 // awaitedLockType is the type of the lock the backend pid waits on (pg_locks.locktype): advisory
@@ -309,9 +300,9 @@ func raceAcrossBuilds(t *testing.T, builds *twoBuilds, pairing ownerLockPairing,
 		t.Fatalf("hold the issue's row: %v", err)
 	}
 	firstAnswered := first.send()
-	firstPID, _ := queuedBackend(t, builds.database, holder, previousApplication, firstStatement, 20*time.Second)
+	firstPID, _ := queuedBackend(t, builds.database, holder, previousApplication, firstStatement)
 	secondAnswered := second.send()
-	secondPID, waitingOn := queuedBackend(t, builds.database, holder, currentApplication, secondStatement, 20*time.Second)
+	secondPID, waitingOn := queuedBackend(t, builds.database, holder, currentApplication, secondStatement)
 	if pairing == sameProtocolPairing {
 		for _, queued := range []struct {
 			pid  uint32
@@ -326,8 +317,8 @@ func raceAcrossBuilds(t *testing.T, builds *twoBuilds, pairing ownerLockPairing,
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	return answerWithin(t, firstAnswered, answerBound, "the "+builds.previousName()+"'s write of the race, once the lock on the issue was let go,"),
-		answerWithin(t, secondAnswered, answerBound, "this build's write of the race, once the lock on the issue was let go,"),
+	return awaitHTTPAnswer(t, firstAnswered, "the "+builds.previousName()+"'s write of the race, once the lock on the issue was let go,"),
+		awaitHTTPAnswer(t, secondAnswered, "this build's write of the race, once the lock on the issue was let go,"),
 		waitingOn
 }
 
@@ -352,7 +343,7 @@ func raceAcrossBuilds(t *testing.T, builds *twoBuilds, pairing ownerLockPairing,
 func TestTwoBuildsSerialiseOneOwnersWritersBothWays(t *testing.T) {
 	builds := newTwoBuilds(t)
 	previous := builds.startNamed(t, true, previousApplication)
-	pairing, err := ownerLockPairingOf(registeredOwnerLockProtocol(t, builds.database, previous, builds.previousName(), 30*time.Second))
+	pairing, err := ownerLockPairingOf(registeredOwnerLockProtocol(t, builds.database, previous, builds.previousName()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +509,7 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 	defer pause.Rollback(ctx)
 	patched := crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
 		body: `{"labels_add":["current-build"]}`}.send()
-	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, currentLabelWrite, 20*time.Second)
+	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, currentLabelWrite)
 	t.Logf("this build's PATCH waits in %q", waitingOn)
 
 	options := builds.options(nil)
@@ -527,24 +518,28 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 	builds.a = startDispatchProcessWith(t, builds.databaseURL(t)+"&application_name="+previousApplication, options)
 	previous := builds.a
 
-	var gatePID uint32
-	var gateQuery string
-	booted := false
-	for deadline := time.Now().Add(60 * time.Second); gatePID == 0 && !booted; {
-		if gatePID, gateQuery = gateWaiter(t, builds.database, patchPID); gatePID != 0 {
-			break
-		}
-		booted = previous.healthyWithin(50*time.Millisecond) == nil
-		if !booted && time.Now().After(deadline) {
-			t.Fatalf("the %s neither served nor waited for the owner lock gate within 60s:\n%s", builds.previousName(), previous.Output.String())
-		}
+	// The previous build serves once it logs its listening line (dispatchProcess.healthy), which
+	// it writes only after its boot's dashboard publish: one read of its output says whether it
+	// serves now.
+	serves := func() bool { return strings.Contains(previous.Output.String(), previous.listeningLine()) }
+	type bootReading struct {
+		GatePID   uint32
+		GateQuery string
+		Booted    bool
 	}
+	got := testwait.Until(t, "the "+builds.previousName()+" to serve or to wait for the owner lock gate", func() (bootReading, bool) {
+		if pid, query := gateWaiter(t, builds.database, patchPID); pid != 0 {
+			return bootReading{GatePID: pid, GateQuery: query}, true
+		}
+		return bootReading{Booted: serves()}, serves()
+	})
+	gatePID, gateQuery, booted := got.GatePID, got.GateQuery, got.Booted
 	labelPrevious := crossBuildWrite{process: previous, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
 		body: `{"labels_add":["previous-build"]}`}
 	if booted {
 		t.Errorf("the %s served %s after it started while this build's PATCH, which read no earlier build in the fleet, was between its owner lock and its write; want its boot to wait at its dashboard publish for that PATCH (the owner lock gate)",
 			builds.previousName(), time.Since(started).Round(time.Millisecond))
-		if answer := answerWithin(t, labelPrevious.send(), answerBound, "the "+builds.previousName()+"'s PATCH, sent while this build's PATCH was still paused,"); answer.status != http.StatusOK {
+		if answer := awaitHTTPAnswer(t, labelPrevious.send(), "the "+builds.previousName()+"'s PATCH, sent while this build's PATCH was still paused,"); answer.status != http.StatusOK {
 			t.Fatalf("the %s's PATCH answered %s", builds.previousName(), answer)
 		}
 		if err := pause.Rollback(ctx); err != nil {
@@ -556,12 +551,14 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 		if !strings.Contains(gateQuery, "insert into dashboard_builds") {
 			t.Errorf("the %s waits for the gate in %q, want its dashboard publish's insert", builds.previousName(), gateQuery)
 		}
-		const held = 3 * time.Second
-		if previous.healthyWithin(held) == nil {
-			t.Fatalf("the %s served while this build's PATCH it waits for was still under way", builds.previousName())
-		}
+		// Its backend still waits for the gate behind this build's paused PATCH, and its boot
+		// serves only after the publish that waits there: that state, not a span, is what keeps
+		// it from serving while the PATCH is under way.
 		if pid, _ := gateWaiter(t, builds.database, patchPID); pid != gatePID {
-			t.Fatalf("after %s the %s's backend waiting for the gate is %d, want %d still waiting", held, builds.previousName(), pid, gatePID)
+			t.Fatalf("the %s's backend waiting for the gate is %d, want %d still waiting", builds.previousName(), pid, gatePID)
+		}
+		if serves() {
+			t.Fatalf("the %s served while this build's PATCH it waits for was still under way", builds.previousName())
 		}
 		released := time.Now()
 		if err := pause.Rollback(ctx); err != nil {
@@ -570,11 +567,11 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 		previous.waitHealthy(t)
 		t.Logf("the %s served %s after this build's PATCH was let go, %s after it started", builds.previousName(),
 			time.Since(released).Round(time.Millisecond), time.Since(started).Round(time.Millisecond))
-		if answer := answerWithin(t, labelPrevious.send(), answerBound, "the "+builds.previousName()+"'s PATCH"); answer.status != http.StatusOK {
+		if answer := awaitHTTPAnswer(t, labelPrevious.send(), "the "+builds.previousName()+"'s PATCH"); answer.status != http.StatusOK {
 			t.Fatalf("the %s's PATCH answered %s", builds.previousName(), answer)
 		}
 	}
-	if answer := answerWithin(t, patched, answerBound, "this build's PATCH, once its update of the labels was let go,"); answer.status != http.StatusOK {
+	if answer := awaitHTTPAnswer(t, patched, "this build's PATCH, once its update of the labels was let go,"); answer.status != http.StatusOK {
 		t.Fatalf("this build's PATCH answered %s", answer)
 	}
 	var labels []string
@@ -585,8 +582,8 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 		t.Errorf("the issue's labels are %v; want this build's and the %s's both: the label the %s added once it served was lost under this build's PATCH, which read the labels before it",
 			labels, builds.previousName(), builds.previousName())
 	}
-	if answer := answerWithin(t, crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
-		body: `{"labels_add":["current-build-again"]}`}.send(), answerBound, "this build's second PATCH"); answer.status != http.StatusOK {
+	if answer := awaitHTTPAnswer(t, crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["current-build-again"]}`}.send(), "this build's second PATCH"); answer.status != http.StatusOK {
 		t.Fatalf("this build's second PATCH answered %s", answer)
 	}
 	current.WaitForOutput(t, rowModeLine)
@@ -594,14 +591,10 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 
 // ───── the previous build's registration beside a write of this build held past its bound ─────
 
-// registrationGateBound bounds an earlier build's registration's wait for the owner lock gate:
+// The bound of an earlier build's registration's wait for the owner lock gate is
 // owner_lock_legacy_registration's lock_timeout (migration 20261115200014_owner_lock_legacy_gate),
-// spelled again here. registrationGateHold is how long the row below holds a write of this build
-// in flight once that registration waits: longer than the bound.
-const (
-	registrationGateBound = 5 * time.Second
-	registrationGateHold  = 8 * time.Second
-)
+// Postgres's own: the row below proves it from the refusal's SQLSTATE (55P03), not from how long
+// the registration took.
 
 // heartbeatWatch is what watchHeartbeat saw of one server process's row: each heartbeat_at it read,
 // in order, the oldest the row was at a read by the database's clock, whether a read found no row,
@@ -623,8 +616,8 @@ func (w heartbeatWatch) gaps() []time.Duration {
 }
 
 // watchHeartbeat reads the server_processes row of instance every 100 ms until the stop it returns
-// is called, which answers what it saw, or the test ends. The stop fails the test when the watch's
-// read in flight has not returned within answerBound.
+// is called, which answers what it saw, or the test ends. The stop waits for the watch's read in
+// flight through the shared wait.
 func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop func() heartbeatWatch) {
 	done := make(chan struct{})
 	seen := make(chan heartbeatWatch, 1)
@@ -660,13 +653,7 @@ func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop 
 	t.Cleanup(end)
 	return func() heartbeatWatch {
 		end()
-		select {
-		case watch := <-seen:
-			return watch
-		case <-time.After(answerBound):
-			t.Fatalf("the watch of server process %s's heartbeat had not stopped %s after it was told to", instance, answerBound)
-			return heartbeatWatch{}
-		}
+		return testwait.Receive(t, "the watch of server process "+instance+"'s heartbeat to stop", seen)
 	}
 }
 
@@ -674,8 +661,8 @@ func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop 
 // no dashboard and its registration is its arrival, while a write of this build is between its
 // owner lock and its write phase for longer than the registration's bound: a PATCH adding a label,
 // held as the boot row above holds it (pauseLabelWrites). The registration waits for the gate
-// holding the registry's lock, which every heartbeat takes too, and is refused with 55P03 once
-// registrationGateBound has passed; the previous build then exits, as its main does when its
+// holding the registry's lock, which every heartbeat takes too, and is refused with 55P03 once its
+// lock_timeout has passed; the previous build then exits, as its main does when its
 // registration fails. This build's process does not lapse meanwhile: its row is never older than
 // the live window (processes.LiveWindow), its heartbeat gaps logged. Once the write has committed
 // with its label, the previous build, started again as its supervisor would, registers and
@@ -705,7 +692,7 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 	defer pause.Rollback(ctx)
 	patched := crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
 		body: `{"labels_add":["current-build"]}`}.send()
-	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, currentLabelWrite, 20*time.Second)
+	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, currentLabelWrite)
 	t.Logf("this build's PATCH waits in %q", waitingOn)
 	stopWatch := watchHeartbeat(t, builds.database, instance)
 
@@ -718,50 +705,35 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 	}
 	started := time.Now()
 	previous := startPrevious()
-	var gateQuery string
-	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		var gatePID uint32
-		if gatePID, gateQuery = gateWaiter(t, builds.database, patchPID); gatePID != 0 {
-			break
+	gateQuery := testwait.Until(t, "the "+builds.previousName()+"'s registration to wait for the owner lock gate", func() (string, bool) {
+		if gatePID, query := gateWaiter(t, builds.database, patchPID); gatePID != 0 {
+			return query, true
 		}
 		select {
 		case <-previous.Exited:
 			t.Fatalf("the %s exited before its registration waited for the owner lock gate:\n%s", builds.previousName(), previous.Output.String())
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the %s's registration did not wait for the owner lock gate within 60s:\n%s", builds.previousName(), previous.Output.String())
-		}
-	}
+		return "", false
+	})
 	waiting := time.Now()
 	t.Logf("the %s waits for the owner lock gate %s after it started, in %q", builds.previousName(),
 		waiting.Sub(started).Round(time.Millisecond), gateQuery)
 	if !strings.Contains(gateQuery, "insert into server_processes") {
 		t.Errorf("the %s waits for the gate in %q, want its registration's insert: with no web app it publishes no dashboard", builds.previousName(), gateQuery)
 	}
-	refused := false
-	select {
-	case <-previous.Exited:
-		refused = true
-		took := time.Since(waiting)
-		t.Logf("the %s exited %s after its registration began to wait for the gate", builds.previousName(), took.Round(time.Millisecond))
-		if took > registrationGateBound+3*time.Second {
-			t.Errorf("the %s exited %s after its registration began to wait for the gate, want within its bound of %s and the exit", builds.previousName(), took.Round(time.Millisecond), registrationGateBound)
-		}
-		if output := previous.Output.String(); !strings.Contains(output, `msg="dispatch: register this server process"`) || !strings.Contains(output, "SQLSTATE 55P03") {
-			t.Errorf("the %s exited without logging its registration refused for the lock timeout (55P03):\n%s", builds.previousName(), output)
-		}
-	case <-time.After(registrationGateBound + 3*time.Second):
-		t.Errorf("the %s's registration still waited for the gate %s after it began, past its bound of %s",
-			builds.previousName(), time.Since(waiting).Round(time.Millisecond), registrationGateBound)
-	}
-	if rest := registrationGateHold - time.Since(waiting); rest > 0 {
-		time.Sleep(rest)
+	// The registration's bound is its lock_timeout: the previous build is refused with 55P03 and
+	// exits while this build's PATCH is still paused. A registration with no bound waits for the
+	// PATCH as long as it is held, so the shared wait's end is what fails it.
+	testwait.Receive(t, "the "+builds.previousName()+"'s registration to be refused at its lock_timeout while this build's PATCH is held", previous.Exited)
+	t.Logf("the %s exited %s after its registration began to wait for the gate", builds.previousName(), time.Since(waiting).Round(time.Millisecond))
+	if output := previous.Output.String(); !strings.Contains(output, `msg="dispatch: register this server process"`) || !strings.Contains(output, "SQLSTATE 55P03") {
+		t.Errorf("the %s exited without logging its registration refused for the lock timeout (55P03):\n%s", builds.previousName(), output)
 	}
 	if err := pause.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if answer := answerWithin(t, patched, answerBound, "this build's PATCH, once its update of the labels was let go,"); answer.status != http.StatusOK {
+	if answer := awaitHTTPAnswer(t, patched, "this build's PATCH, once its update of the labels was let go,"); answer.status != http.StatusOK {
 		t.Fatalf("this build's PATCH answered %s", answer)
 	}
 	watch := stopWatch()
@@ -774,19 +746,17 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 		t.Errorf("this build's registration lapsed while the %s's registration waited: its row was %s old at its oldest (gone: %t), want under the live window %s",
 			builds.previousName(), watch.oldest.Round(time.Millisecond), watch.gone, processes.LiveWindow)
 	}
-	if refused {
-		var earlier int
-		if err := builds.database.Pool.QueryRow(ctx, `select count(*) from server_processes where owner_lock_protocol = 0`).Scan(&earlier); err != nil {
-			t.Fatal(err)
-		}
-		if earlier != 0 {
-			t.Errorf("%d rows of an earlier build are registered after the %s's registration was refused, want none", earlier, builds.previousName())
-		}
-		previous = startPrevious()
+	var earlier int
+	if err := builds.database.Pool.QueryRow(ctx, `select count(*) from server_processes where owner_lock_protocol = 0`).Scan(&earlier); err != nil {
+		t.Fatal(err)
 	}
+	if earlier != 0 {
+		t.Errorf("%d rows of an earlier build are registered after the %s's registration was refused, want none", earlier, builds.previousName())
+	}
+	previous = startPrevious()
 	previous.waitHealthy(t)
-	if answer := answerWithin(t, crossBuildWrite{process: previous, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
-		body: `{"labels_add":["previous-build"]}`}.send(), answerBound, "the "+builds.previousName()+"'s PATCH"); answer.status != http.StatusOK {
+	if answer := awaitHTTPAnswer(t, crossBuildWrite{process: previous, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["previous-build"]}`}.send(), "the "+builds.previousName()+"'s PATCH"); answer.status != http.StatusOK {
 		t.Fatalf("the %s's PATCH answered %s", builds.previousName(), answer)
 	}
 	var labels []string
@@ -796,8 +766,8 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 	if !slices.Contains(labels, "previous-build") || !slices.Contains(labels, "current-build") {
 		t.Errorf("the issue's labels are %v; want this build's and the %s's both", labels, builds.previousName())
 	}
-	if answer := answerWithin(t, crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
-		body: `{"labels_add":["current-build-again"]}`}.send(), answerBound, "this build's second PATCH"); answer.status != http.StatusOK {
+	if answer := awaitHTTPAnswer(t, crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["current-build-again"]}`}.send(), "this build's second PATCH"); answer.status != http.StatusOK {
 		t.Fatalf("this build's second PATCH answered %s", answer)
 	}
 	current.WaitForOutput(t, rowModeLine)

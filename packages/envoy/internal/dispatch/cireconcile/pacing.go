@@ -37,13 +37,9 @@ const (
 // configures and the work only ever buys GitHub more room, never less.
 func (r *Reconciler) gap(rows int) time.Duration {
 	if r.Pace <= 0 {
-		// A caller that waits for nothing, which is what every test of this package is.
+		// A caller that waits for nothing, which is what every test of this package not about
+		// the pace is.
 		return 0
-	}
-	if r.PassTimeout <= 0 {
-		// An unbounded pass has no budget to spread its requests over, so it keeps the pause its
-		// deployment configured.
-		return r.Pace
 	}
 	work := r.restWork()
 	if r.known() == 0 && work == 0 {
@@ -64,7 +60,7 @@ func (r *Reconciler) gap(rows int) time.Duration {
 		// down.
 		return FastestRequestPace
 	}
-	return min(max(r.PassTimeout*9/10/time.Duration(expected), FastestRequestPace), r.Pace)
+	return min(max(r.bound()*9/10/time.Duration(expected), FastestRequestPace), r.Pace)
 }
 
 // restWork is the REST requests the last pass learned this one will make: every head a query
@@ -93,10 +89,10 @@ func (r *Reconciler) pace(ctx context.Context, c *counts) {
 	if c.pace <= 0 || c.restRequests == 0 {
 		return
 	}
-	timer := time.NewTimer(c.pace)
+	timer := r.clock().NewTimer(c.pace)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-	case <-timer.C:
+	case <-timer.C():
 	}
 }

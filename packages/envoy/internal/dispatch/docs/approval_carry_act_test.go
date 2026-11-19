@@ -48,7 +48,7 @@ func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, actAnswerSpec)
 	service.ScheduleSettlement(artifactID)
-	waitFor(t, 3*time.Second, "settlement to index both blocks", func() bool {
+	waitFor(t, "settlement to index both blocks", func() bool {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from asks where block_artifact_id = $1 and block_id = any($2::text[])

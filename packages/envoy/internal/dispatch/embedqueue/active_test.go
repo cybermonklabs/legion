@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // liveProcess writes the server_processes row of a server process whose embedder has identity,
@@ -178,6 +180,13 @@ func TestARestartKeepsItsIdentityActive(t *testing.T) {
 // its own ceiling: the bucket never refills faster than the larger ceiling, and each waits out
 // its debt at its own, so together they never take more than the larger ceiling per minute, and
 // neither stops the other. The ceilings are small, so a "minute" of tokens passes in seconds.
+//
+// Both processes wait out their debts on one fake clock (Deps.Clock), and the window passes on it:
+// once both are waiting, the row moves it to the earliest wait armed, and the bucket's own clock,
+// PostgreSQL's now(), passes the same span with it, taken back off the row's last_refill_at before
+// the move, so the next reservation refills by it. A reservation also refills by what PostgreSQL's
+// clock passed on its own while the row ran, so the limit is the larger ceiling's over the window
+// and that time, read on the same clock.
 func TestTwoCeilingsTogetherNeverPassTheLargerOne(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -188,10 +197,14 @@ func TestTwoCeilingsTogetherNeverPassTheLargerOne(t *testing.T) {
 		tokens  = 5
 		window  = 3 * time.Second
 	)
-	mustExec(t, database.Pool, `update embeddings_rate_limit set tokens_available = 0, last_refill_at = now()`)
+	var emptied time.Time
+	if err := database.Pool.QueryRow(ctx,
+		`update embeddings_rate_limit set tokens_available = 0, last_refill_at = now() returning last_refill_at`).Scan(&emptied); err != nil {
+		t.Fatalf("empty the bucket: %v", err)
+	}
 
-	started := time.Now()
-	deadline := started.Add(window)
+	fake := clocktest.New(time.Now())
+	started := fake.Now()
 	taken := make([]int, 2)
 	var wg sync.WaitGroup
 	for i, side := range []struct {
@@ -200,16 +213,42 @@ func TestTwoCeilingsTogetherNeverPassTheLargerOne(t *testing.T) {
 	}{{database, smaller}, {second, larger}} {
 		wg.Go(func() {
 			for {
-				reserveTokens(ctx, Deps{Store: side.database}, tokens, side.ceiling, nil)
-				if time.Now().After(deadline) {
+				reserveTokens(ctx, Deps{Store: side.database, Clock: fake}, tokens, side.ceiling, nil)
+				if fake.Now().Sub(started) > window {
 					return
 				}
 				taken[i] += tokens
 			}
 		})
 	}
-	wg.Wait()
-	elapsed := deadline.Sub(started).Seconds()
+	stopped := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(stopped)
+	}()
+	for fake.Now().Sub(started) <= window {
+		next := fake.AwaitArmed(t, "both processes to wait out their debts", 2)[0]
+		mustExec(t, database.Pool, `update embeddings_rate_limit set last_refill_at = last_refill_at - make_interval(secs => $1)`,
+			next.Sub(fake.Now()).Seconds())
+		fake.Set(next)
+	}
+	// Past the window each process stops once its wait is out, counting nothing more.
+	testwait.Eventually(t, "both processes to stop once the window has passed", func() bool {
+		select {
+		case <-stopped:
+			return true
+		default:
+		}
+		if armed := fake.Armed(); len(armed) > 0 {
+			fake.Set(armed[len(armed)-1])
+		}
+		return false
+	})
+	var drifted float64
+	if err := database.Pool.QueryRow(ctx, `select extract(epoch from now() - $1::timestamptz)::float8`, emptied).Scan(&drifted); err != nil {
+		t.Fatalf("read how far PostgreSQL's clock passed: %v", err)
+	}
+	elapsed := window.Seconds() + drifted
 	total := taken[0] + taken[1]
 	// One reservation per process may be in flight at the window's edge.
 	if limit := float64(larger)/60*elapsed + 2*tokens; float64(total) > limit {

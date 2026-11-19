@@ -35,13 +35,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // ───── the previous build ───────────────────────────────────────────────────
@@ -261,17 +261,16 @@ func jsonBody(t *testing.T, value any) string {
 
 // ───── the previous build's owner lock protocol ─────────────────────────────
 
-// registeredOwnerLockProtocol waits up to within for the one server process database's registry
-// holds (server_processes) and answers the owner lock protocol it registered with
-// (owner_lock_protocol: store.OwnerLockProtocol for this tree, 0, the column's default, for a build
-// before the owner lock, which writes no such column). process is that process, and name what a
-// failure calls it. The read polls, since a build may serve a moment before its registration
-// commits. It fails the test when the registry holds more than one process, when process exits
-// before its row reads, or when within passes first.
-func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *dispatchProcess, name string, within time.Duration) int {
+// registeredOwnerLockProtocol waits for the one server process database's registry holds
+// (server_processes) and answers the owner lock protocol it registered with (owner_lock_protocol:
+// store.OwnerLockProtocol for this tree, 0, the column's default, for a build before the owner
+// lock, which writes no such column). process is that process, and name what a failure calls it.
+// The read polls, since a build may serve a moment before its registration commits. It fails the
+// test when the registry holds more than one process or when process exits before its row reads;
+// the wait has no bound of its own (testwait.Until).
+func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *dispatchProcess, name string) int {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
+	return testwait.Until(t, "the "+name+" to register its server process", func() (int, bool) {
 		rows, err := database.Pool.Query(context.Background(), `select owner_lock_protocol from server_processes`)
 		if err != nil {
 			t.Fatalf("read the registered server processes: %v", err)
@@ -282,20 +281,18 @@ func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *d
 		}
 		switch {
 		case len(protocols) == 1:
-			return protocols[0]
+			return protocols[0], true
 		case len(protocols) > 1:
 			t.Fatalf("the registry holds %d server processes, at owner lock protocols %v, where the %s's should be its only one",
 				len(protocols), protocols, name)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the %s registered no server process within %s:\n%s", name, within, process.Output.String())
-		}
 		select {
 		case <-process.Exited:
 			t.Fatalf("the %s exited before it registered:\n%s", name, process.Output.String())
-		case <-time.After(50 * time.Millisecond):
+		default:
 		}
-	}
+		return 0, false
+	})
 }
 
 // probedOwnerLockProtocols is the owner lock protocol each previous build registered when
@@ -328,15 +325,11 @@ func previousBuildOwnerLockProtocol(t *testing.T, build previousBuild) int {
 	_, nats := multiprocessNATS(t)
 	probe := startDispatchProcessWith(t, databaseURLOf(t, database),
 		dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: build.path("envoy-dispatch")})
-	protocol := registeredOwnerLockProtocol(t, database, probe, name, 60*time.Second)
+	protocol := registeredOwnerLockProtocol(t, database, probe, name)
 	if err := probe.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill the %s: %v", name, err)
 	}
-	select {
-	case <-probe.Exited:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the %s was still running 30s after it was killed:\n%s", name, probe.Output.String())
-	}
+	testwait.Receive(t, "the "+name+" to exit once it was killed", probe.Exited)
 	probed.byDir[build.dir] = protocol
 	return protocol
 }

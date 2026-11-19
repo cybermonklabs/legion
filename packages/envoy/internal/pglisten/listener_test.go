@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // testChannels are the channels the listener under test listens on: the delivery hub's three, the
 // one deployment where three channels share a connection (api/delivery_live_hub.go).

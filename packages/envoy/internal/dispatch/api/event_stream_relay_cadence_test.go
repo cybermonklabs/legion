@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -10,8 +12,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The cadence a relay generation reads a gap on (eventGapReread), step by step: a gap only the
@@ -60,30 +64,32 @@ const cadenceXid = uint64(1) << 40
 // observation sees the event but does not prove itself, and the relay observes again at once
 // rather than after a delay: with no older transaction id running, that second observation proves
 // the first and the event is published. The script's snapshots never prove themselves (cadenceRow),
-// so this holds the relay to the cadence whatever the test Postgres was doing. The fallback timer
-// is an hour here, so only the immediate second observation can publish it, and the relay is idle
-// again once it has.
+// so this holds the relay to the cadence whatever the test Postgres was doing. The relay's timers
+// run on a fake clock of its own that the test moves, and its fallback is an hour, so only an
+// immediate second observation can publish the event: a re-read after a delay waits on a timer
+// the fake never reaches. Before the event and once it is published the relay is at rest: it has
+// no read due (requireCadenceRelayAtRest).
 func TestEventStreamRelayProvesItsOwnObservationAtOnce(t *testing.T) {
+	const coalesce = time.Millisecond
 	_, database, deps := newTestServer(t, testServerOptions{})
-	relay, horizon := newCadenceRelay(t, deps, database, time.Millisecond)
+	relay, fake, horizon, reads := newCadenceRelay(t, deps, database, coalesce)
 	subscription, _, _ := subscribeRelay(t, relay)
-	horizon.settle(t)
-	if observed := horizon.observedDuring(600 * time.Millisecond); observed != 0 {
-		t.Fatalf("an idle relay took %d observations in 600 ms, want none", observed)
-	}
+	requireCadenceRelayAtRest(t, relay, fake, settleCadenceRelay(t, relay, fake, coalesce, reads), "an idle relay")
 
 	horizon.arm(eventHead(t, database)+1,
 		cadenceObservation{xmin: cadenceXid, xid: cadenceXid + 1},     // sees the event: unproven
 		cadenceObservation{xmin: cadenceXid + 2, xid: cadenceXid + 2}, // nothing older runs: proves it
 	)
 	id := commitCadenceEvent(t, database)
-	requireRelayPublishes(t, subscription, 5*time.Second, id)
+	if first := nextCadenceRead(t, fake, coalesce, reads, "the read the event's notification wakes"); first.gap != events.GapUnproven {
+		t.Fatalf("the notification's read left gap %d, want %d: its observation sees the event and does not prove itself", first.gap, events.GapUnproven)
+	}
+	second := testwait.Receive(t, "the relay's second observation, at once, with its clock standing still", reads)
+	requireRelayPublishes(t, subscription, id)
 	if left := horizon.left(); left != 0 {
 		t.Fatalf("the relay published after %d of its 2 scripted observations", 2-left)
 	}
-	if observed := horizon.observedDuring(600 * time.Millisecond); observed != 0 {
-		t.Fatalf("the relay took %d observations in 600 ms after it published, want none", observed)
-	}
+	requireCadenceRelayAtRest(t, relay, fake, second, "the relay once it published")
 }
 
 // A gap an older transaction holds open is closed by that transaction's commit notification: the
@@ -91,23 +97,20 @@ func TestEventStreamRelayProvesItsOwnObservationAtOnce(t *testing.T) {
 // Here a write holds the lower id open while the higher one commits; the relay's read of the
 // higher one, and the immediate observation after it, find the write still running (their
 // snapshots' xmin is the write's id), so the gap is held. The write's commit notifies, and the
-// read it wakes proves both and publishes the two events in id order. The coalescing window is
-// two seconds and the fallback timer an hour, so only a read the notification woke at once can
-// publish them within the second the test allows. The scripted proof applies only to an
-// observation taken once the lower id is committed, so the script never claims the write ended
-// before it did.
+// read it wakes proves both and publishes the two events in id order. The relay's timers run on a
+// fake clock of its own that the test moves, its coalescing window is two seconds and its fallback
+// an hour: the read the commit wakes must publish both events without arming the window. The
+// scripted proof applies only to an observation taken once the lower id is committed, so the
+// script never claims the write ended before it did.
 func TestEventStreamRelayClosesAHeldGapOnTheHoldersCommitNotification(t *testing.T) {
 	const coalesce = 2 * time.Second
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, handler, "OTHER", "Other issue", "A spec")
 	waitForQuietEventLog(t, database, 500*time.Millisecond)
-	relay, horizon := newCadenceRelay(t, deps, database, coalesce)
+	relay, fake, horizon, reads := newCadenceRelay(t, deps, database, coalesce)
 	subscription, _, _ := subscribeRelay(t, relay)
-	// The listener's first LISTEN wakes one catch-up read, a coalescing window later; once it has
-	// run no wake is pending, so the next read is the one the higher id's commit wakes.
-	time.Sleep(coalesce + 500*time.Millisecond)
-	horizon.settle(t)
+	settleCadenceRelay(t, relay, fake, coalesce, reads)
 
 	var low atomic.Int64
 	committed := func() bool {
@@ -122,69 +125,165 @@ func TestEventStreamRelayClosesAHeldGapOnTheHoldersCommitNotification(t *testing
 	)
 	lowID, high, commitLow := appendOutOfOrder(t, database, events.NewBroker(), issue.Key, other.Key)
 	low.Store(lowID)
-	horizon.awaitTaken(t, 2, coalesce+10*time.Second)
+	nextCadenceRead(t, fake, coalesce, reads, "the read the higher id's commit wakes")
+	held := testwait.Receive(t, "the relay's second observation, at once, with its clock standing still", reads)
+	if held.gap != events.GapHeld {
+		t.Fatalf("the second observation left gap %d, want %d: the write holding id %d still runs", held.gap, events.GapHeld, lowID)
+	}
+	// The relay publishes within a read, before it reports the read, and has no read due now, so
+	// nothing it publishes can arrive later: the subscription is read as it stands.
+	requireCadenceRelayAtRest(t, relay, fake, held, "the relay holding the gap")
 	select {
 	case event := <-subscription:
 		t.Fatalf("the relay published event %d while the write holding %d is open", event.Event.ID, lowID)
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 
 	commitLow()
-	requireRelayPublishes(t, subscription, time.Second, lowID, high)
+	window := fake.Now().Add(coalesce)
+	if testwait.Until(t, "the relay to publish both events, or to arm its coalescing window", func() (string, bool) {
+		switch {
+		case len(subscription) >= 2:
+			return "published", true
+		case slices.ContainsFunc(fake.Armed(), window.Equal):
+			return "window armed", true
+		}
+		return fmt.Sprintf("%d published, timers armed for %v", len(subscription), fake.Armed()), false
+	}) != "published" {
+		t.Fatalf("the read the write's commit notification woke waits the %s coalescing window; want it read at once (eventGapReread.eager)", coalesce)
+	}
+	requireRelayPublishes(t, subscription, lowID, high)
 	if left := horizon.left(); left != 0 {
 		t.Fatalf("the relay published after %d of its 3 scripted observations", 3-left)
 	}
 }
 
 // waitForQuietEventLog waits until the event log's head has stood still for quiet, so no write
-// the test's setup made is still to notify.
+// the test's setup made is still to notify. The quiet spell is what the row needs, not a bound;
+// the wait has none of its own (testwait.Until).
 func waitForQuietEventLog(t *testing.T, database *store.Store, quiet time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
 	head, since := eventHead(t, database), time.Now()
-	for time.Since(since) < quiet {
-		if time.Now().After(deadline) {
-			t.Fatal("the event log was still growing after 10 s")
-		}
-		time.Sleep(20 * time.Millisecond)
+	testwait.Until(t, "the event log's head to stand still for "+quiet.String(), func() (int64, bool) {
 		if now := eventHead(t, database); now != head {
 			head, since = now, time.Now()
 		}
-	}
+		return head, time.Since(since) >= quiet
+	})
+}
+
+// relayRead is one read of a cadence relay's generation as run reports it (afterRead): the
+// horizon it read through and the gap it left open.
+type relayRead struct {
+	safe int64
+	gap  events.Gap
 }
 
 // newCadenceRelay is a relay on a server of its own whose horizon observes through a
-// cadenceHorizonDB, with coalesce as its coalescing window and an hour for its fallback timer.
-func newCadenceRelay(t *testing.T, deps Deps, database *store.Store, coalesce time.Duration) (*eventStreamRelay, *cadenceHorizonDB) {
+// cadenceHorizonDB, with coalesce as its coalescing window and an hour for its fallback timer,
+// both on the fake clock it returns (eventStreamRelay.clock). reads receives each read the relay's
+// generation makes, once that read's re-read is scheduled (eventStreamRelay.afterRead).
+func newCadenceRelay(t *testing.T, deps Deps, database *store.Store, coalesce time.Duration) (*eventStreamRelay, *clocktest.Fake, *cadenceHorizonDB, <-chan relayRead) {
 	t.Helper()
-	horizon := &cadenceHorizonDB{HorizonDB: database.Pool, taken: make(chan int, 16)}
+	horizon := &cadenceHorizonDB{HorizonDB: database.Pool}
 	served := directServer(deps)
 	served.horizonOnce.Do(func() { served.eventHorizon = events.NewHorizon(horizon) })
 	lifetime, stop := context.WithCancel(t.Context())
 	relay := newEventStreamRelay(served, lifetime)
-	relay.coalesce, relay.gapFallback = coalesce, time.Hour
+	fake := clocktest.New(time.Now())
+	relay.coalesce, relay.gapFallback, relay.clock = coalesce, time.Hour, fake
+	reads := make(chan relayRead, 64)
+	relay.afterRead = func(safe int64, gap events.Gap) {
+		select {
+		case reads <- relayRead{safe: safe, gap: gap}:
+		case <-lifetime.Done():
+		}
+	}
 	t.Cleanup(func() {
 		stop()
 		relay.wait()
 	})
-	return relay, horizon
+	return relay, fake, horizon, reads
+}
+
+// wakePending reports whether a notification waits for the relay's running generation (its wake
+// signal is set), which the generation answers with a read next.
+func wakePending(relay *eventStreamRelay) bool {
+	relay.mu.Lock()
+	defer relay.mu.Unlock()
+	return relay.generation != nil && len(relay.generation.wake) > 0
+}
+
+// nextCadenceRead takes the relay's next read, moving fake past the coalescing window when the
+// relay arms one before it: a notification's read waits that window unless the read before it
+// found a gap held.
+func nextCadenceRead(t *testing.T, fake *clocktest.Fake, coalesce time.Duration, reads <-chan relayRead, what string) relayRead {
+	t.Helper()
+	return testwait.Until(t, what, func() (relayRead, bool) {
+		select {
+		case read := <-reads:
+			return read, true
+		default:
+		}
+		if window := fake.Now().Add(coalesce); slices.ContainsFunc(fake.Armed(), window.Equal) {
+			fake.Set(window)
+		}
+		return relayRead{}, false
+	})
+}
+
+// settleCadenceRelay takes the reads of the relay's start, moving fake past each coalescing window
+// it arms, until a read leaves no immediate re-read and no notification is pending, and returns
+// that read. The relay's start and the catch-up its listener's LISTEN wakes are over then.
+func settleCadenceRelay(t *testing.T, relay *eventStreamRelay, fake *clocktest.Fake, coalesce time.Duration, reads <-chan relayRead) relayRead {
+	t.Helper()
+	var last relayRead
+	taken := 0
+	testwait.Until(t, "the relay to come to rest after its start", func() (string, bool) {
+		select {
+		case last = <-reads:
+			taken++
+			rest := last.gap != events.GapUnproven && !wakePending(relay) && len(reads) == 0
+			return fmt.Sprintf("%d reads, the last leaving gap %d", taken, last.gap), rest
+		default:
+		}
+		if window := fake.Now().Add(coalesce); slices.ContainsFunc(fake.Armed(), window.Equal) {
+			fake.Set(window)
+		}
+		return fmt.Sprintf("%d reads, waiting for the next", taken), false
+	})
+	return last
+}
+
+// requireCadenceRelayAtRest fails the test when the relay has a read due after last, the read it
+// reported last: an immediate re-read (last left a gap unproven), a notification pending, or a
+// timer armed on fake short of its hour's fallback. Its generation reads only when one of those
+// comes due (eventStreamRelay.run), so a relay with none observes nothing until a notification.
+func requireCadenceRelayAtRest(t *testing.T, relay *eventStreamRelay, fake *clocktest.Fake, last relayRead, what string) {
+	t.Helper()
+	if last.gap == events.GapUnproven {
+		t.Fatalf("%s re-reads at once: its last read left gap %d", what, last.gap)
+	}
+	if wakePending(relay) {
+		t.Fatalf("%s has a notification pending", what)
+	}
+	for _, at := range fake.Armed() {
+		if at.Sub(fake.Now()) < time.Hour {
+			t.Fatalf("%s has a timer armed for %s, %s from now, want none before its hour's fallback", what, at, at.Sub(fake.Now()))
+		}
+	}
 }
 
 // cadenceHorizonDB observes through the real pool, so the relay starts and reads as it does in
-// production, and counts every observation. Once armed, each observation that sees an id at or
-// above from has its snapshot and transaction id replaced by the next scripted observation, so
-// the test decides which observation proves which, whatever else holds a transaction id on the
-// shared test Postgres; taken receives each scripted observation's position, from 1, as it is
-// taken.
+// production. Once armed, each observation that sees an id at or above from has its snapshot and
+// transaction id replaced by the next scripted observation, so the test decides which
+// observation proves which, whatever else holds a transaction id on the shared test Postgres.
 type cadenceHorizonDB struct {
 	events.HorizonDB
-	observations atomic.Int64
-	taken        chan int
 
-	mu       sync.Mutex
-	from     int64
-	script   []cadenceObservation
-	position int
+	mu     sync.Mutex
+	from   int64
+	script []cadenceObservation
 }
 
 // cadenceObservation is one scripted snapshot xmin and transaction id. when, if set, holds it back
@@ -207,43 +306,7 @@ func (db *cadenceHorizonDB) left() int {
 	return len(db.script)
 }
 
-// settle waits until the relay has taken no observation for 300 ms: its start and the catch-up
-// its listener's connection runs are over.
-func (db *cadenceHorizonDB) settle(t *testing.T) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for db.observedDuring(300*time.Millisecond) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the relay kept observing for 10 s after it started")
-		}
-	}
-}
-
-// observedDuring is how many observations were taken during the next d.
-func (db *cadenceHorizonDB) observedDuring(d time.Duration) int64 {
-	before := db.observations.Load()
-	time.Sleep(d)
-	return db.observations.Load() - before
-}
-
-// awaitTaken waits up to within for the scripted observation at position to be taken.
-func (db *cadenceHorizonDB) awaitTaken(t *testing.T, position int, within time.Duration) {
-	t.Helper()
-	timeout := time.After(within)
-	for {
-		select {
-		case taken := <-db.taken:
-			if taken >= position {
-				return
-			}
-		case <-timeout:
-			t.Fatalf("scripted observation %d not taken within %s", position, within)
-		}
-	}
-}
-
 func (db *cadenceHorizonDB) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
-	db.observations.Add(1)
 	return cadenceResults{BatchResults: db.HorizonDB.SendBatch(ctx, batch), db: db}
 }
 
@@ -282,12 +345,10 @@ func (row cadenceRow) Scan(dest ...any) error {
 		return nil
 	}
 	db.script = db.script[1:]
-	db.position++
 	*dest[2].(*string) = strconv.FormatUint(next.xmin, 10)
 	*dest[3].(*string) = strconv.FormatUint(next.xid-1, 10)
 	*dest[4].(*bool) = false
 	*dest[5].(*string) = strconv.FormatUint(next.xid, 10)
-	db.taken <- db.position
 	return nil
 }
 
@@ -318,22 +379,12 @@ func commitCadenceEvent(t *testing.T, database *store.Store) int64 {
 	return id
 }
 
-// requireRelayPublishes requires the relay to publish exactly ids, in order, each within within
-// of the call.
-func requireRelayPublishes(t *testing.T, subscription <-chan relayedEvent, within time.Duration, ids ...int64) {
+// requireRelayPublishes requires the relay to publish exactly ids, in order.
+func requireRelayPublishes(t *testing.T, subscription <-chan relayedEvent, ids ...int64) {
 	t.Helper()
-	timeout := time.After(within)
 	for _, id := range ids {
-		select {
-		case event, open := <-subscription:
-			if !open {
-				t.Fatal("the relay's subscription ended")
-			}
-			if event.Event.ID != id {
-				t.Fatalf("the relay published event %d, want %d (of %v)", event.Event.ID, id, ids)
-			}
-		case <-timeout:
-			t.Fatalf("the relay did not publish event %d (of %v) within %s", id, ids, within)
+		if event := testwait.Receive(t, fmt.Sprintf("the relay to publish event %d (of %v)", id, ids), subscription); event.Event.ID != id {
+			t.Fatalf("the relay published event %d, want %d (of %v); 0 is its subscription's end", event.Event.ID, id, ids)
 		}
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/yuin/goldmark/ast"
@@ -337,16 +336,19 @@ func nestedCallouts(depth int) string {
 }
 
 // A megabyte of bare quote markers is a million nested quotes, a tree deep enough to overflow the
-// process stack in the document pipeline's recursive walks. It is refused in bounded time, before
-// the parser builds that tree for them to enter.
+// process stack in the document pipeline's recursive walks. It is refused in a parse linear in
+// the markers, no more than parseStepsPerCharacter steps (ParseWork) for each, before the parser
+// builds that tree for them to enter.
 func TestParseRefusesAMebibyteOfQuotesInBoundedTime(t *testing.T) {
-	started := time.Now()
-	_, err := Parse(strings.Repeat(">", 1<<20))
+	markdown := strings.Repeat(">", 1<<20)
+	before := ParseWork()
+	_, err := Parse(markdown)
+	steps := ParseWork() - before
 	if !errors.Is(err, ErrSchema) {
 		t.Fatalf("1 MiB of `>`: %v, want ErrSchema", err)
 	}
-	if elapsed := time.Since(started); elapsed > 10*time.Second {
-		t.Fatalf("refusing 1 MiB of `>` took %s, want under 10 s", elapsed)
+	if allowed := parseStepsPerCharacter * uint64(len(markdown)); steps > allowed {
+		t.Fatalf("refusing 1 MiB of `>` took %d steps, past the %d (%d a character) a parse linear in it takes", steps, allowed, parseStepsPerCharacter)
 	}
 }
 

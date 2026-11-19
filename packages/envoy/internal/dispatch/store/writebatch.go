@@ -124,13 +124,15 @@ func (r batchRow) Scan(dest ...any) error {
 // statement that failed (the server runs none after it) or the first callback that returned an
 // error (whose later statements ran, and are rolled back with the transaction the caller now
 // abandons), whichever comes first in the batch. The batch is empty again afterwards. An empty
-// batch sends nothing.
+// batch sends nothing. A batch it sends marks ctx's transaction as past its first write batch
+// (SentWriteBatch) until the transaction ends.
 func (b *WriteBatch) Send(ctx context.Context, tx pgx.Tx) error {
 	if b.batch.Len() == 0 {
 		return nil
 	}
 	batch := b.batch
 	b.batch = pgx.Batch{}
+	markSent(ctx)
 	return tx.SendBatch(ctx, &batch).Close()
 }
 

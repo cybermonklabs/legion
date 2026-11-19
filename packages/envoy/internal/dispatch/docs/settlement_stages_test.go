@@ -111,6 +111,68 @@ func TestSettlementTakeHoldsTheRoomsLiveInstance(t *testing.T) {
 	}
 }
 
+// take of a room no room holds: during a shutdown that may not load the document it ends the
+// settlement and loads nothing; otherwise it warms the room, and when a close retires the room
+// between that warm-up and take's read of it, it stops short on the replaced room, holding no
+// document, so its retry decides by the room's generation (retrySettleLocked).
+func TestSettlementTakeOfARoomNoRoomHolds(t *testing.T) {
+	t.Run("during a shutdown that may not load it", func(t *testing.T) {
+		service, artifactID := newTestService(t)
+		service.settle = time.Hour
+		seedServiceText(t, service, artifactID, "Context.\n")
+		closeDocumentRoom(t, service, artifactID)
+		service.shutdownRooms.Store(artifactID, struct{}{})
+		t.Cleanup(func() { service.shutdownRooms.Delete(artifactID) })
+
+		settle := stageSettlement(t, service, artifactID)
+		var stopped error
+		settle.stoppedShort = func(err error) settleOutcome {
+			stopped = err
+			return settleOutcome{next: settleRetry, err: err}
+		}
+		step, outcome := settle.take(context.Background(), false)
+		if step != settleDone || outcome != (settleOutcome{}) || stopped != nil {
+			t.Fatalf("take answered step %v, outcome %+v, stopped short with %v; want the settlement ended with nothing more to do", step, outcome, stopped)
+		}
+		if settle.doc != nil || service.srv.GetDoc(artifactID) != nil {
+			t.Fatal("take loaded the document's room during a shutdown that may not load it")
+		}
+	})
+	t.Run("retired after its warm-up", func(t *testing.T) {
+		service, artifactID := newTestService(t)
+		service.settle = time.Hour
+		seedServiceText(t, service, artifactID, "Context.\n")
+		closeDocumentRoom(t, service, artifactID)
+		var closed bool
+		service.afterSettleWarm = func(room string) {
+			if room != artifactID || closed {
+				return
+			}
+			closed = true
+			if err := service.srv.CloseRoom(room, true); err != nil {
+				t.Errorf("close the room between take's warm-up and its read: %v", err)
+			}
+		}
+
+		settle := stageSettlement(t, service, artifactID)
+		var stopped error
+		settle.stoppedShort = func(err error) settleOutcome {
+			stopped = err
+			return settleOutcome{next: settleRetry, err: err}
+		}
+		step, outcome := settle.take(context.Background(), false)
+		if !closed {
+			t.Fatal("take never reached the window between its warm-up and its read of the room")
+		}
+		if step != settleDone || !errors.Is(stopped, errRoomReplaced) || outcome.next != settleRetry || !errors.Is(outcome.err, errRoomReplaced) {
+			t.Fatalf("take answered step %v, outcome %+v, stopped short with %v; want it stopped short on the replaced room", step, outcome, stopped)
+		}
+		if settle.doc != nil {
+			t.Fatal("take holds a document of a room a close retired")
+		}
+	})
+}
+
 // readLocked reads the tree the settlement reconciles, at an exact commit position, with the
 // rendering its version reuses, the latest version it compares that rendering against, and whom
 // that version would credit.

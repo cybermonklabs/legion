@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // claimIssue gives issueKey's claim to holder, as a claim write leaves the row.
@@ -490,7 +491,7 @@ func TestRunRecordsTheClaimantRouteSoARetryDoesNotRepublishIt(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, 5*time.Second, "the first attempt backed off after reaching the claimant", func() bool {
+	testwait.Eventually(t, "the first attempt backed off after reaching the claimant", func() bool {
 		destinations, attempts := publishedDestinations(t, database, event.ID)
 		return attempts > 0 && slices.Contains(destinations, claimantTopic)
 	})
@@ -498,7 +499,7 @@ func TestRunRecordsTheClaimantRouteSoARetryDoesNotRepublishIt(t *testing.T) {
 		t.Fatalf("published_destinations after the first attempt = %#v, want the issue topic and the claimant", destinations)
 	}
 	publisher.setFailTopic("")
-	waitFor(t, 7*time.Second, "the retry published the event", func() bool {
+	testwait.Eventually(t, "the retry published the event", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	if got, want := topicsOf(publisher.all()), []string{issueTopic, claimantTopic, askerTopic}; !reflect.DeepEqual(got, want) {

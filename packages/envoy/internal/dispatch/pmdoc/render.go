@@ -263,8 +263,11 @@ type footnoteLabelSet struct {
 
 // refersTo reports whether text shaped like a reference with label is escaped: it would read as a
 // reference to a defined label, or this renderer escaped it when it lowercased labels. An escape
-// the parser does not need reads back as the same text.
+// the parser does not need reads back as the same text. Each character of label it folds is a
+// step of the render (RenderWork): footnoteReferenceText asks only of a label no longer than a
+// defined one could fold to, so the folds of a text are linear in it.
 func (labels footnoteLabelSet) refersTo(label string) bool {
+	renderWork.Add(uint64(len(label)))
 	return labels.keys[footnoteLabelKey(label)] || labels.lowered[strings.ToLower(label)]
 }
 
@@ -1290,8 +1293,12 @@ func writeNulsInAttrs(attrs Attrs) {
 
 // writtenLineBreaks is a textblock's inline nodes with each soft break a space and each line feed
 // in text outside code followed by more than whitespace a hard break (asWritten), adjacent text
-// with the same marks merged, as the parser reads it.
+// with the same marks merged, as the parser reads it. Whether only whitespace follows a node is
+// read once for the textblock, from its end, so each node and each line it splits is a step of the
+// render (RenderWork), where asking it of the rest of the text at every line was not.
 func writtenLineBreaks(nodes []*Node) []*Node {
+	steps := 2 * len(nodes)
+	defer func() { renderWork.Add(uint64(steps)) }()
 	out := make([]*Node, 0, len(nodes))
 	appendText := func(text string, marks []Mark) {
 		if text == "" {
@@ -1319,6 +1326,7 @@ func writtenLineBreaks(nodes []*Node) []*Node {
 			lastNonWhitespace := len(strings.TrimRightFunc(value, unicode.IsSpace))
 			lineStart := 0
 			for {
+				steps++
 				lineEnd := strings.IndexByte(value[lineStart:], '\n')
 				if lineEnd < 0 {
 					appendText(value[lineStart:], node.Marks)

@@ -659,8 +659,12 @@ func nextExpiry(pop deliveryPopulation, n time.Duration, now time.Time) time.Tim
 	next := nextUTCMidnight(now)
 	consider := func(leaves time.Time) {
 		// A row is in the window while its time is at or after the start, so it leaves just past
-		// its time + n.
-		if at := leaves.Add(n).Add(time.Nanosecond); at.After(now) && at.Before(next) {
+		// its time + n. PostgreSQL stores and compares a timestamptz at microsecond resolution and
+		// the window is judged against rows read from it, so the leaving moment is a microsecond
+		// past, the finest a timestamptz can hold: a finer step would leave the window start at a
+		// moment the database rounds back onto the row, and the hub would drop it while a GET over
+		// the same window kept it.
+		if at := leaves.Add(n).Add(time.Microsecond); at.After(now) && at.Before(next) {
 			next = at
 		}
 	}

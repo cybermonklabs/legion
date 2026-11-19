@@ -11,6 +11,7 @@ import (
 
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -21,9 +22,11 @@ import (
 // of the binary's run. A service still alive fails the run - the exit code stays storetest.Main's
 // when that is already non-zero, and becomes non-zero when the tests passed and a service is
 // still alive. The fix such a run asks for is a t.Cleanup on the test the report names, shutting
-// down the service that test built.
+// down the service that test built. The xid window rows judge their windows' gaps only in the
+// timing lane (storetest.JudgeXidGaps).
 func TestMain(m *testing.M) {
-	code := storetest.Main(m)
+	storetest.JudgeXidGaps(os.Getenv(benchtime.TimingEnv) != "")
+	code := storetest.Main(m.Run)
 	if reportLeakedServices() && code == 0 {
 		code = 1
 	}

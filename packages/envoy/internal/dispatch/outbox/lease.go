@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -75,6 +76,13 @@ const (
 // holds it to the take-over bound rather than to nothing.
 var publisherHoldOptions = duty.HoldOptions{TTL: 6 * time.Second, Renew: time.Second, Margin: 2 * time.Second}
 
+// timerClock is the clock the outbox arms its timers on, a narrowing of clock.Clock: the
+// standby's timer to the lapse of the current hold, and the holder's grace for a lost NATS
+// connection and its one retry timer.
+type timerClock interface {
+	NewTimer(d time.Duration) clock.Timer
+}
+
 // holdEnd is why a holder stopped publishing.
 type holdEnd string
 
@@ -111,6 +119,10 @@ type Outbox struct {
 	hold atomic.Pointer[duty.Hold]
 	// claims counts the batches this outbox read, one per scanBatch: how often it scanned.
 	claims atomic.Int64
+	// clock is what the outbox arms its timers on: clock.Real() in production (New), and a
+	// clocktest.Fake in a row that reads which wait the outbox armed and moves past it itself.
+	// Set it only before Run starts, so nothing races it.
+	clock timerClock
 	// afterRetryArmed is given the wait serve armed its one retry timer for, each time it arms
 	// one. Nil in production; a test uses it to read the sequence the outbox went through - which
 	// wait it armed, and when - rather than measuring the wall clock the publish landed on. Set
@@ -131,6 +143,11 @@ type Outbox struct {
 	// disconnected waits here without having scanned, and says nothing about what is due. Set it
 	// only before Run starts, so nothing races it.
 	afterServeWait func()
+	// afterStandbyWait is called in standby each time it is about to wait, after any try of the
+	// hold it made. Nil in production; a test uses it as afterServeWait is used, to know the
+	// standby has stopped trying for now, and reads the wake queue (standbyWake) itself. Set it
+	// only before Run starts, so nothing races it.
+	afterStandbyWait func()
 	// probeBeforeHold is set when this process gave the publisher hold up for NATS lost, and
 	// cleared once a probe of its connection is answered (answering). Only Run's goroutine reads
 	// and writes it.
@@ -149,6 +166,7 @@ func New(deps Deps) *Outbox {
 		token:       fmt.Sprintf("%s/%d", host, os.Getpid()),
 		wake:        make(chan struct{}, 1),
 		standbyWake: make(chan struct{}, 1),
+		clock:       clock.Real(),
 	}
 }
 
@@ -296,7 +314,7 @@ func (o *Outbox) standby(ctx context.Context) *duty.Hold {
 		if ctx.Err() != nil {
 			return nil
 		}
-		var lapse *time.Timer
+		var lapse clock.Timer
 		var lapsed <-chan time.Time
 		if o.deps.Publisher.Connected() {
 			wait := holdRetry
@@ -310,8 +328,11 @@ func (o *Outbox) standby(ctx context.Context) *duty.Hold {
 					continue
 				}
 			}
-			lapse = time.NewTimer(wait)
-			lapsed = lapse.C
+			lapse = o.clock.NewTimer(wait)
+			lapsed = lapse.C()
+		}
+		if o.afterStandbyWait != nil {
+			o.afterStandbyWait()
 		}
 		select {
 		case <-ctx.Done():
@@ -493,14 +514,14 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // still down when the grace ends, or a batch's sends failed for the connection and a probe of
 // that connection failed too.
 func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
-	var disconnected, retryTimer *time.Timer
+	var disconnected, retryTimer clock.Timer
 	var disconnectedFor, retryDue <-chan time.Time
 	due := true
 	for {
 		if !o.deps.Publisher.Connected() {
 			if disconnected == nil {
-				disconnected = time.NewTimer(natsLossGrace)
-				disconnectedFor = disconnected.C
+				disconnected = o.clock.NewTimer(natsLossGrace)
+				disconnectedFor = disconnected.C()
 			}
 		} else {
 			if disconnected != nil {
@@ -528,8 +549,8 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 					retryTimer, retryDue = nil, nil
 				}
 				if wait, ok := o.nextRetry(ctx, end.failed || failedPass); ok {
-					retryTimer = time.NewTimer(wait)
-					retryDue = retryTimer.C
+					retryTimer = o.clock.NewTimer(wait)
+					retryDue = retryTimer.C()
 					if o.afterRetryArmed != nil {
 						o.afterRetryArmed(wait)
 					}

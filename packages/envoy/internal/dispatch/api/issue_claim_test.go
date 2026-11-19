@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // liveRegistry is the roster the Envoy listener answers from, which a test moves to start or
@@ -90,13 +92,8 @@ func claimHandler(t *testing.T, live *liveRegistry) (http.Handler, *store.Store,
 // awaitLookup waits for the listener lookup a gated test is expecting.
 func awaitLookup(t *testing.T, lookups <-chan int, want int) {
 	t.Helper()
-	select {
-	case got := <-lookups:
-		if got != want {
-			t.Fatalf("listener lookup %d, want lookup %d", got, want)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatalf("the request never took listener lookup %d", want)
+	if got := testwait.Receive(t, fmt.Sprintf("the request to take listener lookup %d", want), lookups); got != want {
+		t.Fatalf("listener lookup %d, want lookup %d", got, want)
 	}
 }
 
@@ -1078,7 +1075,7 @@ func whileTheRowIsHeld(
 	callHandler, callPID := oneConnectionHandler(t, deps)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- request(callHandler) }()
-	if response, early := storetest.WaitForQueuedBehind(t, tx, callPID, answered, 10*time.Second); early {
+	if response, early := storetest.WaitForQueuedBehind(t, tx, callPID, answered); early {
 		t.Fatalf("the request answered %d before it queued behind the issue's owner lock: %s", response.Code, response.Body.String())
 	}
 	holderActor := model.Actor{
@@ -1092,13 +1089,7 @@ func whileTheRowIsHeld(
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the holder change: %v", err)
 	}
-	select {
-	case response := <-answered:
-		return response
-	case <-time.After(10 * time.Second):
-		t.Fatal("the request never answered once the owner lock was free")
-		return nil
-	}
+	return testwait.Receive(t, "the request to answer once the owner lock was free", answered)
 }
 
 // A claim and a release begin their transaction before they take the issue's row, so a write that
@@ -1141,7 +1132,7 @@ func TestAClaimWriteThatWaitedNeverMovesUpdatedAtBackward(t *testing.T) {
 			go func() {
 				answered <- dispatchRequest(t, callHandler, write.method, "/api/v1/issues/"+key+"/claim", write.body, "alice")
 			}()
-			if response, early := storetest.WaitForQueuedBehind(t, holder, callPID, answered, 10*time.Second); early {
+			if response, early := storetest.WaitForQueuedBehind(t, holder, callPID, answered); early {
 				t.Fatalf("%s answered %d before it queued behind the issue row: %s", write.name, response.Code, response.Body.String())
 			}
 			var stamped time.Time

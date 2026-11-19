@@ -141,9 +141,11 @@ func TestTheStopIsInThePassLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the pass line's rate_limit_until is not RFC3339: %v", err)
 	}
-	// The stand-in's own answer resets ninety seconds out, so the line's time is ahead of now and
-	// not far ahead of it.
-	if !until.After(time.Now()) || until.After(time.Now().Add(5*time.Minute)) {
-		t.Fatalf("the pass line says the limit ends at %s, want the stand-in's reset, which is moments away", until)
+	// The stand-in's own answer resets at a whole second it records, and GitHub's wait is that
+	// reset less the moment githubapp read the answer, which the pass adds back to its own
+	// reading: the line says the reset itself, to the second it carries.
+	reset := h.github.lastReset()
+	if !until.Equal(reset) {
+		t.Fatalf("the pass line says the limit ends at %s, want the stand-in's reset at %s", until, reset)
 	}
 }

@@ -8,19 +8,25 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// jetStreamWait bounds each JetStream request of a context Cluster.JetStream opens. It is too short
-// for a create of a stream of more than one copy on a cluster: nats-server answers that create
-// from the stream's first leader, once its members have elected one (processStreamLeaderChange),
-// and on a loaded machine that election can come after jetStreamWait, which ends the request with
+// jetStreamWait bounds each JetStream request of a context Cluster.JetStream opens, main's bound:
+// internal/bus's TestRaisingTheStreamWhileAPublisherSendsKeepsEveryAcknowledgedMessage counts a
+// publish that draws no answer across the stream's raise as failed once this wait ends, and with
+// the test binary's deadline in its place that publish waits out the whole run.
+// A2's callers still use this bound; A2 deletes it with its last caller. It is too short for a
+// create of a stream of more than one copy on a cluster: nats-server answers that create from the
+// stream's first leader, once its members have elected one (processStreamLeaderChange), and on a
+// loaded machine that election can come after jetStreamWait, which ends the request with
 // `context deadline exceeded` although the server makes the stream. Such a create goes through
 // Cluster.CreateStream.
 const jetStreamWait = 10 * time.Second
 
-// JetStream is a JetStream context, its requests bounded by jetStreamWait, on whichever running
-// member of the cluster answers (Connect), closed when the test ends. A test creates a stream of
-// more than one copy with Cluster.CreateStream, not through it.
+// JetStream is a JetStream context, each request of it bounded by jetStreamWait, on whichever
+// running member of the cluster answers (Connect), closed when the test ends. A test creates a
+// stream of more than one copy with Cluster.CreateStream, not through it.
 func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 	t.Helper()
 	conn := Connect(t, c.URL())
@@ -33,12 +39,12 @@ func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 }
 
 // CreateStream creates the stream config names on a connection of its own to the cluster
-// (Connect), sending the create once through the context createJetStream opens, and fails the
-// test with the server's answer when the create is refused. A successful create of a stream of
-// more than one copy is answered by that stream's first leader, once its members have elected one
-// (processStreamLeaderChange), which on a loaded machine can come after jetStreamWait; a refusal,
-// such as a placement the cluster cannot make, is answered before any election
-// (jsClusteredStreamRequest).
+// (Connect), sending the create once through the context createJetStream opens, whose wait for
+// the answer is the test binary's deadline, and fails the test with the server's answer when the
+// create is refused. A successful create of a stream of more than one copy is answered by that
+// stream's first leader, once its members have elected one (processStreamLeaderChange), which on
+// a loaded machine can take many seconds; a refusal, such as a placement the cluster cannot make,
+// is answered before any election (jsClusteredStreamRequest).
 func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 	t.Helper()
 	conn := Connect(t, c.URL())
@@ -64,53 +70,55 @@ func settled(cluster *natsgo.ClusterInfo, n int) bool {
 		!slices.ContainsFunc(cluster.Replicas, func(peer *natsgo.PeerInfo) bool { return !peer.Current || peer.Offline })
 }
 
-// AwaitSettledStream waits, within connectTimeout, until stream holds as many settled copies as
-// its configuration asks (settled), and returns its info. A test that asserts the copies a write
-// left reads them from the info it returns.
+// AwaitSettledStream waits until stream holds as many settled copies as its configuration asks
+// (settled), and returns its info. A test that asserts the copies a write left reads them from the
+// info it returns.
 func AwaitSettledStream(t testing.TB, js natsgo.JetStreamContext, stream string) *natsgo.StreamInfo {
 	t.Helper()
-	return awaitInfo(t, connectTimeout, fmt.Sprintf("stream %s did not settle", stream),
-		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
+	return awaitInfo(t, fmt.Sprintf("stream %s to settle", stream),
+		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream, natsgo.MaxWait(readWait)) },
 		func(info *natsgo.StreamInfo) bool { return settled(info.Cluster, info.Config.Replicas) },
 		describeStream)
 }
 
-// AwaitStreamCopies waits, within connectTimeout, until stream is configured with n copies and
-// holds n settled ones (settled), and returns its info.
+// AwaitStreamCopies waits until stream is configured with n copies and holds n settled ones
+// (settled), and returns its info. A member that was killed or lame-ducked mid-write rejoins and
+// catches its streams up, which this waits out however long it takes.
 func AwaitStreamCopies(t testing.TB, js natsgo.JetStreamContext, stream string, n int) *natsgo.StreamInfo {
 	t.Helper()
-	return AwaitStreamCopiesWithin(t, js, stream, n, connectTimeout)
-}
-
-// AwaitStreamCopiesWithin is AwaitStreamCopies bounded by within rather than by connectTimeout,
-// for a caller whose own bound for the work it is waiting on is the longer one: a member that was
-// killed or lame-ducked mid-write rejoins and catches its streams up, which takes longer than the
-// connect this package's other waits bound.
-func AwaitStreamCopiesWithin(t testing.TB, js natsgo.JetStreamContext, stream string, n int, within time.Duration) *natsgo.StreamInfo {
-	t.Helper()
-	return awaitInfo(t, within, fmt.Sprintf("stream %s did not hold %d settled copies", stream, n),
-		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
+	return awaitInfo(t, fmt.Sprintf("stream %s to hold %d settled copies", stream, n),
+		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream, natsgo.MaxWait(readWait)) },
 		func(info *natsgo.StreamInfo) bool { return info.Config.Replicas == n && settled(info.Cluster, n) },
 		describeStream)
 }
 
-// AwaitConsumerCopies waits, within connectTimeout, until stream's consumer holds n settled copies
-// (settled), as a durable that sets no replica count of its own does once it has followed its
-// stream to n, and returns its info.
+// AwaitStreamCopiesWithin is AwaitStreamCopies under main's name and signature, from when it took
+// a bound of its own; within is no longer read, and the wait is AwaitStreamCopies's.
+// A2's callers still use this; A2 deletes it with its last caller.
+func AwaitStreamCopiesWithin(t testing.TB, js natsgo.JetStreamContext, stream string, n int, _ time.Duration) *natsgo.StreamInfo {
+	t.Helper()
+	return AwaitStreamCopies(t, js, stream, n)
+}
+
+// AwaitConsumerCopies waits until stream's consumer holds n settled copies (settled), as a durable
+// that sets no replica count of its own does once it has followed its stream to n, and returns its
+// info.
 func AwaitConsumerCopies(t testing.TB, js natsgo.JetStreamContext, stream, consumer string, n int) *natsgo.ConsumerInfo {
 	t.Helper()
-	return awaitInfo(t, connectTimeout, fmt.Sprintf("consumer %s of %s did not hold %d settled copies", consumer, stream, n),
-		func() (*natsgo.ConsumerInfo, error) { return js.ConsumerInfo(stream, consumer) },
+	return awaitInfo(t, fmt.Sprintf("consumer %s of %s to hold %d settled copies", consumer, stream, n),
+		func() (*natsgo.ConsumerInfo, error) {
+			return js.ConsumerInfo(stream, consumer, natsgo.MaxWait(readWait))
+		},
 		func(info *natsgo.ConsumerInfo) bool { return settled(info.Cluster, n) },
 		describeConsumer)
 }
 
-// AwaitStreamLeader waits, within connectTimeout, until stream has a leader other than not, the
-// server_name of a member the test stopped or "" for any, and returns its info.
+// AwaitStreamLeader waits until stream has a leader other than not, the server_name of a member
+// the test stopped or "" for any, and returns its info.
 func AwaitStreamLeader(t testing.TB, js natsgo.JetStreamContext, stream, not string) *natsgo.StreamInfo {
 	t.Helper()
-	return awaitInfo(t, connectTimeout, fmt.Sprintf("stream %s had no leader other than %q", stream, not),
-		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
+	return awaitInfo(t, fmt.Sprintf("stream %s to have a leader other than %q", stream, not),
+		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream, natsgo.MaxWait(readWait)) },
 		func(info *natsgo.StreamInfo) bool {
 			return info.Cluster != nil && info.Cluster.Leader != "" && info.Cluster.Leader != not
 		},
@@ -164,22 +172,29 @@ func describeCluster(cluster *natsgo.ClusterInfo) string {
 		Copies(cluster), cluster.Leader, strings.Join(peers, "; "))
 }
 
-// awaitInfo reads an info every retryInterval until a read succeeds and done holds for it, and
-// returns that info; after within it fails the test with failure, what describe says of the info
-// it read last, and the last error.
-func awaitInfo[T any](t testing.TB, within time.Duration, failure string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
+// infoRead is one read of awaitInfo's wait: what the describer says of the info it read, and the
+// server's answer, which is what the failure of a wait that ran out prints.
+type infoRead[T any] struct {
+	info     *T
+	err      error
+	describe func(*T) string
+}
+
+func (r infoRead[T]) String() string { return fmt.Sprintf("%s (%v)", r.describe(r.info), r.err) }
+
+// awaitInfo reads an info through the shared wait until a read succeeds and done holds for it, and
+// returns that info. Each caller bounds its read by readWait, whatever the wait of the context it
+// was given, so a read sent across a leader change that draws no answer is sent again: a member
+// that still counts a stream's or a consumer's leader that is gone answers nothing for it
+// (nats-server v2.15.1, jsStreamInfoRequest, jsConsumerInfoRequest, isGroupLeaderless). The
+// failure of a wait that ran out prints what describe says of the info it read last and the last
+// error.
+func awaitInfo[T any](t testing.TB, what string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
+	return testwait.Until(t, what, func() (infoRead[T], bool) {
 		info, err := read()
-		if err == nil && done(info) {
-			return info
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s within %s: %s (%v)", failure, within, describe(info), err)
-		}
-		time.Sleep(retryInterval)
-	}
+		return infoRead[T]{info: info, err: err, describe: describe}, err == nil && done(info)
+	}).info
 }
 
 // StreamWrites records every stream create and update a JetStream account's clients ask for: a

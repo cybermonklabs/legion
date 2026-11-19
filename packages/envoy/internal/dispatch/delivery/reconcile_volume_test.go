@@ -16,15 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// fastPageRetries shrinks the wait between page retries for a test that means to exercise one.
-// Production's wait is a second, which would only make these tests slower.
-func fastPageRetries(t *testing.T) {
-	t.Helper()
-	previous := githubPageRetryWait
-	githubPageRetryWait = time.Millisecond
-	t.Cleanup(func() { githubPageRetryWait = previous })
-}
-
 // TestWalkWindowedVisitsAWindowItCannotHalveWhole pins the one case where visit receives more
 // than maxResults at once. GitHub's date qualifiers cannot split finer than a second, so a window
 // under two seconds is the floor: one whose total is past maxResults but within githubResultCap
@@ -192,7 +183,6 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 // that failed once failed the whole pass, which then restarted its 28-day window from the
 // beginning and failed again. GitHub reports a query it gave up on as a 502 or a 504.
 func TestListWorkflowRunsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *testing.T) {
-	fastPageRetries(t)
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
 	runs := make([]map[string]any, 0, 25)
@@ -246,7 +236,6 @@ func smallRun(id int64, created time.Time) map[string]any {
 // failure: one slow search page failed the whole installation's search, and with no progress kept
 // the next pass restarted the same 28-day window.
 func TestSearchMergedPullRequestsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *testing.T) {
-	fastPageRetries(t)
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
 
@@ -315,7 +304,6 @@ func searchNode(number int, merged string) map[string]any {
 // requests, past one installation's hourly rate limit -- could never finish one, since each pass
 // restarted it from the beginning.
 func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
-	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	// This test is the regular runs/deploy step's: a finished backfill lists nothing, so every
@@ -436,7 +424,6 @@ func countRuns(t *testing.T, ctx context.Context, pool *store.Pool) int {
 // that is removed, or whose repositories move to another, leaves a row keyed by an id no listing
 // answers for again, and nothing else would ever collect it.
 func TestReconcilePrunesProgressOfAnInstallationThatNoLongerExists(t *testing.T) {
-	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	scope := searchProgressScope(settings)

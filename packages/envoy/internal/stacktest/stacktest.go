@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // maxStackEnv carries the cap, in bytes, to the child process the parent runs, which caps its
@@ -29,7 +30,10 @@ const maxStackEnv = "ENVOY_TEST_MAX_STACK_BYTES"
 // In the parent it starts the test binary again for this one test, with the cap in the
 // environment, and mirrors the child's result: a skipped child skips the parent, a passing child
 // passes, and any failure shows the child's whole output - a stack overflow's fatal error among it.
-// In the child, where the cap is set, it runs body under that cap.
+// The child runs under what is left of the parent's deadline (-test.timeout), so a wait in the
+// body gives up by name (testwait) before the parent's own alarm and the parent prints why; under
+// no deadline the child has none either. In the child, where the cap is set, it runs body under
+// that cap.
 func Under(t *testing.T, maxStackBytes int, body func(t *testing.T)) {
 	t.Helper()
 	if value := os.Getenv(maxStackEnv); value != "" {
@@ -41,7 +45,11 @@ func Under(t *testing.T, maxStackBytes int, body func(t *testing.T)) {
 		body(t)
 		return
 	}
-	child := exec.Command(os.Args[0], "-test.run", runPattern(t.Name()), "-test.v", "-test.count=1")
+	args := []string{"-test.run", runPattern(t.Name()), "-test.v", "-test.count=1"}
+	if deadline, ok := t.Deadline(); ok {
+		args = append(args, "-test.timeout="+time.Until(deadline).String())
+	}
+	child := exec.Command(os.Args[0], args...)
 	child.Env = append(os.Environ(), maxStackEnv+"="+strconv.Itoa(maxStackBytes))
 	output, err := child.CombinedOutput()
 	if err == nil && hasVerdict(string(output), "SKIP", t.Name()) {

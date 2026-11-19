@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -81,10 +83,30 @@ type harness struct {
 	// reviewer is the review App's id this test's listener and pass were built with, which
 	// startListener needs for the webhook handler it mounts.
 	reviewer string
+	// clock is the time every pass of this harness runs its bound and its waits on. It moves
+	// only when a test moves it, so a pass's bound falls where the test moves it to
+	// (passCutByItsBound) and never because the machine running the test is slow.
+	clock *clocktest.Fake
+	// ciClock is the time the listener's CI store runs its summary loop on (cistore.WithClock):
+	// the loop's grid, its debounce, and the backoff of a claim that lost a compare-and-swap.
+	// The reconciler's CI writer stamps its records on it too, so a record it writes falls due a
+	// debounce after a moment on this clock and on no other. It is the reconciler's clock's
+	// neighbour rather than the same one, so a pass cut at its five-minute bound moves no tick of
+	// the loop; settlement and the helpers beside it move it (driveLoop).
+	ciClock *clocktest.Fake
 	// issues counts the issues issueInRepository has recorded, so each one it records has a key
 	// and a number of its own without its caller passing them.
 	issues int
 }
+
+// listenerDebounce and listenerTick are the summary loop's settings cmd/listener runs it with
+// (ENVOY_CI_DEBOUNCE's default and the one-second tick, cmd/listener/main.go), which this
+// harness runs it with too: the loop's grid and its debounce read the CI store's clock, which
+// the test moves, so no test shortens them.
+const (
+	listenerDebounce = 5 * time.Second
+	listenerTick     = time.Second
+)
 
 // newHarness is the whole stack with the listener already running, which every test wants but
 // the one about a pass that runs before the listener has made the CI bucket.
@@ -111,7 +133,9 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 
 	logs := &syncBuffer{}
 	limits := ratelimit.New(database.Pool)
-	github := newFakeGitHub(t)
+	fake := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
+	github := newFakeGitHub(t, fake)
+	ciClock := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
 	return &harness{
 		t:        t,
 		ctx:      ctx,
@@ -120,26 +144,32 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 		bus:      client,
 		logs:     logs,
 		reviewer: reviewer,
+		clock:    fake,
+		ciClock:  ciClock,
 		reconciler: &Reconciler{
 			Pool:   database.Pool,
 			GitHub: github.client(limits),
 			Limits: limits,
 			// The writer is bound by the first pass that finds NATS connected and the bucket
 			// made, as the running pass binds it, rather than here.
-			Open:          openWriter(client),
+			Open:          openWriter(client, ciClock),
 			ReviewerAppID: reviewer,
 			Logger:        slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-			// A test waits for no pace.
+			// A test not about the pace waits for no pace.
 			Pace: 0,
+			// The bound is the one every deployment runs, Interval, on a clock that reaches it
+			// only when a test moves it there.
+			Clock: fake,
 		},
 	}
 }
 
 // openWriter is the Open a Reconciler of this harness binds through: cistore's own writer, which
-// creates no bucket and so fails until the listener has made one.
-func openWriter(client *bus.Client) func() (Writer, error) {
+// creates no bucket and so fails until the listener has made one, stamping its records on
+// ciClock, the listener's clock.
+func openWriter(client *bus.Client, ciClock *clocktest.Fake) func() (Writer, error) {
 	return func() (Writer, error) {
-		writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+		writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), cistore.WithClock(ciClock))
 		if err != nil {
 			return nil, err
 		}
@@ -151,7 +181,8 @@ func openWriter(client *bus.Client) func() (Writer, error) {
 // the pass making it has run out of its own bound. It is a CI bucket slower to answer than the
 // pass has left, which is the one thing that can take a pass past its bound in the middle of a
 // page its query answered whole: those heads cost no request of their own, so nothing else
-// about them can be slow.
+// about them can be slow. The held write is named on the stand-in's held stream, which is what
+// passCutByItsBound waits on before it moves the clock to the bound.
 //
 // The count is the harness's rather than one pass's, so the pass after the one that was held
 // writes every head of its own without waiting.
@@ -165,6 +196,7 @@ func (h *harness) holdWriteUntilTheBoundFalls(nth int) {
 		}
 		return &holdingWriter{Writer: writer, hold: func(ctx context.Context) {
 			if writes++; writes == nth {
+				h.github.held.Add(fmt.Sprintf("check-run write %d", nth))
 				<-ctx.Done()
 			}
 		}}, nil
@@ -188,21 +220,43 @@ func (w *holdingWriter) Record(ctx context.Context, observation contracts.CIObse
 // to make this listener settle, and a record alone does not prove that.
 func (h *harness) startListener() {
 	h.t.Helper()
-	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour),
+		cistore.WithClock(h.ciClock))
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}
-	ready, cancelReady := context.WithTimeout(h.ctx, 10*time.Second)
-	defer cancelReady()
-	if err := listener.WaitForCacheReady(ready); err != nil {
+	if err := listener.WaitForCacheReady(testwait.Context(h.t)); err != nil {
 		h.t.Fatalf("the listener's cache is not ready: %v", err)
 	}
 	loop, endLoop := context.WithCancel(h.ctx)
 	h.t.Cleanup(endLoop)
-	cistore.StartSummaryLoop(loop, listener, h.bus, 100*time.Millisecond, 20*time.Millisecond,
+	cistore.StartSummaryLoop(loop, listener, h.bus, listenerDebounce, listenerTick,
 		metrics.New().NewGauge("held", ""), logging.New("loop"))
 	h.listener = listener
 	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, listener)
+}
+
+// driveLoop moves the CI store's clock to the earliest moment armed on it when that moment is no
+// later than until, and reports whether it moved. What is armed there while a test drives the
+// loop is the loop's own: its next tick, and the backoff of a claim that lost a compare-and-swap
+// (cistore.Store.casState), the only wait its writes arm. A webhook the listener records arms its
+// RecordWait on the same clock, but only while the record is in flight, and no test drives the
+// loop while one is.
+func (h *harness) driveLoop(until time.Time) bool {
+	armed := h.ciClock.Armed()
+	if len(armed) == 0 || armed[0].After(until) {
+		return false
+	}
+	h.ciClock.Set(armed[0])
+	return true
+}
+
+// loopStep is the furthest one move of driveLoop takes the loop: a debounce and a tick, which
+// holds the loop's next tick and a record's falling due, and never a far later moment the loop
+// arms for (a stale claim, a handover's grace) that the settling a test waits for does not
+// reach.
+func (h *harness) loopStep() time.Time {
+	return h.ciClock.Now().Add(listenerDebounce + listenerTick)
 }
 
 // replica is a second Reconciler standing for the other Dispatch process of a deployment: a
@@ -215,10 +269,11 @@ func (h *harness) replica() *Reconciler {
 		Pool:          h.pool,
 		GitHub:        h.github.client(limits),
 		Limits:        limits,
-		Open:          openWriter(h.bus),
+		Open:          openWriter(h.bus, h.ciClock),
 		ReviewerAppID: h.reviewer,
 		Logger:        slog.New(slog.NewJSONHandler(&syncBuffer{}, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Pace:          0,
+		Clock:         h.clock,
 	}
 }
 
@@ -321,6 +376,78 @@ func (h *harness) pass() {
 	h.reconciler.Pass(h.ctx)
 }
 
+// startPass runs one reconcile pass within ctx on a goroutine of its own, as the loop runs it,
+// and the channel it returns is closed once the pass has returned.
+func (h *harness) startPass(ctx context.Context) <-chan struct{} {
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		h.reconciler.Pass(ctx)
+	}()
+	return ended
+}
+
+// passCutByItsBound runs one reconcile pass and ends it on its own bound at what the test made
+// GitHub or the bucket hold (fakeGitHub.hold, fakeGitHub.holdQuery, holdWriteUntilTheBoundFalls),
+// as a GitHub slower than the interval ends a pass.
+func (h *harness) passCutByItsBound() {
+	h.t.Helper()
+	h.cutAtTheHold(h.startPass(h.ctx))
+}
+
+// cutAtTheHold waits until the running pass reaches what the test made GitHub or the bucket
+// hold, checks that the pass armed its bound one Interval from the moment it started -- the
+// clock stands where it stood then, since only a test moves it -- and moves the clock to that
+// bound. It returns once the pass has, which ended reports.
+func (h *harness) cutAtTheHold(ended <-chan struct{}) {
+	h.t.Helper()
+	began := h.clock.Now()
+	held := testwait.Next(h.t, "the pass to reach what GitHub holds past its bound", &h.github.held,
+		func(string) bool { return true })
+	armed := h.clock.AwaitArmed(h.t, "the pass's bound", 1)
+	if want := began.Add(Interval); len(armed) != 1 || !armed[0].Equal(want) {
+		h.t.Fatalf("the pass held at %s armed %v, want its bound alone at %s, one Interval from its start", held, armed, want)
+	}
+	h.clock.Set(armed[0])
+	testwait.Receive(h.t, "the pass to end on its bound at "+held, ended)
+}
+
+// passThroughItsWaits runs one reconcile pass and moves the clock to each wait the pass arms
+// between two reads of GitHub -- the gap before a REST request (Pace), the wait a query earns
+// (graphQLPace) -- once it is armed, and never to the pass's own bound. It returns how long
+// each wait was, in the order the pass armed them.
+func (h *harness) passThroughItsWaits() []time.Duration {
+	h.t.Helper()
+	ended := h.startPass(h.ctx)
+	var waits []time.Duration
+	for {
+		next := testwait.Until(h.t, "the pass to arm a wait beside its bound, or to end", func() (armedWait, bool) {
+			select {
+			case <-ended:
+				return armedWait{ended: true}, true
+			default:
+			}
+			armed := h.clock.Armed()
+			if len(armed) < 2 {
+				return armedWait{armed: armed}, false
+			}
+			return armedWait{armed: armed}, true
+		})
+		if next.ended {
+			return waits
+		}
+		waits = append(waits, next.armed[0].Sub(h.clock.Now()))
+		h.clock.Set(next.armed[0])
+	}
+}
+
+// armedWait is one reading of a running pass: whether it has ended, and the deadlines pending on
+// the clock, of which the pass's bound is the last and a wait it armed the first.
+type armedWait struct {
+	ended bool
+	armed []time.Time
+}
+
 // subscribe listens for the head's settlements before anything can publish one.
 func (h *harness) subscribe() *nats.Subscription {
 	h.t.Helper()
@@ -332,13 +459,25 @@ func (h *harness) subscribe() *nats.Subscription {
 	return sub
 }
 
-// settlement is the next settlement published for the head, which must arrive.
+// settlement is the next settlement published for the head, which must arrive: it moves the
+// summary loop's clock on through each tick it arms until the loop publishes one.
 func (h *harness) settlement(sub *nats.Subscription, why string) cistore.Summary {
 	h.t.Helper()
-	message, err := sub.NextMsg(15 * time.Second)
-	if err != nil {
-		h.t.Fatalf("%s: no settlement was published: %v", why, err)
-	}
+	message := testwait.Until(h.t, why+": a settlement of the head", func() (*nats.Msg, bool) {
+		waiting, _, err := sub.Pending()
+		if err != nil {
+			h.t.Fatalf("%s: read the settlements waiting: %v", why, err)
+		}
+		if waiting > 0 {
+			message, err := sub.NextMsgWithContext(testwait.Context(h.t))
+			if err != nil {
+				h.t.Fatalf("%s: reading the settlement published failed: %v", why, err)
+			}
+			return message, true
+		}
+		h.driveLoop(h.loopStep())
+		return nil, false
+	})
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(message.Data, &envelope); err != nil {
 		h.t.Fatalf("%s: the settlement is not an envelope: %v", why, err)
@@ -350,14 +489,32 @@ func (h *harness) settlement(sub *nats.Subscription, why string) cistore.Summary
 	return summary
 }
 
-// noSettlement fails when another settlement is published within the summary loop's own debounce
-// several times over.
+// noSettlement runs every pass the summary loop would make over three debounces of its own clock
+// and fails when a settlement of the head has reached sub. A pass that changed a record wakes the
+// loop, which arms its next tick; each tick it arms within that span is moved to and run, until
+// it arms none, which is a loop with nothing due. That the loop publishes nothing later still
+// rests on the state each caller reads next: the loop publishes a settlement only by claiming the
+// record and then marking it emitted, two writes of it, so a record whose revision has not moved
+// since it settled (settledRecord) has had none published since; and the loop settles no record
+// holding a check still queued or running.
 func (h *harness) noSettlement(sub *nats.Subscription, why string) {
 	h.t.Helper()
-	message, err := sub.NextMsg(2 * time.Second)
-	if err == nil {
-		h.t.Fatalf("%s: a settlement was published: %s", why, message.Data)
+	horizon := h.ciClock.Now().Add(3 * listenerDebounce)
+	testwait.Eventually(h.t, why+": the summary loop to arm no tick it has not run", func() bool {
+		return !h.driveLoop(horizon)
+	})
+	waiting, _, err := sub.Pending()
+	if err != nil {
+		h.t.Fatalf("%s: read the settlements waiting: %v", why, err)
 	}
+	if waiting == 0 {
+		return
+	}
+	message, err := sub.NextMsgWithContext(testwait.Context(h.t))
+	if err != nil {
+		h.t.Fatalf("%s: %d settlements were published, and reading the first failed: %v", why, waiting, err)
+	}
+	h.t.Fatalf("%s: a settlement was published: %s", why, message.Data)
 }
 
 // settledRecord is the head's record once the summary loop has finished with it. Publishing a
@@ -366,18 +523,32 @@ func (h *harness) noSettlement(sub *nats.Subscription, why string) {
 // test comparing revisions across a pass has to start from one that has stopped.
 func (h *harness) settledRecord() (cistore.State, uint64) {
 	h.t.Helper()
-	var state cistore.State
-	var revision uint64
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
-		next, nextRevision, ok := h.record()
-		if ok && next.SettledEmitted && next.Claim == nil && nextRevision == revision {
-			return next, revision
-		}
-		state, revision = next, nextRevision
-		time.Sleep(50 * time.Millisecond)
-	}
-	h.t.Fatalf("the head's record did not settle: %+v", state)
-	return state, revision
+	return h.settledRecordAt(gitHubRepository, 7, headSHA)
+}
+
+// settledRecordAt is settledRecord for one head of any repository, keyed as recordAt keys it:
+// the record once it is settled, unclaimed, and at the revision the read before found it at. It
+// moves the summary loop on as settlement does, so a mark held in a claim's backoff runs.
+func (h *harness) settledRecordAt(repository string, number int64, sha string) (cistore.State, uint64) {
+	h.t.Helper()
+	var last uint64
+	read := testwait.Until(h.t, fmt.Sprintf("the record of %s#%d to settle and stop moving", repository, number),
+		func() (recordRead, bool) {
+			state, revision := h.recordAt(repository, number, sha)
+			stopped := state != nil && state.SettledEmitted && state.Claim == nil && revision == last
+			last = revision
+			if !stopped {
+				h.driveLoop(h.loopStep())
+			}
+			return recordRead{state: state, revision: revision}, stopped
+		})
+	return *read.state, read.revision
+}
+
+// recordRead is one read of a head's record, as a wait for the record to settle reports it.
+type recordRead struct {
+	state    *cistore.State
+	revision uint64
 }
 
 // record is the head's record as the bucket holds it, with its revision, and ok false when the

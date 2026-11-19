@@ -137,10 +137,13 @@ func BenchmarkKeystrokeBesideReads(b *testing.B) {
 					if reader.read != nil {
 						reading.Go(func() {
 							for {
+								// The cadence the run measures: a read every `every`, or one
+								// after another where that is zero.
+								time.Sleep(every)
 								select {
 								case <-stop:
 									return
-								case <-time.After(every):
+								default:
 								}
 								reader.read(service)
 							}
@@ -148,6 +151,7 @@ func BenchmarkKeystrokeBesideReads(b *testing.B) {
 					}
 					latencies := make([]time.Duration, 0, 120)
 					for range 120 {
+						// A typist's cadence on a document a room is serving.
 						time.Sleep(20 * time.Millisecond)
 						start := time.Now()
 						live.Transact(func(txn *crdt.Transaction) { texts[0].Insert(txn, 0, "y", nil) })

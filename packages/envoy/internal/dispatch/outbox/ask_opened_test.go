@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestRunPublishesPersistedAskOpenedEventID(t *testing.T) {
@@ -30,7 +30,7 @@ func TestRunPublishesPersistedAskOpenedEventID(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, time.Second, "ask opening publication", func() bool {
+	testwait.Eventually(t, "ask opening publication", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) != nil
 	})
 	var stored struct {

@@ -463,13 +463,8 @@ func TestCopyLoadsAtStartAndAfterAWakeAndKeepsItsCopyOnAFailedLoad(t *testing.T)
 	// started waits for the next load, which begins only after the one before it has ended.
 	started := func(what string) {
 		t.Helper()
-		select {
-		case bounded := <-calls:
-			if !bounded {
-				t.Fatalf("%s: the load has no bound of %s", what, loadTimeout)
-			}
-		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
-			t.Fatalf("%s: no load started", what)
+		if bounded := testwait.Receive(t, what+": a load to start", calls); !bounded {
+			t.Fatalf("%s: the load has no bound of %s", what, loadTimeout)
 		}
 	}
 	warnings := func() int {
@@ -519,9 +514,5 @@ func TestCopyLoadsAtStartAndAfterAWakeAndKeepsItsCopyOnAFailedLoad(t *testing.T)
 	testwait.Eventually(t, "the copy to hold the newest rows", holds(second))
 
 	stop()
-	select {
-	case <-ran:
-	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
-		t.Fatal("Run did not return once its context ended")
-	}
+	testwait.Receive(t, "Run to return once its context ended", ran)
 }

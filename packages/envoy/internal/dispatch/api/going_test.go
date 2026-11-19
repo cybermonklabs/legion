@@ -11,9 +11,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/going"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // goingRig is the record under test: a server on the harness's database, called directly. These
@@ -309,10 +311,14 @@ func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
 	abandoned := rig.record(t, "nobody is answering this")
 	rig.age(t, abandoned.ID, time.Minute, time.Second)
 	leases := sweepLeases(t, rig.database)
+	ticks := clocktest.New(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
 	runSweep(t, func(ctx context.Context) {
-		RunMaintenanceSweep(ctx, rig.database.Pool, maintenanceTestInterval, leases, nil)
+		runMaintenanceSweepOn(ctx, ticks, rig.database.Pool, MaintenanceSweepInterval, leases, nil)
 	})
-	waitUntil(t, 30*time.Second, "the abandoned run ended by a maintenance pass", func() bool {
+	first := ticks.Now().Add(MaintenanceSweepInterval)
+	awaitArmedAt(t, ticks, "the maintenance loop's first tick", first)
+	ticks.Set(first)
+	testwait.Eventually(t, "the abandoned run ended by a maintenance pass", func() bool {
 		_, state, err := rig.server.readGoingStream(context.Background(), abandoned.ID, 0)
 		return err == nil && state.Terminal > 0
 	})

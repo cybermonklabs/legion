@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // architectureLeases is the pool an import pass takes its lease on, the one cmd/dispatch gives
@@ -38,11 +39,7 @@ func TestAnImportPassWhoseLeaseIsHeldElsewhereReadsNothing(t *testing.T) {
 			<-release
 		})
 	}()
-	select {
-	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the other caller never took the architecture-import lease")
-	}
+	testwait.Receive(t, "the other caller to take the architecture-import lease", taken)
 
 	syncAllLeased(ctx, importer, leases, time.Now())
 	if trees, blobs := fake.reads(); trees != 0 || blobs != 0 {

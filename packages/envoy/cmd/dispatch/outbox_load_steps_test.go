@@ -25,6 +25,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -259,7 +260,7 @@ func (r *sessionRig) step(t *testing.T, writers []*dispatchProcess, rate int) lo
 			roleIDs[write.commentID] = true
 		}
 	}
-	target.recorder.waitForDelivery(ids, finished.Add(loadDeliveryWithin))
+	target.recorder.waitForDelivery(t, ids)
 	outcome := target.recorder.outcome(ids, started, finished)
 	outcome.requireDelivered(t, what, len(ids))
 
@@ -305,7 +306,7 @@ func (r *sessionRig) burst(t *testing.T, writers []*dispatchProcess) loadBurstRe
 	finished := time.Now()
 
 	ids, failures := written(t, what, writes)
-	target.recorder.waitForDelivery(ids, finished.Add(loadDeliveryWithin))
+	target.recorder.waitForDelivery(t, ids)
 	outcome := target.recorder.outcome(ids, started, finished)
 	outcome.requireDelivered(t, what, len(ids))
 	drain := 0.0
@@ -428,43 +429,34 @@ func (r *loadRecorder) record(destination loadDestination, data []byte, at time.
 // for loadSetupQuiet with nothing arriving, so a step starts with its setup published.
 func (r *loadRecorder) waitForSetup(t *testing.T, issue string) {
 	t.Helper()
-	deadline := time.Now().Add(loadDeliveryWithin)
-	for {
+	testwait.Until(t, "the setup's events, the route change on "+issue+" last, to be published and settle", func() (bool, bool) {
 		r.mu.Lock()
 		routed, last := r.seen[issue+" issue.updated"], r.last
 		r.mu.Unlock()
-		if routed && time.Since(last) >= loadSetupQuiet {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the setup's events were not published within %v (route change on %s received: %v)",
-				loadDeliveryWithin, issue, routed)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return routed, routed && time.Since(last) >= loadSetupQuiet
+	})
 }
 
 // waitForDelivery waits until every comment of ids has reached every destination it is addressed
-// to, or until deadline.
-func (r *loadRecorder) waitForDelivery(ids []string, deadline time.Time) {
+// to.
+func (r *loadRecorder) waitForDelivery(t *testing.T, ids []string) {
+	t.Helper()
 	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		want[id] = true
 	}
-	for time.Now().Before(deadline) {
-		r.mu.Lock()
-		delivered := 0
-		for _, arrival := range r.events {
-			if _, ok := arrival.reached(r.roleIssue); ok && want[arrival.commentID] {
-				delivered++
+	testwait.Until(t, fmt.Sprintf("every one of the %d comments to reach the destinations it is addressed to", len(ids)),
+		func() (int, bool) {
+			r.mu.Lock()
+			delivered := 0
+			for _, arrival := range r.events {
+				if _, ok := arrival.reached(r.roleIssue); ok && want[arrival.commentID] {
+					delivered++
+				}
 			}
-		}
-		r.mu.Unlock()
-		if delivered == len(want) {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+			r.mu.Unlock()
+			return delivered, delivered == len(want)
+		})
 }
 
 // loadOutcome is what the test session received of a step's or a burst's written comments.

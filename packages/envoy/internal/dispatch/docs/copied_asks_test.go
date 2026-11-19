@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -303,18 +304,13 @@ func openAsksUnder(t *testing.T, service *Service, blockID string) []string {
 }
 
 // requireOneOpenAskOn waits for the settlement a retraction arms on document: exactly one open ask
-// under blockID on the issue, on document. It waits as long as a room's own work may take
-// (roomWait), and fails naming the asks it read last.
+// under blockID on the issue, on document.
 func requireOneOpenAskOn(t *testing.T, service *Service, blockID, document string) {
 	t.Helper()
-	var open []string
-	if testwait.Holds(roomWait(t), 20*time.Millisecond, func() bool {
-		open = openAsksUnder(t, service, blockID)
-		return len(open) == 1 && open[0] == document
-	}) {
-		return
-	}
-	t.Fatalf("open asks under %s = %v, want one, on the copy %s", blockID, open, document)
+	testwait.Until(t, fmt.Sprintf("one open ask under %s, on the copy %s", blockID, document), func() ([]string, bool) {
+		open := openAsksUnder(t, service, blockID)
+		return open, len(open) == 1 && open[0] == document
+	})
 }
 
 // A block pasted into a second document and then cut from its first, the destination settling
@@ -471,7 +467,7 @@ func TestAnAnswerOrResolutionOfACopysSourceAfterARewordingOpensTheCopysOwnAsk(t 
 			if closing == "answered" {
 				answer = &model.AskAnswer{User: "alice", Selected: []string{"Tuesday"}, At: time.Date(2026, 10, 9, 9, 0, 0, 0, time.UTC)}
 			}
-			if err := closeSource(context.Background(), service, original, "ship", source, answer, nil); err != nil {
+			if err := closeSource(t, context.Background(), service, original, "ship", source, answer, nil); err != nil {
 				t.Fatal(err)
 			}
 			if owed := copyOwed(t, service, copied); owed != 1 {
@@ -550,7 +546,7 @@ func TestADocumentEditOfADecidedAsksWordingIsWrittenBackAndLeavesItsRow(t *testi
 				settleCurrentGeneration(t, service, original)
 				source := blockAskOn(t, service, original, "ship")
 				answer, opener := decidedShip(closing)
-				if err := closeSource(context.Background(), service, original, "ship", source, answer, nil); err != nil {
+				if err := closeSource(t, context.Background(), service, original, "ship", source, answer, nil); err != nil {
 					t.Fatal(err)
 				}
 				write(t, service, original)
@@ -631,7 +627,7 @@ func TestASettlementRestoresADecidedAskAnEarlierReleaseReworded(t *testing.T) {
 			seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 			settleCurrentGeneration(t, service, original)
 			answer, opener := decidedShip(closing)
-			if err := closeSource(context.Background(), service, original, "ship", blockAskOn(t, service, original, "ship"), answer, nil); err != nil {
+			if err := closeSource(t, context.Background(), service, original, "ship", blockAskOn(t, service, original, "ship"), answer, nil); err != nil {
 				t.Fatal(err)
 			}
 			source := blockAskOn(t, service, original, "ship")
@@ -676,7 +672,7 @@ func TestARestorationOfACopysSourceSettlesTheCopyAgain(t *testing.T) {
 				seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 				settleCurrentGeneration(t, service, original)
 				answer, _ := decidedShip(closing)
-				if err := closeSource(ctx, service, original, "ship", blockAskOn(t, service, original, "ship"), answer, nil); err != nil {
+				if err := closeSource(t, ctx, service, original, "ship", blockAskOn(t, service, original, "ship"), answer, nil); err != nil {
 					t.Fatal(err)
 				}
 				source := blockAskOn(t, service, original, "ship")
@@ -742,7 +738,7 @@ func TestTheBootsRestorationSettlesTheRestoredAsksOwnDocument(t *testing.T) {
 			seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 			settleCurrentGeneration(t, service, original)
 			answer, opener := decidedShip(closing)
-			if err := closeSource(ctx, service, original, "ship", blockAskOn(t, service, original, "ship"), answer, nil); err != nil {
+			if err := closeSource(t, ctx, service, original, "ship", blockAskOn(t, service, original, "ship"), answer, nil); err != nil {
 				t.Fatal(err)
 			}
 			source := blockAskOn(t, service, original, "ship")
@@ -866,7 +862,7 @@ func TestACopyOfADecidedAsksEditedTextOpensItsOwnAskAndACopyOfItsDecidedWordingS
 	seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 	settleCurrentGeneration(t, service, original)
 	source := blockAskOn(t, service, original, "ship")
-	if err := closeSource(context.Background(), service, original, "ship", source, &mondayAnswer, nil); err != nil {
+	if err := closeSource(t, context.Background(), service, original, "ship", source, &mondayAnswer, nil); err != nil {
 		t.Fatal(err)
 	}
 	editLiveTree(t, service, original, func(tree *pmdoc.Node) *pmdoc.Node {
@@ -935,7 +931,7 @@ func TestACopyOfARestoredSourceRewordedAndAnsweredOpensItsOwnAsk(t *testing.T) {
 
 	source = rewordShip(t, service, original)
 	answer := model.AskAnswer{User: "alice", Selected: []string{"Tuesday"}, At: time.Date(2026, 10, 9, 10, 0, 0, 0, time.UTC)}
-	if err := closeSource(context.Background(), service, original, "ship", source, &answer, nil); err != nil {
+	if err := closeSource(t, context.Background(), service, original, "ship", source, &answer, nil); err != nil {
 		t.Fatal(err)
 	}
 	settleCurrentGeneration(t, service, copied)
@@ -987,13 +983,9 @@ func TestThreeCopiesOfARetractedAskShareTheOneAskTheFirstOpens(t *testing.T) {
 	})
 	settleCurrentGeneration(t, service, original)
 
-	var open []string
-	var shown map[string]string
-	pending := -1
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		open = openAsksUnder(t, service, "shared")
-		shown = map[string]string{}
+	testwait.Until(t, "one open ask under shared on a copy that the other two name, no settlement pending", func() (string, bool) {
+		open := openAsksUnder(t, service, "shared")
+		shown := map[string]string{}
 		for _, copy := range copies {
 			text, err := service.Text(context.Background(), copy)
 			if err != nil {
@@ -1001,13 +993,10 @@ func TestThreeCopiesOfARetractedAskShareTheOneAskTheFirstOpens(t *testing.T) {
 			}
 			shown[copy] = text
 		}
-		pending = pendingSettlements(t, service)
-		if len(open) == 1 && pending == 0 && sharesOneAsk(t, service, copies, open[0], shown) {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("open asks under shared = %v, pending settlements = %d, want one open ask on a copy that the other two name, none pending; copies:\n%v", open, pending, shown)
+		pending := pendingSettlements(t, service)
+		reading := fmt.Sprintf("open asks under shared = %v, pending settlements = %d; copies:\n%v", open, pending, shown)
+		return reading, len(open) == 1 && pending == 0 && sharesOneAsk(t, service, copies, open[0], shown)
+	})
 }
 
 // sharesOneAsk reports whether opener, a copy holding the block's one open ask, is one of copies
@@ -1038,43 +1027,54 @@ func sharesOneAsk(t *testing.T, service *Service, copies []string, opener string
 // copyLockWait is the LIKE pattern of a statement waiting on a project's copy lock.
 const copyLockWait = "%" + projectCopiesLock + "%"
 
-// settlementBarrier is a settlement hook (afterSettleLock, afterSettleReconcile) that holds each
-// settlement calling it until all n have called it or wait on their project's copy lock
-// (lockProjectCopies). It runs on settlement's goroutine, so a failed read is reported with
-// t.Errorf and lets the settlement go on.
-func settlementBarrier(t *testing.T, service *Service, n int) func(string) {
-	t.Helper()
-	var mu sync.Mutex
-	arrived := 0
-	return func(string) {
-		mu.Lock()
-		arrived++
-		mu.Unlock()
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			waiting, err := storetest.CountLockWaits(context.Background(), service.store, copyLockWait)
-			if err != nil {
-				t.Errorf("count the settlements waiting on the copy lock: %v", err)
-				return
-			}
-			mu.Lock()
-			reached := arrived
-			mu.Unlock()
-			if reached+waiting >= n {
-				return
-			}
-			time.Sleep(2 * time.Millisecond)
-		}
-		t.Errorf("settlements never all reached the barrier or the copy lock")
+// settlementBarrier holds each settlement that calls its hook (afterSettleLock,
+// afterSettleReconcile) until the test opens it, which it does once all n have called it or wait
+// on their project's copy lock (lockProjectCopies).
+type settlementBarrier struct {
+	service *Service
+	n       int
+	arrived atomic.Int32
+	gate    chan struct{}
+	// waits is the shared wait's context: the hook runs on settlement's goroutine, where a wait
+	// cannot fail the test, so it waits under it, and the test's own wait (open) is the one that
+	// fails.
+	waits context.Context
+}
+
+func newSettlementBarrier(t *testing.T, service *Service, n int) *settlementBarrier {
+	return &settlementBarrier{service: service, n: n, gate: make(chan struct{}), waits: testwait.Context(t)}
+}
+
+// hook is the settlement hook: it counts the settlement in and holds it until the test opens the
+// barrier.
+func (b *settlementBarrier) hook(string) {
+	b.arrived.Add(1)
+	select {
+	case <-b.gate:
+	case <-b.waits.Done():
 	}
+}
+
+// open waits until each of the n settlements has called the hook or waits on the project's copy
+// lock, and lets every one held at the barrier go on.
+func (b *settlementBarrier) open(t *testing.T) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("%d settlements to reach the barrier or the copy lock", b.n), func() (string, bool) {
+		waiting, err := storetest.CountLockWaits(context.Background(), b.service.store, copyLockWait)
+		if err != nil {
+			t.Fatalf("count the settlements waiting on the copy lock: %v", err)
+		}
+		reached := int(b.arrived.Load())
+		return fmt.Sprintf("%d at the barrier, %d on the copy lock", reached, waiting), reached+waiting >= b.n
+	})
+	close(b.gate)
 }
 
 // roomGeneration is document's room generation once its live updates are durable, the generation a
 // settlement of it runs at (settleCurrentGeneration).
 func roomGeneration(t *testing.T, service *Service, document string) uint64 {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(ctx, document); err != nil {
 		t.Fatalf("wait for live updates to reach persistence: %v", err)
 	}
@@ -1124,12 +1124,16 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 	for index, copy := range copies {
 		generations[index] = roomGeneration(t, service, copy)
 	}
-	service.afterSettleLock = settlementBarrier(t, service, len(copies))
-	service.afterSettleReconcile = settlementBarrier(t, service, len(copies))
+	locked := newSettlementBarrier(t, service, len(copies))
+	reconciled := newSettlementBarrier(t, service, len(copies))
+	service.afterSettleLock = locked.hook
+	service.afterSettleReconcile = reconciled.hook
 	var settling sync.WaitGroup
 	for index, copy := range copies {
 		settling.Go(func() { service.settleRoom(copy, generations[index]) })
 	}
+	locked.open(t)
+	reconciled.open(t)
 	settling.Wait()
 	service.afterSettleLock, service.afterSettleReconcile = nil, nil
 
@@ -1160,8 +1164,7 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t *testing.T) {
 	service, _ := newTestService(t)
 	service.settle = time.Hour
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 	original := createProjectDocument(t, service.store, "# Original")
 	seedServiceText(t, service, original, "Context\n\n"+shared)
@@ -1180,7 +1183,7 @@ func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t
 	generation := roomGeneration(t, service, copied)
 
 	settled := make(chan error, 1)
-	if err := answerSource(ctx, service, original, source, func() {
+	if err := answerSource(t, ctx, service, original, source, func() {
 		go func() {
 			service.settleRoom(copied, generation)
 			settled <- nil
@@ -1189,11 +1192,7 @@ func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-settled:
-	case <-ctx.Done():
-		t.Fatal("the copy's settlement never finished")
-	}
+	testwait.Receive(t, "the copy's settlement to finish", settled)
 	state := service.room(copied)
 	state.mu.Lock()
 	failures := state.settleFailures
@@ -1214,10 +1213,10 @@ func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t
 
 // answerSource answers source, the ask of the block shared on the project document original, as
 // closeSource does, with eu-west-1. between runs right after SettleCopiesOf.
-func answerSource(ctx context.Context, service *Service, original string, source model.Ask, between func()) error {
+func answerSource(t testing.TB, ctx context.Context, service *Service, original string, source model.Ask, between func()) error {
 	region := "eu-west-1"
 	answer := model.AskAnswer{User: "alice", Selected: []string{}, Text: &region, At: time.Date(2026, 10, 9, 9, 0, 0, 0, time.UTC)}
-	return closeSource(ctx, service, original, "shared", source, &answer, between)
+	return closeSource(t, ctx, service, original, "shared", source, &answer, between)
 }
 
 // closeSource answers source, the ask of blockID on original, with answer, or resolves it when
@@ -1229,8 +1228,10 @@ func answerSource(ctx context.Context, service *Service, original string, source
 // between, when set, runs while the write phase stands right after those rows, holding the copy
 // lock and the copies' pending rows: the batch waits there on a gate lock this helper holds
 // (closeSourceGate) until between has returned, so the statements after the rows run only then.
-// It returns its error rather than failing the test, so it can run off the test's goroutine.
-func closeSource(ctx context.Context, service *Service, original, blockID string, source model.Ask, answer *model.AskAnswer, between func()) error {
+// It returns its error rather than failing the test, so it can run off the test's goroutine; only
+// its wait for the gate, when between is set, waits through the shared wait on t, so a caller that
+// passes between calls it on the test's goroutine.
+func closeSource(t testing.TB, ctx context.Context, service *Service, original, blockID string, source model.Ask, answer *model.AskAnswer, between func()) error {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	tx, err := service.store.Pool.Begin(ctx)
 	if err != nil {
@@ -1319,23 +1320,31 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 	committed := make(chan error, 1)
 	go func() { committed <- ledger.Commit(ctx) }()
 	reached := func() error {
-		for {
-			waiting, err := storetest.CountLockWaits(ctx, service.store, "%close_source_gate%")
-			if err != nil {
-				return err
-			}
-			if waiting > 0 {
-				return nil
-			}
+		type reading struct {
+			waiting   int
+			committed bool
+			err       error
+		}
+		got := testwait.Until(t, "the close's write phase to reach the gate, or the close to commit", func() (reading, bool) {
 			select {
 			case err := <-committed:
 				committed <- err
-				return fmt.Errorf("the close committed (%v) before its write phase reached the gate", err)
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(2 * time.Millisecond):
+				return reading{committed: true, err: err}, true
+			default:
 			}
+			waiting, err := storetest.CountLockWaits(ctx, service.store, "%close_source_gate%")
+			if err != nil {
+				return reading{err: err}, true
+			}
+			return reading{waiting: waiting}, waiting > 0
+		})
+		switch {
+		case got.committed:
+			return fmt.Errorf("the close committed (%v) before its write phase reached the gate", got.err)
+		case got.err != nil:
+			return got.err
 		}
+		return nil
 	}
 	// Whatever happens here, the gate opens and the commit returns before this does, so nothing
 	// rolls the transaction back under the commit.
@@ -1371,8 +1380,7 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 		t.Run(order, func(t *testing.T) {
 			service, _ := newTestService(t)
 			service.settle = time.Hour
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 			original := createProjectDocument(t, service.store, "# Original")
 			seedServiceText(t, service, original, "Context\n\n"+shared)
@@ -1396,13 +1404,13 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 			case "answer first":
 				// The answer holds the copy lock and the copy's pending row while the copy's settlement
 				// waits on the lock, then appends its event and commits.
-				if err := answerSource(ctx, service, original, source, func() {
+				if err := answerSource(t, ctx, service, original, source, func() {
 					go settle()
 					waitForLockWait(t, ctx, service.store, copyLockWait, settled)
 				}); err != nil {
 					t.Fatal(err)
 				}
-				awaitDone(t, ctx, "the copy's settlement", settled)
+				awaitDone(t, "the copy's settlement", settled)
 			case "settlement first":
 				// The copy's settlement holds the copy lock, reconciled, while the answer waits on it.
 				reconciled, proceed := make(chan struct{}), make(chan struct{})
@@ -1413,18 +1421,14 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 					}
 				}
 				go settle()
-				select {
-				case <-reconciled:
-				case <-ctx.Done():
-					t.Fatal("the copy's settlement never reconciled")
-				}
+				testwait.Receive(t, "the copy's settlement to reconcile", reconciled)
 				answered := make(chan error, 1)
-				go func() { answered <- answerSource(ctx, service, original, source, nil) }()
+				go func() { answered <- answerSource(t, ctx, service, original, source, nil) }()
 				waitForLockWait(t, ctx, service.store, copyLockWait, answered)
 				close(proceed)
-				awaitDone(t, ctx, "the copy's settlement", settled)
+				awaitDone(t, "the copy's settlement", settled)
 				service.afterSettleReconcile = nil
-				awaitDone(t, ctx, "the answer", answered)
+				awaitDone(t, "the answer", answered)
 				// The settlement read the source before the answer, so the copy shows it open and owes
 				// the settlement the answer marked.
 				requireCopiedStates(t, service, copied, `state="open" `+copiedFrom(t, service, source.ID, original))
@@ -1456,17 +1460,11 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 	}
 }
 
-// awaitDone waits for what, which sends its result on done, failing the test on an error or when
-// ctx ends first.
-func awaitDone(t *testing.T, ctx context.Context, what string, done <-chan error) {
+// awaitDone waits for what, which sends its result on done, failing the test on an error.
+func awaitDone(t *testing.T, what string, done <-chan error) {
 	t.Helper()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("%s: %v", what, err)
-		}
-	case <-ctx.Done():
-		t.Fatalf("%s never finished", what)
+	if err := testwait.Receive(t, what+" to finish", done); err != nil {
+		t.Fatalf("%s: %v", what, err)
 	}
 }
 

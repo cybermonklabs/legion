@@ -321,7 +321,7 @@ func TestStoredHistoryIsNeverTorn(t *testing.T) {
 		writer.gate.hold()
 		writer.service.addConnection(artifactID, 2, typist)
 		editAsPeer(t, writer.service, artifactID, replaceRun(typedText, fmt.Sprintf("Typed-%d-x.", round)))
-		waitFor(t, roomWait(t), "the typist's rewrite to wait at the gate", func() bool { return writer.gate.waiting.Load() == 1 })
+		waitFor(t, "the typist's rewrite to wait at the gate", func() bool { return writer.gate.waiting.Load() == 1 })
 		keystroke := editAsPeer(t, writer.service, artifactID, replaceRun(fmt.Sprintf("Typed-%d-x.", round), fmt.Sprintf("Typed-%d-xy.", round)))
 		writer.service.removeConnection(artifactID, 2)
 		if !writer.service.hasPendingUpdates(artifactID) {

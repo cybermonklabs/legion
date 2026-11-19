@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,10 +39,12 @@ import (
 // poller never saw - a write phase that is one batch can hold its xid for less than a poll
 // interval - is judged from its statements alone; one that wrote nothing by either source holds
 // no xid to judge (MayHoldNoXid). Inside the window the rig checks two things. Its shape, in
-// every build: the window holds at most the statements the measurement declared (XidShape), and
-// nothing else. And, where the build judges a window's time at all (XidJudgesGaps), D6 of the
-// INFRA-636 plan: every statement-free gap is at most XidMaxGap, and the gaps together take no
-// longer than the statements do.
+// every run: the window holds at most the statements the measurement declared (XidShape), and
+// nothing else. And, in the timing lane alone (XidJudgesGaps), D6 of the INFRA-636 plan: every
+// statement-free gap is at most XidMaxGap, and the gaps together take no longer than the
+// statements do. Beside the shape, every plain run checks that no collaborator is called inside
+// the window, once the transaction has sent its first write batch (storetest/collabtest,
+// store.SentWriteBatch), which no reading of the clock decides.
 //
 // Which transactions are judged is decided by context, not guessed from timing: the caller marks
 // the context its operation runs under (MarkXid) and the tracer marks every statement whose
@@ -51,8 +54,8 @@ import (
 // (settlement timers, the outbox, listeners) runs under contexts of its own, so it shares the pool
 // but never the verdict.
 
-// XidMaxGap is the longest statement-free gap D6 allows inside an xid window, in a build that
-// judges a window's time at all (XidJudgesGaps).
+// XidMaxGap is the longest statement-free gap D6 allows inside an xid window, in the timing lane,
+// the one run that judges a window's time at all (XidJudgesGaps).
 const XidMaxGap = 5 * time.Millisecond
 
 // XidFaultGap is the statement-free gap the rig's deliberate-fault self-tests inject behind the
@@ -62,39 +65,43 @@ const XidMaxGap = 5 * time.Millisecond
 // the test that goes red first if the bound is ever widened too far.
 const XidFaultGap = 20 * time.Millisecond
 
-// XidJudgesGaps reports whether this build judges how long a window's statement-free gaps are.
-// A plain build does, and holds every window to D6's XidMaxGap. A build with the race detector
-// does not, and the build tag is the only thing that says so (raceDetector).
+// xidGapsJudged is whether this test binary judges how long a window's statement-free gaps are
+// (XidJudgesGaps). JudgeXidGaps sets it.
+var xidGapsJudged atomic.Bool
+
+// JudgeXidGaps turns the gap judgment on for the whole test binary when judge is true. A window
+// rig package's TestMain calls it with whether the timing lane runs
+// (os.Getenv(benchtime.TimingEnv) != ""), which a _test.go file reads: no file of this package
+// reads the environment.
+func JudgeXidGaps(judge bool) { xidGapsJudged.Store(judge) }
+
+// XidJudgesGaps reports whether this run judges how long a window's statement-free gaps are: only
+// the timing lane (DISPATCH_BENCH_TIMING, benchtime.TimingEnv, on a quiet machine) does, and never
+// a build with the race detector (raceDetector). Every other run, every CI lane included, judges
+// a window's shape (XidShape) and its collaborator calls (collabtest) and no reading of the clock.
 //
-// The reason is that under the race detector no wall-clock bound can tell what it is meant to
-// tell. The detector's instrumentation and the scheduling it forces leave a goroutine off the
-// processor between two statements of a window nothing is wrong with, for as long as a slow Go
-// call would: measured on this plan's two-core box, a scheduler stall of 92.683 ms behind
-// 20.130 ms of statements (the issue patch window, now a step of the api package's
-// TestXidWindowsOnTheLargeSpec, once in twenty race iterations), and on a GitHub runner 9.331 ms
-// behind 27.368 ms (TestXidWindowReconcileTaskProgress, envoy-go-race-docs job 127074699024 of
-// run 41975931479). A bound set above those stops catching the faults it exists for; one set
-// below them reddens a required lane for every pull request on main. Neither a constant nor a
-// share of the window's own statement time escapes that, because the stall and the fault are the
-// same measurement.
+// The reason is that a gap is a reading of the wall clock, and a starved CPU stretches one inside
+// a window nothing is wrong with for as long as a slow Go call would. Job rc-reopen-100 (the two
+// reopen rows of the api package, -count=100 beside 8 busy loops) failed one run on a 76 ms
+// statement-free gap inside the repair's transaction, against XidMaxGap's 5 ms, on code that was
+// correct. Under the race detector the same holds without any load: on this plan's two-core box a
+// scheduler stall of 92.683 ms behind 20.130 ms of statements (the issue patch window, a step of
+// the api package's TestXidWindowsOnTheLargeSpec, once in twenty race iterations), and on a GitHub
+// runner 9.331 ms behind 27.368 ms (TestXidWindowReconcileTaskProgress, envoy-go-race-docs job
+// 127074699024 of run 41975931479). A bound set above those stops catching the faults it exists
+// for; one set below them fails correct code. Neither a constant nor a share of the window's own
+// statement time escapes that, because the stall and the fault are the same measurement.
 //
-// What holds under the race detector instead is the rule no scheduling can move, which every
-// window test asserts for itself: the window holds the write batch and its COMMIT and nothing
-// else. A document call put back inside a window that runs a statement of its own is caught
-// there by that rule, in either build. One that spends its time in Go alone - the rig's own
-// control, and its deliberate-fault self-tests, which inject a sleep - is caught only by a plain
-// run. So in CI a race lane checks a window's shape alone, and the gap bound is judged in plain
-// runs: the docs window tests run under -race in envoy-go-race-docs (shape) and without it in
-// envoy-go-docs-finalizers (shape and gaps); the api and delivery window tests are
-// `//go:build !race`, so no race lane runs them and envoy-go's step "Test what the race build
-// cannot run at all or at full size" runs them plain (shape and gaps); refs' runs plain in
-// envoy-go's unit step. envoy-go and envoy-go-docs-finalizers are among the slow suites the
-// changes job holds back on a pull request: each runs on a merge group (its first attempt only),
-// on a manual dispatch, and on a pull request only while it carries the `full-ci` label, and
-// only when its filter (envoy_go, envoy_go_race_docs) selects the change. So the gap bound is
-// judged in the merge queue before every merge, not on every pull-request push. Under the race
-// detector the docs tests that inject a sleep skip their timing arm by name.
-func XidJudgesGaps() bool { return !raceDetector }
+// What every run holds instead is what no scheduling can move. The window holds the write batch
+// and its COMMIT and nothing else (XidShape), so a document call put back inside a window that
+// runs a statement of its own is caught by that rule. And no collaborator that leaves the
+// process - the embedder, the file store, a listener or GitHub over HTTP - is called inside the
+// window, after its transaction's first write batch (collabtest, store.SentWriteBatch), so such a
+// call there is caught whether it ran a statement or not. Pure Go work inside a window that calls no
+// collaborator - the docs package's control (TestXidWindowCatchesADocumentCallInsideTheWindow,
+// whose parseInput is that work) and the rig's deliberate-fault self-tests, which inject a sleep -
+// is caught only in the timing lane, and those rows skip their timing arm by name elsewhere.
+func XidJudgesGaps() bool { return xidGapsJudged.Load() && !raceDetector }
 
 // xidPollInterval is how often the poller reads pg_stat_activity: the plan's 0.5 ms. A poll's own
 // round trip is of the same order, so in practice a backend is looked at about every millisecond.
@@ -692,9 +699,8 @@ func (r *XidReport) Err() error {
 // XidShape is what the windows of a measured operation must hold, which every measurement
 // declares: the most statements one of its windows may run while it holds its transaction id,
 // and what those statements are, for a failure to quote. A count of statements is the one
-// reading of a window no scheduling can move, so the rig holds every window to it in every
-// build - it is the whole of what a race build judges (XidJudgesGaps), and it stands beside D6's
-// bound in a plain one.
+// reading of a window no scheduling can move, so the rig holds every window to it in every run,
+// and it stands beside D6's bound in the timing lane (XidJudgesGaps).
 //
 // The declaration is a parameter rather than a default so that a window test cannot be written
 // without it: a measurement that declares no shape does not compile, and one that declares an

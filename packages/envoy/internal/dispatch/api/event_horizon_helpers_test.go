@@ -2,10 +2,8 @@ package api
 
 import (
 	"context"
-	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -64,21 +62,16 @@ func appendOutOfOrder(t *testing.T, database *store.Store, broker *events.Broker
 	}
 }
 
-// holdClusterTransactionID opens a transaction in the test cluster's postgres database and takes
-// a transaction id, as a job in another database or another package's test does. Snapshots are
-// instance-wide, so until it ends no horizon on the cluster proves an observation taken after it
-// began. It commits when release runs or after hold, whichever comes first, and by the time the
-// test ends; release returns once it has.
-func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func()) {
+// holdClusterTransactionID opens a transaction in a second database of the test binary's own on
+// the test cluster (storetest.OtherDatabase) and takes a transaction id, as a job in another
+// database or another package's test does. Snapshots are instance-wide, so until it ends no
+// horizon on the cluster proves an observation taken after it began. It commits when release
+// runs, and the test's cleanup runs release; release returns once it has committed.
+func holdClusterTransactionID(t *testing.T) (release func()) {
 	t.Helper()
-	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
+	conn, err := pgx.Connect(t.Context(), storetest.OtherDatabase(t))
 	if err != nil {
-		t.Fatalf("parse %s: %v", storetest.DatabaseURLEnv, err)
-	}
-	config.Database = "postgres"
-	conn, err := pgx.ConnectConfig(t.Context(), config)
-	if err != nil {
-		t.Fatalf("connect to the cluster's postgres database: %v", err)
+		t.Fatalf("connect to the binary's other database: %v", err)
 	}
 	tx, err := conn.Begin(t.Context())
 	if err != nil {
@@ -90,23 +83,12 @@ func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func())
 		_ = conn.Close(context.Background())
 		t.Fatalf("take a transaction id: %v", err)
 	}
-	released := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		timer := time.NewTimer(hold)
-		defer timer.Stop()
-		select {
-		case <-released:
-		case <-timer.C:
-		}
-		_ = tx.Commit(context.Background())
-		_ = conn.Close(context.Background())
-	}()
 	var once sync.Once
 	release = func() {
-		once.Do(func() { close(released) })
-		<-done
+		once.Do(func() {
+			_ = tx.Commit(context.Background())
+			_ = conn.Close(context.Background())
+		})
 	}
 	t.Cleanup(release)
 	return release

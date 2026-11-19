@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // backDateKeyLease moves the lease the row under key holds back by, past the lease a repeat
@@ -81,11 +82,9 @@ func TestAKeyedWriteAProcessDiedRunningIsTakenOverOnceItsLeaseLapses(t *testing.
 		}
 		return rows == 1
 	}
-	for deadline := time.Now().Add(30 * time.Second); !held(); time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("process A never claimed the key:\n%s", pair.a.Output.String())
-		}
-	}
+	testwait.Until(t, "process A to claim the key", func() (string, bool) {
+		return pair.a.Output.String(), held()
+	})
 	if err := pair.a.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill process A: %v", err)
 	}
@@ -115,15 +114,11 @@ func TestAKeyedWriteAProcessDiedRunningIsTakenOverOnceItsLeaseLapses(t *testing.
 			"until its %v lease is out", leaseMargin, answer, contracts.IdempotencyKeyInFlight, contracts.IdempotencyLease)
 	}
 	// Then the rest of the way, past the end, where the take-over must come.
-	lapsed := backDateKeyLease(t, pair.database, "killed-press", leaseMargin+time.Second)
-	for answer.status == http.StatusConflict {
-		if time.Since(lapsed) > 30*time.Second {
-			t.Fatalf("process B never took the key over: still %v %v after the dead run's lease lapsed",
-				answer, time.Since(lapsed))
-		}
-		time.Sleep(200 * time.Millisecond)
+	backDateKeyLease(t, pair.database, "killed-press", leaseMargin+time.Second)
+	testwait.Until(t, "process B to take the key over once the dead run's lease lapsed", func() (httpAnswer, bool) {
 		answer = repeat()
-	}
+		return answer, answer.status != http.StatusConflict
+	})
 	if answer.status != http.StatusCreated || answer.header.Get(contracts.IdempotencyReplayedHeader) != "" {
 		t.Fatalf("the repeat once the lease lapsed: %v replayed=%q, want the write made by process B", answer,
 			answer.header.Get(contracts.IdempotencyReplayedHeader))

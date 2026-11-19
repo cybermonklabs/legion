@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // These tests hold an API transaction open between its live document write and a forced
@@ -360,11 +363,7 @@ func (f *heldWriteFixture) startFailingEdit(t *testing.T) <-chan *httptest.Respo
 	t.Cleanup(func() {
 		closeTestGate(f.failure.releaseBeforeApply)
 		closeTestGate(f.failure.release)
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("transactional edit did not exit after releasing test gates")
-		}
+		testwait.Receive(t, "the transactional edit's return once the test gates were released", done)
 	})
 	return responses
 }
@@ -408,27 +407,23 @@ func (f *heldWriteFixture) waitForLiveText(t *testing.T, want string) {
 // waitForLiveText waits until the live document's text holds want.
 func waitForLiveText(t *testing.T, documentService *docs.Service, artifactID, want string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the live document to show %q", want), func() (string, bool) {
 		text, err := documentService.Text(context.Background(), artifactID)
 		if err != nil {
 			t.Fatalf("read live document: %v", err)
 		}
-		if strings.Contains(text, want) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("live document never showed %q; it holds %q", want, text)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return text, strings.Contains(text, want)
+	})
 }
 
 // waitOutSettlement gives a settlement armed by now time to run: three settle intervals, when
 // the fixture settles at all within the test.
-func (f *heldWriteFixture) waitOutSettlement() {
+func (f *heldWriteFixture) waitOutSettlement(t *testing.T) {
+	t.Helper()
 	if f.settle < time.Second {
-		time.Sleep(3 * f.settle)
+		testwait.Span(t, 3*f.settle, "a settlement the room armed runs on the room's own goroutine once its settle "+
+			"interval passes on the real clock, and no state the test reads says no settlement is still due, the "+
+			"database is real I/O (no synctest), and no later action of the test is ordered after it")
 	}
 }
 
@@ -459,24 +454,16 @@ func (f *heldWriteFixture) versions(t *testing.T) []string {
 
 func (f *heldWriteFixture) waitForVersionHolding(t *testing.T, text string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		for _, version := range f.versions(t) {
-			if strings.Contains(version, text) {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no version holds %q: %q", text, f.versions(t))
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, fmt.Sprintf("a version holding %q", text), func() ([]string, bool) {
+		versions := f.versions(t)
+		return versions, slices.ContainsFunc(versions, func(version string) bool { return strings.Contains(version, text) })
+	})
 }
 
 // assertVersionCount waits out settlement, then counts the document's versions.
 func (f *heldWriteFixture) assertVersionCount(t *testing.T, want int) {
 	t.Helper()
-	f.waitOutSettlement()
+	f.waitOutSettlement(t)
 	if versions := f.versions(t); len(versions) != want {
 		t.Fatalf("document versions = %q, want %d", versions, want)
 	}
@@ -486,7 +473,7 @@ func (f *heldWriteFixture) assertVersionCount(t *testing.T, want int) {
 // text.
 func (f *heldWriteFixture) assertNoVersionHolds(t *testing.T, text string) {
 	t.Helper()
-	f.waitOutSettlement()
+	f.waitOutSettlement(t)
 	for _, version := range f.versions(t) {
 		if strings.Contains(version, text) {
 			t.Fatalf("version %s holds the rolled-back %q", version, text)
@@ -497,17 +484,10 @@ func (f *heldWriteFixture) assertNoVersionHolds(t *testing.T, text string) {
 // assertDurableText renders the document the store would load, update by update.
 func (f *heldWriteFixture) assertDurableText(t *testing.T, want string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the durable document to read %q", want), func() (string, bool) {
 		got := f.durableText(t)
-		if got == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("durable document = %q, want %q", got, want)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return got, got == want
+	})
 }
 
 func (f *heldWriteFixture) durableText(t *testing.T) string {
@@ -539,8 +519,7 @@ func (f *heldWriteFixture) durableText(t *testing.T) string {
 // behind the held transaction.
 func (f *heldWriteFixture) waitForLockWaiter(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Eventually(t, "a request queued behind the held transaction", func() bool {
 		var waiting int
 		if err := f.probe.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
@@ -548,14 +527,8 @@ func (f *heldWriteFixture) waitForLockWaiter(t *testing.T) {
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no request queued behind the held transaction")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return waiting > 0
+	})
 }
 
 func (f *heldWriteFixture) assertArtifactKeyShareLockAvailable(t *testing.T) {
@@ -644,11 +617,7 @@ func drainDocumentUpdates(store *recordingVersionedStore) {
 
 func waitForDocumentUpdate(t *testing.T, store *recordingVersionedStore) {
 	t.Helper()
-	select {
-	case <-store.updates:
-	case <-time.After(time.Second):
-		t.Fatal("document mutation did not reach persistence")
-	}
+	testwait.Receive(t, "the document mutation to reach persistence", store.updates)
 }
 
 // postApplyFailureDocs fails a document write after the real write returned, holding it first
@@ -734,18 +703,10 @@ func closeTestGate(gate chan struct{}) {
 
 func waitForBeforeApply(t *testing.T, docs *postApplyFailureDocs) {
 	t.Helper()
-	select {
-	case <-docs.beforeApply:
-	case <-time.After(time.Second):
-		t.Fatal("document mutation did not reach pre-apply gate")
-	}
+	testwait.Receive(t, "the document mutation to reach its pre-apply gate", docs.beforeApply)
 }
 
 func waitForPostApply(t *testing.T, docs *postApplyFailureDocs) {
 	t.Helper()
-	select {
-	case <-docs.applied:
-	case <-time.After(time.Second):
-		t.Fatal("document mutation did not complete")
-	}
+	testwait.Receive(t, "the document mutation to complete", docs.applied)
 }

@@ -10,10 +10,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // searchRequestOn is one search sent to one of the two paths the search handler serves
@@ -236,20 +236,13 @@ func TestSearchReadsOnlyTheLatestDocumentVersion(t *testing.T) {
 		t.Fatalf("edit document: status=%d body=%s", edit.Code, edit.Body.String())
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	testwait.Eventually(t, "the second artifact version", func() bool {
 		var versions int
 		if err := database.Pool.QueryRow(context.Background(), "select count(*) from artifact_versions where artifact_id = $1", issue.PrimaryArtifactID).Scan(&versions); err != nil {
 			t.Fatalf("count artifact versions: %v", err)
 		}
-		if versions >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("waiting for second artifact version")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return versions >= 2
+	})
 
 	// The issue carries its primary document's words too (20261105145242), so neither it nor the
 	// document may answer the word the edit replaced, and both answer the word that replaced it.

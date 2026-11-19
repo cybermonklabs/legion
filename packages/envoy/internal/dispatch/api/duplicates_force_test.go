@@ -1,13 +1,11 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"math"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -169,25 +167,19 @@ func TestCreateIssueForcedPastNothingRecordsNothing(t *testing.T) {
 }
 
 func TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList(t *testing.T) {
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "FORCED")
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
 		"project": "FORCED", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe,
 	}))
 
-	// The gate reads the project's term statistics first, so a lock on that table holds its read
-	// until the bound ends; the create goes in all the same, recording that the check did not
-	// answer.
-	served.duplicateBound = 200 * time.Millisecond
-	lockTx, err := database.Pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin the lock transaction: %v", err)
-	}
-	t.Cleanup(func() { _ = lockTx.Rollback(context.Background()) })
-	if _, err := lockTx.Exec(context.Background(), "lock table search_term_stats in access exclusive mode"); err != nil {
-		t.Fatalf("lock search_term_stats: %v", err)
-	}
+	// A gate that cannot read at all: its bound is spent before the read starts (gateBounds), so
+	// the create below - an exact copy of the issue above, which an answering gate would name -
+	// goes in recording that the check did not answer. Holding the read behind a lock on the
+	// term statistics until a real 200 ms ran out said the same thing, and said it only on a
+	// machine that kept to 200 ms.
+	served.duplicateBound = spentGateBound
 
 	forced := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
 		"project": "FORCED", "title": "Astrolabe calibration drifts after a reseat",
@@ -251,22 +243,19 @@ func TestCreateIssueForcedExternalRecordsNoCheckThatNeverRan(t *testing.T) {
 // that no near-copy check was made. Refusing it would turn one slow read into a project nobody
 // can write to.
 func TestCreateIssueNudgeIsAbsentWhenTheGateDoesNotAnswer(t *testing.T) {
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "NUDGE")
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
 		"project": "NUDGE", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe,
 	}))
 
-	served.duplicateBound = 200 * time.Millisecond
-	lockTx, err := database.Pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin the lock transaction: %v", err)
-	}
-	t.Cleanup(func() { _ = lockTx.Rollback(context.Background()) })
-	if _, err := lockTx.Exec(context.Background(), "lock table search_term_stats in access exclusive mode"); err != nil {
-		t.Fatalf("lock search_term_stats: %v", err)
-	}
+	// A gate that cannot read at all: its bound is spent before the read starts (gateBounds). The
+	// create below is an exact copy of the issue above, which an answering gate refuses, so the
+	// 201 and the note below are the gate's silence and nothing else. Holding the read behind a
+	// lock on the term statistics until a real 200 ms ran out said the same thing, and said it
+	// only on a machine that kept to 200 ms.
+	served.duplicateBound = spentGateBound
 
 	response := createIssueRequest(t, handler, map[string]any{
 		"project": "NUDGE", "title": "Astrolabe calibration drifts after a reseat",
@@ -278,8 +267,9 @@ func TestCreateIssueNudgeIsAbsentWhenTheGateDoesNotAnswer(t *testing.T) {
 			Suggestions model.Suggestions `json:"suggestions"`
 		} `json:"advice"`
 	}](t, response).Advice.Suggestions
-	if suggestions.NearCopyCheck == "" {
-		t.Fatalf("create %s says nothing about the check that did not answer: %s", created.Key, response.Body.String())
+	if suggestions.NearCopyCheck != nearCopyCheckNotMade(spentGateBound) {
+		t.Fatalf("create %s says %q about the check that did not answer, want %q: a gate that did not read is not a gate that failed",
+			created.Key, suggestions.NearCopyCheck, nearCopyCheckNotMade(spentGateBound))
 	}
 	if suggestions.LikelyDuplicate != nil || len(suggestions.TitleMatches) != 0 {
 		t.Fatalf("a create the gate could not check named issues: %#v %#v",

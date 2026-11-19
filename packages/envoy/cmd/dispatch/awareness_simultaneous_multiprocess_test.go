@@ -40,14 +40,14 @@ func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T
 		}
 		return true
 	}
-	if err := carol.WaitForAwareness(liveWithin, all); err != nil {
-		t.Fatalf("carol on A did not see all five readers on A within %v: %v", liveWithin, err)
+	if err := carol.WaitForAwareness(t, all); err != nil {
+		t.Fatalf("carol on A did not see all five readers on A: %v", err)
 	}
-	if err := bob.WaitForAwareness(liveWithin, all); err != nil {
+	if err := bob.WaitForAwareness(t, all); err != nil {
 		held := []uint64{}
 		for client := range bob.AwarenessStates() {
 			held = append(held, client)
 		}
-		t.Fatalf("five readers on A placed their cursors at once: carol on A saw all five, bob on B holds only %v after %v", held, liveWithin)
+		t.Fatalf("five readers on A placed their cursors at once: carol on A saw all five, bob on B holds only %v", held)
 	}
 }

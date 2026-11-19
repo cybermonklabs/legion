@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build (ownerlock_fleet_test.go): the earlier build's arrival
@@ -58,10 +58,12 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			arrived := make(chan error, 1)
 			go func() { arrived <- arriveOn(ctx, conn, arrival, uuid.NewString()) }()
 			awaitGateWait(t, s, arrivalPID, arrived, arrival.name)
+			// The arrival waits for the gate the writer holds shared (awaitGateWait read it
+			// waiting), so it cannot end before the writer commits: that state is what this reads.
 			select {
 			case err := <-arrived:
 				t.Fatalf("%s ended (%v) while the writer was between its owner lock and its write", arrival.name, err)
-			case <-time.After(300 * time.Millisecond):
+			default:
 			}
 
 			if _, err := writer.Exec(ctx, ownerLock, OwnerLockNamespace, owners.issueA.LockKey()); err != nil {
@@ -73,13 +75,8 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			if err := writer.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case err := <-arrived:
-				if err != nil {
-					t.Fatalf("%s after the writer committed: %v", arrival.name, err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatalf("%s did not end within 10s of the writer's commit", arrival.name)
+			if err := testwait.Receive(t, arrival.name+" to end once the writer committed", arrived); err != nil {
+				t.Fatalf("%s after the writer committed: %v", arrival.name, err)
 			}
 
 			next, err := s.Pool.Begin(ctx)
@@ -99,15 +96,13 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			if gate, _ := gateLock(t, s, next.Conn().PgConn().PID()); gate != "" {
 				t.Errorf("the writer after %s holds the gate as %q, want no gate in the mode beside an earlier build", arrival.name, gate)
 			}
+			// A writer in the mode beside an earlier build holds no gate, so the second arrival
+			// waits for nothing; one that waited on the gate would never end while next stands,
+			// which the shared wait's end fails by name.
 			again := make(chan error, 1)
 			go func() { again <- arrive(ctx, s, arrival, uuid.NewString()) }()
-			select {
-			case err := <-again:
-				if err != nil {
-					t.Fatalf("a second arrival beside a writer in the mode beside an earlier build: %v", err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatalf("a second arrival waited 5s beside a writer that holds no gate")
+			if err := testwait.Receive(t, "a second arrival beside a writer that holds no gate to end", again); err != nil {
+				t.Fatalf("a second arrival beside a writer in the mode beside an earlier build: %v", err)
 			}
 		})
 	}
@@ -228,12 +223,12 @@ func dropRoleAfterTestDatabase(t *testing.T, s *Store, role string) {
 	}
 }
 
-// awaitFleetReadPause waits up to ten seconds for backend pid to stop at the fleet read's pause
-// (pauseFleetReadsAt), and fails the test when its owner lock answers first (done closes).
+// awaitFleetReadPause waits for backend pid to stop at the fleet read's pause (pauseFleetReadsAt),
+// and fails the test when its owner lock answers first (done closes). The wait has no bound of its
+// own (testwait.Eventually).
 func awaitFleetReadPause(t *testing.T, s *Store, pid uint32, done <-chan struct{}) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Eventually(t, "the writer's fleet read to stop at the pause", func() bool {
 		var waiting bool
 		if err := s.Pool.QueryRow(context.Background(), `
 			select exists (
@@ -244,18 +239,15 @@ func awaitFleetReadPause(t *testing.T, s *Store, pid uint32, done <-chan struct{
 			t.Fatalf("read the fleet read's pause: %v", err)
 		}
 		if waiting {
-			return
+			return true
 		}
 		select {
 		case <-done:
 			t.Fatal("the writer's owner lock answered before its fleet read stopped at the pause")
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the writer's fleet read did not stop at the pause within 10s")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return false
+	})
 }
 
 // The fleet read owner_lock_fleet makes after its try reads under a snapshot of its own, so an
@@ -318,23 +310,14 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 			if c.arrival != nil {
 				arrived := make(chan error, 1)
 				go func() { arrived <- arrive(ctx, s, *c.arrival, uuid.NewString()) }()
-				select {
-				case err := <-arrived:
-					if err != nil {
-						t.Fatalf("%s while the writer was stopped inside its first fleet read: %v", c.arrival.name, err)
-					}
-				case <-time.After(10 * time.Second):
-					t.Fatalf("%s waited 10s beside a writer stopped before its try, which holds no gate", c.arrival.name)
+				if err := testwait.Receive(t, c.arrival.name+" beside a writer stopped before its try, which holds no gate, to end", arrived); err != nil {
+					t.Fatalf("%s while the writer was stopped inside its first fleet read: %v", c.arrival.name, err)
 				}
 			}
 			if err := pause.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case <-done:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the writer's owner lock did not answer within 10s of the pause's end")
-			}
+			testwait.Receive(t, "the writer's owner lock to answer once the pause ended", done)
 			if err := <-locked; err != nil {
 				t.Fatalf("the writer's owner lock: %v", err)
 			}
@@ -355,21 +338,16 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 	}
 }
 
-// writerGateBound is how long an owner lock of this build may take while an arrival waits for the
-// gate, once its statements are prepared on its connection: its statement and the owners' rows
-// after it, two round trips with no wait in them.
-const writerGateBound = 50 * time.Millisecond
-
 // A writer of this build that starts while an earlier build's arrival waits for the owner lock gate
 // never queues behind that arrival. The arrival waits for a transaction that read no earlier build
 // and holds the gate shared; the writer's owner lock tries the gate shared, which Postgres refuses
 // while the arrival's exclusive request waits, and so takes its owners' rows, as it does beside an
 // earlier build, at once. Each read-phase owner lock - LockOwner, LockOwnersShared, TryLockOwners -
 // answers in the mode beside an earlier build, holding its owner's row and no gate, and the arrival
-// is still waiting after them. Each runs twice on one connection: the first run prepares its
-// statements there, which is no cost of the gate, and the second answers within writerGateBound.
-// With the gate waited for rather than tried, the first of them queues behind the arrival until
-// the transaction it waits for ends.
+// is still waiting after them. That none of them waits is read from pg_locks, not from how long it
+// took: each must answer without its backend ever being seen waiting for the gate. With the gate
+// waited for rather than tried, the first of them queues behind the arrival until the transaction
+// it waits for ends, and pg_locks shows it waiting.
 func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *testing.T) {
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
@@ -416,46 +394,49 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 				t.Fatal(err)
 			}
 			defer writerConn.Release()
-			for _, measured := range []bool{false, true} {
-				for _, writer := range writers {
-					tx, err := writerConn.Begin(ctx)
-					if err != nil {
-						t.Fatal(err)
-					}
-					locked := make(chan error, 1)
-					began := time.Now()
-					go func() { locked <- writer.lock(tx) }()
+			writerPID := writerConn.Conn().PgConn().PID()
+			for _, writer := range writers {
+				tx, err := writerConn.Begin(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				locked := make(chan error, 1)
+				go func() { locked <- writer.lock(tx) }()
+				type lockReading struct {
+					Answered bool
+					Err      error
+					Gate     string
+				}
+				got := testwait.Until(t, writer.name+" to answer, or to wait for the gate", func() (lockReading, bool) {
 					select {
 					case err := <-locked:
-						took := time.Since(began)
-						if err != nil {
-							t.Fatalf("%s: %v", writer.name, err)
-						}
-						if measured {
-							t.Logf("%s answered in %s while %s waited for the gate", writer.name, took, arrival.name)
-							if took > writerGateBound {
-								t.Errorf("%s took %s while %s waited for the gate, want at most %s: no wait on the gate", writer.name, took, arrival.name, writerGateBound)
-							}
-						}
-					case <-time.After(5 * time.Second):
-						t.Errorf("%s waited 5s while %s waited for the gate; want it to try the gate, not queue behind the arrival", writer.name, arrival.name)
-						_ = holder.Rollback(ctx)
-						<-locked
-						_ = tx.Rollback(ctx)
-						t.FailNow()
+						return lockReading{Answered: true, Err: err}, true
+					default:
 					}
-					if mode := lastOwnerLockMode(); mode != ownerLockAdvisoryAndRow {
-						t.Errorf("%s while %s waited for the gate took the %s mode, want %s", writer.name, arrival.name, mode, ownerLockAdvisoryAndRow)
-					}
-					if !ownerRowHeld(t, s, writer.owner) {
-						t.Errorf("%s while %s waited for the gate holds no row of %s, want it held beside the advisory lock", writer.name, arrival.name, writer.owner.LockKey())
-					}
-					if gate, granted := gateLock(t, s, writerConn.Conn().PgConn().PID()); gate != "" {
-						t.Errorf("%s while %s waited for the gate holds it as %q (granted %t), want no gate", writer.name, arrival.name, gate, granted)
-					}
-					if err := tx.Rollback(ctx); err != nil {
-						t.Fatal(err)
-					}
+					gate, granted := gateLock(t, s, writerPID)
+					return lockReading{Gate: gate}, gate != "" && !granted
+				})
+				if !got.Answered {
+					t.Errorf("%s waits for the gate (%s) while %s waits for it; want it to try the gate, not queue behind the arrival", writer.name, got.Gate, arrival.name)
+					_ = holder.Rollback(ctx)
+					<-locked
+					_ = tx.Rollback(ctx)
+					t.FailNow()
+				}
+				if got.Err != nil {
+					t.Fatalf("%s: %v", writer.name, got.Err)
+				}
+				if mode := lastOwnerLockMode(); mode != ownerLockAdvisoryAndRow {
+					t.Errorf("%s while %s waited for the gate took the %s mode, want %s", writer.name, arrival.name, mode, ownerLockAdvisoryAndRow)
+				}
+				if !ownerRowHeld(t, s, writer.owner) {
+					t.Errorf("%s while %s waited for the gate holds no row of %s, want it held beside the advisory lock", writer.name, arrival.name, writer.owner.LockKey())
+				}
+				if gate, granted := gateLock(t, s, writerPID); gate != "" {
+					t.Errorf("%s while %s waited for the gate holds it as %q (granted %t), want no gate", writer.name, arrival.name, gate, granted)
+				}
+				if err := tx.Rollback(ctx); err != nil {
+					t.Fatal(err)
 				}
 			}
 			if gate, granted := gateLock(t, s, arrivalPID); gate != "ExclusiveLock" || granted {
@@ -464,13 +445,8 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatal(err)
 			}
-			select {
-			case err := <-arrived:
-				if err != nil {
-					t.Fatalf("%s after the transaction in flight committed: %v", arrival.name, err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatalf("%s did not end within 10s of the commit of the transaction it waited for", arrival.name)
+			if err := testwait.Receive(t, arrival.name+" to end once the transaction it waited for committed", arrived); err != nil {
+				t.Fatalf("%s after the transaction in flight committed: %v", arrival.name, err)
 			}
 		})
 	}

@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const clientID = "Iv1.redeliver"
@@ -118,7 +119,7 @@ func openState(tb testing.TB) bus.KeyValue {
 		tb.Fatalf("connect NATS: %v", err)
 	}
 	tb.Cleanup(nc.Close)
-	js, err := nc.JetStream()
+	js, err := nc.JetStream(testnats.MaxWait(tb))
 	if err != nil {
 		tb.Fatalf("JetStream: %v", err)
 	}
@@ -2372,15 +2373,11 @@ func TestTheSweepSummaryCountsEveryOutcome(t *testing.T) {
 		defer close(done)
 		h.sweeper().Run(ctx, time.Hour, leases)
 	}()
-	for deadline := time.Now().Add(10 * time.Second); h.logs.count("webhook redelivery sweep") == 0; {
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("no summary line:\n%s", h.logs)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.Until(t, "the running sweep's summary line", func() (string, bool) {
+		return h.logs.String(), h.logs.count("webhook redelivery sweep") > 0
+	})
 	cancel()
-	<-done
+	testwait.Receive(t, "the running sweep to return once its context ended", done)
 
 	want := []string{
 		" failed_attempts=1", " deliveries=1",

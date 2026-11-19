@@ -210,6 +210,8 @@ func findURLs(value string) []foundLink {
 		for after < len(value) && strings.IndexByte(" \t\r\n", value[after]) < 0 {
 			after++
 		}
+		// Each character of the match's rest read is a step of the parse (ParseWork).
+		parseWork.Add(uint64(after - end))
 		if end = splitURL(value, domainStart, after); end == domainStart {
 			continue
 		}
@@ -222,6 +224,9 @@ func findURLs(value string) []foundLink {
 // nextURLPattern is where the URL pattern next matches in value from at, and where its domain
 // begins (a www URL's `www` among it), or -1.
 func nextURLPattern(value string, at int) (start, domain int) {
+	// Each character the search passes is a step of the parse (ParseWork).
+	from := at
+	defer func() { parseWork.Add(uint64(at - from)) }()
 	for ; at < len(value); at++ {
 		switch value[at] | 0x20 {
 		case 'h':
@@ -266,6 +271,9 @@ func (d *urlDomain) read(value string, start int) int {
 		}
 		d.end++
 	}
+	// Each character of the run read is a step of the parse (ParseWork); a domain beginning
+	// inside the run last read reads none.
+	parseWork.Add(uint64(d.end - start))
 	if d.lastDot >= 0 {
 		d.lastOK = domainPart(value[d.lastDot+1 : d.end])
 	}
@@ -379,13 +387,18 @@ func (r *emailRun) read(value string, at, to int) int {
 	for r.end < to && gfmAtext(value[r.end]) {
 		r.end++
 	}
+	// Each character read is a step of the parse (ParseWork); a match beginning inside the run
+	// last read reads none.
+	parseWork.Add(uint64(r.end - at))
 	if r.end == to || value[r.end] != '@' {
 		return 0
 	}
 	part := func(at int) int {
+		start := at
 		for at < to && emailDomainCharacter(value[at]) {
 			at++
 		}
+		parseWork.Add(uint64(at - start))
 		return at
 	}
 	end := part(r.end + 1)

@@ -13,14 +13,16 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 )
 
 // durableBindInterval is how often an intake that does not deliver tries for its durable's hold,
-// and for the durable under it. It is cmd/listener/durable.go's interval: a standby polls every two
-// seconds, so it takes the durable over within one interval of the holder releasing its hold, and
-// within one interval of the hold's lapse when the holder dies (intakeHoldTTL).
+// and for the durable under it, on the hold's clock (heldDurable.holdClock). It is
+// cmd/listener/durable.go's interval: a standby polls every two seconds, so it takes the durable
+// over within one interval of the holder releasing its hold, and within one interval of the hold's
+// lapse when the holder dies (intakeHoldTTL).
 //
 // Unlike the listener, which gives up at its durableBindDeadline and exits so the runtime starts
 // it again, Dispatch's standby polls for the life of the process: there is no deadline and no
@@ -220,6 +222,17 @@ type heldDurable struct {
 	// returns. It is nil outside tests: a test sets it to hold a take-over that has bound the
 	// durable until past Run's ctx's end.
 	boundHook func()
+	// clock is the time this intake's stop deadline runs on (stopContext), and the job intake's
+	// bursts and reads too (JobIntake.schedule, JobIntake.fire): clock.Real, which newHeldDurable
+	// gives it, and a test's clocktest.Fake, set before Run, as boundHook is.
+	clock intakeClock
+	// holdClock is the time the durable's hold runs on: this intake's tries for it every
+	// durableBindInterval (run), its renewals and its loss deadline (duty.HoldOptions.Clock), and
+	// every reading of whether this intake still holds it (holds, intakeDelivery.holdCovers,
+	// retryHeld). clock.Real, which newHeldDurable gives it, and a test's clocktest.Fake, set
+	// before Run, on which a try comes and a loss deadline passes only where the test moves it.
+	// Whether another process may take the hold is the database's clock either way.
+	holdClock clock.Clock
 
 	mu sync.Mutex
 	// delivering is the latest subscription subscribe made, which StopDelivering stops.
@@ -233,8 +246,20 @@ func newHeldDurable(natsClient *bus.Client, leases intakeLeases, config func() n
 ) heldDurable {
 	return heldDurable{
 		nats: natsClient, leases: leases, holder: uuid.New(), throttle: &bindThrottle{},
-		config: config, name: config().Durable, key: key, handle: handle,
+		config: config, name: config().Durable, key: key, handle: handle, clock: clock.Real(), holdClock: clock.Real(),
 	}
+}
+
+// intakeClock is the time an intake's stop and the job intake's schedule run on
+// (heldDurable.clock), a narrowing of clock.Clock: clock.Real in production and a test's
+// clocktest.Fake. A read is armed for a moment as the wait from the clock's present at the arm,
+// so a clock that moved between the read and the arm fires the timer at that moment all the same
+// (api's hubClock has the same shape). A read's deadline is the clock's too (JobIntake.fire), so a
+// test moves time past it rather than waiting it out.
+type intakeClock interface {
+	Now() time.Time
+	AfterFunc(d time.Duration, f func()) clock.Timer
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
 
 // intakeHoldLost is the line of an intake whose durable's hold is no longer its own, so it stops
@@ -244,20 +269,24 @@ const intakeHoldLost = "dispatch delivery: the intake's hold is lost; it stops d
 // run delivers from the durable while this intake holds its hold, and stands by for it otherwise,
 // until ctx ends; then it stops delivering and releases the hold (stop), under the one stop
 // deadline armed at ctx's end (stopContext), so a take-over under way at that moment spends that
-// budget rather than starting one of its own. Each durableBindInterval while it delivers nothing,
-// and ready reports true, it tries for the hold and the durable (attempt); each intakeHoldRenew
-// while it delivers, it checks the durable still delivers to it (check); and the moment its hold
-// is lost it stops delivering. wake, when not nil, answers a channel the loop waits on beside its
-// tickers and takes again each time it fires -- the delivery intake's settings cache storing
-// settings, which is what makes its first attempt ready (Intake.Run).
+// budget rather than starting one of its own. Each durableBindInterval on holdClock while it
+// delivers nothing, and ready reports true, it tries for the hold and the durable (attempt); each
+// intakeHoldRenew while it delivers, it checks the durable still delivers to it (check); and the
+// moment its hold is lost it stops delivering. wake, when not nil, answers a channel the loop
+// waits on beside its timers and takes again each time it fires -- the delivery intake's settings
+// cache storing settings, which is what makes its first attempt ready (Intake.Run).
 func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, ready func() bool) {
 	// Armed before the first attempt, so a take-over under way as ctx ends -- a standby's poll,
 	// whose JetStream calls take their own time -- spends the stop's budget rather than starting
 	// it late.
-	stopping, release := stopContext(ctx)
+	stopping, release := stopContext(ctx, d.clock)
 	defer release()
 	defer d.stop(stopping)
-	binds := time.NewTicker(durableBindInterval)
+	// The tries are due on a grid durableBindInterval apart from the run's start, on the hold's
+	// clock, as a ticker's ticks are (duty.RunLeasedOn): a try that overran the interval is
+	// followed by one at once, and the grid moments it overran are dropped.
+	bindDue := d.holdClock.Now().Add(durableBindInterval)
+	binds := d.holdClock.NewTimer(durableBindInterval)
 	defer binds.Stop()
 	checks := time.NewTicker(intakeHoldRenew)
 	defer checks.Stop()
@@ -285,8 +314,15 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 		case <-changed:
 			changed = wake()
 			attempt()
-		case <-binds.C:
+		case <-binds.C():
+			received := d.holdClock.Now()
+			next := bindDue.Add(durableBindInterval)
+			for !next.After(received) {
+				next = next.Add(durableBindInterval)
+			}
 			attempt()
+			bindDue = next
+			binds.Reset(bindDue.Sub(d.holdClock.Now()))
 		case <-checks.C:
 			d.check(ctx)
 		case <-lost:
@@ -354,7 +390,7 @@ func (d *heldDurable) takeHold(ctx context.Context) bool {
 		return false
 	}
 	hold, err := duty.TryHold(bounded, d.leases, holdName, d.holder, duty.HoldOptions{
-		TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Token: token,
+		TTL: intakeHoldTTL, Renew: intakeHoldRenew, Margin: intakeHoldMargin, Token: token, Clock: d.holdClock,
 	})
 	if err != nil {
 		if ctx.Err() == nil {
@@ -385,7 +421,7 @@ func (d *heldDurable) boundElsewhere(info *natsgo.ConsumerInfo) bool {
 // holds reports whether this intake may still act under its hold: the hold's loss deadline has
 // not passed (duty.Hold.Deadline).
 func (d *heldDurable) holds() bool {
-	return d.hold != nil && time.Now().Before(d.hold.Deadline())
+	return d.hold != nil && d.holdClock.Now().Before(d.hold.Deadline())
 }
 
 // takeOver makes the durable deliver to this intake, under the hold and the durable's consumer
@@ -592,11 +628,11 @@ func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(
 		if !d.holds() {
 			return d.failedStep(doing, errHoldNotHeld, attributes)
 		}
-		deadline := time.Now().Add(takeOverCallTimeout)
+		deadline := d.holdClock.Now().Add(takeOverCallTimeout)
 		if lost := d.hold.Deadline(); lost.Before(deadline) {
 			deadline = lost
 		}
-		call, cancel := context.WithDeadline(finish, deadline)
+		call, cancel := d.holdClock.WithDeadline(finish, deadline)
 		err := step(call)
 		cancel()
 		if err == nil {

@@ -363,9 +363,9 @@ func TestParseReadsAFootnoteDefinitionEndingInABlock(t *testing.T) {
 
 // A reference goldmark's exact match leaves unresolved is looked up among the definitions by its
 // label's key once, not compared with every definition: with 2,000 definitions and 2,000 such
-// references a document parses in about the time it takes with the definitions written as plain
-// paragraphs, where comparing each pair would take over a hundred times as long. The two timings
-// are taken in the same run, so a slow machine slows both.
+// references a document parses in about the steps (ParseWork) it takes with the definitions
+// written as plain paragraphs, where keying every definition again for each reference would take
+// hundreds of times as many. Both are counts of the parse's own steps, which no load moves.
 func TestParseResolvesUnmatchedReferencesWithoutComparingEveryDefinition(t *testing.T) {
 	document := func(definitions bool) string {
 		var markdown strings.Builder
@@ -381,20 +381,16 @@ func TestParseResolvesUnmatchedReferencesWithoutComparingEveryDefinition(t *test
 		}
 		return markdown.String()
 	}
-	fastest := func(markdown string) time.Duration {
-		best := time.Duration(1<<63 - 1)
-		for range 3 {
-			start := time.Now()
-			if _, err := Parse(markdown); err != nil {
-				t.Fatal(err)
-			}
-			best = min(best, time.Since(start))
+	steps := func(markdown string) uint64 {
+		before := ParseWork()
+		if _, err := Parse(markdown); err != nil {
+			t.Fatal(err)
 		}
-		return best
+		return ParseWork() - before
 	}
-	plain, withDefinitions := fastest(document(false)), fastest(document(true))
+	plain, withDefinitions := steps(document(false)), steps(document(true))
 	if withDefinitions > 10*plain {
-		t.Fatalf("parsing took %v with 2,000 definitions and %v with them as paragraphs, want under ten times as long", withDefinitions, plain)
+		t.Fatalf("parsing took %d steps with 2,000 definitions and %d with them as paragraphs, want under ten times as many", withDefinitions, plain)
 	}
 }
 

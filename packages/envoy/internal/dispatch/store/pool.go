@@ -16,6 +16,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // ErrNestedAcquire is the shared pool refusing a second connection to a caller that already
@@ -47,9 +49,12 @@ var ErrNestedAcquire = errors.New(
 
 // holding records whether the context's caller holds a connection of this pool: its
 // transaction, or one it acquired directly. One writer sets it and one reader tests it, so a
-// flag is the whole state - a transaction never opens a second transaction of its own.
+// flag is the whole state - a transaction never opens a second transaction of its own. sent
+// records that the transaction has sent a write batch (WriteBatch.Send), which is what gives it
+// its transaction id; the release that clears connection clears it too.
 type holding struct {
 	connection atomic.Bool
+	sent       atomic.Bool
 }
 
 type holdingKey struct{}
@@ -84,7 +89,10 @@ func hold(ctx context.Context) func() {
 		return nil
 	}
 	state.connection.Store(true)
-	return sync.OnceFunc(func() { state.connection.Store(false) })
+	return sync.OnceFunc(func() {
+		state.connection.Store(false)
+		state.sent.Store(false)
+	})
 }
 
 func holdsConnection(ctx context.Context) bool {
@@ -99,6 +107,25 @@ func holdsConnection(ctx context.Context) bool {
 // ErrNestedAcquire refuses, and for optional work a quiet skip is better than that refusal, whose
 // stack names a call site that is working as intended.
 func HoldsPooledConnection(ctx context.Context) bool { return holdsConnection(ctx) }
+
+// SentWriteBatch reports whether ctx's caller holds one of this pool's connections and its
+// transaction has gone past its first write batch (WriteBatch.Send): it marks a transaction in its
+// write phase, which holds a transaction id from there until its commit. The xid window rigs'
+// collaborator check (storetest/collabtest) reads it. Before the first batch a transaction is in
+// its read phase, where a route's own document work runs on its transaction (docs.API.Join).
+func SentWriteBatch(ctx context.Context) bool {
+	state, ok := ctx.Value(holdingKey{}).(*holding)
+	return ok && state.connection.Load() && state.sent.Load()
+}
+
+// markSent records, for WriteBatch.Send, that ctx's caller's transaction is sending a write batch
+// (SentWriteBatch). A context the pool cannot see, or one that holds no connection, has nothing to
+// mark.
+func markSent(ctx context.Context) {
+	if state, ok := ctx.Value(holdingKey{}).(*holding); ok && state.connection.Load() {
+		state.sent.Store(true)
+	}
+}
 
 // ForConcurrentRead returns a context for one of a caller's reads that run side by side: ctx's
 // deadline, cancellation and values, with a hold mark of its own, so that read takes one
@@ -298,7 +325,16 @@ func (p *Pool) RoomAppends() (*pgxpool.Pool, error) {
 // answering; once Close has closed every other pool it closes this one and Healthy refuses
 // (ErrPoolClosed).
 func (p *Pool) Healthy(ctx context.Context) (int, error) {
-	return p.HealthyWithin(ctx, healthProbeTimeout)
+	return p.HealthyOn(ctx, clock.Real())
+}
+
+// HealthyOn is Healthy with healthProbeTimeout armed on c, for a caller whose own waits run on a
+// clock a test moves: cmd/dispatch's shutdown counts failed probes toward its decision to exit,
+// and its test ends each probe by moving a clocktest.Fake to the bound. The bound is c's alone,
+// with no wall-clock bound beneath it, so a probe on a fake ends when the test moves the fake
+// there and never because the test was slow to; on clock.Real it is Healthy.
+func (p *Pool) HealthyOn(ctx context.Context, c clock.Clock) (int, error) {
+	return p.healthyWithin(ctx, c, healthProbeTimeout)
 }
 
 // HealthyWithin is Healthy with a bound the caller names, for the one caller whose read is not
@@ -311,13 +347,18 @@ func (p *Pool) Healthy(ctx context.Context) (int, error) {
 // (healthPool), so that read always pays a fresh dial, and two seconds bounds the query where it
 // has to bound the dial as well. A caller that is always cold names a bound that covers one.
 func (p *Pool) HealthyWithin(ctx context.Context, bound time.Duration) (int, error) {
+	return p.healthyWithin(ctx, clock.Real(), bound)
+}
+
+// healthyWithin is HealthyWithin with bound armed on c.
+func (p *Pool) healthyWithin(ctx context.Context, c clock.Clock, bound time.Duration) (int, error) {
 	health, err := p.healthPool()
 	if err != nil {
 		return 0, err
 	}
 	// Derived from the caller's context, so a request the client already gave up on ends with
 	// it instead of holding the probe's one connection for the full bound.
-	ctx, cancel := context.WithTimeout(ctx, bound)
+	ctx, cancel := c.WithTimeout(ctx, bound)
 	defer cancel()
 	// The cast holds the result at bigint whichever type the column has: a connection that
 	// prepared this read while schema_migrations.version was an integer would otherwise fail it

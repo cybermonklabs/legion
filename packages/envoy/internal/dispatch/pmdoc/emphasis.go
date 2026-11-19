@@ -111,6 +111,8 @@ func (p emphasisParser) Parse(_ ast.Node, block text.Reader, pc parser.Context) 
 	for length < len(line) && line[length] == char {
 		length++
 	}
+	// Each character of the run scanned is a step of the parse (ParseWork).
+	parseWork.Add(uint64(length))
 	after := ' '
 	if length < len(line) {
 		after = util.ToRune(line, length)
@@ -198,7 +200,13 @@ func (p tildeParser) Parse(parent ast.Node, block text.Reader, pc parser.Context
 		return nil
 	}
 	node := parser.ScanDelimiter(line, before, 1, tildeDelimiters{rules: p.rules})
-	if node == nil || node.OriginalLength > 2 {
+	if node == nil {
+		return nil
+	}
+	// Each character of the run scanned is a step of the parse (ParseWork): a run read again from
+	// each of its `~` would count its length that many times.
+	parseWork.Add(uint64(node.OriginalLength))
+	if node.OriginalLength > 2 {
 		return nil
 	}
 	node.Segment = segment.WithStop(segment.Start + node.OriginalLength)

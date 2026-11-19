@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // acceptedAttempt is one delivery attempt as the accept route and every message read answer it;
@@ -571,14 +572,10 @@ func TestAcceptAClaimAndAReplyOfOneAttemptAllLand(t *testing.T) {
 			}
 			got := map[string]string{}
 			for range 3 {
-				select {
-				case landed := <-outcomes:
-					got[landed.call] = fmt.Sprintf("%d %s", landed.response.Code, responseCode(t, landed.response))
-					if landed.response.Code >= http.StatusInternalServerError {
-						t.Errorf("%s: status=%d body=%s", landed.call, landed.response.Code, landed.response.Body.String())
-					}
-				case <-time.After(10 * time.Second):
-					t.Fatalf("the three calls did not all return; returned so far %v", got)
+				landed := testwait.Receive(t, fmt.Sprintf("the three calls to return (returned so far %v)", got), outcomes)
+				got[landed.call] = fmt.Sprintf("%d %s", landed.response.Code, responseCode(t, landed.response))
+				if landed.response.Code >= http.StatusInternalServerError {
+					t.Errorf("%s: status=%d body=%s", landed.call, landed.response.Code, landed.response.Body.String())
 				}
 			}
 			if fmt.Sprint(got) != fmt.Sprint(test.want) {

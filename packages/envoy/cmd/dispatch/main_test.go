@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -41,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -1024,15 +1026,12 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	}
 
 	first := start(database)
-	deadline := time.Now().Add(10 * time.Second)
-	for !probe(first) {
-		if time.Now().After(deadline) {
-			t.Fatal("healthz never reported the only outbox publishing")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, "healthz to report the only process publishing", func() bool { return probe(first) })
 	second := start(storetest.SecondProcess(t, database))
-	time.Sleep(time.Second)
+	testwait.Span(t, time.Second, "the standby must not report itself publishing while the first holds the hold: "+
+		"a process that has not taken the hold writes nothing of its own to read, both run in this test process "+
+		"behind real HTTP so synctest does not reach them, and the later action this row takes - stopping the "+
+		"holder - is what hands the hold over")
 	if probe(second) || !probe(first) {
 		t.Fatalf("outbox_publisher: first %t, second %t, want only the first, which holds the publisher hold", probe(first), probe(second))
 	}
@@ -1041,13 +1040,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	if probe(first) {
 		t.Fatal("healthz reported a stopped outbox publishing")
 	}
-	deadline = time.Now().Add(10 * time.Second)
-	for !probe(second) {
-		if time.Now().After(deadline) {
-			t.Fatal("healthz never reported the standby publishing once the holder stopped")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Eventually(t, "healthz to report the standby publishing once the holder stopped", func() bool { return probe(second) })
 }
 
 // /healthz says this build judges a write's Idempotency-Key (INFRA-258), which the agents' client
@@ -1179,49 +1172,58 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 		database.Pool.Close()
 	})
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
+	// The probe's bound is armed on a fake clock (healthzHandlerOn), so the row reads the bound the
+	// probe armed and ends the probe only by moving the fake to it.
+	began := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(began)
+	server := httptest.NewServer(healthzHandlerOn(fake, database, nil, nil, nil, "", nil, issuers{}, nil))
 	defer server.Close()
 	// The shared pool's own round trip is the control: the link works right up to the outage.
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
 		t.Fatalf("query through the proxy before the outage: %v", err)
 	}
 
-	// The load balancer's own timeout: a poll it has not heard back from in five seconds is a
-	// failure, and three consecutive failures replace the task.
-	client := &http.Client{Timeout: 5 * time.Second}
-
+	// The load balancer's own timeout is five seconds: a poll it has not heard back from in that
+	// long is a failure, and three consecutive failures replace the task. The probe on a database
+	// that answers nothing arms its bound as it starts and answers once that bound passes.
 	blackholed.Store(true)
-	started := time.Now()
-	response, err := client.Get(server.URL + "/healthz")
-	if err != nil {
-		t.Fatalf("health probe with Postgres unreachable: %v (after %s)", err, time.Since(started))
+	answered := healthzAsync(t, server.URL)
+	armed := fake.AwaitArmed(t, "the database probe's bound", 1)
+	if bound := armed[0].Sub(began); bound >= 5*time.Second {
+		t.Fatalf("the database probe armed its bound %v after the poll came, at or past the load balancer's five seconds", bound)
 	}
-	defer response.Body.Close()
-	var health map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
-		t.Fatalf("decode health response: %v", err)
-	}
-	if response.StatusCode != http.StatusServiceUnavailable || health["db"] != false || health["schema_version"] != nil {
+	fake.Set(armed[0])
+	health := testwait.Receive(t, "the health probe to answer once its bound passed", answered).decode(t)
+	if health.status != http.StatusServiceUnavailable || health.body["db"] != false || health.body["schema_version"] != nil {
 		t.Fatalf("health probe with Postgres unreachable = %d %#v, want 503 with db false and no schema version",
-			response.StatusCode, health)
+			health.status, health.body)
 	}
 }
 
-// unansweringBucket is a file store whose bucket never answers its probe: Healthy waits out the
-// two seconds files.S3 bounds its HeadBucket by, as a hung HeadBucket does.
-type unansweringBucket struct{ *filestest.Memory }
+// heldBucket is a file store whose bucket answers its probe only once the test releases it, and
+// says when the probe has reached it, so a test can hold the bucket's probe in flight while it
+// reads what the rest of the probe does. Its probe fails, as a hung HeadBucket's bound does.
+type heldBucket struct {
+	*filestest.Memory
+	reached chan struct{}
+	release chan struct{}
+}
 
-func (unansweringBucket) Healthy(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	<-ctx.Done()
-	return ctx.Err()
+func (b heldBucket) Healthy(ctx context.Context) error {
+	close(b.reached)
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	return errors.New("the bucket did not answer")
 }
 
 // /healthz still answers inside the tightest prober's three seconds when Postgres and the
 // file store's bucket both stop answering. Each probe is bounded at two seconds on its own, so
 // run one after the other they took four, and the compose healthcheck and the deploy script
-// read that silence as a dead process; run side by side they take two.
+// read that silence as a dead process; run side by side they take two. The row proves them side
+// by side: the database probe arms its bound on the fake while the bucket's probe is held in
+// flight, and a handler that ran them one after the other never has both in flight at once.
 func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) {
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
@@ -1238,26 +1240,72 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 		blackholed.Store(false)
 		database.Pool.Close()
 	})
-	bucket := unansweringBucket{filestest.NewMemory()}
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, issuers{}, nil))
+	bucket := heldBucket{Memory: filestest.NewMemory(), reached: make(chan struct{}), release: make(chan struct{})}
+	began := time.Date(2026, time.November, 17, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(began)
+	server := httptest.NewServer(healthzHandlerOn(fake, database, nil, nil, bucket, "", nil, issuers{}, nil))
 	defer server.Close()
 
-	client := &http.Client{Timeout: 3 * time.Second}
 	blackholed.Store(true)
-	started := time.Now()
-	response, err := client.Get(server.URL + "/healthz")
-	if err != nil {
-		t.Fatalf("health probe with Postgres and the bucket unreachable: %v (after %s)", err, time.Since(started))
+	answered := healthzAsync(t, server.URL)
+	testwait.Receive(t, "the bucket's probe to start", bucket.reached)
+	armed := fake.AwaitArmed(t, "the database probe's bound, armed while the bucket's probe is held in flight", 1)
+	close(bucket.release)
+	fake.Set(armed[0])
+	health := testwait.Receive(t, "the health probe to answer once both probes ended", answered).decode(t)
+	if health.status != http.StatusServiceUnavailable || health.body["db"] != false || health.body["files"] != false {
+		t.Fatalf("health probe with Postgres and the bucket unreachable = %d %#v, want 503 with db and files false",
+			health.status, health.body)
 	}
-	defer response.Body.Close()
-	var health map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+}
+
+// healthzReply is one GET of /healthz as healthzAsync received it.
+type healthzReply struct {
+	response *http.Response
+	err      error
+}
+
+// healthzRead is a /healthz answer's status and decoded body.
+type healthzRead struct {
+	status int
+	body   map[string]any
+}
+
+// decode fails t unless the GET was answered with a JSON body, and reads it.
+func (a healthzReply) decode(t *testing.T) healthzRead {
+	t.Helper()
+	if a.err != nil {
+		t.Fatalf("health probe: %v", a.err)
+	}
+	defer a.response.Body.Close()
+	read := healthzRead{status: a.response.StatusCode}
+	if err := json.NewDecoder(a.response.Body).Decode(&read.body); err != nil {
 		t.Fatalf("decode health response: %v", err)
 	}
-	if response.StatusCode != http.StatusServiceUnavailable || health["db"] != false || health["files"] != false {
-		t.Fatalf("health probe with Postgres and the bucket unreachable = %d %#v, want 503 with db and files false",
-			response.StatusCode, health)
+	return read
+}
+
+// healthzAsync sends one GET of /healthz at serverURL (healthzWithin) on a goroutine of its own,
+// so the test can move the probe's clock while it waits, and delivers the answer on the channel.
+func healthzAsync(t *testing.T, serverURL string) <-chan healthzReply {
+	t.Helper()
+	answered := make(chan healthzReply, 1)
+	go func() {
+		response, err := healthzWithin(t, serverURL)
+		answered <- healthzReply{response: response, err: err}
+	}()
+	return answered
+}
+
+// healthzWithin is one GET of /healthz at serverURL under the shared wait's context, which ends
+// only near the test binary's deadline: a probe that never answers fails there.
+func healthzWithin(t *testing.T, serverURL string) (*http.Response, error) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, serverURL+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("build the health probe: %v", err)
 	}
+	return http.DefaultClient.Do(request)
 }
 
 // blackholePostgres puts a proxy in front of upstream and returns its address. While blackholed
@@ -1370,7 +1418,7 @@ func TestMain(m *testing.M) {
 		main()
 		os.Exit(0)
 	}
-	os.Exit(storetest.Main(m))
+	os.Exit(storetest.Main(m.Run))
 }
 
 func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {
@@ -1477,7 +1525,7 @@ func TestCensusSubcommandExitCodes(t *testing.T) {
 func TestCensusSubcommandPrintsACensusErrorWithOnePrefix(t *testing.T) {
 	database := storetest.Open(t)
 	var out, errOut bytes.Buffer
-	if code := census(context.Background(), database.Pool.Config().ConnString()+"&search_path=nosuch", &out, &errOut); code != 2 {
+	if code := census(context.Background(), testdb.WithParameter(t, database.Pool.Config().ConnString(), "search_path", "nosuch"), &out, &errOut); code != 2 {
 		t.Fatalf("exit %d, want 2; stderr %q", code, errOut.String())
 	}
 	const want = "census: the connection's search_path names no schema that exists, so current_schema() is null: the census would find neither schema_migrations nor any table, and the runner can create neither; name an existing schema in the search_path\n"

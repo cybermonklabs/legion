@@ -159,9 +159,11 @@ jobs:
       # TestWebDisplayFixture, and of TestTheWebFixtureFindsItsFilesFromAnyDirectory, which stats
       # the same file: without `--check` the first writes the fixture instead of checking it, so
       # envoy-go's unit step skips both by the same names, both texts built from
-      # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py.
+      # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py. -timeout 10m against a slowest run
+      # of 0.021 s over this job's 20 newest green merge-group runs up to 2026-11-15, when the step
+      # ran TestWebDisplayFixture alone.
       - name: Check the web app's display-tree fixture is up to date
-        run: go test -count=1 -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
+        run: go test -count=1 -timeout 10m -run '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' ./internal/dispatch/pmdoc/ -args --check
         working-directory: packages/envoy
       - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
         run: bash scripts/dev-broker.test.sh

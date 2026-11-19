@@ -3085,7 +3085,7 @@ func (kv *historyFailKeyValue) History(string, ...natsgo.WatchOpt) ([]natsgo.Key
 }
 
 // TestMain removes the NATS server the package's tests share (testnats.Main).
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(testnats.Main(m.Run)) }
 
 // The registry's clock stamps what it records: an interest's UpdatedAt and a role claim's
 // ClaimedAt come from the clock Open was given, as the grace window does.

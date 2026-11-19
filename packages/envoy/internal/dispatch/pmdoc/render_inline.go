@@ -306,13 +306,15 @@ func (s *rawHTMLScan) opensAt(at int) bool {
 	return html != nil
 }
 
-// readLines makes the run's lines and a reader over them.
+// readLines makes the run's lines and a reader over them. Each line it makes is a step of the
+// render (RenderWork); the walks of the parser it asks count in the parse's (ParseWork).
 func (s *rawHTMLScan) readLines() {
 	for start := s.from; start < len(s.written); {
 		stop, next := blockLine(s.written, start, s.prefix)
 		s.lines.Append(text.NewSegment(start, stop))
 		start = next
 	}
+	renderWork.Add(uint64(s.lines.Len()))
 	s.reader = text.NewBlockReader(s.written, &s.lines)
 }
 

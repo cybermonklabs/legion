@@ -5,8 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"net/url"
-	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -22,38 +20,17 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/migrationid"
 )
 
-func testDatabaseURL(t *testing.T) string {
-	t.Helper()
-	databaseURL := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run Postgres store tests")
-	}
-	return databaseURL
-}
-
-func openTestStore(t *testing.T) *Store {
-	t.Helper()
-	store, err := Open(context.Background(), testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(store.Pool.Close)
-	return store
-}
-
+// openEmptyTestStore opens an empty database of the test's own on the server
+// DISPATCH_TEST_DATABASE_URL names (testdb), dropped after the test ends, and skips the test when
+// that variable is unset. A test that needs the tables migrates it itself. This package's own
+// tests cannot clone storetest's migrated template, since storetest imports this package.
 func openEmptyTestStore(t *testing.T) *Store {
 	t.Helper()
-	ctx := context.Background()
-	baseURL, err := url.Parse(testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
-	}
-	adminURL := *baseURL
-	adminURL.Path = "/postgres"
-	store, err := Open(ctx, testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	store, err := Open(context.Background(), testdb.DispatchServer.Database(t, "dispatch_test"))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
@@ -77,14 +54,8 @@ func randomDatabaseSuffix(t *testing.T) string {
 // first wrong in the dangerous direction - the pool is silently pinned and the refusal never
 // fires - and the last two wrong in the worse one, refusing to boot on a valid password.
 func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
-	base := testDatabaseURL(t)
-	withPoolSize, err := url.Parse(base)
-	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
-	}
-	query := withPoolSize.Query()
-	query.Set(poolSizeParam, "4")
-	withPoolSize.RawQuery = query.Encode()
+	base := testdb.DispatchServer.Database(t, "dispatch_test")
+	withPoolSize := testdb.WithParameter(t, base, poolSizeParam, "4")
 
 	// The rows that must not be refused point at a closed port: the observable is whether the
 	// refusal fired, not whether the credentials are real.
@@ -93,7 +64,7 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 		databaseURL string
 		refused     bool
 	}{
-		"url query":            {withPoolSize.String(), true},
+		"url query":            {withPoolSize, true},
 		"keyword value":        {"host=127.0.0.1 " + poolSizeParam + "=4", true},
 		"keyword value spaced": {"host=127.0.0.1 " + poolSizeParam + " = 4", true},
 		"quoted value containing the parameter": {
@@ -138,7 +109,7 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 // time.Local, which is never time.UTC - not even under TZ=UTC, where it is a location of its own
 // named "UTC" - so this holds the connection to the zone rather than to the host's.
 func TestScannedTimestampsCarryUTCWhateverTheHostZone(t *testing.T) {
-	store := openTestStore(t)
+	store := openEmptyTestStore(t)
 	ctx := context.Background()
 	// Both wire formats: the pool's own (binary, the statement cache's) and the text one a
 	// simple-protocol query answers, each with a scan plan of its own in pgx.
@@ -688,13 +659,7 @@ func TestMigrateRecordsTheVersionUnderTheValuesResetGives(t *testing.T) {
 func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
 	t.Helper()
 	ctx := context.Background()
-	baseURL, err := url.Parse(testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
-	}
-	adminURL := *baseURL
-	adminURL.Path = "/postgres"
-	config, err := pgxpool.ParseConfig(testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	config, err := pgxpool.ParseConfig(testdb.DispatchServer.Database(t, "dispatch_test"))
 	if err != nil {
 		t.Fatalf("parse the isolated database's URL: %v", err)
 	}
@@ -840,11 +805,11 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 // createVersionTable pins its transaction (pgmigrate.Pin), so the widen's ALTER TABLE, which takes
 // ACCESS EXCLUSIVE on schema_migrations, is bounded by LockTimeout. Here another connection holds
 // ACCESS SHARE on an integer schema_migrations in an open transaction, so the widen must wait for
-// it. With the pin the widen gives up after LockTimeout with a lock-timeout error (SQLSTATE 55P03)
-// rather than waiting without limit.
+// it. With the pin the widen gives up with a lock-timeout error (SQLSTATE 55P03), which only the
+// server's lock_timeout produces, rather than waiting without limit.
 //
 // Control: remove the pgmigrate.Pin call from createVersionTable's callback and the widen waits
-// without limit; the context deadline below fires and the error is not a lock timeout.
+// without limit; the shared wait's context ends it and the error is not a lock timeout.
 func TestMigrateCreateVersionTableBoundsTheWidenLock(t *testing.T) {
 	store := openIsolatedStoreWithPool(t, 4)
 	setup := context.Background()
@@ -859,17 +824,10 @@ func TestMigrateCreateVersionTableBoundsTheWidenLock(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = holder.Exec(context.Background(), "rollback") })
 
-	ctx, cancel := context.WithTimeout(setup, pgmigrate.LockTimeout+10*time.Second)
-	defer cancel()
-	started := time.Now()
-	err := store.createVersionTable(ctx, true)
-	elapsed := time.Since(started)
+	err := store.createVersionTable(testwait.Context(t), true)
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
-		t.Fatalf("createVersionTable returned %v after %v; want a lock-timeout error (SQLSTATE 55P03): the widen was not bounded", err, elapsed)
-	}
-	if elapsed > pgmigrate.LockTimeout+5*time.Second {
-		t.Errorf("createVersionTable returned after %v; want about LockTimeout (%v): it waited past its bound", elapsed, pgmigrate.LockTimeout)
+		t.Fatalf("createVersionTable returned %v; want a lock-timeout error (SQLSTATE 55P03): the widen was not bounded", err)
 	}
 }
 

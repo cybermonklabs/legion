@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -138,7 +139,10 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	// A clock that stands still: the comment's lookup of the role is answered as the listener
+	// answers it and is never left unanswered by its bound (mentionLookupTimeout), after which its
+	// send would look the role up once more than the two lookups this row counts.
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.Held()})
 	direct := directServer(deps)
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent mention retry", "before")
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
