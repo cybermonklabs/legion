@@ -1,5 +1,5 @@
 {
-  "source": "theorem-labs/agent-infra fe26eb31 envoy-cluster/hub.go hubMeasurePublish, hubMeasureSubscribe",
+  "source": "example-org/deployment fe26eb31 envoy-cluster/hub.go hubMeasurePublish, hubMeasureSubscribe",
   "publish": [
     "$JS.API.INFO",
     "$JS.API.STREAM.NAMES",

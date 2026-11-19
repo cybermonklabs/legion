@@ -38,7 +38,7 @@ import (
 // an HTML comment, and one who reads the file sees every bullet a comment holds, so a comment in
 // the paragraph's lists fails both tests rather than deciding them.
 const (
-	reclaimParagraphStart = "The remedy for a volume near full is manual"
+	reclaimParagraphStart = "The remedy for a volume the trimmer cannot bring down is manual"
 	reclaimParagraphEnd   = "As for the rest:"
 	reclaimDeleteHeading  = "Delete list"
 	reclaimExemptHeading  = "Exempt, each for a reason"

@@ -150,11 +150,15 @@ export interface DocumentConnection {
   readonly doc: Doc;
   destroy(): void;
   /**
-   * Has the server admit this connection again: the server decides a socket's admission once, as
-   * it connects, so this closes the socket, the connection reconnects as it does after any close
-   * the server makes, and the new socket's admission reaches `onAdmission` and the pending sync.
-   * The close is this page's own and says nothing of the server, so its reconnect waits the first
-   * attempt's spread whatever backoff earlier closes built.
+   * Has the server decide a read-only admission again: the server decides a socket's admission
+   * once, as it connects, so this closes a socket admitted read-only, the connection reconnects as
+   * it does after any close the server makes, and the new socket's admission reaches
+   * `onAdmission` and the pending sync. A socket admitted writable keeps its admission. A socket
+   * the server has not answered yet may be one the connection opened after the server's own
+   * close, which the server admits as it decides now, so its answer decides: a read-only one
+   * closes it, unreported. Closing that socket regardless would cost a second reconnect, and its
+   * draw. Either close is this page's own and says nothing of the server, so its reconnect waits
+   * the first attempt's spread whatever backoff earlier closes built.
    */
   readmit(): void;
   /**
@@ -338,7 +342,8 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     let busyCloses = 0;
     // The attempt the next reconnect is, from 0, the first after a socket that stayed up
     // `STEADY_SOCKET_MS`; `openedAt` is when the current socket opened, by the page's clock, and
-    // undefined while none is open; `readmitting` says `readmit` closed it (`reconnect`).
+    // undefined while none is open; `readmitting` says the page closed it to be admitted again
+    // (`readmit`, or a read-only answer on the socket a readmit found unanswered; `reconnect`).
     // `waiting` is the wait the host was told of, until the socket it waits for is made.
     let attempt = 0;
     let openedAt: number | undefined;
@@ -348,6 +353,13 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     // `connect: false` below means this class cannot instantiate a socket until `sync` is assigned
     // after the provider exists; the explicit `websocket.connect()` is deliberately last.
     let sync: PendingSync | undefined;
+    // The socket the server last answered (its Authenticated frame), and whether it admitted that
+    // socket read-only.
+    let admitted: { readOnly: boolean; socket: WebSocket } | undefined;
+    // The socket a readmit found unanswered: a read-only answer closes it (`readmit`). It may name
+    // a socket that closed before it answered; no later socket can equal that one, so each later
+    // socket is judged by its own admission, as if no readmit had found it.
+    let readmitOnAnswer: WebSocket | undefined;
     const WebSocketPolyfill = class extends globalThis.WebSocket {
       constructor(url: string, protocols?: string | string[]) {
         super(url, protocols);
@@ -528,6 +540,21 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
       name: artifactId,
       onAuthenticated: () => {
         const readOnly = isSchemaReadOnly(provider.authorizedScope);
+        const socket = websocket.webSocket;
+        if (socket !== null && socket === readmitOnAnswer) {
+          readmitOnAnswer = undefined;
+          if (readOnly) {
+            // A read-only answer on a socket the readmit found unanswered: the connection
+            // reconnects, and the next socket's admission is the one the host is told of. The
+            // close is the page's own, as `readmit`'s is (`reconnect`).
+            readmitting = true;
+            socket.close();
+            return;
+          }
+        }
+        if (socket !== null) {
+          admitted = { readOnly, socket };
+        }
         // Whether the admission is read-only decides from here on whether the editor takes typing
         // and whether the pending sync stores a local update as a person's edit.
         sync?.authenticated(readOnly);
@@ -648,7 +675,15 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
       doc,
       readmit() {
         const socket = websocket.webSocket;
-        if (!destroyed && socket !== null) {
+        // With no socket, the connection's next one connects after this call.
+        if (destroyed || socket === null) {
+          return;
+        }
+        if (admitted === undefined || admitted.socket !== socket) {
+          readmitOnAnswer = socket;
+          return;
+        }
+        if (admitted.readOnly) {
           readmitting = true;
           socket.close();
         }
