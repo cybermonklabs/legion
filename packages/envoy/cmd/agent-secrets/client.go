@@ -898,9 +898,9 @@ type OperatorMachines struct {
 	Credentials []OperatorMachine `json:"credentials"`
 }
 
-// OperatorMachines lists the calling machine login's operator's own machines' logins, as
-// Dispatch's machine-login page lists them but without any service's login, with the raw body
-// for --json.
+// OperatorMachines lists the calling machine login's operator's own logins, their machines' and
+// those of the pods whose account BROKER_POD_OPERATORS maps to them, as Dispatch's machine-login
+// page lists them but without any service's login, with the raw body for --json.
 func (c *client) OperatorMachines(ctx context.Context, signer proofSigner) (OperatorMachines, []byte, error) {
 	raw, err := c.doProof(ctx, signer, http.MethodGet, "/v1/operator/machines", nil)
 	if err != nil {
@@ -913,7 +913,8 @@ func (c *client) OperatorMachines(ctx context.Context, signer proofSigner) (Oper
 	return out, raw, nil
 }
 
-// RevokeOperatorMachine ends one of the calling machine login's operator's own machines' logins.
+// RevokeOperatorMachine ends one of the calling machine login's operator's own logins, a
+// machine's or a pod's, as OperatorMachines lists them.
 // An id that would not name one path segment as written is refused (pathID).
 func (c *client) RevokeOperatorMachine(ctx context.Context, signer proofSigner, id string) error {
 	if err := pathID("a machine id", id); err != nil {

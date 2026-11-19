@@ -399,6 +399,20 @@ another person:
 After a move, have the second person revoke the pod's login on Dispatch's machine-login page, which
 ends the old enrollment, or replace the pod.
 
+A broker of an earlier release reads a person's pod login as that person's own machine login, since
+it holds an operator. Such a broker lets the login enrol a session under the name of one of the
+person's box sessions and take that session's grants, end the person's box sessions, and call the
+four operator routes above. It also answers the pod's enrollment as the person whatever this
+setting says. A roll serves the previous release beside this one against one database
+([running more than one pod](#running-more-than-one-pod)), so:
+
+- set `BROKER_POD_OPERATORS` only in a deploy after every broker replica runs this release;
+- before you roll the broker back to an earlier release, remove every entry and redeploy, then
+  revoke on Dispatch's machine-login page each login that a mapped account made, which anyone
+  signed in may do once its entry is gone and which ends the enrollments that login made. Roll
+  back only after that. The pods log in again with no person, so no login or enrollment that
+  carries a person is left for the earlier release to read.
+
 A pod trades its own projected ServiceAccount token, minted for `BROKER_EXCHANGE_K8S_AUDIENCE`, at
 the token exchange for a Dispatch access token. `BROKER_EXCHANGE_ACCOUNTS` lists the accounts whose
 tokens write as one person: in the one Dispatch project the entry names, or, for an entry that names

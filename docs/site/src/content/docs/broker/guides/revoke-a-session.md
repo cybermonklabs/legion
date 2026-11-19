@@ -290,8 +290,8 @@ $ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")"
 (Those are the calls Dispatch's server makes, as above.)
 
 `STATE` is `expired` for a login past its expiry whose sessions still run. `--json` prints the
-broker's answer, the machine-login page's rows for your own machines. On the machine whose login was
-revoked, every machine and grant command is refused from then on:
+broker's answer, the machine-login page's rows for your own machines and your pods. On the machine
+whose login was revoked, every machine and grant command is refused from then on:
 
 ```console
 $ agent-secrets machine list

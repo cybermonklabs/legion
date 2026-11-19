@@ -2,8 +2,9 @@
 //
 // "agent-secrets machine login|login-status|list|revoke": the machine login the host helper holds
 // for every session it registers, started and read through the helper, and the operator's own
-// machines' logins, listed and ended under it (the broker's operator routes, signed by the
-// helper's sign-launcher op). groupForms (main.go) dispatches them.
+// logins, their machines' and their pods' (BROKER_POD_OPERATORS), listed and ended under it (the
+// broker's operator routes, signed by the helper's sign-launcher op). groupForms (main.go)
+// dispatches them.
 package main
 
 import (
@@ -185,10 +186,11 @@ func roughDuration(d time.Duration) string {
 	}
 }
 
-// cmdMachineList implements "machine list": the logins of the operator's own machines that can
-// still reach a secret, newest first, each row as Dispatch's machine-login page lists it; that
-// page also lists every service's login, which this leaves out, so the table has no service
-// column. --json prints the broker's answer verbatim.
+// cmdMachineList implements "machine list": the logins of the operator's own machines, and of the
+// pods whose account BROKER_POD_OPERATORS maps to the operator, that can still reach a secret,
+// newest first, each row as Dispatch's machine-login page lists it; that page also lists every
+// service's login, which this leaves out, so the table has no service column. --json prints the
+// broker's answer verbatim.
 func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 	const form = "machine list"
 	flagArgs, positional := splitArgs(args, nil)
@@ -247,9 +249,10 @@ func machineRow(m OperatorMachine) []string {
 }
 
 // cmdMachineRevoke implements "machine revoke CREDENTIAL_ID": it ends one of the operator's own
-// machines' logins, as Dispatch's machine-login page does, and every session it enrolled; a
-// service's login is not found here. Revoking this machine's own login, its id in any case the
-// broker reads, ends this machine's broker access too, which it warns about on stderr.
+// machines' logins, or a login of one of the operator's pods, as Dispatch's machine-login page
+// does, and every session it enrolled; a service's login is not found here. Revoking this
+// machine's own login, its id in any case the broker reads, ends this machine's broker access
+// too, which it warns about on stderr.
 func cmdMachineRevoke(args []string, stdout, stderr io.Writer) int {
 	const form = "machine revoke"
 	flagArgs, positional := splitArgs(args, nil)
