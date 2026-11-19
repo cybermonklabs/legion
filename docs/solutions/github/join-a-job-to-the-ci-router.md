@@ -393,8 +393,9 @@ the fills live in workflows that run there.
   keys restores by `go-notices-Linux-` on `ubuntu-24.04`, and `go-notices-Linux-ARM64-go1.27.3`
   starts with that prefix: such a branch restored main's arm64 go-licenses on x86_64 and failed
   with `Exec format error` (run 44437023306). When a family whose entry holds a program a job runs
-  changes its key, put the new part before the point where an older branch's `restore-keys`
-  prefix ends, or rename the family, so that no older prefix matches the new entries.
+  changes its key, put the new part before the point where an older branch's `key` or
+  `restore-keys` ends, or rename the family: GitHub matches both as prefixes, so no older `key` or
+  `restore-keys` may be a prefix of a new key.
 - Add no `actions/cache/save` step here, and no `if:` that tests `github.event_name == 'push'` or
   compares `github.ref` with a branch ref: the workflow runs on no push, so such a condition gates
   its step on what no run ever is, and `check-ci-filters.sh` refuses it. A family a new job

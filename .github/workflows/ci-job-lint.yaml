@@ -192,9 +192,10 @@ jobs:
       # on ubuntu-24.04 by the prefix go-notices-Linux-, and an entry keyed
       # go-notices-Linux-ARM64-go<version> starts with that prefix: such a branch restored main's
       # arm64 go-licenses on x86_64 and failed on it with "Exec format error" (run 44437023306).
-      # No key or restore-keys of an older branch starts with go-notices-ARM64- or
-      # go-notices-X64-, so such a branch misses this family and builds go-licenses for its own
-      # runner.
+      # Before this shape, every go-notices key and restore-keys began with go-notices-Linux-,
+      # which no key of this shape begins with, so a branch that still carries one misses this
+      # family and builds go-licenses for its own runner. A branch that takes this shape names its
+      # own runner's architecture first, so it can match only an entry of that architecture.
       - if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
