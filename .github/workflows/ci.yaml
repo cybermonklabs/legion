@@ -2754,6 +2754,9 @@ jobs:
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/logtest/*'
+              # gcp/clusteredhub_listener_live_test.go's issuer of the projected tokens a listener
+              # that requires a credential verifies.
+              - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/sockettest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
