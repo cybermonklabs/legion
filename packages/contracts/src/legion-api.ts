@@ -1123,7 +1123,7 @@ const legionConsumerLag = z.object({
   unavailable: nonEmptyString.optional(),
 });
 
-/** `api.PauseActorView` — who paused the project or ended its pause (contract 175): the
+/** `api.PauseActorView` — who paused the project or ended its pause (contract 171): the
  * controller, with the session it acted from, or the operator, who acts from none. The daemon's
  * store holds these two shapes and no other (`project_pauses_by_session` and
  * `project_pauses_ended_by_session` in its migration `20261115194357_project_pause`), so a
@@ -1141,7 +1141,7 @@ const pauseFields = {
   reason: nonEmptyString,
 };
 
-/** `api.PauseView` — one pause of the project (contract 175): its id, `since`, when it began,
+/** `api.PauseView` — one pause of the project (contract 171): its id, `since`, when it began,
  * `by`, who paused, `reason`, why, and, once a resume has ended it, `endedAt` and `endedBy`, when
  * and by whom. A pause answers this shape for the pause it began, and a refusal that names the
  * pause that stands carries it; both are of a pause no resume has ended, so neither names an
@@ -1183,7 +1183,7 @@ const legionPauseHeldRow = z.object({
   waitedSeconds: z.number().int().nonnegative(),
 });
 
-/** `api.PausedView` — the project's open pause as the state shows it (contract 175): the pause,
+/** `api.PausedView` — the project's open pause as the state shows it (contract 171): the pause,
  * `waitsOn`, the claims whose stop it still waits on, and `held`, every row it holds. The rows
  * are listed under the pause because the pause is the reason each one waits. Both lists are
  * never null. */
@@ -1230,10 +1230,10 @@ const legionPaused = z.object({
  * the shapes `internal/projection` answers before the route marks them carry none either.
  * `paused` is the project's open pause, with the claims whose stop it still waits on and the rows
  * it holds, and `lastPause` is its newest ended pause, with when and by whom it was ended
- * (contract 175). The daemon writes each only where there is one: `paused` while the project is
+ * (contract 171). The daemon writes each only where there is one: `paused` while the project is
  * paused and `lastPause` while it runs after a pause has ended, so a state carries one of them at
  * most, and neither before the project's first pause. Both are optional for that reason, and for
- * the one `wakesWaiting` is optional for: the route strips both for a caller in a pod below 175,
+ * the one `wakesWaiting` is optional for: the route strips both for a caller in a pod below 171,
  * and for that caller alone (`api.stateFor`, `withoutPause`), so a reader in such a pod learns
  * nothing of the pause from a state that carries neither. */
 export const LegionStateResponse = z.object({
@@ -1423,7 +1423,7 @@ const legionReleaseRecord = z.object({
  * no release row is recorded for it), the role it was for, what woke it, when the wake reached the
  * daemon, and `podReadyAt` and `firstTurnAt`, each absent until it is observed. `stuck` is a wake
  * that went ten minutes with no turn of the woken role. `pause` is the project pause that held
- * the wake (contract 175), absent on a wake no pause held: a held wake pairs with no release, so
+ * the wake (contract 171), absent on a wake no pause held: a held wake pairs with no release, so
  * its `release` is 0, and its time to the first turn measures the pause, so a reader of these
  * records counts it apart (`releaseRecords` in `packages/pi-shared/src/legion-phase-ops.ts`). */
 const legionResumeRecord = z.object({

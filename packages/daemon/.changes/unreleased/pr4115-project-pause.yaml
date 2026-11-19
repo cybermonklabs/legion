@@ -51,7 +51,7 @@ body: |-
   project, its role changes queue no role-holders publication of that project, and the idle
   release releases no pod of it. A new pod restores a saved workspace only of an issue that its own
   project records, so it never takes the workspace another project's daemon saved for its own pod.
-  The daemon API contract is 175. Before a rollback to an earlier release, do three things in this
+  The daemon API contract is 171. Before a rollback to an earlier release, do three things in this
   order (docs/kubernetes.md, "Rolling back the project pause"). Resume the project. Resume one role
   of each pod that a pause still holds, because an earlier release reads no hold and deletes a held
   pod in which no role is live, with its unpushed work. Then, with the daemon stopped, run the

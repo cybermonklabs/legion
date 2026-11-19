@@ -618,7 +618,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// with each issue's `assignments` gone, the experiment answers contract 141 added
 			// (withoutAssignments), with each issue's `entryQueuedAt`, `entryConfirmedAt` and
 			// `architectStalls` gone, the three keys entryTimesContract added (withoutEntryTimes),
-			// and with the project's pause gone, the `paused` contract 175 added (withoutPause).
+			// and with the project's pause gone, the `paused` contract 171 added (withoutPause).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
 			// this fixture stands no member of that kind.

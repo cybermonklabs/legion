@@ -666,7 +666,7 @@ func TestTheStateRouteServesAPodItsPluginContractsPause(t *testing.T) {
 // pauseContract is the contract whose entry in version.go added the two keys, and this daemon's
 // own contract is never below it: a caller at this contract is served them.
 func TestThePauseContractIsTheContractThatAddedTheKeys(t *testing.T) {
-	const addedPause = 175
+	const addedPause = 171
 	if pauseContract != addedPause {
 		t.Fatalf("pauseContract = %d, want %d, the contract whose entry in version.go added `paused` and `lastPause`",
 			pauseContract, addedPause)

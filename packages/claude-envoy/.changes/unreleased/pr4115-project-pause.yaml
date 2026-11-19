@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The plugin speaks daemon API contract 175, which adds the project pause. The `legion` tool's
+  The plugin speaks daemon API contract 171, which adds the project pause. The `legion` tool's
   description of `read_release_records` says that a wake a project pause held is counted as
   `heldByPause` and left out of the wake-to-first-turn seconds. Where that wake's issue was
   released before it, the wake ends the release in the pod-hours released and in the share of

@@ -95,13 +95,13 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 175's project pause
+number is the one `DaemonAPIVersion` declares, last bumped by contract 171's project pause
 (dispatch://INFRA-3759: the controller's `legion` tool gains `pause (reason)` and `resume`, which
 post `POST /legion/v1/project/pause` and `POST /legion/v1/project/resume` with a controller grant
 and answer the pause the daemon began or ended; `GET /legion/v1/state` carries `paused` while the
 project is paused and `lastPause` once a pause has ended, which `read_state`'s summary prints as
 one line, and which the reader this plugin parses the state through takes as optional, because a
-caller from a pod whose claims record a contract under 175 is served the state with neither
+caller from a pod whose claims record a contract under 171 is served the state with neither
 (`api.stateFor`, `withoutPause`); and a resume of the release records carries `pause`, the pause
 that held its wake, which `read_release_records` counts as `heldByPause` and leaves out of its
 wake-to-first-turn seconds), after contract 168's plan rating (the `handoff_complete` that ends
