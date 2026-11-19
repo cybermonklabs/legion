@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { CutWords } from "./CutWords";
 import { measureNearWords } from "./clamp-fixtures";
@@ -499,6 +500,47 @@ test("useOutOfTabOrder with keepScrollers keeps only a scroller whose content ru
   } finally {
     view.unmount();
     restore();
+  }
+});
+
+// Decision 317: a scroller counts as one that scrolls whenever its content runs past its box,
+// judged again on every change of its width, so a block that starts to overflow when the window
+// narrows gains its tab stop, and one that stops overflowing when it widens loses it, with its own
+// name and role again. A width changes no child of the box, so only a size observer sees it, and
+// the observer stops with the box.
+test("useOutOfTabOrder with keepScrollers judges a scroller again on every change of its width", () => {
+  const sizes = installResizeObserver();
+  let restore = () => {};
+  try {
+    const view = draw(<KeptScrollers keepScrollers />);
+    try {
+      const code = view.container.querySelector("[data-code]");
+      if (code === null) throw new Error("the box draws no code block");
+      expect(keptState(view.container, ["[data-code]"])).toEqual([
+        { label: null, role: null, tabIndex: "-1" },
+      ]);
+      // The window narrows, and the code block's line runs past its box.
+      restore = overflowing("[data-code]");
+      sizes.resize(code);
+      expect(
+        keptState(view.container, ["[data-code]"]),
+        "a code block that came to overflow as its width changed has no tab stop"
+      ).toEqual([{ label: CONTROL_LABELS.scrolls_code, role: "region", tabIndex: "0" }]);
+      // The window widens again, and the line fits.
+      restore();
+      restore = () => {};
+      sizes.resize(code);
+      expect(
+        keptState(view.container, ["[data-code]"]),
+        "a code block that came to fit as its width changed keeps its tab stop"
+      ).toEqual([{ label: null, role: null, tabIndex: "-1" }]);
+    } finally {
+      view.unmount();
+    }
+    expect(sizes.live(), "the size observer outlived the box").toBe(0);
+  } finally {
+    restore();
+    sizes.restore();
   }
 });
 
