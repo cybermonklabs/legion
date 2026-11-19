@@ -30,7 +30,13 @@ fi
 goroot="$(go env GOROOT)"
 export GOROOT="$goroot"
 go_cmd="$goroot/bin/go"
-go_version="$("$go_cmd" env GOVERSION)"
+# The toolchain's version and its host, from one `go env`: the script runs once per release target,
+# and each go process it starts is time on every one of them. The assignment, not the read, runs
+# go, so `set -e` stops the script when it fails.
+go_env="$("$go_cmd" env GOVERSION GOHOSTOS GOHOSTARCH)"
+{ read -r go_version; read -r go_hostos; read -r go_hostarch; } <<EOF
+$go_env
+EOF
 
 # go-licenses runs on this machine whatever GOOS the packages target, so it is built for the host
 # (empty GOOS and GOARCH), outside any module, once per version, toolchain and host. The host is the
@@ -39,8 +45,7 @@ go_version="$("$go_cmd" env GOVERSION)"
 # go-licenses here, and that binary is then at another host's path, so this one is built rather
 # than the foreign one run (an x86_64 lint that ran an arm64 one failed with "Exec format error",
 # run 44437023306).
-go_host="$("$go_cmd" env GOHOSTOS)-$("$go_cmd" env GOHOSTARCH)"
-tool_dir="${XDG_CACHE_HOME:-$HOME/.cache}/legion/go-licenses-$GO_LICENSES_VERSION-$go_version-$go_host"
+tool_dir="${XDG_CACHE_HOME:-$HOME/.cache}/legion/go-licenses-$GO_LICENSES_VERSION-$go_version-$go_hostos-$go_hostarch"
 tool="$tool_dir/go-licenses"
 if [ ! -x "$tool" ]; then
   (cd / && GOOS='' GOARCH='' GOFLAGS='' GOBIN="$tool_dir" \
