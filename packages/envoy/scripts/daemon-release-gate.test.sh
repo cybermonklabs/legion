@@ -45,7 +45,10 @@ export DAEMON_RELEASE_GATE_PULUMI_PROJECT_PREFIX="$project_prefix"
 # The fake gh. It finds the endpoint among its arguments and drops a `?ref=` query, then answers:
 # `repos/example-org/deployment/commits/HEAD` with FAKE_HEAD; `.../contents/<path>` with the bytes
 # of FAKE_ROOT/files/<path>, or for a directory one `<name>\t<file|dir>` line per entry, as the
-# gate's --jq prints GitHub's listing; `repos/cybermonklabs/legion/compare/<base>...<head>` with
+# gate's --jq prints GitHub's listing; `.../git/trees/<sha>:<path>` with the line `false` (`true`
+# when FAKE_ROOT/truncated/<path with / as _> exists) and then one `<path>\t<blob|tree>` line per
+# file and directory under FAKE_ROOT/files/<path>, every level with `?recursive=1` and the top one
+# without, as the gate's --jq prints GitHub's tree; `repos/cybermonklabs/legion/compare/<base>...<head>` with
 # FAKE_ROOT/compare/<head>, failing as an unreachable API when FAKE_API_DOWN=1;
 # `repos/cybermonklabs/legion/commits/refs/tags/<tag>` with FAKE_ROOT/tags/<tag>; and
 # `repos/<owner>/<repo>/contents/.claude-plugin/marketplace.json` with
@@ -65,6 +68,15 @@ refusal="${FAKE_ROOT:?}/refuse/$(printf '%s' "$path" | tr '/' '_')"
 [ ! -f "$refusal" ] || { cat "$refusal" >&2; exit 1; }
 case "$path" in
   repos/example-org/deployment/commits/HEAD) echo "${FAKE_HEAD:?}" ;;
+  repos/example-org/deployment/git/trees/*:*)
+    root=${path#*:}
+    dir="${FAKE_ROOT}/files/${root}"
+    [ -d "$dir" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    if [ -e "${FAKE_ROOT}/truncated/$(printf '%s' "$root" | tr '/' '_')" ]; then echo true; else echo false; fi
+    depth=(-maxdepth 1)
+    [[ $endpoint != *recursive=1* ]] || depth=()
+    (cd "$dir" && find . -mindepth 1 "${depth[@]}" \( -type d -printf '%P\ttree\n' \) -o \( -type f -printf '%P\tblob\n' \)) | sort
+    ;;
   repos/example-org/deployment/contents/*)
     file="${FAKE_ROOT}/files/${path#repos/example-org/deployment/contents/}"
     if [ -d "$file" ]; then
@@ -126,6 +138,7 @@ if [ "$1" = run ]; then
   if [ ! -d "$dir/fs" ]; then
     echo "Unable to find image '$ref' locally" >&2
     echo "docker: Error response from daemon: manifest for $ref not found: manifest unknown" >&2
+    printf '\nRun '"'"'docker run --help'"'"' for more information\n' >&2
     exit 125
   fi
   case "$entrypoint $*" in
@@ -288,15 +301,25 @@ for number, entry in enumerate(entries, start=1):
         yaml.safe_dump(entry, handle)
 PY
 }
-# envoy_program <declares|none>: the deployment's envoy/ program. Either way it holds a Go file
-# that is not the hub's, a _test.go and a subdirectory that both call NewNatsHub(, and a comment
-# line naming the call; with declares, main.go calls it.
+# envoy_program <declares|none>: the deployment's envoy/ program and the local module its go.mod
+# replaces, ../shared. Either way the name NewNatsHub stands in every place that is not a use: a
+# func's own name and a method's, a comment, a string and a raw string, a _test.go and a file under
+# testdata/; with declares, main.go calls it.
 envoy_program() {
   local dir="${case_root}/files/envoy"
-  mkdir -p "$dir/sdks/gcp"
-  printf 'package gcp\n\nfunc NewNatsHub(ctx int) {}\n' >"$dir/sdks/gcp/natsHub.go"
+  mkdir -p "$dir/sdks/gcp" "$dir/testdata" "${case_root}/files/shared"
+  printf 'module example.org/deployment/envoy\n\nreplace example.org/sdk => ./sdks/gcp // the generated SDK\n\nreplace (\n\texample.org/shared => ../shared\n\texample.org/nats v1.0.0 => example.org/nats v1.0.1\n)\n' >"$dir/go.mod"
+  printf 'package gcp\n\n// NewNatsHub registers a hub.\nfunc NewNatsHub(ctx int) error { return register("pkg:gcp:NatsHub") }\n\nfunc (m *module) NewNatsHub(name string) {}\n' >"$dir/sdks/gcp/natsHub.go"
   printf 'package main\n\nfunc TestHub() { _ = envoygcp.NewNatsHub(ctx, "hub") }\n' >"$dir/main_test.go"
-  printf 'package main\n\nfunc transform() {}\n' >"$dir/hub_transform.go"
+  printf 'package fixture\n\nvar hub = envoygcp.NewNatsHub(ctx, "hub")\n' >"$dir/testdata/fixture.go"
+  cat >"$dir/hub_transform.go" <<'GO'
+package main
+
+/* envoygcp.NewNatsHub(ctx, "hub") made the VM hub */
+const note = "NewNatsHub(\"" + `NewNatsHub(`
+const quote = '"'
+GO
+  printf 'package shared\n\nfunc Names() []string { return nil }\n' >"${case_root}/files/shared/names.go"
   if [ "$1" = declares ]; then
     printf 'package main\n\n\thub, err := envoygcp.NewNatsHub(ctx, "hub", &envoygcp.NatsHubArgs{})\n' >"$dir/main.go"
   else
@@ -321,7 +344,9 @@ listener_stacks() {
 }
 
 # run_gate [--unset <variable>]... [env assignments...] -- [gate arguments...]: runs the gate in the
-# current case, each --unset variable taken out of its environment; sets $status.
+# current case, with HOME the case's own and no CLAUDE_CONFIG_DIR of the machine running this test
+# unless an assignment gives one, each --unset variable taken out of its environment last; sets
+# $status.
 run_gate() {
   local unsets=() assignments=()
   while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
@@ -338,9 +363,9 @@ run_gate() {
   : >"$err"
   : >"$calls"
   status=0
-  env "${unsets[@]}" PATH="${temporary_dir}/bin:${PATH}" HOME="${case_root}/home" FAKE_CALLS="$calls" \
+  env -u CLAUDE_CONFIG_DIR PATH="${temporary_dir}/bin:${PATH}" HOME="${case_root}/home" FAKE_CALLS="$calls" \
     FAKE_ROOT="$case_root" FAKE_HEAD="$deployment_head" "${assignments[@]}" \
-    bash "$gate_under_test" "$@" >"$out" 2>"$err" || status=$?
+    env "${unsets[@]}" bash "$gate_under_test" "$@" >"$out" 2>"$err" || status=$?
 }
 
 # mutant <function> <name>: writes a copy of the gate whose <function> is the definition read from
@@ -690,8 +715,10 @@ check "dispatch's server image is never read" "$(lacks "$server_pin" "$calls")"
 check "each real platform is read, and no attestation entry" \
   "$(grep -qF '(index .Image "linux/arm64")' "$calls" && grep -qF '(index .Image "linux/amd64")' "$calls" && lacks '(index .Image "unknown/unknown")' "$calls")"
 check "decides the VM hub from envoy/'s Go files" "$(grep -qF "contents/envoy/main.go?ref=${deployment_head}" "$calls" && echo true || echo false)"
-check "reads no _test.go and nothing in a subdirectory" \
-  "$([ "$(lacks "contents/envoy/main_test.go" "$calls")" = true ] && lacks "contents/envoy/sdks" "$calls" || echo false)"
+check "reads no _test.go and nothing under testdata/" \
+  "$([ "$(lacks "contents/envoy/main_test.go" "$calls")" = true ] && lacks "contents/envoy/testdata" "$calls" || echo false)"
+check "reads the subdirectories and the module go.mod replaces with ../shared" \
+  "$(grep -qF "contents/envoy/sdks/gcp/natsHub.go?ref=" "$calls" && grep -qF "contents/shared/names.go?ref=" "$calls" && echo true || echo false)"
 check "prints no NO VM HUB line" "$(lacks "NO VM HUB" "$out")"
 
 # The VM hub's removal (the deployment's envoy/ program losing its gcp:NatsHub) deletes the
@@ -742,6 +769,8 @@ check "says the program declares no VM hub, at the commit it read" \
   "$(has_line "NO VM HUB: envoy/ at ${deployment_head} declares no gcp:NatsHub")"
 check "reads every Go file that is not a test" \
   "$(grep -qF "contents/envoy/main.go?ref=" "$calls" && grep -qF "contents/envoy/hub_transform.go?ref=" "$calls" && echo true || echo false)"
+check "a func's own name, a method's, a comment, a string, a _test.go and testdata/ declare nothing" \
+  "$(grep -qF "contents/envoy/sdks/gcp/natsHub.go?ref=" "$calls" && echo true || echo false)"
 check "reads no VM pin: not envoy's stack file, not its image" \
   "$([ "$(lacks "contents/envoy/Pulumi.prod.yaml" "$calls")" = true ] && lacks "$envoy_pin" "$calls" || echo false)"
 check "opens on the other two pins" \
@@ -751,7 +780,7 @@ check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
 echo "case: --listeners, envoy/ cannot be listed"
 new_case listeners-hub-unlisted
 listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
-refuse "repos/${deployment}/contents/envoy" "gh: Resource not accessible by integration (HTTP 403)"
+refuse "repos/${deployment}/git/trees/${deployment_head}:envoy" "gh: Resource not accessible by integration (HTTP 403)"
 index "$envoy_pin" "$legion" "$ahead_rev"
 index "$cluster_pin" "$legion" "$ahead_rev"
 index "$dispatch_listener_pin" "$legion" "$ahead_rev"
@@ -783,7 +812,7 @@ check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 echo "case: --listeners, envoy/ lists no Go file"
 new_case listeners-hub-no-go
 listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
-rm "${case_root}"/files/envoy/*.go
+find "${case_root}/files/envoy" "${case_root}/files/shared" -name '*.go' -delete
 index "$cluster_pin" "$legion" "$ahead_rev"
 index "$dispatch_listener_pin" "$legion" "$ahead_rev"
 compare "$ahead_rev" ahead 0
@@ -792,6 +821,85 @@ check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN, having read nothing to decide by" \
   "$(has_line "UNKNOWN: envoy: ${deployment} envoy/ at ${deployment_head} lists no Go file to read the VM hub from")"
 check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
+
+# Every form of a use declares the hub, wherever the program's code holds it: a space or a comment
+# between the name and its call, a reference called later, a helper package of envoy/ and the
+# module envoy/go.mod replaces with a local directory. Each fixture's VM pin is behind, so a gate
+# that missed the use would print NO VM HUB and open.
+for shape in space comment reference helper replaced; do
+  echo "case: --listeners, the VM hub declared by a use of shape ${shape}"
+  new_case "listeners-use-${shape}"
+  listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+  envoy_program none
+  case "$shape" in
+    space) printf 'package main\n\n\thub, err := envoygcp.NewNatsHub (ctx, "hub")\n' >"${case_root}/files/envoy/main.go" ;;
+    comment) printf 'package main\n\n\thub, err := envoygcp.NewNatsHub /* the VM hub */ (ctx, "hub")\n' >"${case_root}/files/envoy/main.go" ;;
+    reference) printf 'package main\n\nvar newHub = envoygcp.NewNatsHub\n' >"${case_root}/files/envoy/main.go" ;;
+    helper)
+      mkdir -p "${case_root}/files/envoy/infra"
+      printf 'package infra\n\nfunc Run() { envoygcp.NewNatsHub(ctx, "hub") }\n' >"${case_root}/files/envoy/infra/hub.go"
+      ;;
+    replaced) printf 'package shared\n\nfunc Hub() { envoygcp.NewNatsHub(ctx, "hub") }\n' >"${case_root}/files/shared/hub.go" ;;
+  esac
+  index "$envoy_pin" "$legion" "$behind_rev"
+  index "$cluster_pin" "$legion" "$ahead_rev"
+  index "$dispatch_listener_pin" "$legion" "$ahead_rev"
+  compare "$behind_rev" behind 4
+  compare "$ahead_rev" ahead 0
+  run_gate -- --listeners "$commit"
+  check "exits 1" "$(is "$status" 1)"
+  check "reads the VM pin and shuts on it" "$(has_line "GATE SHUT: envoy runs ${behind_rev} (behind ${commit} by 4)")"
+  check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
+done
+
+echo "case: --listeners, a Go file of envoy/ the scan cannot read as Go"
+new_case listeners-hub-not-go
+listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+envoy_program none
+printf 'package main\n\n/* a comment with no end\n' >"${case_root}/files/envoy/main.go"
+index "$cluster_pin" "$legion" "$ahead_rev"
+index "$dispatch_listener_pin" "$legion" "$ahead_rev"
+compare "$ahead_rev" ahead 0
+run_gate -- --listeners "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the file" \
+  "$(has_line "UNKNOWN: envoy: cannot read the Go files of ${deployment} envoy/ at ${deployment_head}: envoy/main.go has a /* comment with no end")"
+check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
+
+echo "case: --listeners, GitHub lists envoy/ truncated"
+new_case listeners-hub-truncated
+listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+envoy_program none
+mkdir -p "${case_root}/truncated" && : >"${case_root}/truncated/envoy"
+index "$cluster_pin" "$legion" "$ahead_rev"
+index "$dispatch_listener_pin" "$legion" "$ahead_rev"
+compare "$ahead_rev" ahead 0
+run_gate -- --listeners "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the truncated listing" \
+  "$(has_line "UNKNOWN: envoy: GitHub listed ${deployment} envoy/ at ${deployment_head} truncated (true), so not every Go file can be read")"
+check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
+
+for shape in unreadable outside; do
+  echo "case: --listeners, an envoy/go.mod that is ${shape}"
+  new_case "listeners-go-mod-${shape}"
+  listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+  envoy_program none
+  if [ "$shape" = unreadable ]; then
+    refuse "repos/${deployment}/contents/envoy/go.mod" "gh: Server Error (HTTP 502)"
+    want="UNKNOWN: envoy: cannot read ${deployment} envoy/go.mod at ${deployment_head}: gh: Server Error (HTTP 502)"
+  else
+    printf 'module example.org/deployment/envoy\n\nreplace example.org/far => ../../far\n' >"${case_root}/files/envoy/go.mod"
+    want="UNKNOWN: envoy: cannot read ${deployment} envoy/go.mod at ${deployment_head}: envoy/go.mod replaces a module with ../../far, outside this repository"
+  fi
+  index "$cluster_pin" "$legion" "$ahead_rev"
+  index "$dispatch_listener_pin" "$legion" "$ahead_rev"
+  compare "$ahead_rev" ahead 0
+  run_gate -- --listeners "$commit"
+  check "exits 3" "$(is "$status" 3)"
+  check "refuses UNKNOWN naming why" "$(has_line "$want")"
+  check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
+done
 
 # The deployment requires dispatch's listenerImage (its dispatch/main.go loadSettings; its
 # pinListenerImage reads that key and no other), so a stack that sets none runs no listener this
@@ -1151,6 +1259,148 @@ run_gate FAKE_NPM_DOWN=1 -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming npm's answer" \
   "$(has_line "UNKNOWN: dotfiles .claude/settings.json: npm cannot resolve @sjawhar/claude-envoy@>=1.0.0: npm error code ENOTFOUND")"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+
+# The dotfiles' copy of pi-envoy is what a new session loads. An install that did not finish leaves
+# it behind the pin, and `omp plugin link` puts a link to a checkout at its path, which a tree
+# linked to the dotfiles carries inside them; neither may read as the pin.
+echo "case: --clients, the dotfiles' installed pi-envoy behind its pin"
+clients_case clients-installed-behind
+printf '{"name": "@sjawhar/pi-envoy", "version": "%s"}\n' "$envoy_behind" \
+  >"${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy/package.json"
+run_gate -- --clients "$commit"
+check "exits 1" "$(is "$status" 1)"
+check "shuts naming the installed version and the pin" \
+  "$(has_line "GATE SHUT: dotfiles omp/plugins installed @sjawhar/pi-envoy runs pi-envoy ${envoy_behind} from pi-envoy-v${envoy_behind} at ${envoy_behind_rev} (behind ${commit} by 300); the pin names ${envoy_ahead}")"
+
+echo "case: --clients, the dotfiles' pi-envoy a link to a checkout outside them"
+clients_case clients-linked-checkout
+mkdir -p "${case_root}/outside/pi-envoy"
+printf '{"name": "@sjawhar/pi-envoy", "version": "%s"}\n' "$envoy_ahead" >"${case_root}/outside/pi-envoy/package.json"
+rm -r "${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
+ln -s "${case_root}/outside/pi-envoy" "${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming where the link goes" \
+  "$(has_line "UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ~/.dotfiles, in ${case_root}/home/.dotfiles/omp/plugins, a link to ${case_root}/outside/pi-envoy")"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+
+echo "case: --clients, a profile's plugin tree whose pi-envoy links to the dotfiles' copy"
+clients_case clients-profile-link
+mkdir -p "${case_root}/home/.omp/profiles/work/plugins/node_modules/@sjawhar"
+ln -s "${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy" \
+  "${case_root}/home/.omp/profiles/work/plugins/node_modules/@sjawhar/pi-envoy"
+run_gate -- --clients "$commit"
+check "exits 0, the copy being the dotfiles' own" "$(is "$status" 0)"
+check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
+
+for shape in malformed directory; do
+  echo "case: --clients, a Claude Code plugin record that is ${shape}"
+  clients_case "clients-claude-record-${shape}"
+  mkdir -p "${case_root}/home/.claude/plugins"
+  if [ "$shape" = malformed ]; then
+    printf '{"version": 2, "plugins": {"claude-envoy@legion-plugins": [' >"${case_root}/home/.claude/plugins/installed_plugins.json"
+  else
+    mkdir "${case_root}/home/.claude/plugins/installed_plugins.json"
+  fi
+  run_gate -- --clients "$commit"
+  check "exits 3" "$(is "$status" 3)"
+  check "refuses UNKNOWN naming the record" \
+    "$(grep -qF "UNKNOWN: dotfiles .claude/settings.json: ${case_root}/home/.claude/plugins/installed_plugins.json cannot be read as JSON: " "$out" && echo true || echo false)"
+  check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+done
+
+echo "case: --clients, claude-envoy installed in the dotfiles' Claude Code configuration, behind"
+clients_case clients-claude-installed-behind
+tag "claude-envoy-v3.3.0" "$behind_rev"
+mkdir -p "${case_root}/home/.dotfiles/.claude/plugins"
+printf '{"version": 2, "plugins": {"claude-envoy@legion-plugins": [{"scope": "user", "version": "3.3.0"}]}}\n' \
+  >"${case_root}/home/.dotfiles/.claude/plugins/installed_plugins.json"
+run_gate CLAUDE_CONFIG_DIR="${case_root}/home/.dotfiles/.claude" -- --clients "$commit"
+check "exits 1" "$(is "$status" 1)"
+check "shuts naming the installed copy" \
+  "$(has_line "GATE SHUT: dotfiles .claude/plugins installed claude-envoy runs claude-envoy 3.3.0 from claude-envoy-v3.3.0 at ${behind_rev} (behind ${commit} by 12)")"
+check "still reads the version the marketplace serves" \
+  "$(grep -qF "PASS: dotfiles .claude/settings.json runs claude-envoy 4.0.0 " "$out" && echo true || echo false)"
+
+echo "case: --clients, claude-envoy installed in the CLAUDE_CONFIG_DIR of another configuration"
+clients_case clients-claude-config-dir
+mkdir -p "${case_root}/other-claude/plugins"
+printf '{"version": 2, "plugins": {"claude-envoy@legion-plugins": [{"version": "4.0.0"}]}}\n' \
+  >"${case_root}/other-claude/plugins/installed_plugins.json"
+run_gate CLAUDE_CONFIG_DIR="${case_root}/other-claude" -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming where it is installed" \
+  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: claude-envoy is installed outside ~/.dotfiles, in ${case_root}/other-claude/plugins")"
+
+echo "case: --clients, a marketplace with two claude-envoy entries"
+clients_case clients-marketplace-twice
+printf '{"name": "legion-plugins", "plugins": [{"name": "claude-envoy", "source": {"source": "npm", "package": "@sjawhar/claude-envoy", "version": ">=1.0.0"}}, {"name": "claude-envoy", "source": {"source": "npm", "package": "@sjawhar/claude-envoy", "version": "1.0.0"}}]}\n' \
+  >"${case_root}/marketplaces/example-org/plugins.json"
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN, choosing neither" \
+  "$(grep -q '^UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy as .*2 entries name claude-envoy' "$out" && echo true || echo false)"
+check "asks npm nothing" "$(lacks "npm view" "$calls")"
+
+for shape in text mixed; do
+  echo "case: --clients, npm answers ${shape} where a list of versions belongs"
+  clients_case "clients-npm-${shape}"
+  if [ "$shape" = text ]; then
+    printf 'npm warn config something\n4.0.0\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
+  else
+    printf '["4.0.0", {"version": "1.0.0"}]\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
+  fi
+  run_gate -- --clients "$commit"
+  check "exits 3" "$(is "$status" 3)"
+  check "refuses UNKNOWN" "$(has_line "UNKNOWN: dotfiles .claude/settings.json: npm answers no version of @sjawhar/claude-envoy for >=1.0.0")"
+  check "the verdict is the last line" "$(last_line_is "UNKNOWN")"
+done
+
+echo "case: --clients, a pre-release pin a release tag names"
+clients_case clients-pre-release
+dotfiles "17.41.0-rc.1"
+tag "pi-envoy-v17.41.0-rc.1" "$ahead_rev"
+run_gate -- --clients "$commit"
+check "exits 0" "$(is "$status" 0)"
+check "reads it as the exact version it is" \
+  "$(has_line "PASS: dotfiles omp/plugins/package.json runs pi-envoy 17.41.0-rc.1 from pi-envoy-v17.41.0-rc.1 at ${ahead_rev} (ahead of ${commit})")"
+
+echo "case: --clients, a run with no HOME"
+clients_case clients-no-home
+run_gate --unset HOME -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming HOME" "$(has_line "UNKNOWN: dotfiles: HOME is not set, so this box's ~/.dotfiles cannot be found")"
+check "the verdict is the last line" "$(last_line_is "UNKNOWN")"
+
+# A field of the wrong type is never a reason to skip a project, and an image reference with a
+# tab in it is never read as the reference before the tab: YAML's false equals 0 in Python, and a
+# tab cut the gate's own line apart.
+echo "case: a project whose fields are of the wrong type, or whose image is no plain reference"
+new_case invalid-fields
+legion_stack "    - key: LINUX
+      replicas: 1
+      daemonImage: ${worker_a}
+    - key: BET
+      replicas: false
+      daemonImage: ${worker_b}
+    - key: OSSV
+      daemon: \"false\"
+      daemonImage: ${worker_b}
+    - key: INFRA
+      replicas: 1
+      daemonImage: \"${worker_a}\tsuffix\""
+single "$worker_a" "$legion" "$ahead_rev"
+single "$worker_b" "$legion" "$behind_rev"
+compare "$ahead_rev" ahead 0
+compare "$behind_rev" behind 3
+run_gate -- "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "a replicas of false is no count, not a skip" "$(has_line "UNKNOWN: BET names replicas false, which is no count of replicas")"
+check "a daemon that is a string is no boolean" "$(has_line "UNKNOWN: OSSV names daemon \"false\", which is neither true nor false")"
+check "an image with a tab is no reference, and is not read cut short" \
+  "$(has_line "UNKNOWN: INFRA names daemonImage \"${worker_a}\\tsuffix\", which is no image reference")"
+check "no project is skipped" "$(lacks "SKIPPED" "$out")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 if [ "$failures" -ne 0 ]; then

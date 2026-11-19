@@ -600,7 +600,9 @@ is no such file, a file it cannot read, and a file whose `key` is not its name's
 entry at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at `runtime: tmux`
 runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from its `image`
 (the deployment's `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN` by
-name, as does an entry on any runtime but `kubernetes`, the default. A deployment that lists no
+name, as does an entry on any runtime but `kubernetes`, the default. A field of the wrong type (a
+`replicas` that is no count, a `daemon` that is no boolean) and an image that is no plain reference
+are `UNKNOWN` by name, never a project skipped or an image cut short. A deployment that lists no
 running daemon is `UNKNOWN`, never `GATE OPEN`.
 
 With `--listeners` it reads the listener pins: envoy-cluster's `envoyImage`, dispatch's
@@ -609,11 +611,17 @@ server's, and envoy's `listenerImage` when the deployment declares its VM hub. A
 sets no `listenerImage` reads `UNKNOWN`, since its deployment requires that key (the deployment's
 `dispatch/main.go`) and the listener runs no other image. Whether the deployment declares the VM hub
 is decided from its `envoy/` program, never from the pin, because removing the hub removes its
-config keys too: the gate lists `envoy/` and reads each `.go` file in it that is not a `_test.go`,
-and a file with a line that calls `NewNatsHub(` (not a `//` comment line) declares the hub. Declared,
-envoy's `listenerImage` is read, and a stack that sets none is `UNKNOWN`. Declared by no file, every
-file read, the gate prints `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and reads no VM
-pin. A listing or a read that fails, or a listing with no Go file, is `UNKNOWN`.
+config keys too. The gate reads every Go file a build of `envoy/` compiles from the deployment
+repository: `envoy/` and its subdirectories, and each directory a local `replace` of
+`envoy/go.mod` names, without `_test.go` files and the `testdata/`, `_` and `.` directories that
+`go build` leaves out. The program declares the hub when its code, outside comments and strings,
+uses the identifier `NewNatsHub` anywhere but as the name of the func that defines it, so a call
+spelled with a space before its `(`, a reference called later and a call in a helper package all
+count. Declared, envoy's `listenerImage` is read, and a stack that sets none is `UNKNOWN`. Declared
+by no file, every file read, the gate prints `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub`
+and reads no VM pin. A listing, a read or a `go.mod` that fails, a `replace` that leaves the
+repository, a listing GitHub truncated, a program with no Go file and a file the gate cannot read
+as Go are `UNKNOWN`.
 
 With `--clients` it reads the clients that deliver to a session. Each must carry `<commit>`, since
 an older client follow filter passes a frame in a form it does not match in silence:
@@ -626,19 +634,24 @@ an older client follow filter passes a frame in a form it does not match in sile
   its `legion` binary is built from, and its manifest keeps the source version and never a release
   one, so its commit is the one `/opt/legion/bin/legion version` in the same image names. An image
   with no claude-envoy manifest is `UNKNOWN`. The gate pulls each image docker does not hold.
-- On this developer box: the `@sjawhar/pi-envoy` pin of `~/.dotfiles/omp/plugins/package.json`,
-  resolved to its release tag; and the claude-envoy version the marketplace `legion-plugins`
-  serves to `~/.dotfiles/.claude/settings.json`. The gate reads the marketplace's
-  `.claude-plugin/marketplace.json` from the GitHub repository that settings file names for it,
-  takes the npm package and version range it serves claude-envoy as, and takes the highest version
-  `npm view` matches to the range, whose release tag is `claude-envoy-v<version>`. A settings file
-  that enables no `claude-envoy@legion-plugins` prints `SKIPPED`. A pi-envoy installed in an Oh My
-  Pi plugin tree other than `~/.dotfiles/omp/plugins` (`~/.omp/plugins` or a profile's), and a
-  claude-envoy installed in `~/.claude/plugins`, are `UNKNOWN`, since the dotfiles' pins say nothing
-  about them. The gate reads pins, not processes: a session started before a pin moved still runs
-  the plugin it loaded.
+- On this developer box: the `@sjawhar/pi-envoy` pin of `~/.dotfiles/omp/plugins/package.json`
+  and, where it differs from the pin, the version installed beside it, each resolved to its release
+  tag; each `claude-envoy@legion-plugins` install the dotfiles' own Claude Code plugin record
+  (`~/.dotfiles/.claude/plugins/installed_plugins.json`) holds; and the claude-envoy version the
+  marketplace `legion-plugins` serves to `~/.dotfiles/.claude/settings.json`. The gate reads the
+  marketplace's `.claude-plugin/marketplace.json` from the GitHub repository that settings file
+  names for it, takes the one npm package and version range it serves claude-envoy as, and takes
+  the highest version `npm view` matches to the range, whose release tag is
+  `claude-envoy-v<version>`. A settings file that enables no `claude-envoy@legion-plugins` prints
+  `SKIPPED`. A pi-envoy whose copy is not a directory inside the dotfiles (a link `omp plugin link`
+  made to a checkout, or another plugin tree: `~/.omp/plugins` or a profile's), a claude-envoy
+  recorded in `~/.claude` or in another `CLAUDE_CONFIG_DIR`, or installed from another marketplace,
+  and a plugin record the gate cannot read are `UNKNOWN`, since the dotfiles' pins say nothing
+  about them. The gate reads pins and installs, not processes: a session started before a pin
+  moved still runs the plugin it loaded.
 
-A version that is no exact release version, or that no release tag names, is `UNKNOWN`.
+A version that is no exact release version (a pre-release one counts; a range does not), or that
+no release tag names, is `UNKNOWN`.
 
 Each pin's `org.opencontainers.image.source` and `.revision` labels are read with `docker buildx
 imagetools inspect`, an OCI image index one platform at a time (its `.Image.Config.Labels` is
