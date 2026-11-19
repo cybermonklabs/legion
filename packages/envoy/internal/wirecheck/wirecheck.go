@@ -25,6 +25,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/gofetch"
 )
 
 // Finding is one value a call to the other party encodes or decodes with a type the wire package
@@ -172,7 +174,7 @@ type listedPackage struct {
 // (GOPROXY=off), since a fetch while a test runs would fail the test whenever the module proxy or
 // the checksum database does, on a change that touched nothing it checks. The job that runs the
 // check fetches the modules of pkgs in a step before the tests; a module the cache lacks fails the
-// listing with the command that does it.
+// listing with the command that does it (gofetch.Hint).
 func goList(dir string, pkgs []string) ([]listedPackage, error) {
 	args := append([]string{"list", "-deps", "-export", "-json=ImportPath,Dir,Export,GoFiles,CgoFiles,ImportMap,DepOnly,Error"}, pkgs...)
 	command := exec.Command("go", args...)
@@ -182,7 +184,7 @@ func goList(dir string, pkgs []string) ([]listedPackage, error) {
 	command.Stderr = &stderr
 	out, err := command.Output()
 	if err != nil {
-		return nil, fmt.Errorf("go %s in %s: %v\n%s%s", strings.Join(args, " "), dir, err, stderr.String(), fetchHint(dir, pkgs, stderr.String()))
+		return nil, fmt.Errorf("go %s in %s: %v\n%s%s", strings.Join(args, " "), dir, err, stderr.String(), gofetch.Hint(dir, pkgs, stderr.String()))
 	}
 	var listed []listedPackage
 	decoder := json.NewDecoder(bytes.NewReader(out))
@@ -194,26 +196,11 @@ func goList(dir string, pkgs []string) ([]listedPackage, error) {
 			return nil, fmt.Errorf("read go list's answer in %s: %v", dir, err)
 		}
 		if p.Error != nil {
-			return nil, fmt.Errorf("go list in %s: %s: %s%s", dir, p.ImportPath, p.Error.Err, fetchHint(dir, pkgs, p.Error.Err))
+			return nil, fmt.Errorf("go list in %s: %s: %s%s", dir, p.ImportPath, p.Error.Err, gofetch.Hint(dir, pkgs, p.Error.Err))
 		}
 		listed = append(listed, p)
 	}
 	return listed, nil
-}
-
-// fetchHint is what goList adds to an error whose text, refusal, says GOPROXY=off refused a module
-// lookup: the command that fetches the modules of pkgs in dir before the tests, from the
-// repository root, with dir made absolute so the command runs from there whatever directory the
-// test ran Check in. It is empty for any other error.
-func fetchHint(dir string, pkgs []string, refusal string) string {
-	if !strings.Contains(refusal, "GOPROXY=off") {
-		return ""
-	}
-	if abs, err := filepath.Abs(dir); err == nil {
-		dir = abs
-	}
-	return "\nThe module cache lacks a module this listing needs, and a test fetches no module while it runs. " +
-		"Fetch them before the tests, from the repository root:\n  .github/scripts/go-fetch.sh deps " + dir + " " + strings.Join(pkgs, " ")
 }
 
 // checkedPackage is one package of pkgs, parsed and type-checked from its source.

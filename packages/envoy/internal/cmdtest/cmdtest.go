@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/gofetch"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -96,7 +97,7 @@ func BuildCommand(t testing.TB, c Command) string {
 // The build fetches no module: it runs with GOPROXY=off, after c.Env, so it builds from the
 // module cache alone. A fetch while a test runs would turn a fault of the module proxy into this
 // test's failure, on a change that touched nothing it tests; a module the cache lacks fails the
-// build instead, with the command that fetches what it needs before the tests (fetchFirst).
+// build instead, with the command that fetches what it needs before the tests (gofetch.Hint).
 func runBuild(t testing.TB, c Command, overlay string) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), c.Name)
@@ -117,25 +118,10 @@ func runBuild(t testing.TB, c Command, overlay string) string {
 	cmd := exec.Command("go", args...)
 	cmd.Dir, cmd.Env = c.Dir, append(env[:len(env):len(env)], "GOPROXY=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Errorf("build %s: %v\n%s%s", c.Name, err, out, fetchFirst(c.Dir, target, out))
+		t.Errorf("build %s: %v\n%s%s", c.Name, err, out, gofetch.Hint(c.Dir, []string{target}, string(out)))
 		return ""
 	}
 	return binary
-}
-
-// fetchFirst is what a build whose output says it needed a module the cache lacks adds to its
-// failure: the command that downloads the modules a build of target in dir needs, which a job runs
-// in a step before its tests. It is empty for any other failure.
-func fetchFirst(dir, target string, out []byte) string {
-	if !strings.Contains(string(out), "GOPROXY=off") {
-		return ""
-	}
-	if abs, err := filepath.Abs(dir); err == nil {
-		dir = abs
-	}
-	return "\nThe module cache lacks a module this build needs, and a test fetches no module while it " +
-		"runs. Fetch them before the tests, from the repository root:\n  .github/scripts/go-fetch.sh deps " +
-		dir + " " + target
 }
 
 // Process is a binary a test started, with its combined output.
