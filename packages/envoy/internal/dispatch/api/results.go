@@ -1017,7 +1017,7 @@ func blockWords(node *pmdoc.Node) string {
 }
 
 // holdsLink reports whether a word holds a link: `://`, which a dispatch:// reference and every
-// URL carry. blockWords and lineWords drop such a word by this one rule.
+// URL that names a host carry. blockWords and lineWords drop such a word by this one rule.
 func holdsLink(word string) bool {
 	return strings.Contains(word, "://")
 }
@@ -1034,7 +1034,8 @@ type lineWords struct {
 	// holds no project (lineWordsFor).
 	issueKey *regexp.Regexp
 	// host is the host name of this Dispatch's own URL in lower case, so a link to it written
-	// without its scheme is dropped too; "" for a Dispatch configured with no URL.
+	// without its scheme is dropped too; "" when the configured URL names no host (none is
+	// configured, or it does not parse).
 	host string
 	// punctuation is the punctuation a plain word may hold: plainPunctuation, which lineWordsFor
 	// sets, and which a test widens by one rune to show its property can fail.
@@ -1045,18 +1046,22 @@ type lineWords struct {
 // letters and digits (plainWord).
 // Runes: . , ; : ! ? ' " - ( ) /
 // The line drops whole every word that holds any other rune: every other ASCII punctuation mark
-// and symbol (`*`, `_` and `~` emphasis, where `_X_` at a word's edge hides where a key ends; the
-// backtick; `<` and `>` for HTML tags and comments; `[` and `]` for links; `\` for escapes; `&` for
-// character references; `$` for math; `@` and `#` for mentions and references; and the rest), every
-// Unicode punctuation mark and symbol (dashes and quotation marks among them), every combining
-// mark, every invisible or default-ignorable character (a letter among them too), and every
-// separator that does not end a word. Each of these can split, join, hide or forge a key or a host
-// once GitHub renders the line, which one word read alone cannot see; allowing these few runes and
-// nothing else closes that class instead of listing its members.
-// Two look-alikes pass by design: a letter of another script that looks like a Latin one, such as
-// Cyrillic `А` in `АСМЕ-12`, and GitHub's `:name:` emoji shortcodes, such as `:one:`, a picture
-// that can look like a digit. Neither is the characters of a key, and closing them would break
-// international text: every letter of every script is kept, and `:` stays for ordinary prose.
+// and symbol (`*`, `_` and `~` for emphasis and strikethrough, where `_X_` at a word's edge hides
+// where a key ends; the backtick; `<` and `>` for HTML tags and comments; `[` and `]` for links;
+// `\` for escapes; `&` for character references; `$` for math; `@` and `#` for mentions and
+// references; and the rest), every Unicode punctuation mark and symbol (dashes and quotation marks
+// among them), every combining mark, every number that is no decimal digit (superscripts,
+// fractions, Roman numerals), every default-ignorable code point (the zero-width space, variation
+// selectors and the Hangul filler letters among them), every control code point that is no white
+// space (white space ends a word), and every private-use and unassigned code point. Many of these
+// can split, join, hide or forge a key or a host once GitHub renders the line, which one word read
+// alone cannot see; rather than list which, the rule allows these few runes and nothing else, which
+// closes that class.
+// Two look-alikes pass by design: a letter or digit of another script that looks like a Latin one,
+// such as Cyrillic `А` in `АСМЕ-12`, and GitHub's `:name:` emoji shortcodes, such as `:one:`, a
+// picture that can look like a digit. Neither is made of the characters of a key. Closing the first
+// would break international text, which needs the visible letters and digits of every script;
+// closing the second would drop from the line every word of ordinary prose that ends in `:`.
 // The cost is that a word such as `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b` or `it’s` leaves the
 // line, while the record keeps the whole reading.
 const plainPunctuation = `.,;:!?'"-()/`
@@ -1078,13 +1083,13 @@ func plainWord(word, punctuation string) bool {
 
 // privateHost and tailnetHost are the two host rules of .github/scripts/check-private-names.sh,
 // read in any case as that script reads them: a host below `.internal.`, and a Tailscale MagicDNS
-// host, a DNS label then `.ts.net` with no letter or digit after it. privateHost also takes a host
-// that ends in `.internal` with no letter or digit after it (a full stop, a bracket or a hyphen
-// included), which the script does not refuse: the script guards the whole repository, where
-// names such as metadata.google.internal and host.docker.internal are well known and not private,
-// while the line is pasted into public text with no reader in between, so it is stricter on
-// purpose. The line drops every word holding one, written without a scheme too, and the script's
-// reserved example hosts with them, since no line needs a host.
+// host, a DNS label then `.ts.net` with no ASCII letter or digit after it. privateHost also takes
+// a host that ends in `.internal` with no ASCII letter or digit after it (a full stop, a
+// parenthesis or a hyphen included), which the script does not refuse: the script guards the
+// whole repository, where names such as metadata.google.internal and host.docker.internal are
+// well known and not private, while the line is pasted into public text with no reader in
+// between, so it is stricter on purpose. The line drops every word holding one, written without a
+// scheme too, and the script's reserved example hosts with them, since no line needs a host.
 var (
 	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal([^[:alnum:]]|$)`)
 	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
@@ -1199,16 +1204,18 @@ func blockContent(node *pmdoc.Node) string {
 }
 
 // checkResultLine is the pull-request body line one recorded result implies. Dispatch writes it
-// rather than each caller, so every writer writes one grammar; it carries no link, no Dispatch
-// host and no issue key of a project Dispatch holds (lineWords).
+// rather than each caller, so every writer writes one grammar. Its reading carries no link, no
+// private or Dispatch host, no word that is not plain, and no word holding an issue key of a
+// project Dispatch holds as lineWordsFor reads one (lineWords); the check's block id and the
+// role are printed as written.
 //
 // The tail is the reading the role recorded (Observed) and not the check's own words, which
 // every reader of the pull request can read on the issue and which a pass and a fail would
 // carry alike: the line's whole purpose is to say what was seen. What words keeps of a reading
-// is cut, when it is longer than the budget, at a word boundary and marked with an ellipsis, so a
-// reader can tell a cut line from a short one. A result with no reading says so, since a line
-// that simply stopped after the role would read as a reading nobody recorded, and a reading words
-// keeps nothing of says that.
+// is cut, when it is longer than the budget, and marked with an ellipsis, so a reader can tell a
+// cut line from a short one; the cut falls at a word boundary where the budget's first runes hold
+// one (cut). A result with no reading says so, since a line that simply stopped after the role
+// would read as a reading nobody recorded, and a reading words keeps nothing of says that.
 func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWords) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, recorded by %s.",
 		check.BlockID, check.Attributes.When, result.Verdict, result.CommitSHA, result.Role)
