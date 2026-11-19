@@ -54,10 +54,11 @@ func TestAReviewStillRunningAtTheFirstObservationIsOneRound(t *testing.T) {
 }
 
 // TestASendBackOutOfRetroIsCountedOnTheObservedTimeline: metric 3 counts "a move from `testing`,
-// `reviewing`, `accepting` `retro`, `merging` or `awaiting_merge` to `implementing`". A head that
-// starts conflicting with its base sends the issue back out of any of them (the daemon workflow's
-// TriggerConflict), so the observed half counts a move out of retro, as the status half counts
-// the `in_progress` written over a `retro`.
+// `reviewing`, `accepting` `retro`, `merging` or `awaiting_merge` to `implementing`". A backward
+// move (`request_backward_move`, the daemon workflow's TriggerBackward rows) sends the issue back
+// out of any of them, as a head that started conflicting with its base did before
+// cybermonklabs/legion#4464, so the observed half counts a move out of retro, as the status half
+// counts the `in_progress` written over a `retro`.
 func TestASendBackOutOfRetroIsCountedOnTheObservedTimeline(t *testing.T) {
 	fromRetro := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
 		observeString(legion.FieldPhase, hour(0), "implementing").
@@ -107,10 +108,11 @@ func TestAMoveFromTestingBackToImplementingIsASendBackOnTheObservedTimeline(t *t
 
 // TestAMoveOutOfEachSendBackPhaseToImplementingIsASendBack: metric 3's share sent back counts "a
 // move from `testing`, `reviewing`, `accepting` `retro`, `merging` or `awaiting_merge` to
-// `implementing`" (the spec's metric 3), and a head that starts conflicting with its base sends
-// the issue back out of any of them (the daemon workflow's TriggerConflict). Each of the six
-// phases is a row of its own, observed for the hour between two stretches of implementing, so a
-// phase the rule leaves out fails its own row.
+// `implementing`" (the spec's metric 3), and a backward move (`request_backward_move`, the daemon
+// workflow's TriggerBackward rows) sends the issue back out of any of them, as a head that started
+// conflicting with its base did before cybermonklabs/legion#4464. Each of the six phases is a row
+// of its own, observed for the hour between two stretches of implementing, so a phase the rule
+// leaves out fails its own row.
 func TestAMoveOutOfEachSendBackPhaseToImplementingIsASendBack(t *testing.T) {
 	for _, phase := range []string{"testing", "reviewing", "accepting", "retro", "merging", "awaiting_merge"} {
 		t.Run(phase, func(t *testing.T) {

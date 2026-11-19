@@ -217,16 +217,16 @@ and decides there, the only gate on such an issue.
   tester names that missing surface as the blocker instead of passing the phase. Environment or
   secret-scrub evidence (e.g. "`LEGION_*`/`DISPATCH_*`/`ENVOY_*` unset") is recorded once, in
   its `test` handoff, and only when a check calls for it — never
-  re-pasted into the PR body each round. After a forward merge, compute the
-  fingerprint (*The unchanged-diff check* in
-  `skill://legion-worker/references/conflicts-and-rewrites.md`) at the commit your results name
-  and at the new head. Equal: re-run only the
-  bare gates — the repository's CI green at the new head and its smoke check — and record each
-  check with no `ci_check` again at the new head, its `--observed` ending
-  `forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean`. A search that finds an instance is a failure, not a re-check: record it under `failures` and run a full test round. The
-  real-surface verification is not repeated, except in a parent's last round, which the architect
-  or the implementer's forward-merge comment names to you: then run a full test round. Different:
-  a full test round.
+  re-pasted into the PR body each round. After a forward merge of the base, read what the merge
+  changed since the commit your results name.
+  For a merge of the base, `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in.
+  A check those files or the resolution can reach runs again, and a check the merge was made for has no pass to carry.
+  Record every other check with no `ci_check` again at the new head without running it, its
+  `--observed` naming the earlier pass and why the merge cannot reach what the check drives.
+  Search the merge head for the class of every finding of every earlier review round: an
+  instance it finds is a failure, recorded under `failures`. The real-surface verification is
+  repeated whole in a parent's last round, which the architect or the implementer's
+  forward-merge comment names to you: then run a full test round.
 - **The implementer runs `skill://simplify-settled-diff` once per pull request, in its first
   implementing round, after its own results and before it completes that round,
   whatever the diff touches, a docs-only diff included.** The daemon starts no implementing round
