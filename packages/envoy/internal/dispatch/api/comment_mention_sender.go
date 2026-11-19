@@ -76,9 +76,16 @@ type mentionSend struct {
 	// takeover paces this send's tries at a listener being replaced. The send its comment queues
 	// carries the pacing that comment's own resolution started (resolveThroughTakeover), so the
 	// resolution and the send share one window; a send a keyed repeat queues starts a window of
-	// its own, as its resolution is the sender's own (replayComment), and so does a send that
-	// waited for an earlier event, which made no try.
+	// its own, as its resolution is the sender's own (replayComment), and so does a send handed to
+	// the sender held (mentionHeldForOrder.send). A send taken from a held lane starts its window
+	// again when its whole delivery starts (sendCommentMention): it waited there behind an earlier
+	// event, or a read of the rule that failed, for as long as that took, which has no bound, so a
+	// window that started before the wait would have closed before the try it paces, and the
+	// first take-over answer would settle the attempt failed with no try again.
 	takeover takeoverRetry
+	// fromHeldLane is that the lane this send was last taken from is a held lane (next), so its
+	// whole delivery starts its take-over window again (takeover).
+	fromHeldLane bool
 	// parks is how many times this send has waited for an earlier event of its comment's owner,
 	// which paces its lane's next try (mentionOrderRetry).
 	parks int
@@ -445,8 +452,9 @@ func (m *mentionSender) serve(lane laneKey) {
 // waits. The send it takes carries the claim this sender records for it, which stays among the
 // claims the refresh writes again until the send ends (claimedDuring): a try that reads the rule
 // alone writes no claim, so the claim its row carries is still that one, and a refresh that writes
-// the row while the try is in flight records the claim it wrote (held). ok is false when the
-// goroutine is done: the sender stopped, or no lane has a send left for it.
+// the row while the try is in flight records the claim it wrote (held). It carries too whether
+// lane is a held lane, where it waited (mentionSend.fromHeldLane). ok is false when the goroutine
+// is done: the sender stopped, or no lane has a send left for it.
 func (m *mentionSender) next(lane laneKey) (mentionSend, laneKey, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -471,6 +479,7 @@ func (m *mentionSender) next(lane laneKey) (mentionSend, laneKey, bool) {
 	m.lanes[lane][0] = mentionSend{}
 	m.lanes[lane] = m.lanes[lane][1:]
 	item.claimed = m.held[item.key()].claimed
+	item.fromHeldLane = lane.held
 	return item, lane, true
 }
 
@@ -652,8 +661,9 @@ func (m *mentionSender) wait() {
 // failure is logged and leaves the attempt pending, as deliverBroadcast's does, for the delivery
 // sweep once the claim it took lapses. A send that waited for an earlier event of its comment's
 // owner, or whose read of that rule failed (mentionHeldForOrder), answers the send to take up
-// again, which its lane parks (park): the same attempt, under the claim that send renewed, with a
-// take-over window of its own.
+// again, which its lane parks (park) on a held lane: the same attempt, under the claim that send
+// renewed. A send taken from a held lane starts its take-over window when its whole delivery
+// starts (mentionSend.takeover), since it waited there for as long as the earlier event took.
 //
 // A send that waited before - behind an earlier event, or behind none because its read of the rule
 // failed - reads the rule alone first, for the session it waited to reach (mentionCopyHolderFor),
@@ -680,12 +690,15 @@ func (s *server) sendCommentMention(ctx context.Context, item mentionSend) (ment
 			return item, true
 		}
 	}
+	if item.fromHeldLane {
+		item.takeover = s.newTakeoverRetry()
+	}
 	_, held, err := s.deliverResolvedCommentMention(
 		ctx, item.comment, item.created, item.mention, item.actor,
 		attemptClaim{attempt: item.attempt, claimedAt: item.claimed}, item.takeover,
 	)
 	if held != nil {
-		item.claimed, item.takeover = held.claim.claimedAt, s.newTakeoverRetry()
+		item.claimed = held.claim.claimedAt
 		item.held(held)
 		return item, true
 	}
