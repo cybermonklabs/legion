@@ -1,9 +1,10 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, jest, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
+  readdirSync,
   realpathSync,
   rmSync,
   statSync,
@@ -12,7 +13,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { temporaryDirectories, temporaryDirectory } from "./temporary-directories";
+import {
+  REMOVAL_NOTE_MS,
+  removeDirectories,
+  temporaryDirectories,
+  temporaryDirectory,
+} from "./temporary-directories";
 
 const makeDirectory = temporaryDirectories("test-fixtures-per-test");
 
@@ -329,5 +335,126 @@ test("makes three and seals the root", () => {
       expect(output).toContain(name);
     }
     expect(run.exitCode).not.toBe(0);
+  });
+});
+
+/**
+ * The hooks wait for the removal itself, with no bound of their own: a removal the disk holds
+ * past the bound `bun test` gives a hook otherwise (`--timeout`, 5 s unless set) still passes. This
+ * reads a `bun test` of its own run with `--timeout 100`, whose preload holds the removal of its
+ * directories 1 s, so the row costs about a second rather than the default's five; a hook that
+ * took the default bound fails that run with "a beforeEach/afterEach hook timed out".
+ */
+describe("a removal the disk holds past the hooks' default bound", () => {
+  const makeDirectory = temporaryDirectories("test-fixtures-slow");
+
+  test("still passes, in both forms, and leaves no directory", () => {
+    const work = makeDirectory("run");
+    const root = join(work, "root");
+    mkdirSync(root);
+    writeFileSync(
+      join(work, "hold.ts"),
+      `import { mock } from "bun:test";
+import * as fsPromises from "node:fs/promises";
+const realRm = fsPromises.rm;
+mock.module("node:fs/promises", () => ({
+  ...fsPromises,
+  rm: async (...args: Parameters<typeof realRm>) => {
+    await Bun.sleep(1_000);
+    return await realRm(...args);
+  },
+}));
+`
+    );
+    writeFileSync(
+      join(work, "slow.test.ts"),
+      `import { test } from "bun:test";
+import { temporaryDirectories, temporaryDirectory } from ${JSON.stringify(join(import.meta.dir, "temporary-directories"))};
+
+const make = temporaryDirectories("each", { root: ${JSON.stringify(root)} });
+temporaryDirectory("all");
+
+test("makes one", () => {
+  make("one");
+});
+`
+    );
+    const run = Bun.spawnSync(
+      [process.execPath, "test", "--timeout", "100", "--preload", "./hold.ts", "./slow.test.ts"],
+      { cwd: work, env: { ...process.env } }
+    );
+    const output = `${run.stdout.toString()}${run.stderr.toString()}`;
+
+    expect(output).not.toContain("timed out");
+    expect(run.exitCode, output).toBe(0);
+    expect(readdirSync(root)).toEqual([]);
+  });
+});
+
+// The removal's note, on the fake clock: the removal itself is held by the row, so nothing here
+// waits on real time, and the note is what a run that its own deadline ends prints.
+describe("removeDirectories", () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  /** One macrotask turn, on a `setImmediate` that Bun's fake clock leaves real: it comes only
+   *  once every promise already chained has run as far as it goes. */
+  function nextTurn(): Promise<void> {
+    const turn = Promise.withResolvers<void>();
+    setImmediate(turn.resolve);
+    return turn.promise;
+  }
+
+  test("names the directories once a removal has run past its note, and still waits for it", async () => {
+    jest.useFakeTimers();
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const held = Promise.withResolvers<void>();
+      const named = ["/scratch/a", "/scratch/b"];
+      let settled = false;
+      const removal = removeDirectories(named, () => held.promise).finally(() => {
+        settled = true;
+      });
+      jest.advanceTimersByTime(REMOVAL_NOTE_MS - 1);
+      expect(warn).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[0]).toBe(
+        `still removing /scratch/a /scratch/b after ${REMOVAL_NOTE_MS} ms; the hook waits for the removal to finish`
+      );
+      await nextTurn();
+      expect(settled).toBe(false);
+      held.resolve();
+      await removal;
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a removal that ends before its note names nothing and leaves no timer", async () => {
+    jest.useFakeTimers();
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await removeDirectories(["/scratch/a"], async () => {});
+      expect(jest.getTimerCount()).toBe(0);
+      jest.advanceTimersByTime(REMOVAL_NOTE_MS);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a removal that fails rejects naming each directory, and leaves no timer", async () => {
+    jest.useFakeTimers();
+    const removal = removeDirectories(["/scratch/a", "/scratch/b"], async (directory) => {
+      throw new Error(`EBUSY: resource busy or locked, rmdir '${directory}'`);
+    });
+    await expect(removal).rejects.toThrow(
+      "temporary directories left behind:\n  /scratch/b: EBUSY: resource busy or locked, rmdir '/scratch/b'\n  /scratch/a: EBUSY"
+    );
+    expect(jest.getTimerCount()).toBe(0);
   });
 });

@@ -1,17 +1,23 @@
 import { afterAll, afterEach, beforeAll } from "bun:test";
 import { randomBytes } from "node:crypto";
-import {
-  chmodSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  realpathSync,
-  rmSync,
-  type Stats,
-} from "node:fs";
+import { type Dirent, mkdirSync, mkdtempSync, realpathSync, type Stats } from "node:fs";
+import { chmod, lstat, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+/**
+ * bun's bound on the hooks that remove this fixture's directories: none. A removal is the disk's
+ * work, and on a loaded machine with a full disk it passed bun's unstated 5 s, which failed rows
+ * whose behaviour held: the 160-entry tree a child `bun` leaves under its HOME took up to 4 s to
+ * remove at a 1-minute load of 550 on 288 CPUs. bun 1.4.4 gives a hook whose bound is infinite no
+ * deadline of its own, under `bun test --timeout` too, which otherwise sets the hooks' default. A
+ * removal that never ends is ended by the run's own deadline, after `REMOVAL_NOTE_MS` has named it.
+ */
+const NO_BOUND = Number.POSITIVE_INFINITY;
+
+/** How long a removal runs before its hook names the directories on stderr, in milliseconds. The
+ *  note decides nothing: it says what a run that its own deadline ends was removing. */
+export const REMOVAL_NOTE_MS = 10_000;
 
 /** What {@link temporaryDirectories} takes. */
 export type TemporaryDirectoriesOptions = {
@@ -72,7 +78,8 @@ export type TemporaryDirectoryMaker = (suffix?: string) => string;
  *
  * The `afterEach` attempts every directory even when one of them cannot be removed, since the
  * directories are independent and one refusal must not leave the rest on disk, and reports the
- * refusals together at the end.
+ * refusals together at the end. It waits for the removal itself, with no bound on the hook
+ * (`NO_BOUND`), and names the directories once the removal has run `REMOVAL_NOTE_MS`.
  */
 export function temporaryDirectories(
   prefix: string,
@@ -80,9 +87,7 @@ export function temporaryDirectories(
 ): TemporaryDirectoryMaker {
   const root = options.root ?? tmpdir();
   const made: string[] = [];
-  afterEach(() => {
-    removeEvery(made.splice(0));
-  });
+  afterEach(() => removeDirectories(made.splice(0)), NO_BOUND);
   return (suffix) => {
     const directory = mkdtempSync(join(root, nameTemplate(prefix, suffix)));
     made.push(directory);
@@ -113,7 +118,9 @@ export function temporaryDirectories(
  *
  * The name is the prefix, a dash and eight random hexadecimal characters, two more than
  * `mkdtemp` adds. The directory is made exclusively, so `mode` applies to it and a path that
- * somehow exists already fails the file rather than handing two suites one directory.
+ * somehow exists already fails the file rather than handing two suites one directory. The
+ * `afterAll` removes the directory as {@link temporaryDirectories}' `afterEach` does: it waits for
+ * the removal, with no bound on the hook.
  */
 export function temporaryDirectory(
   prefix: string,
@@ -127,9 +134,7 @@ export function temporaryDirectory(
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
   });
-  afterAll(() => {
-    removeTree(directory);
-  });
+  afterAll(() => removeDirectories([directory]), NO_BOUND);
   return directory;
 }
 
@@ -154,20 +159,38 @@ function nameTemplate(prefix: string, suffix: string | undefined): string {
 
 /**
  * Removes every directory of `directories`, newest first, so one made inside another goes before
- * the directory holding it. Every tree is attempted even when one of them refuses, since the
- * directories are independent and one refusal must not leave the rest on disk, and the refusals
- * are reported together at the end: a hook that stopped at the first failure would leave every
- * later directory behind and name only the one it stopped on (the behaviour
- * `packages/envoy-client/test/temp-dir.ts` had, which this fixture took over from it).
+ * the directory holding it, and waits for the removal itself. Every tree is attempted even when one
+ * of them refuses, since the directories are independent and one refusal must not leave the rest
+ * on disk, and the refusals are reported together at the end: a hook that stopped at the first
+ * failure would leave every later directory behind and name only the one it stopped on (the
+ * behaviour `packages/envoy-client/test/temp-dir.ts` had, which this fixture took over from it).
+ * Once the removal has run `REMOVAL_NOTE_MS`, it names the directories on stderr and goes on
+ * waiting. `removeOne` is the removal of one tree, `removeTree` unless a test of this module holds
+ * it.
  */
-function removeEvery(directories: readonly string[]): void {
+export async function removeDirectories(
+  directories: readonly string[],
+  removeOne: (directory: string) => Promise<void> = removeTree
+): Promise<void> {
+  if (directories.length === 0) return;
+  // A real timer: the removal is the filesystem's work, which bun's fake timers cannot advance,
+  // and the note only names it.
+  const note = setTimeout(() => {
+    console.warn(
+      `still removing ${directories.join(" ")} after ${REMOVAL_NOTE_MS} ms; the hook waits for the removal to finish`
+    );
+  }, REMOVAL_NOTE_MS);
   const failures: string[] = [];
-  for (const directory of [...directories].reverse()) {
-    try {
-      removeTree(directory);
-    } catch (error) {
-      failures.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`);
+  try {
+    for (const directory of [...directories].reverse()) {
+      try {
+        await removeOne(directory);
+      } catch (error) {
+        failures.push(`${directory}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
+  } finally {
+    clearTimeout(note);
   }
   if (failures.length > 0) {
     throw new Error(`temporary directories left behind:\n  ${failures.join("\n  ")}`);
@@ -176,27 +199,30 @@ function removeEvery(directories: readonly string[]): void {
 
 /**
  * Removes one tree, making every directory in it writable, searchable and readable first.
- * `rmSync` alone fails on a tree a test made read-only on purpose, and a test can make one
- * without meaning to: Go's module cache writes 0555 directories and 0444 files, so a suite that
- * runs `go` under its temporary directory leaves a tree nothing can unlink.
+ * `rm` alone fails on a tree a test made read-only on purpose, and a test can make one without
+ * meaning to: Go's module cache writes 0555 directories and 0444 files, so a suite that runs `go`
+ * under its temporary directory leaves a tree nothing can unlink.
  */
-function removeTree(directory: string): void {
-  makeWritable(directory);
-  rmSync(directory, { recursive: true, force: true });
+async function removeTree(directory: string): Promise<void> {
+  await makeWritable(directory);
+  await rm(directory, { recursive: true, force: true });
 }
 
 /** `chmod -R u+rwx` on a tree's directories, following no symlink. A path already gone is
- * nothing to do. */
-function makeWritable(path: string): void {
-  const entry = makeSelfWritable(path);
+ * nothing to do. Only a directory is visited: an entry its directory lists as a file or a
+ * symlink (`Dirent`) is left alone. */
+async function makeWritable(path: string): Promise<void> {
+  const entry = await makeSelfWritable(path);
   if (entry === undefined || !entry.isDirectory()) return;
-  let entries: string[];
+  let entries: Dirent[];
   try {
-    entries = readdirSync(path);
+    entries = await readdir(path, { withFileTypes: true });
   } catch {
     return;
   }
-  for (const name of entries) makeWritable(join(path, name));
+  for (const child of entries) {
+    if (child.isDirectory()) await makeWritable(join(path, child.name));
+  }
 }
 
 /**
@@ -207,10 +233,10 @@ function makeWritable(path: string): void {
  * holding it, never on the file, and a file in a temporary tree can be a hard link to one
  * outside it, whose mode is the same inode's.
  */
-function makeSelfWritable(path: string): Stats | undefined {
+async function makeSelfWritable(path: string): Promise<Stats | undefined> {
   let entry: Stats;
   try {
-    entry = lstatSync(path);
+    entry = await lstat(path);
   } catch {
     return undefined;
   }
@@ -220,9 +246,9 @@ function makeSelfWritable(path: string): Stats | undefined {
   const wanted = mode | 0o700;
   if (wanted !== mode) {
     try {
-      chmodSync(path, wanted);
+      await chmod(path, wanted);
     } catch {
-      // A mode this user cannot set is left to rmSync to report.
+      // A mode this user cannot set is left to rm to report.
     }
   }
   return entry;

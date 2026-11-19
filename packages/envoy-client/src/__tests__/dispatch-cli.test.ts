@@ -3,7 +3,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
-import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
@@ -1624,6 +1627,10 @@ describe("the dispatch CLI", () => {
 // directory, so the command reads no developer's `envoy.json`.
 describe("the dispatch entry as its own process", () => {
   const entry = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
+  // Bun's runtime cache for the child, one for the describe: a child `bun` given HOME=<the row's
+  // directory> writes some 160 cache files (2.2 MiB) there otherwise, which every row's afterEach
+  // then removes, and which no later row reads, since each row's directory is new.
+  const bunCache = temporaryDirectory("dispatch-cli-bun-cache");
 
   /** The entry run as the shell runs it, under the same Bun as this test. */
   async function spawnDispatch(
@@ -1639,6 +1646,7 @@ describe("the dispatch entry as its own process", () => {
         DISPATCH_SESSION_ID: "ses-1",
         DISPATCH_URL: `http://127.0.0.1:${server.port}`,
         DISPATCH_TOKEN: "test-token",
+        BUN_RUNTIME_TRANSPILER_CACHE_PATH: bunCache,
       },
       stdout: "pipe",
       stderr: "pipe",

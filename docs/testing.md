@@ -83,9 +83,13 @@ itself, whose tests import its sources by relative path.
   Both forms take `root`, the directory the temporary one is made in, for a test that needs another
   filesystem, such as `/dev/shm` for a rename that must cross one. Both remove a tree a test left
   read-only: the removal chmods `u+rwX` down the tree first, following no symlink out of it and
-  leaving a file's own mode alone, because `rmSync` alone fails on the 0555 directories and 0444
-  files a Go module cache writes, and because a file in such a tree can be a hard link to one
-  outside it.
+  leaving a file's own mode alone, because a recursive removal alone fails on the 0555 directories
+  and 0444 files a Go module cache writes, and because a file in such a tree can be a hard link to
+  one outside it. Both wait for the removal itself, with no bound on the hook that removes: a
+  removal is the disk's work, and on a loaded machine with a full disk it passed bun's unstated
+  5 s hook bound, which failed rows whose behaviour held. A removal that never ends is ended by
+  the run's own deadline (the CI job's timeout), and the hook names its directories on stderr once
+  it has run 10 s, so that run says what it was removing.
 
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
