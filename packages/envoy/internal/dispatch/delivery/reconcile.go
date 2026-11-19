@@ -1016,7 +1016,8 @@ type passRateLimit struct {
 	first atomic.Pointer[githubapp.RateLimitError]
 }
 
-// keep records err's rate limit where it is the pass's first, and answers whether err is one.
+// keep records err's rate limit where it is the first that the step met, and answers whether err
+// is one. Each step that reads the rows of every installation has its own passRateLimit.
 func (p *passRateLimit) keep(err error) bool {
 	limited, ok := githubapp.AsRateLimit(err)
 	if ok {
