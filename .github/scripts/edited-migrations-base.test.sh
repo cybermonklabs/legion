@@ -16,6 +16,16 @@
 set -euo pipefail
 shopt -s inherit_errexit
 
+# The fixtures are judged on git's defaults wherever the harness runs, so every git variable the
+# environment sets goes before any git runs. GIT_CONFIG_GLOBAL and GIT_CONFIG_NOSYSTEM, below, keep
+# out only the configuration files, not configuration in the environment: a Legion pod sets
+# core.hooksPath=/dev/null through GIT_CONFIG_COUNT, GIT_CONFIG_KEY_0 and GIT_CONFIG_VALUE_0, so
+# the failing merge-base row's hook never ran there. GIT_CONFIG_PARAMETERS (what `git -c` hands
+# on), GIT_NO_REPLACE_OBJECTS or GIT_DIR would change a case too.
+while read -r name; do
+  unset "$name"
+done < <(compgen -e GIT_)
+
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 script="$script_dir/edited-migrations-base.sh"
 
