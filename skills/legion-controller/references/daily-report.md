@@ -40,6 +40,7 @@ One `dispatch message --issue <report KEY> --body-file -` of at most 2,000 chara
 - **Waiting on a person.** Each open park, deferral, unreachable-claim or finding ask that holds a tree, with its `dispatch://` reference.
 - **Asks resolved with no answer.** For each root in `admission.active` or `admission.waiting`, the newest `Asked whether to park:` and `Asked whether to defer:` comment of each key (step 1 of `skill://legion-controller/references/park-asks.md`, once with each prefix) whose ask was resolved with no answer, unless its wait has ended.
 - **Free slots**, counted in issues, as the skill's "Free slots" says.
+- **The priorities.** Each plan line the reconciliation before this report moved for the deployment's priorities, and this project's count of work in flight under no priority, both from step 2 of `skill://legion-controller/references/backlog-stewardship.md#reconcile-the-weekly-plan`.
 - **Open capabilities.** Each `capabilities` row with `status: open`: its name, `detail`, a deployment row's `configLine`, and who acts on it. Nothing when none is open.
 - **Stalled work.** Each `provider-errors` run with its model, and each root an `architect-stalled` or `tree-stalled` wake left for the report (`skill://legion-controller/references/wakes.md`).
 - **The week** (first report of each UTC week only): the numbers of `skill://legion-controller/references/weekly-audit.md`, each beside the command that recounts it.
