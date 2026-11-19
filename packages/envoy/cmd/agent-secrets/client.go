@@ -460,7 +460,7 @@ type SecretDecision struct {
 // the broker, where its approver signs in and decides it, while the request is pending; empty
 // once it is not, and from a broker from before that page. Detail is the broker's one sentence
 // about why it denied the request — the secret that refused it and the rule that did, as
-// "GCLOUD_SAMI: requester-not-listed" — which every line this CLI prints about a refusal carries,
+// "GCLOUD_DEMO: requester-not-listed" — which every line this CLI prints about a refusal carries,
 // so a session reads that asking again will not help; nil when the broker recorded none, and from
 // a broker from before the field.
 type RequestResult struct {

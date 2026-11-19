@@ -48,7 +48,7 @@ const (
 	// testGCPProject is a project NUMBER, the form the broker's gcp_project setting and the
 	// secrets' own resource-name prefix take.
 	testGCPProject = "100000000001"
-	testKMSKeyName = "projects/acme-agent-infra/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+	testKMSKeyName = "projects/acme-deployment/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 	testGCPPrefix  = "projects/100000000001/secrets/agent-secrets-"
 )
 
@@ -578,7 +578,7 @@ const stubTokenPrefix = "stub-gcloud-token-for-"
 
 // machineEmail is the service account a machine's own Application Default Credentials and its
 // own gcloud login name.
-const machineEmail = "robot@acme-agent-infra.iam.gserviceaccount.com"
+const machineEmail = "robot@acme-deployment.iam.gserviceaccount.com"
 
 // machineADCKinds are the Application Default Credentials that are a machine's own identity, as
 // useGCPIdentity takes them: a service account key file, a workload identity federation credential

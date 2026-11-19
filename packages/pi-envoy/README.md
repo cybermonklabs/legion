@@ -72,7 +72,7 @@ task's deadline, or once its session is no longer the open session.
 
 A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, and that
 session in `ENVOY_SESSION_ROLE_SESSION`: the id the pod starts the agent with (`omp
---session-id`). agent-infra's sessions workload sets both once t-e-32 lands (it sets
+--session-id`). The deployment repository's sessions workload sets both once t-e-32 lands (it sets
 `AGENT_SESSION_ROLE` today). While the named session's own records name no other role, every
 pass that registers it — its start, each session event and each heartbeat — claims that role for
 it outright, last-claim-wins, under the session's own credential, which the listener holds to

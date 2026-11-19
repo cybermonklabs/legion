@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // The reads the guard makes when gh's REST read of a visibility fails on its connection to GitHub
@@ -284,7 +286,7 @@ func (g *Guard) curlVisibility(ctx context.Context, slug string) (Visibility, er
 		if _, own := stoppedByItsOwnBound(ctx, err); own {
 			return "", &transportError{program: "curl", said: err.Error()}
 		}
-		return "", err
+		return "", procgroup.Said(err, visibilityBody(printed)+"\n"+stderr.String())
 	}
 	return curlAnswer(status, printed, stderr.String(), slug)
 }
@@ -407,7 +409,7 @@ func (g *Guard) ghToken(ctx context.Context, slug string) (string, error) {
 		stderr: &stderr,
 	})
 	if err != nil {
-		return "", err
+		return "", procgroup.Said(err, stderr.String())
 	}
 	if status != 0 {
 		return "", fmt.Errorf("gh auth git-credential get exited %d: %s", status, said("", stderr.String(), slug))

@@ -509,20 +509,22 @@ func (rig *contractRig) pendingFor(t *testing.T, login string) []contractPending
 	}](t, resp).Pending
 }
 
-// TestContractASharedSecretsRequestIsInEveryInboxAndAnyoneApprovesIt drives a request whose
-// approver is anyone (a shared human-tier secret): it is in both signed-in people's credential
-// inboxes through Dispatch, the second person, who neither owns nor operates anything, approves it
-// on the broker's page, the broker records that person's email as the deciding login, the session
-// gets the value, and the request leaves both inboxes.
-func TestContractASharedSecretsRequestIsInEveryInboxAndAnyoneApprovesIt(t *testing.T) {
+// TestContractASharedSecretsRequestIsInItsOperatorsInboxAndAnyoneApprovesIt drives a request
+// whose approver is anyone (a shared human-tier secret): through Dispatch it is in the credential
+// inbox of its session's operator, the person responsible for the agent that asked, and not in the
+// second signed-in person's; that second person, who neither owns nor operates anything, still
+// approves it on the broker's page, the broker records that person's email as the deciding login,
+// the session gets the value, and the request leaves the inbox.
+func TestContractASharedSecretsRequestIsInItsOperatorsInboxAndAnyoneApprovesIt(t *testing.T) {
 	rig := newContractRig(t)
 	pending := rig.createPendingAgentSecretRecord(t, "deploy the preview", "SHARED_KEY")
 
-	for _, login := range []string{contractApprover, contractOther} {
-		rows := rig.pendingFor(t, login)
-		if len(rows) != 1 || rows[0].RecordID != pending.RecordID || rows[0].Kind != "agent_secret" || len(rows[0].Identifiers) != 1 || rows[0].Identifiers[0] != "SHARED_KEY" {
-			t.Fatalf("%s's inbox = %+v, want the SHARED_KEY request %s", login, rows, pending.RecordID)
-		}
+	rows := rig.pendingFor(t, contractApprover)
+	if len(rows) != 1 || rows[0].RecordID != pending.RecordID || rows[0].Kind != "agent_secret" || len(rows[0].Identifiers) != 1 || rows[0].Identifiers[0] != "SHARED_KEY" {
+		t.Fatalf("%s's inbox = %+v, want the SHARED_KEY request %s", contractApprover, rows, pending.RecordID)
+	}
+	if rows := rig.pendingFor(t, contractOther); len(rows) != 0 {
+		t.Fatalf("%s's inbox = %+v, want empty: the request is its session's operator's to be asked", contractOther, rows)
 	}
 
 	rig.approveOnBrokerPage(t, contractOther, pending.RecordID)
@@ -911,8 +913,8 @@ func TestContractAPersonsMachineLoginIsTheirsAloneToApproveThroughDispatch(t *te
 
 // TestContractAnyoneApprovalCannotReleaseAPersonsWithheldSecret drives a request that was pending
 // when its session's operator withheld one of its names: the session's {AUTO_TOKEN, SHARED_KEY}
-// request waits on anyone and is in a second person's Inbox through Dispatch, the operator revokes
-// the session's automatic AUTO_TOKEN grant from Live grants through Dispatch, and the second
+// request waits on anyone and is in its operator's Inbox through Dispatch, the operator revokes
+// the session's automatic AUTO_TOKEN grant from Live grants through Dispatch, and a second
 // person, who owns nothing, approving it on the broker's page decides nothing; the operator,
 // AUTO_TOKEN's owner, approves it there and the session reads AUTO_TOKEN on that approval.
 func TestContractAnyoneApprovalCannotReleaseAPersonsWithheldSecret(t *testing.T) {
@@ -926,8 +928,8 @@ func TestContractAnyoneApprovalCannotReleaseAPersonsWithheldSecret(t *testing.T)
 	if mixed.State != "pending" || mixed.RecordID == nil {
 		t.Fatalf("mixed request = %s, want pending", asJSON(t, mixed))
 	}
-	if rows := rig.pendingFor(t, contractOther); len(rows) != 1 || rows[0].RecordID != *mixed.RecordID {
-		t.Fatalf("%s's inbox = %+v, want the mixed request", contractOther, rows)
+	if rows := rig.pendingFor(t, contractApprover); len(rows) != 1 || rows[0].RecordID != *mixed.RecordID {
+		t.Fatalf("%s's inbox = %+v, want the mixed request", contractApprover, rows)
 	}
 	if resp := dispatchRequest(t, rig.Dispatch, http.MethodPost, "/api/v1/credential-grants/"+*auto.GrantID+"/revoke", map[string]any{}, contractApprover); resp.Code != http.StatusOK {
 		t.Fatalf("revoke = %d: %s", resp.Code, resp.Body.String())
