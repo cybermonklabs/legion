@@ -480,6 +480,49 @@ func TestAPlantedPathCannotRedirectCredentials(t *testing.T) {
 	g.stop(8)
 }
 
+// A link the previous agent planted in the private directory toward a directory outside it, under
+// a directory it made 0555, which the launcher, holding no capability, cannot unlink the link
+// from, is never followed when the next start clears the private directory: what the link names,
+// and the file in it, are as they were, and the start is refused naming the entry it could not
+// clear. os.RemoveAll opens such an entry with O_DIRECTORY|O_NOFOLLOW, which a gVisor release
+// follows a link through (rolefile.OpenDirectory), so in such a pod it deletes what the link
+// names; Linux refuses that open, so only such a gVisor shows that control fail.
+func TestWriteFilesRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("as root a 0555 directory does not stop the unlink, so the removal never opens the link")
+	}
+	g := newRig(t)
+	workspace := t.TempDir()
+	keep := filepath.Join(workspace, "keep")
+	if err := os.WriteFile(keep, []byte("kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(g.private, "planted")
+	if err := os.Mkdir(planted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(planted, "link")
+	if err := os.Symlink(workspace, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(planted, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// The private directory keeps planted, which its own cleanup could not remove at 0555.
+	t.Cleanup(func() { _ = os.Chmod(planted, 0o755) })
+	marker := filepath.Join(t.TempDir(), "marker")
+	got := g.start(g.childStart(8, marker, map[string]string{"ENVOY_TOKEN": "envoy-8"}))
+	if got.OK || !strings.Contains(got.Error, "clear planted from the private directory") {
+		t.Fatalf("start result = %#v, want the start refused naming planted, the entry it could not clear", got)
+	}
+	if body, err := os.ReadFile(keep); err != nil || string(body) != "kept\n" {
+		t.Fatalf("%s, in the directory the planted link names, is %q (%v), want it kept", keep, body, err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the planted link is %v (%v), want it left as it was", info, err)
+	}
+}
+
 // A replayed start of the live generation answers as before and rewrites nothing; the same id with
 // another payload, credentials included, is refused before anything is written; and a generation
 // that already ran is never started again.
