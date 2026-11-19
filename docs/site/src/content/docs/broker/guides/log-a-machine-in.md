@@ -185,7 +185,10 @@ none
 agent-secrets machine login-status: no machine login since the helper started, and none kept on this machine; run: agent-secrets machine login, and have a human approve it
 ```
 
-A login nobody approves [expires](/legion/broker/concepts/#machine-login); start a new one. When
+A login nobody approves [expires](/legion/broker/concepts/#machine-login); start a new one. The
+expired login stays in the approver's Dispatch Inbox, marked **Expired**, until they click
+**Dismiss**, and its code on the machine-login page shows its facts with no **Approve** or
+**Deny**. When
 the credential reaches its expiry, the broker refuses it, or the broker refuses its refresh (as it
 does once the login is revoked), the helper drops it and logs why at ERROR, and `login-status`
 prints `expired` with that reason. A refused refresh also deletes the machine file, so the next

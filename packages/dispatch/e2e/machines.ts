@@ -185,7 +185,7 @@ export async function assertPaneProportions(
 // k5: the machine page draws each tmux server's windows and panes.
 // ---------------------------------------------------------------------------------------------
 
-export const DRAW_HOST = "sami-devbox";
+export const DRAW_HOST = "sand-devbox";
 /** The parts are in socket order, so the person's socket is the first part and the Legion
  *  daemon's private one the second. */
 export const PERSON_SOCKET = "/tmp/tmux-1000/default";
@@ -323,7 +323,7 @@ export function lonePlace(paneNumber: number): TmuxPlace {
 // k9: the drawing holds its proportions at a laptop width and a phone width.
 // ---------------------------------------------------------------------------------------------
 
-export const WIDTH_HOST = "sami-laptop";
+export const WIDTH_HOST = "sand-laptop";
 
 export const widthIds = {
   agentsFirst: "019a1c53-8f6d-7a0c-9b5b-6c3d7e0f1a53",

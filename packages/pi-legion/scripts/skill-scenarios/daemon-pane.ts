@@ -13,6 +13,7 @@ import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
 import { DEFAULT_ENVOY_URL } from "@legion/envoy-client/envoy-settings";
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 /** This checkout's daemon module, the one the rig reads unless a run names another checkout's. */
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
@@ -75,8 +76,10 @@ export interface DaemonPane {
 }
 
 /** The stand-in for the claim's GitHub App token: `daemon-pane.go` renders it into the claim's gh
- * files, and the pane's own `gh auth token` prints it. A placeholder, never a secret. */
-export const RIG_GH_TOKEN = "ghs_rig_token";
+ * files, and the pane's own `gh auth token` prints it. Random, as a real one is, since a process
+ * that reads it holds it and scrubs it from every line it prints
+ * (`@legion/contracts/held-secrets`). */
+export const RIG_GH_TOKEN = fixtureSecret("gh");
 
 /** Where a worker pane runs: the run directory that stands for the daemon's state directory and
  * the issue's workspace, the stand-in daemon's port, and the Oh My Pi profile. */

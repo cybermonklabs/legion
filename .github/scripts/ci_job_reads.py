@@ -9,11 +9,13 @@ header says what is proved).
             (pinned_step): its whole run: script and directory, and the Runs that stand for what
             it compiles. The check fails when a run: step of a ci.yaml job - or of a job of a
             local workflow that job calls, whose steps it reads the same way - starts a go
-            command no Run or exact entry claims, and when a pin's text is gone, so the table
-            cannot drift from ci.yaml silently. A claimed command the check does not reduce (check-ci-filters.sh's
-            header says which it does), and every Run of an exact entry whose step no longer holds
-            its script, counts as reading every Go file of the repository and every file under a
-            Go module's directory; a script's pin is its whole line.
+            command no Run or exact entry claims, when a pin's text is gone, and when a step an
+            exact entry pins runs another script or directory, or under an env, shell, container
+            or job that could move what it compiles, naming the step and what differs, so the
+            table cannot drift from ci.yaml silently. A claimed command the check does not reduce
+            (check-ci-filters.sh's header says which it does) counts as reading every Go file of
+            the repository and every file under a Go module's directory; a script's pin is its
+            whole line.
   RULES     a source file -> what it does when a test run compiles it: a go command it starts (a
             Run, whose closure is added) or a file it reads outside its package (a Read). A
             _test.go file counts when go list lists it in a tested package under the job's tags;
@@ -292,7 +294,9 @@ def setup_bun(job, workflow=""):
 
 
 def bun_job(job, workflow=""):
-    """setup_bun and a frozen `bun install`. No Bun configuration file and no .npmrc anywhere."""
+    """setup_bun and a frozen `bun install`. No .npmrc anywhere, and one Bun configuration file,
+    packages/dispatch/bunfig.toml, which holds `[test]` alone and so changes no install: an
+    install runs at the repository root, and Bun reads bunfig.toml from the working directory."""
     install = at(job, "bun install --frozen-lockfile", workflow)
     return setup_bun(job, workflow) + reads(
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-60)"),
@@ -421,7 +425,6 @@ CLAUDE_ENVOY_BUILD = reads(
         ("packages/pi-legion/agents/**", "packages/claude-envoy/scripts/build.ts:231-232"),
         ("skills/**", "packages/claude-envoy/scripts/build.ts:198-202 (staged pi-legion partition); packages/claude-envoy/skills/* symlinks into ../../../skills"),
         (".bun-version", "packages/claude-envoy/scripts/build.ts:32 reads the Bun pin"),
-        (".github/scripts/check-private-names.sh", "packages/claude-envoy/scripts/verify-build.sh checks the build with it"),
         (".github/scripts/release-push.sh", "packages/claude-envoy/scripts/verify-build.sh runs its check-built; the claude-envoy job runs its extract-built"),
         (".github/workflows/release.yaml", "packages/claude-envoy/tests/build-inputs.test.ts:154 holds its $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt"),
 ) + envoy_client_dep("packages/claude-envoy/src/envoy-channel-server.ts:10-84, hooks/session-hook.ts:91-109 import @legion/envoy-client/*")
@@ -434,7 +437,14 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                              "packages/claude-envoy/tests/answers-claude.test.ts:312,338 runs"),
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:13"),
-        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
+        ("packages/pi-shared/test/daemon-state.ts", f"{at('claude-envoy', 'Typecheck Claude Envoy plugin')}: packages/claude-envoy/tests/legion-tool.test.ts:8 imports @legion/pi-shared/test/daemon-state, so tsc compiles it in that program"),
+        (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
+        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:10"),
+        (".github/actions/private-names-packed-plugin/**",
+         at("private-names", "./.github/actions/private-names-packed-plugin", job_file("claude-envoy"))),
+        (".github/scripts/check-private-names.sh", ".github/actions/private-names-packed-plugin/action.yml runs it, "
+                                                   "called by " + at("private-names", "./.github/actions/private-names-packed-plugin",
+                                                                     job_file("claude-envoy"))),
 )
 
 
@@ -448,12 +458,12 @@ PACK_READS = [  # bun pm pack of pi-envoy / pi-legion runs their prepack (script
 PMDOC_GEN = [f"{ENVOY}/internal/dispatch/pmdoc/gen/**", "packages/proof-editor/**", CONTRACTS_SRC, "package.json", "bun.lock", "patches/**"]
 # The broker's packages broker-refgen's tests parse through parseDir (cmd/broker-refgen/source.go:34),
 # which reads the non-test .go files of one directory and none under it (:42). readAPI
-# (pages.go:34) parses the API package (routes.go:226), the approval page's through the
-# pageAnswerers call its routes make (routes.go:668), and each package a route's refusal takes a
-# sentinel error's message from (routes.go:557); apiPage (pages.go:58) parses the packages
+# (pages.go:34) parses the API package (routes.go:238), the approval page's through the
+# pageAnswerers call its routes make (routes.go:699), and each package a route's refusal takes a
+# sentinel error's message from (routes.go:588); apiPage (pages.go:58) parses the packages
 # declaring the struct types of the bodies it documents (bodies.go:59); and checkRefusalWrites
 # parses refusalDirs (recorder.go:78). refgen finds a sentinel's or a body's package from the import
-# of the file naming it (importDir, source.go:222), an import of this module, so every package it
+# of the file naming it (importDir, source.go:254), an import of this module, so every package it
 # can parse beside those two is in their import closure within the module: REFGEN_API is that
 # closure, read from the imports of the non-test files at each run (envoy_import_closure), so a
 # route that names one more package's error or type is declared with no edit here.
@@ -463,7 +473,9 @@ MODULE_SOURCES = [Read(path, "internal/dispatch/api/module_source_test.go:76 wal
                              "and all) and :83 parses every .go file it finds but the test files (:80), for "
                              "the tests that ask it for the module's sources: lock_level_test.go:89, "
                              "event_insert_guard_test.go:44, review_order_guard_test.go:49, "
-                             "review_write_guard_test.go:51, one_expression_guard_test.go:66")
+                             "review_write_guard_test.go:51, one_expression_guard_test.go:66, "
+                             "issue_route_writer_guard_test.go:105; issue_route_writer_guard_test.go:124 "
+                             "also walks packages/envoy and reads every non-test file of it as text")
                   for path in files_but_tests(ENVOY, tree=True)]
 
 
@@ -525,6 +537,7 @@ RULES = {
         for path in files_but_tests(f"{DAEMON}/internal/stream")],
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
+    f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:142")),
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
@@ -541,11 +554,11 @@ RULES = {
     f"{DAEMON}/internal/stream/integration_test.go": [legion_build("internal/stream/integration_test.go:157 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/workerbin/workerbin_test.go": reads((f"{DAEMON}/docker/gh", "internal/runtime/workerbin/workerbin_test.go:99")),
     f"{DAEMON}/internal/textcheck/design_approved_wake_test.go": reads(
-        (f"{DAEMON}/internal/workflow/design_approved_wake_extract.txt", "internal/textcheck/design_approved_wake_test.go:23-24 reads the phrase from it, in place of importing internal/workflow"),
-        ("skills/legion-architect/SKILL.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../.."),
-        ("skills/legion-architect/references/design-gate.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../.."),
-        ("skills/legion-architect/references/wake-routing.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../.."),
-        (f"{DAEMON}/internal/prompts/roles/architect-root.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../..")),
+        (f"{DAEMON}/internal/workflow/design_approved_wake_extract.txt", "internal/textcheck/design_approved_wake_test.go:26-27 reads the phrase from it, in place of importing internal/workflow"),
+        ("skills/legion-architect/SKILL.md", "internal/textcheck/design_approved_wake_test.go:32-38 reads it under ../../../.."),
+        ("skills/legion-architect/references/design-gate.md", "internal/textcheck/design_approved_wake_test.go:32-38 reads it under ../../../.."),
+        ("skills/legion-architect/references/wake-routing.md", "internal/textcheck/design_approved_wake_test.go:32-38 reads it under ../../../.."),
+        (f"{DAEMON}/internal/prompts/roles/architect-root.md", "internal/textcheck/design_approved_wake_test.go:32-38 reads it under ../../../..")),
     f"{DAEMON}/internal/textcheck/file_copy_test.go": reads(
         (f"{DAEMON}/**/*.go", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
@@ -574,70 +587,89 @@ RULES = {
         ("docs/site/src/content/docs/legion/concepts.md",
          "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../..")),
     f"{DAEMON}/internal/textcheck/reclaim_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:44,167 reads it under ../../../.."),
+        ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:51,281 reads it under ../../../.."),
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
-         "internal/textcheck/reclaim_doc_test.go:123 reads the committed copy it holds the guide's paragraph to (reclaimExtractLists)")),
+         "internal/textcheck/reclaim_doc_test.go:242 reads the committed copy it holds the guide's paragraph to (reclaimExtractLists)")),
     # cmd/legion/troubleshooting_refusals_test.go reads no text outside its own package and has
     # no row: troubleshooting_refusals_extract.txt, the copy of the troubleshooting page's refusal
     # table it reads its rows from, stands in its own directory, and this row is what holds that
     # copy to the page, in the text-check job (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/troubleshooting_refusals_doc_test.go": reads(
         ("docs/site/src/content/docs/legion/troubleshooting.md",
-         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.. "
-         "for troubleshooting_refusals_doc_test.go:43 (shippedText)"),
+         "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
+         "for troubleshooting_refusals_doc_test.go:48 (shippedText)"),
         (f"{DAEMON}/cmd/legion/troubleshooting_refusals_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../../cmd/legion/troubleshooting_refusals_extract.txt "
-         "for troubleshooting_refusals_doc_test.go:36, the committed copy it holds the page's refusal table to (quotedBody)")),
+         "internal/textcheck/waiting_line_texts_test.go:475 reads it as ../../cmd/legion/troubleshooting_refusals_extract.txt "
+         "for troubleshooting_refusals_doc_test.go:41, the committed copy it holds the page's refusal table to (quotedBody)")),
     # internal/daemon/upgrade_phase_entry_way_back_test.go reads no text outside its own package
     # any more and has no row: upgrade_way_back_extract.txt and
     # upgrade_architect_entry_way_back_extract.txt stand in its own directory, and this row is what
     # holds those copies to the guide, in the text-check job (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/way_back_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.. "
-                               "for way_back_doc_test.go:94 (shippedText)"),
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
+                               "for way_back_doc_test.go:181 (shippedText)"),
         (f"{DAEMON}/internal/daemon/upgrade_way_back_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../daemon/upgrade_way_back_extract.txt for "
-         "way_back_doc_test.go:70, the committed copy it holds the guide's block to (quotedBody)"),
+         "internal/textcheck/waiting_line_texts_test.go:475 reads it as ../daemon/upgrade_way_back_extract.txt for "
+         "way_back_doc_test.go:129, the committed copy it holds the guide's block to (quotedBody)"),
         (f"{DAEMON}/internal/daemon/upgrade_architect_entry_way_back_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../daemon/upgrade_architect_entry_way_back_extract.txt "
-         "for way_back_doc_test.go:70, the committed copy it holds the guide's contract 146 block to (quotedBody)")),
+         "internal/textcheck/waiting_line_texts_test.go:475 reads it as ../daemon/upgrade_architect_entry_way_back_extract.txt "
+         "for way_back_doc_test.go:129, the committed copy it holds the guide's contract 146 block to (quotedBody)")),
+    # This test reads the store's migrations through migrations.All: its import puts their embed
+    # in the go list closure of the text-check run, which needs no row, so the guide is its one row.
+    f"{DAEMON}/internal/textcheck/phase_entry_migrations_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
+                               "for phase_entry_migrations_doc_test.go:252 (shippedText)")),
+    # This test reads the roll forward's header through migrations.WayBack, whose embed is in the
+    # go list closure of the text-check run, as the row above says, so the guide is its one row.
+    f"{DAEMON}/internal/textcheck/step_records_way_back_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
+                               "for step_records_way_back_doc_test.go:59 (shippedText) and :41 "
+                               "(wayBackBlockOfTheGuide, way_back_doc_test.go:132)")),
+    # This test reads the plan record's migration through migrations.WayBack, which reads the
+    # store's migrations as the one above does, and internal/store's plan_ratings_way_back_test.go,
+    # which runs that migration's way back, reads no text outside its package, so the guide is this
+    # one's one row.
+    f"{DAEMON}/internal/textcheck/plan_ratings_way_back_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
+                               "for plan_ratings_way_back_doc_test.go:35 (assertIsTheGuidesBlock, way_back_doc_test.go:165, "
+                               "through wayBackBlockOfTheGuide, :181) and :49 (entryLinkIn of shippedText)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
         (f"{DAEMON}/internal/api/waiting_line_contract_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../api/waiting_line_contract_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:475 reads it as ../api/waiting_line_contract_extract.txt"),
         (f"{DAEMON}/internal/workflow/waiting_line_words_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../workflow/waiting_line_words_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:475 reads it as ../workflow/waiting_line_words_extract.txt"),
         (f"{DAEMON}/cmd/legion/awaiting_summary_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../../cmd/legion/awaiting_summary_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:475 reads it as ../../cmd/legion/awaiting_summary_extract.txt"),
         (f"{DAEMON}/cmd/legion/waiting_line_block_extract.txt",
-         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../../cmd/legion/waiting_line_block_extract.txt"),
+         "internal/textcheck/waiting_line_texts_test.go:475 reads it as ../../cmd/legion/waiting_line_block_extract.txt"),
         # The texts those copies are held to, each read under ../../../.. by shippedText: the
         # seven the contract windows are recomputed from, the eight the band list names, and
         # those eight again read whole for the ban.
-        ("AGENTS.md", "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
+        ("AGENTS.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/concepts.md",
-         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/running-legion.md",
-         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/troubleshooting.md",
-         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.."),
         ("packages/contracts/src/legion-api.ts",
-         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.."),
         ("packages/pi-legion/AGENTS.md",
-         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.."),
         ("packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
-         "internal/textcheck/waiting_line_texts_test.go:390 reads that one fragment under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:485 reads that one fragment under ../../../.."),
         ("packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
-         "internal/textcheck/waiting_line_texts_test.go:390 reads that one fragment under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:485 reads that one fragment under ../../../.."),
         ("packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
-         "internal/textcheck/waiting_line_texts_test.go:390 reads that one fragment under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:485 reads that one fragment under ../../../.."),
         ("skills/legion-architect/references/acceptance.md",
-         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.."),
         ("skills/legion-controller/references/admission.md",
-         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.."),
+         "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.."),
         ("skills/legion-controller/references/wakes.md",
-         "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../..")),
+         "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../..")),
     # The three checks main's #2989 put under packages/daemon, and the waiting-line block check
     # main's #3718 brought, read no text outside it any more: each is held to a copy committed
     # beside its own package, and the row above is what holds those copies to the texts, in the
@@ -749,7 +781,7 @@ RULES = {
          "cmd/spec-check/main_test.go:432 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "
          "lists at :69 and its built binary reads")),
     f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem",
-                                                            "internal/broker/config/config_test.go:1454,1484 Load the URL whose sslrootcert is this bundle (rdsBundle :1414), which pgx reads to build the root pool")),
+                                                            "internal/broker/config/config_test.go:1836,1866 Load the URL whose sslrootcert is this bundle (rdsBundle :1796), which pgx reads to build the root pool")),
     f"{ENVOY}/internal/broker/store/storetest/storetest_test.go": [
         run(f"{ENVOY}/internal/broker/store/storetest", ["."], "internal/broker/store/storetest/storetest_test.go:22 go list -deps .", mode="build")],
     f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:57")),
@@ -760,9 +792,11 @@ RULES = {
     f"{ENVOY}/internal/contracts/normalize_test.go": reads(
         (f"{FIX}/github-envelopes/*", "internal/contracts/normalize_test.go:753"),
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/normalize_test.go:2078,2711")),
+    f"{ENVOY}/internal/contracts/plan_rating_test.go": reads(
+        (f"{FIX}/daemon-api/plan-rating-cases.json", "internal/contracts/plan_rating_test.go:21")),
     f"{ENVOY}/internal/dispatch/api/copy_lock_order_test.go": [
         run(ENVOY, ["./cmd/dispatch"], "internal/dispatch/api/copy_lock_order_test.go:264 go list -deps -export ./cmd/dispatch in packages/envoy", mode="build")],
-    f"{ENVOY}/internal/dispatch/api/delivery_live_diff_test.go": reads((f"{FIX}/live/*", "internal/dispatch/api/delivery_live_diff_test.go:982,1013")),
+    f"{ENVOY}/internal/dispatch/api/delivery_live_diff_test.go": reads((f"{FIX}/live/*", "internal/dispatch/api/delivery_live_diff_test.go:982,1016")),
     f"{ENVOY}/internal/dispatch/api/delivery_measures_test.go": reads(
         (f"{ENVOY}/internal/dispatch/delivery/measures/testdata/dora-fixture.json", "internal/dispatch/api/delivery_measures_test.go:82")),
     f"{ENVOY}/internal/dispatch/api/delivery_test.go": reads(
@@ -774,8 +808,14 @@ RULES = {
          "internal/dispatch/api/openapi_test.go:199-200 (the path built runtime-relative ../../../../.., then "
          "read: the committed document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the "
          "emitter's bytes with)")),
+    f"{ENVOY}/internal/dispatch/api/session_answers_test.go": reads(
+        (f"{FIX}/ask-reply-recipients.json",
+         "internal/dispatch/api/session_answers_test.go:1496 os.ReadFile (askReplyRecipientsFixture :1167, "
+         "../../../../contracts/fixtures): TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers compares "
+         "the copies the outbox published with the committed fixture, which :1489 writes under -update")),
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES,
+    f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": MODULE_SOURCES,
     # main's #3429 put this check in who_waits_test.go, a behaviour file of this package, where
     # the race job was the only one that ran it and the module walk under it was declared by
@@ -795,6 +835,11 @@ RULES = {
          "internal/dispatch/legion/golden_state_test.go:29 os.ReadFile (goldenStatePath :16, "
          "../../../../contracts/fixtures/daemon-api): the state document the daemon's own "
          "internal/api/state_golden_test.go writes, which the sampler's decode must read")),
+    f"{ENVOY}/internal/dispatch/outbox/copyrule/copyrule_test.go": [
+        Read(path, "internal/dispatch/outbox/copyrule/copyrule_test.go:45 walks packages/envoy (../../../..) and :58 "
+                   "reads every .go file it finds but the test files and node_modules, to hold every reader of the "
+                   "mention copy rule to copyrule.Holder")
+        for path in files_but_tests(ENVOY, tree=True)],
     f"{ENVOY}/internal/dispatch/outbox/expects_reply_never_false_test.go": reads(
         ("packages/contracts/src/dispatch-api*.ts",
          "internal/dispatch/outbox/expects_reply_never_false_test.go:137-138 globs ../../../../contracts/src/dispatch-api*.ts "
@@ -865,9 +910,9 @@ RULES = {
                   "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :825)")
           for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:37,44 reads it under ../../../.."),
+        ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:43,50 reads it under ../../../.."),
         (f"{ENVOY}/internal/broker/oauth/claims_doc_extract.txt",
-         "internal/textcheck/claims_doc_test.go:71 reads the committed copy it holds the guide's list to (extractLines, called with it at :54)")),
+         "internal/textcheck/claims_doc_test.go:77 reads the committed copy it holds the guide's list to (extractLines, called with it at :60)")),
     f"{ENVOY}/internal/textcheck/environment_reads_test.go": [
         Read(path, "internal/textcheck/environment_reads_test.go:117 environmentReads walks it (:36), testdata and "
                    "node_modules passed over (:41-42), and :49 parses each .go file but the test files (:46)")
@@ -877,6 +922,24 @@ RULES = {
         (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/envoy (../.., infra included)")),
     f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
         (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:23 reads packages/envoy/loadtest/README.md under ../../../..")),
+    f"{ENVOY}/internal/textcheck/refusal_codes_test.go": reads(
+        (f"{ENVOY}/**/*.go", "internal/textcheck/refusal_codes_test.go:44 calls refusalCodeCopies on ../.. (refusalCodeRoots, :32), whose walk at :108 reads every .go file under packages/envoy, infra included"),
+        (f"{DAEMON}/**/*.go", "internal/textcheck/refusal_codes_test.go:44 calls refusalCodeCopies on ../../../daemon (refusalCodeRoots, :32), whose walk at :108 reads every .go file under packages/daemon")),
+    f"{ENVOY}/internal/textcheck/visible_markdown_copy_test.go": reads(
+        (f"{DAEMON}/internal/textcheck/visible_markdown_test.go", "internal/textcheck/visible_markdown_copy_test.go:50 os.ReadFile (readGoTokens, called with daemonVisibleMarkdown :14, ../../../daemon/internal/textcheck/visible_markdown_test.go, at :21)")),
+    # The listener's Go clients held to its wire package: wirecheck.Check type-checks them over
+    # the export data of `go list -deps -export`, which it runs in each module's own directory, and
+    # the load-test harness's main package is parsed for a listener route named outside its client.
+    f"{ENVOY}/listenerwire/clients_test.go": [
+        run(ENVOY, ["./internal/broker/wake", "./internal/dispatch/envoy", "./loadtest/listenerclient", "./internal/testnats/cmd/refillrig"],
+            "listenerwire/clients_test.go:27,30 wirecheck.Check runs go list -deps -export over them in packages/envoy (internal/wirecheck/wirecheck.go goList)",
+            mode="build"),
+        run(DAEMON, ["./internal/notify", "./internal/controller"],
+            "listenerwire/clients_test.go:28,30 wirecheck.Check runs go list -deps -export over them in packages/daemon (internal/wirecheck/wirecheck.go goList)",
+            mode="build"),
+        *[Read(path, "listenerwire/clients_test.go:100 lists the load-test package's Go files and :110 parses each, "
+                     "test files passed over (TestTheLoadTestCallsTheListenerOnlyThroughItsClient)")
+          for path in files_but_tests(f"{ENVOY}/loadtest")]],
     # --- envoy-infra
     f"{INFRA}/core/permissions_live_test.go": [
         run(ENVOY, ["./cmd/dispatch", "./cmd/listener"], "infra/core/permissions_live_test.go:404 buildEnvoyCommand builds . in ../../cmd/<dispatch|listener> (root go.work)", mode="build")],
@@ -961,7 +1024,9 @@ NATS_MATRIX_SCRIPT = f"""\
 rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
 go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
 cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
-go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/"""
+go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
+callout=$(../../{TAGGED_TESTS} natslive ./internal/broker/natscallout)
+go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/broker/natscallout/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
@@ -1008,7 +1073,7 @@ AIRLOCK_JOB = "airlock-lean"
 AIRLOCK_LEAN = f"{ENVOY}/internal/broker/airlock/lean"
 AIRLOCK_PKGS = ["./internal/broker/airlock/"]
 AIRLOCK_SEED_STEP = "Compare the Go airlock with the model over the seed corpus"
-AIRLOCK_SEED_SCRIPT = "go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes)$' ./internal/broker/airlock/"
+AIRLOCK_SEED_SCRIPT = "go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelReadsAHostlessEntryWithGuidance)$' ./internal/broker/airlock/"
 AIRLOCK_FUZZ_STEP = "Fuzz the Go airlock against the model"
 AIRLOCK_FUZZ_SCRIPT = "go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/"
 AIRLOCK_BUILD_STEP = "Build the Lean model"
@@ -1145,7 +1210,7 @@ def has_go_files(directory: Path) -> bool:
     return False
 
 
-def packages_kept(root: str, pattern: str) -> list:
+def packages_kept(root: str, pattern: str, under: str = ".") -> list:
     """The `go list` patterns that together name the packages a step's `go list ./... | grep -Ev
     '<pattern>'` hands go test in the module at `root`. The pattern is tried as that grep tries
     it: against each import path `go list ./...` prints, which is the module path the root's
@@ -1159,18 +1224,21 @@ def packages_kept(root: str, pattern: str) -> list:
     onto this job's filter, and a change to one of them would go on starting a job that does not
     run the test that reads it (dispatch://INFRA-1413)."""
     base = Path(root)
+    # A step that lists a subtree rather than the module (`go list ./<under>/... | grep -Ev`,
+    # database-skips.sh's ./internal/broker/...) passes it as `under`; "." is the module's ./....
+    start = base / under
     module = next(line.split()[1] for line in (base / "go.mod").read_text().splitlines()
                   if line.startswith("module "))
     dropped = []
-    for current, subdirs, names in os.walk(base):
+    for current, subdirs, names in os.walk(start):
         here = Path(current)
         subdirs[:] = sorted(s for s in subdirs if not go_skips_dir(here, s))
-        under = here.relative_to(base).as_posix()
-        if any(n.endswith(".go") for n in names) and re.search(pattern, module if under == "." else f"{module}/{under}"):
+        rel = here.relative_to(base).as_posix()
+        if any(n.endswith(".go") for n in names) and re.search(pattern, module if rel == "." else f"{module}/{rel}"):
             dropped.append(here)
     if not dropped:
-        raise ValueError(f"`grep -Ev '{pattern}'` takes no package of {root} out of `go list ./...`, so no lane "
-                         "is leaving one out; follow the package, or drop the grep")
+        raise ValueError(f"`grep -Ev '{pattern}'` takes no package of {root} out of `go list ./{under}/...`, so no "
+                         "lane is leaving one out; follow the package, or drop the grep")
     found = []
 
     def walk(here: Path):
@@ -1183,7 +1251,7 @@ def packages_kept(root: str, pattern: str) -> list:
             elif has_go_files(child):
                 found.append(f"./{child.relative_to(base).as_posix()}/...")
 
-    walk(base)
+    walk(start)
     return found
 
 
@@ -1451,10 +1519,12 @@ class RaceJob(NamedTuple):
 
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
-            "Race-test delivery, the store, the bus, the listener, the registry store, the session cache and kvwatch",
+            "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the "
+            "NATS credentials and the NATS auth service",
             "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
-                    RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
+                    RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
+                    RacePackage("natscred"), RacePackage("internal/broker/natscallout"))),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "70m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
@@ -1484,30 +1554,95 @@ NOTE_AND_SPEC_STEP = "Test the architecture-note and spec-file rules and their c
 NOTE_AND_SPEC_PKGS = [f"./{p}/" for p in NOTE_AND_SPEC_PACKAGES]
 NOTE_AND_SPEC_TEXT = "go test -count=1 " + " ".join(NOTE_AND_SPEC_PKGS)
 
-# The broker's packages, internal/broker and every package under it, which envoy-go's step
-# "Count the database broker suites' skips" runs with `go test -json` through
-# packages/envoy/scripts/database-skips.sh, and fails on a failed test as on a skipped one. The
-# unit step leaves them out: it ran each of them a second time in the same job, with the same
-# database, about 645 s of package time on a merge-group run of 2026-11-17 (job 133989142856),
-# internal/broker/helper alone 326 s.
+# listenerwire's tests and wirecheck's, the tool its clients test runs, which envoy-go-checks runs
+# in a step of their own, their one run. clients_test.go type-checks the daemon's listener clients
+# (its RULES entry), so run in envoy-go's unit step a change to one of those daemon packages would
+# start that whole job, its database and its 20-minute unit step, for one type check. They need no
+# database. As with the architecture-note and spec-file packages, that step's package list and the
+# unit step's exclusion are built from this one list.
+LISTENERWIRE_PACKAGES = ["listenerwire", "internal/wirecheck"]
+LISTENERWIRE_STEP = "Test the listener's wire package, its clients and wirecheck"
+LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
+LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
+
+# The packages envoy-go's step "Count the database broker suites' skips" runs with `go test -json`
+# through packages/envoy/scripts/database-skips.sh, its default table (DEFAULT_PACKAGES there):
+# the broker's tree, internal/broker and every package under it, and its command, cmd/broker.
+# That step fails on a failed test as on a skipped one. The unit step leaves them out: it ran
+# each of them a second time in the same job, with the same database, about 645 s of package
+# time on a merge-group run of 2026-11-17 (job 133989142856), internal/broker/helper alone 326 s;
+# cmd/broker took 580 s of the unit step on 2026-11-18 (job 135007706189). The script's own
+# DEFAULT_EXCEPT, a `grep -Ev` over that table's import paths, leaves out the race lane's packages
+# under the tree (DATABASE_SKIPS_PATTERN, today the auth service's natscallout), which open no
+# database and which the lane's race job runs: a run there too would be each one's second in the
+# same CI run. The pattern is built from ENVOY_RACE_LANE, as the unit step's is.
+# hold_database_skips_packages() below refuses a script whose table is not this list, or whose
+# DEFAULT_EXCEPT is not that pattern.
 DATABASE_SKIPS_TREE = "internal/broker"
+DATABASE_SKIPS_COMMAND = "cmd/broker"
+DATABASE_SKIPS_PKGS = [f"./{DATABASE_SKIPS_TREE}/...", f"./{DATABASE_SKIPS_COMMAND}/"]
 DATABASE_SKIPS_STEP = "Count the database broker suites' skips"
 DATABASE_SKIPS_SCRIPT = "packages/envoy/scripts/database-skips.sh"
+DATABASE_SKIPS_PATTERN = "|".join(
+    f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages
+    if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/"))
+# The -timeout of envoy-go's unit step, which the count step passes the counter too: cmd/broker
+# ran under it in the unit step before it moved to the count, so its limit does not fall.
+UNIT_TEST_TIMEOUT = "20m"
+DATABASE_SKIPS_RUN = f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT}"
+# The counter's own test, which envoy-go runs before the count: its five controls run the counter
+# on these three packages, one at a time, each narrowed to its planted and expected tests.
+DATABASE_SKIPS_TEST_STEP = "Test the database skip counter"
+DATABASE_SKIPS_TEST = "packages/envoy/scripts/database-skips.test.sh"
+DATABASE_SKIPS_TEST_PKGS = ["./internal/broker/api/", "./cmd/broker/", "./internal/dispatch/api/"]
 
-# The unit step runs the module less five things: the lane's packages, which the three race jobs
+
+def hold_database_skips_packages():
+    """Refuse a database-skips.sh whose default table is not DATABASE_SKIPS_PKGS, or whose
+    DEFAULT_EXCEPT is not DATABASE_SKIPS_PATTERN. The counting step's Run claims that table's
+    closure less the lane's packages, and the unit step leaves the whole table out, so a package
+    the script added without this list would run twice in the job, one it dropped would run in no
+    step of it, and a lane package the script kept would run twice in the CI run, with every check
+    green."""
+    text = Path(DATABASE_SKIPS_SCRIPT).read_text()
+    found = re.findall(r"^DEFAULT_PACKAGES=\((.*)\)$", text, re.M)
+    if found != [" ".join(DATABASE_SKIPS_PKGS)]:
+        raise ValueError(f"{DATABASE_SKIPS_SCRIPT}'s DEFAULT_PACKAGES is {found}, and DATABASE_SKIPS_PKGS here is "
+                         f"{DATABASE_SKIPS_PKGS}: make them one list, which the unit step leaves out and the "
+                         f"database-skips step runs")
+    excepted = re.findall(r"^DEFAULT_EXCEPT='(.*)'$", text, re.M)
+    if excepted != [DATABASE_SKIPS_PATTERN]:
+        raise ValueError(f"{DATABASE_SKIPS_SCRIPT}'s DEFAULT_EXCEPT is {excepted}, and DATABASE_SKIPS_PATTERN here, "
+                         f"the race lane's packages under {DATABASE_SKIPS_TREE}, is '{DATABASE_SKIPS_PATTERN}': make "
+                         f"them one pattern, so the count runs no package the lane's race job runs")
+
+
+hold_database_skips_packages()
+
+# The unit step runs the module less six things: the lane's packages, which the three race jobs
 # run under the detector, internal/integration, which envoy-go's integration step runs, the text
-# checks, which the text-check job runs, the architecture-note and spec-file packages, which
-# envoy-go-checks runs, and the broker's tree, which envoy-go's database-skips step runs. Its
-# `grep -Ev` is `/integration`, then the text checks, then those packages, each the package
-# alone, then the broker's tree, then, in the lane's own order, each package in the form go
+# checks, which the text-check job runs, the architecture-note and spec-file packages and
+# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-checks runs, and the
+# broker's tree and command, which envoy-go's database-skips step runs. Its `grep -Ev` is
+# `/integration`, then the text checks, then those packages, each the package alone, then the
+# broker's tree and its command, then, in the lane's own order, each package in the form go
 # list's import paths need - a tree matching the package and everything under it, any other the
 # package alone.
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
-    + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES]
-    + [f"/{DATABASE_SKIPS_TREE}($|/)"]
+    + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES]
+    + [f"/{DATABASE_SKIPS_TREE}($|/)", f"/{DATABASE_SKIPS_COMMAND}$"]
     + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
+
+# envoy-go-race-api's step runs its package through database-skips.sh, which counts the skips of
+# that same run, so the package's contract tests, which skip without BROKER_TEST_DATABASE_URL, and
+# the rest, which skip without DISPATCH_TEST_DATABASE_URL, cannot skip unseen in a step that runs
+# without -v. Its text is built from the lane's declaration: the race job's packages, and its
+# -timeout as the counter's --timeout.
+RACE_API = RACE_JOBS["envoy-go-race-api"]
+RACE_API_SCRIPT = ("scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL "
+                   f"--race --timeout {RACE_API.timeout} " + " ".join(race_pkgs(RACE_API)))
 
 
 # ---------------------------------------------------------------- the web app's display fixture
@@ -1547,7 +1682,7 @@ if re.search(UNIT_TEST_PATTERN, f"/{WEB_FIXTURE_PACKAGE}"):
                      f"`grep -Ev` takes out, so that step does not run them and the -skip below skips nothing; "
                      f"name the step that runs that package now and move the -skip to it")
 UNIT_TEST_SCRIPT = (f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | "
-                    f"xargs go test -count=1 -timeout 20m -skip {WEB_FIXTURE_PATTERN}")
+                    f"xargs go test -count=1 -timeout {UNIT_TEST_TIMEOUT} -skip {WEB_FIXTURE_PATTERN}")
 
 
 def hold_web_fixture_tests():
@@ -1644,13 +1779,13 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
-# The eight static checks of internal/dispatch/api, keyed by their path in this repository: the
-# seven source guards and one_expression_guard_test.go, which reads the module's text for the same
+# The nine static checks of internal/dispatch/api, keyed by their path in this repository: the
+# eight source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all fifteen of their tests in the plain step; they are left out of it instead,
+# below would put all seventeen of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
-# tells nobody anything. The exemption is held to the files it is about in three ways, so a
-# sixteenth such test cannot quietly rejoin the plain step: a file named here that does not
+# tells nobody anything. The exemption is held to the files it is about in three ways, so an
+# eighteenth such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -1665,6 +1800,9 @@ TEXT_CHECK_TESTS = {
         "TestTheGuardReadsABodyStringOffARequestType"},
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": {
         "TestOnlyTheBrokerInsertsEvents"},
+    f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": {
+        "TestOnlyTheIssuePatchWritesTheRoute",
+        "TestTheRouteWriterGuardSeesAPlantedWriter"},
     f"{ENVOY}/internal/dispatch/api/keyed_write_guard_test.go": {
         "TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks",
         "TestTheKeyedWriteGuardSeesWhatItGuards"},
@@ -1676,10 +1814,37 @@ TEXT_CHECK_TESTS = {
         "TestEveryReviewReadOrdersByReviewOrder",
         "TestTheReviewOrderGuardReadsBothOrders"},
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": {
-        "TestOnlyWriteReviewWritesReviews",
+        "TestOnlyQueueReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
 }
+
+# The mention sender's claim model (internal/dispatch/api), keyed by path as TEXT_CHECK_TESTS is:
+# the search over every interleaving of the sender's own code, and the test that holds the rules
+# it restates to their SQL. Both carry `//go:build !race`, since the detector slows the search
+# about sevenfold, so the walk below would put them in envoy-go's plain step; they are left out of
+# it because the envoy-go-claim-model job runs them by name, alone on its runner, where the search
+# has every core and a deadline measured for it. They are held to the files they are about as
+# TEXT_CHECK_TESTS' are, by the same three refusals.
+CLAIM_MODEL_TESTS = {
+    f"{ENVOY}/internal/dispatch/api/comment_mention_claim_model_search_test.go": {
+        "TestTheMentionSenderClaimModel"},
+    f"{ENVOY}/internal/dispatch/api/comment_mention_claim_model_sql_test.go": {
+        "TestTheClaimModelsRulesAreTheSQLsRules"},
+}
+# Every file whose tests a job of their own runs by name, and which therefore names no test of the
+# plain step: the text-check job's and the claim model job's.
+BY_NAME_TESTS = {**TEXT_CHECK_TESTS, **CLAIM_MODEL_TESTS}
+
+
+def by_name_list(path: Path) -> str:
+    """The name of the list of BY_NAME_TESTS that holds `path`'s row."""
+    return "CLAIM_MODEL_TESTS" if path.as_posix() in CLAIM_MODEL_TESTS else "TEXT_CHECK_TESTS"
+
+
+def by_name_job(path: Path) -> str:
+    """The job that runs the tests of `path`'s BY_NAME_TESTS row by name."""
+    return "the envoy-go-claim-model job" if path.as_posix() in CLAIM_MODEL_TESTS else "the text-check job"
 
 
 def race_impossible_tests_of(path: Path) -> set:
@@ -1693,20 +1858,21 @@ def race_impossible_tests_of(path: Path) -> set:
     closes it - holds it, and only when that function is itself a test, so a read in a helper,
     at package level or in a function literal outside any declaration - which a later test may be
     the one caller of - makes ci-filters red rather than giving a test that does not run smaller
-    the plain run and dropping the one that does. A file TEXT_CHECK_TESTS names is the exception:
-    it names no test here, since the text-check job runs its tests by name, and it is refused
-    unless it carries the tag and its tests are exactly the names that list holds for it."""
+    the plain run and dropping the one that does. A file BY_NAME_TESTS names is the exception:
+    it names no test here, since a job of its own runs its tests by name (the text-check job, or
+    the claim model's), and it is refused unless it carries the tag and its tests are exactly the
+    names that list holds for it."""
     text = path.read_text()
     found = GO_BUILD_LINE.search(text)
     constraint = found.group(1) if found else ""
     if constraint not in ("", "race", "!race") and re.search(r"\brace\b", constraint):
         raise ValueError(f"{path}: `//go:build {constraint}` names race in a form ci_job_reads.py does not read; "
                          "teach race_impossible_tests_of() the form, or the plain step loses the file's tests")
-    exempt = TEXT_CHECK_TESTS.get(path.as_posix())
+    exempt = BY_NAME_TESTS.get(path.as_posix())
     if exempt is not None and constraint != "!race":
-        raise ValueError(f"{path}: TEXT_CHECK_TESTS leaves this file's tests out of the plain step because the "
-                         "text-check job runs them by name, but the file does not carry `//go:build !race`, so "
-                         "the race build still compiles and runs them; restore the tag, or drop the row")
+        raise ValueError(f"{path}: {by_name_list(path)} leaves this file's tests out of the plain step because "
+                         f"{by_name_job(path)} runs them by name, but the file does not carry `//go:build !race`, "
+                         "so the race build still compiles and runs them; restore the tag, or drop the row")
     # A file the race build compiles and that nowhere writes raceEnabled, in code or in a comment,
     # names no test here and refuses nothing, so it never reaches the blanking pass below. That is
     # almost every file of the lane: 610 of them, 10.9 MB, which this guard takes from 3.0 s to
@@ -1740,9 +1906,9 @@ def race_impossible_tests_of(path: Path) -> set:
         unnamed = ", ".join(sorted(names - exempt))
         stale = ", ".join(sorted(exempt - names))
         if unnamed or stale:
-            raise ValueError(f"{path}: TEXT_CHECK_TESTS does not name this file's tests exactly - "
+            raise ValueError(f"{path}: {by_name_list(path)} does not name this file's tests exactly - "
                              f"in the file and not in the list: {unnamed or 'none'}; in the list and not in the "
-                             f"file: {stale or 'none'}. A guard test the text-check job does not run by name "
+                             f"file: {stale or 'none'}. A test {by_name_job(path)} does not run by name "
                              "belongs in the plain step, so name it in both places or in neither")
         return set()
     return names
@@ -1778,7 +1944,7 @@ def race_impossible_tests(root, packages=None) -> dict:
     """Per package under `root`, in the order `packages` lists them, the tests only a plain run
     covers (race_impossible_tests_of). `packages` is each (path under `root`, directory) to read,
     and the envoy lane's (race_lane_packages) when it is not given. A package that has none is left
-    out. A file TEXT_CHECK_TESTS names under `root` that this walk never reads is refused: the row
+    out. A file BY_NAME_TESTS names under `root` that this walk never reads is refused: the row
     would otherwise go on exempting a file that has moved out of the lane, or been deleted, and say
     nothing."""
     found, read = {}, set()
@@ -1789,22 +1955,20 @@ def race_impossible_tests(root, packages=None) -> dict:
             names |= race_impossible_tests_of(path)
         if names:
             found[under] = names
-    gone = sorted(f for f in TEXT_CHECK_TESTS if f.startswith(f"{root}/") and f not in read)
+    gone = sorted(f for f in BY_NAME_TESTS if f.startswith(f"{root}/") and f not in read)
     if gone:
-        raise ValueError(f"TEXT_CHECK_TESTS names {', '.join(gone)}, which the lane's walk of {root} does not "
-                         "read: the file moved out of the lane or is gone, and its row now exempts nothing; "
-                         "follow the file, or drop the row")
+        raise ValueError(f"{', '.join(sorted({by_name_list(Path(f)) for f in gone}))} names {', '.join(gone)}, "
+                         f"which the lane's walk of {root} does not read: the file moved out of the lane or is "
+                         "gone, and its row now exempts nothing; follow the file, or drop the row")
     return found
 
 
 def race_impossible_script(packages) -> str:
     """A plain run of the tests the detector makes impossible: one `go test` per package
     of `packages` (race_impossible_tests), each naming that package's own tests, anchored and
-    sorted, in its -run."""
-    lines = []
-    for under, names in packages.items():
-        lines.append(f"go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}")
-    return "\n".join(lines)
+    sorted, in its -run, under a 10-minute timeout."""
+    return "\n".join(f"go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}"
+                     for under, names in packages.items())
 
 
 # The step as the lane and packages/envoy's own source make it, so a test added under
@@ -1838,12 +2002,12 @@ DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_pack
 DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The text-check job: the three modules' text checks, and the fifteen tests of the Dispatch API's
-# eight static checks - its seven source guards and one_expression_guard_test.go. They read the
+# The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
+# nine static checks - its eight source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those fifteen out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those seventeen out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
@@ -1860,6 +2024,21 @@ GUARD_SCRIPT = ("go test -count=1 -run "
                 f"'^({'|'.join(sorted(name for names in TEXT_CHECK_TESTS.values() for name in names))})$' "
                 f"{GUARD_PACKAGE}")
 
+# The claim model's job: the mention sender's claim model and the test of the rules it restates,
+# by name (CLAIM_MODEL_TESTS), the same declaration that leaves exactly those two out of envoy-go's
+# plain step. -run and -v are outside the simple form, so the step is pinned whole. A -run moves
+# no closure: the step compiles every test file of internal/dispatch/api, the source guards that
+# walk the module's source among them, so this gate reads what the API's plain tests read.
+CLAIM_MODEL_JOB = "envoy-go-claim-model"
+CLAIM_MODEL_PACKAGE = "./internal/dispatch/api"
+CLAIM_MODEL_STEP = "Search every order of the mention sender's claims"
+# Twice the 19 min 18 s the step took on an ubuntu-24.04 runner at three periods; the job's
+# timeout-minutes is this and ten.
+CLAIM_MODEL_TIMEOUT = "40m"
+CLAIM_MODEL_SCRIPT = (f"go test -count=1 -timeout {CLAIM_MODEL_TIMEOUT} -v -run "
+                      f"'^({'|'.join(sorted(name for names in CLAIM_MODEL_TESTS.values() for name in names))})$' "
+                      f"{CLAIM_MODEL_PACKAGE}")
+
 
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
 BUILD_BINARIES = "docs/site/scripts/build-binaries.sh"
@@ -1875,11 +2054,15 @@ mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
 # The steps that read the stacks' connection limit before a browser step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
-# shard and alone jobs, whose containers have no Go, and the visual job's own, outside its browser
-# step's budget. One script; two names, since the check finds a step by name across the workflow.
-# Pinned whole, since `go run` is not a form the simple form reduces.
+# shard and alone jobs, whose containers have no Go, and the visual, multiprocess, embedder and
+# two-build jobs' own, outside their browser steps' budgets. One script; a name per job, since the
+# check finds a step by name across the workflow. Pinned whole, since `go run` is not a form the
+# simple form reduces.
 BROWSER_CONNECTIONS_STEP = "Read the connections each stack's Postgres must allow"
 BROWSER_VISUAL_CONNECTIONS_STEP = "Read the connections the visual stack's Postgres must allow"
+BROWSER_MP_CONNECTIONS_STEP = "Read the connections the multiprocess stack's Postgres must allow"
+BROWSER_EMBEDDER_CONNECTIONS_STEP = "Read the connections the embedder stack's Postgres must allow"
+TWO_BUILDS_CONNECTIONS_STEP = "Read the connections the two-build stack's Postgres must allow"
 BROWSER_CONNECTIONS_SCRIPT = """\
 connections=$(go run ./internal/dispatch/store/cmd/connections)
 [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
@@ -1915,6 +2098,25 @@ STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
+# The check that no migration a database may have run is edited without its replaces line: a
+# script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
+# stands for the command it compiles.
+EDITED_MIGRATIONS_STEP = "Check that no migration a database may have run is edited without its replaces line"
+EDITED_MIGRATIONS_SCRIPT = "\n".join([
+    'if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then',
+    '  if [ -z "$MIGRATION_BASE" ]; then',
+    '    echo "::error::this workflow_dispatch run names no migration-base, so the check cannot tell which commits it lands; main-bypass-check.yaml passes the commit main pointed at before the push"',
+    '    exit 2',
+    '  fi',
+    '  git fetch --no-tags --depth=1 origin "$MIGRATION_BASE"',
+    '  base=$MIGRATION_BASE',
+    'else',
+    '  git fetch --no-tags --depth=2 origin "$GITHUB_SHA"',
+    '  base=$(git rev-parse HEAD^1)',
+    'fi',
+    'go build -o "$RUNNER_TEMP/edited-migrations" ./internal/pgmigrate/cmd/edited-migrations',
+    '"$RUNNER_TEMP/edited-migrations" --base "$base"',
+])
 SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
@@ -1992,8 +2194,8 @@ SCRIPT_TEST_GATES = [
     harness("release_push_test", "Test release scripts", f"{SCRIPTS}/release-push.test.sh", [
         (f"{SCRIPTS}/release-push.sh", "the script under test"),
         (f"{SCRIPTS}/release-bump.sh", "release-push.sh:914 runs it for `version`, and the version cases read its refusals"),
-        (".github/workflows/release.yaml", "release-push.test.sh:1079,1093 reads it for the checkout-before-push case"),
-        ("packages/pi-legion/.changie.yaml", "release-push.test.sh:2211 copies the shipped configuration into its fold-notes fixture"),
+        (".github/workflows/release.yaml", "release-push.test.sh's worker_image_release case reads that job's step out of it and runs it"),
+        ("packages/pi-legion/.changie.yaml", "release-push.test.sh's fold-notes case for the shipped configuration copies it into its fixture"),
     ]),
     harness("release_bump_test", "Test the release version bump", f"{SCRIPTS}/release-bump.test.sh", [
         (f"{SCRIPTS}/release-bump.sh", "the script under test"),
@@ -2073,9 +2275,23 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),
     ]),
     harness("check_private_names_test", "Test the private-name check", f"{SCRIPTS}/check-private-names.test.sh", [
+        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names.test.sh:23 sources it for its fixtures"),
+        (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names.test.sh:525 runs it too: the pull request's text is the guard's other surface"),
-    ]),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:254 runs it too: the pull request's text is the guard's other surface"),
+    ], lib=False),
+    harness("check_private_names_terms_test", "Test the private-name check's term list", f"{SCRIPTS}/check-private-names-terms.test.sh", [
+        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-terms.test.sh:24 sources it for its fixtures"),
+        (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
+        (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:254 runs it, over a pull request's text naming a term"),
+    ], lib=False),
+    harness("check_private_names_keys_test", "Test the private-name check's issue-key rule", f"{SCRIPTS}/check-private-names-keys.test.sh", [
+        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-keys.test.sh:24 sources it for its fixtures"),
+        (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
+        (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:254 runs it, over a pull request's new text"),
+    ], lib=False),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
     ]),
@@ -2090,6 +2306,8 @@ SCRIPT_TEST_GATES = [
     harness("check_release_credentials_test", "Test the release credential check",
             f"{SCRIPTS}/check-release-credentials.test.sh", [
         (f"{SCRIPTS}/check-release-credentials.sh", "the script under test"),
+        (f"{SCRIPTS}/shell_commands.py", "check-release-credentials.sh imports it to find command position, "
+                                         "and the harness links it into each fixture"),
     ]),
     harness("repo_paths_test", "Test the repository path derivation", f"{SCRIPTS}/repo-paths.test.sh", [
         (f"{SCRIPTS}/repo-paths.sh", "the script under test"),
@@ -2171,13 +2389,12 @@ SCRIPT_TEST_GATES = [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:76-78)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:80-82)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2432 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2876-2911 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2818 imports this table to derive the plain step's -run lists"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
     ]),
@@ -2195,6 +2412,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module that engine imports"),
         (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its two-steps case reads this file's own go test line, the wrapper one"),
         (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its two-steps case reads this file's own go test line, the GODEBUG one"),
+        (".github/workflows/ci-job-envoy-go.yaml", "its audited-step case reads this file's step that runs database-skips.sh"),
+        (".github/workflows/ci-job-envoy-go-race-api.yaml", "its audited-step case reads this file's step that runs database-skips.sh with arguments"),
         ("packages/envoy/scripts/database-skips.sh", "its last case hashes this script, the one AUDITED_SCRIPTS reads"),
         (f"{SCRIPTS}/ci_job_reads.py", "its last case imports this file for the reads this gate declares"),
     ]),
@@ -2276,9 +2495,6 @@ GATES = [
             (DAEMON, DAEMON_RACE_PKGS, "go test -race over the three concurrent packages, the plugin-pack tests "
                                        "skipped by name", {"race": True}),
         ]),
-        # The race step's packages' tests the race build does not compile or runs smaller
-        # (DAEMON_RACE_IMPOSSIBLE_*), one go test per package, each selecting that package's own
-        # tests with -run.
         pinned_step("daemon-go", DAEMON_RACE_IMPOSSIBLE_STEP, DAEMON, DAEMON_RACE_IMPOSSIBLE_SCRIPT, [
             (DAEMON, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
             for under in DAEMON_RACE_IMPOSSIBLE_PACKAGES
@@ -2346,7 +2562,7 @@ GATES = [
         (TEST_LIB, "check-private-names-port.test.sh:63 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh",
          "the frozen script every case of check-private-names-port.test.sh runs beside the "
-         "engine, symlinked into each fixture (:203,411,457,546)"),
+         "engine, symlinked into each fixture (:213,421,467,556)"),
     ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod")),
 
     # What is left of the test job once the daemon's Go suite and the private-name port harness
@@ -2461,7 +2677,7 @@ GATES = [
         ("skills/**", "docs/site/generators/legion-skills.ts:15-19 reads skills/*/SKILL.md"),
         ("deploy/kubernetes/**", "docs/site/generators/legion-config.ts's exampleFiles lists every tracked deploy/kubernetes *.example/*.yml/*.yaml and its renderExamples reads each whole"),
         ("scripts/third-party-notices.ts", "docs/site/astro.config.mjs:10-15; packages/dispatch/web/vite.config.ts:6-12"),
-        (".github/scripts/check-private-names.sh", at_docs("Check the built site has no private name, internal host, or tailnet host")),
+        (".github/scripts/check-private-names.sh", at("private-names", "Check the built site has no private name, internal host, tailnet host, or term of the deployment's own list", DOCS_SITE)),
         (".github/scripts/repo-paths.sh", "docs/site/repo-paths.ts:21,25 runs it for the site's own URL, base and edit links "
                                           f"(astro.config.mjs), read by {at_docs('Build the docs site')}"),
         (f"{ENVOY}/internal/dispatch/api/routes_table.go", "docs/site/generators/dispatch-api.ts's page sources it, checked by generators/lib/markdown.ts's writePage"),
@@ -2475,12 +2691,12 @@ GATES = [
         # and the packages of REFGEN_API past them, whose non-test files the build of
         # ./cmd/broker above reads already.
         *[(path, f"broker-refgen parses it (packages/envoy/cmd/broker-refgen/{where})") for directory, where in (
-            ("internal/broker/api", "routes.go:17,226"),
+            ("internal/broker/api", "routes.go:17,238"),
             ("internal/broker/config", "config.go:11,36"),
             ("cmd/broker", "config.go:12,40"),
             ("internal/broker/helper", "pages.go:16, codes.go:15"),
             ("cmd/agent-secrets", "pages.go:17, codes.go:68"),
-            ("internal/broker/approval", "routes.go:668 g.in of the pageAnswerers directory named at :34, which parses it at bodies.go:26"),
+            ("internal/broker/approval", "routes.go:699 g.in of the pageAnswerers directory named at :34, which parses it at bodies.go:26"),
             ("internal/broker/airlockproxy", "recorder.go:13,78"),
         ) for path in files_but_tests(f"{ENVOY}/{directory}")],
     ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE)
@@ -2489,15 +2705,16 @@ GATES = [
     gate("contracts", "contracts", reads=reads(
         ("packages/contracts/**", f"{at('contracts', 'Typecheck contracts')}, test (src/, scripts/gen-go.test.ts) and build in packages/contracts"),
         ("skills/dispatch/SKILL.md", "packages/contracts/src/dispatch-tools.test.ts's dispatchSkillHeadings reads skills/dispatch/SKILL.md headings"),
-        ("skills/dispatch-writing-specs/SKILL.md", "packages/contracts/src/dispatch-tools.test.ts:1523 existsSync(skills/dispatch-writing-specs/SKILL.md)"),
+        ("skills/dispatch-writing-specs/SKILL.md", "packages/contracts/src/dispatch-tools.test.ts:1565 existsSync(skills/dispatch-writing-specs/SKILL.md)"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json", "packages/contracts/src/dispatch-href.test.ts:51-55"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-text-references.json", "packages/contracts/src/dispatch-text-references.test.ts:10-14"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-block-id-encodings.json", "packages/contracts/src/dispatch-block-ref.test.ts:98-102 reads the Go side's own table by relative path and asserts set equality against it, so the two halves are one corpus"),
         (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:370 (the new URL at :366-369)"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/block-pointer-values.json", "packages/contracts/src/dispatch-block-ref.test.ts:129-133 reads pmdoc's own JSON copy of the block pointer table by relative path"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:146-150 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
-        (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:63-66 reads every file of generated (:19, this one :7) and gen-go.ts's outputs list (--check compares the committed file)"),
-        (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:63-66 reads every file of generated (:19, this one :12-15) and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
+        (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:63 reads it for the envelope aliases, :81 reads every file of generated (:20-26, this one :7), and gen-go.ts's outputs list holds it (--check compares the committed file)"),
+        (f"{ENVOY}/listenerwire/envelope_generated.go", "packages/contracts/scripts/gen-go.test.ts:53 reads it for the envelope, :81 reads every file of generated (:20-26, this one :8), and gen-go.ts's outputs list holds it (the envelope's Go mirror, generated from schemas/envelope.schema.json)"),
+        (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:81 reads every file of generated (:20-26, this one :13-16) and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
         (TEST_FIXTURES_SRC, "packages/contracts/src/*.test.ts import @legion/test-fixtures"),
     ) + bun_job("contracts")),
 
@@ -2518,7 +2735,11 @@ GATES = [
                                       "third-party packages its manifest names and @legion/contracts"),
         (CONTRACTS_SRC, "packages/broker-client/src/token-client.ts imports @legion/contracts/trailing-slash"),
         (TEST_FIXTURES_SRC, "packages/broker-client/src/__tests__ import @legion/test-fixtures"),
-        (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts:84 reads the Go package's own corpus by relative path (CORPUS_PATH :27-29) - that file itself, never a copy, so the two clients are held to one wire"),
+        (f"{ENVOY}/internal/brokertoken/testdata/connection-proof-go.json", "packages/broker-client/src/__tests__/dpop.test.ts reads the Go signer's committed connection proof and verifies it with jose"),
+        (f"{ENVOY}/internal/brokertoken/testdata/connection-proof-ts.json", "packages/broker-client/src/__tests__/dpop.test.ts reads this signer's committed connection proof and holds it to the signer's claim names"),
+        (f"{ENVOY}/internal/broker/oauth/testdata/refusal-descriptions.json", "packages/broker-client/src/__tests__/refusal-corpus.test.ts reads the broker's refusal texts as its OAuth library writes them, which internal/broker/oauth's refusal-corpus test writes"),
+        (f"{ENVOY}/internal/broker/oauth/testdata/refusal-codes.json", "packages/broker-client/src/__tests__/refusal-corpus.test.ts reads the OAuth codes the broker's library writes, which internal/broker/oauth's refusal-corpus test writes, and holds LIBRARY_OAUTH_ERROR_CODES to them"),
+        (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts reads the Go package's own corpus by relative path (CORPUS_PATH) - that file itself, never a copy, so the two clients are held to one wire; refusal-corpus.test.ts reads it for the broker's own refusal codes"),
     ) + bun_job("broker-client")),
 
     gate("envoy_client", "envoy-client", reads=reads(
@@ -2527,8 +2748,8 @@ GATES = [
         (CONTRACTS_SRC, f"{at('envoy-client', 'Build contracts for Envoy client')}; tsconfig paths @legion/contracts -> ../contracts/src/index.ts"),
         (f"{FIX}/dispatch-targeted-delivery.json", "packages/envoy-client/src/__tests__/delivery.test.ts:17, dispatch-text.test.ts:128"),
         (f"{FIX}/envoy-session-no-interests.json", "packages/envoy-client/src/__tests__/transport.test.ts:3"),
+        (f"{FIX}/ask-reply-recipients.json", "packages/envoy-client/src/__tests__/ask-reply-recipients.test.ts:61 renders the copies packages/envoy's TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes"),
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
-        (f"{FIX}/go-unicode-isspace.json", "packages/envoy-client/src/__tests__/dispatch-execute.test.ts:27"),
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:23-30 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
         ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts:2101 reads skills/<skill>/SKILL.md for every skill a notice cites"),
         ("packages/*/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-asked-of.test.ts:377-381 reads every package's AGENTS.md, and its ALLOWED names lines of four of them, so rewording one of those lines fails that test"),
@@ -2539,6 +2760,7 @@ GATES = [
         ("**/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:506-514,668-686,746-754 ('no text states the old rule') reads every text file git lists under OLD_RULE_ROOTS and every AGENTS.md, so a text there that states the replaced rule fails that row"),
         (f"{ENVOY}/cmd/dispatch/README.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:783 names it and :791 reads it ('states the rule'): the CLI guide's sentence on an assignee move names the project's default assignee"),
         (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
+        ("docs/site/src/content/docs/dispatch/for-agents.md", "packages/envoy-client/src/__tests__/plans-command.test.ts:314 readFileSync (REPO_ROOT :210): the guide for agents' Plans row, held to the contract's rating scale"),
         (f"{ENVOY}/internal/bus/testdata/private-stream-subjects.json", "packages/envoy-client/src/__tests__/stream-topics.test.ts:131 reads the listener's own cases by relative path (SHARED_CASES :118-121), which packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads too"),
     ) + bun_job("envoy-client")),
 
@@ -2586,10 +2808,10 @@ GATES = [
     ], reads=reads(
         ("packages/pi-legion/**", f"{at('pi-legion', 'Typecheck pi-legion')}, test and pack in packages/pi-legion"),
         ("packages/pi-envoy/**", "packages/pi-legion/extensions/legion.test.ts:70,311 and legion-role-claim.test.ts:13,99 import ../../pi-envoy/extensions/envoy; packages/pi-shared/test/omp-harness.ts:1035"),
-        ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:313 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :24) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-44 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
+        ("packages/claude-envoy/**", "packages/pi-legion/src/skills-guard.test.ts:318 spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER :29) and asserts an exact file list over the tree it writes, so that script and everything it reads - its BUNDLE_ENTRYPOINTS at scripts/build.ts:39-44 among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
         ("packages/envoy-client/bin/dispatch.ts", "the fourth entry of that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:43), outside the package it builds"),
         ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts"),
-        ("packages/pi-shared/test/**", "packages/pi-legion/extensions/legion-phase-stall-omp.test.ts:14, legion-role-tools-omp.test.ts:13, src/skills-guard.test.ts:15, scripts/prepack.test.ts:4"),
+        ("packages/pi-shared/test/**", "packages/pi-legion/extensions/legion-phase-stall-omp.test.ts:14, legion-role-tools-omp.test.ts:13, src/skills-guard.test.ts:20, scripts/prepack.test.ts:4"),
         ("packages/envoy-client/test/subscribe-answer.ts", "packages/pi-legion/extensions/legion-role-claim.test.ts:46 "
                                                            "imports @legion/envoy-client/test/subscribe-answer, and "
                                                            "packages/pi-shared/test/omp-harness.ts:17, which this "
@@ -2603,15 +2825,15 @@ GATES = [
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:111 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:20"),
         ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:8-19 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
-        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:39 stages them and :199-203 reads the roots at :189-197; scripts/skill-scenarios/rig.test.ts:954,1170; prepack stages skills"),
+        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:44 stages them and :204-208 reads the roots at :194-202; scripts/skill-scenarios/rig.test.ts:954,1170; prepack stages skills"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion', 'Pack pi-legion')}); packages/pi-shared/test/skills-guard.ts:17,34"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100"),
-        (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:199-203 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :192"),
-        ("docs/kubernetes.md", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :191"),
-        ("docs/site/src/content/docs/**", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :193"),
-        ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :194"),
-        ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :195"),
-        ("README.md", "packages/pi-legion/src/skills-guard.test.ts:199-203, a root of the list at :196"),
+        (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:204-208 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :197"),
+        ("docs/kubernetes.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :196"),
+        ("docs/site/src/content/docs/**", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :198"),
+        ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :199"),
+        ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :200"),
+        ("README.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :201"),
         ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
         (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),
@@ -2690,14 +2912,17 @@ GATES = [
              {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
         ], workflow=BROWSER_SITE),
         # The stacks' connection limit, read on the host for the shard and alone jobs, whose
-        # containers have no Go, and in the visual job before its timed browser step.
+        # containers have no Go, and in the visual, multiprocess and embedder jobs before their
+        # timed browser steps.
         *[pinned_step(job, step, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/store/cmd/connections"],
              "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
              {"mode": "build"}),
         ], workflow=BROWSER_SITE)
           for job, step in ((BROWSER_BINARIES, BROWSER_CONNECTIONS_STEP),
-                            (BROWSER_VISUAL, BROWSER_VISUAL_CONNECTIONS_STEP))],
+                            (BROWSER_VISUAL, BROWSER_VISUAL_CONNECTIONS_STEP),
+                            (BROWSER_MP, BROWSER_MP_CONNECTIONS_STEP),
+                            (BROWSER_EMBEDDER, BROWSER_EMBEDDER_CONNECTIONS_STEP))],
         # The multiprocess job builds the server once, so its two processes find it current and
         # start in seconds rather than waiting out run-server.sh's own build in each boot wait.
         # The line has an `-o`, which is no form this check reduces, so the entry pins the whole
@@ -2780,16 +3005,16 @@ GATES = [
             for under in RACE_IMPOSSIBLE_PACKAGES
         ]),
         # The module but the race lane's packages, internal/integration, which the integration
-        # step tests, the text checks, which the text-check job runs, the architecture-note
-        # packages, which envoy-go-checks runs, and the broker's tree, which the database-skips
-        # step below runs. The Run names the packages the step's own
-        # `grep -Ev` keeps (packages_kept over UNIT_TEST_PATTERN), so it is read from the pattern
-        # the step runs rather than claimed beside it. A Run saying more would credit this job
-        # with tests other jobs run: the race lane's are envoy-go-race's, envoy-go-race-api's and
-        # envoy-go-race-docs', the text checks are the text-check job's, the architecture-note
-        # packages are envoy-go-checks', and the closure of ./... would put their test files and
-        # the files only those tests read on this job's filter, so a change to one of them would
-        # start a job that does not run the test it touches.
+        # step tests, the text checks, which the text-check job runs, the architecture-note and
+        # spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which
+        # envoy-go-checks runs, and the broker's tree, which the database-skips step below runs.
+        # The Run names the packages the step's own `grep -Ev` keeps (packages_kept over
+        # UNIT_TEST_PATTERN), so it is read from the pattern the step runs rather than claimed
+        # beside it. A Run saying more would credit this job with tests other jobs run: the race
+        # lane's are envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs', the text checks
+        # are the text-check job's, those packages are envoy-go-checks', and the closure of ./...
+        # would put their test files and the files only those tests read on this job's filter, so a
+        # change to one of them would start a job that does not run the test it touches.
         # Its -skip takes WEB_FIXTURE_TESTS out of this step: without `--check`
         # TestWebDisplayFixture writes the committed web display fixture rather than checking it,
         # so a second run here asks nothing and can only pass, and
@@ -2801,24 +3026,44 @@ GATES = [
             (ENVOY, packages_kept(ENVOY, UNIT_TEST_PATTERN),
              "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps", {}),
         ]),
-        # The broker's tree, which database-skips.sh runs with `go test -json` from packages/envoy
-        # and the unit step leaves out (DATABASE_SKIPS_TREE).
-        pinned_step("envoy-go", DATABASE_SKIPS_STEP, ".", DATABASE_SKIPS_SCRIPT, [
-            (ENVOY, [f"./{DATABASE_SKIPS_TREE}/..."],
-             "packages/envoy/scripts/database-skips.sh's go test -json of the broker's packages", {}),
+        # The counter's test: its controls run database-skips.sh on DATABASE_SKIPS_TEST_PKGS, one
+        # at a time, from packages/envoy (and the API package once more from a temporary checkout
+        # of the same commit, which compiles the same files). Each run's -run moves no closure -
+        # the whole package compiles whichever tests it selects - so each Run is the plain go test
+        # of its package, which is why this job reads everything the API's tests read.
+        pinned_step("envoy-go", DATABASE_SKIPS_TEST_STEP, ".", DATABASE_SKIPS_TEST, [
+            (ENVOY, DATABASE_SKIPS_TEST_PKGS,
+             "packages/envoy/scripts/database-skips.test.sh's runs of the counter on each package", {}),
         ]),
-        # Only what the natslive tag adds, one package at a time: the rig's own matrix, and the
-        # one test of internal/bus that needs a real server image. The rest of internal/testnats
-        # runs in the unit step; the rest of internal/bus runs in envoy-go-race, since
-        # UNIT_TEST_PATTERN leaves the race lane's packages out of the unit step, and the
-        # envoy_go entry of TAG_RUNS, one entry per step, checks the testnats half alone.
+        # The broker's tree less the race lane's packages under it, and its command, which
+        # database-skips.sh runs with `go test -json` from packages/envoy (DATABASE_SKIPS_PKGS less
+        # DEFAULT_EXCEPT, which hold_database_skips_packages() holds to DATABASE_SKIPS_PATTERN); the
+        # unit step leaves the whole table out. The Run names the tree's packages that pattern
+        # keeps (packages_kept), as the unit step's does, so a lane package's files do not reach
+        # this step's reads.
+        pinned_step("envoy-go", DATABASE_SKIPS_STEP, ".", DATABASE_SKIPS_RUN, [
+            (ENVOY, packages_kept(ENVOY, DATABASE_SKIPS_PATTERN, DATABASE_SKIPS_TREE) + [f"./{DATABASE_SKIPS_COMMAND}/"],
+             f"packages/envoy/scripts/database-skips.sh's go test -json -timeout {UNIT_TEST_TIMEOUT} of the broker's "
+             "packages, less the race lane's, and its command", {}),
+        ]),
+        # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
+        # test of internal/bus that needs a real server image, and the auth service's check that
+        # the deployed server lets an empty allow list through, which its guard refuses. The rest
+        # of internal/testnats runs in the unit step; the rest of internal/bus and
+        # internal/broker/natscallout runs in envoy-go-race, since UNIT_TEST_PATTERN leaves the
+        # race lane's packages out of the unit step, and the envoy_go entry of TAG_RUNS, one entry
+        # per step, checks the testnats half alone.
         pinned_step("envoy-go", NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
             (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
+            (ENVOY, ["./internal/broker/natscallout/"], "go test -tags natslive ./internal/broker/natscallout/", {"tags": "natslive"}),
         ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
         (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
+        (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', DATABASE_SKIPS_STEP)} runs it, and "
+                                f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
+        (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
     ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")),
 
     # envoy-go's fast half: its format and generated-code checks, the shell-script tests,
@@ -2835,6 +3080,10 @@ GATES = [
         # packages, tests, testdata and all, built from the list the unit step's `grep -Ev` leaves
         # them out by.
         step_run("envoy-go-checks", NOTE_AND_SPEC_STEP, NOTE_AND_SPEC_TEXT, ENVOY, NOTE_AND_SPEC_PKGS),
+        # LISTENERWIRE_PACKAGES' tests (listenerwire's, its clients test's type check of the daemon's
+        # listener clients among them, and internal/wirecheck's), built from the list the unit
+        # step's `grep -Ev` leaves them out by.
+        step_run("envoy-go-checks", LISTENERWIRE_STEP, LISTENERWIRE_TEXT, ENVOY, LISTENERWIRE_PKGS),
     ], exact=[
         # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
         # and this Run stands for the command it compiles.
@@ -2852,6 +3101,11 @@ GATES = [
                          "go run ./cmd/spec-check guard, which builds the command and runs it over the "
                          "repository root", {"mode": "build"}),
                     ]),
+        pinned_step("envoy-go-checks", EDITED_MIGRATIONS_STEP, ENVOY, EDITED_MIGRATIONS_SCRIPT, [
+            (ENVOY, ["./internal/pgmigrate/cmd/edited-migrations"],
+             "go build of ./internal/pgmigrate/cmd/edited-migrations, whose binary the step then runs to "
+             "compare each store's migrations with the base's", {"mode": "build"}),
+        ]),
         # One linux build of the listener per architecture the loop reads from the target list.
         pinned_step("envoy-go-checks", PACK_STEP, ENVOY, PACK_SCRIPT, [
             (ENVOY, ["./cmd/listener"], f"GOOS=linux GOARCH={arch} go build ./cmd/listener",
@@ -2970,12 +3224,12 @@ GATES = [
         *[step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[module], TEXT_CHECK_TEXT, module, [TEXT_CHECK_PKG])
           for module in TEXT_CHECK_MODULES],
     ], exact=[
-        # The fifteen static tests by name: a -run is outside the simple form, so the step is
+        # The seventeen static tests by name: a -run is outside the simple form, so the step is
         # pinned whole. A -run moves no closure - the whole package compiles whichever tests the
         # run selects - so the Run is the plain go test of the package, which is why this gate
         # reads everything the API's tests read.
         pinned_step(TEXT_CHECK_JOB, GUARD_STEP, ENVOY, GUARD_SCRIPT, [
-            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's fifteen source-check tests in {GUARD_PACKAGE}", {}),
+            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's seventeen source-check tests in {GUARD_PACKAGE}", {}),
         ]),
         # The supervise table's two pure pins by name (SUPERVISE_TABLE_TESTS), which the
         # daemon-go plain step skips: pinned whole for the same reason, and its Run is the plain
@@ -2987,17 +3241,35 @@ GATES = [
         ]),
     ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod")),
 
+    # The claim model's job: its two tests by name (CLAIM_MODEL_TESTS), pinned whole since a -run
+    # is outside the simple form. Its Run is the plain go test of the package, which compiles every
+    # test file of internal/dispatch/api whichever two the -run selects, so this gate reads what
+    # the API's plain tests read, the module's source that its guards walk included. The rules'
+    # test opens the job's Postgres; the search opens none.
+    gate("envoy_go_claim_model", CLAIM_MODEL_JOB, exact=[
+        pinned_step(CLAIM_MODEL_JOB, CLAIM_MODEL_STEP, ENVOY, CLAIM_MODEL_SCRIPT, [
+            (ENVOY, [CLAIM_MODEL_PACKAGE], f"go test -run of the sender claim model's two tests in {CLAIM_MODEL_PACKAGE}", {}),
+        ]),
+    ], reads=setup_go(CLAIM_MODEL_JOB, f"{ENVOY}/go.mod")),
+
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
-    # envoy-go unit step and its plain companion are built from too. envoy-go-race-docs is the one
-    # whose step is not race_step's text: it runs the package under .github/scripts/race_memory.py
+    # envoy-go unit step and its plain companion are built from too. Two steps are not race_step's
+    # text, and each gate pins its whole line: envoy-go-race-api's runs its package through
+    # database-skips.sh (RACE_API_SCRIPT), which counts that run's skips, and envoy-go-race-docs'
+    # runs the package under .github/scripts/race_memory.py
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
          reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
-    gate("envoy_go_race_api", "envoy-go-race-api",
-         runs=[race_step(RACE_JOBS["envoy-go-race-api"]), ceiling_run("envoy-go-race-api")],
-         reads=ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
+    gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-go-race-api")], exact=[
+        pinned_step("envoy-go-race-api", RACE_API.step, ENVOY, RACE_API_SCRIPT, [
+            (ENVOY, race_pkgs(RACE_API),
+             f"{DATABASE_SKIPS_SCRIPT}'s go test -json -race -timeout {RACE_API.timeout} of the package", {"race": True}),
+        ]),
+    ], reads=reads(
+        (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go-race-api', RACE_API.step)} runs the package through it"),
+    ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
@@ -3050,6 +3322,13 @@ GATES = [
         pinned_step(TWO_BUILDS_JOB, "Build the Dispatch server", ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
             (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
         ]),
+        # The browser half's stack connection limit, read before its two browser steps, which
+        # start the harness's own Postgres rather than using the service.
+        pinned_step(TWO_BUILDS_JOB, TWO_BUILDS_CONNECTIONS_STEP, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
+            (ENVOY, ["./internal/dispatch/store/cmd/connections"],
+             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
+             {"mode": "build"}),
+        ]),
     ], reads=reads(
         ("packages/dispatch/**", at(TWO_BUILDS_JOB, "Browser-test each build's page against the other build's server")),
         ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-150 (build:web)"),
@@ -3089,7 +3368,7 @@ GATES = [
 
     gate("airlock_lean", AIRLOCK_JOB, exact=[
         pinned_step(AIRLOCK_JOB, AIRLOCK_SEED_STEP, ENVOY, AIRLOCK_SEED_SCRIPT, [
-            (ENVOY, AIRLOCK_PKGS, "the airlock package's model comparisons: FuzzAirlock over the committed seed corpus and TestModelAgreesOnHostShapes", {}),
+            (ENVOY, AIRLOCK_PKGS, "the airlock package's model comparisons: FuzzAirlock over the committed seed corpus, TestModelAgreesOnHostShapes and TestTheModelReadsAHostlessEntryWithGuidance", {}),
         ]),
         pinned_step(AIRLOCK_JOB, AIRLOCK_FUZZ_STEP, ENVOY, AIRLOCK_FUZZ_SCRIPT, [
             (ENVOY, AIRLOCK_PKGS, "the same tests, fuzzed against the model for 120 seconds", {}),
@@ -3161,8 +3440,8 @@ GATES = [
         ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:38 and :69 COPY packages/dispatch packages/dispatch, which :80 runs build:web in"),
         ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:39, :42 and :70 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
         ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:74 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
-        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :117"),
-        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :119"),
+        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :118"),
+        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :120"),
         # The image's Go stage copies the Envoy module whole (packages/envoy/docker/Dockerfile:106
         # COPY packages/envoy ./), and the held-port image's build copies it whole with the
         # envoy-infra module under it (packages/envoy/infra/host/heldportwrapper/Dockerfile:30
@@ -3172,7 +3451,8 @@ GATES = [
         # command of this gate reaches most of those files, so rule 9 of check-ci-filters.sh reads
         # the filter's module pattern as matching unread files without these rows, while
         # check-image-trigger-paths.sh refuses the filter without it: the read is the image
-        # builds', and this is where the two checks meet.
+        # builds', and this is where the two checks meet. listenerwire's envelope_generated.go is
+        # among them, which the Go stage then replaces with the web stage's fresh generation (:110).
         *[(path, "packages/envoy/docker/Dockerfile:106 COPY packages/envoy ./, and "
                  "packages/envoy/infra/host/heldportwrapper/Dockerfile:30 COPY packages/envoy /src/packages/envoy")
           for path in files_but_tests(ENVOY, suffix="", tree=True, skip=(".changes",))
@@ -3205,6 +3485,11 @@ GATES = [
                    f"the packages that rig hands buildGoBinaries, run by "
                    f"{at(STALL, 'Design-gate advice of the real CLI against a real Dispatch')}",
                    ENVOY, ["./cmd/dispatch"], mode="build"),
+        script_run("packages/envoy-client/src/__tests__/nats-credential.test.ts",
+                   'packages: ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"],',
+                   f"the packages that test hands buildGoBinaries, run by "
+                   f"{at(STALL, 'Broker credential tests on a hub behind the auth service')}",
+                   ENVOY, ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"], mode="build"),
         ceiling_run(STALL),
     ], reads=reads(
         ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),
@@ -3415,8 +3700,9 @@ TAG_RUNS = [
     TagRun("dispatch_two_builds_go", TWO_BUILDS_SAME_JOB, TWO_BUILDS_SAME_STEP, "envoy_go", "envoy-go",
            f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",
            job_file(TWO_BUILDS_JOB)),
+    # envoy-go's unit step leaves /cmd/broker$ out, since its database-skips step runs it.
     TagRun("broker_multiprocess", "broker-multiprocess", BROKER_MP_STEP, "envoy_go", "envoy-go",
-           f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/broker's untagged tests",
+           f"envoy-go's \"{DATABASE_SKIPS_STEP}\" runs ./cmd/broker's untagged tests",
            job_file("broker-multiprocess")),
     # envoy-go's unit step leaves /cmd/listener$ out, since the lane runs it under the detector.
     TagRun("listener_server_change", "listener-server-change", SOAK_STEP, "envoy_go_race", "envoy-go-race",

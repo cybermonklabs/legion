@@ -17,6 +17,11 @@ import type { DocumentBlocks } from "./issue-tree";
  * assignee moves its questions to that person's count. Nothing waits on a reader whose login has
  * not resolved.
  *
+ * A decision is on the review list by its tie to a statement, and `isCoverageStatement` answers
+ * which addresses name one: a caller passes `coverageStatements(issue, coverage)`
+ * (`tree-drafts.ts`), the rule the tree's review list reads, so the count counts the decisions
+ * the tree marks as waiting and no other.
+ *
  * A decision the reader asked to change waits on its agent and is not counted
  * (`decisionChanges`): `comments` are the issue's comments, and `documents` the blocks of its
  * documents the page has read (`undefined` where it has read none), which name the decision a
@@ -39,7 +44,7 @@ export function waitingOnReader(
   issue: Pick<IssueDetails, "artifacts" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
   decisions: IssueDecisions | undefined,
-  isStatement: (reference: string) => boolean,
+  isCoverageStatement: (reference: string) => boolean,
   comments: readonly ChangeComment[] | undefined,
   documents: readonly DocumentBlocks[] | undefined
 ): WaitingOnReader {
@@ -63,7 +68,7 @@ export function waitingOnReader(
     viewer === undefined
       ? 0
       : (decisions?.decisions ?? []).filter((decision) =>
-          inReviewList(decision, isStatement, changes.has(decision.ref))
+          inReviewList(decision, isCoverageStatement, changes.has(decision.ref))
         ).length;
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
 }

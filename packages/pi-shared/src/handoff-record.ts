@@ -31,8 +31,9 @@ import { staleGitLockNote } from "./git-lock";
  * workspace, because a sibling role's push moves `legion/<issue>@origin` under a worker whose
  * evidence is older. A record whose body does not parse, holds no `head`, or holds one of another
  * shape reports no commit for the planner, the tester and the reviewer, whose completion still
- * goes; the daemon refuses it `HANDOFF_STALE_ENTRY` when it is of an earlier phase entry, since a
- * completion naming no commit says nothing about a head.
+ * goes; the daemon refuses it `HANDOFF_STALE_ENTRY` when it is of an earlier phase entry, and
+ * `HANDOFF_HEAD_MERGED_FORWARD` when it is of testing or reviewing once a merge forward of the
+ * issue's pull request has landed, since a completion naming no commit says nothing about a head.
  *
  * While the issue stands in implementing, the phase the implementer works, its round is the
  * commit its workspace stands on, `@-`, so its record and its branch are held to that commit:

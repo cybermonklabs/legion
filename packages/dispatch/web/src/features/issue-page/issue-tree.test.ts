@@ -25,7 +25,6 @@ import type {
 import { askResolutionBadge } from "../refs/actor";
 import { agentsOnlyItem } from "./issue-address";
 import {
-  ambiguousTargets,
   buildIssueTree,
   drawnLine,
   FIRST_LINE_LIMIT,
@@ -35,10 +34,11 @@ import {
   lineWordsRaw,
   nodeWords,
   type TreeNode,
-  targetNames,
+  targetNaming,
 } from "./issue-tree";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
+import { knownIssueKeys, rowReferences, rowReferenceWords } from "./row-references";
 import {
   addressesAsShortForms,
   blockNodeId,
@@ -624,9 +624,9 @@ test("a chip of an ambiguous short reference says so, and a gone target's chip d
 });
 
 // An ambiguous short reference has no name, as a gone target has none, so the page publishes
-// neither among its names (`targetNames`); it publishes the ambiguous one among the references
-// it read as ambiguous (`ambiguousTargets`), by the chip's own rule, so a link draws it as
-// written and links nothing, where it reads a gone one's own.
+// neither among its names (`targetNaming`'s `names`); it publishes the ambiguous one among the
+// references it read as ambiguous (its `ambiguous`), by the chip's own rule, so a link draws
+// it as written and links nothing, where it reads a gone one's own.
 test("the page publishes an ambiguous short reference as ambiguous, and a gone target nowhere", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
@@ -649,8 +649,9 @@ test("the page publishes an ambiguous short reference as ambiguous, and a gone t
     ] satisfies ReferenceTarget[],
   };
 
-  expect([...ambiguousTargets(reads)]).toEqual([ambiguous]);
-  expect([...targetNames(reads)]).toEqual([[named, title]]);
+  const naming = targetNaming(reads);
+  expect([...naming.ambiguous]).toEqual([ambiguous]);
+  expect([...naming.names]).toEqual([[named, title]]);
 });
 
 // R21: a typed block is a directive, and the reference read names a block by its stored excerpt,
@@ -910,8 +911,9 @@ test("a task needed by a pinned and an unpinned pointer is one needs chip", () =
 
 // R21: an ask's question and a comment's or a message's body are markdown, and the batched read
 // names each by that stored text, so a chip naming one - and the name the page publishes for it,
-// which is the chip's by one rule (`targetNames`) - draws its plain words and no `**`, backtick
-// or link mark. An issue's name is its title, which is no markdown, and stands as written.
+// which is the chip's by one rule (`targetNaming`) - draws its plain words and no `**`, backtick
+// or link mark. An issue's name is its title, which is no markdown and is drawn as written, but
+// for each bare address in it, which reads as its target's short form (`titleWords`).
 test("a chip naming an ask, a comment or a message draws its plain words, an issue its title", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
@@ -941,7 +943,7 @@ test("a chip naming an ask, a comment or a message draws its plain words, an iss
       { name: "Hold the deploy until the plan lands", ref },
       { name: title, ref: issueRef },
     ]);
-    expect([...targetNames(reads)], kind).toEqual([
+    expect([...targetNaming(reads).names], kind).toEqual([
       [ref, "Hold the deploy until the plan lands"],
       [issueRef, title],
     ]);
@@ -1091,7 +1093,7 @@ test("a stored text read to plain words keeps what markdown reads literally and 
     ["[the plan](https://example.com/plan)", "the plan"],
     ["<https://example.com/a_b*c*>", "https://example.com/a_b*c*"],
     // A bare address reads as its target's short form, and so does an autolink's, as a link's
-    // words do; an escaped mark after an address is put back before it is read, so it trails the
+    // words do; an escaped mark after an address is the character it escapes, so it trails the
     // short form as a sentence's end. An address in a code span stays as its author wrote it.
     ["see dispatch://CORE-2 and <dispatch://CORE-3>", "see CORE-2 and CORE-3"],
     ["see dispatch://CORE-2\\.", "see CORE-2."],
@@ -1138,11 +1140,8 @@ test("a stored text read to plain words drops the markers of a quote and of a li
 });
 
 // R21: an author's own private-use character - an icon font's, a pasted terminal glyph - is a
-// word of the text and no stand-in. The stand-ins what markdown reads literally is held as are
-// chosen for each text from the private-use code points it does not hold, so U+E02A and U+E05F,
-// which once stood in for an escaped `*` and `_`, read as written outside code, inside a code
-// span and beside an escape, and a text holding one still reads its escapes and code spans as
-// it did. One holding the first code points a stand-in would take reads past them.
+// word of the text: it reads as written outside code, inside a code span and beside an escape,
+// as the server's reading holds it.
 test("a stored text read to plain words keeps the author's private-use characters as written", () => {
   const star = "\ue02a";
   const low = "\ue05f";
@@ -1250,8 +1249,7 @@ test("a node's one line is cut from its first block, so a heading is never run i
 });
 
 // A stored heading's text is everything after its one marker, so a heading whose text opens on
-// `#` keeps it: `## # 1 rule` is the heading `# 1 rule`. Cutting the marker off before reading the
-// line to plain words, which cuts a marker off again, read it `1 rule`.
+// `#` keeps it: `## # 1 rule` is the heading `# 1 rule`.
 test("a node's line from a stored heading leaves out its marker once", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
@@ -1437,6 +1435,116 @@ test("a plan task written `**1\\. …**` keeps its label in its line, from its r
     expect(task === undefined ? "" : drawnLine(firstLineOf(lineWords(task))), sent).toBe(
       "1. Stand the harness up and record what the page is today."
     );
+  }
+});
+
+/** Titles as an issue stores them, each with the words of its line and, where they differ from
+ *  those, the words of its line with every address as written (`lineWordsRaw`). */
+const TITLES: readonly (readonly [title: string, words: string, raw?: string])[] = [
+  ["1. Migrate the table", "1. Migrate the table"],
+  ["Add `x` flag", "Add `x` flag"],
+  ["Fix <script> handling", "Fix <script> handling"],
+  ["Follow dispatch://CORE-3 up", "Follow CORE-3 up", "Follow dispatch://CORE-3 up"],
+  [
+    "1. Fix `x` for dispatch://CORE-3/spec#b-r1",
+    "1. Fix `x` for CORE-3 spec block",
+    "1. Fix `x` for dispatch://CORE-3/spec#b-r1",
+  ],
+  ["Migrate the table\n- then drop it", "Migrate the table - then drop it"],
+  ["  Migrate   the\n\ntable  ", "Migrate the table"],
+];
+
+/** A child issue `key` of the issue, titled `title`, as the issue read lists it. */
+function childIssue(key: string, title: string): IssueChild {
+  return {
+    active_at: "2026-11-05T00:00:00Z",
+    external_links: [],
+    key,
+    status: "todo",
+    subtree_done: 0,
+    subtree_total: 0,
+    title,
+  };
+}
+
+// A title is no markdown: the header draws the issue's as written, and the list of an issue's
+// children each child's (`slots/header.tsx`, `ChildrenTab.tsx`). The line of the issue and of a
+// child issue is so its text as written, each run of white space one space, but for a bare
+// address, which reads as its target's short form, as it does on every other node's line (R22).
+// Read as markdown, `1. Migrate the table` would be a list item with no label, ``Add `x` flag``
+// would lose its backticks and `Fix <script> handling` its tag, and a title with a line feed or a
+// blank line would lose what follows it. A caller that names each reference itself reads the
+// line with every address as written (`lineWordsRaw`).
+test("the line of the issue and of a child issue is its title as written, its addresses short", () => {
+  for (const [title, words, raw = words] of TITLES) {
+    const root = buildIssueTree({
+      issue: { ...issueDetails([]), children: [childIssue("CORE-2", title)], title },
+    });
+    expect(lineWords(root), title).toBe(`${KEY} ${words}`);
+    expect(lineWordsRaw(root), title).toBe(`${KEY} ${raw}`);
+    const child = nodeOf(root, "CORE-2");
+    expect(child?.type, title).toBe("child_issue");
+    expect(child === undefined ? "" : lineWords(child), title).toBe(words);
+    expect(child === undefined ? "" : lineWordsRaw(child), title).toBe(raw);
+  }
+});
+
+// R22: the batched read names an issue by its title cut to its first 240 characters, and a chip
+// naming the issue or a child of it, the name the page publishes for it and the link a row draws
+// for it by that name read the whole title the issue read holds, by the rule the row's own line
+// reads it by (`titleWords`): a bare address in it reads as its target's short form and its
+// white space collapses, so a comment citing `dispatch://CORE-2`, titled
+// `Follow dispatch://CORE-3 up`, links `CORE-2` and `Follow CORE-3 up`, the line CORE-2's own row
+// reads, and never the address as written. A title longer than that cut is named whole too, so
+// an address the cut would end inside, and one past it, read short as they do on the row.
+test("a chip, a published name and a row's link name a child issue by the line its row reads", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const own = `dispatch://${KEY}`;
+  const cited = "dispatch://CORE-2";
+  const citing = { ...comment("c1", "2026-11-05T01:00:00Z"), body: `See ${cited} first.` };
+  const long = `${"a".repeat(225)} dispatch://CORE-3/spec#b-r1 then dispatch://CORE-4 up`;
+  const longWords = `${"a".repeat(225)} CORE-3 spec block then CORE-4 up`;
+  for (const [title, words] of [...TITLES, [long, longWords] as const]) {
+    // The read's name for an issue, as the server cuts it: the title's first 240 characters.
+    const head = [...title].slice(0, 240).join("");
+    const reads = {
+      comments: [citing],
+      decisions: decisions([
+        {
+          ...decision("d1", "Keep it.", []),
+          links: [linkTo(own, "issue"), linkTo(cited, "issue")],
+        },
+      ]),
+      issue: { ...issueDetails([spec, made]), children: [childIssue("CORE-2", title)], title },
+      targets: [
+        { gone: false, kind: "issue", name: head, ref: own },
+        { gone: false, kind: "issue", name: head, ref: cited },
+      ] satisfies ReferenceTarget[],
+    };
+    const root = buildIssueTree(reads);
+    const child = nodeOf(root, "CORE-2");
+    const line = child === undefined ? "" : lineWords(child);
+    expect(line, title).toBe(words);
+    expect(lineWords(root), title).toBe(`${KEY} ${line}`);
+    const chips = nodeOf(root, blockNodeId("decisions-md", "d1"))?.chips;
+    expect(
+      chips?.map(({ name, ref }) => ({ name, ref })),
+      title
+    ).toEqual([
+      { name: line, ref: own },
+      { name: line, ref: cited },
+    ]);
+    const { names } = targetNaming(reads);
+    expect([...names], title).toEqual([
+      [own, line],
+      [cited, line],
+    ]);
+    const links = rowReferences(nodeOf(root, citing.id)?.text ?? "", knownIssueKeys(names));
+    expect(
+      links.map((link) => rowReferenceWords(link, names)),
+      title
+    ).toEqual([{ key: "CORE-2", words: line }]);
   }
 });
 
@@ -2909,9 +3017,9 @@ function readingOf(words: string): DisplayTree {
 
 // R20: a read that sends the server's reading of a node's text hands that reading to the node,
 // which draws it (`NodeRow.tsx`); the record the text is goes with it, so its references link
-// as they do on every other surface. A read that sends none - a statement's and a check's from a
-// server that predates `text_tree`, and every result's - leaves its node holding none: the page
-// parses no stored markdown to make one up.
+// as they do on every other surface. A read that sends none - a statement's, a check's and a
+// result's from a server that predates `text_tree` and `observed_tree` - leaves its node holding
+// none: the page parses no stored markdown to make one up.
 test("a node holds the server's reading of its text where its read sends one", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
@@ -3083,7 +3191,7 @@ test("a bare address in a node's line reads as its target's short form, from a r
 
 // R22: a comment's body is stored markdown, which a chip naming the comment draws
 // read to plain words (`plainWords`), so a bare address in the body reads as its target's short
-// form in the chip's name and in the name the page publishes for it (`targetNames`). A link
+// form in the chip's name and in the name the page publishes for it (`targetNaming`). A link
 // whose target is an address reads as its words, as it did.
 test("a chip naming a comment whose body holds a bare address names it by the short form", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
@@ -3100,7 +3208,56 @@ test("a chip naming a comment whose body holds a bare address names it by the sh
 
   const chips = nodeOf(buildIssueTree(reads), blockNodeId("decisions-md", "d1"))?.chips;
   expect(chips?.map(({ name, ref }) => ({ name, ref }))).toEqual([{ name, ref }]);
-  expect([...targetNames(reads)]).toEqual([[ref, name]]);
+  expect([...targetNaming(reads).names]).toEqual([[ref, name]]);
+});
+
+// R1 and R21: a stored text read to plain words holds the words the server's reading of the
+// same text holds, since a chip naming an ask, a comment or a message and the name the page
+// publishes for it are those words, and a node with no reading takes its line from them. Each
+// pair below is a stored body and the words of the reading a running build of this head sent
+// for it (`wordsOf` of `body_tree`). An HTML comment, as every agent's comment and every
+// message of the daemon's outbox ends with, is no word of the text; nor is an inline tag, a
+// table's pipes and rule, a thematic break's marks or a single-tilde strike; a link whose URL
+// holds parentheses reads as its words alone; and a list that follows a paragraph with no blank
+// line ends that paragraph, so the paragraph is the first block a line is cut from.
+test("a stored text read to plain words holds the words of the server's reading of it", () => {
+  for (const [stored, reading] of [
+    ["Hold the deploy.\n\n<!-- legion-outbox:11715 -->", "Hold the deploy."],
+    [
+      'Fixed in abc1234.\n\n<!-- legion: {"session":"s-1","phase":"implementing"} -->',
+      "Fixed in abc1234.",
+    ],
+    [
+      "Done. <sub>Posted by the Legion implementer.</sub>",
+      "Done. Posted by the Legion implementer.",
+    ],
+    ["See [the doc](https://example.com/a_(b)) first.", "See the doc first."],
+    ["| Reading | At 1440 px |\n|---|---|\n| one | two |", "Reading At 1440 px one two"],
+    ["~~gone~~ and ~also~ gone.", "gone and also gone."],
+    ["* * *\n\nAfter the rule.", "After the rule."],
+  ] as const) {
+    expect(plainWordsRaw(stored), stored).toBe(reading);
+  }
+  expect(lineWordsRaw({ text: "Intro line:\n- item one\n- item two" })).toBe("Intro line:");
+
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const ref = `dispatch://${KEY}/message/message-9`;
+  const reads = {
+    decisions: decisions([{ ...decision("d1", "Keep it.", []), links: [linkTo(ref, "message")] }]),
+    issue: issueDetails([spec, made]),
+    targets: [
+      {
+        gone: false,
+        kind: "message",
+        name: "Hold the deploy.\n\n<!-- legion-outbox:11715 -->",
+        ref,
+      },
+    ],
+  };
+  const chips = nodeOf(buildIssueTree(reads), blockNodeId("decisions-md", "d1"))?.chips;
+  expect(chips?.map(({ name }) => name)).toEqual(["Hold the deploy."]);
+  expect([...targetNaming(reads).names]).toEqual([[ref, "Hold the deploy."]]);
 });
 
 // The body draws a node's whole words, the words filter matches them and the batched reference
@@ -3224,4 +3381,36 @@ test("an issue addresses a node as its tree does, from the issue alone", () => {
   ]);
   const context = treeContext({ issue }, () => "");
   expect(references.map(context.nodeIdOf)).toEqual(references.map(alone));
+});
+
+// A results read that carries each result's reading of its observed text (`observed_tree`) hands
+// that reading to the result's node, so its line is the reading's first block and the page parses
+// no result's stored text; the node names no source, since a result is no record the reference
+// graph indexes. A result whose read sends none - a server of the build before - keeps its stored
+// text's line.
+test("a result node holds the server's reading of its observed text where the read sends one", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const root = buildIssueTree({
+    issue: issueDetails([spec, checks]),
+    results: checkedResults([
+      {
+        blockId: "c1",
+        results: [
+          recorded("res-read", "A control.", {
+            observed: "stored words",
+            observed_tree: readingOf("Server words."),
+          }),
+          recorded("res-stored", "A control.", { observed: "Stored **words** only." }),
+        ],
+      },
+    ]),
+  });
+  const read = nodeOf(root, "res-read");
+  expect(read?.tree).toEqual(readingOf("Server words."));
+  expect(read?.source).toBeUndefined();
+  expect(read === undefined ? "" : lineWords(read)).toBe("Server words.");
+  const stored = nodeOf(root, "res-stored");
+  expect(stored?.tree).toBeUndefined();
+  expect(stored === undefined ? "" : lineWords(stored)).toBe("Stored words only.");
 });

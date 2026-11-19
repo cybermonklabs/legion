@@ -57,6 +57,14 @@ export interface AgentStreamOptions {
    * id names nothing Dispatch knows, so the stream stays where it started.
    */
   readonly followsSessionId: boolean
+  /**
+   * Settles once the session's NATS connection is admitted as `session`, where the connection is
+   * admitted as one session at a time: under its broker token a `/clear`'s new id is the
+   * connection's only once the move lands (`followSession`), and a subscribe before then is
+   * refused and closed by the server. Where this is absent the connection may take every id's
+   * subjects, and the new control subject is taken at once.
+   */
+  readonly admitted?: (session: string) => Promise<void>
   /** Whether this session is a Legion pane, whose first command the daemon's bridge writes
    *  rather than a person (`./agent-stream-claude`, `PANE_SEEDED_COMMAND`). */
   readonly isPane?: boolean
@@ -292,7 +300,16 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
     // still holds, so they are put back under the new id rather than read again.
     publishSettings()
     publishCommands()
-    subscribe()
+    // The old id's control subject goes at once, and the new id's is taken once the connection
+    // may take it (`AgentStreamOptions.admitted`): a later `/clear` before then takes its own.
+    subscription?.unsubscribe()
+    subscription = undefined
+    const admitted = options.admitted?.(next)
+    if (admitted === undefined) subscribe()
+    else
+      void admitted.then(() => {
+        if (!stopped && session === next) subscribe()
+      })
   })
 
   const reading = (async (): Promise<void> => {

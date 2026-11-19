@@ -146,6 +146,14 @@ source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 decided_by: session:2b8627f4-9a2a-4c12-85bf-910144bc0b5c
 ```
 
+The session that cancels need not be the one that asked: a request belongs to the principal that
+made it, so you cancel your own request from another box, the next pod of a Legion role cancels what
+the pod before it asked for, and a machine cancels its request after its helper restarted. Another
+person, another role of the same issue and another machine of the same fleet are refused
+`NOT_YOURS`, as is every session but the one that asked when its broker enrollment records no owner,
+which is any enrollment made before the broker recorded owners
+([Concepts](/legion/broker/concepts/#requests-and-grants)).
+
 ## End a session
 
 Ending a session's enrollment revokes all of its grants and cancels all of its pending requests
@@ -361,6 +369,8 @@ a sign-in of its own. Run `agent-secrets login` on the machine to sign in again.
 The sessions above are agents'. A person's own sign-in to the broker's approval page is separate:
 it lasts a day at most, is never extended, and ends when they sign out. Nobody ends someone
 else's from a page; an operator ends every browser session one login holds by running the
-broker's own subcommand in a broker pod, `envoy-broker end-sessions <login>`
-([Ending a person's sessions](/legion/broker/operate/#ending-a-persons-sessions)). Revoking a
+broker's own subcommand, `envoy-broker end-sessions <login>`, in a one-off process of the image
+with the serving broker's settings
+([Ending a person's sessions](/legion/broker/operate/#ending-a-persons-sessions) and
+[Running a subcommand](/legion/broker/operate/#running-a-subcommand)). Revoking a
 grant or a machine login does not need a broker sign-in and never ends one.

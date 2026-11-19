@@ -1,7 +1,9 @@
 -- 20261102233626_drop_document_embeddings_trigger.up.sql
 -- A document is embedded in windows of its blocks (20261102233625_block_embedding_windows),
--- which refs.IndexBlocks writes in the transaction that writes the version's block rows. The
--- trigger 0074 added, which enqueued the whole markdown of each new version as one text, has
+-- which the version write's own index wrote in the transaction that writes the version's block
+-- rows (refs.BlockIndexing.Queue); since 20261108070000 that index marks the document owed its
+-- windows instead and the block-index tick's window arm writes them (refs.WriteDocumentWindows).
+-- The trigger 0074 added, which enqueued the whole markdown of each new version as one text, has
 -- nothing left to do: the whole-text row it wrote holds only the first embed.MaxInputRunes
 -- runes of the document, which is the gap the windows close.
 --

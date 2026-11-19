@@ -424,6 +424,54 @@ test("Escape closes the open card", async () => {
   }
 });
 
+// The Escape that ends an IME composition is the composition's (decision 325): the open card stays
+// open and the key goes on to the page, which the card's capture listener on `document` would
+// stop. An Escape after the composition closes the card and stops there.
+test("an Escape that ends an IME composition leaves the open card open", () => {
+  const getIssue = mockIssues();
+  jest.useFakeTimers();
+  const behind: KeyboardEvent[] = [];
+  const hearBehind = (event: KeyboardEvent) => behind.push(event);
+  window.addEventListener("keydown", hearBehind);
+  const view = render(<Harness />);
+  try {
+    const first = screen.getByRole("link", { name: "first" });
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(first, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    // user-event has no form for a key that ends a composition, so the event is made by hand.
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          isComposing: true,
+          key: "Escape",
+        })
+      );
+    });
+    expect(
+      screen.queryByRole("tooltip"),
+      "the Escape that ended a composition closed the card"
+    ).toBeInTheDocument();
+    expect(behind.length, "the Escape that ended a composition stopped short of the page").toBe(1);
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
+      );
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(behind.length, "the card's Escape reached the page").toBe(1);
+  } finally {
+    view.unmount();
+    window.removeEventListener("keydown", hearBehind);
+    getIssue.mockRestore();
+  }
+});
+
 test("only one card is open at a time: hovering a second reference replaces the first", async () => {
   const getIssue = mockIssues();
   jest.useFakeTimers();
@@ -659,6 +707,10 @@ test("scrolling under a hover-opened card closes it", () => {
       jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
     });
     expect(screen.getByRole("tooltip")).toBeTruthy();
+    // The reader turns the wheel over the reference, which makes the scroll after it theirs: a
+    // scroll with no input of the reader's behind it is the page moving by itself, which keeps
+    // the card. user-event has no wheel form.
+    fireEvent.wheel(first);
     // user-event has no scroll form.
     fireEvent.scroll(document);
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();

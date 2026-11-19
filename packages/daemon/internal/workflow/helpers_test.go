@@ -102,14 +102,18 @@ func mergingEngineAt(now time.Time) *Engine {
 }
 
 // applyFacts applies each fact to pool through engine, failing the test on an error, and returns
-// the fact's result.
+// the fact's result. The boot's open of each run no start counted comes before each fact
+// (bootBefore), as it comes before any fact the daemon applies, and what the fact left is kept
+// for the next pass's check (factLeft).
 func applyFacts(t *testing.T, pool *pgxpool.Pool, engine *Engine) func(id string, fact intake.Fact) intake.Result {
 	return func(id string, fact intake.Fact) intake.Result {
 		t.Helper()
+		bootBefore(t, pool, engine)
 		result, err := intake.ApplyFact(context.Background(), pool, "api", id, fact, engine, admissionStub{})
 		if err != nil {
 			t.Fatalf("ApplyFact %s: %v", id, err)
 		}
+		factLeft(t, pool)
 		return result
 	}
 }

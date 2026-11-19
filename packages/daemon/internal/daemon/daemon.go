@@ -164,8 +164,9 @@ type overrides struct {
 	// that came due (workflowRuntime.idleTick, both ticks); zero is the production minute. A test
 	// of release and wake shortens it, so it waits out its own period rather than the daemon's.
 	idleTick time.Duration
-	// mergeStateRetry is how long the merge-state ladder and the merge-queue read wait between two
-	// reads of GitHub (workflowRuntime.mergeStateRetry, read through mergeStateWait); zero is the
+	// mergeStateRetry is how long the merge-state ladder, the merge-queue read and the second read
+	// of a conflicting head wait between two reads of GitHub, and the unit the reads after a
+	// ladder wait in (workflowRuntime.mergeStateRetry, read through mergeStateWait); zero is the
 	// production mergeStateLadderWait. A whole-daemon test of those reads shortens it, so it waits
 	// out its own wait rather than half a minute a read.
 	mergeStateRetry time.Duration
@@ -213,6 +214,20 @@ type overrides struct {
 	// none of to reserve. nil, in production, is nothing: every launch reaches the real store's
 	// own check.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// streamWaitBegan runs, naming the claim, once an agent's request has queued its mark on the
+	// worker stream and begins to wait for the claim's machine to handle what the stream read
+	// before it (supervision.awaitStreamWithin); nil, in production, is nothing. It is the seam a
+	// test learns at that the request has reached that wait, which nothing outside the daemon can
+	// read: the wait writes nothing and answers nothing until the machine lets it go or its bound
+	// runs out.
+	streamWaitBegan func(claim.Token)
+	// beforeDecision runs on a claim's feed before its machine decides each event the feed took
+	// (supervisor.add), naming the claim and the event, with no lock of the machine's held; nil, in
+	// production, is nothing. It is the seam a test holds an event at while the stream has read it
+	// and the machine has not decided it, with the machine free for every reader: a hold inside
+	// the decision would hold the machine's lock, which an agent's request waits on at its grant
+	// check (supervise.Machine.Claim).
+	beforeDecision func(claim.Token, supervise.Event)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -393,6 +408,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		if plan.memoryGuardKills != nil {
 			plan.memoryGuardKills.bind(workflow.pool, workflow.handlers)
 		}
+		// The cache trimmers of this project's issue pods report through the pool and the
+		// handlers the workflow has just built, which is what turns a sweep of a filling volume
+		// into the fact that tells the issue's architect (volumeTrimReports).
+		if plan.volumeReports != nil {
+			plan.volumeReports.bind(workflow.pool, workflow.handlers)
+		}
 	}
 	if cfg.Runtime.Name == "tmux" {
 		executable, err := os.Executable()
@@ -482,14 +503,25 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// unreachable Postgres refuses earlier, at store.Open
 		// (TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword, scripts/e2e/stage1-skeleton.sh).
 		plan.nats.log(log)
-		// The three probes, and the cutover repair after them, run one after another on this
-		// goroutine, so they share one hold mark (a sequential flow); whether the daemon is stopping
-		// is still read from ctx.
+		// The open of the uncounted runs, the three probes and the cutover repair after them run
+		// one after another on this goroutine, so they share one hold mark (a sequential flow);
+		// whether the daemon is stopping is still read from ctx.
 		probing := store.WithTransactionTracking(ctx)
-		err := bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
-			readinessAttempt(func(attempt context.Context) error {
-				return workflow.connect(attempt, cfg, plan.nats)
-			}, bootTimeout, natsauth.Unreachable))
+		// The runs no start of this release counted, which an earlier release began, get their
+		// open row first (openUncountedRuns): before the listing's reconcile, the boot's first
+		// admission pass, and before any fact, so the settle of each fact ends such a run as an
+		// open run, and a fact its agent's request applies waits for that agent's stream. It is
+		// one Postgres transaction with a bound of its own, and a failure of it stops the boot as
+		// the reconcile's own transaction's does.
+		opening, cancelOpening := context.WithTimeout(probing, bootTimeout)
+		err := workflow.openUncountedRuns(opening)
+		cancelOpening()
+		if err == nil {
+			err = bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
+				readinessAttempt(func(attempt context.Context) error {
+					return workflow.connect(attempt, cfg, plan.nats)
+				}, bootTimeout, natsauth.Unreachable))
+		}
 		if err == nil {
 			err = bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
 				readinessAttempt(workflow.reconcile, bootTimeout, dispatch.Unreachable))
@@ -750,6 +782,11 @@ type plan struct {
 	// memoryGuardKills is the memory guards' kill holder (memoryGuardKills); nil under tmux, and
 	// for a replaced runtime, where no launcher reports.
 	memoryGuardKills *memoryGuardKills
+	// volumeReports is how the Kubernetes runtime's launcher sessions reach the fact path with
+	// one issue pod's volume sweep (volumeTrimReports, prepareSandbox): a pointer, so the
+	// factory built before the workflow opens and the boot that fills it once it has hold the
+	// one holder. Nil under tmux, and for a replaced runtime, where no launcher reports.
+	volumeReports *volumeTrimReports
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
 	// sessionLost and sessionStoreFault tell the workflow that a claim's recorded session is in no
@@ -839,6 +876,10 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// streamWaitBegan is overrides.streamWaitBegan; nil runs nothing.
+	streamWaitBegan func(claim.Token)
+	// beforeDecision is overrides.beforeDecision; nil runs nothing.
+	beforeDecision func(claim.Token, supervise.Event)
 }
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
@@ -978,6 +1019,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
+		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1518,6 +1560,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	draining, endDrain := context.WithCancel(context.Background())
 	tokens := api.NewBootTokens(st)
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
+	sup.beforeDecision = p.beforeDecision
 	listener, err := stream.Listen(draining, p.stream,
 		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
 	if err != nil {
@@ -1573,6 +1616,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionStoreFault:       p.sessionStoreFault,
 		ProviderErrorRunReached: p.providerErrorRunReached,
 		SessionGone:             cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
+		RoleHolder:              roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
 		Clock:                   p.clock,
 		Log:                     log,
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
@@ -1737,6 +1781,17 @@ func (s *sessionStopsInFlight) wait() {
 	<-drained
 }
 
+// roleHolderLookup is the supervisor's read of a role's holder at the Envoy listener
+// (supervise.Deps.RoleHolder, notify.HTTPPublisher.RoleHolder), which a forget of a session its
+// claim does not hold asks before it clears anything (supervise's mayForget). With no listener
+// configured it is nil, and nothing is asked.
+func roleHolderLookup(envoyURL, token string) func(ctx context.Context, role string) (holder, state string, err error) {
+	if envoyURL == "" {
+		return nil
+	}
+	return notify.New(envoyURL, token).RoleHolder
+}
+
 // sessionStop sends this daemon's clean stops, one call of send each; cleanSessionStop says when a
 // machine asks for one and what the delete's two conditions keep. It holds what every stop
 // shares: the listener client, the log that says what became of each stop, and the budget a
@@ -1801,7 +1856,9 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 		NotRegisteredAfter: goneAt,
 	})
 	if err != nil {
-		s.log.Warn("the Envoy listener did not take the clean stop of a dead role's session", "session", session, "error", err)
+		// A refused delete and an unreachable listener did not stop the session, and an answer
+		// that could not be read to its end leaves whether it did unknown; the error says which.
+		s.log.Warn("the Envoy listener did not confirm the clean stop of a dead role's session", "session", session, "error", err)
 		return
 	}
 	if !stopped.Deleted {
@@ -1837,9 +1894,19 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 // launch a crash cut short, and by then the stop has retired it, so launchUnfinished would not
 // relaunch it: its ReleaseUncertainLaunch acts only on a launch-uncertain claim. Dropping that token
 // is a second guard beside that check, so boot does not report the retired claim as an unrecorded
-// launch. The steps before the relaunches run on boot, settle on budgets of its own, and the
-// relaunches on the machines' context; the daemon's stop ends all three (run).
+// launch. Before any of that, before the first machine exists, every recorded session name no row
+// holds is held (holdRecordedSessions): restore builds each machine with its timers armed, and a
+// timer decides on its own goroutine the moment it fires, so a restored claim's deadline could
+// otherwise relaunch it into a name the hold had not yet given to no claim, and keep it (review
+// round 9 of #4220). Then every claim recording a name it does not hold is suspended
+// (suspendSessionConflicts); a restored timer that fires between restore and that suspension
+// relaunches its claim into the hold's refusal, which holdRecorded refuses before anything starts
+// and charges one launch failure. The steps before the relaunches run on boot, settle on budgets
+// of its own, and the relaunches on the machines' context; the daemon's stop ends all three (run).
 func (s *supervision) start(boot context.Context, settle func() error) error {
+	if err := s.holdRecordedSessions(boot); err != nil {
+		return err
+	}
 	unfinished, err := s.supervisor.restore(boot, s.claims)
 	if err != nil {
 		return err
@@ -1850,6 +1917,9 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		}
 		controller := claim.ControllerToken(s.plan.project)
 		unfinished = slices.DeleteFunc(unfinished, func(token claim.Token) bool { return token == controller })
+	}
+	if err := s.suspendSessionConflicts(boot); err != nil {
+		return err
 	}
 	pruneAllBut(runtime.SecretsDir(s.cfg.StateDir), s.claims, s.log)
 	reconciled := s.reconcileBootOrphans(boot)
@@ -1878,14 +1948,7 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 	}()
 	go func() {
 		defer s.wg.Done()
-		for ev := range s.stream.Events() {
-			mapped, err := superviseEvent(ev)
-			if err != nil {
-				s.log.Error("worker stream: an event no machine can take", "error", err)
-				continue
-			}
-			s.supervisor.post(claimOf(mapped), mapped)
-		}
+		s.pump()
 	}()
 	go func() {
 		defer s.wg.Done()
@@ -2545,6 +2608,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		CallerPod:          callerPodOf(s.runtime),
 		Ready:              ready.serving,
 		Supervisor:         s.supervisor,
+		AwaitStream:        s.awaitStream,
 		PodUpdateRounds:    s.podUpdateRoundsView,
 		BootTokens:         s.tokens,
 		Project:            p.project,

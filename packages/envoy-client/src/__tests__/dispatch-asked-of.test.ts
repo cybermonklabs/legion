@@ -7,6 +7,7 @@ import {
   AskEventPayloadSchema,
   dispatchToolSpecs,
 } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags } from "../dispatch-command";
@@ -22,11 +23,14 @@ import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 const makeDirectory = temporaryDirectories("dispatch-asked-of");
 
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
+
 /** The repository root, from this file's own path rather than the working directory, which bun
  *  sets to the package when the check runs `cd packages/envoy-client && bun test`. */
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
 
-const ASSIGNEE = "bob@theorem.dev";
+const ASSIGNEE = "bob@example.com";
 
 interface Recorded {
   readonly method: string;
@@ -95,7 +99,7 @@ async function run(argv: readonly string[]): Promise<{
     {
       HOME: stateDir,
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "test-token",
+      DISPATCH_TOKEN: TOKEN,
       DISPATCH_STATE_DIR: stateDir,
       DISPATCH_HOST: "omp",
       DISPATCH_SESSION_ID: "ses-1",
@@ -419,15 +423,15 @@ test("an ask.asked_of payload keeps its three hand-on fields", () => {
     opened_event_id: 12,
     question: "Which store do we keep?",
     asked_of: ASSIGNEE,
-    asked_of_by: "alice@theorem.dev",
+    asked_of_by: "alice@example.com",
     asked_of_at: "2026-11-02T09:00:00Z",
-    thread_logins: ["alice@theorem.dev", ASSIGNEE],
+    thread_logins: ["alice@example.com", ASSIGNEE],
     waiting_on_person: ASSIGNEE,
   });
 
   expect(parsed).toMatchObject({
     asked_of: ASSIGNEE,
-    asked_of_by: "alice@theorem.dev",
+    asked_of_by: "alice@example.com",
     asked_of_at: "2026-11-02T09:00:00Z",
   });
   // Read-time only: the row never stores it, so no frame may carry it.
@@ -438,8 +442,8 @@ test("an ask.asked_of payload keeps its three hand-on fields", () => {
     AskEventPayloadSchema.parse({
       opened_event_id: 13,
       asked_of: null,
-      asked_of_by: "alice@theorem.dev",
+      asked_of_by: "alice@example.com",
       asked_of_at: "2026-11-02T10:00:00Z",
     })
-  ).toMatchObject({ asked_of: null, asked_of_by: "alice@theorem.dev" });
+  ).toMatchObject({ asked_of: null, asked_of_by: "alice@example.com" });
 });

@@ -192,15 +192,16 @@ func printLoopCheck(w io.Writer, lines []loopCheckLine, rehearsal int) int {
 }
 
 // loopSeedCheckFlags are loop-seed-check's own flags. The Postgres URL carries the database's
-// password, so it has the file form every credential of this package has, for the reason
-// readCredentials gives (guard.go).
+// password, so it is read from -pg-file, the way every credential of this package is, for the
+// reason readCredentials gives (guard.go); -pg takes a URL with no password in it.
 type loopSeedCheckFlags struct {
 	plan, pg, pgFile string
+	pgGiven          argvFlag
 }
 
 func (f *loopSeedCheckFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&f.plan, "plan", "", "the plan the seed was written from (loopseed.plan.json)")
-	fs.StringVar(&f.pg, "pg", "", "direct Postgres URL of the dispatch database the seed was written to")
+	f.pgGiven.register(fs, "pg", &f.pg, pgValueRefusal, "direct Postgres URL of the dispatch database the seed was written to, with no password in it")
 	fs.StringVar(&f.pgFile, "pg-file", "", "file holding the -pg value, so no password reaches the command line")
 }
 
@@ -224,7 +225,9 @@ func runLoopSeedCheck(args []string) error {
 	fs := flag.NewFlagSet("loop-seed-check", flag.ExitOnError)
 	var f loopSeedCheckFlags
 	f.register(fs)
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))

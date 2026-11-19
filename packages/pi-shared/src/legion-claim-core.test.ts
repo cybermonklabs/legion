@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./claim-first-turn-bound";
 import { createLegionDaemonClient } from "./daemon-client";
 import { bootLegionClaim, type LegionClaimHost } from "./legion-claim-core";
@@ -15,8 +16,10 @@ function daemonFixture(name: string): Record<string, unknown> {
 
 const registered = daemonFixture("register.json");
 const claimToken = String(registered.claimToken);
+/** The boot token the pane hands a registering session. */
+const BOOT_TOKEN = fixtureSecret("boot");
 const registration = {
-  bootToken: "boot-token-from-the-pane",
+  bootToken: BOOT_TOKEN,
   sessionId: "ses_claim",
   ompSessionFile: "/sessions/ses_claim.jsonl",
   agentId: "ses_claim",

@@ -31,8 +31,8 @@ import (
 // notification stream, so the report goes over core NATS and reaches only a subscriber connected
 // when it is sent. The role topic has two forms while every reader takes both
 // (dispatch://INFRA-3862), the role alone and its project first, so the subscription takes every
-// name under the role lanes' prefix, which the daemon's grant names whole
-// (daemonpermissions.Grant), and exceptionNotice reads either form.
+// name under the role lanes' prefix, which the daemon's grant names whole (natsgrant.Daemon), and
+// exceptionNotice reads either form.
 const noticeExceptionSubjects = "notifications.envoy.exceptions." + notify.RoleTopicPrefix + ">"
 
 // The listener's own liveness windows for a role holder (packages/envoy/internal/session), read
@@ -519,8 +519,8 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 // prompted (supervise.SaidReady), having booted or taken its Envoy role back. A boot's ready comes
 // before the name — the session claims its role at its first turn — so a notice this releases, and
 // the catch-up that same ready writes, can still be refused no_holder and wait the outbox's own
-// backoff (retryBackoff, one second doubling to a cap of 64) until the name is taken. What the
-// release ends is the wait for the architect, not the wait for the role. That covers a copy
+// backoff (record.RetryBackoff, one second doubling to a cap of 64) until the name is taken. What
+// the release ends is the wait for the architect, not the wait for the role. That covers a copy
 // waiting out its re-send delay, whichever session it failed on (a Go relaunch resumes the
 // claim's session file, so the relaunched agent registers the very session id the stopped one
 // had), and a notice held on the outbox's backoff while nobody held the role. A copy waiting

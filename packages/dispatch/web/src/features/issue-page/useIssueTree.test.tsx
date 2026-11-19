@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
+import { referenceTargetsQuery } from "../../api/queries";
 import { MIN_REFETCH_INTERVAL_MS, refreshQueries } from "../../api/query-refresh";
 import type {
   Artifact,
@@ -252,6 +253,76 @@ test("the names already in hand stand while a tree that grew reads the new set",
   }
 });
 
+// A names read that fails under a new key - the tree grew by one comment - holds no answer of its
+// own, where a refetch that fails under the same key keeps one. The names the last answer gave
+// stand all the same: the task row keeps its words and the page keeps publishing the name of what
+// a comment cites, while the view says the read failed (`namesFailed`). A read under that key that
+// succeeds draws its own names, and nothing has failed any more.
+test("a names read that fails for a tree that grew keeps the names in hand, and says it failed", async () => {
+  const cited = "dispatch://CORE-7";
+  const citing: Comment = { ...comment, body: `Read ${cited} first.` };
+  let title = "The cited issue";
+  let failing = false;
+  const stubs = stubTreeReads(
+    async (refs) => {
+      if (failing) throw new Error("the names read failed");
+      return {
+        targets: namedTargets(refs).targets.map((target) =>
+          target.ref === cited ? { ...target, kind: "issue", name: title } : target
+        ),
+      };
+    },
+    { comments: [citing] }
+  );
+  // No retry: the read under the new key fails on its first attempt.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        const tree = useIssueTree(issue);
+        return { name: useKnownReferenceName(cited), tree };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current.name).toBe("The cited issue"));
+    expect(taskWords(view.result.current.tree.root)).toBe(TASK_WORDS);
+    expect(view.result.current.tree.namesFailed).toBe(false);
+
+    // A second comment arrives: the tree holds one address more, and the names read of that set
+    // fails.
+    failing = true;
+    const second: Comment = { ...comment, body: "A second turn.", id: "comment-2" };
+    await act(async () => {
+      client.setQueryData(["comments", KEY], [citing, second]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current.tree.namesFailed).toBe(true));
+    const grown = view.result.current.tree.root;
+    expect(nodesInOrder(grown).some((node) => node.id === second.id)).toBe(true);
+    expect(taskWords(grown)).toBe(TASK_WORDS);
+    expect(view.result.current.name).toBe("The cited issue");
+
+    // The cited issue is renamed, and the failed read is read again, as window focus reads a
+    // read in error again (`refetchFailedOnFocus`): this time it answers.
+    failing = false;
+    title = "The cited issue, renamed";
+    await act(async () => {
+      await client.refetchQueries({ predicate: (query) => query.state.status === "error" });
+    });
+    await waitFor(() => expect(view.result.current.name).toBe("The cited issue, renamed"));
+    expect(view.result.current.tree.namesFailed).toBe(false);
+    expect(taskWords(view.result.current.tree.root)).toBe(TASK_WORDS);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 /** What the batched name read answers for `refs`: the plan task's words for its address, and
  *  words of their own for every other. */
 function namedTargets(refs: readonly string[]): { targets: ReferenceTarget[] } {
@@ -346,7 +417,7 @@ test("The names are read in one batched request, after every other read has answ
         await out.promise;
       });
       // The read sends no reading of the task, so the name the page publishes for it is the
-      // page's word for its kind, as a chip naming it draws (`targetNames`).
+      // page's word for its kind, as a chip naming it draws (`targetNaming`).
       await waitFor(() => expect(view.result.current.name).toBe(NODE_TYPE_NAMES.plan_task));
       expect(asked, `one names read after the ${read} read answers`).toHaveLength(1);
       expect(asked[0]).toContain(TASK_REF);
@@ -538,7 +609,7 @@ test("one publisher leaving keeps the names and ambiguous references another pub
 
 // R21: the batched read names an ask by its question as stored, which is markdown, and every
 // link that reads the page's published names draws the name as it is, so the page publishes the
-// question's plain words, the name a chip naming the ask draws (`targetNames`).
+// question's plain words, the name a chip naming the ask draws (`targetNaming`).
 test("a published name of an ask is its question's plain words, never its markdown", async () => {
   const cited = `dispatch://${KEY}/ask/ask-9`;
   const stubs = stubTreeReads(
@@ -688,6 +759,223 @@ test("once the second read has nothing left to name, the first read's newer name
   }
 });
 
+// A published name stands in for the one a link beside the tree would read of its own
+// (`useKnownReferenceName`), and the feed refreshes only a names read whose key holds the address,
+// so the page publishes a name only for an address one of its reads asks for now. A plan task's
+// words cite an issue, which the one more read names. The task is reworded to cite nothing, and
+// a comment arriving reads the tree's new set: nothing is left for the one more read to name, its
+// query is disabled and never answers again, and the name it gave goes.
+test("once a plan task's words stop citing an address, the page publishes no name for it", async () => {
+  const cited = "dispatch://CORE-7";
+  let words = `Draw the tree as ${cited} asks.`;
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(async (refs) => {
+    asked.push([...refs]);
+    return {
+      targets: namedTargets(refs).targets.map((target) => {
+        if (target.ref === TASK_REF) {
+          return {
+            ...target,
+            name: `:::plan_task{#t1}\n${words}\n:::`,
+            text_tree: {
+              content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+              type: "doc",
+            },
+          };
+        }
+        return target.ref === cited
+          ? { ...target, kind: "issue", name: "The cited issue" }
+          : target;
+      }),
+    };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return useKnownReferenceName(cited);
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current).toBe("The cited issue"));
+    expect(asked[1]).toEqual([cited]);
+
+    // The task is reworded to cite nothing, and a comment arrives: the first read of the tree's
+    // new set answers the new words.
+    words = "Draw the tree from one read.";
+    await act(async () => {
+      client.setQueryData(["comments", KEY], [comment]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current).toBeUndefined());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(asked).toHaveLength(3);
+    expect(asked[2]).toContain(TASK_REF);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// The same for the one more read, of what a plan task's words cite: the task's words come to cite
+// one issue more, and the read of the two issues fails. The name that read gave before stands,
+// beside the first read's names, while the view says the read failed; a read under that key that
+// succeeds names the second issue too, and nothing has failed any more.
+test("one more read that fails for words that cite more keeps the names it gave, and says it failed", async () => {
+  const cited = "dispatch://CORE-7";
+  const added = "dispatch://CORE-8";
+  let words = `Draw the tree as ${cited} asks.`;
+  let failing = false;
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(async (refs) => {
+    asked.push([...refs]);
+    // The one more read names only what the task's words cite, so it never names the task.
+    if (failing && !refs.includes(TASK_REF)) throw new Error("the names read failed");
+    return {
+      targets: namedTargets(refs).targets.map((target) => {
+        if (target.ref === TASK_REF) {
+          return {
+            ...target,
+            name: `:::plan_task{#t1}\n${words}\n:::`,
+            text_tree: {
+              content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+              type: "doc",
+            },
+          };
+        }
+        if (target.ref === cited) return { ...target, kind: "issue", name: "The cited issue" };
+        return target.ref === added
+          ? { ...target, kind: "issue", name: "The added issue" }
+          : target;
+      }),
+    };
+  });
+  // No retry: the read under the new key fails on its first attempt.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        const tree = useIssueTree(issue);
+        return { names: [useKnownReferenceName(cited), useKnownReferenceName(added)], tree };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current.names).toEqual(["The cited issue", undefined]));
+    expect(asked.at(-1)).toEqual([cited]);
+    expect(view.result.current.tree.namesFailed).toBe(false);
+
+    // The task's words come to cite the second issue too, which the first read of a tree that
+    // grew by a comment answers; the one more read, of both issues, fails.
+    words = `Draw the tree as ${cited} and ${added} ask.`;
+    failing = true;
+    await act(async () => {
+      client.setQueryData(["comments", KEY], [comment]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current.tree.namesFailed).toBe(true));
+    expect(asked.at(-1)).toEqual([cited, added]);
+    expect(view.result.current.names).toEqual(["The cited issue", undefined]);
+
+    // The failed read is read again, and this time it answers.
+    failing = false;
+    await act(async () => {
+      await client.refetchQueries({ predicate: (query) => query.state.status === "error" });
+    });
+    await waitFor(() =>
+      expect(view.result.current.names).toEqual(["The cited issue", "The added issue"])
+    );
+    expect(view.result.current.tree.namesFailed).toBe(false);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// The one more read's kept answer stands only for what it is asked for now. A plan task's words
+// cite two issues, which the one more read names. Then the first issue is renamed and a comment
+// cites it, so the first read names it now, with its new name; the one more read is asked for the
+// second issue alone, and that read fails. Its kept answer still holds the first issue's old name,
+// which must not stand over the first read's newer one.
+test("a failed one more read's kept answer stands over no name the first read now gives", async () => {
+  const cited = "dispatch://CORE-7";
+  const added = "dispatch://CORE-8";
+  const words = `Draw the tree as ${cited} and ${added} ask.`;
+  let title = "The cited issue";
+  let failing = false;
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(async (refs) => {
+    asked.push([...refs]);
+    // The one more read names only what the task's words cite, so it never names the task.
+    if (failing && !refs.includes(TASK_REF)) throw new Error("the names read failed");
+    return {
+      targets: namedTargets(refs).targets.map((target) => {
+        if (target.ref === TASK_REF) {
+          return {
+            ...target,
+            name: `:::plan_task{#t1}\n${words}\n:::`,
+            text_tree: {
+              content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+              type: "doc",
+            },
+          };
+        }
+        if (target.ref === cited) return { ...target, kind: "issue", name: title };
+        return target.ref === added
+          ? { ...target, kind: "issue", name: "The added issue" }
+          : target;
+      }),
+    };
+  });
+  // No retry: the one more read under its new key fails on its first attempt.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        const tree = useIssueTree(issue);
+        return { names: [useKnownReferenceName(cited), useKnownReferenceName(added)], tree };
+      },
+      { wrapper }
+    );
+    await waitFor(() =>
+      expect(view.result.current.names).toEqual(["The cited issue", "The added issue"])
+    );
+    expect(asked.at(-1)).toEqual([cited, added]);
+
+    // The first issue is renamed and a comment cites it: the first read names it now, and the
+    // one more read, of the second issue alone, fails.
+    title = "The cited issue, renamed";
+    failing = true;
+    await act(async () => {
+      client.setQueryData(["comments", KEY], [{ ...comment, body: `Read ${cited} again.` }]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current.tree.namesFailed).toBe(true));
+    expect(asked.some((refs) => refs.length === 1 && refs[0] === added)).toBe(true);
+    await waitFor(() =>
+      expect(view.result.current.names).toEqual(["The cited issue, renamed", "The added issue"])
+    );
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // One block read for every document of the issue was 25 of a first load's 47
 // requests. The tree reads the blocks of the spec and of the plan, Verification and decisions
 // documents, whose typed blocks the page draws, and of no other document: each the one the issue
@@ -765,7 +1053,7 @@ test("A plan with no role that the issue names by its id has its blocks read and
 
 // The batched read names a typed block by its stored excerpt, which opens on the block's
 // directive line. Every link that reads the page's published names draws the name as it is, so
-// the page publishes the name a chip naming the block draws (`targetNames`): the first line of
+// the page publishes the name a chip naming the block draws (`targetNaming`): the first line of
 // the server's reading where the read sends one, and the page's word for the block's kind where
 // it sends none - never the directive line.
 test("A published name of a typed block is never its directive line", async () => {
@@ -932,10 +1220,14 @@ test("a tree mounted again past 30 s reads nothing, and a comment event reads th
   }
 });
 
-/** An event of the feed on the issue, with the payload its rules read. The page's rows are not
- *  the contract's payloads, so it is cast as the feed's own tests cast theirs
- *  (`event-feed.test.ts`). */
-function feedEvent(type: EventType, payload: Record<string, unknown>): DispatchEvent {
+/** An event of the feed on the issue, with the payload its rules read; `owner` puts it on another
+ *  owner. The page's rows are not the contract's payloads, so it is cast as the feed's own tests
+ *  cast theirs (`event-feed.test.ts`). */
+function feedEvent(
+  type: EventType,
+  payload: Record<string, unknown>,
+  owner: Record<string, unknown> = {}
+): DispatchEvent {
   return {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-11-05T02:00:00Z",
@@ -946,30 +1238,75 @@ function feedEvent(type: EventType, payload: Record<string, unknown>): DispatchE
     project: "CORE",
     seq: 2,
     type,
+    ...owner,
   } as unknown as DispatchEvent;
 }
 
-// A names read is keyed by the addresses it names, so only
-// words that change under an address already named need a rule - a comment's edit, an ask's edit
-// and a document's new version - and each refreshes every names read the app holds, by the key's
-// prefix; so do a document's rename and its removal, which rename or empty every address to it,
-// and an issue's write that changes its title, which names every address to it. A new
-// comment is a new address, which the tree reads under a key of its own, a person's edit of a
-// document is the notice after the versions that already refreshed them, and an issue's write that
-// leaves its title alone renames nothing.
-test("an edited comment or ask and a document's new version refresh every names read, a new comment none", () => {
+/** The address sets among `held` whose names read `event` refreshes: each set is cached under the
+ *  key the page reads it by (`referenceTargetsQuery`), and the event's rules run over the cache as
+ *  the feed runs them. */
+function refreshedNames(event: DispatchEvent, held: readonly string[][]): string[][] {
+  const client = new QueryClient();
+  for (const refs of held) {
+    client.setQueryData(referenceTargetsQuery(refs).queryKey, { targets: [] });
+  }
+  refreshQueries(client, eventRefreshTargets(event, "alice"));
+  return held.filter(
+    (refs) => client.getQueryState(referenceTargetsQuery(refs).queryKey)?.isInvalidated === true
+  );
+}
+
+/** Names reads whose key names an address under the issue, each under another form of it. */
+const NAMING_ISSUE = [[`dispatch://${KEY}/comment/comment-1`, "dispatch://ACME-2"], [TASK_REF]];
+
+/** A names read whose key names the issue by its own address alone, as a child's page names its
+ *  parent. The read answers that address with the issue's title and nothing else. */
+const NAMING_KEY = [[`dispatch://${KEY}`]];
+
+/** Names reads whose key names no address of the issue: another issue's, and a document of the
+ *  issue's project, which is no address of the issue. */
+const NAMING_ELSEWHERE = [
+  ["dispatch://ACME-2", "dispatch://ACME-2/comment/comment-1"],
+  ["dispatch://CORE/artifact/roadmap-md"],
+];
+
+// A names read is keyed by the addresses it names, so only words that change under an address
+// already named need a rule - a comment's edit, an ask's edit and a document's new version - and
+// so do a document's rename and its removal, which rename or empty every address to it, and an
+// issue's write that changes its title, which renames the issue's own address. The feed is the
+// workspace's, so each refreshes only the names reads whose key names an address it can change of
+// the issue the event is on: an event on an issue no read names changes no name that read holds,
+// and only a title change changes the name of the issue's own address, which the names read
+// answers with the issue's title and nothing else. A child's page names its parent by that
+// address, and the parent's documents take new versions often: none of those, nor any other
+// change under the parent, reads the child's names again, where the parent's new title, and an
+// older server's update that names none of its changes, does. A new comment is a new address,
+// which the tree reads under a key of its own, a person's edit of a document is the notice after
+// the versions that already refreshed them, and an issue's write that leaves its title alone
+// renames nothing.
+test("an edit on an issue refreshes the names reads whose key names the issue and no other, a new comment none", () => {
   const editsWords = [
     feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
     feedEvent("ask.edited", { anchor: null, id: "ask-1" }),
     feedEvent("artifact.version", { artifact_id: plan.id, name: "Plan" }),
     feedEvent("artifact.renamed", { artifact: plan }),
     feedEvent("artifact.removed", { artifact: plan }),
-    feedEvent("issue.updated", { changed: ["title"] }),
   ];
   for (const event of editsWords) {
-    expect(eventRefreshTargets(event, "alice"), event.type).toContainEqual({
-      queryKey: ["reference-targets"],
-    });
+    expect(
+      refreshedNames(event, [...NAMING_KEY, ...NAMING_ISSUE, ...NAMING_ELSEWHERE]),
+      event.type
+    ).toEqual(NAMING_ISSUE);
+  }
+  for (const payload of [{ changed: ["title"] }, {}]) {
+    expect(
+      refreshedNames(feedEvent("issue.updated", payload), [
+        ...NAMING_KEY,
+        ...NAMING_ISSUE,
+        ...NAMING_ELSEWHERE,
+      ]),
+      JSON.stringify(payload)
+    ).toEqual(NAMING_KEY);
   }
   const editsNoWords = [
     feedEvent("comment.created", { anchor: null, ask_id: null, id: "comment-2" }),
@@ -977,8 +1314,130 @@ test("an edited comment or ask and a document's new version refresh every names 
     feedEvent("issue.updated", { changed: ["status"] }),
   ];
   for (const event of editsNoWords) {
-    const keys = eventRefreshTargets(event, "alice").map((target) => target.queryKey[0]);
-    expect(keys, event.type).not.toContain("reference-targets");
+    expect(refreshedNames(event, [...NAMING_KEY, ...NAMING_ISSUE]), event.type).toEqual([]);
+  }
+});
+
+// An issue's address ends at its key: the letters `dispatch://CORE-1` begin every address of
+// CORE-12 too, and none of them is an address of CORE-1.
+test("an event on CORE-1 leaves a names read naming only CORE-12 alone", () => {
+  const other = [
+    "dispatch://CORE-12",
+    "dispatch://CORE-12/comment/comment-1",
+    "dispatch://CORE-12/spec#b-s1",
+  ];
+  const own = [`dispatch://${KEY}`, `dispatch://${KEY}/spec#b-s1`];
+  for (const event of [
+    feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
+    feedEvent("issue.updated", { changed: ["title"] }),
+  ]) {
+    expect(refreshedNames(event, [other, own]), event.type).toEqual([own]);
+  }
+});
+
+const roadmap = issueDocument("artifact-roadmap", "roadmap-md", {
+  issue_key: null,
+  name: "Roadmap",
+});
+
+// A project document's event is on the document and what it owns, each written under
+// `dispatch://CORE/artifact/roadmap-md`. A rename, a removal, a comment's edit, the edit of an
+// ask its anchor puts on the document, or of a block ask through the ask's own route, and an
+// approval request's rewording carry the slug, so they leave a read naming another document of
+// the project alone too, `roadmap-md-2` among them; a new version and the edit of a question
+// asked of the document as a whole name the document by its id alone, as a version's rewording
+// of a block ask does, so they are held to the project's documents, which leaves another
+// project's documents and every issue alone.
+test("a project document's event refreshes the names reads naming that document, and none naming another", () => {
+  const onDocument = { artifact_id: roadmap.id, issue_key: null };
+  const naming = [
+    ["dispatch://CORE/artifact/roadmap-md"],
+    ["dispatch://CORE/artifact/roadmap-md@v2"],
+    ["dispatch://CORE/artifact/roadmap-md#b-r1"],
+    ["dispatch://ACME-2", "dispatch://CORE/artifact/roadmap-md/comment/comment-1"],
+  ];
+  const otherOwners = [["dispatch://ACME/artifact/roadmap-md"], [`dispatch://${KEY}`, TASK_REF]];
+  const sameProject = [
+    ["dispatch://CORE/artifact/roadmap-md-2"],
+    ["dispatch://CORE/artifact/notes-md#b-n1"],
+  ];
+  const namingSlug = [
+    feedEvent("artifact.renamed", { artifact: roadmap, previous_name: "Plans" }, onDocument),
+    feedEvent("artifact.removed", { artifact: roadmap }, onDocument),
+    feedEvent(
+      "comment.edited",
+      {
+        anchor: null,
+        artifact_slug: roadmap.slug,
+        ask_id: null,
+        id: "comment-1",
+        project_key: "CORE",
+      },
+      onDocument
+    ),
+    feedEvent(
+      "ask.edited",
+      {
+        anchor: { artifact_id: roadmap.id, mark_id: "ask-2", quote: "Ship it." },
+        anchor_artifact: {
+          name: roadmap.name,
+          primary: false,
+          project: "CORE",
+          slug: roadmap.slug,
+        },
+        artifact_id: roadmap.id,
+        id: "ask-2",
+      },
+      onDocument
+    ),
+    feedEvent(
+      "ask.edited",
+      {
+        anchor: null,
+        artifact_id: roadmap.id,
+        block_artifact: { id: roadmap.id, primary: false, slug: roadmap.slug },
+        block_id: "q1",
+        id: "ask-3",
+      },
+      onDocument
+    ),
+    feedEvent(
+      "ask.edited",
+      {
+        anchor: null,
+        approval: {
+          artifact_id: roadmap.id,
+          documents: [
+            { artifact_id: roadmap.id, name: roadmap.name, requested_version: 1, version: 2 },
+          ],
+          name: roadmap.name,
+          requested_version: 1,
+          version: 2,
+        },
+        approval_artifact: {
+          name: roadmap.name,
+          primary: false,
+          project: "CORE",
+          slug: roadmap.slug,
+        },
+        artifact_id: roadmap.id,
+        id: "ask-4",
+        kind: "approval",
+      },
+      onDocument
+    ),
+  ];
+  for (const event of namingSlug) {
+    expect(refreshedNames(event, [...naming, ...otherOwners, ...sameProject]), event.type).toEqual(
+      naming
+    );
+  }
+  const namingId = [
+    feedEvent("artifact.version", { artifact_id: roadmap.id, name: roadmap.name }, onDocument),
+    feedEvent("ask.edited", { anchor: null, artifact_id: roadmap.id, id: "ask-1" }, onDocument),
+  ];
+  for (const event of namingId) {
+    expect(refreshedNames(event, [...naming, ...otherOwners]), event.type).toEqual(naming);
   }
 });
 

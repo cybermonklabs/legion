@@ -50,6 +50,7 @@ printf '%%s|%%s\n' "$LEGION_GITHUB_OWNER" "$LEGION_GITHUB_READ_ONLY" >>%q
 mode=write
 [ -z "$LEGION_GITHUB_READ_ONLY" ] || mode=read
 [ -z "$FAKE_BROKER_FAIL" ] || { echo "broker: refused" >&2; exit 3; }
+[ -z "$FAKE_BROKER_KILLED" ] || { echo "broker: dying" >&2; kill -KILL 0; }
 if [ -n "$FAKE_BROKER_NONE" ]; then
   [ -n "$LEGION_GITHUB_OWNER" ] || { printf '{"installations":{}}'; exit 0; }
   echo "agent-secrets: github app has no installation on $LEGION_GITHUB_OWNER" >&2; exit 1
@@ -255,6 +256,25 @@ func TestTokenModeAnOwnerWithoutAnInstallationIsNotInstalled(t *testing.T) {
 	_, err := tokens.Token(context.Background(), Implement, "sjawhar")
 	if err == nil || errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), "github_apps.implement.token_command failed (exit 3): broker: refused") {
 		t.Fatalf("Token with a failing command = %v, want the command's failure with its stderr", err)
+	}
+}
+
+// A command a signal ended (the kernel's out-of-memory kill, say) fails naming the signal, with its
+// stderr, where an exit names its status: it has none, and read as one it was `failed (exit -1)`.
+// It is no more transient than any other failure but exit 75. The fake kills its whole process
+// group, which procgroup.Configure made its own, so the signal reaches the shell the daemon runs.
+func TestTokenModeACommandASignalEndedFailsNamingTheSignal(t *testing.T) {
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	broker := newFakeBroker(t, []string{"sjawhar"}, now.Add(time.Hour))
+	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
+	tokens := tokenModeManager(github.serve(t), broker, &now, &bytes.Buffer{})
+	t.Setenv("FAKE_BROKER_KILLED", "1")
+
+	_, err := tokens.Token(context.Background(), Implement, "sjawhar")
+
+	var transient *TransientError
+	if err == nil || errors.As(err, &transient) || !strings.Contains(err.Error(), "github_apps.implement.token_command failed (signal: killed): broker: dying") {
+		t.Fatalf("Token with a command a signal ended = %v, want a failure that is not transient naming the signal and the command's stderr", err)
 	}
 }
 

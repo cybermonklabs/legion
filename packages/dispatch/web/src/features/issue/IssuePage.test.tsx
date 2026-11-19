@@ -9,6 +9,7 @@ import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "rea
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
@@ -17,6 +18,7 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -32,6 +34,7 @@ import type {
   Subscriber,
   UserIssueState,
 } from "../../api/types";
+import type { ConnectionCallbacks } from "../doc/connection";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -307,6 +310,18 @@ function renderIssuePage(
   })
 ) {
   const runtime = fakeDocumentRuntime({ text: seedText });
+  // Each document connection is told once that it has synced: by the timer below if the page has
+  // opened it by then, else by a row that waits for the connection and then calls
+  // `syncOpenedDocuments` itself. The page opens a document's connection only once that document's
+  // reads have answered, which can be after the timer.
+  const told = new Set<ConnectionCallbacks>();
+  const syncOpenedDocuments = () => {
+    for (const callbacks of runtime.callbacks) {
+      if (told.has(callbacks)) continue;
+      told.add(callbacks);
+      callbacks.onSynced();
+    }
+  };
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   const view = render(
     <MemoryRouter initialEntries={[path]}>
@@ -327,8 +342,8 @@ function renderIssuePage(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  window.setTimeout(runtime.sync);
-  return { ...view, runtime };
+  window.setTimeout(syncOpenedDocuments);
+  return { ...view, runtime, syncOpenedDocuments };
 }
 
 async function openSubscribedAgents(count: number) {
@@ -675,7 +690,9 @@ test("IssuePage lists project labels with issue labels selected and filters them
     const input = await screen.findByRole("combobox", { name: "Search or create label" });
     await waitFor(() => expect(listIssues).toHaveBeenCalledWith({ project: "CORE" }));
     expect(screen.getByRole("option", { name: "bug" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("option", { name: "frontend" })).toHaveAttribute(
+    // "frontend" is a label of the project's list, which the picker draws once that request has
+    // answered, not when it is made; "bug" is the issue's own and is drawn at once.
+    expect(await screen.findByRole("option", { name: "frontend" })).toHaveAttribute(
       "aria-selected",
       "false"
     );
@@ -1192,6 +1209,61 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   }
 });
 
+// `s` is the Spec's and `t` starts the chord, so the Steps tab takes the next letter of its name.
+test("IssuePage opens the Steps tab with the t e chord", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const steps = spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] });
+  const view = renderIssuePage("/issues/CORE-1/spec");
+
+  try {
+    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await user.keyboard("t");
+    await user.keyboard("e");
+
+    await screen.findByRole("tab", { name: "Steps", selected: true });
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/steps");
+    await screen.findByText("No step of this issue has run in Legion.");
+    expect(steps).toHaveBeenCalledWith("CORE-1");
+  } finally {
+    view.unmount();
+    steps.mockRestore();
+    restore();
+  }
+});
+
+// The page keeps the Steps tab mounted once shown and hides its panel, so the page tells the tab
+// when it is shown: a Steps tab the reader left reads nothing more, however long the page stays
+// open, and catches up once it is shown again.
+test("IssuePage stops the Steps tab's reads while another tab is shown, and restarts them when Steps is", async () => {
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    const restore = stubIssuePage(issue);
+    const steps = spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] });
+    const view = renderIssuePage("/issues/CORE-1/steps");
+    try {
+      await tick(0);
+      expect(screen.getByRole("tab", { name: "Steps", selected: true })).toBeDefined();
+      expect(steps).toHaveBeenCalledTimes(1);
+
+      await user.click(screen.getByRole("tab", { name: "Activity" }));
+      await tick(0);
+      expect(screen.getByRole("tab", { name: "Activity", selected: true })).toBeDefined();
+      const left = steps.mock.calls.length;
+      await tick(600_000, 1_000);
+      expect(steps).toHaveBeenCalledTimes(left);
+
+      await user.click(screen.getByRole("tab", { name: "Steps" }));
+      await tick(300_000, 1_000);
+      expect(steps).toHaveBeenCalledTimes(left + 7);
+    } finally {
+      view.unmount();
+      steps.mockRestore();
+      restore();
+    }
+  });
+});
+
 test("IssuePage opens the Collaborators tab with the t o chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
@@ -1254,6 +1326,10 @@ test("IssuePage keeps the Spec mounted across tabs", async () => {
 
   try {
     await screen.findByRole("tab", { name: "Spec", selected: true });
+    // The document draws its text once its connection has synced, and the page opens that
+    // connection only once the document's reads have answered.
+    await waitFor(() => expect(view.runtime.connections).toHaveLength(1));
+    act(() => view.syncOpenedDocuments());
     await waitFor(() =>
       expect(within(view.container).getByRole("article")).toHaveTextContent(
         "The mounted specification"

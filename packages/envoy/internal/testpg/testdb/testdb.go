@@ -46,7 +46,11 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	// `with (force)` ends every backend attached to the database, which the drop needs because a
 	// database a connection still holds cannot be dropped. That covers a connection the test left
 	// open, so one leaked pool cannot keep a database on a shared server for the rest of the run.
-	t.Cleanup(func() { adminExec(t, adminURL, server.Host, "drop database "+name+" with (force)") })
+	// `if exists`, because a cleanup the test registered later runs first and may have dropped
+	// the database already: the cleanup of a role the test created there drops the database before
+	// the role, which nothing in the database then holds (internal/dispatch/store's
+	// dropRoleAfterTestDatabase).
+	t.Cleanup(func() { adminExec(t, adminURL, server.Host, "drop database if exists "+name+" with (force)") })
 	return databaseURL(*server, name)
 }
 

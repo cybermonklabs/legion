@@ -790,6 +790,7 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed as the sign-in client ID", "signInClientId", func(a *gcp.DispatchArgs) { a.SignInClientId = seed }},
 		{"a seed inside the sign-in domain", "signInDomain", func(a *gcp.DispatchArgs) { a.SignInDomain = lower + ".example.com" }},
 		{"a seed inside the outside origin", "outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = "https://" + lower + ".example.com" }},
+		{"a seed inside the public origin", "publicOrigin", func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://" + lower + ".example.com" }},
 		{"a seed in the database version", "databaseVersion", func(a *gcp.DispatchArgs) { a.DatabaseVersion = pulumi.StringRef(seed) }},
 		{"a seed in the database tier", "databaseTier", func(a *gcp.DispatchArgs) { a.DatabaseTier = pulumi.StringRef(seed) }},
 		{"a seed as the database availability type", "databaseAvailabilityType", func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef(seed) }},
@@ -827,6 +828,12 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed as the chat model", "chatModel", func(a *gcp.DispatchArgs) {
 			setChatEndpoint(a)
 			a.ChatModel = pulumi.StringRef(seed)
+		}},
+		{"a lowercase seed as the existing cluster's name", "existingCluster.name", func(a *gcp.DispatchArgs) {
+			a.ExistingCluster = &gcp.DispatchClusterArgs{Name: lower, Location: "us-central1"}
+		}},
+		{"a seed inside the existing cluster's location", "existingCluster.location", func(a *gcp.DispatchArgs) {
+			a.ExistingCluster = &gcp.DispatchClusterArgs{Name: "example-existing", Location: "us-" + lower + "1"}
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -1718,10 +1725,10 @@ func TestDispatchDeclaresItsTailscaleService(t *testing.T) {
 }
 
 // The Service's Protect follows deletionProtection, the input that already guards the cluster and
-// the database, and is true when the consumer sets nothing: no resource option of a consumer's own
-// program reaches a component's child, so a hard-coded Protect could be undone only by a state
-// edit and deleting a Dispatch would need one. Shaped as the cluster-only mode's own pair
-// (TestDispatchClusterOnlyPassesDeletionProtectionToTheCluster).
+// the database the component makes, and is true when the consumer sets nothing: no resource option
+// of a consumer's own program reaches a component's child, so a hard-coded Protect could be undone
+// only by a state edit and deleting a Dispatch would need one. Shaped as the cluster-only mode's
+// own pair (TestDispatchClusterOnlyPassesDeletionProtectionToTheCluster).
 func TestDispatchProtectsItsTailscaleServiceWithDeletionProtection(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -3037,7 +3044,7 @@ func TestDispatchRegistersNoBudgetOrPriorityClassUnset(t *testing.T) {
 }
 
 // requireKubernetesChild asserts that r is a child of the component on its own Kubernetes
-// provider, waiting on the cluster, as AGENTS.md has every Kubernetes child do.
+// provider, waiting on the component's own Cluster (dispatchCluster.waitFor).
 func requireKubernetesChild(t *testing.T, r pulumitest.Registration) {
 	t.Helper()
 	require.Equal(t, "urn:pulumi:s::p::"+dispatchType+"::example-dispatch", r.RPC.GetParent())

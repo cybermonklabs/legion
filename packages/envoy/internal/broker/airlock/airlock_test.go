@@ -139,11 +139,6 @@ func TestValidate(t *testing.T) {
 			want: []string{`secrets[1]`, `"github"`, "repeated"},
 		},
 		{
-			name:  "no host",
-			rules: Rules{Secrets: []SecretRule{{Name: "github"}}},
-			want:  []string{`secrets[0]`, `"github"`, "no host"},
-		},
-		{
 			name: "judge above 900 seconds",
 			rules: Rules{Secrets: []SecretRule{
 				{Name: "github", Hosts: []string{"a.example.com"}, Judge: new(uint32(901))},
@@ -162,7 +157,7 @@ func TestValidate(t *testing.T) {
 			rules: Rules{Secrets: []SecretRule{
 				{Name: "github", Kind: "gcp", Judge: new(uint32(901))},
 			}},
-			want: []string{`secrets[0]`, "no host"},
+			want: []string{`secrets[0]`, "901"},
 		},
 		{
 			name: "a host written as a URL",
@@ -251,6 +246,10 @@ func TestValidate(t *testing.T) {
 		{"kind aws", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Kind: "aws"}}}},
 		{"kind azure", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Kind: "azure"}}}},
 		{"no secret at all", Rules{}},
+		// An entry with no host says who decides a key the airlock binds nowhere: its judge
+		// and the judge's guidance, for a key whose value is released to the command.
+		{"an entry with no host", Rules{Secrets: []SecretRule{{Name: "a", Judge: new(uint32(600)), Guidance: "grant for releases"}}}},
+		{"an entry with an empty host list", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{}}}}},
 		{"a name", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"slack.com"}}}}},
 		{"a suffix", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"*.googleapis.com"}}}}},
 		{"a name with digits in all but its last label", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"1e100.net", "*.0.example.com"}}}}},
@@ -901,6 +900,35 @@ func TestDigest(t *testing.T) {
 		if got := (Rules{Secrets: []SecretRule{entry}}).Digest(entry.Name); got == want {
 			t.Errorf("a changed %s left the digest at %s", field, got)
 		}
+	}
+	// Guidance is the one field outside the fingerprint: it tells the judge how to decide a
+	// request to come, and changes nothing a live grant may do, so writing it ends no grant.
+	guided := base
+	guided.Guidance = "grant only for the release job"
+	if got := (Rules{Secrets: []SecretRule{guided}}).Digest(guided.Name); got != want {
+		t.Errorf("guidance moved the digest from %s to %s; want it left out of the fingerprint", want, got)
+	}
+}
+
+// TestBound: the one reader of "does the airlock hold this value back". An entry that binds a
+// host does; an entry with no host carries who decides and nothing more, so its value is released
+// to the command as a name with no entry is; and a name the file does not hold is not bound.
+func TestBound(t *testing.T) {
+	judge := uint32(300)
+	rules := Rules{Secrets: []SecretRule{
+		{Name: "bound", Hosts: []string{"api.example.com"}},
+		{Name: "hostless", Judge: &judge, Guidance: "grant for releases"},
+	}}
+	for name, want := range map[string]bool{"bound": true, "hostless": false, "absent": false} {
+		if got := rules.Bound(name) != nil; got != want {
+			t.Errorf("Bound(%q) found an entry: %v; want %v", name, got, want)
+		}
+	}
+	if seconds, ok := rules.JudgeSeconds("hostless"); !ok || seconds != 300 {
+		t.Errorf("JudgeSeconds(hostless) = %d, %v; want 300, true: a host-less entry still carries its judge", seconds, ok)
+	}
+	if got := rules.Guidance("hostless"); got != "grant for releases" {
+		t.Errorf("Guidance(hostless) = %q; want the entry's own text", got)
 	}
 }
 

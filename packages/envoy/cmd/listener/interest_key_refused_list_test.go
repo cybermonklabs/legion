@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // GET /v1/sessions lists every live session the session bucket holds, even one whose id the
@@ -126,11 +127,11 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d, body %.300s; want 200 listing every session", recorder.Code, recorder.Body.String())
 	}
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
 		t.Fatalf("decode GET /v1/sessions %.300s: %v", recorder.Body.String(), err)
 	}
-	byID := map[string]sessionInfo{}
+	byID := map[string]listenerwire.SessionInfo{}
 	for _, row := range rows {
 		byID[row.SessionID] = row
 	}
