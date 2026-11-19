@@ -3461,6 +3461,43 @@ grep -qF 'and the spend collector, for its keep-list' "$dir/judgement.md" || {
 case_result "a page whose landing component names one outside Legion, Envoy and Dispatch fails --shape, naming the page" \
     'page-[a-z-]+: .*[Ll]anding component' "$(fixture_run "$dir" --shape)"
 
+# 121. A row whose read of GitHub's REST API gets no answer at all is no verdict on the
+# deliverable (test round 38). Case 119 holds a refusal for GitHub's rate limit as a mode
+# that cannot run, since that failure is GitHub's and not the deliverable's, and live_read
+# holds a curl transport error the same way for the gate's own reads. A row's curl that
+# cannot reach api.github.com, and the gate's own read of the same URL that github_answer
+# makes after it, which gets no status either, is that same outage. At 3df528a3 it ended
+# exit 1 with 'FAIL replay-command: f-github-read ran its command and a read inside it
+# failed: ... exited 7, and GitHub answered nothing when the gate read ... again', a verdict
+# on the deliverable during an outage. The tester's run of n-arms-precedent on 2026-11-19
+# met one: 'curl: (28) Failed to connect to api.github.com port 443 after 127038 ms'. The
+# case plants case 119's row with a curl of the case's own first on PATH that cannot
+# connect to api.github.com, and expects --replay to end exit 2, cannot run, naming GitHub,
+# with no FAIL line.
+OUTAGE_CASE="$WORK/github-outage"
+mkdir -p "$OUTAGE_CASE/bin"
+cat >"$OUTAGE_CASE/bin/curl" <<'STUB'
+#!/bin/sh
+case " $* " in
+*" https://api.github.com/"*)
+    printf 'curl: (7) Failed to connect to api.github.com port 443 after 3 ms: Could not connect to server\n' >&2
+    exit 7
+    ;;
+esac
+exec REAL_CURL "$@"
+STUB
+sed -i "s|REAL_CURL|'$(command -v curl)'|" "$OUTAGE_CASE/bin/curl"
+chmod +x "$OUTAGE_CASE/bin/curl"
+dir="$(fresh github-outage)"
+cat "$ANSWER_CASE/row" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+out="$(PATH="$OUTAGE_CASE/bin:$ANSWER_CASE/bin:$PATH" fixture_run "$dir" --replay)"
+outage_case="a row whose curl of GitHub's REST API reaches no GitHub cannot run, exit 2, naming GitHub, and prints no FAIL"
+if grep -q '^FAIL' "$out/text"; then
+    case_failed "$outage_case" "$(grep '^FAIL' "$out/text" | head -2 | cut -c1-300 | tr '\n' ' ')"
+else
+    ending_result "$outage_case" 2 '^check\.sh cannot run --replay.*GitHub' "$out"
+fi
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
