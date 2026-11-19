@@ -256,7 +256,7 @@ describe.concurrent("outside-path-reach.sh", () => {
       const [unset, empty, given] = await Promise.all([
         answered("870", "870", true),
         answered("", ""),
-        answered("7", "0.5"),
+        answered("7", "2"),
       ]);
       expect(unset).toEqual({
         reads: [
@@ -268,8 +268,8 @@ describe.concurrent("outside-path-reach.sh", () => {
       });
       expect(empty).toEqual(unset);
       expect(given.reads).toEqual([
-        { path: "/healthz", connect: "7", read: "0.5" },
-        { path: "/api/v1/projects", connect: "7", read: "0.5" },
+        { path: "/healthz", connect: "7", read: "2" },
+        { path: "/api/v1/projects", connect: "7", read: "2" },
       ]);
       expect(given.code).toBe(0);
     }
