@@ -5,13 +5,15 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
+import { procRootOf } from "./proc-root";
 
 // run_processes (lib/rig.sh) names the processes of a run still alive, and stop_marked_processes
 // (lib/process-tree.sh) ends them: each that carries the run's mark, LEGION_E2E_RUN=$work, which the
 // run exports, or a daemon pane's XDG_CONFIG_HOME under $work (run_marks), and no process that only
 // works under $work or names it on its command line, as a person's shell or `tail -f` watching the
-// run does. Both read every process of the machine, since a process that left every tree the run
-// recorded is one of them, with one grep per batch of entries and no command for each.
+// run does. Both read every process of `${proc_root:-/proc}`, since a process that left every tree
+// the run recorded is one of them, with one grep per batch of entries and no command for each; each
+// row points proc_root at a proc root of its own processes (harness).
 const rig = join(import.meta.dir, "rig.sh");
 const force = join(import.meta.dir, "arg-max-force.sh");
 const root = join(import.meta.dir, "..", "..", "..");
@@ -106,8 +108,11 @@ async function gone(pid: number): Promise<boolean> {
 // directory WORK, marked as a run marks itself (LEGION_E2E_RUN), under the drivers' `set -Eeuo
 // pipefail` and an ERR trap that prints, and answers its exit code and output. WORK comes in through
 // the environment, and the mark is exported only once the shell runs, so the harness's own process
-// carries no mark. PATH, when given, comes first.
-function harness(work: string, body: string, path = "") {
+// carries no mark. PATH, when given, comes first. The walks read `proc_root`, a proc root of the
+// row's own processes (lib/proc-root.ts): every process the row recorded so far and this test
+// process, so a row's time is its own and not the host's process count. ROOT, when given, is that
+// root instead.
+function harness(work: string, body: string, path = "", procRoot = rowRoot()) {
   const ran = Bun.spawnSync(
     ownGroup([
       "bash",
@@ -122,12 +127,20 @@ export LEGION_E2E_RUN=$work
 ${body}`,
     ]),
     {
-      env: { PATH: `${path}${path ? ":" : ""}${process.env.PATH ?? ""}`, WORK: work },
+      env: {
+        PATH: `${path}${path ? ":" : ""}${process.env.PATH ?? ""}`,
+        WORK: work,
+        proc_root: procRoot,
+      },
       stdout: "pipe",
       stderr: "pipe",
     }
   );
   return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() };
+}
+// rowRoot is a fresh proc root holding every process the row recorded and this test process.
+function rowRoot(): string {
+  return procRootOf(dir, [...started.held.map(({ pid }) => pid), process.pid]);
 }
 const pids = (out: string) => out.split("\n").filter(Boolean);
 
@@ -149,10 +162,14 @@ test.skipIf(skip)(
     const shell = spawn(["sleep", "60"], { cwd: work });
     const tail = spawn(["tail", "-f", join(work, "transcript.log")], { cwd: dir });
     const other = spawn(["sleep", "60"], { cwd: dir });
+    // A marked process outside the row's proc root: a walk that read the host's /proc and not the
+    // root it was given names it, so the row fails rather than only slowing.
+    const root = rowRoot();
+    const outside = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
     writeFileSync(calls, "");
     // The drivers call it under `set -E` with an ERR trap that prints, and in the bare word split a
     // stage's checks use, where a status of its own would reach that trap.
-    const r = harness(work, `for p in $(run_processes); do echo "$p"; done`, bin);
+    const r = harness(work, `for p in $(run_processes); do echo "$p"; done`, bin, root);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     const named = pids(r.out);
@@ -162,11 +179,13 @@ test.skipIf(skip)(
       shell,
       tail,
       other,
-      named: named.filter((p) => [shell, tail, other].map(String).includes(p)),
+      outside,
+      named: named.filter((p) => [shell, tail, other, outside].map(String).includes(p)),
     }).toEqual({
       shell,
       tail,
       other,
+      outside,
       named: [],
     });
     const log = readFileSync(calls, "utf8").split("\n").filter(Boolean);
@@ -218,16 +237,17 @@ test.skipIf(skip)(
 test.skipIf(skip || !argMaxForceHolds())(
   "names every marked process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry",
   () => {
-    // The force (lib/arg-max-force.sh): an exec handed every /proc/<pid> entry as an argument fails
-    // with E2BIG, as `find /proc/[0-9]*/cwd` did unforced at about 80,000 processes, while an exec of a
-    // few arguments still starts. The walk must still name the run's process, or fail naming why; an
-    // empty answer is the defect.
+    // The force (lib/arg-max-force.sh): an exec handed every <pid> entry of the row's proc root as an
+    // argument fails with E2BIG, as `find /proc/[0-9]*/cwd` did unforced at about 80,000 processes,
+    // while an exec of a few arguments still starts; the root's own synthetic entries, not the host's
+    // processes, take it past the limit. The walk must still name the run's process, or fail naming
+    // why; an empty answer is the defect.
     const work = join(dir, "e2big");
     mkdirSync(work);
     const inside = spawn(["sleep", "60"], { cwd: work, env: { LEGION_E2E_RUN: work } });
     const r = harness(
       work,
-      `arg_max_force environ 6144 "$work" ${JSON.stringify(String.raw`find /proc/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0'`)}
+      `arg_max_force environ 6144 "$work" ${JSON.stringify(String.raw`find "$proc_root"/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0'`)}
 run_processes`
     );
     expect(r.err).toBe("");
@@ -240,15 +260,16 @@ test.skipIf(skip || !argMaxForceHolds())(
   "listening_holders names the holder of a listening socket where a program handed every /proc/<pid>/fd would not start",
   () => {
     // listening_holders (lib/rig.sh) walks every process for the one holding a socket, held_only_by's
-    // reading of a port. Under the same force its walk must still name this test process, which
-    // holds the listener, or fail naming why; no holder at all is the defect.
+    // reading of a port. Under the same force, over the row's proc root and its synthetic entries,
+    // its walk must still name this test process, which holds the listener, or fail naming why; no
+    // holder at all is the defect.
     const work = join(dir, "holders");
     mkdirSync(work);
     const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
     try {
       const r = harness(
         work,
-        `arg_max_force fd 1024 "$work" ${JSON.stringify(String.raw`find /proc/[0-9]*/fd -maxdepth 1 -lname 'socket:\[0\]'`)}
+        `arg_max_force fd 1024 "$work" ${JSON.stringify(String.raw`find "$proc_root"/[0-9]*/fd -maxdepth 1 -lname 'socket:\[0\]'`)}
 listening_holders ${listener.port}`
       );
       expect(r.err).toBe("");
@@ -296,7 +317,7 @@ st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $s
       expect(r.err).toBe("");
       expect(r.out).toBe("listening_holders 2\nrun_processes 2\n");
       expect(readFileSync(join(work, "lh.err"), "utf8")).toMatch(
-        /^listening_holders: find exited 137 reading \/proc: /m
+        /^listening_holders: find exited 137 reading \/\S+: /m
       );
       expect(readFileSync(join(work, "rp.err"), "utf8")).toMatch(
         /^procs_naming: xargs exited 125 reading /m

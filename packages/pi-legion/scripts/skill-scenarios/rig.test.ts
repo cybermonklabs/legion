@@ -13,6 +13,7 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
+import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
@@ -557,15 +558,18 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   // scripts/e2e/lib/own-group.ts): stop_env_processes stops what it ends, and a stopped member of
   // the test runner's own group hangs the runner up where that group is orphaned, as in a Legion pod.
   // A row that sweeps waits until its run process runs sleep (untilRunning), and so leads its own
-  // group, before it sweeps.
+  // group, before it sweeps. The walk reads `proc_root`, a proc root of the row's run process alone
+  // (scripts/e2e/lib/proc-root.ts), so a row's time is its own and not the host's process count.
   const runProcess = (dir: string) =>
     Bun.spawn(ownGroup(["sleep", "60"]), {
       env: { PATH: process.env.PATH ?? "", SKILL_SCENARIO_RUN: path.join(dir, "run-1") },
       stdout: "ignore",
       stderr: "ignore",
     });
-  const groupBash = (script: string, args: string[]) => {
-    const result = Bun.spawnSync(ownGroup(["bash", "-c", script, "-", ...args]), { env: childEnv });
+  const groupBash = (script: string, args: string[], procRoot: string) => {
+    const result = Bun.spawnSync(ownGroup(["bash", "-c", script, "-", ...args]), {
+      env: { ...childEnv, proc_root: procRoot },
+    });
     return {
       code: result.exitCode,
       stdout: result.stdout.toString(),
@@ -583,10 +587,11 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
       const scratch = freshDir("env-pids-scratch");
       const run = runProcess(dir);
       try {
-        const old = 'grep -lzsF -e "SKILL_SCENARIO_RUN=$2" /proc/[0-9]*/environ';
+        const old = 'grep -lzsF -e "SKILL_SCENARIO_RUN=$2" "$proc_root"/[0-9]*/environ';
         const forced = groupBash(
           `set -euo pipefail\n. ${JSON.stringify(force)}\n. ${JSON.stringify(processTree)}\n${fn("run_env_pids")}\narg_max_force environ 6144 "$1" ${JSON.stringify(old)}\nrun_env_pids "$2"`,
-          [scratch, dir]
+          [scratch, dir],
+          procRootOf(scratch, [run.pid])
         );
         expect(forced).toEqual({ code: 0, stdout: `${run.pid} ${start(run.pid)}\n`, stderr: "" });
       } finally {
@@ -608,7 +613,8 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
       const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
       const own = groupBash(
         `${prelude}\n${fn("run_env_pids")}\nstop_env_processes "$1"; echo "status $?"`,
-        [dir]
+        [dir],
+        procRootOf(dir, [run.pid])
       );
       expect(own).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
       expect(await run.exited).not.toBe(0);

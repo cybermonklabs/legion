@@ -86,18 +86,52 @@ proc_group() { proc_stat_field "$1" 5 pgid; }
 # zombie included, since a zombie runs nothing any more. A host with no /proc asks ps for the start
 # as a date (lstart).
 proc_start() {
-  [ "$(proc_stat_field "$1" 3 state)" != Z ] || return 0
-  proc_stat_field "$1" 22 lstart
+  local stat=
+  local -a fields
+  if [ ! -d /proc/self ]; then
+    [ "$(proc_stat_field "$1" 3 state)" != Z ] || return 0
+    proc_stat_field "$1" 22 lstart
+    return 0
+  fi
+  { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
+  [ -n "$stat" ] || return 0
+  read -r -a fields <<<"${stat##*) }"
+  [ "${fields[0]}" != Z ] || return 0
+  printf '%s\n' "${fields[19]}"
 }
+
+# proc_unreadable WHO WHAT prints "WHO: /proc has no self, so WHAT" and succeeds when this host's
+# /proc cannot answer for a process: on Linux a /proc with no `self` (an empty tmpfs mounted there),
+# where a pid reads as gone whether or not its process runs, and where pgrep reads nothing too and
+# exits 1 as it does for a process with no children. A host with no /proc at all (macOS) is not
+# unreadable: it is answered by ps and pgrep.
+proc_unreadable() {
+  [ ! -d /proc/self ] || return 1
+  case ${OSTYPE:-} in
+    linux*)
+      echo "$1: /proc has no self, so $2" >&2
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 # proc_children asks pgrep, which walks every process for its parent, where /proc cannot answer: a
 # host with no /proc (macOS), and a kernel built without CONFIG_PROC_CHILDREN, whose /proc has no
 # task/<tid>/children file at all, so the read below would print no child of a process that has
-# children and stop_tree would leave them running.
+# children and stop_tree would leave them running. A Linux /proc that cannot be read
+# (proc_unreadable), and pgrep's own failure, any status above 1, make it print why and fail with 2,
+# so no caller reads either as no children.
 proc_children() {
-  local list
+  local list status=0
   local -a more
+  ! proc_unreadable proc_children "the children of $1 were not read" || return 2
   if [ ! -d /proc/self ] || { [ -d "/proc/$1" ] && [ ! -e "/proc/$1/task/$1/children" ]; }; then
-    pgrep -P "$1" || true
+    pgrep -P "$1" || status=$?
+    [ "$status" -le 1 ] || {
+      echo "proc_children: pgrep -P $1 exited $status, so the children of $1 were not read" >&2
+      return 2
+    }
     return 0
   fi
   for list in /proc/"$1"/task/*/children; do
@@ -126,6 +160,65 @@ signalable() {
   return 1
 }
 
+# started_at maps each pid a proof recorded (record_start) to the start time it had then. A pid is
+# recorded where the shell learns it, right after its `&` (`$!`) or its own pid file: the kernel gives
+# a pid to another process only once its process has ended and been reaped, so that read meets the
+# process itself, or nothing once it has gone, unless in the moment between it ended, bash reaped it
+# and another process took the pid. A second source of this file keeps what is recorded.
+declare -gA started_at
+
+# record_start PID records PID's start time in started_at, for stop_pid to hold PID to, and fails
+# with 1 when PID has no live process to read it from.
+record_start() {
+  local start
+  start=$(proc_start "$1")
+  [ -n "$start" ] || return 1
+  started_at[$1]=$start
+}
+
+# stop_pid PID ends PID, which the proof recorded with record_start (start_process records each
+# service): SIGTERM, then up to 10 s for it to exit, then SIGKILL, each sent through freeze_if held to
+# the recorded start, so a pid whose process ended, was reaped and passed to another process since,
+# another user's or another run's, gets no signal. On this box the pid counter wraps in about seven
+# minutes, so a daemon that crashed before the cleanup leaves its pid to a stranger well within a
+# run. A pid with no recorded start is a caller's bug: it is named and left alone. It is best effort:
+# a failed cleanup must never obscure the check that failed, so it always succeeds.
+stop_pid() {
+  local pid=${1:-} start i
+  [ -n "$pid" ] || return 0
+  start=${started_at[$pid]:-}
+  [ -n "$start" ] || {
+    echo "stop_pid: no start time is recorded for pid $pid (record_start), so it was not signalled" >&2
+    return 0
+  }
+  signalable "$pid" || return 0
+  freeze_if "$pid" "$start" TERM || return 0
+  for i in $(seq 1 50); do
+    [ "$(proc_start "$pid")" = "$start" ] || return 0
+    sleep 0.2
+  done
+  freeze_if "$pid" "$start" KILL || true
+  return 0
+}
+
+# signal_group PID SIGNAL sends SIGNAL to the process group PID leads, PID being a group leader the
+# proof recorded (record_start), only while PID is still that process: it stops the leader first
+# (freeze_if … STOP, held to the recorded start), so the leader cannot exit and leave its group id to
+# another group before the signal lands, then signals the group and thaws the leader. A leader with
+# no recorded start, or one that has gone, is left alone, and so is what is left of its group: the
+# run's sweep ends the marked processes that remain. It always succeeds.
+signal_group() {
+  local pid=${1:-} start
+  [ -n "$pid" ] || return 0
+  start=${started_at[$pid]:-}
+  [ -n "$start" ] || return 0
+  signalable "$pid" || return 0
+  freeze_if "$pid" "$start" STOP || return 0
+  kill "-$2" -- "-$pid" 2>/dev/null || true
+  kill -CONT "$pid" 2>/dev/null || true
+  return 0
+}
+
 # process_args PID NAME reads PID's arguments into the array NAME from the NUL-delimited
 # /proc/PID/cmdline, in this shell: no pipe stands between the read and the check, so nothing can
 # end early on it. It fails when the entry cannot be read or holds no argument (the process has
@@ -133,6 +226,12 @@ signalable() {
 process_args() {
   local -n _args=$2
   { mapfile -d '' -t _args <"/proc/$1/cmdline"; } 2>/dev/null && [ "${#_args[@]}" -gt 0 ]
+}
+# process_environ PID NAME reads PID's environment into the array NAME, as process_args reads its
+# arguments, and fails when it cannot be read or is empty (the process has gone).
+process_environ() {
+  local -n _environ=$2
+  { mapfile -d '' -t _environ <"/proc/$1/environ"; } 2>/dev/null && [ "${#_environ[@]}" -gt 0 ]
 }
 # env_of PID NAME prints every value PID's environment gives NAME, one a line, read in this shell
 # from the NUL-delimited /proc/PID/environ with no pipe between the read and the check: a
@@ -145,7 +244,7 @@ env_of() {
   local - entry
   local -a entries=()
   set +x
-  { mapfile -d '' -t entries <"/proc/$1/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
+  process_environ "$1" entries || return 2
   for entry in "${entries[@]}"; do
     case $entry in "$2="*) printf '%s\n' "${entry#*=}" ;; esac
   done
@@ -157,7 +256,7 @@ env_has() {
   local - entry
   local -a entries=()
   set +x
-  { mapfile -d '' -t entries <"/proc/$1/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
+  process_environ "$1" entries || return 2
   for entry in "${entries[@]}"; do
     case $entry in "$2="*) return 0 ;; esac
   done
@@ -171,7 +270,7 @@ env_length() {
   local - entry LC_ALL=C
   local -a entries=()
   set +x
-  { mapfile -d '' -t entries <"/proc/$1/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
+  process_environ "$1" entries || return 2
   for entry in "${entries[@]}"; do
     case $entry in "$2="*)
       entry=${entry#*=}
@@ -239,7 +338,7 @@ names_dir() {
     echo "names_dir: no run directory given, so no process is the run's" >&2
     return 2
   }
-  { mapfile -d '' -t entries <"/proc/$pid/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
+  process_environ "$pid" entries || return 2
   for entry in "${entries[@]}"; do
     for name in "${names[@]}"; do
       case $entry in "$name=$dir" | "$name=$dir"/*) return 0 ;; esac
@@ -260,15 +359,16 @@ names_dir() {
 # out. Without START, PID itself is not checked: a caller that has PID stopped passes its start all
 # the same.
 proc_descendants() {
-  local parent=$1 held=${2:-} child start
+  local parent=$1 held=${2:-} child start children
   [ -z "$held" ] || [ "$(proc_start "$parent")" = "$held" ] || return 0
-  for child in $(proc_children "$parent"); do
+  children=$(proc_children "$parent") || return 2
+  for child in $children; do
     start=$(proc_start "$child")
     [ -n "$start" ] || continue
     [ "$(proc_parent "$child")" = "$parent" ] && [ "$(proc_start "$child")" = "$start" ] || continue
     [ -z "$held" ] || [ "$(proc_start "$parent")" = "$held" ] || return 0
     printf '%s %s\n' "$child" "$start"
-    proc_descendants "$child" "$start"
+    proc_descendants "$child" "$start" || return 2
   done
 }
 
@@ -276,11 +376,14 @@ proc_descendants() {
 # (freeze_if … STOP), with every process under it: each child goes with its own tree (stop_tree,
 # held to PID as its parent, which a stopped PID cannot lose), then PID itself (SIGKILL). PID's own
 # parent is not read: it can exit and leave PID to another between two reads, and a stop_tree held
-# to the parent read first would then leave PID stopped and alive.
+# to the parent read first would then leave PID stopped and alive. When PID's children, or a
+# child's, could not be read (proc_children), PID is killed all the same and it fails with 2.
 kill_frozen() {
-  local pid=$1 child
-  for child in $(proc_children "$pid"); do stop_tree "$child" "$pid"; done
+  local pid=$1 child children status=0
+  children=$(proc_children "$pid") || status=2
+  for child in $children; do stop_tree "$child" "$pid" || status=2; done
   kill -KILL "$pid" 2>/dev/null || true
+  return "$status"
 }
 
 # kill_held DIR NAME… reads `PID START` lines on stdin, as a walk of the run's processes prints them
@@ -289,15 +392,17 @@ kill_frozen() {
 # NAMEs the value DIR or a path under it (names_dir). A pid that passed to another process since
 # the walk gets no signal, and a blank line is skipped. The run's sweep (stop_marked_processes, with
 # run_marks) and the skill-scenario rig's stop_env_processes (with SKILL_SCENARIO_RUN) end their
-# walks' processes through it, so the loop and its rows are written once.
+# walks' processes through it, so the loop and its rows are written once. It fails with 2 when a
+# tree's processes could not all be read (kill_frozen).
 kill_held() {
-  local dir=$1 pid start
+  local dir=$1 pid start status=0
   shift
   while read -r pid start; do
     [ -n "$pid" ] || continue
     freeze_if "$pid" "$start" STOP names_dir "$dir" "$@" || continue
-    kill_frozen "$pid"
+    kill_frozen "$pid" || status=2
   done
+  return "$status"
 }
 
 # stop_tree PID [PARENT] stops PID and every process under it. A watcher is a loop whose kubectl, jq
@@ -308,57 +413,64 @@ kill_held() {
 # /proc entry (proc_parent and proc_children), never from every process on the machine.
 # proc_children prints nothing for a process with no children, which is no error: under a driver's
 # `set -E` a failing command would run the ERR trap inside the substitution, and a trap that prints
-# there would hand its words over as child pids (the `0` of an `exit 0` among them).
+# there would hand its words over as child pids (the `0` of an `exit 0` among them). On a Linux
+# /proc that cannot be read (proc_unreadable), where a pid's parent reads as none whether or not the
+# process runs, it prints why and fails with 2, and so it does when a child's could not be read.
 stop_tree() {
-  local pid=${1:-} parent=${2:-$$} child
+  local pid=${1:-} parent=${2:-$$}
   [ -n "$pid" ] || return 0
+  ! proc_unreadable stop_tree "the parent of $pid was not read" || return 2
   signalable "$pid" || return 0
   [ "$(proc_parent "$pid")" = "$parent" ] || return 0
   kill -STOP "$pid" 2>/dev/null || return 0
-  for child in $(proc_children "$pid"); do stop_tree "$child" "$pid"; done
-  kill -KILL "$pid" 2>/dev/null || true
+  kill_frozen "$pid"
 }
 
 # procs_naming DIR NAME… prints `PID START` (proc_start) for each process whose environment gives
 # one of the NAMEs the value DIR or a path under it (names_dir), this shell itself left out. It reads
-# every process's environment, since a process that left every tree the run recorded, a
-# double-forked daemon the kernel gave to pid 1, is one of them: one grep narrows the environments to
-# those holding a NAME=DIR anywhere, and each is then read whole, variable by variable. The shell's
-# glob hands the entries to grep through xargs, which splits them into calls that fit ARG_MAX: as
-# grep's own arguments, past about 80,000 processes, grep could not start. The start is read before
-# and after the environment, and a process that ended or whose start moved between is left out.
-# xargs exits 123 when a batch's grep exits 1 or 2 (no match in it, or an environment this user may
-# not read, another user's, or whose process ended during the walk), which is no error here. Any
-# other status is xargs's own, a batch it could not start or a grep a signal ended (125), and like a
-# machine with no /proc to read it makes procs_naming print why and fail with 2, so no caller reads
-# an unread machine as one with nothing left.
+# the environment of every process of `${proc_root:-/proc}`: the host's /proc, unless a test points
+# proc_root at a proc root of its own (links to the /proc entries of the processes it started,
+# scripts/e2e/lib/proc-root.ts), since a walk of the host's whole /proc holds the test's time to the
+# host's process count. Every process is read since a process that left every tree the run
+# recorded, a double-forked daemon the kernel gave to pid 1, is one of them: one grep narrows the
+# environments to those holding a NAME=DIR anywhere, and each is then read whole, variable by
+# variable. The shell's glob hands the entries to grep through xargs, which splits them into calls
+# that fit ARG_MAX: as grep's own arguments, past about 80,000 processes, grep could not start. The
+# start is read before and after the environment, and a process that ended or whose start moved
+# between is left out. xargs exits 123 when a batch's grep exits 1 or 2 (no match in it, or an
+# environment this user may not read, another user's, or whose process ended during the walk),
+# which is no error here. Any other status is xargs's own, a batch it could not start or a grep a
+# signal ended (125), and like a proc root that lists no process at all (an empty tmpfs where /proc
+# should be, or one whose pid entries this user cannot see), it makes procs_naming print why and
+# fail with 2, so no caller reads an unread machine as one with nothing left.
 procs_naming() {
-  local dir=$1 p pid before status=0 name
-  local -a names=("${@:2}") naming_patterns=() naming_files=()
+  local dir=$1 proc=${proc_root:-/proc} p pid before status=0 name
+  local -a names=("${@:2}") naming_patterns=() naming_files=() entries=()
   # An empty DIR would match `NAME=` followed by any absolute path (names_dir).
   [ -n "$dir" ] || {
     echo "procs_naming: no run directory given, so no process was named" >&2
     return 2
   }
-  [ -r /proc/self/environ ] || {
-    echo "procs_naming: there is no /proc/<pid>/environ to read, so the processes naming $dir were not read" >&2
+  entries=("$proc"/[0-9]*/environ)
+  [ -e "${entries[0]}" ] || {
+    echo "procs_naming: $proc lists no process's environ, so the processes naming $dir were not read" >&2
     return 2
   }
   for name in "${names[@]}"; do naming_patterns+=(-e "$name=$dir"); done
   # `|| exit` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
   # firing inside the substitution for the batches every walk has with no match.
-  mapfile -t naming_files < <(printf '%s\0' /proc/[0-9]*/environ | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
+  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
   wait "$!" || status=$?
   case $status in
     0 | 123) ;;
     *)
-      echo "procs_naming: xargs exited $status reading /proc/<pid>/environ, so the processes naming $dir were not read" >&2
+      echo "procs_naming: xargs exited $status reading $proc/<pid>/environ, so the processes naming $dir were not read" >&2
       return 2
       ;;
   esac
   for p in ${naming_files[@]+"${naming_files[@]}"}; do
-    pid=${p#/proc/}
-    pid=${pid%/environ}
+    pid=${p%/environ}
+    pid=${pid##*/}
     [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] || continue
     before=$(proc_start "$pid")
     [ -n "$before" ] || continue
@@ -417,9 +529,10 @@ marked_processes() {
 # start (proc_descendants), so a child it leaves behind when it exits is still ended, by its own
 # start time, and a stranger that took a reaped pid below is not. A process still alive after
 # GRACE, or every one with no GRACE, is ended with its tree. It prints why and fails with 2 when the
-# run's processes could not be read, having signalled nothing.
+# run's processes could not be read, having signalled nothing, and fails with 2 after its signals
+# when a process's tree below it could not be read (proc_children).
 stop_marked_processes() {
-  local dir=$1 grace=${2:-0} pairs pid start i entry
+  local dir=$1 grace=${2:-0} pairs pid start i entry status=0 found
   local -a sent=() alive=() below=()
   pairs=$(marked_processes "$dir") || {
     echo "stop_marked_processes: stopped no process of the run under $dir, since none could be named" >&2
@@ -429,7 +542,8 @@ stop_marked_processes() {
   if [ "$grace" -gt 0 ]; then
     while read -r pid start; do
       freeze_if "$pid" "$start" STOP names_dir "$dir" "${run_marks[@]}" || continue
-      mapfile -t -O "${#below[@]}" below < <(proc_descendants "$pid" "$start")
+      found=$(proc_descendants "$pid" "$start") || status=2
+      [ -z "$found" ] || mapfile -t -O "${#below[@]}" below <<<"$found"
       kill -TERM "$pid" 2>/dev/null || true
       kill -CONT "$pid" 2>/dev/null || true
       sent+=("$pid $start")
@@ -446,11 +560,11 @@ stop_marked_processes() {
     pairs=
     [ "${#alive[@]}" = 0 ] || pairs=$(printf '%s\n' "${alive[@]}")
   fi
-  kill_held "$dir" "${run_marks[@]}" <<<"$pairs"
+  kill_held "$dir" "${run_marks[@]}" <<<"$pairs" || status=2
   for entry in ${below[@]+"${below[@]}"}; do
     freeze_if "${entry%% *}" "${entry#* }" KILL || true
   done
-  return 0
+  return "$status"
 }
 
 # proc_describe PID... prints one line for each PID that runs: its pid, parent, process group,
@@ -496,7 +610,7 @@ proc_describe() {
 # EXE, naming each process it passed and the program it runs, and when more than one does: it
 # picks none.
 launched() {
-  local top=$1 exe want pid child seen hit
+  local top=$1 exe want pid child seen hit next=0
   local -a programs=() pending matches=() walked=()
   shift
   for exe in "$@"; do
@@ -507,9 +621,9 @@ launched() {
     programs+=("$want")
   done
   pending=("$top")
-  while [ "${#pending[@]}" -gt 0 ]; do
-    pid=${pending[0]}
-    pending=("${pending[@]:1}")
+  while [ "$next" -lt "${#pending[@]}" ]; do
+    pid=${pending[next]}
+    next=$((next + 1))
     for child in $(proc_children "$pid"); do
       seen=$(readlink "/proc/$child/exe" 2>/dev/null || :)
       hit=

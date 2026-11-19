@@ -291,26 +291,31 @@ reap_interval=10s
 # The acceptance this proof measures: a role's record is gone this many seconds after the kill.
 clean_stop_limit_seconds=10
 
-# own_session PIDFILE COMMAND… runs COMMAND in a session of its own and writes its pid to PIDFILE.
-# The control session needs one: it is killed by pid, and a process in the run's own process group
-# would take this script's group signals with it. The pid comes back through a file because `setsid
-# --fork` returns at once and `$!` is the pid of a process that has already gone.
+# own_session PIDFILE COMMAND… runs COMMAND in a session of its own and writes its pid and its start
+# time to PIDFILE (record_pid_sh, lib/process-tree.sh, before it execs COMMAND, so both are
+# COMMAND's own). The control session needs one: it is killed by pid, and a process in the run's own
+# process group would take this script's group signals with it. The pid comes back through a file
+# because `setsid --fork` returns at once and `$!` is the pid of a process that has already gone.
 own_session() {
   local pidfile=$1
   shift
-  # shellcheck disable=SC2016 # $$ and $@ are the new session's own, expanded by the shell it runs
-  setsid --fork bash -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' own-session "$pidfile" "$@"
+  setsid --fork sh -c "$record_pid_sh" record-pid "$pidfile" "$@"
 }
 
-# agent_pid PIDFILE VAR waits for the pid the new session wrote and assigns it to VAR.
+# agent_pid PIDFILE VAR waits for the pid and start the new session wrote (record_pid_sh,
+# lib/process-tree.sh), assigns the pid to VAR and records its start (started_at), which
+# stop_agent's signals are held to.
 agent_pid() {
-  local waited=0
+  local waited=0 pid start
   while [ ! -s "$1" ]; do
     waited=$((waited + 1))
     [ "$waited" -lt 60 ] || return 1
     sleep 0.5
   done
-  printf -v "$2" '%s' "$(cat "$1")"
+  read -r pid start <"$1" || return 1
+  [ -n "$start" ] || return 1
+  started_at[$pid]=$start
+  printf -v "$2" '%s' "$pid"
 }
 
 # stop_agent PID ends the control session, and only while it still carries the run's mark
@@ -322,9 +327,9 @@ stop_agent() {
   [ -n "${1:-}" ] || return 0
   names_dir "$work" "${run_marks[@]}" "$1" || return 0
   signalable "$1" || return 0
-  kill -TERM -- -"$1" 2>/dev/null || true
+  signal_group "$1" TERM
   stop_pid "$1"
-  kill -KILL -- -"$1" 2>/dev/null || true
+  signal_group "$1" KILL
 }
 
 cleanup() {

@@ -648,9 +648,9 @@ run_env_pids() { procs_naming "$1" SKILL_SCENARIO_RUN; }
 # that dropped the variable included, through kill_held (scripts/e2e/lib/process-tree.sh), the
 # run's sweep's own loop: each is frozen and read again, ended only while it is still the process
 # the walk read (its start time) and still names the run, and then ended with its tree, its own
-# parent not read again. When run_env_pids could not read the machine's environments it says so,
-# and this says it stopped nothing and returns, so the exit handler that runs it goes on with the
-# rest of its cleanup.
+# parent not read again. When run_env_pids could not read the machine's environments, or a tree's
+# processes could not all be read (kill_held), it says so, and this returns, so the exit handler
+# that runs it goes on with the rest of its cleanup.
 # shellcheck disable=SC2329 # the exit traps run it
 stop_env_processes() {
   local pairs
@@ -658,7 +658,8 @@ stop_env_processes() {
     echo "stop_env_processes: stopped no process of the run under $1, since none could be named" >&2
     return 0
   }
-  kill_held "$1" SKILL_SCENARIO_RUN <<<"$pairs"
+  kill_held "$1" SKILL_SCENARIO_RUN <<<"$pairs" ||
+    echo "stop_env_processes: the processes under some process of the run under $1 could not be read" >&2
 }
 
 # stop_panes SESSION stops, with stop_tree, each pane process of SESSION on the work directory's

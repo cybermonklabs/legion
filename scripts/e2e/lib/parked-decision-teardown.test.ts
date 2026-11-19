@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { procRootOf } from "./proc-root";
 import { scriptFunctions } from "./script-functions";
 
 // stop_agent_daemons (parked-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
@@ -110,8 +111,8 @@ async function until(what: string, ok: () => boolean) {
 // run_processes) and stop_agent_daemons taken from the script by name, its run marked as the script
 // marks it (LEGION_E2E_RUN). $work comes in through the environment, and the mark is exported only
 // once the shell runs, so the harness's own process carries no mark and run_processes does not name
-// it.
-function harness(work: string, body: string) {
+// it. PROCROOT, when given, is the proc root the walks read (`proc_root`, lib/proc-root.ts).
+function harness(work: string, body: string, procRoot?: string) {
   const ran = Bun.spawnSync(
     [
       "bash",
@@ -126,7 +127,15 @@ export LEGION_E2E_RUN=$work
 ${fn("stop_agent_daemons")}
 ${body}`,
     ],
-    { env: { PATH: process.env.PATH ?? "", WORK: work }, stdout: "pipe", stderr: "pipe" }
+    {
+      env: {
+        PATH: process.env.PATH ?? "",
+        WORK: work,
+        ...(procRoot === undefined ? {} : { proc_root: procRoot }),
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    }
   );
   return { code: ran.exitCode, stdout: ran.stdout.toString(), stderr: ran.stderr.toString() };
 }
@@ -256,7 +265,8 @@ wait
 
 // The walk reads every process's session from its whole /proc/<pid>/stat: a process names itself,
 // and a name that holds a newline cut a first-line read short of the session field, so a broker so
-// named was tied to no broker.pid and outlived the run.
+// named was tied to no broker.pid and outlived the run. The walk reads a proc root of the broker
+// alone (lib/proc-root.ts), so the row's time is its own and not the host's process count.
 test.skipIf(skipWithout("python3"))(
   "stops a broker's session whose leader's name holds a newline and a `) `",
   async () => {
@@ -285,7 +295,7 @@ test.skipIf(skipWithout("python3"))(
     });
     await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
     expect(readFileSync(`/proc/${broker.pid}/comm`, "utf8")).toBe(") S 1\n\n");
-    const stopped = harness(work, "stop_agent_daemons");
+    const stopped = harness(work, "stop_agent_daemons", procRootOf(dir, [broker.pid]));
     expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
     await until("the broker to end", () => !alive(broker.pid));
   },

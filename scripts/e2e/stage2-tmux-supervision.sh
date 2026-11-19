@@ -136,18 +136,6 @@ until_true() {
 
 # ---- cleanup: never fails, leaves nothing of the run behind ---------------------------------------
 
-# stop_pid PID: SIGTERM, a bounded wait, then SIGKILL. Never fails.
-stop_pid() {
-  local pid=$1 i
-  [ -n "$pid" ] || return 0
-  kill -TERM "$pid" 2>/dev/null || return 0
-  for i in $(seq 1 50); do
-    kill -0 "$pid" 2>/dev/null || return 0
-    sleep 0.2
-  done
-  kill -KILL "$pid" 2>/dev/null || true
-  return 0
-}
 cleanup() {
   local status=$? p
   # A second Ctrl-C, TERM or HUP must not end the teardown part way: its own signal traps would
@@ -261,6 +249,7 @@ start_daemon() {
   python3 "$held_port" exec --from "$work/daemon.sock" --fd-env LEGION_LISTEN_FD -- \
     env -u LEGION_OMP_PATH HOME="$omp_home" OMP_PROFILE="$profile" PATH="$work/realbin:$PATH" "$work/legion" start --config "$work/legion.yaml" >>"$daemon_log" 2>&1 &
   daemon_pid=$!
+  record_start "$daemon_pid" || true
   until_true 180 "the daemon to answer /healthz" curl -fs --max-time 5 "http://127.0.0.1:$port/healthz"
 }
 # stop_daemon PID HOW: bounded, and the exit status judged — daemon.Run returns 0 on a cancelled
@@ -369,8 +358,10 @@ port_of() {
 }
 python3 "$held_port" keep --port-file "$work/daemon.port" --socket "$work/daemon.sock" >>"$work/keepers.log" 2>&1 &
 daemon_keeper_pid=$!
+record_start "$daemon_keeper_pid" || true
 python3 "$held_port" keep --port-file "$work/deadline.port" --socket "$work/deadline.sock" >>"$work/keepers.log" 2>&1 &
 deadline_keeper_pid=$!
+record_start "$deadline_keeper_pid" || true
 port='' deadline_port='' envoy_port=''
 port_of "the daemon's keeper" "$work/daemon.port" "$daemon_keeper_pid" port "$work/keepers.log"
 port_of "the second daemon's keeper" "$work/deadline.port" "$deadline_keeper_pid" deadline_port "$work/keepers.log"
@@ -411,6 +402,7 @@ ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_M
   python3 "$held_port" exec --port-file "$work/listener.port" --fd-env ENVOY_LISTEN_FD --env 'PORT={port}' -- \
   "$work/envoy-listener" >"$work/listener.log" 2>&1 &
 listener_pid=$!
+record_start "$listener_pid" || true
 port_of "the Envoy listener" "$work/listener.port" "$listener_pid" envoy_port "$work/listener.log"
 until_true 60 "the Envoy listener to answer /v1/sessions" \
   curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$envoy_port/v1/sessions"
@@ -743,6 +735,7 @@ python3 "$held_port" exec --from "$work/deadline.sock" --fd-env LEGION_LISTEN_FD
   env LEGION_OMP_PATH="$work/stub/omp" HOME="$omp_home" OMP_PROFILE="$profile" PATH="$work/realbin:$PATH" \
   "$work/legion" start --config "$work/deadline.yaml" >"$work/deadline.log" 2>&1 &
 deadline_pid=$!
+record_start "$deadline_pid" || true
 until_true 120 "the second daemon to answer /healthz" curl -fs --max-time 5 "http://127.0.0.1:$deadline_port/healthz"
 dclaims() {
   local sub=$1

@@ -302,28 +302,32 @@ max_age_shown=2h0m0s
 shipping_max_age=5m
 shipping_max_age_shown=5m0s
 
-# own_session PIDFILE COMMAND… runs COMMAND in a session of its own and writes its pid to PIDFILE.
-# Every agent this proof stalls needs one. A stopped process in the run's own process group makes
-# the kernel send that whole group a SIGHUP and a SIGCONT the moment the group counts as orphaned
-# — which under a supervisor it already does — so a plain `kill -STOP` would kill this script and
-# un-stall the very session it meant to stall. The pid comes back through a file because `setsid
-# --fork` returns at once and `$!` is the pid of a process that has already gone.
+# own_session PIDFILE COMMAND… runs COMMAND in a session of its own and writes its pid and its start
+# time to PIDFILE (record_pid_sh, lib/process-tree.sh, before it execs COMMAND, so both are
+# COMMAND's own). Every agent this proof stalls needs one. A stopped process in the run's own
+# process group makes the kernel send that whole group a SIGHUP and a SIGCONT the moment the group
+# counts as orphaned — which under a supervisor it already does — so a plain `kill -STOP` would kill
+# this script and un-stall the very session it meant to stall. The pid comes back through a file
+# because `setsid --fork` returns at once and `$!` is the pid of a process that has already gone.
 own_session() {
   local pidfile=$1
   shift
-  # shellcheck disable=SC2016 # $$ and $@ are the new session's own, expanded by the shell it runs
-  setsid --fork bash -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' own-session "$pidfile" "$@"
+  setsid --fork sh -c "$record_pid_sh" record-pid "$pidfile" "$@"
 }
 
-# agent_pid PIDFILE VAR waits for the pid the new session wrote and assigns it to VAR.
+# agent_pid PIDFILE VAR waits for the pid and start the new session wrote, assigns the pid to VAR and
+# records its start (started_at), which stop_agent's signals are held to.
 agent_pid() {
-  local waited=0
+  local waited=0 pid start
   while [ ! -s "$1" ]; do
     waited=$((waited + 1))
     [ "$waited" -lt 60 ] || return 1
     sleep 0.5
   done
-  printf -v "$2" '%s' "$(cat "$1")"
+  read -r pid start <"$1" || return 1
+  [ -n "$start" ] || return 1
+  started_at[$pid]=$start
+  printf -v "$2" '%s' "$pid"
 }
 
 # stop_agent PID ends one agent process the run started, and only while it still carries the run's
@@ -337,9 +341,9 @@ stop_agent() {
   names_dir "$work" "${run_marks[@]}" "$1" || return 0
   signalable "$1" || return 0
   kill -CONT "$1" 2>/dev/null || true
-  kill -TERM -- -"$1" 2>/dev/null || true
+  signal_group "$1" TERM
   stop_pid "$1"
-  kill -KILL -- -"$1" 2>/dev/null || true
+  signal_group "$1" KILL
 }
 
 cleanup() {
@@ -563,6 +567,7 @@ watch_exceptions() {
     }
   ') >>"$evidence/logs/exceptions.log" 2>&1 &
   exceptions_pid=$!
+  record_start "$exceptions_pid" || true
 }
 
 # ---- prerequisites --------------------------------------------------------------------------------
@@ -1322,6 +1327,7 @@ watch_role_forwards() {
     }
   ') >>"$evidence/logs/role-forwards.log" 2>&1 &
   role_forwards_pid=$!
+  record_start "$role_forwards_pid" || true
   wait_until 60 "the watcher of notifications.agent.$1 to subscribe" \
     grep -q "subscribed notifications.agent.$1" "$evidence/logs/role-forwards.log"
 }

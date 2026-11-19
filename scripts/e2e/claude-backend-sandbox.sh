@@ -992,6 +992,7 @@ start_daemon() {
     env "${daemon_env_unset[@]}" "$work/legion" start --config "$work/legion.yaml" >>"$daemon_log" 2>&1 7>&- &
   fi
   daemon_pid=$!
+  record_start "$daemon_pid" || true
   timeout_hook=report_boot
   # The boot runs the worker image's probe pod, so the bound is the cluster's, not a local process's.
   until_true 900 "the Go daemon to boot and answer /healthz" daemon_answers_or_exited

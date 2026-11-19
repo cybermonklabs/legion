@@ -6156,10 +6156,10 @@ Each item below names a function, then what it does.
 
   waits, bounded, for CMD to succeed while PID lives, and fails naming NAME's log the moment PID exits
 
-- `stop_pid PID`
+- `stop_pid PID` (in [`lib/process-tree.sh`](#libprocess-treesh), which this rig sources)
 
-  TERM, then KILL after 10 s; best effort, so a failed cleanup never hides the check that failed.
-  An empty PID does nothing; a PID that cannot name one process of the run (0 however spelled, so any value with a leading zero, 1, a negative or non-numeric value, the calling shell or its process group's leader) is refused with a printed line ([`signalable`](#libprocess-treesh)), since `kill 0` signals the caller's whole process group
+  TERM, then KILL after 10 s, each sent through `freeze_if` held to the start time recorded for PID when the run learned it (`record_start`; `start_process` records each service, and a script records each `$!` and pid file it reads), so a pid whose process ended and passed to another process since, another user's or another run's, gets no signal; best effort, so a failed cleanup never hides the check that failed.
+  An empty PID does nothing, a PID with no recorded start is named and left alone, and a PID that cannot name one process of the run (0 however spelled, so any value with a leading zero, 1, a negative or non-numeric value, the calling shell or its process group's leader) is refused with a printed line ([`signalable`](#libprocess-treesh)), since `kill 0` signals the caller's whole process group
 
 - `run_processes`
 
@@ -6210,13 +6210,22 @@ It reads the ignored signals through the shell's own `trap -p` of each signal, a
 
 ## lib/arg-max-force.sh
 
-`arg_max_force ENTRY ROOM SCRATCH OLD_FORM` puts a test's shell under the force where a row proves that a walk of every process hands the machine's `/proc/<pid>/ENTRY` entries to no program as its arguments.
+`arg_max_force ENTRY ROOM SCRATCH OLD_FORM` puts a test's shell under the force where a row proves that a walk of every process hands the proc root's `<pid>/ENTRY` entries to no program as its arguments.
+The walk reads `proc_root`, a proc root of the row's own processes ([`lib/proc-root.ts`](#libproc-rootts)), never the host's `/proc`, so the row's time is its own.
 A 512 KiB stack makes ARG_MAX 128 KiB, and an exported `PADDING` fills the environment to ROOM bytes short of the largest that still lets a program of no arguments start, measured there and then.
 An exec handed every entry as an argument then fails with E2BIG, as one does unforced at about 80,000 processes, while an exec of a few arguments still starts.
-A machine with too few processes for every entry together to outgrow twice ROOM gets more first, sleeps it starts, records by pid and ends when the shell exits.
-The control it must pass runs there too: OLD_FORM, the command line the walk replaced, fails with E2BIG, and a program of no arguments still starts; a force that is not in force exits the shell naming why.
+A root whose entries together are under twice ROOM gets more first: entries of its own at pids above the kernel's `pid_max`, which no process can hold, each with an empty `environ`, an empty `fd` directory and a `cwd` link to `/`.
+The control it must pass runs there too: OLD_FORM, the command line the walk replaced, fails with E2BIG, and a program of no arguments still starts; a force that is not in force, or a shell with no `proc_root`, exits naming why.
 `lib/run-processes.test.ts` and the skill-scenario rig's `run_env_pids` row (`packages/pi-legion/scripts/skill-scenarios/rig.test.ts`) source it.
 `lib/arg-max-force.ts`'s `argMaxForceHolds()` says whether the kernel holds that exec at all: an environment of two 100,000-byte variables under a 512 KiB stack must stop a program of no arguments, as Linux does; gVisor starts it, so there the force cannot be in force, and those rows are skipped by that name rather than failed or passed
+
+## lib/proc-root.ts
+
+A proc root of a test's own processes, for code under test that reads `${proc_root:-/proc}`: a directory holding a link to the real `/proc/<pid>` of each process the test names (`procRootOf`), so that code reads those processes' own files and signals their real pids, and its work is the test's processes rather than the host's.
+The walks of every process read it: `procs_naming` (and so `run_processes`, `marked_processes`, the sweep and the skill-scenario rig's `run_env_pids`), `listening_holders`, `refuse_leftovers` and the parked-decision proof's `stop_agent_daemons`.
+A walk of the host's whole `/proc` held a row to the host's process count; on this devbox at 25,474 entries `refuse_leftovers` alone took 29 s.
+Each row of `lib/run-processes.test.ts` walks a root of the processes it started and the test process, and its first row starts a marked process outside that root, which a walk that went back to the host's `/proc` would name.
+The file is #4187's, copied unchanged, so its header also names `role_kill_sh`, which reads a proc root once #4187 lands.
 
 ## lib/process-tree.sh
 
@@ -6225,7 +6234,8 @@ On a devbox at load 469 one such walk of 29,613 entries took 504 s; every other 
 and an entry read through `tr | grep -q` under `pipefail` reads as absent whenever grep stops before tr has written the rest, which missed 2 to 4 reads in 100 of a devbox's own environment and every read of one with a mebibyte after the variable.
 [`lib/rig.sh`](#librigsh) sources it, and `stage2-tmux-supervision.sh`, which sources no rig, sources it on its own.
 It needs nothing of its caller's.
-Its walks of every process (`procs_naming`) hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` hands them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) `listening_holders` always exits 2.
+Its walks of every process (`procs_naming`) read `${proc_root:-/proc}` ([`lib/proc-root.ts`](#libproc-rootts)) and hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` hands them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) `listening_holders` always exits 2.
+A walk or a read that cannot see the processes it reads says why and fails with 2, never reads as none: a proc root that lists no process, an `xargs` or a `find` a signal ended, an unreadable `/proc/net/tcp`, and a Linux `/proc` with no `self` (an empty tmpfs mounted there, `proc_unreadable`), where `proc_children`, `proc_descendants`, `stop_tree`, `kill_frozen`, `kill_held` and the sweep fail with 2.
 
 ```sh
 . "$root/scripts/e2e/lib/process-tree.sh"     # sourced, never run
@@ -6236,13 +6246,19 @@ Its walks of every process (`procs_naming`) hand the entries to `grep` through `
   print PID's parent, its process group, and each of its children, one a line, from that process's own `/proc/PID/stat` (read whole and past its last `) `, since a command name may hold both and a newline) and every thread's `/proc/PID/task/*/children`.
   None reads every process of the machine, as procps-ng's `ps -p` and `pgrep -P` do: one `ps -o args= -p PID` opened `/proc/<pid>/stat` 12,564 times at about 13,000 processes.
   Each prints nothing for a process that is gone; a host with no `/proc` asks `ps` and `pgrep`.
-  [`signalable`](#libprocess-treesh), `stop_tree` (below), `stop_pid` ([`lib/rig.sh`](#librigsh)) and the skill-scenario rig's `stop_env_processes` use them.
-  `proc_children` asks `pgrep` as well where a process's `task/<tid>/children` file is missing (a kernel built without `CONFIG_PROC_CHILDREN`), so `stop_tree` never leaves the children of such a process running
+  [`signalable`](#libprocess-treesh), `stop_tree` (below), `stop_pid` (below) and the skill-scenario rig's `stop_env_processes` use them.
+  `proc_children` asks `pgrep` as well where a process's `task/<tid>/children` file is missing (a kernel built without `CONFIG_PROC_CHILDREN`), so `stop_tree` never leaves the children of such a process running, and fails with 2 on a `pgrep` that exits above 1 and on a `/proc` that cannot be read
 
 - `proc_start PID`
 
   prints PID's start time, field 22 of `/proc/PID/stat`, which the kernel sets at the fork and exec keeps, and nothing for a process that is gone, a zombie included:
   a pid and its start name one process even once the kernel has given the pid to another
+
+- `record_start PID`, `stop_pid PID`, `signal_group PID SIGNAL`
+
+  `record_start` records PID's start time in `started_at`, read where the run learns the pid (right after its `&`, or from its own pid file), and fails for a pid with no live process.
+  `stop_pid` sends TERM, then KILL after 10 s, and `signal_group` sends SIGNAL to the group PID leads, each through `freeze_if` held to that recorded start, so a pid whose process ended and passed to another since gets no signal; a pid with no recorded start is named and left alone.
+  `lib/unread-proc.test.ts` holds both with a start that is not the process's own, and, where `sudo -n` can make a pid namespace whose `pid_max` is 2400, with a daemon that ended and a stranger that took its pid
 
 - `signalable PID`
 
@@ -6475,6 +6491,8 @@ The check fails, through the caller's `fail`, naming each container and process 
 A driver counts as alive only while its pid is a live, non-zombie process that started no later than the container or process it would own, since pids are reused.
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
+It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment in the shell itself and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process; a proc root that lists no process is reported through `fail`, naming it.
+`lib/leftovers.test.ts` holds both, and the reading of each of the three places a process names its run
 
 ## lib/operator-dispatch.sh
 

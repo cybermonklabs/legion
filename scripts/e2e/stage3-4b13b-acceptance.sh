@@ -729,6 +729,7 @@ start_daemon
 note "project $project, profile $profile, plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest"), ports NATS $port_nats Dispatch $port_dispatch daemon $port_daemon listener $port_listener"
 pane_watcher &
 watcher_pid=$!
+record_start "$watcher_pid" || true
 production_baseline
 note "production Dispatch audit baseline: event ${prod_baseline}"
 pass
@@ -812,6 +813,7 @@ for issue in "$root1" "$root2" "$root3"; do wait_for_architect "$issue"; done
 printf '%s\n' "$root1" "$root2" "$root3" "$child" >"$work/instructor-issues"
 instructor &
 instructor_pid=$!
+record_start "$instructor_pid" || true
 note "the instructor watches $root1 $root2 $root3 $child"
 pass
 

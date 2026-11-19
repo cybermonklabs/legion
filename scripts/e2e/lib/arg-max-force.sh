@@ -1,35 +1,39 @@
 # shellcheck shell=bash
 # arg_max_force ENTRY ROOM SCRATCH OLD_FORM puts the calling shell under the force where a row proves
-# that a walk of every process does not hand the machine's /proc entries to a program as its
-# arguments. Sourced by a test's shell, never by a proof.
+# that a walk of every process does not hand the proc root's entries to a program as its arguments.
+# Sourced by a test's shell, never by a proof.
 #
-# A 512 KiB stack makes ARG_MAX 128 KiB, and PADDING, exported, fills the environment to ROOM bytes
-# short of the largest that still lets a program of no arguments start, measured here. An exec
-# handed every /proc/<pid>/ENTRY as an argument then fails with E2BIG, as one does unforced at about
-# 80,000 processes, while an exec of a few arguments still starts. A machine with too few processes
-# for every entry together to outgrow twice ROOM gets more first: sleeps this starts, recorded by
-# pid and ended when the shell exits (an EXIT trap of its own, so the caller sets none). The control
-# the force must pass runs here: OLD_FORM, the command line the walk replaced, run through eval, must
-# fail with E2BIG, and a program of no arguments must still start. SCRATCH is a directory the caller
+# The walk under test reads `$proc_root`, a proc root the row made of its own processes
+# (scripts/e2e/lib/proc-root.ts), never the host's /proc, so the row's time is its own and not the
+# host's process count. A 512 KiB stack makes ARG_MAX 128 KiB, and PADDING, exported, fills the
+# environment to ROOM bytes short of the largest that still lets a program of no arguments start,
+# measured here. An exec handed every $proc_root/<pid>/ENTRY as an argument then fails with E2BIG, as
+# one does unforced at about 80,000 processes, while an exec of a few arguments still starts. A root
+# whose entries together are under twice ROOM gets more first: entries of its own at pids above the
+# kernel's pid_max, which no process can hold, each with an empty `environ`, an empty `fd` directory
+# and a `cwd` link to /, so they name no process and no socket of any walk. The control the force
+# must pass runs here: OLD_FORM, the command line the walk replaced, run through eval, must fail
+# with E2BIG, and a program of no arguments must still start. SCRATCH is a directory the caller
 # owns, where the control keeps its stderr for the time of a read. Any failure of the force exits
 # the shell with 1 and a line naming it.
 arg_max_force() {
-  local entry=$1 room=$2 scratch=$3 old=$4 true_bin lo=0 hi=131072 mid err line
+  local entry=$1 room=$2 scratch=$3 old=$4 true_bin lo=0 hi=131072 mid err line unreal
+  [ -n "${proc_root:-}" ] && [ -d "$proc_root" ] || {
+    echo "arg_max_force: no proc root of the row's own (proc_root) to force" >&2
+    exit 1
+  }
   ulimit -s 512
   [ "$(getconf ARG_MAX)" = 131072 ] || {
     echo "ARG_MAX is $(getconf ARG_MAX), not 131072, under a 512 KiB stack" >&2
     exit 1
   }
-  force_sleepers=()
-  trap arg_max_force_end EXIT
+  unreal=$(</proc/sys/kernel/pid_max)
   while [ "$(arg_max_force_glob "$entry")" -lt $((2 * room)) ]; do
-    [ "${#force_sleepers[@]}" -lt 5000 ] || {
-      echo "5000 more processes still leave every /proc/<pid>/$entry under twice $room bytes" >&2
-      exit 1
-    }
     for _ in $(seq 50); do
-      sleep 300 >/dev/null 2>&1 &
-      force_sleepers+=("$!")
+      unreal=$((unreal + 1))
+      mkdir -p "$proc_root/$unreal/fd"
+      : >"$proc_root/$unreal/environ"
+      ln -s / "$proc_root/$unreal/cwd"
     done
   done
   true_bin=$(type -P true)
@@ -61,15 +65,10 @@ arg_max_force() {
   }
 }
 
-# arg_max_force_glob ENTRY prints the bytes every /proc/<pid>/ENTRY takes as arguments: the path, its
-# terminating zero and its pointer.
+# arg_max_force_glob ENTRY prints the bytes every $proc_root/<pid>/ENTRY takes as arguments: the
+# path, its terminating zero and its pointer.
 arg_max_force_glob() {
   local a n=0
-  for a in /proc/[0-9]*/"$1"; do n=$((n + ${#a} + 9)); done
+  for a in "$proc_root"/[0-9]*/"$1"; do [ ! -e "$a" ] || n=$((n + ${#a} + 9)); done
   echo "$n"
-}
-
-# arg_max_force_end ends the sleeps arg_max_force started, by the pids it recorded.
-arg_max_force_end() {
-  [ "${#force_sleepers[@]}" = 0 ] || { kill "${force_sleepers[@]}" && wait "${force_sleepers[@]}"; } 2>/dev/null || :
 }

@@ -1641,6 +1641,7 @@ start_daemon() {
     "$work/legion" start --config "$work/legion.yaml" >>"$daemon_log" 2>&1 9>&- 7>&- &
   daemon_pid=$!
   daemon_started=1
+  record_start "$daemon_pid" || true
   timeout_hook=report_boot
   # A daemon that exits (a refused image probe, a config it will not run) ends the wait at once.
   until_true 900 "the Go daemon to boot and answer /healthz" daemon_answers_or_exited
@@ -2064,6 +2065,7 @@ start_pod_watch() {
   setpriv --pdeathsig KILL bun "$root/scripts/e2e/lib/secret-leaks.ts" "$operator" "$namespace" "legion.dev/project=$run_label" \
     "$evidence/pod-watch.json" "$work/secret-leaks.json" 2>>"$evidence/logs/secret-leaks.err" 9>&- 7>&- &
   leaks_pid=$!
+  record_start "$leaks_pid" || true
   ( # Node memory for the nodes the run's pods are on, every 30 s (metrics-server).
     trap - EXIT ERR
     set +e

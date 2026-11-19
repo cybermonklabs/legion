@@ -19,8 +19,7 @@ const dir = temporaryDirectory("process-tree-test");
 // perl: run starts every harness through ownGroup (lib/own-group.ts).
 const skip = skipWithout("bash", "sleep", "sh", "perl");
 const program = join(dir, "program");
-// esc is TEXT as a regular expression that matches it alone.
-const esc = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const literalPattern = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const other = join(dir, "other");
 beforeAll(() => {
   if (skip) return;
@@ -240,11 +239,11 @@ echo "line: status $st: $why"
       expect(two).not.toBeNull();
       expect(two?.[1]).toBe(program);
       expect(lines[1]).toMatch(
-        new RegExp(`^none: status 1: no process below \\d+ runs ${esc(program)}$`)
+        new RegExp(`^none: status 1: no process below \\d+ runs ${literalPattern(program)}$`)
       );
       expect(lines[2]).toMatch(
         new RegExp(
-          `^line: status 1: no process below \\d+ runs ${esc(program)}; below it: \\d+ ${esc(other)}$`
+          `^line: status 1: no process below \\d+ runs ${literalPattern(program)}; below it: \\d+ ${literalPattern(other)}$`
         )
       );
       expect(await gone(Number(two?.[2]))).toBe(true);
@@ -309,7 +308,9 @@ if native_program "$scratch/mise" >/dev/null; then echo "mise itself: named"; el
         expect(r.err).toBe("");
         const lines = r.out.trimEnd().split("\n");
         expect(lines[0]).toMatch(
-          new RegExp(`^not a child of it: status 1: 0 children of \\d+ run ${esc(program)}$`)
+          new RegExp(
+            `^not a child of it: status 1: 0 children of \\d+ run ${literalPattern(program)}$`
+          )
         );
         const kid = /^its child: the other program (\d+)$/.exec(lines[1] ?? "");
         expect(kid).not.toBeNull();
@@ -348,25 +349,19 @@ echo "none: status $st: \${why%%:*}"
   }
 );
 
-// The rig helpers' process-scan rows: signalable and stop_tree (lib/process-tree.sh), the proc_*
-// reads they use (lib/process-tree.sh) and the failure note of parked-decision-devbox.sh's
-// wait_for_run_processes each read only the /proc entries of the processes they ask about. Each row
-// puts a stand-in for ps, pgrep and pkill first on PATH that logs every call and runs nothing: those
-// read every process on the machine (procps-ng's `ps -p` included), so a helper that still calls one
-// is named in the log, and the row fails. The traced row, where strace is on the host, also holds
-// that the helpers list no directory but the task directory of a process they ask about and open no
-// other process's entry.
-const waitForRunProcesses = scriptFunctions(
-  join(import.meta.dir, "..", "parked-decision-devbox.sh")
-)("wait_for_run_processes");
+// The rig helpers' process-scan rows: signalable and stop_tree (lib/process-tree.sh) and the proc_*
+// reads they use each read only the /proc entries of the processes they ask about (the failure note
+// of parked-decision-devbox.sh's wait_for_run_processes is parked-decision-cleanup.test.ts's). Each
+// row puts a stand-in for ps, pgrep and pkill first on PATH that logs every call and runs nothing:
+// those read every process on the machine (procps-ng's `ps -p` included), so a helper that still
+// calls one is named in the log, and the row fails. The traced row, where strace is on the host,
+// also holds that the helpers list no directory but the task directory of a process they ask about
+// and open no other process's entry.
 const noStrace = skipWithout("strace");
-// standIns is the shell that puts the logging ps, pgrep and pkill first on PATH, logging to
-// $scratch/calls.
-const standIns = `mkdir -p "$scratch/bin"
+const logPsPgrepPkillCalls = `mkdir -p "$scratch/bin"
 for n in ps pgrep pkill; do printf '#!/bin/sh\\necho "$0 $*" >>%s/calls\\nexit 1\\n' "$scratch" >"$scratch/bin/$n"; chmod +x "$scratch/bin/$n"; done
 PATH="$scratch/bin:$PATH"`;
-// tree starts a parent with two children, and sets g and kids once both children run.
-const tree = `(sleep 300 & sleep 301 & wait) </dev/null >/dev/null 2>&1 &
+const startParentWithTwoSleeps = `(sleep 300 & sleep 301 & wait) </dev/null >/dev/null 2>&1 &
 g=$!
 started+=("$g")
 until_true 10 "two children of $g" sh -c '[ "$(cat /proc/$1/task/*/children | wc -w)" = 2 ]' sh "$g"
@@ -376,8 +371,8 @@ describe.skipIf(skip)("the rig helpers' process-scan rows", () => {
   test(
     "signalable refuses this shell and its group's leader, stop_tree refuses a wrong parent and then ends a tree, and none starts ps, pgrep or pkill",
     async () => {
-      const r = run(`${standIns}
-${tree}
+      const r = run(`${logPsPgrepPkillCalls}
+${startParentWithTwoSleeps}
 if signalable $$ 2>/dev/null; then echo "signalable took this shell"; else echo "this shell: refused"; fi
 read -r stat </proc/$$/stat
 read -r -a fields <<<"\${stat##*) }"
@@ -419,53 +414,13 @@ echo "calls: [\${calls//$'\\n'/;}]"
     slow
   );
 
-  test(
-    "wait_for_run_processes's failure names each survivor that runs with its command line, and none that has ended, starting no ps, pgrep or pkill",
-    () => {
-      const r = run(`${standIns}
-true &
-ended=$!
-wait "$ended"
-${waitForRunProcesses}
-run_processes() { printf '%s\\n' "$$" "$PPID" "$ended"; }
-since() { printf '0s'; }
-(
-  note() { printf '   %s\\n' "$*"; }
-  fail() { printf 'FAIL: %s\\n' "$*"; exit 1; }
-  wait_for_run_processes 0 3
-) >"$scratch/note" 2>&1 || true
-printf 'shell=%s test=%s ended=%s\\n' "$$" "$PPID" "$ended"
-cat "$scratch/note"
-calls=$(cat "$scratch/calls" 2>/dev/null || :)
-echo "calls: [\${calls//$'\\n'/;}]"
-`);
-      expect(r.err).toBe("");
-      const ids = /^shell=(\d+) test=(\d+) ended=(\d+)$/m.exec(r.out);
-      expect(ids).not.toBeNull();
-      const [, shell, testPid, ended] = ids ?? [];
-      expect(r.out).toContain(
-        `FAIL: timed out after 0s (3 polls) waiting for every process of the run to end; still running: ${shell} ${testPid} ${ended}\n`
-      );
-      expect(r.out).toMatch(
-        new RegExp(
-          `^ +${shell} ppid ${testPid} pgid \\d+ sid \\d+ started .+: bash -c set -Eeuo pipefail`,
-          "m"
-        )
-      );
-      expect(r.out).toMatch(new RegExp(`^ +${testPid} ppid \\d+ .*: \\S*bun`, "m"));
-      expect(r.out).not.toMatch(new RegExp(`^ +${ended} `, "m"));
-      expect(r.out).toEndWith("calls: []\n");
-    },
-    slow
-  );
-
   test.skipIf(noStrace)(
     "the helpers open no other process's /proc entry and list no directory but the task directories of the processes they ask about",
     async () => {
       // strace follows the traced shell and every process it starts. The traced shell records the
       // pids it asks about first (the tree's three and its own, which signalable reads), so each
       // /proc path the trace names can be held to them.
-      const r = run(`${tree}
+      const r = run(`${startParentWithTwoSleeps}
 st=0
 export ASKED="$scratch/asked"
 # The shell's own "Killed" notice of the tree the traced shell stops goes to a file of its own, with
@@ -774,6 +729,57 @@ echo "agent $agent"
         `another pane's ticks: status 1, agent S\nits own ticks: killed\nagent ${agent}\n`
       );
       expect(await gone(agent)).toBe(true);
+    },
+    slow
+  );
+});
+
+// proc_start gives a zombie no start, since a zombie runs nothing any more and a signal held to its
+// start would reach no process; and the environment readers (env_of, env_has, env_length,
+// names_dir) answer 2 for an environment that is empty, a process that has gone or one with no
+// variable at all, never 1, the answer of an environment that lacks the name.
+describe.skipIf(skip)("proc_start and the environment readers", () => {
+  test(
+    "proc_start gives a zombie no start and a live process its own",
+    () => {
+      const r = run(`
+bash -c 'sleep 600 & "$0" 0 </dev/null >/dev/null 2>&1 & echo $!; exec sleep 600' "$program" </dev/null >"$scratch/zombie" 2>/dev/null &
+parent=$!
+started+=("$parent")
+until_true 10 "the child to be a zombie" sh -c 'read -r z <"$1" && read -r s </proc/$z/stat && s=\${s##*) } && [ "\${s%% *}" = Z ]' sh "$scratch/zombie"
+read -r zombie <"$scratch/zombie"
+echo "zombie: [$(proc_start "$zombie")]"
+echo "live: [$(proc_start "$parent")] [$(start_of "$parent")]"
+`);
+      expect(r.err).toBe("");
+      const live = /^live: \[(\d+)\] \[(\d+)\]$/m.exec(r.out);
+      expect(r.out).toStartWith("zombie: []\n");
+      expect(live?.[1]).toBe(live?.[2]);
+    },
+    slow
+  );
+  test(
+    "each environment reader answers 2 for an empty environment, and 1 or the value for one it reads",
+    () => {
+      const r = run(`
+env -i "$program" 600 </dev/null >/dev/null 2>&1 &
+empty=$!
+env -i NAME=value "$program" 600 </dev/null >/dev/null 2>&1 &
+full=$!
+started+=("$empty" "$full")
+until_true 10 "both to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$3" ] && [ "$(readlink /proc/$2/exe)" = "$3" ]' sh "$empty" "$full" "$program"
+for pid in "$empty" "$full"; do
+  st=0; v=$(env_of "$pid" NAME) || st=$?; printf 'env_of %s [%s]; ' "$st" "$v"
+  st=0; env_has "$pid" OTHER || st=$?; printf 'env_has %s; ' "$st"
+  st=0; v=$(env_length "$pid" NAME) || st=$?; printf 'env_length %s [%s]; ' "$st" "$v"
+  st=0; names_dir /elsewhere NAME "$pid" || st=$?; printf 'names_dir %s\\n' "$st"
+done
+`);
+      expect(r.err).toBe("");
+      expect(r.out).toBe(
+        "env_of 2 []; env_has 2; env_length 2 []; names_dir 2\n" +
+          "env_of 0 [value]; env_has 1; env_length 0 [5]; names_dir 1\n"
+      );
     },
     slow
   );

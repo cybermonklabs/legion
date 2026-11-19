@@ -186,7 +186,7 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   stop_pid "$dispatch_keeper_pid"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  stop_agent_daemons
+  stop_agent_daemons || true
   stop_marked_processes "$work" || true
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   close_unpassed_run_pull_requests
@@ -570,12 +570,21 @@ wait_for_run_processes() {
 # service detached, a session of its own, and ends its services and their helpers when it ends, even
 # by SIGKILL. A member is signalled only when it also carries that runtime directory in
 # OMP_DAEMON_RUNTIME_DIR or is one of the run's by run_processes's reading, so a session the kernel
-# later gave the same id is left alone. It finds nothing by working directory alone: what it misses,
-# a service whose broker did not end it among them, cleanup-is-complete's wait still names.
+# later gave the same id is left alone, and each signal goes through freeze_if, held to the start
+# time the walk read (lib/process-tree.sh), so a member that ended and whose pid another process
+# took since is never signalled. It finds nothing by working directory alone: what it misses, a
+# service whose broker did not end it among them, cleanup-is-complete's wait still names. It reads
+# `${proc_root:-/proc}`: the host's /proc, unless a test points proc_root at a proc root of the
+# processes it started (lib/proc-root.ts). It prints why and fails with 2 when the run's processes
+# could not be read (run_processes) or the proc root lists no process at all, so a walk that read
+# nothing never reads as one with nothing to stop.
 stop_agent_daemons() {
-  local file dir real leader p stat sid line env_dir i alive
-  local -a run=() targets=() environ=()
-  local -A dirs=()
+  local file dir real leader p stat sid line env_dir i alive pid start listed
+  local -a run=() targets=() environ=() fields=()
+  local -A dirs=() started=()
+  # A /proc that cannot be read has no /dev/fd either, so the broker.pid search below would read
+  # nothing and stop nothing (proc_unreadable, lib/process-tree.sh).
+  ! proc_unreadable stop_agent_daemons "no broker session was looked for" || return 2
   while IFS= read -r -d '' file; do
     leader=$(jq -r '.pid // empty' "$file" 2>/dev/null) || continue
     [[ $leader =~ ^[1-9][0-9]*$ ]] || continue
@@ -584,16 +593,24 @@ stop_agent_daemons() {
     dirs[$leader]="$dir $real"
   done < <(find "$work" -name broker.pid -type f -print0 2>/dev/null || :)
   ((${#dirs[@]} > 0)) || return 0
-  mapfile -t run < <(run_processes)
-  for p in /proc/[0-9]*; do
+  listed=$(run_processes) || {
+    echo "stop_agent_daemons: the run's processes could not be read (run_processes), so no broker session was stopped" >&2
+    return 2
+  }
+  mapfile -t run <<<"$listed"
+  listed=
+  for p in "${proc_root:-/proc}"/[0-9]*; do
+    [ -e "$p" ] || continue
+    listed=1
     # Read whole (proc_stat_field's way, lib/process-tree.sh), since a process names itself and a
     # name may hold a newline, which a read of the first line stops at.
     stat=
     { IFS= read -r -d '' stat <"$p/stat"; } 2>/dev/null || :
     [ -n "$stat" ] || continue
     # The fields after the command, which may itself hold spaces, parentheses or a newline: state,
-    # ppid, process group, session.
-    read -r _ _ _ sid _ <<<"${stat##*\) }"
+    # ppid, process group, session, and the start time, the 20th.
+    read -r -a fields <<<"${stat##*\) }"
+    sid=${fields[3]}
     [ -n "${dirs[$sid]+set}" ] || continue
     env_dir=
     environ=()
@@ -601,20 +618,25 @@ stop_agent_daemons() {
     for line in ${environ[@]+"${environ[@]}"}; do
       case $line in OMP_DAEMON_RUNTIME_DIR=*) env_dir=${line#*=} ;; esac
     done
-    if { [ -n "$env_dir" ] && [[ " ${dirs[$sid]} " == *" $env_dir "* ]]; } || [[ " ${run[*]} " == *" ${p#/proc/} "* ]]; then
-      targets+=("${p#/proc/}")
+    if { [ -n "$env_dir" ] && [[ " ${dirs[$sid]} " == *" $env_dir "* ]]; } || [[ " ${run[*]} " == *" ${p##*/} "* ]]; then
+      targets+=("${p##*/}")
+      started[${p##*/}]=${fields[19]}
     fi
   done
+  [ -n "$listed" ] || {
+    echo "stop_agent_daemons: ${proc_root:-/proc} lists no process, so no broker session was stopped" >&2
+    return 2
+  }
   ((${#targets[@]} > 0)) || return 0
   note "stopping ${#targets[@]} processes of ${#dirs[@]} Oh My Pi daemon broker sessions: ${targets[*]}"
-  kill -TERM "${targets[@]}" 2>/dev/null || true
+  for pid in "${targets[@]}"; do freeze_if "$pid" "${started[$pid]}" TERM || true; done
   for i in $(seq 1 50); do
     alive=
-    for p in "${targets[@]}"; do ! kill -0 "$p" 2>/dev/null || alive=1; done
+    for pid in "${targets[@]}"; do [ "$(proc_start "$pid")" != "${started[$pid]}" ] || alive=1; done
     [ -n "$alive" ] || return 0
     sleep 0.2
   done
-  kill -KILL "${targets[@]}" 2>/dev/null || true
+  for pid in "${targets[@]}"; do freeze_if "$pid" "${started[$pid]}" KILL || true; done
   return 0
 }
 
@@ -1060,9 +1082,10 @@ stop_pid "$daemon_keeper_pid"
 stop_pid "$dispatch_keeper_pid"
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 # The panes are gone; what their sessions started detached is not (stop_agent_daemons).
-stop_agent_daemons
+stop_agent_daemons || fail "the run's Oh My Pi broker sessions could not be read, so they were not stopped"
+# Still running is still the process recorded at its start: a pid another process took since is not.
 for pid in $daemon_pid $dispatch_pid $listener_pid $daemon_keeper_pid $dispatch_keeper_pid; do
-  ! kill -0 "$pid" 2>/dev/null || fail "process $pid still runs"
+  [ -z "${started_at[$pid]:-}" ] || [ "$(proc_start "$pid")" != "${started_at[$pid]}" ] || fail "process $pid still runs"
 done
 docker rm -f "$pg_container" "$nats_container" >/dev/null
 for container in "$pg_container" "$nats_container"; do

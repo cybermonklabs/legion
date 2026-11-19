@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
@@ -18,8 +18,8 @@ const dir = temporaryDirectory("parked-decision-cleanup-test");
 
 let runs = 0;
 // wait runs `wait_for_run_processes ARGS` with RUN_PROCESSES as run_processes's body; the body sees
-// the call it is in as $call, counting from 1.
-function wait(runProcesses: string, args: string) {
+// the call it is in as $call, counting from 1. BIN, when given, comes first on PATH.
+function wait(runProcesses: string, args: string, bin = "") {
   const calls = join(dir, `calls-${++runs}`);
   writeFileSync(calls, "");
   const script = `${set}
@@ -36,7 +36,7 @@ ${tree("proc_describe")}
 ${fn("wait_for_run_processes")}
 wait_for_run_processes ${args}`;
   const result = Bun.spawnSync(["bash", "-c", script], {
-    env: { PATH: process.env.PATH, CALLS: calls },
+    env: { PATH: `${bin}${bin ? ":" : ""}${process.env.PATH ?? ""}`, CALLS: calls },
   });
   return {
     pid: result.pid,
@@ -57,18 +57,37 @@ describe("wait_for_run_processes", () => {
     expect(r.calls).toBeGreaterThan(1);
   });
 
-  test("a process of the run that never ends fails the wait once the poll floor is reached", () => {
+  test("a process of the run that never ends fails the wait once the poll floor is reached, naming each survivor that runs and starting no ps, pgrep or pkill", () => {
     // Three survivors: the harness's own shell ($$) and this test process ($PPID), which run, and
     // a process that has ended. The failure names all three, and its note names each one that
-    // runs, its command line included, and none that has ended.
+    // runs, its parent, group, session, start and command line included, and none that has ended.
+    // A ps, a pgrep and a pkill first on PATH log each call and run nothing: each reads every
+    // process of the machine, and the note reads only the /proc entries of the survivors.
+    const bin = join(dir, `bin-${++runs}`);
+    mkdirSync(bin);
+    const logged = join(bin, "calls");
+    writeFileSync(logged, "");
+    for (const name of ["ps", "pgrep", "pkill"]) {
+      writeFileSync(join(bin, name), `#!/bin/sh\necho "$0 $*" >>'${logged}'\nexit 1\n`, {
+        mode: 0o755,
+      });
+    }
     const ended = Bun.spawnSync(["true"]).pid;
-    const r = wait(`printf '%s\\n' "$$" "$PPID" ${ended}`, "0 3");
+    const r = wait(`printf '%s\\n' "$$" "$PPID" ${ended}`, "0 3", bin);
     expect(r.code).not.toBe(0);
     expect(r.calls).toBe(3);
-    expect(r.stderr).toContain(`still running: ${r.pid} ${process.pid} ${ended}`);
-    expect(r.stdout).toMatch(new RegExp(`^ +${r.pid} .*bash -c set `, "m"));
-    expect(r.stdout).toMatch(new RegExp(`^ +${process.pid} .*bun`, "m"));
+    expect(r.stderr).toMatch(
+      new RegExp(
+        `^FAIL: timed out after \\d+s \\(3 polls\\) waiting for every process of the run to end; still running: ${r.pid} ${process.pid} ${ended}$`,
+        "m"
+      )
+    );
+    expect(r.stdout).toMatch(
+      new RegExp(`^ +${r.pid} ppid ${process.pid} pgid \\d+ sid \\d+ started .+: bash -c set `, "m")
+    );
+    expect(r.stdout).toMatch(new RegExp(`^ +${process.pid} ppid \\d+ .*: \\S*bun`, "m"));
     expect(r.stdout).not.toMatch(new RegExp(`^ +${ended} `, "m"));
+    expect(readFileSync(logged, "utf8")).toBe("");
   });
 
   // Catches a wait that gives up on the poll floor alone, the wall-clock half dropped: it would

@@ -125,15 +125,20 @@ broker_pid='' issuer_pid='' fake_envoy_pid='' fake_github_pid='' dispatch_pid=''
 broker_database='' admin_url='' dispatch_port='' fake_envoy_port='' fake_github_port=''
 cleanup() {
   local status=$? pid
+  # A run that died before it read the helper's pid file (below) reads it here, and its start with
+  # it, which is then the start of whatever process holds that pid now: the one place a start is
+  # read late, since the run never reached the read that follows the helper's own start.
   if [ -z "$helper_pid" ] && [ -s "$work/agent/helper.pid" ]; then
     helper_pid="$(cat "$work/agent/helper.pid")"
+    record_start "$helper_pid" || true
   fi
   # The helper runs as this user under the root-owned sudo and unshare that started it, which exit
   # with it. Every other service leads a process group of its own (setsid), signalled whole so its
-  # children go too: run-server.sh's `flock … go build`, before it execs the server, is one.
+  # children go too: run-server.sh's `flock … go build`, before it execs the server, is one. A group
+  # is signalled only while its leader is still the process recorded (signal_group).
   stop_pid "$helper_pid"
   for pid in "$dispatch_pid" "$fake_github_pid" "$fake_envoy_pid" "$broker_pid" "$issuer_pid"; do
-    [ -z "$pid" ] || kill -TERM -- "-$pid" 2>/dev/null || true
+    [ -z "$pid" ] || signal_group "$pid" TERM
     stop_pid "$pid"
   done
   stop_pid "$dispatch_keeper_pid"
@@ -278,6 +283,7 @@ start_process agent sudo -n unshare --uts --fork -- env -i PATH="$work/bin:/usr/
   helper "$AGENT_HOST" "$work/agent/helper.pid" "$(id -u)" "$(id -g)"
 until_true 30 "the helper's pid" test -s "$work/agent/helper.pid"
 helper_pid="$(cat "$work/agent/helper.pid")"
+record_start "$helper_pid" || true
 # The helper's own pid, not sudo's: kill -0 cannot probe a root process.
 await_start agent "$helper_pid" 600 "agent-secrets-helper" \
   grep -q 'agent-secrets-helper listening' "$work/logs/agent.log"
