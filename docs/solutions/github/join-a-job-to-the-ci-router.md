@@ -372,7 +372,8 @@ the fills live in workflows that run there.
   (`key: <family>-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}`),
   with the family's prefix as `restore-keys`
   (`restore-keys: ${{ format('<family>-{0}-{1}-', runner.os, runner.arch) }}`; the families are
-  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-infra`, `go-notices`). In
+  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test` and `go-envoy-infra`, and `go-notices` in
+  the order the item below gives). In
   `ci.yaml` that fallback applies on every run, a dispatched one on main included, because no job
   there saves. A job that does save keeps the prefix off main alone
   (`restore-keys: ${{ github.ref != 'refs/heads/main' && format('<family>-{0}-{1}-', runner.os, runner.arch) || '' }}`),
@@ -385,6 +386,15 @@ the fills live in workflows that run there.
   go.sum change downloads only the changed modules, and Go's build cache is content-addressed, so a
   stale entry costs a run only what changed. Share a family only with the jobs that build the same
   packages, or whichever job saves first owns the entry the others then miss.
+- `go-notices` is the one family keyed with the architecture before the OS
+  (`key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}`,
+  `restore-keys: ${{ format('go-notices-{0}-{1}-', runner.arch, runner.os) }}`). Its entry holds
+  go-licenses, a program the notices step runs. A branch cut before the architecture joined the
+  keys restores by `go-notices-Linux-` on `ubuntu-24.04`, and `go-notices-Linux-ARM64-go1.27.3`
+  starts with that prefix: such a branch restored main's arm64 go-licenses on x86_64 and failed
+  with `Exec format error` (run 44437023306). When a family whose entry holds a program a job runs
+  changes its key, put the new part before the point where an older branch's `restore-keys`
+  prefix ends, or rename the family, so that no older prefix matches the new entries.
 - Add no `actions/cache/save` step here, and no `if:` that tests `github.event_name == 'push'` or
   compares `github.ref` with a branch ref: the workflow runs on no push, so such a condition gates
   its step on what no run ever is, and `check-ci-filters.sh` refuses it. A family a new job

@@ -75,8 +75,11 @@ name: CI
 # entry per runner architecture, keyed on the runner's architecture and on the Go version its
 # job's setup-go installed: a build cache holds the objects of the architecture that compiled
 # them, so an entry an x86_64 runner filled would give a job on ubuntu-24.04-arm its modules and
-# none of its objects, so each family is filled on every runner one of its jobs runs on. An
-# entry is
+# none of its objects, so each family is filled on every runner one of its jobs runs on.
+# go-notices puts the architecture before the OS in its key and the other families put it after:
+# its entry holds go-licenses, a program lint's notices step runs, and a branch older than the
+# architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key starts with
+# (ci-job-lint.yaml's restore step says what that did). An entry is
 # refreshed only when Go is bumped. A go.sum change downloads only the changed modules, and Go's
 # build cache is content-addressed, so a stale entry costs a run only what changed; a key on the
 # go.sum files left a whole entry, up to a gigabyte, per change for seven days. go-envoy-infra is

@@ -185,6 +185,16 @@ jobs:
       # 2.2 GB entry per key change; keyed on the Go version, a go.sum change only downloads the
       # changed modules and rebuilds the changed packages, since Go's build cache is
       # content-addressed. Restored only when the notices step runs; ci-caches.yaml fills it.
+      #
+      # The runner's architecture comes before the OS in this family's key, where the other Go
+      # families put it after: the entry holds go-licenses, a program of the runner that built it,
+      # which the notices step runs. A branch cut before lint moved to ubuntu-24.04-arm restores
+      # on ubuntu-24.04 by the prefix go-notices-Linux-, and an entry keyed
+      # go-notices-Linux-ARM64-go<version> starts with that prefix: such a branch restored main's
+      # arm64 go-licenses on x86_64 and failed on it with "Exec format error" (run 44437023306).
+      # No key or restore-keys of an older branch starts with go-notices-ARM64- or
+      # go-notices-X64-, so such a branch misses this family and builds go-licenses for its own
+      # runner.
       - if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -192,8 +202,8 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
             ~/.cache/legion
-          key: go-notices-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-notices-{0}-{1}-', runner.os, runner.arch) }}
+          key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-notices-{0}-{1}-', runner.arch, runner.os) }}
 
       # Every Go archive a release ships carries THIRD_PARTY_NOTICES, written at build time with
       # the build's own GOOS, GOARCH and CGO_ENABLED (release.yaml's legion_build job and
