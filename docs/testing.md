@@ -235,6 +235,15 @@ and each command runs there.
   `web/src/__tests__/responsive-shell.test.tsx` and `web/src/features/agents/AgentsPage.test.tsx`
   do).
 
+- A row that dispatches a DOM event itself (`window.dispatchEvent(new Event("scroll"))`, say)
+  dispatches it inside `act` when a listener of a rendered component sets React state from it,
+  even a state the event leaves as it was. React drops a set of the same value without scheduling
+  it only while the component has no update left from an earlier render; when an update of that
+  component lands just before the event, the set is scheduled outside `act` and the act rule fails
+  the row. Under a lane's load that is rare, and the file alone does not show it:
+  `web/src/features/conversation/ConversationTab.test.tsx`'s row "a scroll event measures the
+  reader position in O(1) rect reads" failed 1 run in 20 that way.
+
 - `web/src/__tests__/act-warnings.test.ts` runs the act rule's six fixtures,
   `web/src/__tests__/act-rule*.fixture.tsx`. Four draw React's act messages.
   `act-rule-quiet-restore.fixture.tsx` proves that the preload puts back a spy of

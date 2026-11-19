@@ -572,7 +572,11 @@ test("a scroll event measures the reader position in O(1) rect reads", async () 
     await screen.findByText("Message 0");
 
     rectSpy.mockClear();
-    window.dispatchEvent(new Event("scroll"));
+    // The scroll listener sets the follow state, as a reader's scroll does, so the event goes
+    // inside `act` like every other scroll of this file.
+    act(() => {
+      window.dispatchEvent(new Event("scroll"));
+    });
 
     // ViewportAnchor measures only in the commit phase, immediately before a content reflow; a
     // scroll alone must do no layout reads. This guards both against O(n) scans over every card
