@@ -52,11 +52,10 @@ export function codexHomes(root: string, envoy: Record<string, unknown>) {
 /**
  * The transpiler cache this test process's bun reads (`BUN_RUNTIME_TRANSPILER_CACHE_PATH`, else
  * `$XDG_CACHE_HOME/bun/@t@`, else `~/.bun/install/cache/@t@`, as bun 1.4.4 places it). The server
- * runs this checkout's TypeScript, and under the fresh `HOME` a test hands it, bun would put its
- * cache in that home: measured on a loaded dev box, a start transpiled the whole graph cold in
- * 11.9 s and wrote 266 files there, against 0.27 s with this cache, so a row's CONNECT came 12 to
- * 18 s late and the removal of its directory outran its 5 s hook. A harness variable: Codex hands
- * the plugin's server no such variable, and the released plugin runs one bundled file.
+ * runs this checkout's TypeScript, and under the fresh `HOME` a test hands it, bun would write its
+ * cache there, 266 files that the removal of the row's directory must then delete. Handing it this
+ * cache keeps them out. A harness variable: Codex hands the plugin's server no such variable, and
+ * the released plugin runs one bundled file.
  */
 function transpilerCache(): string {
   const named = process.env["BUN_RUNTIME_TRANSPILER_CACHE_PATH"]
