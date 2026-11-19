@@ -11,7 +11,7 @@ Pulumi language needs only the Pulumi CLI:
 | `envoy-infra:aws:WebhookListener` | Envoy's webhook listener on ECS Fargate, behind your load balancer's target group, with an alarm on each log line that says a delivery or a start went wrong. |
 | `envoy-infra:gcp:NatsHub` | A NATS server with JetStream on one Google Cloud VM that joins a tailnet, where its clients reach it: see [docs/nats-hub.md](docs/nats-hub.md), which says what it deploys, its inputs and how it is updated, with an example. |
 | `envoy-infra:gcp:ClusteredNatsHub` | NATS with JetStream as three servers on a GKE cluster, one per zone, through the `nats` Helm chart, with an optional tailnet entry whose hosts forward the tailnet's connections to NATS and to Envoy's session listener, which the hub runs as a workload of its own: see [gcp:ClusteredNatsHub](#gcpclusterednatshub). |
-| `envoy-infra:gcp:Dispatch` | Dispatch on GKE Autopilot, with Cloud SQL, served over a tailnet and, only to the namespaces `allowedNamespaces` names, inside its cluster; inside that cluster alone with the tailnet inputs unset, or the cluster alone with `clusterOnly`. It can also run in a GKE cluster and on a Cloud SQL instance it is given (`existingCluster`, `existingDatabaseInstance`): see [gcp:Dispatch](#gcpdispatch). |
+| `envoy-infra:gcp:Dispatch` | Dispatch on GKE Autopilot, with Cloud SQL, served over a tailnet and, only to the namespaces `allowedNamespaces` names, inside its cluster; inside that cluster alone with the tailnet inputs unset, or the cluster alone with `clusterOnly`. It makes its own cluster and its own Cloud SQL instance, or uses a GKE cluster (`existingCluster`), a Cloud SQL instance (`existingDatabaseInstance`), or both, that another program makes: see [gcp:Dispatch](#gcpdispatch). |
 
 The listener creates the `ENVOY_NOTIFICATIONS` stream and its key-value buckets itself when it
 starts, so it needs only a NATS server with JetStream to reach. It creates them at the deployment's
@@ -775,9 +775,13 @@ without `existingCluster` keeps the inputs it always had.
 own instance holds both, with that password.
 
 The proxy sidecar runs with `--private-ip`, so the instance must have a private IP that the
-cluster's pods reach. The instance can be on the component's network, through its private
-services Connection, as a promoted replica of the component's own instance is. It can also be on
-a network that is peered with the component's network.
+cluster's pods reach. The instance must take its private IP through the private services
+Connection of the component's own network. A promoted replica of the component's own instance
+does. Cloud SQL gives an instance its private IP through private services access, which is a VPC
+Network Peering. VPC Network Peering is not transitive. So a peering with another network does
+not let the pods reach an instance that takes its private IP through that network's private
+services access
+([About private services access](https://docs.cloud.google.com/sql/docs/postgres/about-private-services-access)).
 
 **Inputs refused beside them.** The component refuses each of these by name before it registers
 anything:
@@ -1940,11 +1944,14 @@ Naming `existingDatabaseInstance` alone replaces no Kubernetes object. It change
 - With `oidcAudience` and no `oidcIssuer`, `DISPATCH_OIDC_ISSUER` is the new issuer, so a caller's
   token must come from the new cluster.
 
-**The evidence.** Which resource each apply keeps, deletes or changes is derived, not observed.
-The transition tests (`gcp/dispatch_network_test.go`) run the component on mocks with the inputs
-before and after each change. They derive each resource's operation from the two sets of
-registrations. A resource with an equal registration in both runs is taken as a `same` step. That
-is an inference about the Pulumi engine, not an engine run.
+**Before each apply.** Run `pulumi preview` on the stack. Then check two things in its output:
+
+- The Network, the GlobalAddress and the Connection show no step.
+- The preview deletes or replaces only the resources that this section names.
+
+The transition tests (`gcp/dispatch_network_test.go`) derive these operations from the
+component's registrations, an inference about the Pulumi engine, so the real stack's preview is
+the check.
 
 ### YAML
 

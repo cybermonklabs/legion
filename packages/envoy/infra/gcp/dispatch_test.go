@@ -1724,10 +1724,10 @@ func TestDispatchDeclaresItsTailscaleService(t *testing.T) {
 }
 
 // The Service's Protect follows deletionProtection, the input that already guards the cluster and
-// the database, and is true when the consumer sets nothing: no resource option of a consumer's own
-// program reaches a component's child, so a hard-coded Protect could be undone only by a state
-// edit and deleting a Dispatch would need one. Shaped as the cluster-only mode's own pair
-// (TestDispatchClusterOnlyPassesDeletionProtectionToTheCluster).
+// the database the component makes, and is true when the consumer sets nothing: no resource option
+// of a consumer's own program reaches a component's child, so a hard-coded Protect could be undone
+// only by a state edit and deleting a Dispatch would need one. Shaped as the cluster-only mode's
+// own pair (TestDispatchClusterOnlyPassesDeletionProtectionToTheCluster).
 func TestDispatchProtectsItsTailscaleServiceWithDeletionProtection(t *testing.T) {
 	for _, row := range []struct {
 		name string

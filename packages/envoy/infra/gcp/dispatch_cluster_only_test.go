@@ -59,6 +59,27 @@ func dispatchClusterOnlyGolden(t *testing.T) string {
 	return strings.Join(lines, "")
 }
 
+// dispatchGoldenWithout is the whole declaration of a mode that registers what the default mode
+// registers less the resources dropped names, each a child of the component by its type and name:
+// the default mode's registration golden less the one line of each. Reading it from the golden
+// rather than writing it out again holds the two to one declaration: a resource the default
+// renames or reparents moves this expectation with it. The golden must hold exactly one line for
+// each resource dropped names.
+func dispatchGoldenWithout(t *testing.T, dropped ...dispatchResourceName) string {
+	t.Helper()
+	var kept strings.Builder
+	count := 0
+	for _, line := range strings.SplitAfter(readGolden(t, "dispatch-registrations.golden"), "\n") {
+		if slices.ContainsFunc(dropped, func(r dispatchResourceName) bool { return strings.HasPrefix(line, r.typ+" "+r.name+" ") }) {
+			count++
+			continue
+		}
+		kept.WriteString(line)
+	}
+	require.Equal(t, len(dropped), count, "the golden holds one line for each of %v", dropped)
+	return kept.String()
+}
+
 // With clusterOnly the component declares the cluster and what the cluster is made of, and nothing
 // else: no private services range or peering, no Cloud SQL instance, database or user, no
 // generated password, no Secret Manager grant, no Kubernetes provider and no Kubernetes object.

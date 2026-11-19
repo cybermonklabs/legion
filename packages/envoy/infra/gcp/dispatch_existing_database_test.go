@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pulumi/pulumi/sdk/v3/go/property"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/stretchr/testify/require"
 
@@ -26,7 +25,7 @@ const (
 	randomPasswordType = "random:index/randomPassword:RandomPassword"
 	// databaseInstanceURNPart is what the URN of any DatabaseInstance the component registers
 	// holds.
-	databaseInstanceURNPart = "$gcp:sql/databaseInstance:DatabaseInstance::"
+	databaseInstanceURNPart = "$" + sqlInstanceType + "::"
 )
 
 // existingDatabaseInstanceArgs is dispatchArgs with existingDatabaseInstance naming the replica.
@@ -45,31 +44,6 @@ func proxyConnectionName(t *testing.T, m *pulumitest.Mocks) any {
 	return args[len(args)-1]
 }
 
-// dispatchExistingDatabaseInstanceGolden is the whole declaration of a component on an instance it
-// does not make, taken from the default mode's registration golden: every line of it less the
-// lines of DatabaseInstance, Database and User example-dispatch, the component's own instance, its
-// database and its login. Reading it from the golden rather than writing it out again holds the two
-// to one declaration: a resource the default renames or reparents moves this expectation with it.
-func dispatchExistingDatabaseInstanceGolden(t *testing.T) string {
-	t.Helper()
-	own := []string{
-		"gcp:sql/databaseInstance:DatabaseInstance example-dispatch ",
-		"gcp:sql/database:Database example-dispatch ",
-		"gcp:sql/user:User example-dispatch ",
-	}
-	var kept strings.Builder
-	dropped := 0
-	for _, line := range strings.SplitAfter(readGolden(t, "dispatch-registrations.golden"), "\n") {
-		if slices.ContainsFunc(own, func(prefix string) bool { return strings.HasPrefix(line, prefix) }) {
-			dropped++
-			continue
-		}
-		kept.WriteString(line)
-	}
-	require.Equal(t, len(own), dropped, "the golden holds one line each for the component's own instance, database and login")
-	return kept.String()
-}
-
 // With existingDatabaseInstance the component registers exactly what the default inputs register,
 // less its own DatabaseInstance, Database and User: the network half, the cluster half, the
 // generated passwords, the grants and every Kubernetes object keep the names and parents the
@@ -79,36 +53,42 @@ func dispatchExistingDatabaseInstanceGolden(t *testing.T) string {
 func TestDispatchExistingDatabaseInstanceRegistersNoInstanceOfItsOwn(t *testing.T) {
 	m, err := runDispatch(t, existingDatabaseInstanceArgs(), true)
 	require.NoError(t, err)
-	require.Equal(t, dispatchExistingDatabaseInstanceGolden(t), dispatchRegistrations(m))
+	require.Equal(t, dispatchGoldenWithout(t, []dispatchResourceName{
+		{sqlInstanceType, "example-dispatch"},
+		{sqlDatabaseType, "example-dispatch"},
+		{sqlUserType, "example-dispatch"},
+	}...), dispatchRegistrations(m))
 }
 
 // On an instance it does not make the component keeps every RandomPassword it always generated,
-// each under its name, with the inputs, the parent, the provider and the dependencies the default
-// path gives it: the database password, which DATABASE_URL carries and the login dispatch of a
-// promoted replica of the component's own instance holds, the signing key, the agent token and
-// the listener's token. A switch to existingDatabaseInstance therefore replaces none of them.
+// each registered as the default path registers it, a same step from that run to this one
+// (dispatchPlanBetween): under its name and parent, with its inputs, its provider, its options and
+// its dependencies. They are the database password, which DATABASE_URL carries and the login
+// dispatch of a promoted replica of the component's own instance holds, the signing key, the agent
+// token and the listener's token. A switch to existingDatabaseInstance therefore replaces none of
+// them.
 func TestDispatchExistingDatabaseInstanceKeepsEveryGeneratedPassword(t *testing.T) {
 	defaults, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
 	m, err := runDispatch(t, existingDatabaseInstanceArgs(), true)
 	require.NoError(t, err)
-	names := []string{"example-dispatch-password", "example-dispatch-signing-key", "example-dispatch-agent-token", "example-dispatch-listener-token"}
-	require.Equal(t, len(names), countRegistrations(m, randomPasswordType), "the four passwords, and no other")
-	for _, name := range names {
-		want, got := defaults.Named(t, randomPasswordType, name), m.Named(t, randomPasswordType, name)
-		require.Equal(t, want.Inputs, got.Inputs, "%s's inputs", name)
-		require.Equal(t, want.RPC.GetParent(), got.RPC.GetParent(), "%s's parent", name)
-		require.Equal(t, want.RPC.GetProvider(), got.RPC.GetProvider(), "%s's provider", name)
-		require.ElementsMatch(t, want.RPC.GetDependencies(), got.RPC.GetDependencies(), "%s's dependencies", name)
+	same := map[dispatchResourceName]string{
+		{randomPasswordType, "example-dispatch-password"}:       stepSame,
+		{randomPasswordType, "example-dispatch-signing-key"}:    stepSame,
+		{randomPasswordType, "example-dispatch-agent-token"}:    stepSame,
+		{randomPasswordType, "example-dispatch-listener-token"}: stepSame,
 	}
+	require.Equal(t, len(same), countRegistrations(m, randomPasswordType), "the four passwords, and no other")
+	requireDispatchPlan(t, dispatchPlanBetween(t, defaults, m), same)
 }
 
 // The app pod's cloud-sql-proxy sidecar connects to the instance existingDatabaseInstance names,
-// and the databaseInstance output is that name. Neither the Tailscale Service nor the front
-// door's Deployment waits for a DatabaseInstance then: they waited for the component's own
-// instance because an availability-type change restarts it in place, and the component makes no
-// instance to restart. In the default path both still wait for the component's own instance
-// (TestDispatchTheFrontDoorWaitsForTheDatabaseInstance holds why).
+// whose name the databaseInstance output is too
+// (TestConstructTakesAnExistingDatabaseInstanceFromAnotherResource holds the output). Neither the
+// Tailscale Service nor the front door's Deployment waits for a DatabaseInstance then: they waited
+// for the component's own instance because an availability-type change restarts it in place, and
+// the component makes no instance to restart. In the default path both still wait for the
+// component's own instance (TestDispatchTheFrontDoorWaitsForTheDatabaseInstance holds why).
 func TestDispatchExistingDatabaseInstanceIsWhatTheProxyConnectsTo(t *testing.T) {
 	m, err := runDispatch(t, existingDatabaseInstanceArgs(), true)
 	require.NoError(t, err)
@@ -119,7 +99,7 @@ func TestDispatchExistingDatabaseInstanceIsWhatTheProxyConnectsTo(t *testing.T) 
 	waitsForAnInstance := func(dependencies []string) bool {
 		return slices.ContainsFunc(dependencies, func(urn string) bool { return strings.Contains(urn, databaseInstanceURNPart) })
 	}
-	for _, frontDoor := range []struct{ typ, name string }{
+	for _, frontDoor := range []dispatchResourceName{
 		{"tailscale:index/service:Service", "example-dispatch"},
 		{deploymentType, "example-dispatch-tailnet"},
 	} {
@@ -128,15 +108,6 @@ func TestDispatchExistingDatabaseInstanceIsWhatTheProxyConnectsTo(t *testing.T) 
 		require.True(t, waitsForAnInstance(defaults.Named(t, frontDoor.typ, frontDoor.name).RPC.GetDependencies()),
 			"%s %s waits for the component's own instance in the default path", frontDoor.typ, frontDoor.name)
 	}
-
-	inputs := dispatchConstructBaseInputs()
-	inputs["existingDatabaseInstance"] = property.New(replicaConnectionName)
-	_, response, err := constructDispatch(t, inputs, false)
-	require.NoError(t, err)
-	output, ok := response.State.GetOk("databaseInstance")
-	require.True(t, ok, "databaseInstance is in the state")
-	require.True(t, output.IsString(), "databaseInstance is a known string, not %s", output)
-	require.Equal(t, replicaConnectionName, output.AsString())
 }
 
 // The four inputs that configure the Cloud SQL instance the component makes are refused beside

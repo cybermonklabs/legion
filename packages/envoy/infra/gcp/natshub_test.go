@@ -111,17 +111,14 @@ func newMocks() *pulumitest.Mocks {
 					"number":    resource.NewProperty("123456789012"),
 				}, nil
 			case getClusterToken:
-				// getCluster answers each block a cluster has as a list of one.
-				one := func(block resource.PropertyMap) resource.PropertyValue {
-					return resource.NewArrayProperty([]resource.PropertyValue{resource.NewProperty(block)})
-				}
+				// getCluster answers each block a cluster has as a list of one (oneBlock).
 				return resource.PropertyMap{
 					"name":                    args.Args["name"],
 					"location":                args.Args["location"],
 					"endpoint":                resource.NewProperty("example-existing-endpoint"),
-					"masterAuths":             one(resource.PropertyMap{"clusterCaCertificate": resource.NewProperty("ZXhhbXBsZS1leGlzdGluZy1jYQ==")}),
-					"workloadIdentityConfigs": one(resource.PropertyMap{"workloadPool": resource.NewProperty("example-project.svc.id.goog")}),
-					"secretManagerConfigs":    one(resource.PropertyMap{"enabled": resource.NewProperty(true)}),
+					"masterAuths":             oneBlock(resource.PropertyMap{"clusterCaCertificate": resource.NewProperty("ZXhhbXBsZS1leGlzdGluZy1jYQ==")}),
+					"workloadIdentityConfigs": oneBlock(resource.PropertyMap{"workloadPool": resource.NewProperty("example-project.svc.id.goog")}),
+					"secretManagerConfigs":    oneBlock(resource.PropertyMap{"enabled": resource.NewProperty(true)}),
 					"datapathProvider":        resource.NewProperty("ADVANCED_DATAPATH"),
 					"networkPolicies":         resource.NewArrayProperty([]resource.PropertyValue{}),
 					"network":                 resource.NewProperty("projects/example-project/global/networks/example-dispatch-network"),
@@ -136,6 +133,12 @@ func newMocks() *pulumitest.Mocks {
 // getClusterToken is the gcp provider's getCluster invoke, which gcp:Dispatch looks the cluster
 // existingCluster names up with.
 const getClusterToken = "gcp:container/getCluster:getCluster"
+
+// oneBlock is block as the gcp provider's getCluster answers each block a cluster has: a list of
+// one.
+func oneBlock(block resource.PropertyMap) resource.PropertyValue {
+	return resource.NewArrayProperty([]resource.PropertyValue{resource.NewProperty(block)})
+}
 
 // children returns every registration but the hub and the test's provider.
 func children(m *pulumitest.Mocks) []pulumitest.Registration {

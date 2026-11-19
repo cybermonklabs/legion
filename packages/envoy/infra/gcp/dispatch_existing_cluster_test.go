@@ -23,7 +23,7 @@ const (
 	// getCluster answers, the project's own, which the component's own cluster takes too.
 	existingClusterPrincipal = "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/subject/ns/dispatch/sa/example-dispatch"
 	// clusterURNPart is what the URN of any Cluster the component registers holds.
-	clusterURNPart = "$gcp:container/cluster:Cluster::"
+	clusterURNPart = "$" + clusterType + "::"
 )
 
 // exampleExistingCluster is existingCluster naming the example existing cluster newMocks answers
@@ -80,26 +80,6 @@ func runExistingClusterOnMocks(t *testing.T, m *pulumitest.Mocks) error {
 	return runDispatchOnMocks(t, m, "example-dispatch", existingClusterArgs(), newGCPProvider, newRandomProvider, newTailscaleProvider)
 }
 
-// dispatchExistingClusterGolden is the whole declaration of a component on an existing cluster,
-// taken from the default mode's registration golden: every line of it less the line of Cluster
-// example-dispatch, the component's own cluster. Reading it from the golden rather than writing it
-// out again holds the two to one declaration: a resource the default renames or reparents moves
-// this expectation with it.
-func dispatchExistingClusterGolden(t *testing.T) string {
-	t.Helper()
-	var kept strings.Builder
-	dropped := 0
-	for _, line := range strings.SplitAfter(readGolden(t, "dispatch-registrations.golden"), "\n") {
-		if strings.HasPrefix(line, "gcp:container/cluster:Cluster example-dispatch ") {
-			dropped++
-			continue
-		}
-		kept.WriteString(line)
-	}
-	require.Equal(t, 1, dropped, "the golden holds one line for the component's own cluster")
-	return kept.String()
-}
-
 // With existingCluster the component registers exactly what the default inputs register, less its
 // own Cluster: the network half, the database half and every Kubernetes object keep the names and
 // parents the default gives them (TestDispatchRegistrationsMatchTheGolden pins those). The
@@ -108,7 +88,7 @@ func dispatchExistingClusterGolden(t *testing.T) string {
 func TestDispatchExistingClusterRegistersNoClusterOfItsOwn(t *testing.T) {
 	m, err := runDispatch(t, existingClusterArgs(), true)
 	require.NoError(t, err)
-	require.Equal(t, dispatchExistingClusterGolden(t), dispatchRegistrations(m))
+	require.Equal(t, dispatchGoldenWithout(t, dispatchResourceName{clusterType, "example-dispatch"}), dispatchRegistrations(m))
 }
 
 // The Kubernetes provider of a component on an existing cluster takes the kubeconfig rendered from
@@ -135,9 +115,8 @@ func TestDispatchExistingClusterProviderTakesTheLookedUpCluster(t *testing.T) {
 
 	preview := newMocks()
 	preview.Preview = true
-	require.NoError(t, runDispatchOnMocks(t, preview, "example-dispatch", existingClusterArgs(), newGCPProvider, newRandomProvider, newTailscaleProvider))
+	require.NoError(t, runExistingClusterOnMocks(t, preview))
 	previewed := preview.Named(t, kubernetesProviderType, "example-dispatch-kubernetes").Inputs["kubeconfig"]
-	require.NotEqual(t, "<unknown>", normalizedProperty(previewed), "the kubeconfig is known in a preview")
 	known := unwrappedProperty(previewed)
 	require.True(t, known.IsString(), "the previewed kubeconfig is a known string, not %s", known.TypeString())
 	require.Equal(t, existingClusterKubeconfig(), known.StringValue())
@@ -145,10 +124,10 @@ func TestDispatchExistingClusterProviderTakesTheLookedUpCluster(t *testing.T) {
 
 // On an existing cluster no Kubernetes child waits on a Cluster: none is registered, and the
 // cluster exists before the component runs. Dispatch verifies a caller's projected token against
-// the looked-up cluster's issuer, which the serviceAccountIssuer output names too. The pods'
-// principal, which the principal output and the NATS seed's grant name, is the one the
-// component's own cluster gives, since a cluster in the same project shares its Workload Identity
-// pool.
+// the looked-up cluster's issuer. The pods' principal, which the NATS seed's grant names, is the
+// one the component's own cluster gives, since a cluster in the same project shares its Workload
+// Identity pool. TestConstructTakesAnExistingCluster holds the serviceAccountIssuer and principal
+// outputs to the same issuer and principal.
 func TestDispatchExistingClusterChildrenTakeTheLookedUpCluster(t *testing.T) {
 	args := existingClusterArgs()
 	args.OidcAudience = dispatchOidcAudience
@@ -174,22 +153,6 @@ func TestDispatchExistingClusterChildrenTakeTheLookedUpCluster(t *testing.T) {
 	}
 	require.Equal(t, existingClusterPrincipal, member(m))
 	require.Equal(t, member(defaults), member(m), "the seed's grant names the principal the component's own cluster gives")
-
-	_, own, err := constructDispatch(t, dispatchConstructBaseInputs(), false)
-	require.NoError(t, err)
-	inputs := dispatchConstructBaseInputs()
-	inputs["existingCluster"] = existingClusterConstructInput()
-	_, existing, err := constructDispatch(t, inputs, false)
-	require.NoError(t, err)
-	issuer, ok := existing.State.GetOk("serviceAccountIssuer")
-	require.True(t, ok)
-	require.Equal(t, existingClusterIssuer, issuer.AsString())
-	ownPrincipal, ok := own.State.GetOk("principal")
-	require.True(t, ok)
-	principal, ok := existing.State.GetOk("principal")
-	require.True(t, ok)
-	require.Equal(t, existingClusterPrincipal, principal.AsString())
-	require.Equal(t, ownPrincipal.AsString(), principal.AsString(), "the principal output is the one the component's own cluster gives")
 }
 
 // existingCluster's name and location are refused by the resolver, before anything registers and
@@ -249,9 +212,6 @@ func TestDispatchResolverRefusesAnExistingClusterGKECannotName(t *testing.T) {
 // existingCluster, and the cluster and its location. A cluster on the legacy datapath with network
 // policy on enforces NetworkPolicy, and is taken.
 func TestDispatchRefusesAnExistingClusterDispatchCannotRunIn(t *testing.T) {
-	one := func(block resource.PropertyMap) resource.PropertyValue {
-		return resource.NewArrayProperty([]resource.PropertyValue{resource.NewProperty(block)})
-	}
 	none := resource.NewArrayProperty([]resource.PropertyValue{})
 	const refused = "envoy-infra:gcp:Dispatch example-dispatch: existingCluster: cluster example-existing in us-central1 "
 	for _, row := range []struct {
@@ -267,19 +227,19 @@ func TestDispatchRefusesAnExistingClusterDispatchCannotRunIn(t *testing.T) {
 		{"no master auth", func(c resource.PropertyMap) error { c["masterAuths"] = none; return nil },
 			[]string{refused + "has no CA certificate, which the component's Kubernetes provider trusts its endpoint by"}},
 		{"an empty CA certificate", func(c resource.PropertyMap) error {
-			c["masterAuths"] = one(resource.PropertyMap{"clusterCaCertificate": resource.NewProperty("")})
+			c["masterAuths"] = oneBlock(resource.PropertyMap{"clusterCaCertificate": resource.NewProperty("")})
 			return nil
 		}, []string{refused + "has no CA certificate, which the component's Kubernetes provider trusts its endpoint by"}},
 		{"no Workload Identity config", func(c resource.PropertyMap) error { c["workloadIdentityConfigs"] = none; return nil },
 			[]string{refused + "has no Workload Identity pool: the pods' principal, and the NATS seed's grant to it, live in that pool"}},
 		{"an empty Workload Identity pool", func(c resource.PropertyMap) error {
-			c["workloadIdentityConfigs"] = one(resource.PropertyMap{"workloadPool": resource.NewProperty("")})
+			c["workloadIdentityConfigs"] = oneBlock(resource.PropertyMap{"workloadPool": resource.NewProperty("")})
 			return nil
 		}, []string{refused + "has no Workload Identity pool: the pods' principal, and the NATS seed's grant to it, live in that pool"}},
 		{"no Secret Manager config", func(c resource.PropertyMap) error { c["secretManagerConfigs"] = none; return nil },
 			[]string{refused + "has the Secret Manager add-on off: every pod mounts the NATS seed through it"}},
 		{"the Secret Manager add-on off", func(c resource.PropertyMap) error {
-			c["secretManagerConfigs"] = one(resource.PropertyMap{"enabled": resource.NewProperty(false)})
+			c["secretManagerConfigs"] = oneBlock(resource.PropertyMap{"enabled": resource.NewProperty(false)})
 			return nil
 		}, []string{refused + "has the Secret Manager add-on off: every pod mounts the NATS seed through it"}},
 		{"the legacy datapath with no network policy", func(c resource.PropertyMap) error {
@@ -288,12 +248,12 @@ func TestDispatchRefusesAnExistingClusterDispatchCannotRunIn(t *testing.T) {
 		}, []string{refused + `enforces no NetworkPolicy: its datapathProvider is "LEGACY_DATAPATH", not ADVANCED_DATAPATH, and its network policy is off; the component's NetworkPolicies are its only fence`}},
 		{"the legacy datapath with network policy off", func(c resource.PropertyMap) error {
 			c["datapathProvider"] = resource.NewProperty("LEGACY_DATAPATH")
-			c["networkPolicies"] = one(resource.PropertyMap{"enabled": resource.NewProperty(false), "provider": resource.NewProperty("CALICO")})
+			c["networkPolicies"] = oneBlock(resource.PropertyMap{"enabled": resource.NewProperty(false), "provider": resource.NewProperty("CALICO")})
 			return nil
 		}, []string{refused + `enforces no NetworkPolicy: its datapathProvider is "LEGACY_DATAPATH", not ADVANCED_DATAPATH, and its network policy is off; the component's NetworkPolicies are its only fence`}},
 		{"the legacy datapath with network policy on", func(c resource.PropertyMap) error {
 			c["datapathProvider"] = resource.NewProperty("LEGACY_DATAPATH")
-			c["networkPolicies"] = one(resource.PropertyMap{"enabled": resource.NewProperty(true), "provider": resource.NewProperty("CALICO")})
+			c["networkPolicies"] = oneBlock(resource.PropertyMap{"enabled": resource.NewProperty(true), "provider": resource.NewProperty("CALICO")})
 			return nil
 		}, nil},
 	} {

@@ -132,14 +132,10 @@ func providerFor(ctx context.Context, pkg string, opts ...pulumi.ResourceOption)
 // Each registers identically whether the component makes its cluster and its instance or runs on
 // the ones existingCluster and existingDatabaseInstance name, and the Network, the GlobalAddress
 // and the Connection whatever regionalNetwork says too, so turning it false deletes the regional
-// three alone. It also looks the project up through the gcp provider. The cluster half takes the
-// network and the subnetwork from it, and the database half the network, the connection and the
-// project.
-func newDispatchNetwork(ctx *pulumi.Context, comp *Dispatch, s dispatchSettings, opts ...pulumi.ResourceOption) (*dispatchNetwork, error) {
-	gcpProvider, err := providerFor(ctx.Context(), "gcp", opts...)
-	if err != nil {
-		return nil, err
-	}
+// three alone. It also looks the project up through gcpProvider, the consumer's gcp provider that
+// NewDispatch found. The cluster half takes the network and the subnetwork from it, and the
+// database half the network, the connection and the project.
+func newDispatchNetwork(ctx *pulumi.Context, comp *Dispatch, s dispatchSettings, gcpProvider pulumi.ProviderResource) (*dispatchNetwork, error) {
 	child := pulumi.Parent(comp)
 	project := organizations.LookupProjectOutput(ctx, organizations.LookupProjectOutputArgs{}, pulumi.Provider(gcpProvider))
 	network, err := compute.NewNetwork(ctx, s.hostname+"-network", &compute.NetworkArgs{AutoCreateSubnetworks: pulumi.Bool(false)}, child)
@@ -255,28 +251,25 @@ type dispatchLookedUpCluster struct {
 // whether or not the cluster's network policy setting is on.
 const advancedDatapath = "ADVANCED_DATAPATH"
 
-// lookupDispatchCluster looks the cluster existingCluster names up with the plain getCluster invoke,
-// through the consumer's gcp provider, and refuses a cluster Dispatch cannot run in, each refusal a
-// core.InputError naming existingCluster whose message names the cluster and its location: one the
-// lookup fails for; one with no endpoint or no CA certificate, which the component's Kubernetes
-// provider reaches and trusts it by; one with no Workload Identity pool, where the pods' principal
-// and the NATS seed's grant to it live; one with the Secret Manager add-on off, through which every
-// pod mounts the NATS seed; and one that enforces no NetworkPolicy (neither Dataplane V2 nor
-// network policy on), since the component's NetworkPolicies are its only fence. NewDispatch calls
-// it after the providers checks and before it registers anything, so a refused cluster leaves
-// nothing registered. Whether the cluster runs on the component's network can be judged only once
-// that network's name resolves, so newDispatchExistingCluster judges it.
-func lookupDispatchCluster(ctx *pulumi.Context, ref dispatchClusterRef, opts ...pulumi.ResourceOption) (*dispatchLookedUpCluster, error) {
-	gcpProvider, err := providerFor(ctx.Context(), "gcp", opts...)
+// lookupDispatchCluster looks existing, the cluster existingCluster names, up with the plain
+// getCluster invoke, through gcpProvider, the consumer's gcp provider, and refuses a cluster
+// Dispatch cannot run in, each refusal a core.InputError naming existingCluster whose message
+// names the cluster and its location: one the lookup fails for; one with no endpoint or no CA
+// certificate, which the component's Kubernetes provider reaches and trusts it by; one with no
+// Workload Identity pool, where the pods' principal and the NATS seed's grant to it live; one with
+// the Secret Manager add-on off, through which every pod mounts the NATS seed; and one that
+// enforces no NetworkPolicy (neither Dataplane V2 nor network policy on), since the component's
+// NetworkPolicies are its only fence. NewDispatch calls it after the providers checks and before
+// it registers anything, so a refused cluster leaves nothing registered. Whether the cluster runs
+// on the component's network can be judged only once that network's name resolves, so
+// newDispatchExistingCluster judges it.
+func lookupDispatchCluster(ctx *pulumi.Context, existing *DispatchClusterArgs, gcpProvider pulumi.ProviderResource) (*dispatchLookedUpCluster, error) {
+	cluster, err := container.LookupCluster(ctx, &container.LookupClusterArgs{Name: existing.Name, Location: pulumi.StringRef(existing.Location)}, pulumi.Provider(gcpProvider))
 	if err != nil {
-		return nil, err
-	}
-	cluster, err := container.LookupCluster(ctx, &container.LookupClusterArgs{Name: ref.name, Location: pulumi.StringRef(ref.location)}, pulumi.Provider(gcpProvider))
-	if err != nil {
-		return nil, core.InputErrorf("existingCluster", "existingCluster: look up cluster %s in %s: %w", ref.name, ref.location, err)
+		return nil, core.InputErrorf("existingCluster", "existingCluster: look up cluster %s in %s: %w", existing.Name, existing.Location, err)
 	}
 	refuse := func(why string) error {
-		return core.InputErrorf("existingCluster", "existingCluster: cluster %s in %s %s", ref.name, ref.location, why)
+		return core.InputErrorf("existingCluster", "existingCluster: cluster %s in %s %s", existing.Name, existing.Location, why)
 	}
 	switch {
 	case cluster.Endpoint == "":
@@ -291,12 +284,12 @@ func lookupDispatchCluster(ctx *pulumi.Context, ref dispatchClusterRef, opts ...
 		return nil, refuse(fmt.Sprintf("enforces no NetworkPolicy: its datapathProvider is %q, not %s, and its network policy is off; the component's NetworkPolicies are its only fence",
 			cluster.DatapathProvider, advancedDatapath))
 	}
-	location := ref.location
+	location := existing.Location
 	if cluster.Location != nil && *cluster.Location != "" {
 		location = *cluster.Location
 	}
 	return &dispatchLookedUpCluster{
-		name: ref.name, location: location,
+		name: existing.Name, location: location,
 		endpoint: cluster.Endpoint, caCertificate: cluster.MasterAuths[0].ClusterCaCertificate,
 		pool: cluster.WorkloadIdentityConfigs[0].WorkloadPool, network: cluster.Network[strings.LastIndex(cluster.Network, "/")+1:],
 	}, nil

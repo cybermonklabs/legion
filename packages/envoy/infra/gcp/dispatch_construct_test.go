@@ -317,7 +317,7 @@ func TestConstructTakesAnExistingDatabaseInstanceFromAnotherResource(t *testing.
 	inputs["existingDatabaseInstance"] = property.New(replicaConnectionName).WithDependencies([]resource.URN{upstream})
 	m, response, err := constructDispatch(t, inputs, false)
 	require.NoError(t, err)
-	require.Zero(t, countRegistrations(m, "gcp:sql/databaseInstance:DatabaseInstance"), "no DatabaseInstance registers while one is named")
+	require.Zero(t, countRegistrations(m, sqlInstanceType), "no DatabaseInstance registers while one is named")
 	output, ok := response.State.GetOk("databaseInstance")
 	require.True(t, ok, "databaseInstance is in the state")
 	require.True(t, output.IsString(), "databaseInstance is a known string, not %s", output)
@@ -736,7 +736,9 @@ func TestConstructRefusesADispatchInputWithClusterOnly(t *testing.T) {
 // preview. The component looks the cluster up, registers no Cluster, and answers with all eight
 // outputs: the three the cluster decides name the existing cluster, and are known in the preview
 // too, since they wait on the lookup's plain values, the project and the component's Network's
-// name alone; the five Dispatch decides are there as on the component's own cluster.
+// name alone; the five Dispatch decides are there as on the component's own cluster. In the update
+// the principal output is existingClusterPrincipal, the one the component's own cluster gives,
+// since a cluster in the same project shares its Workload Identity pool.
 func TestConstructTakesAnExistingCluster(t *testing.T) {
 	for _, row := range []struct {
 		name    string
@@ -749,7 +751,7 @@ func TestConstructTakesAnExistingCluster(t *testing.T) {
 			m.Preview = row.preview
 			response, err := constructDispatchOnMocks(t, m, inputs)
 			require.NoError(t, err)
-			require.Zero(t, countRegistrations(m, "gcp:container/cluster:Cluster"), "no Cluster registers while one is named")
+			require.Zero(t, countRegistrations(m, clusterType), "no Cluster registers while one is named")
 			for output, want := range map[string]string{
 				"clusterName":          "example-existing",
 				"kubeconfig":           existingClusterKubeconfig(),
@@ -763,6 +765,11 @@ func TestConstructTakesAnExistingCluster(t *testing.T) {
 			for _, output := range []string{"url", "databaseInstance", "principal", "agentToken", "serviceAccountSubject"} {
 				_, ok := response.State.GetOk(output)
 				require.True(t, ok, "%s is in the state", output)
+			}
+			if !row.preview {
+				principal, ok := response.State.GetOk("principal")
+				require.True(t, ok)
+				require.Equal(t, existingClusterPrincipal, principal.AsString(), "the principal output is the one the component's own cluster gives")
 			}
 		})
 	}

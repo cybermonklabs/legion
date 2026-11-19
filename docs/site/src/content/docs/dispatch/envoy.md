@@ -737,8 +737,8 @@ as `envoy-infra:gcp:NatsHub` on one VM or as `envoy-infra:gcp:ClusteredNatsHub`,
 servers on a GKE cluster that also runs the session listener as a workload of its own, which the
 component's optional tailnet hosts forward to. It also deploys Dispatch on Google Cloud as
 `envoy-infra:gcp:Dispatch`, which runs the tailnet-served Dispatch workloads. That component
-creates an Autopilot cluster and private Cloud SQL, or runs in a cluster and on a Cloud SQL
-instance it is given. A hub user with `dispatchMachineId` renders the NATS user
+makes its own Autopilot cluster and private Cloud SQL instance, or uses a cluster, an instance, or
+both, that another program makes. A hub user with `dispatchMachineId` renders the NATS user
 `envoy-dispatch` shares with its listener. Its
 [README](https://github.com/cybermonklabs/legion/blob/main/packages/envoy/infra/README.md) says how to
 install it, what each component deploys and which settings it sets.

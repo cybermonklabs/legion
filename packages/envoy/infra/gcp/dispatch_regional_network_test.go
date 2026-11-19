@@ -2,7 +2,6 @@ package gcp_test
 
 import (
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
@@ -23,13 +22,13 @@ type dispatchResourceName struct{ typ, name string }
 var (
 	dispatchNetworkKept = []dispatchResourceName{
 		{networkType, "example-dispatch-network"},
-		{"gcp:compute/globalAddress:GlobalAddress", "example-dispatch-services"},
-		{"gcp:servicenetworking/connection:Connection", "example-dispatch-services"},
+		{globalAddressType, "example-dispatch-services"},
+		{connectionType, "example-dispatch-services"},
 	}
 	dispatchNetworkRegional = []dispatchResourceName{
-		{"gcp:compute/subnetwork:Subnetwork", "example-dispatch"},
-		{"gcp:compute/router:Router", "example-dispatch"},
-		{"gcp:compute/routerNat:RouterNat", "example-dispatch"},
+		{subnetworkType, "example-dispatch"},
+		{routerType, "example-dispatch"},
+		{routerNatType, "example-dispatch"},
 	}
 )
 
@@ -40,50 +39,15 @@ func existingClusterRegionalNetworkArgs(value bool) *gcp.DispatchArgs {
 	return args
 }
 
-// dispatchNoRegionalNetworkGolden is the whole declaration of a component on an existing cluster
-// with regionalNetwork false, taken from the default mode's registration golden: every line of it
-// less the lines of Cluster, Subnetwork, Router and RouterNat example-dispatch, the component's own
-// cluster and the regional part of its network. Reading it from the golden rather than writing it
-// out again holds the two to one declaration: a resource the default renames or reparents moves
-// this expectation with it.
-func dispatchNoRegionalNetworkGolden(t *testing.T) string {
-	t.Helper()
-	dropped := []string{"gcp:container/cluster:Cluster example-dispatch "}
-	for _, regional := range dispatchNetworkRegional {
-		dropped = append(dropped, regional.typ+" "+regional.name+" ")
-	}
-	var kept strings.Builder
-	count := 0
-	for _, line := range strings.SplitAfter(readGolden(t, "dispatch-registrations.golden"), "\n") {
-		if slices.ContainsFunc(dropped, func(prefix string) bool { return strings.HasPrefix(line, prefix) }) {
-			count++
-			continue
-		}
-		kept.WriteString(line)
-	}
-	require.Equal(t, len(dropped), count, "the golden holds one line each for the component's own cluster, subnetwork, router and Cloud NAT")
-	return kept.String()
-}
-
 // With existingCluster and regionalNetwork false the component registers exactly what the default
 // inputs register, less its own Cluster and the regional part of its network: no Subnetwork,
 // Router or RouterNat registers. The comparison is of the whole registration set, so any of the
-// three, or any resource the default does not register, is a line it does not hold. The Network,
-// the GlobalAddress and the Connection register as they do beside existingCluster with
-// regionalNetwork unset, each a same step from that run to this one (dispatchPlanBetween), so the
-// Cloud SQL instance keeps its private address while the region empties.
+// three, or any resource the default does not register, is a line it does not hold.
 func TestDispatchRegionalNetworkFalseRegistersNoRegionalNetwork(t *testing.T) {
 	m, err := runDispatch(t, existingClusterRegionalNetworkArgs(false), true)
 	require.NoError(t, err)
-	require.Equal(t, dispatchNoRegionalNetworkGolden(t), dispatchRegistrations(m))
-
-	unset, err := runDispatch(t, existingClusterArgs(), true)
-	require.NoError(t, err)
-	same := map[dispatchResourceName]string{}
-	for _, r := range dispatchNetworkKept {
-		same[r] = stepSame
-	}
-	requireDispatchPlan(t, dispatchPlanBetween(t, unset, m), same)
+	dropped := slices.Concat([]dispatchResourceName{{clusterType, "example-dispatch"}}, dispatchNetworkRegional)
+	require.Equal(t, dispatchGoldenWithout(t, dropped...), dispatchRegistrations(m))
 }
 
 // regionalNetwork true is its value when unset, so beside existingCluster it registers exactly what

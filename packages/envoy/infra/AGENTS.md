@@ -201,7 +201,8 @@ versions. Never add the module to the root `go.work`.
   (`gcp.dispatchListenerEnv`, `TestDispatchRefusesABadNatsURLOnceItResolves`).
   `existingDatabaseInstance` is checked for its shape, `<project>:<region>:<instance>`, after its
   seed check (its row in `TestConstructRefusesASeedInADispatchInput`): the refusal is a
-  `core.InputError` naming it that never quotes the value (`gcp.dispatchDatabaseConnectionName`).
+  `core.InputError` naming it that never quotes the value (`gcp.dispatchDatabaseConnectionName`,
+  `TestDispatchRefusesAnExistingDatabaseInstanceThatIsNoConnectionName`).
 - **Plain or Input.** A field of a plain Go type (`string`, `*int`, a pointer to a struct) takes
   only a value the consumer's program knows when it runs: Construct refuses another resource's
   output there, naming the input (Pulumi SDK v3.265.0 `go/pulumi/provider.go`,

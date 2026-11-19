@@ -29,8 +29,8 @@ const (
 const (
 	// dispatchURN is the component's URN, the parent of every resource a transition table names.
 	dispatchURN = "urn:pulumi:s::p::" + dispatchType + "::example-dispatch"
-	// The types of the resources the transition tables name, beside networkType and
-	// randomPasswordType.
+	// The types of the resources the transition tables and the tests of the three inputs name,
+	// beside networkType and randomPasswordType.
 	subnetworkType    = "gcp:compute/subnetwork:Subnetwork"
 	routerType        = "gcp:compute/router:Router"
 	routerNatType     = "gcp:compute/routerNat:RouterNat"
@@ -120,10 +120,11 @@ func runDispatchForPlan(t *testing.T, args *gcp.DispatchArgs) *pulumitest.Mocks 
 // and secrets kept and compared with DeepEquals, so a secret compares as a secret and by its
 // element, and an unknown as unknown; when their dependencies are, compared as a set, and their
 // property dependencies, key by key with each list as a set; and when every other field of the
-// request is, but those dispatchPlanFieldsApart names: provider, protect, retainOnDelete,
-// deleteBeforeReplace, ignoreChanges, replaceOnChanges, aliases and aliasSpecs, customTimeouts,
-// deletedWith, additionalSecretOutputs, version and pluginDownloadURL among them. A read, which
-// none of the fixtures here makes, fails the test: it is no registration this derivation plans.
+// request is, which compares provider, protect, retainOnDelete, deleteBeforeReplace,
+// ignoreChanges, replaceOnChanges, aliases and aliasSpecs, customTimeouts, deletedWith,
+// additionalSecretOutputs, version and pluginDownloadURL among them. Only the fields
+// dispatchPlanFieldsApart names are not compared there. A read, which none of the fixtures here
+// makes, fails the test: it is no registration this derivation plans.
 func dispatchPlanBetween(t *testing.T, before, after *pulumitest.Mocks) dispatchPlan {
 	t.Helper()
 	first, second := dispatchPlanRequests(t, before), dispatchPlanRequests(t, after)
