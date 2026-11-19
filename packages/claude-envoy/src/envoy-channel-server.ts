@@ -1,5 +1,6 @@
 import { type Stats, unwatchFile, watchFile } from "node:fs"
 import { rm } from "node:fs/promises"
+import { setImmediate as nextTurn } from "node:timers/promises"
 import {
   DELIVERY_CAPABILITIES,
   type DeliveryCapability,
@@ -892,10 +893,9 @@ export interface ChannelReopenerOptions {
   readonly inbound: ChannelNatsSettings
   /** The connection name every connection of the server presents. */
   readonly name: string
-  /** Aborts when the server stops: it ends a dial's waits and its redials. */
+  /** Aborts when the server stops: it ends a dial's waits and its redials, and closes a connection
+   *  a dial opened after it. */
   readonly signal: AbortSignal
-  /** Whether the server is stopping, read once a dial opened a connection. */
-  readonly stopping: () => boolean
   /** Stops the token keeper the server holds now and holds `stop` in its place: the one the
    *  server's teardown stops. */
   readonly swapKeeper: (stop: () => void) => void
@@ -933,7 +933,7 @@ export function channelReopener(options: ChannelReopenerOptions): ReopenConnecti
       connect,
       options.signal,
     )
-    if (options.stopping()) {
+    if (options.signal.aborted) {
       next.stop()
       void next.connection.close().catch(() => undefined)
       throw new Error(START_STOPPING)
@@ -1484,9 +1484,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     )
     // nats.js ends a refused subscription as it reads the server's refusal, before the flush's
     // answer; the pump sees the end a turn of the event loop later.
-    const turn = Promise.withResolvers<void>()
-    setImmediate(turn.resolve)
-    await turn.promise
+    await nextTurn()
     if (relay !== owner || owner.subscription !== taken) return
     if (!confirmed) {
       taken?.unsubscribe()
@@ -3087,7 +3085,6 @@ export async function runEnvoyChannelServer(): Promise<void> {
         inbound,
         name: natsName,
         signal: booting.signal,
-        stopping: () => stopping,
         swapKeeper: (stop) => {
           stopNatsKeeper()
           stopNatsKeeper = stop

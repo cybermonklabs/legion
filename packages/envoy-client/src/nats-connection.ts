@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { type ConnectionOptions, ErrorCode, type NatsConnection } from "nats";
 // Not part of nats.js's public surface; nats 2.29.x has them where its connection and server list
 // are. A move would fail the typecheck here, and the rows that dial real nats.js
@@ -270,9 +271,7 @@ export async function connectNats(
         throw error;
       }
       hooks.onRetry?.(error, delayMs, attempt);
-      const waited = Promise.withResolvers<void>();
-      setTimeout(waited.resolve, delayMs);
-      await waited.promise;
+      await delay(delayMs);
       // A wait can run long (a blocked event loop): a later dial starts only with time to answer.
       if (plan.budgetMs - elapsed() < NATS_MIN_REDIAL_BOUND_MS) throw error;
       delayMs = Math.min(delayMs * 2, plan.maxDelayMs);

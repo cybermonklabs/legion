@@ -568,7 +568,6 @@ export async function runCodexEnvoyServer(): Promise<void> {
         inbound,
         name: natsName,
         signal: stopping.signal,
-        stopping: () => isStopping,
         swapKeeper: (stop) => {
           stopNatsKeeper()
           stopNatsKeeper = stop
