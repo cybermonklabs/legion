@@ -345,15 +345,37 @@ census_complete "$section" "after the backfill"
 # role's backend, so it cannot tell a long hold from a short one: such a role waives no hold, and
 # its failure says so.
 #
-# The budget is 180 s with no such hold, six of the tick's 30 s intervals, within an overall bound
-# of 30 minutes, three times objectPassInterval, measured on the shell's clock (SECONDS), not
-# counted in polls. A holder whose id came after the server's observation does not hold the event
-# but is counted all the same, so while another database keeps a transaction open, a server that
-# never runs the pass fails only at the overall bound. A hold longer than objectPassInterval lets
-# the tick's timed pass run while the event waits; that pass writes the message's node before its
-# event is read, and no quiet interval follows it. So when the message has its node while no
-# cursor has reached its event, the section sends another message and waits for that one's pass.
+# The wait is counted in the server's own work, not in time: the block-index tick's passes, each
+# recorded in duty_passes as the period it served (duty's recordPass). A tick that runs while no
+# such hold stands reads the event, owes the pass and runs it, so six ticks with no hold and no
+# pass are a server that does not cure the row, and the section fails; and sixty ticks in all,
+# three times objectPassInterval at the tick's interval, fail it however long the holds were. The
+# lease, the tick's interval and objectPassInterval are read from the source that declares them.
+# The clock is a hang guard alone: ten of the tick's intervals with no pass of its lease at all is
+# a server whose tick has stopped, and fails the section naming the last period it served. A
+# holder whose id came after the server's observation does not hold the event but is counted all
+# the same, so while another database keeps a transaction open, a server that never runs the pass
+# fails only at the sixtieth tick. A hold longer than objectPassInterval lets the tick's timed pass
+# run while the event waits; that pass writes the message's node before its event is read, and no
+# quiet interval follows it. So when the message has its node while no cursor has reached its
+# event, the section sends another message and waits for that one's pass.
 section=pass
+# declared WHAT FILE SED: the one value SED prints out of a Go source file, refused when the file or
+# the declaration is gone, so a build that moves one moves this driver with it.
+declared() {
+  [[ -r "$2" ]] || fail "$section" "$1" "$2 is unreadable"
+  answer="$(sed -n "$3" "$2")"
+  [[ -n "$answer" ]] || fail "$section" "$1" "no such declaration in $2"
+}
+readonly docs_source="$script_dir/../../../envoy/internal/dispatch/docs"
+declared "read the block-index tick's lease" "$docs_source/block_index.go" 's/^const BlockIndexLease = "\(.*\)"$/\1/p'
+readonly tick_lease="$answer"
+declared "read the block-index tick's interval" "$docs_source/block_index.go" \
+  's/^[[:space:]]*BlockIndexReconcileInterval = \([0-9][0-9]*\) \* time\.Second$/\1/p'
+readonly tick_seconds="$answer"
+declared "read the object pass's interval" "$docs_source/block_index_roll.go" \
+  's/^const objectPassInterval = \([0-9][0-9]*\) \* time\.Minute$/\1/p'
+readonly all_ticks=$((3 * answer * 60 / tick_seconds)) quiet_ticks=6 stalled_seconds=$((10 * tick_seconds))
 query "$section" "read whether this role reads every backend's transaction start" "
   select coalesce((select rolsuper from pg_roles where rolname = current_user), false)
       or pg_has_role(current_user, 'pg_read_all_stats', 'member')"
@@ -376,9 +398,8 @@ send_earlier_message() {
   read -r before written <<<"$answer"
 }
 send_earlier_message
-waited_from=$SECONDS unheld=0 holder="" resent=0
+boundary="" ticks=0 quiet=0 last_pass=$SECONDS holder="" resent=0
 while :; do
-  poll_from=$SECONDS
   query "$section" "read whether the server's object pass has run after event $written" "
     select case when exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
         then 'reached' else 'below' end
@@ -417,15 +438,27 @@ while :; do
     [[ "$sees_holders" == t ]] && held=1
     ;;
   esac
-  sleep 1
-  ((held)) || unheld=$((unheld + SECONDS - poll_from))
-  if ((unheld >= 180 || SECONDS - waited_from >= 1800)); then
+  query "$section" "read the period the block-index tick last served" \
+    "select coalesce((select boundary::text from duty_passes where lease = '$tick_lease'), '')"
+  if [[ "$answer" != "$boundary" ]]; then
+    if [[ -n "$boundary" ]]; then
+      ticks=$((ticks + 1))
+      ((held)) || quiet=$((quiet + 1))
+    fi
+    boundary="$answer" last_pass=$SECONDS
+  fi
+  if ((quiet >= quiet_ticks || ticks >= all_ticks)); then
     blind=""
     [[ "$sees_holders" == t ]] ||
       blind="; this role reads no other role's transaction start (it is no superuser and holds no pg_read_all_stats), so no hold was waived"
     fail "$section" "the server's object pass runs" \
-      "no cursor past event $written without a debt and no node of message $before, after $((SECONDS - waited_from)) s, $unheld s of them with no transaction of another database holding the event horizon back; the last one that held it: ${holder:-none}$blind"
+      "no cursor past event $written without a debt and no node of message $before after $ticks block-index ticks, $quiet of them with no transaction of another database holding the event horizon back; the last one that held it: ${holder:-none}$blind"
   fi
+  if ((SECONDS - last_pass >= stalled_seconds)); then
+    fail "$section" "the server's block-index tick runs" \
+      "no pass of lease $tick_lease for $((SECONDS - last_pass)) s; the last period it served began at ${boundary:-no period}"
+  fi
+  sleep 1
 done
 resends=""
 ((resent == 0)) || resends=", sent $resent more time(s) because a timed pass wrote an earlier message's node while a hold kept its event back"
