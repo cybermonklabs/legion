@@ -39,10 +39,14 @@ const (
 )
 
 // createTables are Oh My Pi's own Postgres statements for its two session tables at the pinned
-// release (buildQueries' createTable and createPartsTable). Each is IF NOT EXISTS, so they change
-// nothing Oh My Pi already made, which it migrates itself when it starts. The pinned release makes
-// a third table, its lease table omp_session_leases, which Legion writes nothing to and leaves to
-// Oh My Pi and the database's owner.
+// release (buildQueries' createTable and createPartsTable), except that they name each table bare,
+// as every other statement of this package does, so the connecting login's search_path picks its
+// schema, where Oh My Pi names each table public.<table> and runs its statements under SET LOCAL
+// search_path = pg_catalog, pg_temp (PG_SCHEMA and PG_SEARCH_PATH, sql-session-storage.ts at the
+// pinned tag). Each is IF NOT EXISTS, so they change nothing Oh My Pi already made, which it
+// migrates itself when it starts. The pinned release makes a third table, its lease table
+// omp_session_leases, which Legion writes nothing to and leaves to Oh My Pi and the database's
+// owner.
 var createTables = []string{
 	"CREATE TABLE IF NOT EXISTS omp_session_files (path TEXT PRIMARY KEY, content TEXT NOT NULL, mtime_ms BIGINT NOT NULL, " +
 		"title TEXT, title_source TEXT, title_updated_at TEXT, byte_len BIGINT)",
