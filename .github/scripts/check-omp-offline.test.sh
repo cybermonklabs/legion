@@ -255,6 +255,21 @@ run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "counts it under the helper" "$(contains "$out" 'offline helper (4) or carries a reason (0)')"
 
+# The harness's own spawns pass through ompEnv's body, which calls ompOffline in the same file; a
+# test that imports ompEnv passes only because ompEnv is a helper by its name.
+echo "case: ompEnv imported from the harness is the helper by its name"
+root=$(fixture ts_env_helper)
+put "$root" packages/pi-envoy/extensions/env-helper-omp.test.ts <<'EOF'
+import { ompEnv } from "@legion/pi-shared/test/omp-harness";
+
+test("by ompEnv", async () => {
+  await Bun.spawn([omp, "models"], { env: { ...ompEnv(home, cleanup) } }).exited;
+});
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts it under the helper" "$(contains "$out" 'offline helper (4) or carries a reason (0)')"
+
 echo "case: the reasoned form of a TypeScript start passes"
 root=$(fixture ts_reasoned)
 put "$root" packages/pi-envoy/extensions/tmux-omp.test.ts <<'EOF'
