@@ -691,45 +691,51 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	}
 
 	// R4 of dispatch://INFRA-3399: a read naming only owners the bundle holds no directory for,
-	// octocat here and other in the last row, where no remote of the working directory names a
-	// github.com repository for it, runs with GH_CONFIG_DIR's directory rather than being refused.
-	// It sends GitHub, here the proxy, which refuses it, that directory's token on every request,
-	// and among them a request whose target is octocat's. The proxy reads a request's target owner
-	// from a REST path or a GraphQL `owner` variable alone, so a row whose request names octocat in
-	// a search's q or in another GraphQL variable names the path that request reaches instead. The
-	// reads run under the stand-in the tests count as the shared check the read rule was proven
-	// against (testProvenCheckEnv), which the guard runs alone for a call that writes nothing: the
-	// whole guard would first read the repository's visibility, which `legion gh` refuses for an
-	// owner it holds no directory for. A GraphQL query, which ghWritesNothing does not count as a
-	// read, gets the whole guard, and names no repository whose visibility it would read.
+	// octocat here and other in one row, where no remote of the working directory names a
+	// github.com repository for it, runs with GH_CONFIG_DIR's directory rather than being refused:
+	// in home, which is no git repository, and in the marked fork checkout, whose remotes the
+	// reader reads for no call naming its repository. It sends GitHub, here the proxy, which
+	// refuses it, that directory's token on every request, and among them a request whose target
+	// is octocat's. The proxy reads a request's target owner from a REST path or a GraphQL `owner`
+	// variable alone, so a row whose request names octocat in a search's q or in another GraphQL
+	// variable names the path that request reaches instead. The reads run under the stand-in the
+	// tests count as the shared check the read rule was proven against (testProvenCheckEnv), which
+	// the guard runs alone for a call that writes nothing: the whole guard would first read the
+	// repository's visibility, which `legion gh` refuses for an owner it holds no directory for. A
+	// GraphQL query, which ghWritesNothing does not count as a read, gets the whole guard, and names
+	// no repository whose visibility it would read.
 	proven := []string{"PUBLIC_LEAK_CHECK=" + ghCheckAt(t, ghCheckPasses), testProvenCheckEnv + "=" + ghProvenProgramSHA256}
 	for _, tc := range []struct {
+		dir   string
 		env   []string
 		args  []string
 		owner string // the owner whose directory's token every request carries
 		reach string // what one request names: its target owner as the proxy reads it, or else its path
 	}{
-		{nil, []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner,id"}, "acme", "octocat"},
-		{nil, []string{"pr", "list", "-R", "octocat/hello", "--state", "all", "--limit", "300", "--json", "number"}, "acme", "octocat"},
-		{nil, []string{"pr", "list", "-R", "octocat/hello", "--state", "all", "--limit", "300", "--json", "number", "--search", "author:octocat"}, "acme", "/graphql"},
-		{nil, []string{"api", "repos/octocat/hello/contents/README.md?ref=0123abc", "-H", "Accept: application/vnd.github.raw"}, "acme", "octocat"},
-		{nil, []string{"api", "graphql", "-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}"}, "acme", "octocat"},
-		{nil, []string{"api", "graphql", "-f", "org=octocat", "-f", "query=query($org:String!){organization(login:$org){login}}"}, "acme", "/graphql"},
-		{nil, []string{"api", "graphql", "-f", "organization=octocat", "-f", "query=query($organization:String!){organization(login:$organization){login}}"}, "acme", "/graphql"},
-		{nil, []string{"api", "graphql", "-f", "login=octocat", "-f", "query=query($login:String!){repositoryOwner(login:$login){login}}"}, "acme", "/graphql"},
-		{nil, []string{"api", "orgs/octocat"}, "acme", "/orgs/octocat"},
-		{nil, []string{"api", "users/octocat"}, "acme", "/users/octocat"},
-		{[]string{"GH_REPO=octocat/hello"}, []string{"pr", "list", "--json", "number"}, "acme", "octocat"},
-		{nil, []string{"repo", "list", "octocat", "--limit", "1", "--json", "name"}, "acme", "octocat"},
-		{nil, []string{"search", "repos", "--owner", "octocat", "--limit", "1", "--json", "name"}, "acme", "/search/repositories"},
-		{nil, []string{"search", "prs", "repo:octocat/hello", "--limit", "1", "--json", "number"}, "acme", "/graphql"},
-		{nil, []string{"search", "issues", "owner:octocat", "--limit", "1", "--json", "number"}, "acme", "/graphql"},
-		{nil, []string{"api", "repos/other/thing"}, "acme", "other"},
+		{home, nil, []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner,id"}, "acme", "octocat"},
+		{home, nil, []string{"pr", "list", "-R", "octocat/hello", "--state", "all", "--limit", "300", "--json", "number"}, "acme", "octocat"},
+		{home, nil, []string{"pr", "list", "-R", "octocat/hello", "--state", "all", "--limit", "300", "--json", "number", "--search", "author:octocat"}, "acme", "/graphql"},
+		{home, nil, []string{"api", "repos/octocat/hello/contents/README.md?ref=0123abc", "-H", "Accept: application/vnd.github.raw"}, "acme", "octocat"},
+		{home, nil, []string{"api", "graphql", "-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}"}, "acme", "octocat"},
+		{home, nil, []string{"api", "graphql", "-f", "org=octocat", "-f", "query=query($org:String!){organization(login:$org){login}}"}, "acme", "/graphql"},
+		{home, nil, []string{"api", "graphql", "-f", "organization=octocat", "-f", "query=query($organization:String!){organization(login:$organization){login}}"}, "acme", "/graphql"},
+		{home, nil, []string{"api", "graphql", "-f", "login=octocat", "-f", "query=query($login:String!){repositoryOwner(login:$login){login}}"}, "acme", "/graphql"},
+		{home, nil, []string{"api", "orgs/octocat"}, "acme", "/orgs/octocat"},
+		{home, nil, []string{"api", "users/octocat"}, "acme", "/users/octocat"},
+		{home, []string{"GH_REPO=octocat/hello"}, []string{"pr", "list", "--json", "number"}, "acme", "octocat"},
+		{home, nil, []string{"repo", "list", "octocat", "--limit", "1", "--json", "name"}, "acme", "octocat"},
+		{home, nil, []string{"search", "repos", "--owner", "octocat", "--limit", "1", "--json", "name"}, "acme", "/search/repositories"},
+		{home, nil, []string{"search", "prs", "repo:octocat/hello", "--limit", "1", "--json", "number"}, "acme", "/graphql"},
+		{home, nil, []string{"search", "issues", "owner:octocat", "--limit", "1", "--json", "number"}, "acme", "/graphql"},
+		{home, nil, []string{"api", "repos/other/thing"}, "acme", "other"},
 		// Under a GH_CONFIG_DIR naming sjawhar's directory, the same read carries sjawhar's token.
-		{[]string{"GH_CONFIG_DIR=" + ghconfig.Dir(root, "sjawhar")}, []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner"}, "sjawhar", "octocat"},
+		{home, []string{"GH_CONFIG_DIR=" + ghconfig.Dir(root, "sjawhar")}, []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner"}, "sjawhar", "octocat"},
+		// In the marked fork checkout, whose remotes name acme's repository and sjawhar's, the
+		// read naming its repository carries acme's token.
+		{marked, nil, []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner"}, "acme", "octocat"},
 	} {
 		what := "legion gh " + strings.Join(tc.args, " ")
-		code, out := run(slices.Concat(ghEnv, proven, tc.env), os.Args[0], append([]string{"gh"}, tc.args...)...)
+		code, out := runIn(tc.dir, slices.Concat(ghEnv, proven, tc.env), os.Args[0], append([]string{"gh"}, tc.args...)...)
 		requests := proxy.take()
 		if len(requests) == 0 {
 			t.Errorf("%s = exit %d, %q, and sent GitHub nothing; want its requests sent with %s's token", what, code, out, tc.owner)

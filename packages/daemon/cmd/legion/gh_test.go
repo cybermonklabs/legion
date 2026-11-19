@@ -342,10 +342,10 @@ func ghReferenceUsages(t *testing.T) []ghReferenceUsage {
 // owners; only a command naming no repository at all is not named, once the working directory's
 // git remotes name no owner but the token's, and a command gh only prints the help or version of
 // sends nothing. GH_REPO names the owner only when nothing explicit does, and only for a leaf that
-// reads it. A read naming only owners the bundle holds no directory for, read in a working
-// directory whose remotes name no github.com repository for it, runs with GH_CONFIG_DIR's
-// directory (R4 of dispatch://INFRA-3399); every other call naming such an owner is routed and
-// refused as with no R4.
+// reads it. A read naming only owners the bundle holds no directory for and no repository a
+// configured rename moves, read in a working directory whose remotes name no github.com
+// repository for it, runs with GH_CONFIG_DIR's directory (R4 of dispatch://INFRA-3399); every
+// other call naming such an owner is routed and refused as with no R4.
 func TestGhTargetOfFailsClosed(t *testing.T) {
 	acme := map[string]string{"GH_REPO": "acme/widgets"}
 	// A pane of the issue owner acme, whose GH_CONFIG_DIR is acme's directory of the bundle.
@@ -709,7 +709,9 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 	// sjawhar/gone -> nobody/gone, whose `to` owner has none, which it refuses naming the pair
 	// around that error. The pane is acme's over that bundle (bundlePane). A call that writes
 	// nothing, whose every item is an owner with no directory and whose working directory's
-	// remotes name no github.com repository for it, runs with GH_CONFIG_DIR's directory. Every
+	// remotes name no github.com repository for it, runs with GH_CONFIG_DIR's directory: in a
+	// working directory that is no git repository, and in a checkout whose remotes the reader
+	// reads for no call naming its repository, acme's clone and the marked fork checkout. Every
 	// other call gets the routing and the refusal it gets with no fallback (selectors.dir): a
 	// write, a GraphQL mutation, a read beside an owner the bundle serves, a read with no
 	// GH_CONFIG_DIR, a read whose remotes were read for it (whether or not the remote's entry was
@@ -741,6 +743,20 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// GraphQL query's variables.
 		{argv: []string{"search", "issues", "owner:octocat", "org:hubot"}, env: bundlePane, dir: bundlePane["GH_CONFIG_DIR"]},
 		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "org=hubot", "-f", "query=query($owner:String!,$org:String!){a:repositoryOwner(login:$owner){login} b:organization(login:$org){login}}"}, env: bundlePane, dir: bundlePane["GH_CONFIG_DIR"]},
+		// Reads naming octocat/hello, by an argument, -R, gh api's endpoint and a GraphQL query's
+		// variables, in acme's clone and in the marked fork checkout: the reader reads no remote
+		// for a call naming its repository, so the checkout's remotes name none for it.
+		{argv: []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner"}, env: bundlePane, remotes: remotes(acmeClone), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner"}, env: bundlePane, remotes: markedFork(), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"pr", "list", "-R", "octocat/hello", "--json", "number"}, env: bundlePane, remotes: remotes(acmeClone), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"pr", "list", "-R", "octocat/hello", "--json", "number"}, env: bundlePane, remotes: markedFork(), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"api", "repos/octocat/hello"}, env: bundlePane, remotes: remotes(acmeClone), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"api", "repos/octocat/hello"}, env: bundlePane, remotes: markedFork(), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}"}, env: bundlePane, remotes: remotes(acmeClone), dir: bundlePane["GH_CONFIG_DIR"]},
+		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}"}, env: bundlePane, remotes: markedFork(), dir: bundlePane["GH_CONFIG_DIR"]},
+		// A read for which gh reads the working directory's remotes and finds none on github.com
+		// still runs with GH_CONFIG_DIR's directory: only a github.com remote read for it counts.
+		{argv: []string{"pr", "view", "https://github.com/octocat/hello/tree/main", "--json", "number"}, env: bundlePane, remotes: remotes(ghRemote{name: "origin", url: "https://gitlab.example.com/acme/widgets.git"}), dir: bundlePane["GH_CONFIG_DIR"]},
 		// A read where no GH_CONFIG_DIR names the directory a command naming no owner runs with.
 		{argv: []string{"repo", "view", "octocat/hello", "--json", "name"}, err: unserved},
 		// A write naming an owner with no directory, and a GraphQL mutation naming one.
