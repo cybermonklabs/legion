@@ -1427,6 +1427,88 @@ test("a server edit that takes the row under the reader's hand out of the typed 
   }
 });
 
+// The row a server edit took out of the typed search stays held, and it is still drawn as the
+// Inbox holds it: a pick of P2 in it draws P2 in every commit from the press on, before TanStack
+// Query tells the Inbox of it, after, and after the save lands and the Inbox is read again.
+test("a priority pick on a row held after a server edit took it out of the typed search draws the pick from the press through the landing", async () => {
+  const user = userEvent.setup();
+  const ask = inboxIssue("ask-p1", "CORE-1", "Ship it at P1?", { priority: 1 });
+  const other = inboxIssue("ask-b", "CORE-2", "Ship the docs?", { priority: 1 });
+  const renamed = { ...ask, question: "Rename it?" };
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([ask, other]);
+  const getAsk = mockAskReads([ask, other]);
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const commits = recordCommits<null>(() => drawnPriority('[data-inbox-row="ask-p1"]', "CORE-1"));
+  const { queryClient, unmount } = renderInbox("/?q=ship", { commits });
+  let notifications: HeldNotifications | undefined;
+  try {
+    await screen.findByTestId("ask-ask-p1");
+    // user-event's hover sends a fixed mouse sequence; the row's hold reads this pointerover alone.
+    fireEvent.pointerOver(rowOf("ask-p1"));
+    getInbox.mockResolvedValue([renamed, other]);
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+    });
+    expect(rowIds()).toContain("ask-p1");
+
+    const select = within(rowOf("ask-p1")).getByRole("combobox", { name: "Priority of CORE-1" });
+    const fromPick = commits.markAt(select, "change");
+    notifications = holdNotifications();
+    await user.selectOptions(select, "2");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    notifications.tell();
+    const reads = getInbox.mock.calls.length;
+    getInbox.mockResolvedValue([{ ...renamed, priority: 2 }, other]);
+    await act(async () => {
+      save.resolve({ ...narrowIssueOf(ask, "alice"), priority: 2 });
+      await save.promise;
+    });
+    await waitFor(() => expect(getInbox.mock.calls.length).toBeGreaterThan(reads));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+
+    expect(rowIds()).toContain("ask-p1");
+    expect(fromPick().map(({ drawn }) => drawn)).toEqual(fromPick().map(() => "2 P2"));
+  } finally {
+    notifications?.tell();
+    unmount();
+    patchIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The hold under the typed words lasts only while the reader's words are those: once they type,
+// the row a server edit took out of the search is tested against their words again, and goes at
+// once, though the pointer still rests on it.
+test("a row held after a server edit took it out of the typed search goes once the reader types more words", async () => {
+  const user = userEvent.setup();
+  const askA = inboxIssue("ask-a", "CORE-1", "Ship it?");
+  const askB = inboxIssue("ask-b", "CORE-2", "Ship the docs?");
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
+  const getAsk = mockAskReads([askA, askB]);
+  const { queryClient, unmount } = renderInbox("/?q=ship");
+  try {
+    await screen.findByTestId("ask-ask-a");
+    // user-event's hover sends a fixed mouse sequence; the row's hold reads this pointerover alone.
+    fireEvent.pointerOver(rowOf("ask-a"));
+    getInbox.mockResolvedValue([{ ...askA, question: "Rename it?" }, askB]);
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+    });
+    expect(rowIds()).toContain("ask-a");
+
+    await user.type(screen.getByRole("searchbox", { name: "Search asks" }), " docs");
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("after the reader's own answer fails, an answer from elsewhere still holds the row they are in", async () => {
   const user = userEvent.setup();
   const askA = issueAsk({ id: "ask-a" });
