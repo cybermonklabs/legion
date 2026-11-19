@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -20,30 +21,47 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-// editedMigration is the shipped migration the next release edits in place.
-const editedMigration = "0001_init.up.sql"
+// editedMigration is the shipped migration the next release edits in place. attributionRule is
+// the one #4466 edited in place, a comment scrub, before the runners judged identities: the lane
+// row edits it again, as the next such pull request would.
+const (
+	editedMigration = "0001_init.up.sql"
+	attributionRule = "20261105070440_pull_request_heads_attribution_rule.up.sql"
+)
 
-// nextRelease is release N+1: this tree, N, with editedMigration edited in place as a pull request
+// editedFile is one migration nextRelease edits: its name, and N's text and N+1's.
+type editedFile struct {
+	name             string
+	original, edited []byte
+}
+
+// nextRelease is release N+1: this tree, N, with each of names edited in place as a pull request
 // edits a shipped migration, declaring N's identity of the file in the replaces line the pre-merge
 // check requires (pgmigrate.CheckEdits). It is built with go build -overlay, so the tree is not
-// changed. It answers the binary, and N's text of the file and N+1's.
-func nextRelease(t *testing.T) (binary string, original, edited []byte) {
+// changed. It answers the binary and each file's two texts, in the order of names.
+func nextRelease(t *testing.T, names ...string) (string, []editedFile) {
 	t.Helper()
-	source, err := filepath.Abs(filepath.Join("..", "..", "internal", "dispatch", "store", "migrations", editedMigration))
-	if err != nil {
-		t.Fatal(err)
-	}
-	original, err = os.ReadFile(source)
-	if err != nil {
-		t.Fatalf("read %s: %v", editedMigration, err)
-	}
-	edited = append(append([]byte{}, original...), []byte("\n-- an edit of release N+1\n-- replaces: "+editedMigration+" sha256:"+pgmigrate.Checksum(original)+"\n")...)
 	dir := t.TempDir()
-	replacement := filepath.Join(dir, editedMigration)
-	if err := os.WriteFile(replacement, edited, 0o644); err != nil {
-		t.Fatal(err)
+	replace := map[string]string{}
+	var files []editedFile
+	for _, name := range names {
+		source, err := filepath.Abs(filepath.Join("..", "..", "internal", "dispatch", "store", "migrations", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		original, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		edited := append(append([]byte{}, original...), []byte("\n-- an edit of release N+1\n-- replaces: "+name+" sha256:"+pgmigrate.Checksum(original)+"\n")...)
+		replacement := filepath.Join(dir, name)
+		if err := os.WriteFile(replacement, edited, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		replace[source] = replacement
+		files = append(files, editedFile{name: name, original: original, edited: edited})
 	}
-	overlay, err := json.Marshal(map[string]map[string]string{"Replace": {source: replacement}})
+	overlay, err := json.Marshal(map[string]map[string]string{"Replace": replace})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +69,7 @@ func nextRelease(t *testing.T) (binary string, original, edited []byte) {
 	if err := os.WriteFile(overlayFile, overlay, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-dispatch-next", Flags: []string{"-overlay", overlayFile}}), original, edited
+	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-dispatch-next", Flags: []string{"-overlay", overlayFile}}), files
 }
 
 // refusedBoot starts binary on the database url names and requires it to refuse to start: exit 1,
@@ -80,7 +98,8 @@ func refusedBoot(t *testing.T, b *twoBuilds, url, binary, which, want string) {
 func TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile(t *testing.T) {
 	b := newTwoBuilds(t)
 	ctx := context.Background()
-	next, original, edited := nextRelease(t)
+	next, files := nextRelease(t, editedMigration)
+	original, edited := files[0].original, files[0].edited
 	// recorded reads what version 1's row records: its identity, and the text applied, which the
 	// lane's database records as N's text, or as none where this tree filled the row the previous
 	// build's runner wrote with no name.
@@ -132,14 +151,14 @@ func TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile
 // migrated. A pull request that edits a shipped migration in place, with the replaces line the
 // pre-merge check requires, must keep the lane green. Here this tree, N, stands for that previous
 // build, since its runner judges the applied text, and N+1 (nextRelease) for the pull request's
-// tree. The lane's database, built in production's order (migrateInOrder: N migrates it from
-// empty, N+1 migrates it forward), records N's text of the edited version as applied, and N boots
-// over it. The control is the lane's old setup, a database N+1 migrated from empty, which records
-// N+1's text as applied: N refuses it and exits 1, naming that text, which is the red lane
-// production's order keeps away.
+// tree, which edits 0001_init and #4466's migration. The lane's database, built in production's
+// order (migrateInOrder: N migrates it from empty, N+1 migrates it forward), records N's text of
+// each edited version as applied, and N boots over it. The control is the lane's old setup, a
+// database N+1 migrated from empty, which records N+1's texts as applied: N refuses it and exits
+// 1, naming each, which is the red lane production's order keeps away.
 func TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShippedMigration(t *testing.T) {
 	b := newTwoBuilds(t)
-	next, original, edited := nextRelease(t)
+	next, files := nextRelease(t, editedMigration, attributionRule)
 
 	lane := storetest.Empty(t)
 	migrateInOrder(t, lane, b.binary, next)
@@ -148,10 +167,29 @@ func TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShipped
 	release := startDispatchProcessWith(t, lane, options)
 	release.waitHealthy(t)
 	stop(t, release)
-	t.Logf("release N booted over the lane's database, which N migrated from empty and N+1 migrated forward")
+	t.Logf("release N booted over the lane's database, which N migrated from empty and N+1, editing %s and %s, migrated forward", editedMigration, attributionRule)
 
 	old := storetest.Empty(t)
 	migrateInOrder(t, old, next)
-	refusedBoot(t, b, old, b.binary, "control: release N over a database N+1 migrated from empty",
-		"version 1 is recorded as "+editedMigration+" sha256:"+pgmigrate.Checksum(original)+", which this build's file of version 1, "+editedMigration+" sha256:"+pgmigrate.Checksum(original)+", accepts, but the text applied under it has sha256 "+pgmigrate.Checksum(edited))
+	// One boot: its refusal names every refused version, so each file's line is read from it.
+	options = b.options(nil)
+	options.Binary = b.binary
+	refused := startDispatchProcessWith(t, old, options)
+	refused.WaitExit(t, "control: release N over a database N+1 migrated from empty")
+	if code := refused.Cmd.ProcessState.ExitCode(); code != 1 {
+		t.Errorf("control: release N exited %d over a database N+1 migrated from empty; want 1, a refusal", code)
+	}
+	output := refused.Output.String()
+	for _, file := range files {
+		version, err := strconv.ParseInt(strings.SplitN(file.name, "_", 2)[0], 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		own := file.name + " sha256:" + pgmigrate.Checksum(file.original)
+		v := strconv.FormatInt(version, 10)
+		want := "version " + v + " is recorded as " + own + ", which this build's file of version " + v + ", " + own + ", accepts, but the text applied under it has sha256 " + pgmigrate.Checksum(file.edited)
+		if !strings.Contains(output, want) {
+			t.Errorf("control: release N's refusal does not say %q:\n%s", want, output)
+		}
+	}
 }

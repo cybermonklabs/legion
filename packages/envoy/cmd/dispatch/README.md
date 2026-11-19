@@ -1683,6 +1683,8 @@ What the operator does:
 
 - A database that ran another branch's or an earlier commit's migration, or an edit of one, such as a development database or a preview stack's, holds a schema this build never wrote: reset it, by dropping the database, creating it empty, and starting the server, which migrates it from the first file.
   This includes a fresh preview or development database that a newer build created and an older build then boots: the older build refuses it, and you reset it.
+  It includes too a development or preview database that an unmerged branch with an edited migration first booted under this runner: the boot filled each row from that branch's file, not from the text the database ran, and main refuses the branch's identity, so you reset it.
+  A production database meets this refusal only on a rollback by hand to a release it never ran, one older than the release that first applied a migration it holds; roll back only to a release the database ran, as the auto-deployer does, which rolls back to the image that was running, and only when the deploy applied no version.
 
 - A file edited or renamed on purpose, whose schema the database already holds, takes the line the refusal names, alone on a line of its own and outside every literal; in a `-- pgmigrate:non-transactional` file it goes after the marker, which stays the first line, and the loader refuses a file whose marker stands on any other line, naming it, since such a file would run in a transaction.
   The first replaces line names the identity the version first shipped with, and a later line goes after the ones there, in their order; the next boot accepts the row as it is.
@@ -1694,10 +1696,12 @@ What the operator does:
   A revert of an edit is refused there too, since a database the edited release created applied the edit's text: the revert keeps the replaces lines.
 
 **The limit.**
-A release cannot accept a text it has never seen, so the release before an edit refuses a database that a release carrying the edit created from empty: the applied text there is the edit's.
+A release cannot accept a text it has never seen, so it refuses a database whose migration a later release applied from an edited text: a database that a later release created from empty when that release had edited a migration, and a production database that skipped the release which first shipped a migration, rolled back by hand to that release.
+A release boots on a database a later release filled, since a fill records the version's first identity and no applied text.
 That is the same row a development database leaves when it ran another branch's edit, and refusing it is what this check is for.
-A production database is created once and booted by every later release, so a rollback onto it, and a rolling update over it, still boot: a later release applies no version the earlier one holds, and leaves each row's applied text as it was.
-The two-build tests build their database the same way, in production's order: the previous release migrates it from empty, then this tree migrates it forward, and the previous release boots on that (`laneDatabase`, `cmd/dispatch/twobuild_harness_test.go`).
+A production database is created once and booted by every later release, so a rollback onto it to a release it ran, and a rolling update over it, still boot: a later release applies no version the earlier one holds, and leaves each row's applied text as it was.
+A fill records the file of the build that boots, not the text the database ran, so an edited text a database ran before the runners recorded identities is not detected: the first boot of this runner records its own file's identity for that version, and refuses nothing.
+The two-build tests build their database the same way, in production's order: the previous release migrates it from empty, then this tree migrates it forward, and the previous release boots on that (`laneDatabase`, `cmd/dispatch/twobuild_harness_test.go`); the browser step starts the previous release first for the same reason (`packages/dispatch/e2e/harness-listeners.ts`).
 So a pull request that edits a migration the previous release holds, with its replaces line, keeps that lane green, as it keeps production booting (`TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShippedMigration`, whose control is a database the pull request's tree migrated from empty, which the previous release refuses).
 
 Every row a runner before this one wrote has a null name, so a database's first boot of this runner fills each one with the identity this runner records of its file, and refuses none.

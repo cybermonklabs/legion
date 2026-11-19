@@ -1942,7 +1942,8 @@ LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-ser
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
 # The check that no migration a database may have run is edited without its replaces line: a
-# script around `go run`, so pinned whole, and the Run stands for the command it compiles.
+# script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
+# stands for the command it compiles.
 EDITED_MIGRATIONS_STEP = "Check that no migration a database may have run is edited without its replaces line"
 EDITED_MIGRATIONS_SCRIPT = "\n".join([
     'if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then',

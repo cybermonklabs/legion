@@ -225,8 +225,12 @@ jobs:
       # check's, at main's tip after a push the queue never tested, which can carry several
       # commits: its base is the commit main pointed at before that push (migration-base), and a
       # dispatch that names none fails here rather than compare the tip with its parent alone. The
-      # checkout is one commit deep, so the step fetches the base itself. The command is built and
-      # then run, not run through `go run`, which turns its exit 2, a check that could not be
+      # checkout is one commit deep, so the step fetches the base itself. A push whose `before` is
+      # the all-zero commit, or a commit GitHub no longer serves, fails that fetch, so the check
+      # fails closed: an operator then dispatches the run again by hand with a base GitHub serves,
+      # the newest commit of main the queue tested before the push, as
+      # `gh workflow run ci.yaml --ref main -f migration-base=<that commit>`. The command is built
+      # and then run, not run through `go run`, which turns its exit 2, a check that could not be
       # taken, into an exit 1.
       - name: Check that no migration a database may have run is edited without its replaces line
         env:

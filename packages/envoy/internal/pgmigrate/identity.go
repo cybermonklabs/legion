@@ -266,15 +266,21 @@ type Fix struct {
 //     it: a database that a later release migrated and an earlier one runs over, as an image
 //     rollback does, records versions the earlier set does not hold;
 //   - backfilled where its name is null, with the identity a runner records of the file
-//     (Migration.RecordedIdentity). Nothing says which file wrote it, so it is never refused;
+//     (Migration.RecordedIdentity) and no applied text. Nothing says which file wrote it, so it is
+//     never refused, and the fill records the booting build's file, not the text the database
+//     ran: an edited text a database ran before the runners recorded identities is not detected,
+//     and a database an unmerged branch's edit first booted records that branch's file;
 //   - refused, by a *Refusal, where it records an identity other than the file's own and other
 //     than any the file declares it replaces (Migration.Replaces);
 //   - refused, by a *Refusal, where it records the text it applied and that text is neither the
 //     file's own nor one a replaces line names: the database ran an edit of the file this build does
-//     not hold, such as another branch's, or a later release's when that release created it;
+//     not hold, such as another branch's, or a later release's that applied the version, as one
+//     does on a database it creates from empty, or on one that skipped this release and is rolled
+//     back to it by hand;
 //   - left as it is otherwise. A row that records an identity the file replaces keeps it, so the
 //     release that recorded it still finds its own file's identity there and boots, as a rolling
-//     update and a rollback need.
+//     update and a rollback to a release the database ran need; a row a later release filled has
+//     no applied text, so the release before boots on it too.
 //
 // The refusals come back joined, each a *Refusal, which IsRefusal finds.
 func Reconcile(migrations []Migration, recorded []Recorded) ([]Fix, error) {

@@ -541,11 +541,16 @@ migration and keeps the ones it applied. A database that ran another branch's or
 commit's migration, or an edit of one, such as a test or preview database, is reset: drop it,
 create it empty, and start Dispatch, which migrates it from the first file. This includes a fresh
 preview or development database that a newer build created and an older build then starts on:
-the older build refuses it, and you reset it. A migration edited or renamed on purpose takes the
-`-- replaces: <name> sha256:<hex>` line the refusal gives, after the replaces lines it has, and
-the next start accepts the recorded row as it is. A release cannot
-accept a text it has never seen, so the release before an edit refuses a database that a release
-with the edit created from empty; the production database, created once, still rolls back. To see
+the older build refuses it, and you reset it. It includes too a development or preview database
+that an unmerged branch with an edited migration first started on under this check: that start
+recorded the branch's file, not the text the database ran, and the main branch's release refuses
+it. A migration edited or renamed on purpose takes the `-- replaces: <name> sha256:<hex>` line the
+refusal gives, after the replaces lines it has, and the next start accepts the recorded row as it
+is. A release cannot accept a text it has never seen, so it refuses a database whose migration a
+later release applied from an edited text. On a production database, created once, that happens
+only on a rollback by hand to a release the database never ran: roll back only to a release it
+ran, as the auto-deployer does, which goes back to the image that was running. An edited text a
+database ran before this check is not detected: the first start records its own file. To see
 what a start would do, without changing the database, run
 `DATABASE_URL='<your database URL>' envoy-dispatch versions` with the image you mean to roll
 out, as you run its census.
