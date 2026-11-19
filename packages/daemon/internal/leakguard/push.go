@@ -388,8 +388,8 @@ func short(commit string) string {
 // git runs one git command in dir and answers its standard output, failing where git itself does:
 // a record this package could not read is a setup failure, never a push read as clean. A failure
 // quotes only what git wrote on its standard error (gitSaid), never its standard output, which is
-// the push's own content (a diff, a commit's message): it can be large, and it can hold the very
-// text the guard is refusing. Reading the two apart also keeps a warning git writes on its
+// the push's own content (a diff, a commit's message) and can be large, while git says why it
+// failed on its standard error. Reading the two apart also keeps a warning git writes on its
 // standard error out of the records parsed from its output.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
 	argv := gitArgv(args...)
