@@ -366,8 +366,10 @@ func TestRemoveTreeAnswersTheUnlinkForAFileItCanNeitherUnlinkNorRead(t *testing.
 // A chain of directories a role nests under a directory PID 1 removes is removed holding each
 // level's name, not its whole path: what the removal allocates grows with the chain's size. A walk
 // that joins each level's path allocates about the square of the depth, over 400 MB at this depth.
-// The bound is on the heap bytes the removal allocates (TotalAlloc), which bounds the most heap it
-// can hold at once; the stack its recursion grows, about 4 MB at this depth, is not in that count.
+// The bound is on the heap bytes the removal allocates (TotalAlloc) plus the stack its recursion
+// grows (StackInuse), the most memory it can hold at once for a chain; the test reads both from
+// runtime.MemStats before and after the call. RemoveTree runs on the test's own goroutine, so the
+// stack it grew is still in use at the second read: a stack shrinks only at a GC.
 func TestRemoveTreeOfADeepTreeHoldsItsMemoryBound(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and removes 20,000 directories: 12.5 s in an issue pod under gVisor")
@@ -408,9 +410,13 @@ func TestRemoveTreeOfADeepTreeHoldsItsMemoryBound(t *testing.T) {
 		t.Fatalf("%s holds %v (%v) after the removal, want nothing", root, entries, err)
 	}
 	allocated := after.TotalAlloc - before.TotalAlloc
-	t.Logf("removing a chain %d deep took %s and allocated %d bytes", depth, took, allocated)
-	if allocated > bound {
-		t.Fatalf("removing a chain %d deep allocated %d bytes, want at most %d", depth, allocated, bound)
+	// StackInuse can fall: a GC during the call can shrink or free other goroutines' stacks.
+	grown := int64(after.StackInuse) - int64(before.StackInuse)
+	t.Logf("removing a chain %d deep took %s, allocated %d heap bytes and grew the stack %d bytes",
+		depth, took, allocated, grown)
+	if int64(allocated)+grown > bound {
+		t.Fatalf("removing a chain %d deep allocated %d heap bytes and grew the stack %d bytes, want at most %d together",
+			depth, allocated, grown, bound)
 	}
 }
 
