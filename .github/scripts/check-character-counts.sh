@@ -945,6 +945,11 @@ def rhs(code: str, k: int, lang: str, commas: bool = False) -> str:
             k += 1
             continue
         if c in "([{":
+            if c == "{" and lang == "go" and depth == 0 and code[k - 1] in " \t" and code[start:k].strip():
+                # A Go `{` after a space opens the block of the `for`, `if` or `switch` whose
+                # header holds the assignment (gofmt writes a composite literal's `{` with no
+                # space), so `for i := range n {` assigns i from `range n` and not from the body.
+                break
             depth += 1
         elif c in ")]}":
             if depth == 0:
@@ -1319,6 +1324,14 @@ CONTROLS = [
     ("a %s count from a format verb is followed to its len()", "packages/envoy/internal/planted/verb.go",
      'package planted\n\nfunc v(name string) string {\n'
      '\treturn fmt.Sprintf("%s characters", strconv.Itoa(len(name)))\n}\n', ["instance"]),
+    ("a name a Go for header assigns takes the header's value, not its block's",
+     "packages/envoy/internal/planted/loop.go",
+     'package planted\n\nfunc l(t *testing.T, s string) {\n'
+     '\tfor n := range utf8.RuneCountInString(s) + 1 {\n'
+     '\t\tt.Logf("the first %d characters of %d bytes", n, len(s))\n\t}\n'
+     '\tconst places = 20\n\tfor place := range places {\n'
+     '\t\tt.Errorf("%q at character %d", s[:len(s)/2], place)\n\t}\n}\n',
+     ["code points", "instance | cannot judge"]),
     ("a comment is no hit", "packages/envoy-client/src/comment.ts",
      "// a 40-character name, in a comment\nconst re = /[`]/g;\n", []),
     ("a Python comment is no hit", "scripts/planted/comment.py",
