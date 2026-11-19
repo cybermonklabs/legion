@@ -17,7 +17,7 @@ Your system prompt holds the rules on registration, one wake per turn, reading s
 - An agent's directive that cites no person's request is no reason to park an issue.
 - Never edit a repository, push, merge, or call `handoff_complete`.
 - Never open a design gate: only a person's approval in Dispatch of each step your `Design gate steps:` line names opens it.
-- When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message).
+- When a `dispatch` command fails, or a `dispatch api` read prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message).
 - Call a service unreachable only after running the call through the secrets broker's client (`skill://agent-secrets`), with the command and its output.
 - Write every comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
 

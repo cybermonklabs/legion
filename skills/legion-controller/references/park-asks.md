@@ -17,7 +17,7 @@ With no `failure.at`, end the key `generation <n>` (`issues.<ISSUE>.generation`)
 1. Find your earlier ask for this key:
 
    ```text
-   notes=$(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")" | curl -sS --fail-with-body -H @- "$DISPATCH_URL/api/v1/issues/<root>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
+   notes=$(dispatch api --path '/api/v1/issues/<root>/comments') || { echo "Dispatch read failed" >&2; exit 1; }
    printf '%s' "$notes" | jq -cn 'input | if type == "array" then [.[] | select(.author.kind == "session" and (.body | startswith("Asked whether to park: "))) | {id, created_at, body}] else error("Dispatch did not answer the list") end'
    ```
 
