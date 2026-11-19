@@ -53,14 +53,14 @@ func newGrantGuardRig(t *testing.T) *grantGuardRig {
 	client := setupPublishTestClient(t)
 	clock := &listenerClock{now: time.Now()}
 	reads := &kvwatchtest.Waits{}
-	registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock.Now),
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1), store.WithClock(clock.Now),
 		store.WithRoleClaimWatch(kvwatch.WithAfterFunc(reads.After), kvwatch.WithNow(clock.Now)))
 	if err != nil {
 		t.Fatalf("open the listener's registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -274,7 +274,7 @@ func unreadRegistry(t *testing.T, client *bus.Client, clock *listenerClock) *sto
 	t.Helper()
 	const opens = 10
 	for range opens {
-		registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock.Now))
+		registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1), store.WithClock(clock.Now))
 		if err != nil {
 			t.Fatalf("open the restarted listener's registry: %v", err)
 		}

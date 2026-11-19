@@ -123,6 +123,7 @@ test("reasserts a role claimed after channel startup on the next heartbeat", asy
       configFile: { path: join(stateDirectory, "envoy.json"), error: null },
       stateDirectory,
       clientInstanceID: INSTANCE,
+      pluginName: "@sjawhar/claude-envoy",
       pluginVersion: "source",
     })
 
@@ -165,6 +166,7 @@ test("the record a remembered role writes names this process, so another one tel
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
 

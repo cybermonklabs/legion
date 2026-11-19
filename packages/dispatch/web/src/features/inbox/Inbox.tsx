@@ -1,4 +1,4 @@
-import { INBOX_DISMISSED_PAGE } from "@legion/contracts";
+import { awaitsDecision, INBOX_DISMISSED_PAGE } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -580,9 +580,11 @@ function heldRow(
  *  line is about that agent's asks alone, naming it in plain text (`useAgentText`): the empty
  *  state is a message, not a byline. Otherwise the credential requests above the bands wait on
  *  the viewer as much as an ask whose turn is theirs, so it says nothing until their list has
- *  come back empty: while the list loads, or after it fails, the Inbox cannot say that nothing
- *  needs them. The three filtered lines differ because only the reader's own list is about them:
- *  a cleared filter is about everyone, and any other selection is about whoever it names. */
+ *  come back with none waiting: while the list loads, or after it fails, the Inbox cannot say that
+ *  nothing needs them. An expired request waits on nobody (`awaitsDecision`), so a list holding
+ *  only expired ones still lets it say so, above which the section lists them for dismissal. The
+ *  three filtered lines differ because only the reader's own list is about them: a cleared filter
+ *  is about everyone, and any other selection is about whoever it names. */
 function emptyStateMessage({
   agent,
   agentTitle,
@@ -605,7 +607,9 @@ function emptyStateMessage({
   if (words.length > 0) return "Nothing matches this text";
   if (show === "dismissed") return "Nothing dismissed";
   if (agent !== undefined) return `No open asks from ${agentTitle}`;
-  if (credentials.status !== "listed" || credentials.requests.length > 0) return undefined;
+  if (credentials.status !== "listed" || credentials.requests.some(awaitsDecision)) {
+    return undefined;
+  }
   if (isOwnList(selection, viewer)) return "Nothing needs you";
   return selection.length === 0 ? "Nothing needs anyone" : "Nothing matches this filter";
 }

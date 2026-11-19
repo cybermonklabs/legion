@@ -66,9 +66,9 @@ var legionHidden = [][]string{
 	{"worker-shim"},
 	{"launcher"}, {"launcher", "role-init"},
 	{"claude-bridge"}, {"model-token"}, {"probe-image"},
-	{"workspace-init"}, {"workspace-init", "fetch"}, {"workspace-init", "skills"},
+	{"workspace-init"}, {"workspace-init", "fetch"},
 	{"workspace-init", "provision"}, {"workspace-init", "cache"},
-	{"skills-check"}, {"git-credential"}, {"git"}, {"gh"},
+	{"git-credential"}, {"git"}, {"gh"},
 	{"leak-check"}, {"leak-check", "pre-push"}, {"leak-check", "text"},
 }
 

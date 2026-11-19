@@ -232,6 +232,7 @@ on:
       - 'packages/envoy/internal/broker/judge/*'
       - 'packages/envoy/internal/broker/leasetime/*'
       - 'packages/envoy/internal/broker/machine/*'
+      - 'packages/envoy/internal/broker/netaddr/*'
       - 'packages/envoy/internal/broker/oauth/*'
       - 'packages/envoy/internal/broker/oauthstore/*'
       - 'packages/envoy/internal/broker/oauthwire/*'
