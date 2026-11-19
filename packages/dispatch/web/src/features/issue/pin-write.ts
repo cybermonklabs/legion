@@ -114,9 +114,10 @@ const pinWrite = defineWriteKind<PinWrite>({
 /** Pins or unpins one item of `issueKey` for the viewer: applied to the page's state at once and
  *  written behind every pin of that issue still out. The operation may be derived from the stored
  *  `dismissed` list at the moment of the write, which is what a toggle needs. A read of the state
- *  already out is given up, and one asked while the pin is out waits until the pin is decided
- *  (`holdBackReads`): Dispatch can answer either before it takes the pin, with the item as it
- *  was. */
+ *  already out is given up, and one asked while the pin is out waits until the pin is decided,
+ *  for at most `SEND_DEADLINE_MS` (`holdBackReads`): Dispatch can answer it before it takes the
+ *  pin, with the item as it was. The state is the viewer's alone, so the hold keeps back nobody
+ *  else's change, and ends on no event. */
 export function writePin(
   client: QueryClient,
   issueKey: string,

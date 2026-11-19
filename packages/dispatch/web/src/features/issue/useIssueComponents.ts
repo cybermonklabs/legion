@@ -8,6 +8,7 @@ import type {
   IssueComponentsInput,
   IssueDetails,
 } from "../../api/types";
+import { componentsWritten } from "../../api/write-events";
 import { predictTree } from "../architecture/architecture-model";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -57,9 +58,12 @@ export function useIssueComponents(
   const detailKey = ["issue", issue.key] as const;
   const treeKey = ["architecture", issue.project] as const;
   const mutation = useKeyedWrite({
-    // A read of the issue or the tree asked while the save is out waits for its answer: Dispatch
-    // can answer it before it takes the save, with the components from before the press.
-    holds: () => ({ keys: [detailKey, treeKey] }),
+    // A read of the issue or the tree asked while the save is out waits until Dispatch has taken
+    // it - its answer, or the viewer's `issue.updated` that changed its components - for at most
+    // `SEND_DEADLINE_MS`: Dispatch can answer it before, with the components from before the
+    // press. Only those two queries, by their exact keys: the issue's other reads under its key
+    // (coverage, results, steps) are none of this write's.
+    holds: () => ({ endsOn: componentsWritten(issue.key), keys: [detailKey, treeKey] }),
     // The components line says why a save was refused, beside the picker it came from.
     inline: true,
     label: () => `Components of ${issue.key}`,
@@ -67,9 +71,11 @@ export function useIssueComponents(
     target: () => `issue:${issue.key}`,
     request: (input: IssueComponentsInput) => issuePatchRequest(issue.key, { components: input }),
     onMutate: async (input): Promise<Snapshot> => {
+      // The two queries the save writes, by their exact keys, as the hold names them: a coverage,
+      // results or steps read under the issue's key is none of the save's.
       await Promise.all([
-        queryClient.cancelQueries({ queryKey: detailKey }),
-        queryClient.cancelQueries({ queryKey: treeKey }),
+        queryClient.cancelQueries({ exact: true, queryKey: detailKey }),
+        queryClient.cancelQueries({ exact: true, queryKey: treeKey }),
       ]);
       const snapshot: Snapshot = {
         details: queryClient.getQueryData<IssueDetails>(detailKey),

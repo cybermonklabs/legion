@@ -30,6 +30,7 @@ import type {
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
+import { inboxThreadsWritten } from "../../api/write-events";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
@@ -110,8 +111,9 @@ export interface MarkAllRead {
  * The press writes two reads at once - the Inbox's own list and the unread count every badge
  * shares - so the rows are drawn as read and the Type filter's counts, the sidebar's Inbox count
  * and the compact header's Inbox link are all at zero before the server answers. A read of
- * either already out at the press is given up, and one asked while the press is out waits for its
- * answer (`holds`): Dispatch can answer either before it marks the rows, with them still unread.
+ * either already out at the press is given up, and one asked while the press is out waits until
+ * Dispatch has taken it (`holds`: its answer or its thread-state event, and at most
+ * `SEND_DEADLINE_MS`): Dispatch can answer it before, with the rows still unread.
  * The Agents page's **New replies** badge is the server's own count of unread agent replies, so
  * it drops when the answer lands and the viewer's agent state is read again.
  *
@@ -144,7 +146,7 @@ export function useMarkAllRead({
     rows.some((row) => row.kind === "thread" && marksThread(row.thread, body));
 
   const write = useKeyedWrite<InboxReadResponse, InboxReadRequest, MarkAllRollback>({
-    holds: () => ({ keys: [threadsKey, countKey] }),
+    holds: () => ({ endsOn: inboxThreadsWritten, keys: [threadsKey, countKey] }),
     inline: true,
     label: () => "Inbox marked read",
     onError: (_error, _input, rollback) => {

@@ -34,9 +34,11 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
    *  rather than holding it for the next sign-in (`WriteSpec.endsWithSession`). */
   readonly endsWithSession?: boolean;
   /** The queries this write's optimistic value stands in, whose reads that start from the press
-   *  wait until its answer or its refusal is in (`holdBackReads`): the press's `onMutate` writes
-   *  that value, and its `onSuccess` or `onError` puts the answer or the rollback in its place
-   *  before the hold ends. */
+   *  wait while it is out (`holdBackReads`): until its answer or its refusal is in, its own live
+   *  event says Dispatch took it (`ReadHold.endsOn`), or `SEND_DEADLINE_MS` has passed. The press's
+   *  `onMutate` writes that value, and its `onSuccess` or `onError` puts the answer or the
+   *  rollback in its place before the hold ends. A write of queries other people write names its
+   *  event, or holds nothing. */
   readonly holds?: (variables: TVariables) => ReadHold;
 } & KeyedWriteMade<TData, TVariables>;
 
@@ -112,9 +114,10 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
  * that is down, and a mutation TanStack paused offline would make none, never go late and never
  * offer Stop trying. A press that lands with no answer is kept as `unanswered` for the surface
  * to say so, until the next press or `forgetUnanswered`. A write given `holds` holds back the
- * reads of those queries from its press until its answer or refusal is in: TanStack counts the
- * write as pending until its `onSettled` has run, which may itself read those queries again, so
- * the hold ends as `onSuccess` or `onError` returns rather than when the write settles.
+ * reads of those queries from its press until Dispatch has taken it (`KeyedWriteOptions.holds`):
+ * TanStack counts the write as pending until its `onSettled` has run, which may itself read those
+ * queries again, so the hold ends as `onSuccess` or `onError` returns, if its event or its
+ * deadline has not ended it first, rather than when the write settles.
  */
 export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   endsWithSession,

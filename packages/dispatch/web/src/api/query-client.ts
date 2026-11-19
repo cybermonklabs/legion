@@ -3,7 +3,6 @@ import {
   type DefaultedQueryObserverOptions,
   hashKey,
   notifyManager,
-  partialMatchKey,
   type Query,
   QueryClient,
   type QueryFunction,
@@ -14,6 +13,7 @@ import {
   type Updater,
 } from "@tanstack/react-query";
 
+import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { ApiError, isEventHeadUnavailable, isRetryableQueryError } from "./client";
 import type { DispatchEvent } from "./types";
 
@@ -74,7 +74,7 @@ export function queryRetryDelay(
  * server with its answer thrown away. Calls for one query while it waits share that one follow-up
  * fetch. Every mutation's own `invalidateQueries` call keeps its shape. It also tells whoever
  * listens each time a query calls its function (`onAttempt`), and holds back a read that a write's
- * optimistic value stands in for until that write's answer is in (`holdBackReads`).
+ * optimistic value stands in for until Dispatch has taken that write (`holdBackReads`).
  */
 export class DispatchQueryClient extends QueryClient {
   readonly #attempts = new Set<(queryHash: string) => void>();
@@ -218,9 +218,9 @@ export function replaceQueryData<T>(
   return written;
 }
 
-/** What a write holds back (`holdBackReads`): the queries its value stands in, each key, as a
- *  filter's `queryKey` does, naming every query it is a prefix of, and the live event that says
- *  Dispatch has taken the write. */
+/** What a write holds back (`holdBackReads`): the queries its value stands in, each by its exact
+ *  key, and, where other people write those queries too, the live event that says Dispatch has
+ *  taken the write. */
 export interface ReadHold {
   readonly keys: readonly QueryKey[];
   /** Whether `event`, delivered to `viewer`'s feed, is the write's own: Dispatch publishes it once
@@ -228,9 +228,9 @@ export interface ReadHold {
   readonly endsOn?: (event: DispatchEvent, viewer: string | undefined) => boolean;
 }
 
-/** One hold in force: the keys it holds, its event, and how it ends. */
+/** One hold in force: the hashes of the queries it holds, its event, and how it ends. */
 interface HeldReads {
-  readonly keys: readonly QueryKey[];
+  readonly hashes: ReadonlySet<string>;
   readonly endsOn: ReadHold["endsOn"];
   readonly end: () => void;
 }
@@ -245,11 +245,11 @@ interface ReadHolds {
 
 const readHolds = new WeakMap<QueryClient, ReadHolds>();
 
-/** Whether one of `holds` names the query `queryKey`: as a filter's `queryKey` does, a key names
- *  every query it is a prefix of. */
+/** Whether one of `holds` names the query `queryKey`, by its exact key. */
 function holdsRead(holds: ReadHolds, queryKey: QueryKey): boolean {
+  const hash = hashKey(queryKey);
   for (const hold of holds.held) {
-    if (hold.keys.some((key) => partialMatchKey(queryKey, key))) return true;
+    if (hold.hashes.has(hash)) return true;
   }
   return false;
 }
@@ -284,20 +284,29 @@ function holdEnded(
 }
 
 /**
- * Holds back every read of the queries `hold.keys` name - each key, as a filter's `queryKey`
- * does, every query it is a prefix of - that starts from now until the function this answers is
- * called, or until `hearLiveEvent` hears the write's own event (`hold.endsOn`): what a write keeps
- * while its optimistic value stands in those queries and its answer is not in. A read that started
- * after the optimistic write and reached Dispatch before the write did would answer the state the
- * write replaces, and put it back over the optimistic value while the write is still out; held, it
- * asks once the hold ends, as `projectIssuesQuery` waits for the board's moves. A read already out
- * when the hold starts is not held: the write cancels it (`replaceQueryData`). The write's answer,
- * put in over the reads still out, cancels a held read too, though it has asked nothing yet, and
- * what it was asked for - news of another change, a view mounting - would go unread: such a query
- * is read again once no hold names it, if anything still shows it and no read of it is out already
- * (the one `replaceQueryData` asks). `DispatchQueryClient` holds a read back in its query's
- * function, after `onAttempt` is told, so a plain `QueryClient` lets every read go. The function
- * this answers ends the hold once; called again, it does nothing.
+ * Holds back every read of the queries `hold.keys` name, each by its exact key, that starts from
+ * now until the hold ends: what a write keeps while its optimistic value stands in those queries
+ * and Dispatch has not taken it. A read that started after the optimistic write and reached
+ * Dispatch before the write did would answer the state the write replaces, and put it back over
+ * the optimistic value while the write is still out; held, it asks once the hold ends, as
+ * `projectIssuesQuery` waits for the board's moves. A read already out when the hold starts is not
+ * held: the write cancels it (`replaceQueryData`).
+ *
+ * A held read keeps back more than the old state: whatever anybody else changed in those queries
+ * meanwhile shows only once it asks. So a hold is short. It ends at the first of: the function this
+ * answers, which the write calls once its answer or refusal is in; the write's own live event
+ * (`hold.endsOn`, heard through `hearLiveEvent`), published once Dispatch has committed the write,
+ * so a read asked after it answers the write and every change since; and `SEND_DEADLINE_MS` after
+ * the hold began, by when its write is late at the latest (a write goes late that long after it is
+ * sent, and it is sent at the press or after it), so no read waits longer than that for a write
+ * that may not reach Dispatch soon.
+ *
+ * The write's answer, put in over the reads still out, cancels a held read too, though it has
+ * asked nothing yet, and what it was asked for - news of another change, a view mounting - would
+ * go unread: such a query is read again once no hold names it, if anything still shows it and no
+ * read of it is out already (the one `replaceQueryData` asks). `DispatchQueryClient` holds a read
+ * back in its query's function, after `onAttempt` is told, so a plain `QueryClient` lets every read
+ * go. The function this answers ends the hold once; called again, it does nothing.
  */
 export function holdBackReads(client: QueryClient, hold: ReadHold): () => void {
   let holds = readHolds.get(client);
@@ -308,6 +317,7 @@ export function holdBackReads(client: QueryClient, hold: ReadHold): () => void {
   const ours = holds;
   const end = () => {
     if (!ours.held.delete(held)) return;
+    clearTimeout(deadline);
     for (const check of [...ours.waiting]) check();
     for (const [hash, queryKey] of ours.givenUp) {
       if (holdsRead(ours, queryKey)) continue;
@@ -319,9 +329,10 @@ export function holdBackReads(client: QueryClient, hold: ReadHold): () => void {
   const held: HeldReads = {
     end,
     endsOn: hold.endsOn,
-    keys: [...hold.keys],
+    hashes: new Set(hold.keys.map((key) => hashKey(key))),
   };
   ours.held.add(held);
+  const deadline = setTimeout(end, SEND_DEADLINE_MS);
   return end;
 }
 

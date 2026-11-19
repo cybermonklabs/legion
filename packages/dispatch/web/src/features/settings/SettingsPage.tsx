@@ -81,8 +81,9 @@ export function SettingsPage(): ReactNode {
   // Both mapping writes show their refusal on the row they changed. Neither holds back the reads
   // of the mappings while it is out (`holds`): a read asked then can answer a default another
   // browser set after Dispatch took this write, which an event brings here, and the page shows it
-  // at once. Each write reads the mappings again once it settles, so a read Dispatch answered
-  // before it took the write is put right then.
+  // at once. A read already out at the press is given up in the step the press shows its row, so
+  // no second press reads the rows from before it. Each write reads the mappings again once it
+  // settles, so a read Dispatch answered before it took the write is put right then.
   const putMapping = useKeyedWrite<
     RepoProject,
     MappingInput,
@@ -99,8 +100,8 @@ export function SettingsPage(): ReactNode {
         ...variables,
       });
     },
-    onMutate: async (variables) => {
-      await queryClient.cancelQueries({ queryKey: ["repo-projects"] });
+    onMutate: (variables) => {
+      void queryClient.cancelQueries({ exact: true, queryKey: ["repo-projects"] });
       const previous = queryClient.getQueryData<RepoProject[]>(["repo-projects"]);
       const existing = previous?.find((mapping) => mapping.repo === variables.repo);
       queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
@@ -153,8 +154,8 @@ export function SettingsPage(): ReactNode {
         repo,
       });
     },
-    onMutate: async (repo) => {
-      await queryClient.cancelQueries({ queryKey: ["repo-projects"] });
+    onMutate: (repo) => {
+      void queryClient.cancelQueries({ exact: true, queryKey: ["repo-projects"] });
       const previous = queryClient.getQueryData<RepoProject[]>(["repo-projects"]);
       queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
         current.filter((mapping) => mapping.repo !== repo)

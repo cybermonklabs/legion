@@ -37,8 +37,8 @@ function actionFailure(id: string, error: Error): CommentActionFailure {
 }
 
 interface CommentActionQueueOptions<TContext> {
-  /** The queries `onMutate`'s optimistic value stands in, whose reads wait for the action's
-   *  answer (`KeyedWriteOptions.holds`). */
+  /** The queries `onMutate`'s optimistic value stands in, whose reads wait until Dispatch has
+   *  taken the action (`KeyedWriteOptions.holds`). */
   holds?(input: CommentActionInput): ReadHold;
   onError?(error: Error, input: CommentActionInput, context: TContext | undefined): void;
   onMutate?(input: CommentActionInput): TContext | Promise<TContext>;

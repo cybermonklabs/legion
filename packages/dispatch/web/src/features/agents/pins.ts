@@ -16,6 +16,7 @@ import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { UserAgentState, UserAgentStates } from "../../api/types";
+import { agentStateWritten } from "../../api/write-events";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { useAgentText } from "../refs/AgentName";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -82,8 +83,11 @@ function withPin(state: UserAgentState | undefined, pinned: boolean, at: string)
  * pending-writes indicator and, refused, retried or discarded there, as an issue's pin is. A
  * press whose write fails has the viewer's agent state read again, so no row is left pinned in a
  * page Dispatch never took the pin for. A read of the agent state already out at the press is
- * given up, and one asked while the write is out waits for its answer (`holds`): Dispatch can
- * answer either before it takes the pin, with the state from before the press.
+ * given up, and one asked while the write is out waits until Dispatch has taken the pin (`holds`:
+ * its answer, or the session's state event, whichever comes first, and at most
+ * `SEND_DEADLINE_MS`): Dispatch can answer it before, with the state from before the press. The
+ * query holds every session's unread count, which other sessions' replies move, so the hold ends
+ * on the event rather than wait out an answer that is late.
  *
  * It answers whether Dispatch made the write - a landing it kept no answer for counts, a
  * refusal and a press the reader stopped do not - and never rejects, so a control that presses
@@ -98,7 +102,10 @@ export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Prom
     void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
   }, [queryClient]);
   const { mutateAsync } = useKeyedWrite<UserAgentState, PinPress>({
-    holds: () => ({ keys: [userAgentStateQuery().queryKey] }),
+    holds: ({ sessionId }) => ({
+      endsOn: agentStateWritten(sessionId),
+      keys: [userAgentStateQuery().queryKey],
+    }),
     label: ({ pinned, sessionId }) =>
       `${pinned ? "Pin" : "Unpin"} ${text.sessionText(sessionId, undefined)}`,
     onError: reread,

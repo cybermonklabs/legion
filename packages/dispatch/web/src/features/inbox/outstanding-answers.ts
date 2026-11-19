@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import type { WriteBounds } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow } from "../../api/types";
+import { askWritten } from "../../api/write-events";
 import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
 
 /**
@@ -83,9 +84,11 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables> {
  * what the reader wrote, so the shell's indicator carries the write only while it is out. The
  * hold lasts the same `pending || failed` liveness the snooze reports its own write by
  * (`SnoozeControl`), let go when the server decides the answer, when the form is reset, and when
- * the card goes. A write that takes the row out holds the Inbox's reads until its answer is in
- * (`holds`): one asked meanwhile could be answered before Dispatch takes the answer, with the
- * row still in it.
+ * the card goes. A write that takes the row out holds the Inbox's reads until Dispatch has taken
+ * it (`holds`: its answer, or the ask's `ask.answered` or `ask.resolved` event, and at most
+ * `SEND_DEADLINE_MS`): one asked before could be answered with the row still in it. The Inbox
+ * lists the asks other people open, so the hold ends on the event rather than wait out an answer
+ * that is late.
  */
 export function useOutstandingAnswerWrite<TData, TVariables>({
   askId,
@@ -103,6 +106,7 @@ export function useOutstandingAnswerWrite<TData, TVariables>({
   const queryClient = useQueryClient();
   const mutation = useKeyedWrite<TData, TVariables, InboxRowsBefore>({
     holds: () => ({
+      endsOn: askWritten(askId, ["ask.answered", "ask.resolved"]),
       keys: removesRow === undefined || removesRow() ? [inboxQuery().queryKey] : [],
     }),
     inline: true,
