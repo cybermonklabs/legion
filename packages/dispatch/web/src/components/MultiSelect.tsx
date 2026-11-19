@@ -357,7 +357,9 @@ export function MultiSelect({
               {selected.length === 0 ? null : (
                 <div
                   className={
-                    error === null ? "p-2" : `border-t p-2 ${tooltips ? borderDefault : ON_PAGE.panel}`
+                    error === null
+                      ? "p-2"
+                      : `border-t p-2 ${tooltips ? borderDefault : ON_PAGE.panel}`
                   }
                 >
                   <button
