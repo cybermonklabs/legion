@@ -411,16 +411,15 @@ type AccessGroupPage struct {
 // AccessAnswer is the membership answer the secrets broker reads (GET
 // /api/v1/access/projects/{key}?person=): one project's owner and visibility, the person's member
 // kind (MemberAnswerFull, MemberAnswerRestricted or MemberAnswerNone), whether the read rule lets
-// that person see the project at a browser, and the repositories mapped to the project, sorted
-// and never null.
+// that person see the project at a browser, and the project's Slack channels. It names no
+// repositories: GitHub events carry no project, so no reader needs a project's repositories.
 type AccessAnswer struct {
-	Project      string   `json:"project"`
-	Visibility   string   `json:"visibility"`
-	Owner        string   `json:"owner"`
-	Person       string   `json:"person"`
-	MemberKind   string   `json:"member_kind"`
-	Visible      bool     `json:"visible"`
-	Repositories []string `json:"repositories"`
+	Project    string `json:"project"`
+	Visibility string `json:"visibility"`
+	Owner      string `json:"owner"`
+	Person     string `json:"person"`
+	MemberKind string `json:"member_kind"`
+	Visible    bool   `json:"visible"`
 	// SlackChannels is the project's own list, as ProjectAccess carries it: [] for none.
 	SlackChannels []string `json:"slack_channels"`
 	// SlackChannelsChangedAt is when that list last changed, as ProjectAccess carries it: null

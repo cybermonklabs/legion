@@ -4,26 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
-
-// appendEvents appends evs in tx as one write phase, as a write with several events does.
-func appendEvents(ctx context.Context, tx pgx.Tx, broker *events.Broker, evs []model.Event) ([]model.Event, error) {
-	appended := make([]model.Event, len(evs))
-	err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
-		for index, event := range evs {
-			if err := broker.QueueAppend(batch, event, func(written model.Event) { appended[index] = written }); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	return appended, err
-}
 
 // TestAPairRecordedTwiceReadsAsOnce: session_projects has no unique key, so two first writes of
 // one session in one project, open at once, store the pair twice
@@ -48,28 +31,28 @@ func TestAPairRecordedTwiceReadsAsOnce(t *testing.T) {
 	// the only kind the live insert records.
 	broker := events.NewBroker()
 	session := model.Actor{Kind: "session", ID: "ses_twice", Act: &model.ActorAct{Session: "ses_twice"}}
-	issueEvent := func(key string) []model.Event {
-		return []model.Event{{IssueKey: new(key), Type: "issue.updated", Actor: session, Payload: map[string]any{}}}
+	issueEvent := func(key string) model.Event {
+		return model.Event{IssueKey: new(key), Type: "issue.updated", Actor: session, Payload: map[string]any{}}
 	}
 	first, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the first write: %v", err)
 	}
 	defer first.Rollback(ctx)
-	if _, err := appendEvents(ctx, first, broker, issueEvent("PRIV-1")); err != nil {
+	if _, err := broker.Append(ctx, first, issueEvent("PRIV-1")); err != nil {
 		t.Fatalf("the first write: %v", err)
 	}
 	second, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin the second write: %v", err)
 	}
-	if _, err := appendEvents(context.Background(), second, broker, issueEvent("PRIV-2")); err != nil {
+	if _, err := broker.Append(context.Background(), second, issueEvent("PRIV-2")); err != nil {
 		t.Fatalf("the second write: %v", err)
 	}
 	if err := second.Commit(context.Background()); err != nil {
 		t.Fatalf("commit the second write: %v", err)
 	}
-	if _, err := appendEvents(ctx, first, broker, issueEvent("PRIV-2")); err != nil {
+	if _, err := broker.Append(ctx, first, issueEvent("PRIV-2")); err != nil {
 		t.Fatalf("the first write on PRIV-2: %v", err)
 	}
 	if err := first.Commit(ctx); err != nil {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
@@ -59,7 +60,8 @@ func TestOnlyTheOwnerNamesTheProjectsSlackChannels(t *testing.T) {
 }
 
 // TestTheAccessAnswerCarriesTheProjectsSlackChannels: the membership answer the secrets broker
-// reads carries the owner's list, [] before any write and the stored list after it.
+// reads carries the owner's list, [] before any write and the stored list after it, and names no
+// repositories: its JSON has no `repositories` key (GitHub events carry no project).
 func TestTheAccessAnswerCarriesTheProjectsSlackChannels(t *testing.T) {
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
@@ -73,6 +75,13 @@ func TestTheAccessAnswerCarriesTheProjectsSlackChannels(t *testing.T) {
 		response := agentRequest(t, handler, http.MethodGet, "/api/v1/access/projects/ACC?person=alice", nil, bearer)
 		if response.Code != http.StatusOK {
 			t.Fatalf("the membership answer: %d %s", response.Code, response.Body.String())
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &fields); err != nil {
+			t.Fatalf("decode the membership answer's fields: %v", err)
+		}
+		if repositories, ok := fields["repositories"]; ok {
+			t.Fatalf("the membership answer carries the field repositories (%s); it names no repositories", repositories)
 		}
 		return decodeBody[model.AccessAnswer](t, response).SlackChannels
 	}

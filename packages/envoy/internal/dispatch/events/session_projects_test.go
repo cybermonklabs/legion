@@ -20,7 +20,9 @@ func provenSession(id string) model.Actor {
 	return model.Actor{Kind: "session", ID: id, Owner: new("carol@example.com"), Act: &model.ActorAct{Session: id}}
 }
 
-// appendAll appends events in tx as one write phase, as a write with several events does.
+// appendAll appends events in tx as one write phase, as a write with several events does. Append
+// writes one event a phase, and TestASessionsEventRecordsItsProject needs several in one: a later
+// statement of the phase sees the session's record an earlier one queued and writes none.
 func appendAll(ctx context.Context, tx pgx.Tx, broker *Broker, events []model.Event) ([]model.Event, error) {
 	appended := make([]model.Event, len(events))
 	err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
@@ -144,8 +146,8 @@ func TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit(t *testing.T) {
 	seedEventOwners(t, database)
 	broker := NewBroker()
 	session := provenSession("ses_crossed")
-	issueEvent := func(key string) []model.Event {
-		return []model.Event{{IssueKey: new(key), Type: "issue.updated", Actor: session, Payload: map[string]any{}}}
+	issueEvent := func(key string) model.Event {
+		return model.Event{IssueKey: new(key), Type: "issue.updated", Actor: session, Payload: map[string]any{}}
 	}
 
 	first, err := database.Pool.Begin(ctx)
@@ -153,34 +155,57 @@ func TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit(t *testing.T) {
 		t.Fatalf("begin the first write: %v", err)
 	}
 	defer first.Rollback(ctx)
-	if _, err := appendAll(ctx, first, broker, issueEvent("PP-1")); err != nil {
+	if _, err := broker.Append(ctx, first, issueEvent("PP-1")); err != nil {
 		t.Fatalf("the first write on PP-1: %v", err)
 	}
 
+	// The second write's backend is read before it writes, so the test can watch that one backend
+	// queue behind the first write's transaction (storetest.QueuedBehind): a record of the pair
+	// that waited on the first's uncommitted row queues there, and fails the test the moment it
+	// does. The 30 s bound only turns a write that neither commits nor queues into a failure.
+	pids := make(chan uint32, 1)
 	second := make(chan error, 1)
 	go func() {
 		second <- func() error {
 			tx, err := database.Pool.Begin(context.Background())
 			if err != nil {
+				pids <- 0
 				return err
 			}
+			pids <- tx.Conn().PgConn().PID()
 			defer tx.Rollback(context.Background())
-			if _, err := appendAll(context.Background(), tx, broker, issueEvent("PP-2")); err != nil {
+			if _, err := broker.Append(context.Background(), tx, issueEvent("PP-2")); err != nil {
 				return err
 			}
 			return tx.Commit(context.Background())
 		}()
 	}()
-	select {
-	case err := <-second:
-		if err != nil {
-			t.Fatalf("the second write on PP-2 = %v, want it committed", err)
+	pid := <-pids
+	deadline := time.Now().Add(30 * time.Second)
+	for committed := false; !committed; {
+		select {
+		case err := <-second:
+			if err != nil {
+				t.Fatalf("the second write on PP-2 = %v, want it committed", err)
+			}
+			committed = true
+			continue
+		default:
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the second write on PP-2 waited 10s on the first's uncommitted record of the same pair")
+		queued, err := storetest.QueuedBehind(ctx, first, pid)
+		if err != nil {
+			t.Fatalf("read whether the second write queues behind the first: %v", err)
+		}
+		if queued {
+			t.Fatal("the second write on PP-2 waits on a lock the first write holds: its record of the pair waits for the first's uncommitted row")
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the second write on PP-2 neither committed nor queued behind the first within 30s")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 
-	if _, err := appendAll(ctx, first, broker, issueEvent("PP-2")); err != nil {
+	if _, err := broker.Append(ctx, first, issueEvent("PP-2")); err != nil {
 		t.Fatalf("the first write, taking PP-2 after the second committed: %v", err)
 	}
 	if err := first.Commit(ctx); err != nil {

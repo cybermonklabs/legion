@@ -9,7 +9,35 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
+
+// awaitGroupLockWaiter waits up to ten seconds for a backend of database to wait on a group's
+// name lock (LockGroupName's statement), and fails the test if the call under test answers on
+// answered first: that call never waited for the lock the test holds.
+func awaitGroupLockWaiter(t *testing.T, database *store.Store, what string, answered <-chan error) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		select {
+		case err := <-answered:
+			t.Fatalf("%s finished (%v) while a write naming its group held the group's name lock; want it to wait", what, err)
+		default:
+		}
+		waiting, err := storetest.CountLockWaits(context.Background(), database, "%'access_group:'%")
+		if err != nil {
+			t.Fatalf("count the waiters on a group's name lock: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never waited on its group's name lock within 10s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
 
 // listWrite is one write of a project's list as the routes run it: LockForAccessWrite, then the
 // write, in the one transaction tx.
@@ -49,11 +77,7 @@ func raceAgainstDelete(t *testing.T, project string, write listWrite) {
 			return tx.Commit(context.Background())
 		}()
 	}()
-	select {
-	case err := <-deleted:
-		t.Fatalf("the delete of crew finished (%v) while a write naming crew was still open; want it to wait", err)
-	case <-time.After(500 * time.Millisecond):
-	}
+	awaitGroupLockWaiter(t, database, "the delete of crew", deleted)
 	if _, _, err := write(ctx, open, broker, project, PrincipalGroup, "crew", by); err != nil {
 		t.Fatalf("write crew on %s's list while its delete waits: %v", project, err)
 	}
@@ -136,10 +160,8 @@ func TestAGroupsDeleteReadsEachProjectAfterItsLock(t *testing.T) {
 		}
 		deleted <- result{events: appended, err: err}
 	}()
-	select {
-	case got := <-deleted:
+	if got, answered, _ := storetest.AwaitOwnerLockWaiter(t, database, "the delete of crew", deleted); answered {
 		t.Fatalf("the delete of crew finished (%v) while a write of OTHER's list held OTHER's lock; want it to wait", got.err)
-	case <-time.After(500 * time.Millisecond):
 	}
 	if _, _, err := SetOwner(ctx, open, broker, "OTHER", carol, by); err != nil {
 		t.Fatalf("make %s OTHER's owner while the delete of crew waits: %v", carol, err)

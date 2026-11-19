@@ -21,7 +21,7 @@ import (
 func standIn(t *testing.T) *projectaccesstest.Server {
 	t.Helper()
 	return projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
-		"PRIV": {Visibility: "private", Owner: "carol@example.com", Listed: []string{"bob@example.com"}, Repositories: []string{"example/priv", "example/priv-old"}},
+		"PRIV": {Visibility: "private", Owner: "carol@example.com", Listed: []string{"bob@example.com"}},
 		"PUB":  {Visibility: "public", Owner: "carol@example.com"},
 	}, map[string]string{"bob@example.com": projectaccess.MemberRestricted, "carol@example.com": projectaccess.MemberFull})
 }
@@ -31,7 +31,8 @@ func clientOf(server *projectaccesstest.Server) *projectaccess.Client {
 }
 
 // TestAccessReadsTheK3Answer: every field of Dispatch's answer reaches Answer, for a person the
-// project's list names and for one it does not.
+// project's list names and for one it does not. The answer names no repositories, as Dispatch's
+// does not (GET /api/v1/access/projects/{key}).
 func TestAccessReadsTheK3Answer(t *testing.T) {
 	client := clientOf(standIn(t))
 	before := time.Now()
@@ -45,7 +46,7 @@ func TestAccessReadsTheK3Answer(t *testing.T) {
 	got.AskedAt = time.Time{}
 	want := projectaccess.Answer{
 		Project: "PRIV", Visibility: "private", Owner: "carol@example.com", Person: "carol@example.com",
-		MemberKind: projectaccess.MemberFull, Visible: true, Repositories: []string{"example/priv", "example/priv-old"},
+		MemberKind: projectaccess.MemberFull, Visible: true,
 	}
 	if !reflect.DeepEqual(got, want) || !got.Private() {
 		t.Fatalf("Access(PRIV, carol) = %+v (private %v), want %+v, private", got, got.Private(), want)
@@ -137,7 +138,7 @@ func TestAccessSendsTheAccountToken(t *testing.T) {
 			_, _ = w.Write([]byte(`{"person":"carol@example.com","member_kind":"full"}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"project":"PRIV","visibility":"private","owner":"carol@example.com","person":"carol@example.com","member_kind":"full","visible":true,"repositories":[]}`))
+		_, _ = w.Write([]byte(`{"project":"PRIV","visibility":"private","owner":"carol@example.com","person":"carol@example.com","member_kind":"full","visible":true,"slack_channels":[]}`))
 	}))
 	t.Cleanup(recorder.Close)
 	client := projectaccess.New(recorder.URL+"/", projectaccesstest.StaticAccount("the-broker-account-token-not-a-secret"), nil)

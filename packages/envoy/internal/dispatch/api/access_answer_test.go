@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"slices"
 	"testing"
@@ -41,33 +40,25 @@ func TestTheAccessAnswerAdmitsOnlyItsAccounts(t *testing.T) {
 		http.StatusNotFound, "PROJECT_NOT_FOUND", listedServiceAccount, "GET an unknown project's answer")
 }
 
-// TestTheAccessAnswerCarriesTheProjectsRepositories: the answer names the project's owner and
-// visibility, the person's member kind and whether they see it, and every repository mapped to it,
-// by its mapped and its renamed name.
-func TestTheAccessAnswerCarriesTheProjectsRepositories(t *testing.T) {
+// TestTheAccessAnswerNamesTheProjectAndThePerson: the answer names the project's owner and
+// visibility, the person as the people table spells them, their member kind and whether they see
+// it; with no person, member_kind is none and visible false.
+func TestTheAccessAnswerNamesTheProjectAndThePerson(t *testing.T) {
 	issuer := newServiceTokenIssuer(t)
-	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
+	handler, _, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "ACC", "name": "Access"}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create ACC: %d %s", response.Code, response.Body.String())
-	}
-	if _, err := database.Pool.Exec(context.Background(), `
-		insert into repo_projects (repo, project, created_by, renamed_to) values
-			('acme/web', 'ACC', '{"kind":"user","id":"alice"}', null),
-			('acme/api', 'ACC', '{"kind":"user","id":"alice"}', 'acme/api-v2')
-	`); err != nil {
-		t.Fatalf("map repositories: %v", err)
 	}
 	bearer := issuer.Mint(t, issuer.signing, issuer.Claims(listedServiceAccount, serviceTokenAudience))
 	response := agentRequest(t, handler, http.MethodGet, "/api/v1/access/projects/ACC?person=Alice", nil, bearer)
 	answer := decodeBody[model.AccessAnswer](t, response)
-	want := model.AccessAnswer{Project: "ACC", Visibility: model.ProjectPublic, Owner: "alice", Person: "alice", MemberKind: model.MemberAnswerFull, Visible: true,
-		Repositories: []string{"acme/api", "acme/api-v2", "acme/web"}}
+	want := model.AccessAnswer{Project: "ACC", Visibility: model.ProjectPublic, Owner: "alice", Person: "alice", MemberKind: model.MemberAnswerFull, Visible: true, SlackChannels: []string{}}
 	if response.Code != http.StatusOK || answer.Project != want.Project || answer.Visibility != want.Visibility || answer.Owner != want.Owner ||
-		answer.Person != want.Person || answer.MemberKind != want.MemberKind || answer.Visible != want.Visible || !slices.Equal(answer.Repositories, want.Repositories) {
+		answer.Person != want.Person || answer.MemberKind != want.MemberKind || answer.Visible != want.Visible || !slices.Equal(answer.SlackChannels, want.SlackChannels) {
 		t.Fatalf("the answer = %d %+v, want %+v", response.Code, answer, want)
 	}
 	alone := decodeBody[model.AccessAnswer](t, agentRequest(t, handler, http.MethodGet, "/api/v1/access/projects/ACC", nil, bearer))
-	if alone.Visible || alone.MemberKind != model.MemberAnswerNone || !slices.Equal(alone.Repositories, want.Repositories) {
-		t.Fatalf("the answer with no person = %+v, want visible false, member_kind none, and the repositories", alone)
+	if alone.Visible || alone.MemberKind != model.MemberAnswerNone || alone.Project != "ACC" {
+		t.Fatalf("the answer with no person = %+v, want ACC with visible false and member_kind none", alone)
 	}
 }

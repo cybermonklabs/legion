@@ -54,8 +54,8 @@ const CacheTTL = 30 * time.Second
 // requestTimeout bounds one call to Dispatch, the dial included.
 const requestTimeout = 10 * time.Second
 
-// maxAnswerBytes caps the answer read from Dispatch. An answer is a handful of short fields and a
-// list of repositories, so anything larger is not Dispatch's and is refused rather than held.
+// maxAnswerBytes caps the answer read from Dispatch. An answer is a handful of short fields and the
+// project's Slack channel ids, so anything larger is not Dispatch's and is refused rather than held.
 const maxAnswerBytes = 64 << 10
 
 // maxCached bounds how many answers are kept at once, so a caller naming project keys at random
@@ -125,9 +125,6 @@ type Answer struct {
 	// Visible is whether the person may see the project, or, for a question naming no person,
 	// whether it is public.
 	Visible bool `json:"visible"`
-	// Repositories is every "owner/name" repository Dispatch maps to the project, renames
-	// included, nil when the answer carries none.
-	Repositories []string `json:"repositories"`
 	// AskedAt is when the question this answers was asked, read before it was sent, so an
 	// answer's age is never less than it truly is. *Client always sets it; a zero AskedAt is an
 	// answer from a source that keeps no clock, which Visible takes as fresh.

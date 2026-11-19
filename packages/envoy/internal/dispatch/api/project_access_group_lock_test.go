@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // TestAListWriteNamingAGroupWaitsForTheGroupsLock (written by the A1 tester): the routes that put
@@ -46,13 +47,31 @@ func TestAListWriteNamingAGroupWaitsForTheGroupsLock(t *testing.T) {
 			handler.ServeHTTP(response, request)
 			answered <- response
 		}()
-		select {
-		case response := <-answered:
-			_ = held.Rollback(ctx)
-			t.Fatalf("%s answered %d %s while another transaction held crew's name lock; want it to wait for that lock, "+
-				"which a delete of crew takes first, or the two race to an orphan row or a deadlock",
-				write.name, response.Code, response.Body.String())
-		case <-time.After(750 * time.Millisecond):
+		// The write waits for crew's lock once a backend waits on LockGroupName's statement; it
+		// fails here if it answers first, and ten seconds with neither is a hang.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			select {
+			case response := <-answered:
+				_ = held.Rollback(ctx)
+				t.Fatalf("%s answered %d %s while another transaction held crew's name lock; want it to wait for that lock, "+
+					"which a delete of crew takes first, or the two race to an orphan row or a deadlock",
+					write.name, response.Code, response.Body.String())
+			default:
+			}
+			waiting, err := storetest.CountLockWaits(ctx, database, "%'access_group:'%")
+			if err != nil {
+				_ = held.Rollback(ctx)
+				t.Fatalf("count the waiters on crew's name lock: %v", err)
+			}
+			if waiting > 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				_ = held.Rollback(ctx)
+				t.Fatalf("%s neither answered nor waited on crew's name lock within 10s", write.name)
+			}
+			time.Sleep(5 * time.Millisecond)
 		}
 		if err := held.Rollback(ctx); err != nil {
 			t.Fatalf("release crew's lock: %v", err)

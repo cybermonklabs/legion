@@ -94,7 +94,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, repositories, slack_channels} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible false): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, the repositories mapped to the project by their mapped and renamed names, and slack_channels, the owner's list, [] for none. slack_channels_changed_at is when the list last changed, null until a write changes the list. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    /** @description The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, slack_channels, slack_channels_changed_at} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible false): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, and slack_channels, the owner's list, [] for none. slack_channels_changed_at is when the list last changed, null until a write changes the list. It names no repositories. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
     get: operations["getApiV1AccessProjectsByKey"];
     put?: never;
     post?: never;
@@ -3312,7 +3312,6 @@ export interface components {
       owner: string;
       person: string;
       project: string;
-      repositories: string[] | null;
       slack_channels: string[] | null;
       /** Format: date-time */
       slack_channels_changed_at: null | string;
