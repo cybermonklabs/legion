@@ -800,6 +800,23 @@ replace "$root/.github/ci-filters.yaml" "  - 'fixtures/**'" \
 run_check "$root"
 check "a ! pattern matching nothing is no dead pattern" "$(is "$status" 0)"
 
+echo "case: a directory listing of files_but_tests leaves out a file git ignores"
+# A local run leaves ignored files behind (packages/dispatch's e2e writes packages/envoy's
+# .dispatch-e2e.lock and dispatch-e2e/). Listed as reads, each would be refused as matching no
+# file of the repository, since repo_files() leaves it out, on a tree CI's fresh checkout passes.
+root=$(fixture ignored-listed)
+replace "$root/.github/scripts/ci_job_reads.py" 'from ci_filter_coverage import Read, at, gate, run' \
+  'from ci_filter_coverage import Read, at, files_but_tests, gate, run'
+replace "$root/.github/scripts/ci_job_reads.py" 'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]' \
+  'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition"), *[Read(path, "the app walks fixtures") for path in files_but_tests("fixtures", suffix="", tree=True)]]'
+printf '/fixtures/run.lock\n/fixtures/run/\n' > "$root/.gitignore"
+echo lock > "$root/fixtures/run.lock"
+mkdir -p "$root/fixtures/run"
+echo log > "$root/fixtures/run/out.log"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and names no ignored file" "$(is "$(contains "$out" 'fixtures/run')" false)"
+
 # Rule 9's second direction, the other way round: a pattern that matches files of the repository
 # none of which its job reads selects the job for a change no step of it can see. The app job's
 # reads are its closure, the fixture its test opens and ci.yaml, and docs/readme.md is none of

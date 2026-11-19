@@ -27,6 +27,7 @@ the recipe that runs it as CI does, GOROOT unset.
 from __future__ import annotations
 
 import atexit
+import functools
 import itertools
 import json
 import os
@@ -704,6 +705,33 @@ def repo_files() -> list:
             )
         out += os.fsdecode(result.stdout).split("\0")
     return sorted({f for f in out if f and (REPO / f).is_file()})
+
+
+@functools.cache
+def repo_file_set() -> frozenset:
+    """repo_files() as a set, read once per run for files_but_tests, which the data calls for
+    many directories."""
+    return frozenset(repo_files())
+
+
+def files_but_tests(directory, suffix=".go", tree=False, skip=()):
+    """The files of `directory` a reader that passes over Go test files reads, one path each: the
+    ones whose name ends in `suffix` ("" for every name) but each `_test.go` one, and with `tree`
+    those of every directory under it too, but a directory named in `skip` and node_modules, which
+    holds no file of the repository. A `<dir>/*` or `<dir>/**` read would count every test file
+    of the directory as read, so rule 17 of check-ci-filters.sh would write no `!` pattern for one
+    and a change to a test file alone would start the job; no glob leaves the test files out, so
+    the files are listed from the directory as it is on each run, and one added later is declared
+    with no edit here. Only repo_files() counts, as for every other read: a file git ignores, such
+    as what a local run leaves behind, is no file of the repository, so a read of it would be
+    refused as matching none."""
+    known = repo_file_set()
+    out = []
+    for current, subdirs, names in os.walk(directory):
+        subdirs[:] = sorted(s for s in subdirs if tree and s not in {"node_modules", *skip})
+        out += [path for n in sorted(names)
+                if n.endswith(suffix) and not n.endswith(TEST_SUFFIX) and (path := f"{current}/{n}") in known]
+    return out
 
 
 class Expander:

@@ -56,7 +56,7 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
-from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, run
+from ci_filter_coverage import CACHE_WORKFLOW, Read, TagRun, exact, files_but_tests, repo_file_set, run
 from ci_filter_coverage import at as at_in, gate as gate_in
 from go_build_tags import go_skips_dir, tag_sets
 
@@ -189,15 +189,18 @@ def envoy_go_files_but_infra():
     `<dir>/**/*.go` per top-level directory that holds one and packages/envoy/*.go if the root
     does. A glob for a directory holding no .go file would name no file, which rule 9 refuses, and
     out - where packages/dispatch/e2e/run-broker.sh builds the broker binaries the browser suite
-    starts - holds binaries alone."""
+    starts - holds binaries alone. Only a file of repo_files() counts, so a directory a local run
+    filled with files git ignores names no glob either."""
+    known = repo_file_set()
+
     def holds_go(directory: Path) -> bool:
         for current, subdirs, names in os.walk(directory):
             subdirs[:] = [s for s in subdirs if s not in {"node_modules", "testdata"}]
-            if any(n.endswith(".go") for n in names):
+            if any(n.endswith(".go") and f"{current}/{n}" in known for n in names):
                 return True
         return False
 
-    globs = [f"{ENVOY}/*.go"] if any(Path(ENVOY).glob("*.go")) else []
+    globs = [f"{ENVOY}/*.go"] if any(p.as_posix() in known for p in Path(ENVOY).glob("*.go")) else []
     for entry in sorted(Path(ENVOY).iterdir()):
         if entry.is_dir() and entry.name not in {"infra", "node_modules", "testdata"} and holds_go(entry):
             globs.append(f"{ENVOY}/{entry.name}/**/*.go")
@@ -223,22 +226,6 @@ def credential_check_reads():
         else:
             globs.add(f"{parts[0]}/**" if len(parts) > 1 else path)
     return sorted(globs)
-
-
-def files_but_tests(directory, suffix=".go", tree=False, skip=()):
-    """The files of `directory` a reader that passes over Go test files reads, one path each: the
-    ones whose name ends in `suffix` ("" for every name) but each `_test.go` one, and with `tree`
-    those of every directory under it too, but a directory named in `skip` and node_modules, which
-    holds no file of the repository. A `<dir>/*` or `<dir>/**` read would count every test file
-    of the directory as read, so rule 17 of check-ci-filters.sh would write no `!` pattern for one
-    and a change to a test file alone would start the job; no glob leaves the test files out, so
-    the files are listed from the directory as it is on each run, and one added later is declared
-    with no edit here."""
-    out = []
-    for current, subdirs, names in os.walk(directory):
-        subdirs[:] = sorted(s for s in subdirs if tree and s not in {"node_modules", *skip})
-        out += [f"{current}/{n}" for n in sorted(names) if n.endswith(suffix) and not n.endswith(TEST_SUFFIX)]
-    return out
 
 
 ENVOY_MODULE = "github.com/sjawhar/envoy"
