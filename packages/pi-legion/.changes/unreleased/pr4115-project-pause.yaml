@@ -7,4 +7,4 @@ body: |-
   `read_release_records` counts a wake that a pause held as `heldByPause` and leaves it out of the
   wake-to-first-turn seconds. Where that wake's issue was released before it, the wake ends the
   release in the pod-hours released and in the share of releases woken within ten minutes. The
-  plugin speaks daemon API contract 171.
+  plugin speaks daemon API contract 175.
