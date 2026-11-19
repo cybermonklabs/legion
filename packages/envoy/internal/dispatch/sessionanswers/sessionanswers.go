@@ -141,7 +141,7 @@ const query = `
 	         where ae.id = x.id and ae.actor->>'kind' = 'user' and ae.actor->>'id' = ae.answer->>'user') > 1 as replaced,
 	       a.id::text as ask_id, a.question as ask_question,
 	       i.key as issue_key, i.title as issue_title, ar.project_key, ar.slug, ar.name,
-	       false as mentioned, false as in_ask_thread, false as in_comment_thread, false as on_document,
+	       false as mentioned, false as in_comment_thread, false as on_document,
 	       false as replies_to_session,
 	       ` + ownsAsk + ` as owns
 	from answer_ids x
@@ -154,7 +154,7 @@ const query = `
 	       a.id::text, a.question,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
 	       x.mentioned,
-	       c.ask_id is not null, c.reply_to is not null,
+	       c.reply_to is not null,
 	       c.artifact_id is not null or c.anchor->>'artifact_id' is not null,
 	       false,
 	       ` + ownsAsk + `
@@ -168,7 +168,7 @@ const query = `
 	select 'message', m.id::text, m.created_at, null, m.author, m.body, null, null, false,
 	       null, null,
 	       i.key, i.title, null, null, null,
-	       false, false, false, false,
+	       false, false, false,
 	       exists (select 1 from messages p where p.id = m.in_reply_to
 	               and p.author->>'kind' = 'session' and p.author->>'id' = $1),
 	       false
@@ -185,7 +185,7 @@ const query = `
 	       null, false,
 	       a.id::text, a.question,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
-	       false, false, false, false,
+	       false, false, false,
 	       false,
 	       ` + ownsAsk + `
 	from decline_ids x
@@ -232,18 +232,18 @@ func List(ctx context.Context, pool *store.Pool, session string, since time.Time
 // scan decodes one query row into the item it is to session.
 func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 	var (
-		item                                                model.SessionAnswer
-		author, answer                                      []byte
-		body, dispatchWords, askID, askQuestion             *string
-		issueKey, issueTitle, docProject, docSlug, docName  *string
-		mentioned, inAskThread, inCommentThread, onDocument bool
-		repliesToSession, owns                              bool
+		item                                               model.SessionAnswer
+		author, answer                                     []byte
+		body, dispatchWords, askID, askQuestion            *string
+		issueKey, issueTitle, docProject, docSlug, docName *string
+		mentioned, inCommentThread, onDocument             bool
+		repliesToSession, owns                             bool
 	)
 	if err := row.Scan(
 		&item.Kind, &item.ID, &item.At, &item.EditedAt, &author, &body, &dispatchWords, &answer,
 		&item.Replaced,
 		&askID, &askQuestion, &issueKey, &issueTitle, &docProject, &docSlug, &docName,
-		&mentioned, &inAskThread, &inCommentThread, &onDocument, &repliesToSession, &owns,
+		&mentioned, &inCommentThread, &onDocument, &repliesToSession, &owns,
 	); err != nil {
 		return model.SessionAnswer{}, err
 	}
@@ -296,9 +296,10 @@ func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 		case item.Kind == model.SessionAnswerKindMessage:
 			item.Relation = model.SessionAnswerRelationSentYouMessage
 		// A reply in the thread of an ask the session owns outranks a mention: it is a reply on
-		// the session's own ask however it arrived. Any other session reads the reason that
-		// delivered it.
-		case inAskThread && owns:
+		// the session's own ask however it arrived. owns is false for a comment outside an ask's
+		// thread, whose ask the comment arm's left join leaves null (ownsAsk), so owns alone says
+		// the comment is in such a thread. Any other session reads the reason that delivered it.
+		case owns:
 			item.Relation = model.SessionAnswerRelationRepliedOnYourAsk
 		case mentioned:
 			item.Relation = model.SessionAnswerRelationMentionedYou

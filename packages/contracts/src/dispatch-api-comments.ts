@@ -178,7 +178,7 @@ export const CommentEventPayloadSchema = z
     ask_state: commentEventPayloadFields.ask_state,
     ask_waiting_on: commentEventPayloadFields.ask_waiting_on,
     /** Whose ask the reply is on, as `commentEventPayloadFields.ask_sessions` says. A stand-in
-     *  (`payload_omitted`) drops it when the list encodes to more than 256 bytes. */
+     *  (`payload_omitted`) keeps it whole, whatever its size. */
     ask_sessions: commentEventPayloadFields.ask_sessions,
     turn: commentFields.turn.optional(),
     anchor: z

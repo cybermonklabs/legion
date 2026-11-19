@@ -729,21 +729,19 @@ function dispatchCommentReplyWith(
 /**
  * Whether the session reading a reply in an ask's thread (a `comment.created` with an `ask_id`)
  * owns the ask: asked it or follows it, as the payload's `ask_sessions` says. Every copy of the
- * event carries the same bytes, whatever brought it to this session, so the reader decides. A
- * stand-in (`standIn`: `payload_omitted`) drops the list when it is long, and an ask that many
- * sessions own would then read as everyone's, so a stand-in without it is no reader's own.
- * Undefined for a comment in no ask's thread, and for a payload that carries no list and is no
- * stand-in: a Dispatch older than the field wrote it, or a resend replayed an event stored before
- * it, and the card says what it said before the field.
+ * event carries the same bytes, whatever brought it to this session, so the reader decides. The
+ * outbox's stand-in for an event the bus refused (`payload_omitted`) keeps the list whole,
+ * whatever its size, so a stand-in decides the same way. Undefined for a comment in no ask's
+ * thread, and for a payload that carries no list: a Dispatch older than the field wrote it, its
+ * stand-ins among them, or a resend replayed an event stored before it, and the card says what it
+ * said before the field.
  */
 function ownsRepliedAsk(
   comment: CommentPayload | undefined,
-  standIn: boolean,
   sessionID: string
 ): boolean | undefined {
   if (comment?.ask_id === undefined || comment.ask_id === null) return undefined;
-  if (comment.ask_sessions !== undefined) return comment.ask_sessions.includes(sessionID);
-  return standIn ? false : undefined;
+  return comment.ask_sessions?.includes(sessionID);
 }
 
 /**
@@ -977,10 +975,6 @@ type DispatchFrame =
       readonly notify: unknown;
       readonly quiet: unknown;
       readonly delivery: unknown;
-      /** Whether the event arrived as a stand-in (`payload_omitted`), which `event` no longer
-       *  says once a body read whole took the place of the one it dropped (`withWholeBody`):
-       *  the stand-in's other long fields are dropped all the same. */
-      readonly standIn: boolean;
     }
   | {
       readonly raw: unknown;
@@ -1026,7 +1020,6 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
         notify: wireFrame.event.notify,
         quiet: wireFrame.event.quiet,
         delivery: targeted.data.delivery,
-        standIn: payloadWasOmitted(targeted.data.event.payload),
       };
     }
     const recoverable = RecoverableDispatchDeliveryFailureSchema.safeParse(value);
@@ -1064,7 +1057,6 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
     notify: wireEvent.notify,
     quiet: wireEvent.quiet,
     delivery: undefined,
-    standIn: payloadWasOmitted(parsed.data.payload),
   };
 }
 export function inboundTimestamp(milliseconds: number | undefined): string {
@@ -1205,7 +1197,7 @@ export function renderInbound(
             ? CommentPayloadSchema.safeParse(frame.event.payload)
             : undefined;
         const commentPayload = comment?.success === true ? comment.data : undefined;
-        const ownsAsk = ownsRepliedAsk(commentPayload, frame.standIn, sessionID);
+        const ownsAsk = ownsRepliedAsk(commentPayload, sessionID);
         const compact = dispatchCompact(frame.event, commentPayload, ownsAsk);
         payloadSessions = commentPayload?.ask_sessions ?? [];
         if (frame.event.type.startsWith("ask.")) {

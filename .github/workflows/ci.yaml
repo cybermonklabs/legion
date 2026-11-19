@@ -3491,7 +3491,7 @@ jobs:
               # (ci_job_reads.py, RACE_IMPOSSIBLE_SCRIPT): its live-feed fixtures
               # (internal/dispatch/api/delivery_live_diff_test.go:1016), the committed OpenAPI
               # document (internal/dispatch/api/openapi_test.go:189-190) and the ask reply's copies
-              # (internal/dispatch/api/session_answers_test.go:1362).
+              # (internal/dispatch/api/session_answers_test.go:1496).
               - 'packages/contracts/fixtures/live/**'
               - 'packages/contracts/schemas/dispatch-openapi.json'
               - 'packages/contracts/fixtures/ask-reply-recipients.json'

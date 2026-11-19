@@ -98,5 +98,155 @@
         "in_reply_to": "00000000-0000-4000-8000-000000000001"
       }
     }
-  ]
+  ],
+  "stand_in": {
+    "ask_id": "00000000-0000-4000-8000-000000000004",
+    "owners": [
+      "session-owner-of-the-stand-in-ask-01",
+      "session-owner-of-the-stand-in-ask-02",
+      "session-owner-of-the-stand-in-ask-03",
+      "session-owner-of-the-stand-in-ask-04",
+      "session-owner-of-the-stand-in-ask-05",
+      "session-owner-of-the-stand-in-ask-06",
+      "session-owner-of-the-stand-in-ask-07"
+    ],
+    "copies": [
+      {
+        "reader": "session-owner-of-the-stand-in-ask-01",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-01",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-01",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-owner-of-the-stand-in-ask-02",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-02",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-02",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-owner-of-the-stand-in-ask-03",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-03",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-03",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-owner-of-the-stand-in-ask-04",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-04",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-04",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-owner-of-the-stand-in-ask-05",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-05",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-05",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-owner-of-the-stand-in-ask-06",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-06",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-06",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-owner-of-the-stand-in-ask-07",
+        "topic": "notifications.agent.session-owner-of-the-stand-in-ask-07",
+        "relation": "replied_on_your_ask",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-owner-of-the-stand-in-ask-07",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      },
+      {
+        "reader": "session-b",
+        "topic": "notifications.agent.session-b",
+        "relation": "commented_on_an_issue",
+        "envelope": {
+          "event_id": "dispatch-3",
+          "source": "dispatch",
+          "source_event_id": "3",
+          "topic": "notifications.agent.session-b",
+          "dedupe_key": "dispatch-3",
+          "issued_at": 1767225607000,
+          "payload_summary": "ANS-1 comment created: Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to the region whose queue is nearest. Ship to ",
+          "payload": "{\"actor\":{\"kind\":\"user\",\"id\":\"alice\",\"proven\":true},\"artifact_id\":null,\"created_at\":\"2026-01-01T00:00:08Z\",\"id\":3,\"issue_key\":\"ANS-1\",\"notify\":true,\"payload\":{\"anchor\":null,\"answers\":null,\"artifact_id\":null,\"artifact_name\":\"\",\"ask_id\":\"00000000-0000-4000-8000-000000000004\",\"ask_question\":\"Which region do we ship to first?\",\"ask_sessions\":[\"session-owner-of-the-stand-in-ask-01\",\"session-owner-of-the-stand-in-ask-02\",\"session-owner-of-the-stand-in-ask-03\",\"session-owner-of-the-stand-in-ask-04\",\"session-owner-of-the-stand-in-ask-05\",\"session-owner-of-the-stand-in-ask-06\",\"session-owner-of-the-stand-in-ask-07\"],\"ask_state\":\"open\",\"ask_waiting_on\":\"agent\",\"author\":{\"id\":\"alice\",\"kind\":\"user\",\"proven\":true},\"created_at\":\"2026-01-01T00:00:09Z\",\"deliveries\":[],\"edited_at\":null,\"id\":\"00000000-0000-4000-8000-000000000005\",\"issue_key\":\"ANS-1\",\"mentions\":[],\"payload_omitted\":true,\"reply_block\":null,\"reply_to\":null,\"resolved\":false,\"resolved_at\":null,\"resolved_by\":null,\"suggestion\":null,\"suppress_route\":false,\"thread_logins\":[\"alice\"],\"turn\":\"agent\"},\"project\":\"ANS\",\"quiet\":false,\"seq\":3,\"type\":\"comment.created\"}",
+          "trace_id": "dispatch-3",
+          "in_reply_to": "00000000-0000-4000-8000-000000000004"
+        }
+      }
+    ]
+  }
 }

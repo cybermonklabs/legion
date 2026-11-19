@@ -12,13 +12,15 @@ import { sessionAnswerRelationPhrase } from "../session-answer-relations";
  * case through the real API and outbox and writes each copy it was handed, with what the reader's
  * answers read calls the reply, into this fixture; that test's doc gives the fixture's shape. The
  * card is rendered here from those same bytes, so it and the answers read cannot tell one session
- * the same reply two ways.
+ * the same reply two ways. The fixture's `stand_in` holds the same case for a reply too large for
+ * the bus, as the stand-ins the outbox sent in its place.
  */
 interface AskReplyFixture {
   readonly issue_key: string;
   readonly ask_id: string;
   readonly sessions: Readonly<Record<"A" | "B" | "C" | "D", string>>;
   readonly copies: readonly AskReplyCopy[];
+  readonly stand_in: StandInCase;
 }
 
 interface AskReplyCopy {
@@ -27,6 +29,24 @@ interface AskReplyCopy {
   readonly topic: string;
   readonly relation: string | null;
   readonly envelope: unknown;
+}
+
+/** A person's reply too large for the bus, in the thread of an ask seven sessions own: the
+ *  stand-in (`payload_omitted`) the outbox sent each owner and B in its place. */
+interface StandInCase {
+  readonly ask_id: string;
+  /** The ask's `ask_sessions`: the asker, then each follower in the order it joined. */
+  readonly owners: readonly string[];
+  readonly copies: readonly StandInCopy[];
+}
+
+/** One stand-in, handed on the own topic of `reader`, a session id, with what that session's
+ *  answers read calls the reply. */
+interface StandInCopy {
+  readonly reader: string;
+  readonly topic: string;
+  readonly relation: string;
+  readonly envelope: { readonly payload: string };
 }
 
 /** A copy handed on a session's own topic, with what that session's answers read calls it. */
@@ -60,9 +80,9 @@ function cardOf(copy: AskReplyCopy, session: string): Card {
   return decode(renderInbound(JSON.stringify(copy.envelope), session, copy.topic).content) as Card;
 }
 
-/** The card of a reply on the reader's own ask: the command that answers the ask, and whose turn
- *  it is. */
-function expectOwnersCard(card: Card): void {
+/** The card of a reply on the reader's own ask, `askID` (A's unless named): the command that
+ *  answers the ask, and whose turn it is. */
+function expectOwnersCard(card: Card, askID = fixture.ask_id): void {
   expect({
     relation: card.envoy.dispatch.relation,
     reply_with: card.envoy.reply_with,
@@ -70,7 +90,7 @@ function expectOwnersCard(card: Card): void {
   }).toEqual({
     relation: "replied on your ask",
     reply_with: {
-      command: `dispatch comment --issue ${fixture.issue_key} --body ... --reply-to-ask ${fixture.ask_id}`,
+      command: `dispatch comment --issue ${fixture.issue_key} --body ... --reply-to-ask ${askID}`,
     },
     waiting_on: "agent",
   });
@@ -129,6 +149,66 @@ describe("a person's reply on A's ask, as each session's card reads the copy it 
       expect(cardOf(copy, fixture.sessions[copy.reader]).envoy.dispatch.relation).toBe(
         sessionAnswerRelationPhrase(copy.relation)
       );
+    }
+  });
+});
+
+describe("a reply too large for the bus, on an ask seven sessions own, as each session's card reads the stand-in it was handed", () => {
+  const standIn = fixture.stand_in;
+  /** The reply's whole body, as a host reads it from the comment route once the stand-in named
+   *  the comment cut (`renderInbound`'s `cutItem`), and renders the stand-in again with it. */
+  const wholeBody = "Ship to the region whose queue is nearest. ".repeat(150);
+
+  /** The stand-in handed on `reader`'s own topic. */
+  function standInOf(reader: string): StandInCopy {
+    const found = standIn.copies.find((copy) => copy.reader === reader);
+    if (found === undefined) throw new Error(`the fixture holds no stand-in for ${reader}`);
+    return found;
+  }
+
+  /** `copy` as its reader's card: as it arrived, then rendered again with the body read whole. */
+  function standInCards(copy: StandInCopy): [Card, Card] {
+    const raw = JSON.stringify(copy.envelope);
+    return [
+      decode(renderInbound(raw, copy.reader, copy.topic).content) as Card,
+      decode(renderInbound(raw, copy.reader, copy.topic, wholeBody).content) as Card,
+    ];
+  }
+
+  test("each copy is a stand-in, with no body, that names the ask's seven owners whole and in order", () => {
+    expect(standIn.owners).toHaveLength(7);
+    expect(standIn.copies.map((copy) => copy.reader)).toEqual([...standIn.owners, B]);
+    for (const copy of standIn.copies) {
+      const { payload } = JSON.parse(copy.envelope.payload) as {
+        payload: Record<string, unknown>;
+      };
+      expect({
+        payload_omitted: payload["payload_omitted"],
+        body: payload["body"],
+        ask_sessions: payload["ask_sessions"],
+      }).toEqual({ payload_omitted: true, body: undefined, ask_sessions: [...standIn.owners] });
+    }
+  });
+
+  test("each owner reads a reply on its own ask on its own topic, before and after its body is read whole", () => {
+    for (const owner of standIn.owners) {
+      const [arrived, whole] = standInCards(standInOf(owner));
+
+      expectOwnersCard(arrived, standIn.ask_id);
+      expectOwnersCard(whole, standIn.ask_id);
+      expect(whole.envoy.dispatch.reply).toBe(wholeBody);
+    }
+  });
+
+  test("B, credited on the issue's spec, reads a comment on an issue, before and after its body is read whole", () => {
+    for (const card of standInCards(standInOf(B))) expectOthersCard(card);
+  });
+
+  test("every stand-in's card names the relation the reader's answers read gives the reply", () => {
+    for (const copy of standIn.copies) {
+      for (const card of standInCards(copy)) {
+        expect(card.envoy.dispatch.relation).toBe(sessionAnswerRelationPhrase(copy.relation));
+      }
     }
   });
 });

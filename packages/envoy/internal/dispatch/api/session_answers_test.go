@@ -18,6 +18,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -1097,6 +1098,35 @@ func copyAskSessions(t *testing.T, item contracts.Envelope) []string {
 	return sessions
 }
 
+// refusingOutboxPublisher is a recordingOutboxPublisher behind a server whose maximum payload is
+// refusedPast bytes: it refuses every envelope whose payload is longer, with bus.ErrTooLarge (an
+// ErrRefused), as the bus refuses one past the server's max payload, and records each envelope it
+// accepts. The outbox then sends the refused event's stand-in in its place (outbox's
+// standInEnvelope), which it accepts and records.
+type refusingOutboxPublisher struct {
+	*recordingOutboxPublisher
+	refusedPast int
+}
+
+func (p *refusingOutboxPublisher) WindowUntil(func() time.Time) bus.Sender { return p }
+
+func (p *refusingOutboxPublisher) PublishAsync(item contracts.Envelope) <-chan error {
+	if len(item.Payload) <= p.refusedPast {
+		return p.recordingOutboxPublisher.PublishAsync(item)
+	}
+	refused := make(chan error, 1)
+	refused <- fmt.Errorf("%w: a payload of %d bytes against a maximum of %d", bus.ErrTooLarge, len(item.Payload), p.refusedPast)
+	return refused
+}
+
+func (p *refusingOutboxPublisher) Request(_ string, item contracts.Envelope, _ bus.RequestOptions) <-chan error {
+	return p.PublishAsync(item)
+}
+
+func (p *refusingOutboxPublisher) PublishStoredAsync(_ string, item contracts.Envelope, _ string) <-chan error {
+	return p.PublishAsync(item)
+}
+
 // askReplyFixture is packages/contracts/fixtures/ask-reply-recipients.json, which
 // TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes; that test's doc says what each
 // field holds.
@@ -1105,6 +1135,7 @@ type askReplyFixture struct {
 	AskID    string            `json:"ask_id"`
 	Sessions map[string]string `json:"sessions"`
 	Copies   []askReplyCopy    `json:"copies"`
+	StandIn  askReplyStandIn   `json:"stand_in"`
 }
 
 // askReplyCopy is one copy of a reply the fixture holds.
@@ -1113,6 +1144,22 @@ type askReplyCopy struct {
 	Reader   *string            `json:"reader"`
 	Topic    string             `json:"topic"`
 	Relation *string            `json:"relation"`
+	Envelope contracts.Envelope `json:"envelope"`
+}
+
+// askReplyStandIn is the fixture's stand_in section: a reply on an ask of many owners, too large
+// for the bus, as the stand-ins the outbox sent in its place.
+type askReplyStandIn struct {
+	AskID  string                `json:"ask_id"`
+	Owners []string              `json:"owners"`
+	Copies []askReplyStandInCopy `json:"copies"`
+}
+
+// askReplyStandInCopy is one stand-in of that reply the fixture holds.
+type askReplyStandInCopy struct {
+	Reader   string             `json:"reader"`
+	Topic    string             `json:"topic"`
+	Relation string             `json:"relation"`
 	Envelope contracts.Envelope `json:"envelope"`
 }
 
@@ -1193,6 +1240,13 @@ func normalizeAskReplyFixture(encoded []byte) []byte {
 // version of the spec too), the reply reaches it and still reads as a reply on its own ask, since
 // it wrote the ask.
 //
+// The same holds for a reply too large for the bus, which the outbox sends each destination as a
+// stand-in (payload_omitted) in its place. On a second ask, which seven sessions own, each named
+// by a 36-character id, ask_sessions encodes past the 256 bytes a stand-in keeps of any other
+// field; every stand-in of a person's reply in its thread still names all seven, and the answers
+// read tells each of them that the reply is on its own ask and B, which the reply reaches by its
+// credit, that a person commented on an issue.
+//
 // The test writes the copies it read into packages/contracts/fixtures/ask-reply-recipients.json,
 // which envoy-client's ask-reply-recipients.test.ts renders, so the live card is held to the same
 // bytes the outbox published. Its shape:
@@ -1209,13 +1263,26 @@ func normalizeAskReplyFixture(encoded []byte) []byte {
 //	    "relation": what the reader's answers read calls that reply, or null on the issue's topic,
 //	    "envelope": the contracts.Envelope as the outbox handed it to the bus, which is the JSON
 //	                renderInbound takes as its raw argument
-//	  }, ...]
+//	  }, ...],
+//	  "stand_in": {
+//	    "ask_id": the ask the seven sessions own,
+//	    "owners": their ids, as its ask_sessions names them: the asker, then each follower in
+//	              the order it joined,
+//	    "copies": [{
+//	      "reader":   the id of the session whose own topic the stand-in was handed on: each
+//	                  owner's, then B's,
+//	      "topic":    that topic,
+//	      "relation": what the reader's answers read calls the reply,
+//	      "envelope": the stand-in as the outbox handed it to the bus, as above
+//	    }, ...]
+//	  }
 //	}
 //
 // The copies are the first reply's on A's, B's, C's and the issue's topics, then the third
 // reply's on A's. Every value that differs between runs is a placeholder of its own form
-// (normalizeAskReplyFixture), the same one wherever the value recurs, so ask_id is the id the
-// envelopes carry; the session ids are constants and stand as they are.
+// (normalizeAskReplyFixture), the same one wherever the value recurs, so each ask_id is the id the
+// envelopes carry; the session ids are constants and stand as they are, which is why no owner's
+// id has a uuid's shape.
 // `go test ./internal/dispatch/api -run '^TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers$' -update`
 // rewrites it.
 func TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
@@ -1331,10 +1398,77 @@ func TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
 		t.Fatalf("%s's own topic was handed %d envelopes, want none", askSessionD, len(handed))
 	}
 
+	// The reply as a stand-in. A second ask has seven owners, the asker and six followers, each
+	// named by a 36-character id with no uuid's shape, so the fixture keeps it as it is. Their
+	// ask_sessions encodes past the 256 bytes a stand-in keeps of any other field (outbox's
+	// standInPayloadFieldBytes).
+	standInOwners := make([]string, 7)
+	for i := range standInOwners {
+		standInOwners[i] = fmt.Sprintf("session-owner-of-the-stand-in-ask-%02d", i+1)
+		if len(standInOwners[i]) != 36 {
+			t.Fatalf("owner %q is %d characters, want 36", standInOwners[i], len(standInOwners[i]))
+		}
+	}
+	if encoded, err := json.Marshal(standInOwners); err != nil || len(encoded) <= 256 {
+		t.Fatalf("the %d owners' ids encode to %d bytes (%v), want more than the 256 a stand-in keeps of another field",
+			len(standInOwners), len(encoded), err)
+	}
+	const standInQuestion = "Which region do we ship to first?"
+	standInAskID := f.ask(t, standInOwners[0], standInQuestion)
+	for _, follower := range standInOwners[1:] {
+		f.follow(t, http.MethodPut, standInAskID, follower)
+	}
+	// This publisher refuses an event longer than refusedPast, as the bus refuses one past the
+	// server's maximum payload, and alice's reply is longer: every destination refuses its event,
+	// and the outbox sends each the stand-in instead, which the publisher takes.
+	refusing := &refusingOutboxPublisher{recordingOutboxPublisher: &recordingOutboxPublisher{}, refusedPast: 4096}
+	standInBody := strings.Repeat("Ship to the region whose queue is nearest. ", 150)
+	if len(standInBody) <= refusing.refusedPast {
+		t.Fatalf("a body of %d bytes fits the publisher's %d, so its event is not refused", len(standInBody), refusing.refusedPast)
+	}
+	standInReply := f.comment(t, map[string]any{"body": standInBody, "ask_id": standInAskID}, "alice")
+	f.publishOutboxThrough(t, refusing)
+	standInHanded := refusing.copiesOf(t, "comment.created", standInReply)
+	var standInCopies []askReplyStandInCopy
+	for _, reader := range append(slices.Clone(standInOwners), askSessionB) {
+		want := model.SessionAnswerRelationRepliedOnYourAsk
+		if reader == askSessionB {
+			want = model.SessionAnswerRelationCommentedOnIssue
+		}
+		topic := topicOf(reader)
+		handed, ok := standInHanded[topic]
+		if !ok {
+			t.Fatalf("the long reply was handed on no copy of %s's own topic", reader)
+		}
+		var event struct {
+			Payload map[string]any `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(handed.Payload), &event); err != nil {
+			t.Fatalf("decode the envelope handed on %s: %v", topic, err)
+		}
+		if _, body := event.Payload["body"]; event.Payload["payload_omitted"] != true || body {
+			t.Fatalf("the long reply's copy on %s is no stand-in: payload_omitted %v, body kept %t",
+				topic, event.Payload["payload_omitted"], body)
+		}
+		if got := copyAskSessions(t, handed); !slices.Equal(got, standInOwners) {
+			t.Fatalf("the stand-in on %s names %v as the ask's own sessions, want all %d: %v", topic, got, len(standInOwners), standInOwners)
+		}
+		listed := f.list(t, reader, "")
+		index := slices.IndexFunc(listed.Items, func(item model.SessionAnswer) bool { return item.ID == standInReply })
+		if index < 0 {
+			t.Fatalf("%s's answers = %+v, want the long reply %s among them", reader, listed, standInReply)
+		}
+		if item := listed.Items[index]; item.Relation != want || item.Ask == nil || item.Ask.ID != standInAskID || item.Ask.Question != standInQuestion {
+			t.Fatalf("%s's item = %+v, want the long reply as %s, in ask %s", reader, item, want, standInAskID)
+		}
+		standInCopies = append(standInCopies, askReplyStandInCopy{Reader: reader, Topic: topic, Relation: want, Envelope: handed})
+	}
+
 	fixture := askReplyFixture{
 		IssueKey: f.issue,
 		AskID:    askID,
 		Sessions: map[string]string{"A": askSessionA, "B": askSessionB, "C": askSessionC, "D": askSessionD},
+		StandIn:  askReplyStandIn{AskID: standInAskID, Owners: standInOwners, Copies: standInCopies},
 	}
 	for _, reader := range []struct{ name, session string }{{"A", askSessionA}, {"B", askSessionB}, {"C", askSessionC}} {
 		topic := topicOf(reader.session)

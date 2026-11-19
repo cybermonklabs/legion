@@ -1330,23 +1330,53 @@ describe("renderInbound dispatch events", () => {
       expect(decoded.envoy.dispatch.state).toBe("open");
     });
 
-    // The outbox's stand-in for an event the bus refused drops each long field, so an ask that
-    // many sessions own arrives with no list. Its asker reads it too, and still gets no reply
-    // command and no turn: the card claims no ask it cannot tell is the reader's, and a host that
-    // reads the body whole and renders again changes nothing of that.
-    test("a stand-in that dropped ask_sessions is no reader's own ask, before and after its body is read whole", () => {
-      const { body: _body, ask_sessions: _sessions, ...kept } = askReply;
+    // The outbox's stand-in for an event the bus refused keeps ask_sessions whole, whatever its
+    // size, so the session reading it decides from it as it does from the whole event, and a host
+    // that reads the body whole and renders again changes nothing of that.
+    test("a stand-in that carries ask_sessions is the owner's own ask and no other session's, before and after its body is read whole", () => {
+      const { body: _body, ...kept } = askReply;
       const raw = copy({ ...kept, payload_omitted: true });
 
-      for (const rendered of [
-        renderInbound(raw, asker),
-        renderInbound(raw, asker, undefined, askReply.body),
-      ]) {
-        const decoded = decode(rendered.content) as Card;
-        expect(decoded.envoy.reply_with).toBeUndefined();
-        expect(decoded.envoy.dispatch.waiting_on).toBeUndefined();
-        expect(decoded.envoy.dispatch.relation).toBe("commented on an issue");
+      for (const wholeBody of [undefined, askReply.body]) {
+        const owner = decode(renderInbound(raw, asker, undefined, wholeBody).content) as Card;
+        expect(owner.envoy.dispatch.relation).toBe("replied on your ask");
+        expect(owner.envoy.reply_with).toEqual(replyToAsk);
+        expect(owner.envoy.dispatch.waiting_on).toBe("agent");
+
+        const other = decode(renderInbound(raw, reader, undefined, wholeBody).content) as Card;
+        expect(other.envoy.dispatch.relation).toBe("commented on an issue");
+        expect(other.envoy.reply_with).toBeUndefined();
+        expect(other.envoy.dispatch.waiting_on).toBeUndefined();
       }
+    });
+
+    // A stand-in with no list is one a Dispatch older than ask_sessions sent: the card is the one
+    // this renderer gave a stand-in before it read the field, byte for byte.
+    test("a stand-in that carries no ask_sessions shows the card it showed before, with no relation", () => {
+      const { body: _body, ask_sessions: _sessions, ...older } = askReply;
+
+      expect(renderInbound(copy({ ...older, payload_omitted: true }), reader).content).toBe(
+        [
+          "envoy:",
+          "  from: dispatch",
+          '  at: "1970-01-01T00:00:00Z"',
+          "  id: dispatch-ask-reply",
+          '  re: "dispatch://CORE-1/ask/ask-1"',
+          "  reply_with:",
+          "    command: dispatch comment --issue CORE-1 --body ... --reply-to-ask ask-1",
+          "  dispatch:",
+          "    owner: CORE-1",
+          "    type: comment.created",
+          "    actor:",
+          "      kind: user",
+          "      id: alice",
+          "    question: The service needs a public API. Which approach should we use?",
+          '    reply: ""',
+          "    state: open",
+          "    waiting_on: agent",
+          `  body_note: "this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${targetedCommentID}"`,
+        ].join("\n")
+      );
     });
 
     // A Dispatch older than `ask_sessions` wrote this reply, or a resend replayed one stored

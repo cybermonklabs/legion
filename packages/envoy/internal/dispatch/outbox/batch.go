@@ -938,16 +938,27 @@ func firstAnswered(inflight []*chain) (int, error, bool) {
 }
 
 // standInPayloadFieldBytes is the most one top-level field of an event's payload may encode to
-// for a stand-in to keep it. It is small on purpose: a stand-in exists because the event was too
-// large to send, so it keeps the fields that name the item - its id, its issue, its author, when
-// it was written - and drops the body and the lists that made the event too large.
+// for a stand-in to keep it, unless standInWholeFields names it. It is small on purpose: a
+// stand-in exists because the event was too large to send, so it keeps the fields that name the
+// item - its id, its issue, its author, when it was written - and drops the body and the lists
+// that made the event too large.
 const standInPayloadFieldBytes = 256
+
+// standInWholeFields names the top-level payload fields a stand-in keeps whatever they encode to.
+// Each decides what the event is to each of its readers, and grows with something other than
+// what made the event too large to send. ask_sessions, on a reply in an ask's thread, is the
+// sessions that own the ask: each reader's card tells from it whether the reply is on that
+// reader's own ask, and so whether it carries the command that answers the ask and whose turn it
+// is (packages/envoy-client's ownsRepliedAsk). It grows by one session id with each of the ask's
+// owners, not with the reply's body, and seven 36-character ids are already past
+// standInPayloadFieldBytes.
+var standInWholeFields = map[string]bool{"ask_sessions": true}
 
 // standInEnvelope is item with the event's payload left out: the same topic, event id and
 // payload_summary, and in place of the payload an object holding every top-level field of it
-// whose encoded value is at most standInPayloadFieldBytes, plus payload_omitted: true. A reader
-// then learns which event it is and reads the item itself for the rest, where today it learns
-// nothing at all.
+// whose encoded value is at most standInPayloadFieldBytes, and every field standInWholeFields
+// names whatever its size, plus payload_omitted: true. A reader then learns which event it is
+// and reads the item itself for the rest, where today it learns nothing at all.
 //
 // ok is false for an envelope no stand-in can be made of - one whose payload is not a JSON
 // object, or whose event carries no payload - which settles as a refusal settled before
@@ -963,7 +974,7 @@ func standInEnvelope(item contracts.Envelope) (contracts.Envelope, bool) {
 	}
 	kept := make(map[string]json.RawMessage, len(payload)+1)
 	for name, value := range payload {
-		if len(value) <= standInPayloadFieldBytes {
+		if len(value) <= standInPayloadFieldBytes || standInWholeFields[name] {
 			kept[name] = value
 		}
 	}
