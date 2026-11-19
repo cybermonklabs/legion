@@ -60,8 +60,10 @@ const pointerFile = "public-leak-check/path"
 // it: CheckVar, then public-leak-check.sh on PATH, then the pointer file under the
 // configuration home, whose content is the path of the script. The guard's own Check option
 // stands in front of all three, and is how a test hands the guard a stand-in. Where none of the
-// three names a check at all — CheckVar unset, no check on PATH, and no pointer file — the error
-// is a noneNamed, which sharedCheck reads apart from a check that is named and not there.
+// three names a check at all — CheckVar unset, nothing of the check's name on any PATH entry, and
+// no pointer file — the error is a noneNamed, which sharedCheck reads apart from a broken setup
+// (brokenCheck): a check that is named and not there, a file of the check's name on PATH that is
+// no executable, and a pointer file that cannot be read or names nothing.
 //
 // Every call resolves again, and no answer is kept. The check is published often, and a guard
 // that resolved one copy at start would keep running it: a text the current check refuses would
@@ -74,8 +76,12 @@ func (g *Guard) Resolve() (string, error) {
 	if named := value(env, CheckVar); named != "" {
 		return found(named, CheckVar)
 	}
-	if onPath, ok := lookpath.On(value(env, "PATH"), checkName); ok {
+	searchPath := value(env, "PATH")
+	if onPath, ok := lookpath.On(searchPath, checkName); ok {
 		return onPath, nil
+	}
+	if there := unusableOnPath(searchPath); there != "" {
+		return "", brokenCheck{path: there, error: fmt.Errorf("%s names none, and %s on PATH is no executable file", CheckVar, there)}
 	}
 	config := value(env, "XDG_CONFIG_HOME")
 	if config == "" {
@@ -90,21 +96,38 @@ func (g *Guard) Resolve() (string, error) {
 	content, err := os.ReadFile(pointer)
 	if err != nil {
 		err = fmt.Errorf("%s names none, %s is on no PATH entry, and the pointer file %s could not be read: %w", CheckVar, checkName, pointer, err)
-		if errors.Is(err, fs.ErrNotExist) {
+		if _, statErr := os.Lstat(pointer); errors.Is(statErr, fs.ErrNotExist) {
 			return "", noneNamed{err}
 		}
-		return "", err
+		return "", brokenCheck{path: pointer, error: err}
 	}
 	named := strings.TrimSpace(string(content))
 	if named == "" {
-		return "", fmt.Errorf("the pointer file %s names no check", pointer)
+		return "", brokenCheck{path: pointer, error: fmt.Errorf("the pointer file %s names no check", pointer)}
 	}
 	return found(named, "the pointer file "+pointer)
 }
 
-// noneNamed is Resolve's answer where no place it looks names a check at all, as against a check
-// that is named and not there (missingCheck), a pointer file that cannot be read, and one that
-// names nothing, each of which is a broken setup whatever the deployment runs.
+// unusableOnPath is the first file of the check's name on an entry of searchPath that lookpath.On
+// passed over — a dangling link, a file with no execute bit, a directory — or "" where no entry
+// holds anything of that name. lookpath.On reads the entries it searches, absolute and non-empty,
+// so this reads the same ones. Such a file is somebody's install of the check that does not run,
+// which is a broken setup and not a check named nowhere.
+func unusableOnPath(searchPath string) string {
+	for _, dir := range filepath.SplitList(searchPath) {
+		if dir == "" || !filepath.IsAbs(dir) {
+			continue
+		}
+		candidate := filepath.Join(dir, checkName)
+		if _, err := os.Lstat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// noneNamed is Resolve's answer where no place it looks names a check at all, as against a broken
+// setup (brokenCheck), which is broken whatever the deployment runs.
 type noneNamed struct{ error }
 
 func (n noneNamed) Unwrap() error { return n.error }
@@ -117,24 +140,26 @@ func NoneNamed(err error) bool {
 	return errors.As(err, &none)
 }
 
-// missingCheck is found's answer where the path a variable, an option or a pointer file names is
-// not there: a check that is named and missing, which refuses every write whatever the
+// brokenCheck is Resolve's answer where something names or holds a check that does not run: the
+// path a variable, an option or a pointer file names is not there (found), a file of the check's
+// name on PATH is no executable (unusableOnPath), or the pointer file cannot be read or names
+// nothing. path is that path, or the pointer file's. Each refuses every write whatever the
 // deployment runs.
-type missingCheck struct {
+type brokenCheck struct {
 	path string
 	error
 }
 
-func (m missingCheck) Unwrap() error { return m.error }
+func (b brokenCheck) Unwrap() error { return b.error }
 
-// NamedMissing is the path err, an answer of Resolve, names where a check is named and not there.
-// The tmux runtime tells a pane that path as CheckVar, so the pane's guard refuses its writes for
-// the missing check as the daemon's own guard would, though the pane cannot read the place that
-// named it.
-func NamedMissing(err error) (string, bool) {
-	var missing missingCheck
-	if errors.As(err, &missing) {
-		return missing.path, true
+// BrokenAt is the path err, an answer of Resolve, names where the setup is broken (brokenCheck).
+// The tmux runtime tells a pane that path as CheckVar, so the pane's guard refuses its writes as
+// the daemon's own guard would, though the pane cannot read the place that named it: the path is
+// not there, or it is no program the guard can run, and either refuses the write.
+func BrokenAt(err error) (string, bool) {
+	var broken brokenCheck
+	if errors.As(err, &broken) {
+		return broken.path, true
 	}
 	return "", false
 }
@@ -179,7 +204,7 @@ func (g *Guard) sharedCheck(what string) (string, error) {
 // check it is than as a child process that would not start.
 func found(path, source string) (string, error) {
 	if _, err := os.Stat(path); err != nil {
-		return "", missingCheck{path: path, error: fmt.Errorf("%s names %s, which is not there: %w", source, path, err)}
+		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is not there: %w", source, path, err)}
 	}
 	return path, nil
 }

@@ -224,6 +224,58 @@ func TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone(t *testin
 	}
 }
 
+// A pod records the checker it was built under on its template (leakCheckerAnnotation), and a role
+// started in that pod after the daemon restarted under another checker — the deployment moved its
+// worker image's pin and its checker together, and the pod is kept until its update round — is
+// told the checker its pod was built under, which is the one the install of that pod's own pin
+// hashes to. Told the checker now, its shim would start no agent, so it would never answer the
+// round that is to replace the pod. A pod built under no setting records none, and its role is
+// told the installed check and no checker. A pod the launch builds itself is told the checker now
+// (TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone).
+func TestARoleStartedInAKeptPodIsToldTheCheckerItsPodWasBuiltUnder(t *testing.T) {
+	moved := leakguard.Setting{Repository: testLeakCheck.Repository, CheckerSHA256: strings.Repeat("7c", 32)}
+	for _, tc := range []struct {
+		name     string
+		built    leakguard.Setting
+		recorded string
+		told     map[string]string
+	}{
+		{name: "built under the checker before", built: testLeakCheck, recorded: testLeakCheck.CheckerSHA256,
+			told: map[string]string{leakguard.CheckVar: leakguard.InstalledCheck, leakguard.CheckerVar: testLeakCheck.CheckerSHA256}},
+		{name: "built under no setting", built: leakguard.Setting{},
+			told: map[string]string{leakguard.CheckVar: leakguard.InstalledCheck}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, true),
+				withOptions(func(o *Options) { o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), tc.built }))
+			loc := g.spawn(workerSpec(t))
+			if got := g.sandbox(loc.Sandbox.Name).Spec.PodTemplate.Metadata.Annotations[leakCheckerAnnotation]; got != tc.recorded {
+				t.Fatalf("the pod's template records the checker %q, want %q", got, tc.recorded)
+			}
+			r2 := restartedOver(t, g, loc, func(o *Options) {
+				o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), moved
+				movedReservation(o)
+			})
+			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+				t.Fatalf("the pod has drifted from nothing, so this case proves nothing")
+			}
+			kept := resumeTester(t, g, r2, loc)
+			if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
+				t.Fatalf("Resume replaced the drifted pod; this case is about the pod a launch keeps")
+			}
+			told := map[string]string{}
+			for name, value := range startEnv(startSent(t, g, 2)) {
+				if name == leakguard.CheckVar || name == leakguard.CheckerVar {
+					told[name] = value
+				}
+			}
+			if !maps.Equal(told, tc.told) {
+				t.Fatalf("the role started in the kept pod was told %v of the leak check, want %v", told, tc.told)
+			}
+		})
+	}
+}
+
 // A launcher whose hello says it holds its pin installed — its pod's launcher process took the
 // check before the daemon restarted — is sent nothing of it, and the daemon does not read
 // GitHub for a running pod.

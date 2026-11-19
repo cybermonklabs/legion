@@ -468,8 +468,10 @@ var theChecker = strings.Repeat("5e", 32)
 // write for the check's absence: with no check named anywhere, a push, a text and a gh call each
 // pass the guard with no shared check run, and this repository's own rules still read each — the
 // gh call's body on standard input among them, which the guard buffers itself where no check's
-// handshake asks for it, and hands back for gh. A check that is named and not there is a broken
-// setup whatever the deployment runs, and is refused.
+// handshake asks for it, and hands back for gh. A broken setup is refused whatever the deployment
+// runs, naming the path it is broken at (BrokenAt): a check named and not there, a file of the
+// check's name on PATH that is no executable (a dangling link, no execute bit), and a pointer file
+// that names nothing or cannot be read as a file.
 func TestAGuardOfADeploymentThatNamesNoCheckRunsTheRulesAlone(t *testing.T) {
 	noCheck := func(t *testing.T, extra ...string) *Guard {
 		t.Helper()
@@ -547,13 +549,63 @@ func TestAGuardOfADeploymentThatNamesNoCheckRunsTheRulesAlone(t *testing.T) {
 			t.Fatalf("the refusal of the push is by %q, want this repository's own rules", refused.By)
 		}
 	})
-	t.Run("a check named and not there is refused", func(t *testing.T) {
-		gone := filepath.Join(t.TempDir(), checkName)
-		err := noCheck(t, CheckVar+"="+gone).Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
-		if failed := setupFailure(t, err); failed.Why != whyNoCheck || !strings.Contains(failed.Error(), gone) {
-			t.Fatalf("the setup failure is %q, want the missing check named", failed.Error())
-		}
-	})
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T) (extra []string, at string)
+	}{
+		{"a check named and not there", func(t *testing.T) ([]string, string) {
+			gone := filepath.Join(t.TempDir(), checkName)
+			return []string{CheckVar + "=" + gone}, gone
+		}},
+		{"a dangling link of the check's name on PATH", func(t *testing.T) ([]string, string) {
+			dir := t.TempDir()
+			link := filepath.Join(dir, checkName)
+			if err := os.Symlink(filepath.Join(t.TempDir(), "moved"), link); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"PATH=" + dir}, link
+		}},
+		{"a file of the check's name on PATH with no execute bit", func(t *testing.T) ([]string, string) {
+			dir := t.TempDir()
+			file := filepath.Join(dir, checkName)
+			if err := os.WriteFile(file, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"PATH=" + dir}, file
+		}},
+		{"a pointer file that names nothing", func(t *testing.T) ([]string, string) {
+			config := t.TempDir()
+			pointer := filepath.Join(config, pointerFile)
+			if err := os.MkdirAll(filepath.Dir(pointer), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(pointer, []byte("\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"XDG_CONFIG_HOME=" + config}, pointer
+		}},
+		{"a pointer file that is a directory", func(t *testing.T) ([]string, string) {
+			config := t.TempDir()
+			pointer := filepath.Join(config, pointerFile)
+			if err := os.MkdirAll(pointer, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return []string{"XDG_CONFIG_HOME=" + config}, pointer
+		}},
+	} {
+		t.Run(tc.name+" is refused", func(t *testing.T) {
+			extra, at := tc.setup(t)
+			guard := noCheck(t, extra...)
+			_, resolveErr := guard.Resolve()
+			if broken, ok := BrokenAt(resolveErr); !ok || broken != at || NoneNamed(resolveErr) {
+				t.Fatalf("Resolve = %v, want a broken setup at %s", resolveErr, at)
+			}
+			err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
+			if failed := setupFailure(t, err); failed.Why != whyNoCheck || !strings.Contains(failed.Error(), at) {
+				t.Fatalf("the setup failure is %q, want the broken setup at %s named", failed.Error(), at)
+			}
+		})
+	}
 }
 
 // Under a deployment checker (CheckerVar) a write runs only under the check that checker names: a

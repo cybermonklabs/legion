@@ -2707,3 +2707,22 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 		})
 	}
 }
+
+// The git gh runs for a push makes the pre-push hook, whose guard resolves the check from
+// PUBLIC_LEAK_CHECK and holds it to the deployment's checker (leakguard.CheckerVar), so gh's
+// environment keeps both of its caller's: without the checker, that guard would run a check whose
+// program hashes otherwise, which the role's own guard refuses.
+func TestGhsChildEnvironmentKeepsTheLeakCheckAndItsChecker(t *testing.T) {
+	checker := strings.Repeat("5e", 32)
+	caller := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(),
+		leakguard.CheckVar + "=/opt/check/public-leak-check.sh", leakguard.CheckerVar + "=" + checker}
+	kept := map[string]string{}
+	for _, entry := range ghChildEnviron(caller, nil) {
+		if name, value, ok := strings.Cut(entry, "="); ok && (name == leakguard.CheckVar || name == leakguard.CheckerVar) {
+			kept[name] = value
+		}
+	}
+	if kept[leakguard.CheckVar] != "/opt/check/public-leak-check.sh" || kept[leakguard.CheckerVar] != checker {
+		t.Fatalf("gh's environment kept %v of the leak check, want both of its caller's", kept)
+	}
+}

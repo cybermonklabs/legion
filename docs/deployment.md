@@ -338,9 +338,11 @@ A pane that resolves a check whose `public_leak_check.py` hashes to anything but
 every call of its `legion gh` refused, reads included, with a setup error naming the checker and
 the sha256 it found, so the check the machine's installer put there must be the one whose sha256
 the setting names.
-A check the machine names and does not hold (a stale `PUBLIC_LEAK_CHECK` or a pointer file naming
-a moved check) is told to the pane all the same, so its public writes are refused for the missing
-check under either setting, and the daemon logs a line per launch.
+A broken setup on the machine is told to the pane all the same, as the path it is broken at: a
+stale `PUBLIC_LEAK_CHECK`, a pointer file naming a moved check, a pointer file that names nothing
+or cannot be read, or a `public-leak-check.sh` on `PATH` that is a dangling link or has no execute
+bit. Its public writes are then refused under either setting, and the daemon logs a line per
+launch.
 With no setting, the daemon logs once at boot that the deployment leak check is not configured, and
 a pane's `legion gh` with no check named anywhere writes under the guard's visibility read and this
 repository's own private-name rules alone.

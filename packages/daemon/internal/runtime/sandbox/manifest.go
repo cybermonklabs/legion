@@ -410,6 +410,31 @@ type keptPod struct {
 	// none, and its role is told neither of Oh My Pi's two session variables rather than a URL
 	// file it cannot read.
 	store ompsessions.StoreKind
+	// checker is the deployment's leak check checker this pod was built under, as its template
+	// recorded it (leakCheckerAnnotation): the sha256 its install, made at the image's own pin,
+	// hashes to, and so the one its role is told (launch.leakChecker). "" is a pod built under no
+	// setting or before the record existed, whose role is told none.
+	checker string
+}
+
+// leakCheckerAnnotation records on a pod template's metadata the deployment's leak check checker
+// (Options.LeakCheckSetting's CheckerSHA256) the pod was built under, written where the template
+// is built (podTemplate) and only under a configured setting. A pod's install is made once, at its
+// own image's pin, so a pod kept after the deployment moved its pin and its checker together
+// holds the install of the old pin, which hashes to the old checker. A role started in such a pod
+// is told the checker its pod was built under (keptPod.checker), so its shim starts against the
+// install its pod holds, and it can push its work and answer the update round that replaces the
+// pod, where told the checker now it would start no agent at all.
+const leakCheckerAnnotation = "legion.dev/leak-checker-sha256"
+
+// leakChecker is the checker this launch's generation is told (leakguard.CheckerVar): the one the
+// live pod it keeps was built under (keptPod.checker), and the deployment's own for a launch that
+// builds the pod itself. "" tells none.
+func (l launch) leakChecker(r *Runtime) string {
+	if l.kept != nil {
+		return l.kept.checker
+	}
+	return r.leakCheck.CheckerSHA256
 }
 
 // enrollsIn is the one decision whether a generation of role started now in a pod holds the
@@ -860,15 +885,16 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 	if l.microVM != nil {
 		labels[labelSandbox] = string(SandboxMicroVM)
 	}
+	annotations := map[string]string{
+		doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false",
+		podShapeAnnotation: r.podShapes[l.shapeKey()],
+	}
+	if r.leakCheck.Configured() {
+		annotations[leakCheckerAnnotation] = r.leakCheck.CheckerSHA256
+	}
 	return podTemplate{
-		Metadata: podMetadata{
-			Labels: labels,
-			Annotations: map[string]string{
-				doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false",
-				podShapeAnnotation: r.podShapes[l.shapeKey()],
-			},
-		},
-		Spec: spec,
+		Metadata: podMetadata{Labels: labels, Annotations: annotations},
+		Spec:     spec,
 	}
 }
 
@@ -1555,15 +1581,19 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// is the installed copy, under the scratch the roles of this pod share. The path is the
 	// installer's own constant, so the path a role is told and the path the install writes are
 	// one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls). The checker is
-	// the sha256 of the check's public_leak_check.py the deployment names. It is the sign, to the
-	// shim and the guard, that the deployment runs a check at all; `legion gh` trusts its read
-	// rule under the program that rule was proven against, whose digest it compiles in, and not
-	// under this checker. A deployment that names none (Options.LeakCheckSetting) tells neither:
-	// its pods are pushed no check, and its roles start without one and refuse no write for its
-	// absence.
+	// the sha256 of the check's public_leak_check.py the deployment names, as the pod the role
+	// starts in was built under (launch.leakChecker): a kept pod holds the install of its own
+	// image's pin, so its role is told the checker that install hashes to, and a pod recording
+	// none is told none. It is the sign, to the shim and the guard, that the deployment runs a
+	// check at all; `legion gh` trusts its read rule under the program that rule was proven
+	// against, whose digest it compiles in, and not under this checker. A deployment that names
+	// none (Options.LeakCheckSetting) tells neither: its pods are pushed no check, and its roles
+	// start without one and refuse no write for its absence.
 	if r.leakCheck.Configured() {
 		add(leakguard.CheckVar, leakguard.InstalledCheck)
-		add(leakguard.CheckerVar, r.leakCheck.CheckerSHA256)
+		if checker := l.leakChecker(r); checker != "" {
+			add(leakguard.CheckerVar, checker)
+		}
 	}
 	// The two variables an agent reads to decide it holds a broker at all, gated on the same one
 	// decision as the shim's agent-secrets flags (enrollsIn, launcherCommand): a generation in a

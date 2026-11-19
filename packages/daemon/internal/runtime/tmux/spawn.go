@@ -585,18 +585,20 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	command := shimShellCommand(r.socket, path, workDir, r.legion, r.streamAddress, files[0].Path, r.providerEnvDir, inner)
 	// The check is resolved here, once per launch, in the daemon's own environment, because a
 	// pane can resolve none of the three places itself (resolveLeakCheck). A machine that carries
-	// none is no launch failure. A check this machine names and does not hold is told to the pane
-	// all the same (leakguard.NamedMissing), so the pane's `legion gh` refuses every public write
-	// for the missing check, as the daemon's own guard would, whatever the deployment runs. Where
+	// none is no launch failure. A broken setup on this machine — a check named and not there, a
+	// file of the check's name on PATH that is no executable, a pointer file that cannot be read
+	// or names nothing — is told to the pane all the same, as the path it names
+	// (leakguard.BrokenAt), so the pane's `legion gh` refuses every public write for it, as the
+	// daemon's own guard would, whatever the deployment runs. Where
 	// no place names a check at all, the pane is told no PUBLIC_LEAK_CHECK: under a deployment
 	// that names a shared leak check (Options.LeakCheckSHA256) its public writes are refused,
 	// naming the missing check, and under one that names none they run the guard's rules alone,
-	// and nothing is said of it here: boot has said once that no check is configured. Every other
-	// failure to resolve is said at the launch.
+	// and nothing is said of it here: boot has said once that no check is configured. Every
+	// broken setup is said at the launch.
 	leakCheck, err := resolveLeakCheck(r.ownEnviron)
 	if err != nil {
-		if named, ok := leakguard.NamedMissing(err); ok {
-			leakCheck = named
+		if broken, ok := leakguard.BrokenAt(err); ok {
+			leakCheck = broken
 		}
 		if r.leakCheckSHA256 != "" || !leakguard.NoneNamed(err) {
 			r.log.Warn("tmux runtime: the shared public leak check could not be resolved on this machine, so this pane's writes to a public GitHub repository will be refused; install it with the check's own installer (docs/deployment.md, \"What a pane's gh, git and jj are\")",
