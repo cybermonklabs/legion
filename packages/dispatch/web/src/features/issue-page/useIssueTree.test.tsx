@@ -253,6 +253,76 @@ test("the names already in hand stand while a tree that grew reads the new set",
   }
 });
 
+// A names read that fails under a new key - the tree grew by one comment - holds no answer of its
+// own, where a refetch that fails under the same key keeps one. The names the last answer gave
+// stand all the same: the task row keeps its words and the page keeps publishing the name of what
+// a comment cites, while the view says the read failed (`namesFailed`). A read under that key that
+// succeeds draws its own names, and nothing has failed any more.
+test("a names read that fails for a tree that grew keeps the names in hand, and says it failed", async () => {
+  const cited = "dispatch://CORE-7";
+  const citing: Comment = { ...comment, body: `Read ${cited} first.` };
+  let title = "The cited issue";
+  let failing = false;
+  const stubs = stubTreeReads(
+    async (refs) => {
+      if (failing) throw new Error("the names read failed");
+      return {
+        targets: namedTargets(refs).targets.map((target) =>
+          target.ref === cited ? { ...target, kind: "issue", name: title } : target
+        ),
+      };
+    },
+    { comments: [citing] }
+  );
+  // No retry: the read under the new key fails on its first attempt.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        const tree = useIssueTree(issue);
+        return { name: useKnownReferenceName(cited), tree };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current.name).toBe("The cited issue"));
+    expect(taskWords(view.result.current.tree.root)).toBe(TASK_WORDS);
+    expect(view.result.current.tree.namesFailed).toBe(false);
+
+    // A second comment arrives: the tree holds one address more, and the names read of that set
+    // fails.
+    failing = true;
+    const second: Comment = { ...comment, body: "A second turn.", id: "comment-2" };
+    await act(async () => {
+      client.setQueryData(["comments", KEY], [citing, second]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current.tree.namesFailed).toBe(true));
+    const grown = view.result.current.tree.root;
+    expect(nodesInOrder(grown).some((node) => node.id === second.id)).toBe(true);
+    expect(taskWords(grown)).toBe(TASK_WORDS);
+    expect(view.result.current.name).toBe("The cited issue");
+
+    // The cited issue is renamed, and the failed read is read again, as window focus reads a
+    // read in error again (`refetchFailedOnFocus`): this time it answers.
+    failing = false;
+    title = "The cited issue, renamed";
+    await act(async () => {
+      await client.refetchQueries({ predicate: (query) => query.state.status === "error" });
+    });
+    await waitFor(() => expect(view.result.current.name).toBe("The cited issue, renamed"));
+    expect(view.result.current.tree.namesFailed).toBe(false);
+    expect(taskWords(view.result.current.tree.root)).toBe(TASK_WORDS);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 /** What the batched name read answers for `refs`: the plan task's words for its address, and
  *  words of their own for every other. */
 function namedTargets(refs: readonly string[]): { targets: ReferenceTarget[] } {
@@ -683,6 +753,85 @@ test("once the second read has nothing left to name, the first read's newer name
     await waitFor(() => expect(view.result.current).toBe("The cited issue, renamed"));
     expect(asked).toHaveLength(3);
     expect(asked[2]).toContain(cited);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// The same for the one more read, of what a plan task's words cite: the task's words come to cite
+// one issue more, and the read of the two issues fails. The name that read gave before stands,
+// beside the first read's names, while the view says the read failed; a read under that key that
+// succeeds names the second issue too, and nothing has failed any more.
+test("one more read that fails for words that cite more keeps the names it gave, and says it failed", async () => {
+  const cited = "dispatch://CORE-7";
+  const added = "dispatch://CORE-8";
+  let words = `Draw the tree as ${cited} asks.`;
+  let failing = false;
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(async (refs) => {
+    asked.push([...refs]);
+    // The one more read names only what the task's words cite, so it never names the task.
+    if (failing && !refs.includes(TASK_REF)) throw new Error("the names read failed");
+    return {
+      targets: namedTargets(refs).targets.map((target) => {
+        if (target.ref === TASK_REF) {
+          return {
+            ...target,
+            name: `:::plan_task{#t1}\n${words}\n:::`,
+            text_tree: {
+              content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+              type: "doc",
+            },
+          };
+        }
+        if (target.ref === cited) return { ...target, kind: "issue", name: "The cited issue" };
+        return target.ref === added
+          ? { ...target, kind: "issue", name: "The added issue" }
+          : target;
+      }),
+    };
+  });
+  // No retry: the read under the new key fails on its first attempt.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        const tree = useIssueTree(issue);
+        return { names: [useKnownReferenceName(cited), useKnownReferenceName(added)], tree };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current.names).toEqual(["The cited issue", undefined]));
+    expect(asked.at(-1)).toEqual([cited]);
+    expect(view.result.current.tree.namesFailed).toBe(false);
+
+    // The task's words come to cite the second issue too, which the first read of a tree that
+    // grew by a comment answers; the one more read, of both issues, fails.
+    words = `Draw the tree as ${cited} and ${added} ask.`;
+    failing = true;
+    await act(async () => {
+      client.setQueryData(["comments", KEY], [comment]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current.tree.namesFailed).toBe(true));
+    expect(asked.at(-1)).toEqual([cited, added]);
+    expect(view.result.current.names).toEqual(["The cited issue", undefined]);
+
+    // The failed read is read again, and this time it answers.
+    failing = false;
+    await act(async () => {
+      await client.refetchQueries({ predicate: (query) => query.state.status === "error" });
+    });
+    await waitFor(() =>
+      expect(view.result.current.names).toEqual(["The cited issue", "The added issue"])
+    );
+    expect(view.result.current.tree.namesFailed).toBe(false);
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
