@@ -92,12 +92,12 @@ type pipelinePopulation struct {
 // readPipelinePopulation reads the Pipeline page's runs and pull requests for the shown days
 // ending on at's UTC day, as reader is shown them. Runs are read by start over the whole of the
 // shown days, today included past at. The lead times' pull requests are the timeline's
-// (readDeliveryRows), and so are the deploy runs: one the timeline leaves out, having first
-// shipped only pull requests the reader is not shown, is left out of the job timings
-// (deliveryPopulation.hiddenRuns). A PR-checks run names its pull request by number, so it can
-// carry a hidden pull request's timing, failing job and run address: it is shown when its pull
-// request, the deploy repository's row of that number, is, and one whose number no row holds names
-// no issue and is shown to an open viewer (prChecksShown).
+// (readDeliveryRows), and so are the deploy runs: one the timeline does not show the reader, having
+// first shipped only pull requests the reader is not shown, or, for a reader that is not an open
+// viewer, none, is left out of the job timings (deliveryPopulation.runShown). A PR-checks run names
+// its pull request by number, so it can carry a hidden pull request's timing, failing job and run
+// address: it is shown when its pull request, the deploy repository's row of that number, is, and
+// one whose number no row holds names no issue and is shown to an open viewer (prChecksShown).
 func (s *server) readPipelinePopulation(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, at time.Time) (pipelinePopulation, error) {
 	pool := s.deps.Store.Pool
 	from := measures.WindowStart(at)
@@ -136,7 +136,7 @@ func (s *server) readPipelinePopulation(ctx context.Context, reader model.Actor,
 		return pop, nil
 	}
 	pop.deploys.Runs, pop.deploys.Jobs = runsWhere(pop.deploys.Runs, pop.deploys.Jobs, func(run delivery.DeliveryRun) bool {
-		return !pop.leadTimes.hiddenRuns[run.RunID]
+		return pop.leadTimes.runShown(run.RunID)
 	})
 	shown, err := s.prChecksShown(ctx, reader, settings.DeployRepo, pop.checks.Runs)
 	if err != nil {

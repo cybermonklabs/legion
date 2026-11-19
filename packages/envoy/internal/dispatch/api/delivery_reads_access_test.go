@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strconv"
@@ -19,7 +20,8 @@ import (
 // counts and groups each caller reads once PRIV is private (GH-1, check c-delivery-by-issue). A
 // pull request is shown when the caller sees its issue, one that names no issue to an open viewer
 // only; a run is shown with only the pull requests shown, and is left out when it shipped some and
-// none of them is shown; every count, facet, measure and title is computed from what is shown.
+// none of them is shown, or, for a viewer that is not open, when it shipped none; every count,
+// facet, measure and title is computed from what is shown.
 
 // The seed's day, the Pipeline page's at, and the days the timeline and the measures are read over:
 // the Pipeline page's seven shown days.
@@ -188,7 +190,13 @@ var deliveryReadsTargets = []struct{ name, target string }{
 // the two fields two seeds may answer apart, taken out, at the top and in the timeline's measures.
 func maskedDeliveryRead(t *testing.T, seed privateSeed, caller privateCaller, target string) map[string]any {
 	t.Helper()
-	body := decodeBody[map[string]any](t, seed.mustRequest(t, caller, http.MethodGet, target, nil, http.StatusOK))
+	return maskedDeliveryBody(t, seed.mustRequest(t, caller, http.MethodGet, target, nil, http.StatusOK))
+}
+
+// maskedDeliveryBody is a delivery answer as maskedDeliveryRead masks it.
+func maskedDeliveryBody(t *testing.T, response *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	body := decodeBody[map[string]any](t, response)
 	delete(body, "computed_at")
 	delete(body, "freshness")
 	if measured, ok := body["measures"].(map[string]any); ok {
@@ -388,6 +396,148 @@ func TestADeliveryReadShowsOnlyThePullRequestsItsViewerSees(t *testing.T) {
 	}
 	if got := jobs(callerCarol, deliveryRunR2); !slices.Equal(got, []string{"release / release"}) {
 		t.Errorf("carol: GET %s lists jobs %v, want R2's release / release", run(deliveryRunR2), got)
+	}
+}
+
+// deliveryRunFailed is run 702 of the second private-projects dogfood (2026-11-19): a deploy run
+// on main that failed, so it shipped nothing, and whose only pull request is another project's,
+// still waiting.
+const deliveryRunFailed int64 = 702
+
+// seedRunThatShippedNothing stands up verification v16's seed with seedDeliveryReads' delivery
+// settings, P2 (PRIV-1) and R1, which ships it, and, with failed, the shape of the dogfood's run
+// 702: P25 (PUB-1), merged after R1, and run 702, a deploy run on main started after P25's merge
+// whose production job failed, so it shipped nothing and P25 still waits.
+func seedRunThatShippedNothing(t *testing.T, failed bool) privateSeed {
+	t.Helper()
+	seed := seedPrivateProject(t)
+	ctx, pool := t.Context(), seed.database.Pool
+	if _, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
+		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
+		ProductionJobNames: []string{"release / release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
+		PopulationAuthors: []string{"octocat"},
+	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
+		t.Fatalf("write the delivery settings: %v", err)
+	}
+	pr := func(number int, issueKey string, merged time.Time) {
+		t.Helper()
+		opened := merged.Add(-2 * time.Hour)
+		upsertPR(t, seed.database, delivery.DeliveryPullRequest{
+			Repo: "acme/widgets", Number: number, Title: "change " + strconv.Itoa(number), Author: "octocat",
+			URL:       fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
+			CreatedAt: &opened, MergedAt: &merged, IssueKey: &issueKey,
+		})
+	}
+	deploy := func(id int64, started time.Time, conclusion string) {
+		t.Helper()
+		seedPipelineRun(t, pool, delivery.DeliveryRun{
+			RunID: id, Kind: delivery.DeliveryRunKindDeploy, StartedAt: started,
+			CompletedAt: new(started.Add(40 * time.Minute)), Conclusion: new(delivery.DeliveryRunConclusion(conclusion)),
+			HeadBranch: new("main"), Event: new("push"),
+		}, []pipelineFixtureJob{{name: "release / release", conclusion: conclusion, start: started, end: started.Add(30 * time.Minute)}})
+	}
+	day := func(hour int) time.Time { return time.Date(2026, 10, 1, hour, 0, 0, 0, time.UTC) }
+	pr(2, seed.issue[seedPrivate], day(2))
+	deploy(deliveryRunR1, day(3), string(delivery.DeliveryRunConclusionSuccess))
+	if failed {
+		pr(25, seed.issue[seedPublic], day(6))
+		deploy(deliveryRunFailed, day(7), string(delivery.DeliveryRunConclusionFailure))
+	}
+	return seed
+}
+
+// belowTheReadGate is caller's GET of target answered by handle alone, with the request's path
+// values set from path: what the route's handler answers once the route's read-class gate
+// (withinReadScope) lets the caller through. That gate refuses a deployment read to every viewer
+// that is not open, so for such a viewer this is the handler's own rule.
+func (s privateSeed) belowTheReadGate(t *testing.T, caller privateCaller, handle http.HandlerFunc, target string, path map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.Header = s.readerRequest(t, caller).Header
+	for name, value := range path {
+		request.SetPathValue(name, value)
+	}
+	recorder := httptest.NewRecorder()
+	handle(recorder, request)
+	return recorder
+}
+
+// TestAViewerThatIsNotOpenSeesOnlyTheRunsThatShippedAPullRequestItSees: a viewer that is not open
+// (bob, a restricted member of PRIV, and carol's token that lists PRIV) is shown a deploy run only
+// when the run shipped a pull request that viewer is shown. The dogfood's run 702, which failed and
+// so shipped nothing, and whose only pull request is PUB's P25, still waiting, is in none of its
+// reads: its timeline and its measures equal those of a seed where run 702 and P25 were never
+// written, and so do its Pipeline page and its read of run 702, which answers as an id no run
+// holds. R1, which shipped PRIV's P2, is still shown. The Pipeline page and a run's own read refuse
+// such a viewer before any read (403 DEPLOYMENT_READ_REFUSED, for every id), so the test reads both
+// through the route and from their handlers below that gate (belowTheReadGate), where run 702
+// answers 404 NOT_FOUND exactly as in the seed without it. alice, an open viewer, still reads run
+// 702 in each read: an open viewer's rule is unchanged, and leaves out only a run that shipped pull
+// requests none of which is shown, here R1.
+//
+// Controls, each run on its own, each failing the test: show a run that shipped nothing to every
+// viewer in deliveryPopulation.runShown, the rule before (bob's timeline lists run 702, and his
+// measures and Pipeline page count it); show a run that shipped nothing to every viewer in
+// deliveryRunShown, the rule before (bob's read of run 702 below the gate answers its jobs); show
+// it to no viewer in either (alice's timeline, deploy_run_success, production_apply and read of run
+// 702 lose it).
+func TestAViewerThatIsNotOpenSeesOnlyTheRunsThatShippedAPullRequestItSees(t *testing.T) {
+	carried := seedRunThatShippedNothing(t, true)
+	without := seedRunThatShippedNothing(t, false)
+	failedRun := strconv.FormatInt(deliveryRunFailed, 10)
+	run := "/api/v1/delivery/runs/" + failedRun
+	pipeline := deliveryReadsTargets[2].target
+
+	for _, caller := range []privateCaller{callerBob, callerCarolPrivToken} {
+		for _, read := range deliveryReadsTargets[:2] {
+			got := maskedDeliveryRead(t, carried, caller, read.target)
+			want := maskedDeliveryRead(t, without, caller, read.target)
+			for _, apart := range deliveryFieldsApart(got, want) {
+				t.Errorf("%s: the %s differs from the seed without run 702, in %s", caller, read.name, apart)
+			}
+		}
+		if got := readShownDelivery(t, carried, caller).runs; !reflect.DeepEqual(got, map[int64][]string{deliveryRunR1: {"acme/widgets#2"}}) {
+			t.Errorf("%s reads the timeline's runs as %v, want R1 with P2 alone", caller, got)
+		}
+		for _, target := range []string{pipeline, run} {
+			got := carried.request(t, caller, http.MethodGet, target, nil)
+			want := without.request(t, caller, http.MethodGet, target, nil)
+			if want.Code != http.StatusForbidden || got.Code != want.Code || got.Body.String() != want.Body.String() {
+				t.Errorf("%s: GET %s = %d %s, want what the seed without run 702 answers: %d %s", caller, target, got.Code, got.Body.String(), want.Code, want.Body.String())
+			}
+		}
+		id := map[string]string{"id": failedRun}
+		got := carried.belowTheReadGate(t, caller, carried.server.getDeliveryRun, run, id)
+		want := without.belowTheReadGate(t, caller, without.server.getDeliveryRun, run, id)
+		if want.Code != http.StatusNotFound || got.Code != want.Code || got.Body.String() != want.Body.String() {
+			t.Errorf("%s: below the read gate, GET %s = %d %s, want what an id no run holds answers: %d %s", caller, run, got.Code, got.Body.String(), want.Code, want.Body.String())
+		}
+		gotPipeline := carried.belowTheReadGate(t, caller, carried.server.getDeliveryPipeline, pipeline, nil)
+		wantPipeline := without.belowTheReadGate(t, caller, without.server.getDeliveryPipeline, pipeline, nil)
+		if gotPipeline.Code != http.StatusOK || wantPipeline.Code != http.StatusOK {
+			t.Fatalf("%s: below the read gate, GET %s = %d %s and, without run 702, %d %s; want 200 from both", caller, pipeline,
+				gotPipeline.Code, gotPipeline.Body.String(), wantPipeline.Code, wantPipeline.Body.String())
+		}
+		for _, apart := range deliveryFieldsApart(maskedDeliveryBody(t, gotPipeline), maskedDeliveryBody(t, wantPipeline)) {
+			t.Errorf("%s: below the read gate, the pipeline differs from the seed without run 702, in %s", caller, apart)
+		}
+	}
+
+	if got := readShownDelivery(t, carried, callerAlice).runs; !reflect.DeepEqual(got, map[int64][]string{deliveryRunFailed: {}}) {
+		t.Errorf("alice reads the timeline's runs as %v, want run 702 alone, with no pull request", got)
+	}
+	if got := decodeBody[deliveryMeasuresResponse](t, carried.mustRequest(t, callerAlice, http.MethodGet, deliveryReadsTargets[1].target, nil, http.StatusOK)).Measures.DeployRunSuccess.Concluded; got != 1 {
+		t.Errorf("alice's deploy_run_success counts %d concluded runs, want run 702's alone", got)
+	}
+	if got := decodeBody[deliveryPipelineResponse](t, carried.mustRequest(t, callerAlice, http.MethodGet, pipeline, nil, http.StatusOK)).ProductionApply.Total.N; got != 1 {
+		t.Errorf("alice's production_apply counts %d deploys, want run 702's alone", got)
+	}
+	jobs := []string{}
+	for _, job := range decodeBody[delivery.DeliveryRunDetailView](t, carried.mustRequest(t, callerAlice, http.MethodGet, run, nil, http.StatusOK)).Jobs {
+		jobs = append(jobs, job.Name)
+	}
+	if !slices.Equal(jobs, []string{"release / release"}) {
+		t.Errorf("alice: GET %s lists jobs %v, want run 702's release / release", run, jobs)
 	}
 }
 

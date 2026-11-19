@@ -144,13 +144,13 @@ func (spec *deliveryLiveSpec) readFor(reader model.Actor) {
 // deliveryReaderKey is the part of a view's key its reader decides: whether the reader is the
 // server's own viewer, whether it is open, and the projects it sees, which are all that the
 // timeline's rule reads of a viewer (readDeliveryRows: access.ProjectClause on each pull
-// request's issue, and openness for one that names none); and, for a reader that does not see
-// every object (seesEveryObject), its person and session too, which the event rule the view's
-// session titles are read under reads (delivery.ResolveSessionTitles under readableEvents: its
-// party and own-session arms), as access.SessionClause's own-session arm does for the session
-// groups (groupsShown). Readers that agree on the key read the same rows and share one view, so
-// where no project is private every open viewer shares the one view it always did. A reader with
-// no viewer is the closed one, which sees nothing.
+// request's issue, and openness for one that names none and for a run that shipped none); and, for
+// a reader that does not see every object (seesEveryObject), its person and session too, which the
+// event rule the view's session titles are read under reads (delivery.ResolveSessionTitles under
+// readableEvents: its party and own-session arms), as access.SessionClause's own-session arm does
+// for the session groups (groupsShown). Readers that agree on the key read the same rows and share
+// one view, so where no project is private every open viewer shares the one view it always did. A
+// reader with no viewer is the closed one, which sees nothing.
 func deliveryReaderKey(reader model.Actor) string {
 	viewer := reader.Viewer
 	if viewer == nil {
