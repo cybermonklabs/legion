@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  An answer that something else wrote in a server's place, such as a gateway's or a proxy's page,
+  which can echo the request back with its credentials, is no longer printed whole by the Dispatch
+  server's GitHub App client, its GitHub proxy and its secrets-broker relay, the broker judge's
+  model loop, `dev-airlock-stands`, docstest, loadtest's seed, refs, guard, listener, registrar,
+  Cloud Monitoring and profile reads, or brokertest's Pods (requestseed's stderr) and approval-page
+  Browser. Each names such a body through
+  `github.com/sjawhar/envoy/excerpt` (#4368) in one line, with every credential that request
+  carried redacted: `a body that is not <what> ("<excerpt>")`, `an empty body`, or `a body of N
+  bytes and no readable text`. A server's own error text prints as before, and every error keeps
+  its type, status, code and fields. The GitHub App client's errors reach logs,
+  `delivery_settings.last_error`, `architecture.sync_failed` events and the source-check answer.
+  The GitHub proxy answers a foreign refusal at its status as `{"code":"GITHUB_UPSTREAM","error":…}`,
+  and a failed token mint no longer hands the browser the App's JWT. The judge's model-loop
+  Detail reaches its grant-log row and its `model_err` line. `dev-airlock-stands enroll-pod` also
+  names its `--url` without its user info.
+time: 2026-11-18T11:25:34Z
+custom:
+    Issue: pr4407

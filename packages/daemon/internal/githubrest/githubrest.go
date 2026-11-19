@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/excerpt"
+
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
@@ -190,17 +192,39 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 }
 
 // refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its
-// caller returns: the status, the body as GitHub sent it, the rate-limit headers as GitHub sent
-// them, whether the answer is GitHub's rate limit (limited, which the caller has read already
-// where it decides something of its own by it, as JobLog's 403 does) and, when it is, how long to
-// wait and which budget it spent — the REST API's core budget when GitHub names no other.
+// caller returns: the status, the body as a message may print it (BodyText, with the token the
+// request carried redacted), the rate-limit headers as GitHub sent them, whether the answer is
+// GitHub's rate limit (limited, which the caller has read already where it decides something of
+// its own by it, as JobLog's 403 does) and, when it is, how long to wait and which budget it spent
+// — the REST API's core budget when GitHub names no other.
 func (c Client) refusal(method string, target *url.URL, response *http.Response, body []byte, limited bool) *Answer {
-	refused := &Answer{Method: method, Path: c.answerPath(target), Status: response.StatusCode, Body: strings.TrimSpace(string(body)),
+	refused := &Answer{Method: method, Path: c.answerPath(target), Status: response.StatusCode, Body: BodyText(body, c.Token),
 		RateLimited: limited, RetryAfter: retryAfter(response, body, time.Now()), Limit: limitHeaders(response.Header)}
 	if refused.RateLimited {
 		refused.Budget = spent(response.Header, body)
 	}
 	return refused
+}
+
+// ErrorJSON reports whether body is GitHub's error JSON: an object whose message is a string, the
+// shape every refusal of GitHub's REST API takes.
+func ErrorJSON(body []byte) bool {
+	var answer struct {
+		Message *string `json:"message"`
+	}
+	return json.Unmarshal(body, &answer) == nil && answer.Message != nil
+}
+
+// BodyText is body, a GitHub answer's, as a message names it: as GitHub sent it, trimmed, where it
+// is GitHub's error JSON (ErrorJSON). Any other body was written by something in GitHub's place,
+// such as a proxy, which can echo the request back, so it is named in one line with tokens, the
+// credentials the request carried, and any Authorization or Bearer value redacted
+// (excerpt.BodyForText).
+func BodyText(body []byte, tokens ...string) string {
+	if ErrorJSON(body) {
+		return strings.TrimSpace(string(body))
+	}
+	return excerpt.BodyForText(string(body), "GitHub's error JSON", tokens...)
 }
 
 // answerPath is the path an Answer names for target, its query left out: the path under the
@@ -311,10 +335,12 @@ func nextPage(link string) string {
 }
 
 // Answer is a GitHub REST answer other than 2xx: the request's method and path (its query left
-// out), GitHub's HTTP status, the body GitHub sent with it, the rate-limit headers GitHub sent with
-// it (Limit), and whether it is a rate limit, which every further call on the same token meets
-// until the limit resets, with how long GitHub asks the caller to wait before its next call
-// (retryAfter; zero when it is not one) and the budget the limit spent (empty when it is not one).
+// out), GitHub's HTTP status, the body as a message may print it (BodyText: GitHub's error JSON as
+// GitHub sent it, any other body in one line with the token redacted), the rate-limit headers
+// GitHub sent with it (Limit), and whether it is a rate limit, which every further call on the
+// same token meets until the limit resets, with how long GitHub asks the caller to wait before its
+// next call (retryAfter; zero when it is not one) and the budget the limit spent (empty when it is
+// not one).
 type Answer struct {
 	Method      string
 	Path        string

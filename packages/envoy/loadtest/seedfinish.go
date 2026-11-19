@@ -94,7 +94,7 @@ func (c dispatchCoverage) readCoverage(ctx context.Context) (model.SearchCoverag
 	case res.err != nil:
 		return coverage, fmt.Errorf("GET %s: %w", searchCoveragePath, res.err)
 	case res.status != http.StatusOK:
-		return coverage, fmt.Errorf("GET %s: HTTP %d %s", searchCoveragePath, res.status, trunc(res.body))
+		return coverage, fmt.Errorf("GET %s: HTTP %d %s", searchCoveragePath, res.status, c.a.bodyText(res))
 	}
 	if err := json.Unmarshal(res.body, &coverage); err != nil {
 		return coverage, fmt.Errorf("GET %s: %w", searchCoveragePath, err)

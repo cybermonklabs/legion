@@ -74,7 +74,11 @@ func workflowRunsOfOneCommit(rawQuery string) bool {
 // installation token of the App installation covering the path's repository. A workflow-runs read
 // GitHub answers 200 is trimmed to workflowRuns, and a body that does not decode as workflow runs
 // is 502 GITHUB_UPSTREAM; every other answer, and a workflow-runs answer of any other status,
-// passes through as GitHub sent it, but a rate limit. Any other method is 405; a path the web app
+// passes through as GitHub sent it, but a rate limit and a refusal that is not GitHub's error
+// JSON. Such a refusal was written by something in GitHub's place, which can echo the request back,
+// the installation token included, so it keeps its status and is the {code, error} the web client
+// reads, GITHUB_UPSTREAM naming the body in one line with the token redacted (githubapp.BodyText);
+// so is a token mint that failed, at 502. Any other method is 405; a path the web app
 // does not read, or a workflow-runs read whose query is not one commit's head_sha and its page, is
 // 404 GITHUB_PATH_REFUSED; a repository the App is not installed on, or a deployment with no App
 // key, is 503 GITHUB_TOKEN_UNAVAILABLE. A rate limit is 503 GITHUB_RATE_LIMITED with Retry-After:
@@ -149,6 +153,16 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client)
 			return
 		}
 		api.WriteJSON(w, http.StatusOK, runs)
+		return
+	}
+	if (status < 200 || status > 299) && !githubapp.ErrorJSON(body) {
+		// Something in GitHub's place wrote this refusal, and it can echo the request back, the
+		// installation token included: the browser is given the status and the {code, error} it
+		// reads, naming the body in one line with the token redacted, never the body.
+		api.WriteJSON(w, status, map[string]string{
+			"error": "GitHub answered " + target + " " + strconv.Itoa(status) + " with " + githubapp.BodyText(body, token),
+			"code":  "GITHUB_UPSTREAM",
+		})
 		return
 	}
 	if contentType := header.Get("Content-Type"); contentType != "" {

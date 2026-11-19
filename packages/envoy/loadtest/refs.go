@@ -278,7 +278,7 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 				}
 				res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+t.issue+"/artifacts", who{}, body, refTargetKey(t.n, v+1))
 				if res.err != nil || res.status != http.StatusCreated {
-					return fmt.Errorf("write %s version %d on %s: %d %s %v, want 201", name, v+1, t.issue, res.status, trunc(res.body), res.err)
+					return fmt.Errorf("write %s version %d on %s: %d %s %v, want 201", name, v+1, t.issue, res.status, a.bodyText(res), res.err)
 				}
 				if n := written.Add(1); n%refProgressEvery == 0 {
 					log.Printf("seed-refs: %d/%d versions, %d targets done, %s", n, total, done.Load(), time.Since(start).Round(time.Second))
@@ -318,7 +318,7 @@ func writeRefSources(ctx context.Context, a *api, p refPlan) (issues, cites int,
 			body := map[string]any{"name": refSourceName, "content": b.String(), "actor": refWriter(0)}
 			res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+key+"/artifacts", who{}, body, refSourceKey(key))
 			if res.err != nil || res.status != http.StatusCreated {
-				return fmt.Errorf("write %s on %s: %d %s %v, want 201", refSourceName, key, res.status, trunc(res.body), res.err)
+				return fmt.Errorf("write %s on %s: %d %s %v, want 201", refSourceName, key, res.status, a.bodyText(res), res.err)
 			}
 			return nil
 		})
@@ -372,7 +372,7 @@ func refsShape(ctx context.Context, a *api, sf seedFile) error {
 		}
 		res := a.callRetry(ctx, "GET", "/api/v1/issues/"+is.Key+"/references", who{}, nil)
 		if !res.ok() {
-			return fmt.Errorf("references of %s: %d %s %v", is.Key, res.status, trunc(res.body), res.err)
+			return fmt.Errorf("references of %s: %d %s %v", is.Key, res.status, a.bodyText(res), res.err)
 		}
 		var answer refsAnswer
 		if err := json.Unmarshal(res.body, &answer); err != nil {

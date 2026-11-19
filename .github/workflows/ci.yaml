@@ -734,6 +734,9 @@ jobs:
             dispatch_server: &dispatch_server
               - 'packages/envoy/cmd/dispatch/*'
               - 'packages/envoy/going/*'
+              # excerpt: one redacted line of a body GitHub's or the broker's place wrote, which the
+              # Dispatch server's GitHub App client and its relays name such a body through.
+              - 'packages/envoy/excerpt/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               # The relayed shapes routes_shapes.go names (internal/dispatch/api).
               - 'packages/envoy/internal/broker/wire/*'
@@ -901,6 +904,9 @@ jobs:
               # hold their text to (packages/daemon/internal/api): the splitter, the document
               # parser under it and the contracts both read come with it.
               - 'packages/envoy/dispatchbody/*'
+              # packages/envoy/excerpt names a body that is not its server's own in one redacted
+              # line, which the daemon's clients print.
+              - 'packages/envoy/excerpt/*'
               # The broker's OAuth wire types: packages/envoy/internal/brokerclient below
               # imports them, so `go list -deps ./cmd/legion` lists this package and the anchor
               # was one package short of its own definition until this line. Every other filter
@@ -2125,6 +2131,7 @@ jobs:
             dispatch_server: &dispatch_server
               - 'packages/envoy/cmd/dispatch/*'
               - 'packages/envoy/going/*'
+              - 'packages/envoy/excerpt/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/brokertoken/*'
@@ -2270,6 +2277,7 @@ jobs:
               - 'packages/envoy/cmd/dispatch/**'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
+              - 'packages/envoy/excerpt/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/dispatch/**'
@@ -2484,6 +2492,7 @@ jobs:
               # the merger's READY completion make with the server's own splitter
               # (packages/envoy/dispatchbody, and the parser and contracts under it).
               - 'packages/envoy/dispatchbody/*'
+              - 'packages/envoy/excerpt/*'
               - 'packages/envoy/internal/contracts/*'
               # internal/contracts mints an envelope's ids through it (message_envelope.go).
               - 'packages/envoy/internal/id/*'
@@ -2877,6 +2886,7 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/brokeraddr/**/*_test.go'
               - '!packages/envoy/cmd/**/*_test.go'
+              - '!packages/envoy/excerpt/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
@@ -3010,6 +3020,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/twobuild_migrations_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
+              - '!packages/envoy/excerpt/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
@@ -3049,6 +3060,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/twobuild_migrations_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
+              - '!packages/envoy/excerpt/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
@@ -3151,6 +3163,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/memory_test.go'
               - '!packages/envoy/cmd/dispatch/multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/outbox_load_steps_test.go'
+              - '!packages/envoy/excerpt/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
@@ -3257,6 +3270,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/memory_test.go'
               - '!packages/envoy/cmd/dispatch/multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/outbox_load_steps_test.go'
+              - '!packages/envoy/excerpt/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
@@ -3282,6 +3296,9 @@ jobs:
               # that run the tests: the chat client and the router.
               - 'packages/envoy/going/*'
               - 'packages/envoy/internal/routing/*'
+              # excerpt: the listener's tests build brokertest, which names a page in the broker's
+              # place through it.
+              - 'packages/envoy/excerpt/*'
               # The two listener pod specs cmd/listener/pod_grace_period_test.go:23,28 read: it
               # holds each pod's grace, less its pre-stop wait, to the listener's stop budget.
               - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
@@ -3375,6 +3392,7 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/excerpt/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
@@ -4381,6 +4399,7 @@ jobs:
               - '.github/scripts/pg-connection-ceiling.sh'
               - *go_workspace
               - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/excerpt/*'
               # internal/contracts mints an envelope's ids through it (message_envelope.go).
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
@@ -4436,11 +4455,13 @@ jobs:
               - 'packages/contracts/fixtures/decision-blocks/**'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+              - '!packages/envoy/excerpt/**/*_test.go'
               - '!packages/envoy/internal/contracts/**/*_test.go'
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
               - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
               - '!packages/envoy/internal/dispatch/benchtime/**/*_test.go'
               - '!packages/envoy/internal/dispatch/bytelru/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/docs/docstest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/duty/**/*_test.go'
               - '!packages/envoy/internal/dispatch/events/**/*_test.go'
               - '!packages/envoy/internal/dispatch/githubreads/**/*_test.go'
@@ -4538,6 +4559,9 @@ jobs:
               # hold their text to (packages/daemon/internal/api): the splitter, the document
               # parser under it and the contracts both read come with it.
               - 'packages/envoy/dispatchbody/*'
+              # packages/envoy/excerpt names a body that is not its server's own in one redacted
+              # line, which the daemon's clients print.
+              - 'packages/envoy/excerpt/*'
               # The broker's OAuth wire types: packages/envoy/internal/brokerclient below
               # imports them, so `go list -deps ./cmd/legion` lists this package and the anchor
               # was one package short of its own definition until this line. Every other filter

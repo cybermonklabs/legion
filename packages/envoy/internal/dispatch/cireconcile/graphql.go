@@ -301,7 +301,9 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 		return queryPage{}, err
 	}
 	if status != http.StatusOK {
-		return queryPage{}, fmt.Errorf("the GraphQL query for %s/%s answered %s", repository.owner, repository.repo, githubapp.StatusText(status, body))
+		// GitHub's own refusal prints as GitHub sent it; any other body was written in GitHub's
+		// place and can echo the query back, so it is named with its token redacted.
+		return queryPage{}, fmt.Errorf("the GraphQL query for %s/%s answered %s", repository.owner, repository.repo, githubapp.TokenStatusText(status, body, repository.token))
 	}
 	var answer graphQLAnswer
 	if err := json.Unmarshal(body, &answer); err != nil {

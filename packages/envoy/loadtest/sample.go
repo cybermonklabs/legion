@@ -584,7 +584,7 @@ func getOK(ctx context.Context, client *http.Client, url string) (io.ReadCloser,
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
-		return nil, fmt.Errorf("GET %s answered %d %s", redactURL(url), resp.StatusCode, trunc(b))
+		return nil, fmt.Errorf("GET %s answered %d %s", redactURL(url), resp.StatusCode, fetchedText(b, url))
 	}
 	return resp.Body, nil
 }

@@ -124,7 +124,7 @@ func FetchPullRequest(ctx context.Context, client *githubapp.Client, owner, repo
 	if err != nil {
 		return FetchedPullRequest{}, fmt.Errorf("fetch first commit of %s/%s PR #%d: %w", owner, repo, number, err)
 	}
-	if err := githubapp.CheckResponse(commitsStatus, commitsHeader, commitsBody); err != nil {
+	if err := githubapp.CheckTokenResponse(commitsStatus, commitsHeader, commitsBody, token); err != nil {
 		return FetchedPullRequest{}, fmt.Errorf("fetch first commit of %s/%s PR #%d: %w", owner, repo, number, err)
 	}
 	var commits []commitPayload
@@ -173,7 +173,7 @@ func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, toke
 	if status == http.StatusNotFound || status == http.StatusGone {
 		return pullRequestPayload{}, fmt.Errorf("fetch %s/%s PR #%d: %w (status %d)", owner, repo, number, ErrPullRequestNotFound, status)
 	}
-	if err := githubapp.CheckRepositoryResponse(status, header, body, owner+"/"+repo, pullPath); err != nil {
+	if err := githubapp.CheckRepositoryResponse(status, header, body, token, owner+"/"+repo, pullPath); err != nil {
 		return pullRequestPayload{}, fmt.Errorf("fetch %s/%s PR #%d: %w", owner, repo, number, err)
 	}
 	var payload pullRequestPayload
@@ -201,7 +201,7 @@ func fetchCommitPullPayloads(ctx context.Context, client *githubapp.Client, toke
 		return nil, fmt.Errorf("fetch the pull requests of %s/%s@%s: %w", owner, repo, sha, err)
 	}
 	repoFull := owner + "/" + repo
-	if err := githubapp.CheckRepositoryResponse(status, header, body, repoFull, pullsPath, http.StatusUnprocessableEntity); err != nil {
+	if err := githubapp.CheckRepositoryResponse(status, header, body, token, repoFull, pullsPath, http.StatusUnprocessableEntity); err != nil {
 		return nil, fmt.Errorf("fetch the pull requests of %s@%s: %w", repoFull, sha, err)
 	}
 	if status == http.StatusUnprocessableEntity {
@@ -568,7 +568,7 @@ func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query
 	if err != nil {
 		return searchPage{}, fmt.Errorf("page after %q (%s): %w", after, pageAttemptsNote(), err)
 	}
-	if err := githubapp.CheckResponse(status, header, body); err != nil {
+	if err := githubapp.CheckTokenResponse(status, header, body, token); err != nil {
 		return searchPage{}, fmt.Errorf("page after %q (%s): %w", after, pageAttemptsNote(), err)
 	}
 	var response searchPullRequestsResponse

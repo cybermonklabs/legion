@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/sjawhar/envoy/excerpt"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -26,16 +27,20 @@ type Client struct {
 }
 
 // Refusal is an answer outside 2xx: the URL of the route that refused, the status and what the
-// listener said. Its Error names all three, the body cut to its first 300 bytes, so a log line that
-// carries only a session id still says which listener and route refused.
+// listener said. Its Error names all three, so a log line that carries only a session id still
+// says which listener and route refused: the listener's own error JSON cut to its first 300 bytes,
+// and any other body, which a gateway in the listener's place can write echoing the request back,
+// in one line with the bearer the call carried redacted (answerText).
 type Refusal struct {
 	URL    string
 	Status int
 	Body   []byte
+	// token is the bearer the refused call carried, which Error redacts from a foreign body.
+	token string
 }
 
 func (r *Refusal) Error() string {
-	return fmt.Sprintf("%s: %d %s", r.URL, r.Status, truncate(r.Body))
+	return fmt.Sprintf("%s: %d %s", r.URL, r.Status, answerText(r.Body, "the listener's error JSON", r.token))
 }
 
 // Subscribe sends a session's registration, or its heartbeat, which is the same body again
@@ -69,7 +74,7 @@ func (c *Client) Unsubscribe(ctx context.Context, release listenerwire.Unsubscri
 	}
 	var answer listenerwire.UnsubscribeResponse
 	if json.Unmarshal(body, &answer) != nil {
-		return nil, fmt.Errorf("unreadable answer: %s", truncate(body))
+		return nil, fmt.Errorf("unreadable answer: %s", excerpt.BodyForText(string(body), "the listener's unsubscribe answer", c.Token))
 	}
 	return answer.Removed, nil
 }
@@ -116,7 +121,7 @@ func (c *Client) post(ctx context.Context, path string, body any) ([]byte, error
 	defer response.Body.Close()
 	answer, _ := io.ReadAll(response.Body)
 	if response.StatusCode/100 != 2 {
-		return answer, &Refusal{URL: c.URL + path, Status: response.StatusCode, Body: answer}
+		return answer, &Refusal{URL: c.URL + path, Status: response.StatusCode, Body: answer, token: c.Token}
 	}
 	return answer, nil
 }
@@ -129,11 +134,19 @@ func (c *Client) authorize(request *http.Request) {
 	}
 }
 
-// truncate is b cut to its first 300 bytes, marked as cut, as the harness's log lines cut an
-// answer.
-func truncate(b []byte) string {
-	if len(b) > 300 {
-		return string(b[:300]) + "…"
+// answerText is body, the listener's answer to a call that carried token, as a message names it:
+// the listener's own error JSON (listenerwire.APIError, an object whose error is a string,
+// writeJSONError) cut to its first 300 bytes, marked as cut, as the harness's log lines cut an
+// answer. Any other body was written by something in the listener's place, such as a gateway,
+// which can echo the request back, so it is named as not being notWhat in one line with token and
+// any Authorization or Bearer value redacted (excerpt.BodyForText).
+func answerText(body []byte, notWhat, token string) string {
+	var own listenerwire.APIErrorAs[*string]
+	if json.Unmarshal(body, &own) != nil || own.Error == nil {
+		return excerpt.BodyForText(string(body), notWhat, token)
 	}
-	return string(b)
+	if len(body) > 300 {
+		return string(body[:300]) + "…"
+	}
+	return string(body)
 }

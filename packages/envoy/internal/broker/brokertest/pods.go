@@ -5,7 +5,9 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/proof"
@@ -25,7 +27,8 @@ type TB interface {
 // logs in with its token, its launcher credential enrolls pods that prove their accounts with
 // projected tokens, and a pod asks for a secret, reads its request's state and a grant's values,
 // and cancels a request. Each step logs its request and response, and fails T when the broker
-// answers outside the protocol.
+// answers outside the protocol; both name a body that is not the broker's own with every
+// credential the request carried redacted (answered.text).
 type Pods struct {
 	T    TB
 	Base string
@@ -82,16 +85,17 @@ func (b Pods) LogIn(service, account string) Launcher {
 	if err != nil {
 		b.T.Fatalf("sign %s's login request: %v", service, err)
 	}
-	status, answer := b.send(http.MethodPost, "/v1/launcher-credentials/token", nil, map[string]any{
-		"token":   b.Token(account, ""),
+	token := b.Token(account, "")
+	got := b.send(http.MethodPost, "/v1/launcher-credentials/token", nil, map[string]any{
+		"token":   token,
 		"request": loginRequest,
-	})
+	}, token, loginRequest)
 	var login struct {
 		CredentialID string `json:"credential_id"`
 	}
-	b.decode(answer, &login)
-	if status != http.StatusOK || login.CredentialID == "" {
-		b.T.Fatalf("%s's token login = %d %s, want 200 with a credential_id", service, status, answer)
+	b.decode(got, &login)
+	if got.status != http.StatusOK || login.CredentialID == "" {
+		b.T.Fatalf("%s's token login = %d %s, want 200 with a credential_id", service, got.status, got.text())
 	}
 	return Launcher{Key: key, CredentialID: login.CredentialID}
 }
@@ -109,15 +113,16 @@ func (b Pods) Enroll(by Launcher, runtimeID, account string) Pod {
 	if err != nil {
 		b.T.Fatalf("sign %s's enrollment: %v", runtimeID, err)
 	}
-	status, answer := b.send(http.MethodPost, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
-		"kind": "pod", "runtime_id": runtimeID, "thumbprint": thumbprint, "pod_token": b.Token(account, runtimeID),
-	})
+	podToken := b.Token(account, runtimeID)
+	got := b.send(http.MethodPost, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+		"kind": "pod", "runtime_id": runtimeID, "thumbprint": thumbprint, "pod_token": podToken,
+	}, podToken)
 	var enrolled struct {
 		EnrollmentID string `json:"enrollment_id"`
 	}
-	b.decode(answer, &enrolled)
-	if status != http.StatusCreated || enrolled.EnrollmentID == "" {
-		b.T.Fatalf("enroll %s as %s = %d %s, want 201 with an enrollment_id", runtimeID, account, status, answer)
+	b.decode(got, &enrolled)
+	if got.status != http.StatusCreated || enrolled.EnrollmentID == "" {
+		b.T.Fatalf("enroll %s as %s = %d %s, want 201 with an enrollment_id", runtimeID, account, got.status, got.text())
 	}
 	return Pod{RuntimeID: runtimeID, Key: key, EnrollmentID: enrolled.EnrollmentID}
 }
@@ -135,17 +140,18 @@ func (b Pods) EnrollRefused(by Launcher, runtimeID, account string) (int, string
 	if err != nil {
 		b.T.Fatalf("sign %s's enrollment: %v", runtimeID, err)
 	}
-	status, answer := b.send(http.MethodPost, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
-		"kind": "pod", "runtime_id": runtimeID, "thumbprint": thumbprint, "pod_token": b.Token(account, runtimeID),
-	})
-	if status == http.StatusCreated {
-		b.T.Fatalf("enroll %s as %s = 201 %s, want a refusal", runtimeID, account, answer)
+	podToken := b.Token(account, runtimeID)
+	got := b.send(http.MethodPost, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+		"kind": "pod", "runtime_id": runtimeID, "thumbprint": thumbprint, "pod_token": podToken,
+	}, podToken)
+	if got.status == http.StatusCreated {
+		b.T.Fatalf("enroll %s as %s = 201 %s, want a refusal", runtimeID, account, got.text())
 	}
 	var refusal struct {
 		Code string `json:"code"`
 	}
-	b.decode(answer, &refusal)
-	return status, refusal.Code
+	b.decode(got, &refusal)
+	return got.status, refusal.Code
 }
 
 // Ask has p request the agent secret secretName, naming the reason a pod names, and returns the
@@ -165,12 +171,12 @@ func (b Pods) AskWithReason(p Pod, secretName, reason string) RequestReply {
 	if err != nil {
 		b.T.Fatalf("sign %s's request for %s: %v", p.RuntimeID, secretName, err)
 	}
-	status, answer := b.signed(p, http.MethodPost, "/v1/requests", map[string]any{"request": request, "session_id": nil})
-	if status != http.StatusOK {
-		b.T.Fatalf("%s's POST /v1/requests for %s = %d %s, want 200", p.RuntimeID, secretName, status, answer)
+	got := b.signed(p, http.MethodPost, "/v1/requests", map[string]any{"request": request, "session_id": nil}, request)
+	if got.status != http.StatusOK {
+		b.T.Fatalf("%s's POST /v1/requests for %s = %d %s, want 200", p.RuntimeID, secretName, got.status, got.text())
 	}
 	var reply RequestReply
-	b.decode(answer, &reply)
+	b.decode(got, &reply)
 	return reply
 }
 
@@ -178,12 +184,12 @@ func (b Pods) AskWithReason(p Pod, secretName, reason string) RequestReply {
 func (b Pods) State(p Pod, id string) RequestReply {
 	b.T.Helper()
 	path := "/v1/requests/" + id
-	status, answer := b.signed(p, http.MethodGet, path, nil)
-	if status != http.StatusOK {
-		b.T.Fatalf("%s's GET %s = %d %s, want 200", p.RuntimeID, path, status, answer)
+	got := b.signed(p, http.MethodGet, path, nil)
+	if got.status != http.StatusOK {
+		b.T.Fatalf("%s's GET %s = %d %s, want 200", p.RuntimeID, path, got.status, got.text())
 	}
 	var reply RequestReply
-	b.decode(answer, &reply)
+	b.decode(got, &reply)
 	return reply
 }
 
@@ -191,22 +197,22 @@ func (b Pods) State(p Pod, id string) RequestReply {
 func (b Pods) Cancel(p Pod, id string) {
 	b.T.Helper()
 	path := "/v1/requests/" + id + "/cancel"
-	if status, answer := b.signed(p, http.MethodPost, path, nil); status != http.StatusOK {
-		b.T.Fatalf("%s's POST %s = %d %s, want 200", p.RuntimeID, path, status, answer)
+	if got := b.signed(p, http.MethodPost, path, nil); got.status != http.StatusOK {
+		b.T.Fatalf("%s's POST %s = %d %s, want 200", p.RuntimeID, path, got.status, got.text())
 	}
 }
 
 // Values has p read the values of its grant grantID.
 func (b Pods) Values(p Pod, grantID string) map[string]string {
 	b.T.Helper()
-	status, answer := b.signed(p, http.MethodPost, "/v1/grants/"+grantID+"/values", nil)
-	if status != http.StatusOK {
-		b.T.Fatalf("%s's grant values = %d %s, want 200", p.RuntimeID, status, answer)
+	got := b.signed(p, http.MethodPost, "/v1/grants/"+grantID+"/values", nil)
+	if got.status != http.StatusOK {
+		b.T.Fatalf("%s's grant values = %d %s, want 200", p.RuntimeID, got.status, got.text())
 	}
 	var values struct {
 		Values map[string]string `json:"values"`
 	}
-	b.decode(answer, &values)
+	b.decode(got, &values)
 	return values.Values
 }
 
@@ -220,20 +226,21 @@ func (b Pods) newKey() *ecdsa.PrivateKey {
 	return key
 }
 
-// signed sends body to path with p's proof of its enrollment.
-func (b Pods) signed(p Pod, method, path string, body any) (int, []byte) {
+// signed sends body to path with p's proof of its enrollment; inBody is every credential body
+// carries.
+func (b Pods) signed(p Pod, method, path string, body any, inBody ...string) answered {
 	b.T.Helper()
 	proofHeader, err := proof.Sign(p.Key, p.EnrollmentID, method, b.Base+path, time.Now())
 	if err != nil {
 		b.T.Fatalf("sign %s's proof for %s %s: %v", p.RuntimeID, method, path, err)
 	}
-	return b.send(method, path, map[string]string{"Proof": proofHeader}, body)
+	return b.send(method, path, map[string]string{"Proof": proofHeader}, body, inBody...)
 }
 
 // send sends body as JSON to path with the auth headers, logs the exchange with neither the
-// headers nor the body, since each can carry a credential, and returns the status and the
-// response body.
-func (b Pods) send(method, path string, auth map[string]string, body any) (int, []byte) {
+// headers nor the body, since each can carry a credential, and with the answer named as text
+// names it, and returns the answer. inBody is every credential body carries.
+func (b Pods) send(method, path string, auth map[string]string, body any, inBody ...string) answered {
 	b.T.Helper()
 	var payload []byte
 	if body != nil {
@@ -259,14 +266,16 @@ func (b Pods) send(method, path string, auth map[string]string, body any) (int, 
 	if err != nil {
 		b.T.Fatalf("read the answer to %s %s: %v", method, path, err)
 	}
-	b.T.Logf("> %s %s\n< %d %s", method, path, response.StatusCode, bytes.TrimSpace(answer))
-	return response.StatusCode, answer
+	got := answered{status: response.StatusCode, body: answer, carried: append(slices.Collect(maps.Values(auth)), inBody...)}
+	b.T.Logf("> %s %s\n< %d %s", method, path, got.status, got.text())
+	return got
 }
 
-// decode unmarshals the JSON answer into into, failing T if it is not.
-func (b Pods) decode(answer []byte, into any) {
+// decode unmarshals the JSON answer into into, failing T if it is not, naming the answer as
+// answered.text does.
+func (b Pods) decode(got answered, into any) {
 	b.T.Helper()
-	if err := json.Unmarshal(answer, into); err != nil {
-		b.T.Fatalf("decode %s: %v", answer, err)
+	if err := json.Unmarshal(got.body, into); err != nil {
+		b.T.Fatalf("decode %s: %v", got.text(), err)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/sjawhar/envoy/excerpt"
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -44,7 +45,7 @@ func runIssueStatus(ctx context.Context, c *operatorCall, issue, status string) 
 	if code := c.send(ctx, op, http.MethodPost, "/legion/v1/grants", struct{}{}, func(_ io.Writer, answer []byte) error {
 		var minted api.GrantResponse
 		if err := json.Unmarshal(answer, &minted); err != nil || minted.GrantID == "" {
-			return fmt.Errorf("no grant in it: %s", answer)
+			return fmt.Errorf("no grant in it: %s", excerpt.BodyForText(string(answer), "a grant answer", op.carried()...))
 		}
 		grant = minted.GrantID
 		return nil
@@ -52,7 +53,7 @@ func runIssueStatus(ctx context.Context, c *operatorCall, issue, status string) 
 		return code
 	}
 	// The grant authenticates the status request; the bearer has done its one job.
-	return c.send(ctx, operator{base: op.base}, http.MethodPost, "/legion/v1/issues/status",
+	return c.send(ctx, operator{base: op.base, inBody: []string{grant}}, http.MethodPost, "/legion/v1/issues/status",
 		api.IssueStatusRequest{GrantID: grant, Issue: issue, Status: status}, writeLine)
 }
 

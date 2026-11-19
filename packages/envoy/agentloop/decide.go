@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/envoy/excerpt"
 )
 
 // decidePath is the path a decision is posted to, under the endpoint's base URL.
@@ -100,7 +102,9 @@ type DecideResult struct {
 	// Usage is what the call consumed and what it cost at Model.Price.
 	Usage Usage
 	// Fault is why the call ended short of an answer, and is empty on a call that answered.
-	// Detail says what happened, for a log rather than for a wire.
+	// Detail says what happened, for a log rather than for a wire. A body that is neither
+	// System One's own error JSON nor its answer is named in it as one line, with the bearer
+	// the request carried redacted (the package doc's "A body that is not the provider's").
 	Fault  Fault
 	Detail string
 }
@@ -151,7 +155,8 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 		return DecideResult{}, fmt.Errorf("agentloop: the %s endpoint: %w", SystemOne, err)
 	}
 	post.Header.Set("Content-Type", "application/json")
-	client := newModelTransport(req.Model.Endpoint).client()
+	transport := newModelTransport(req.Model.Endpoint)
+	client := transport.client()
 
 	resp, err := client.Do(post)
 	var raw []byte
@@ -172,22 +177,51 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	case err != nil:
 		result.Fault, result.Detail = FaultProviderError, err.Error()
 	case resp.StatusCode/100 != 2:
-		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("%s: %.500q", resp.Status, raw)
+		result.Fault, result.Detail = FaultProviderError, refusalDetail(resp.Status, raw, transport.credentials())
 	case len(raw) > answerLimit:
 		result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("the answer went past the %d MiB a decision reads", answerLimit>>20)
 	default:
 		var answer systemOneResponse
 		switch err := json.Unmarshal(raw, &answer); {
 		case err != nil:
-			result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("%v: %.500q", err, raw)
+			result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("%v: %s", err, notAnAnswer(raw, transport.credentials()))
 		case len(answer.Answers) == 0 || answer.Usage == nil:
-			result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("the answer holds no answers or no usage: %.500q", raw)
+			result.Fault, result.Detail = FaultMalformed, "the answer holds no answers or no usage: "+notAnAnswer(raw, transport.credentials())
 		default:
 			result.Answers = answer.Answers
 			result.Usage = answer.Usage.priced(req.Model.Price)
 		}
 	}
 	return result, nil
+}
+
+// refusalDetail is what a decision answered with a failing status says of it. System One's own
+// error JSON is the API's own words: the status line and the body, quoted up to 500 runes, as the
+// API wrote them. Any other body is a gateway's or a proxy's in the API's place, which can echo
+// the request back, its bearer header with it, so the status line and the body are each named
+// through an excerpt, with every credential the request carried redacted.
+func refusalDetail(status string, raw []byte, credentials []string) string {
+	if systemOneError(raw) {
+		return fmt.Sprintf("%s: %.500q", status, raw)
+	}
+	return excerpt.Text(status, credentials...) + ": " + excerpt.BodyForText(string(raw), "System One's error JSON", credentials...)
+}
+
+// systemOneError is whether body is System One's own error JSON: an object with a detail member,
+// which the API's 400 (HTTPBadRequestError, a string or an object) and its 422
+// (HTTPValidationError, an array) both carry (https://docs.typesafe.ai/api/system-one.md).
+func systemOneError(body []byte) bool {
+	var shape struct {
+		Detail json.RawMessage `json:"detail"`
+	}
+	return json.Unmarshal(body, &shape) == nil && len(shape.Detail) > 0 && string(shape.Detail) != "null"
+}
+
+// notAnAnswer names a 2xx body that is not a decision's answer, which only something in the API's
+// place sends and which can echo the request back, its bearer header with it: an excerpt, with
+// every credential the request carried redacted.
+func notAnAnswer(raw []byte, credentials []string) string {
+	return excerpt.BodyForText(string(raw), "a System One answer", credentials...)
 }
 
 // validate is whether the request is one that can be made at all: it has its time bound, an

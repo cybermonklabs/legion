@@ -129,7 +129,7 @@ func seed(ctx context.Context, a *api, comments, workers int) (seedFile, error) 
 	for _, p := range seedProjects {
 		res := a.callRetry(ctx, "POST", "/api/v1/projects", who{person: seedPerson}, map[string]any{"key": p.key, "name": "Load " + p.key})
 		if !res.ok() && res.status != 409 {
-			return sf, fmt.Errorf("create project %s: %d %s %v", p.key, res.status, trunc(res.body), res.err)
+			return sf, fmt.Errorf("create project %s: %d %s %v", p.key, res.status, a.bodyText(res), res.err)
 		}
 		sf.Projects = append(sf.Projects, p.key)
 	}
@@ -188,7 +188,7 @@ func seed(ctx context.Context, a *api, comments, workers int) (seedFile, error) 
 			route := "session:" + sessionID(i)
 			res := a.callRetry(gctx, "PATCH", "/api/v1/issues/"+sf.Issues[i].Key, who{}, map[string]any{"route": route, "actor": sessionActor("ses-seed")})
 			if !res.ok() {
-				return fmt.Errorf("route %s: %d %s %v", sf.Issues[i].Key, res.status, trunc(res.body), res.err)
+				return fmt.Errorf("route %s: %d %s %v", sf.Issues[i].Key, res.status, a.bodyText(res), res.err)
 			}
 			sf.Issues[i].Route = route
 			return nil
@@ -215,14 +215,14 @@ func seedIssueWith(ctx context.Context, a *api, sess, project string, projectInd
 		"spec": spec, "force": true, "actor": sessionActor(sess),
 	})
 	if !res.ok() {
-		return seedIssue{}, fmt.Errorf("create issue %s: %d %s %v", placeholder, res.status, trunc(res.body), res.err)
+		return seedIssue{}, fmt.Errorf("create issue %s: %d %s %v", placeholder, res.status, a.bodyText(res), res.err)
 	}
 	var created struct {
 		Key               string `json:"key"`
 		PrimaryArtifactID string `json:"primary_artifact_id"`
 	}
 	if err := json.Unmarshal(res.body, &created); err != nil || created.Key == "" || created.PrimaryArtifactID == "" {
-		return seedIssue{}, fmt.Errorf("decode issue %s: %v %s", placeholder, err, trunc(res.body))
+		return seedIssue{}, fmt.Errorf("decode issue %s: %v %s", placeholder, err, a.bodyText(res))
 	}
 	is := seedIssue{Key: created.Key, Project: project, ArtifactID: created.PrimaryArtifactID, SpecName: specName, SpecBytes: len(spec), Quotes: quotes}
 	for c := range comments {
@@ -239,7 +239,7 @@ func seedIssueWith(ctx context.Context, a *api, sess, project string, projectInd
 			_ = json.Unmarshal(res.body, &comment)
 		}
 		if comment.ID == "" {
-			return seedIssue{}, fmt.Errorf("seed comment on %s: %d %s %v", is.Key, res.status, trunc(res.body), res.err)
+			return seedIssue{}, fmt.Errorf("seed comment on %s: %d %s %v", is.Key, res.status, a.bodyText(res), res.err)
 		}
 		if anchored {
 			is.AnchoredCommentIDs = append(is.AnchoredCommentIDs, comment.ID)

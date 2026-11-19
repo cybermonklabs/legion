@@ -181,7 +181,7 @@ func fetchWorkflowRunsPage(ctx context.Context, client *githubapp.Client, owner,
 	if err != nil {
 		return nil, 0, fmt.Errorf("page %d (%s): %w", page, pageAttemptsNote(), err)
 	}
-	if err := githubapp.CheckResponse(status, header, body); err != nil {
+	if err := githubapp.CheckTokenResponse(status, header, body, token); err != nil {
 		return nil, 0, fmt.Errorf("page %d (%s): %w", page, pageAttemptsNote(), err)
 	}
 	var payload workflowRunsPayload
@@ -211,7 +211,7 @@ func FetchWorkflowRun(ctx context.Context, client *githubapp.Client, owner, repo
 	if err != nil {
 		return FetchedRun{}, fmt.Errorf("fetch %s/%s run %d: %w", owner, repo, runID, err)
 	}
-	if err := githubapp.CheckResponse(status, header, body); err != nil {
+	if err := githubapp.CheckTokenResponse(status, header, body, token); err != nil {
 		return FetchedRun{}, fmt.Errorf("fetch %s/%s run %d: %w", owner, repo, runID, err)
 	}
 	var item workflowRunItem
@@ -262,7 +262,7 @@ func ListWorkflowRunJobs(ctx context.Context, client *githubapp.Client, owner, r
 		if status == http.StatusNotFound {
 			return nil, fmt.Errorf("list jobs of %s/%s run %d (page %d): %w (status %d)", owner, repo, runID, page, ErrRunNotFound, status)
 		}
-		if err := githubapp.CheckResponse(status, header, body); err != nil {
+		if err := githubapp.CheckTokenResponse(status, header, body, token); err != nil {
 			return nil, fmt.Errorf("list jobs of %s/%s run %d (page %d): %w", owner, repo, runID, page, err)
 		}
 		fetched, pageTotal, err := DecodeJobsPage(body)

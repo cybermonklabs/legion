@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/excerpt"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
 )
@@ -55,6 +56,27 @@ const (
 	ReasonHolderLapsed = roleholder.HolderLapsed
 	StateUnresponsive  = "unresponsive"
 )
+
+// refused is how a refusal names the listener's answer: response's status line and body
+// (answerText), the status line through the excerpt too, since the answerer chose its reason
+// phrase.
+func refused(response *http.Response, body []byte, token string) string {
+	return "listener returned " + excerpt.Text(response.Status, token) + ": " + answerText(body, "the listener's error JSON", token)
+}
+
+// answerText is body, the listener's answer to a call that carried token, as an error names it:
+// whole, trimmed and no longer than refusalBodyLimit, where it is the listener's error JSON
+// (listenerwire.APIError, an object whose error is a string, writeJSONError). Any other body was
+// written by something in the listener's place, such as a proxy, which can echo the request back,
+// so it is named as not being notWhat in one line with token, the bearer the call carried, and any
+// Authorization or Bearer value redacted (excerpt.BodyForText).
+func answerText(body []byte, notWhat, token string) string {
+	var own listenerwire.APIErrorAs[*string]
+	if json.Unmarshal(body, &own) != nil || own.Error == nil {
+		return excerpt.BodyForText(string(body), notWhat, token)
+	}
+	return strings.TrimSpace(string(body[:min(len(body), refusalBodyLimit)]))
+}
 
 // The reasons of a role publish the listener answers 504 (ErrNotDelivered). ReasonReceiptTimeout
 // says the last forward reached the NATS server and the holder's session sent no receipt for it,
@@ -263,7 +285,7 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 		// is unknown, so it is the failure a request that never got its answer is.
 		return false, unreadAnswer("publish notice to "+topic, response.Status, readErr)
 	}
-	refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, strings.TrimSpace(string(answered)))
+	refusal := fmt.Errorf("publish notice to %s: %s", topic, refused(response, answered, p.token))
 	return false, publishRefusal(response.StatusCode, answered, refusal)
 }
 
@@ -399,8 +421,7 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 		return SessionRegistration{}, nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: listener returned %s: %s",
-		session, response.Status, strings.TrimSpace(string(body)))
+	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %s", session, refused(response, body, p.token))
 }
 
 // RoleHolder reads the session the listener names as role's holder, with that holder's state (GET
@@ -445,7 +466,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		}
 		var answer listenerwire.RoleHolder
 		if json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
-			return "", "", refused("the listener's answer names no holder: " + excerpt(body))
+			return "", "", refused("the listener's answer names no holder: " + answerText(body, "a role holder answer", p.token))
 		}
 		return answer.Holder, cmp.Or(string(answer.HolderState), "live"), nil
 	}
@@ -457,7 +478,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		}
 		var refusal listenerwire.RoleRefusal
 		if json.Unmarshal(body, &refusal) != nil {
-			return "", "", refused("the listener's 404 is unreadable: " + excerpt(body))
+			return "", "", refused("the listener's 404 is unreadable: " + answerText(body, "the listener's role refusal", p.token))
 		}
 		switch {
 		case refusal.Holder != "":
@@ -465,11 +486,13 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		case refusal.Reason == roleholder.Unclaimed:
 			return "", "", nil
 		}
-		return "", "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed, excerpt(body)))
+		return "", "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed,
+			answerText(body, "a role refusal the daemon reads", p.token)))
 	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, excerpt(body))
+		return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, excerpt.Text(response.Status, p.token),
+			answerText(body, "the listener's error JSON", p.token))
 	}
-	return "", "", refused(fmt.Sprintf("listener returned %s: %s", response.Status, excerpt(body)))
+	return "", "", refused(fmt.Sprintf("listener returned %s: %s", excerpt.Text(response.Status, p.token), answerText(body, "the listener's error JSON", p.token)))
 }
 
 // RoleLookupRefused is a role lookup the listener answered the same way however often it is
@@ -485,11 +508,6 @@ type RoleLookupRefused struct {
 
 func (e *RoleLookupRefused) Error() string {
 	return fmt.Sprintf("the Envoy listener refuses the role lookup (status %d): %s", e.Status, e.Reason)
-}
-
-// excerpt is body as an error names it: trimmed, and no longer than refusalBodyLimit.
-func excerpt(body []byte) string {
-	return strings.TrimSpace(string(body[:min(len(body), refusalBodyLimit)]))
 }
 
 // unreadAnswer is a listener answer of status whose body could not be read to its end (err), for
@@ -591,5 +609,5 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 		return SessionDeleted{Deleted: true}, nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-	return SessionDeleted{}, fmt.Errorf("delete session %s: listener returned %s: %s", session, response.Status, strings.TrimSpace(string(body)))
+	return SessionDeleted{}, fmt.Errorf("delete session %s: %s", session, refused(response, body, p.token))
 }

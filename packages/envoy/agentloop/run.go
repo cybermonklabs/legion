@@ -8,8 +8,10 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 
+	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	anthropicopt "github.com/anthropics/anthropic-sdk-go/option"
 	aisdk "github.com/grafana/ai-sdk"
 	"github.com/grafana/ai-sdk/output"
@@ -23,6 +25,8 @@ import (
 	openaisdk "github.com/openai/openai-go/v3"
 	openaiopt "github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/responses"
+
+	"github.com/sjawhar/envoy/excerpt"
 )
 
 // placeholderKey is the key each vendor client is built with; the run's transport puts the
@@ -112,13 +116,59 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 		result.Fault, result.Detail = FaultTime, fmt.Sprintf("the run went past %s", req.Bounds.Time)
 	case stream.Err() != nil:
-		result.Fault, result.Detail = FaultProviderError, stream.Err().Error()
+		result.Fault, result.Detail = FaultProviderError, providerDetail(stream.Err(), kind, transport.credentials())
 	case len(result.Steps) == 0:
 		result.Fault, result.Detail = FaultProviderError, "the model made no reply"
 	default:
 		r.finish(&result, stream)
 	}
 	return result, nil
+}
+
+// providerDetail is what a run that ended on the provider's error says of it: the SDK's own
+// message, except where that message ends in a body that is not the provider's own error JSON.
+// anthropic-sdk-go's error appends the whole of the body it was answered with, a page that is no
+// JSON included, and the Anthropic provider copies that message into its APICallError, on
+// anthropic-messages and azure-anthropic alike; a gateway or a proxy in the provider's place can
+// answer with a page that echoes the request back, its X-Api-Key or bearer header with it. Such a
+// body is named through excerpt.BodyForText instead, with every credential the run's requests
+// carried redacted, and the provider's own error JSON is kept as the provider wrote it. The two
+// OpenAI kinds' errors print the status and the provider's own message field and no body, so
+// they pass through as they are.
+func providerDetail(err error, kind Kind, credentials []string) string {
+	message := err.Error()
+	var apiErr *anthropicsdk.Error
+	if !errors.As(err, &apiErr) {
+		return message
+	}
+	body := apiErr.RawJSON()
+	if body == "" || providerErrorJSON(body) {
+		return message
+	}
+	notWhat := "Anthropic's error JSON"
+	if kind == AzureAnthropic {
+		notWhat = "Azure Foundry's error JSON"
+	}
+	named := excerpt.BodyForText(body, notWhat, credentials...)
+	if before, found := strings.CutSuffix(message, body); found {
+		return before + named
+	}
+	// The message does not end in the body, so none of it is kept, since it may hold the body
+	// in some other form: the status alone, and the body as the excerpt names it.
+	return fmt.Sprintf("the %s endpoint answered %d with %s", kind, apiErr.StatusCode, named)
+}
+
+// providerErrorJSON is whether body is a provider's own error JSON: an object whose error member
+// is an object carrying a message, which is the shape Anthropic answers an error in
+// ({"type":"error","error":{"type":…,"message":…}}) and the one Azure answers one in
+// ({"error":{"code":…,"message":…}}).
+func providerErrorJSON(body string) bool {
+	var shape struct {
+		Error struct {
+			Message *string `json:"message"`
+		} `json:"error"`
+	}
+	return json.Unmarshal([]byte(body), &shape) == nil && shape.Error.Message != nil
 }
 
 // validate is whether the request is one the loop can run at all: it has its bounds, an

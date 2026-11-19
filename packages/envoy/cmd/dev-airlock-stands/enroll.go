@@ -34,9 +34,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/excerpt"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -117,7 +119,7 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		CredentialID string `json:"credential_id"`
 	}
 	if err := call(ctx, http.MethodPost, base+"/v1/launcher-credentials/token", nil,
-		map[string]string{"token": registrarToken, "request": request}, &login); err != nil {
+		map[string]string{"token": registrarToken, "request": request}, &login, registrarToken, request); err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: the service login: %v\n", err)
 		return 1
 	}
@@ -144,7 +146,7 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		EnrollmentID   string    `json:"enrollment_id"`
 		LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	}
-	if err := call(ctx, http.MethodPost, base+"/v1/enrollments", map[string]string{"Proof": signed}, body, &enrolled); err != nil {
+	if err := call(ctx, http.MethodPost, base+"/v1/enrollments", map[string]string{"Proof": signed}, body, &enrolled, signed, podToken); err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: the enrolment: %v\n", err)
 		return 1
 	}
@@ -177,8 +179,11 @@ func readToken(path string) (string, error) {
 }
 
 // call makes one JSON call and reads its answer into out. A refusal is an error naming the
-// status and the broker's own body, which carries the contract's code and no credential.
-func call(ctx context.Context, method, url string, headers map[string]string, body, out any) error {
+// status and the broker's own body, which carries the contract's code and no credential
+// (refusalText); carried is every credential the call sends, in its headers and its body. The
+// URL is named as redact.URL prints a URL a person configured, since --url can carry a user and
+// a password, which net/http sends as Basic authorization.
+func call(ctx context.Context, method, url string, headers map[string]string, body, out any, carried ...string) error {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -204,7 +209,22 @@ func call(ctx context.Context, method, url string, headers map[string]string, bo
 		return err
 	}
 	if answer.StatusCode != http.StatusOK && answer.StatusCode != http.StatusCreated {
-		return fmt.Errorf("%s %s answered %d: %s", method, url, answer.StatusCode, read)
+		return fmt.Errorf("%s %s answered %d: %s", method, redact.URL(url), answer.StatusCode, refusalText(read, carried))
 	}
 	return json.Unmarshal(read, out)
+}
+
+// refusalText is how call names a refusal's body: whole where it is the broker's error JSON (an
+// object whose error is a string). Any other body was written by something in the broker's
+// place, such as a proxy, which can echo the request back, its credentials included, so it is
+// named in one line with carried and any Authorization or Bearer value redacted
+// (excerpt.BodyForText).
+func refusalText(read []byte, carried []string) string {
+	var envelope struct {
+		Error *string `json:"error"`
+	}
+	if json.Unmarshal(read, &envelope) == nil && envelope.Error != nil {
+		return string(read)
+	}
+	return excerpt.BodyForText(string(read), "the broker's error JSON", carried...)
 }

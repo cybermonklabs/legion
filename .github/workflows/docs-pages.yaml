@@ -128,6 +128,7 @@ on:
       - 'packages/envoy/brokeraddr/*'
       - 'packages/envoy/brokerclient/*'
       - 'packages/envoy/dispatchbody/*'
+      - 'packages/envoy/excerpt/*'
       - 'packages/envoy/internal/brokerclient/*'
       - 'packages/envoy/internal/contracts/*'
       - 'packages/envoy/internal/ctxlock/*'

@@ -177,7 +177,7 @@ env:
     --patch-path scripts/go-third-party-notices.sh --patch-path scripts/assemble-third-party-notices.sh
     --patch-path .github/go-release-targets.json
     -- packages/daemon/ packages/daemon/internal/prompts/roles/ packages/daemon/internal/prompts/go/
-    packages/envoy/brokeraddr/ packages/envoy/brokerclient/ packages/envoy/dispatchbody/
+    packages/envoy/brokeraddr/ packages/envoy/brokerclient/ packages/envoy/dispatchbody/ packages/envoy/excerpt/
     packages/envoy/internal/broker/oauthwire/ packages/envoy/internal/brokerclient/
     packages/envoy/internal/contracts/ packages/envoy/internal/ctxlock/
     packages/envoy/internal/dispatch/bytelru/ packages/envoy/internal/dispatch/itemblocks/

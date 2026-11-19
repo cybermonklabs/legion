@@ -21,8 +21,9 @@ import (
 // many times over and still ends a read that hangs rather than every start that waits on it.
 const leakCheckReadBound = 2 * time.Minute
 
-// refusalBodyBytes is how much of GitHub's answer a refused read keeps: its first line is what
-// the cause sentence quotes, and GitHub's refusals are a line of JSON.
+// refusalBodyBytes is how much of GitHub's answer a refused read keeps: the cause sentence quotes
+// its first line, GitHub's refusals being a line of JSON, or names any other body in one redacted
+// line (refusalText).
 const refusalBodyBytes = 64 << 10
 
 // CheckRepository is the check's repository (CheckSlug), whose tarball a read fetches and which
@@ -175,7 +176,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyBytes))
 		what := fmt.Sprintf("GitHub answered the read of %s at %s with HTTP %d", CheckSlug, tag, response.StatusCode)
 		if strings.TrimSpace(string(body)) != "" {
-			what += ": " + firstLine(string(body))
+			what += ": " + refusalText(body, token)
 		}
 		return Served{}, errors.New(Cause(what, nil))
 	}
@@ -191,6 +192,17 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not slice the check it read at %s", tag), err))
 	}
 	return Served{Tag: tag, Body: body, Frames: frames}, nil
+}
+
+// refusalText is how a refused read names GitHub's answer, body: its first line where that line is
+// GitHub's error JSON, which GitHub writes as one line. Any other body was written by something in
+// GitHub's place, such as a proxy, which can echo the request back, so it is named in one line
+// with token, the read's own, and any Authorization or Bearer value redacted (githubrest.BodyText).
+func refusalText(body []byte, token string) string {
+	if line := firstLine(string(body)); githubrest.ErrorJSON([]byte(line)) {
+		return line
+	}
+	return githubrest.BodyText(body, token)
 }
 
 // readFailure is the cause of a read that did not arrive: the bound's own sentence where the

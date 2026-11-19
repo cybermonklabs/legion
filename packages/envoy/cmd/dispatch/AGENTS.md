@@ -626,7 +626,11 @@ evaluate for a pull request (only `push`, `pull_request`, `pull_request_review`,
 is trimmed to `total_count` and, per run in GitHub's order, only `check_suite_id`, `event` and
 `name`, so a run's head commit (message, author), actor and repository never reach the browser; a
 body that does not decode is `502 GITHUB_UPSTREAM`, and any other status but a rate limit passes
-through unchanged.
+through unchanged, but for a refusal whose body is not GitHub's error JSON (an object whose
+`message` is a string): something in GitHub's place wrote it and can echo the request back, the
+installation token included, so it keeps its status and its body is
+`{"code":"GITHUB_UPSTREAM","error":…}` naming that body in one line with the token redacted
+(`githubapp.BodyText`).
 GitHub's answer is read within 16 MiB rather than the proxy's usual 1 MiB, since each run carries
 its repository and head commit (about 12.8 KB a run) and a page of 100 passes 1 MiB before it is
 trimmed.

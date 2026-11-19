@@ -1064,6 +1064,10 @@ func TestAnUnreachableBrokerIsATransientError(t *testing.T) {
 	}
 }
 
+// A body that is not the contract's shape still yields an *APIError, code UNKNOWN, transient on a
+// 5xx; its message names the body in one line (excerpt.BodyForText), never the body whole, since
+// whatever wrote it in the broker's place can echo the request back
+// (TestEveryRefusalNamesAProxysPageWithoutTheCredentialsItCarried).
 func TestARefusalBodyThatIsNotTheContractsShapeFallsBackToUNKNOWN(t *testing.T) {
 	broker, c := newIssuedClient(t)
 	broker.enrollAnswers = []enrollAnswer{{status: http.StatusBadGateway, body: "<html>Bad Gateway</html>"}}
@@ -1072,8 +1076,8 @@ func TestARefusalBodyThatIsNotTheContractsShapeFallsBackToUNKNOWN(t *testing.T) 
 	if !errors.As(err, &api) {
 		t.Fatalf("err %v is not an *APIError", err)
 	}
-	if api.Code != "UNKNOWN" || api.Message != "<html>Bad Gateway</html>" {
-		t.Fatalf("api = %+v, want code UNKNOWN and the raw body as the message", api)
+	if want := `a body that is not the broker's error JSON ("Bad Gateway")`; api.Code != "UNKNOWN" || api.Message != want {
+		t.Fatalf("api = %+v, want code UNKNOWN and the message %q", api, want)
 	}
 	if api.Permanent() || IsPermanent(err) {
 		t.Fatalf("api = %+v permanent, want a 5xx to be transient", api)

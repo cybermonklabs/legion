@@ -10,6 +10,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/excerpt"
 )
 
 // finite is false for NaN and the infinities.
@@ -49,7 +51,7 @@ func fetchTo(url, path string, timeout time.Duration, lg *log.Logger) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		lg.Printf("fetch %s: %d %s", redactURL(url), resp.StatusCode, trunc(b))
+		lg.Printf("fetch %s: %d %s", redactURL(url), resp.StatusCode, fetchedText(b, url))
 		return
 	}
 	f, err := os.Create(path)
@@ -61,6 +63,17 @@ func fetchTo(url, path string, timeout time.Duration, lg *log.Logger) {
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		lg.Printf("fetch %s: %v", redactURL(url), err)
 	}
+}
+
+// fetchedText is b, the body of an answer other than 200 to a GET of url (a profile, Dispatch's
+// goroutine dump or NATS's /varz), as a message names it. Neither pprof nor NATS's monitoring
+// writes an error JSON of its own, and whatever answered in the server's place, such as a gateway,
+// can echo the request back, so it is named in one line with the credentials url carried
+// (urlCredentials: its userinfo, which net/http sends as Basic auth, and a password query
+// parameter) and any Authorization value redacted (excerpt.BodyForText), as url itself is printed
+// without them (redactURL).
+func fetchedText(b []byte, url string) string {
+	return excerpt.BodyForText(string(b), "the answer asked for", urlCredentials(url)...)
 }
 
 // writeJSONFile writes v to path as indented JSON with the given mode, which it also sets on a

@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/excerpt"
 )
 
 // cloudsqlCPUMetric is Cloud Monitoring's metric for a Cloud SQL instance's CPU: the fraction of
@@ -240,17 +242,18 @@ func readCloudSQLSeries(ctx context.Context, client *http.Client, base, token, p
 		case http.StatusOK:
 		case http.StatusForbidden:
 			return nil, fmt.Errorf("Cloud Monitoring answered 403 to the read of %s for %s: this pod's Google identity may not read project %s's time series: %s",
-				metric, databaseID, project, trunc(b))
+				metric, databaseID, project, monitoringText(b, token))
 		case http.StatusNotFound:
 			return nil, fmt.Errorf("Cloud Monitoring answered 404 to the read of %s for %s: project %s or the timeSeries route is not there: %s",
-				metric, databaseID, project, trunc(b))
+				metric, databaseID, project, monitoringText(b, token))
 		default:
 			return nil, fmt.Errorf("Cloud Monitoring answered %d to the read of %s for %s: %s",
-				resp.StatusCode, metric, databaseID, trunc(b))
+				resp.StatusCode, metric, databaseID, monitoringText(b, token))
 		}
 		var answer cloudsqlTimeSeriesAnswer
 		if err := json.Unmarshal(b, &answer); err != nil {
-			return nil, fmt.Errorf("Cloud Monitoring's answer for %s did not decode as a timeSeries list: %w: %s", databaseID, err, trunc(b))
+			return nil, fmt.Errorf("Cloud Monitoring's answer for %s did not decode as a timeSeries list: %w: %s", databaseID, err,
+				excerpt.BodyForText(string(b), "a timeSeries list", token))
 		}
 		if len(answer.TimeSeries) > 1 {
 			return nil, fmt.Errorf("the filter for %s matched %d series of %s, not one; name one instance", databaseID, len(answer.TimeSeries), metric)
@@ -274,6 +277,24 @@ func readCloudSQLSeries(ctx context.Context, client *http.Client, base, token, p
 	}
 	slices.SortFunc(points, func(a, b cloudsqlPoint) int { return a.At.Compare(b.At) })
 	return points, nil
+}
+
+// monitoringText is b, Cloud Monitoring's answer to a read that carried token, as a refusal names
+// it: Google's error JSON (an object whose error is an object with a string message, the shape
+// every Google API refuses with) as it always was, its first 300 bytes (trunc). Any other body was
+// written by something in the API's place, such as a gateway or a proxy, which can echo the
+// request back, so it is named in one line with token and any Authorization or Bearer value
+// redacted (excerpt.BodyForText).
+func monitoringText(b []byte, token string) string {
+	var refusal struct {
+		Error *struct {
+			Message *string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(b, &refusal) == nil && refusal.Error != nil && refusal.Error.Message != nil {
+		return trunc(b)
+	}
+	return excerpt.BodyForText(string(b), "Google's error JSON", token)
 }
 
 // errNoCloudSQLSample refuses a window Cloud Monitoring holds no point of a reading for. The

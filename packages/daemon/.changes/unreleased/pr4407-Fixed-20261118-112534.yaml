@@ -1,0 +1,21 @@
+kind: Fixed
+body: |-
+  A body that is not the answering server's own error JSON is named in one line, with the
+  credentials the request carried and any `Authorization`, `Bearer` or `DPoP` value redacted, where
+  it was printed whole: a proxy or gateway in the server's place can echo the request back, its
+  headers and body included. It reads `a body that is not <what> ("<excerpt>")`, `an empty body`,
+  or `a body of N bytes and no readable text`, cut to 120 characters with scripts, styles and tags
+  dropped and each URL printed with no user info and no parameter value, as the TypeScript clients
+  name such a body. The sites: the Dispatch client's refusal (after the status line, whose reason
+  phrase is redacted too), the Envoy listener's publish, registration-read and session-delete
+  refusals and every answer its role lookup cannot use, the secrets broker's refusals (the
+  enrollment, the revoke and the carried-enrollments read among them: the ServiceAccount token, the
+  request object, the launcher proof, the pod token and the bearer), GitHub's answers to the REST
+  client, the App's permissions read and token exchange and the leak check's tarball read (the
+  App's JWT or the token), and `legion issue status`, `legion claims` and `legion controller start`
+  (the operator bearer, a grant, the controller's capability). An answer of the daemon's API that
+  is not JSON is named so too, never printed as it came. Each server's own error text reads as
+  before, and every error keeps its fields and codes.
+time: 2026-11-18T11:25:34Z
+custom:
+    Issue: pr4407

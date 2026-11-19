@@ -292,7 +292,10 @@ type Result struct {
 	Steps []Step
 	Usage Usage
 	// Fault is why the run ended short of an answer, and is empty on a run that answered.
-	// Detail says what happened, for a log rather than for a wire.
+	// Detail says what happened, for a log rather than for a wire. A body the provider's
+	// place answered with that is not the provider's own error JSON is named in it as one
+	// line, with every credential the run's requests carried redacted (the package doc's "A
+	// body that is not the provider's").
 	Fault  Fault
 	Detail string
 }

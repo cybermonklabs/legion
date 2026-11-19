@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 )
 
 // writePermissions is the permission set a role's write token is asked for, one per App role:
@@ -305,7 +307,7 @@ func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation stri
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		body := refusalBody(response)
-		failed := fmt.Errorf("GitHub App installation permissions read failed (%d): %s", response.StatusCode, strings.TrimSpace(string(body)))
+		failed := fmt.Errorf("GitHub App installation permissions read failed (%d): %s", response.StatusCode, githubrest.BodyText(body, jwt))
 		if response.StatusCode == http.StatusNotFound {
 			return nil, fmt.Errorf("%w: %w", errInstallationGone, failed)
 		}

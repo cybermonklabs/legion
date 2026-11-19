@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/net/html"
 
+	"github.com/sjawhar/envoy/excerpt"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/store"
@@ -71,6 +72,19 @@ type Response struct {
 	Status int
 	Header http.Header
 	Body   string
+	// carried is every credential the request carried (Browser.carried), which a failure naming
+	// the answer redacts (text).
+	carried []string
+}
+
+// text is the answer's body as a failure names it: in one line, named as not being notWhat, what
+// the step wanted, with every credential the request carried and any Authorization, Bearer or
+// DPoP value redacted (excerpt.BodyForText). The approval page answers in HTML, its refusals too,
+// and nothing tells such a page from one a gateway or a proxy in the broker's place wrote echoing
+// the request back, its cookies included, so every page a failure names is named this way; the
+// excerpt keeps its words. Body is the answer as it came, for a test to read.
+func (r Response) text(notWhat string) string {
+	return excerpt.BodyForText(r.Body, notWhat, r.carried...)
 }
 
 // Location is the answer's Location, failing t when it has none.
@@ -78,7 +92,7 @@ func (r Response) Location(t *testing.T) *url.URL {
 	t.Helper()
 	u, err := url.Parse(r.Header.Get("Location"))
 	if err != nil || r.Header.Get("Location") == "" {
-		t.Fatalf("answer %d has no Location: %v\n%s", r.Status, err, r.Body)
+		t.Fatalf("answer %d has no Location: %v\n%s", r.Status, err, r.text("a redirect"))
 	}
 	return u
 }
@@ -151,9 +165,11 @@ func (b *Browser) target(path string) string {
 	return b.url + path
 }
 
-// send sends req, adding cookies beside the jar's, and runs Check on the broker's answer.
-func (b *Browser) send(t *testing.T, req *http.Request, cookies []*http.Cookie) Response {
+// send sends req, adding cookies beside the jar's, and runs Check on the broker's answer. form is
+// the form req posts, nil for none.
+func (b *Browser) send(t *testing.T, req *http.Request, cookies []*http.Cookie, form url.Values) Response {
 	t.Helper()
+	carried := b.carried(req, cookies, form)
 	for _, c := range cookies {
 		req.AddCookie(c)
 	}
@@ -166,11 +182,26 @@ func (b *Browser) send(t *testing.T, req *http.Request, cookies []*http.Cookie) 
 	if err != nil {
 		t.Fatalf("read %s %s: %v", req.Method, req.URL, err)
 	}
-	out := Response{Status: res.StatusCode, Header: res.Header, Body: string(body)}
+	out := Response{Status: res.StatusCode, Header: res.Header, Body: string(body), carried: carried}
 	if b.Check != nil && strings.HasPrefix(req.URL.String(), b.url) {
 		b.Check(t, req, out)
 	}
 	return out
+}
+
+// carried is every credential req carries, which a failure naming its answer redacts
+// (Response.text): the value of each cookie it sends, the jar's for its URL and cookies; the code
+// and state a sign-in's callback or a provider's sign-in names in its query; and the page token
+// form posts with a decision.
+func (b *Browser) carried(req *http.Request, cookies []*http.Cookie, form url.Values) []string {
+	var carried []string
+	for _, c := range append(loopbackJar{b.jar}.Cookies(req.URL), cookies...) {
+		carried = append(carried, c.Value)
+	}
+	query := req.URL.Query()
+	carried = append(carried, query["code"]...)
+	carried = append(carried, query["state"]...)
+	return append(carried, form["token"]...)
 }
 
 // Get opens path on the broker, or an absolute URL, sending cookies beside the jar's.
@@ -180,7 +211,7 @@ func (b *Browser) Get(t *testing.T, path string, cookies ...*http.Cookie) Respon
 	if err != nil {
 		t.Fatal(err)
 	}
-	return b.send(t, req, cookies)
+	return b.send(t, req, cookies, nil)
 }
 
 // Post posts form to path with headers, sending cookies beside the jar's.
@@ -194,7 +225,7 @@ func (b *Browser) Post(t *testing.T, path string, form url.Values, headers map[s
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	return b.send(t, req, cookies)
+	return b.send(t, req, cookies, form)
 }
 
 // FromPage posts form to path as the broker's own page does, with the broker's Origin.
@@ -224,7 +255,7 @@ func (b *Browser) StartSignIn(t *testing.T, path string) *url.URL {
 	t.Helper()
 	res := b.Get(t, path)
 	if res.Status != http.StatusFound {
-		t.Fatalf("GET %s = %d, want 302 to the provider:\n%s", path, res.Status, res.Body)
+		t.Fatalf("GET %s = %d, want 302 to the provider:\n%s", path, res.Status, res.text("a redirect to the provider"))
 	}
 	return res.Location(t)
 }
@@ -235,7 +266,7 @@ func (b *Browser) Authorize(t *testing.T, authURL *url.URL, claims map[string]an
 	b.issuer.SignInAs(claims)
 	res := b.Get(t, authURL.String())
 	if res.Status != http.StatusFound {
-		t.Fatalf("the provider answered %d, want 302 to the callback: %s", res.Status, res.Body)
+		t.Fatalf("the provider answered %d, want 302 to the callback: %s", res.Status, res.text("a redirect to the callback"))
 	}
 	return res.Header.Get("Location")
 }
@@ -245,7 +276,8 @@ func (b *Browser) SignIn(t *testing.T, recordID string, claims map[string]any) {
 	t.Helper()
 	res := b.Get(t, b.Authorize(t, b.StartSignIn(t, "/approve/"+recordID), claims))
 	if res.Status != http.StatusSeeOther || res.Header.Get("Location") != "/approve/"+recordID {
-		t.Fatalf("callback = %d to %q, want 303 to /approve/%s:\n%s", res.Status, res.Header.Get("Location"), recordID, res.Body)
+		t.Fatalf("callback = %d to %q, want 303 to /approve/%s:\n%s", res.Status, res.Header.Get("Location"), recordID,
+			res.text("a redirect to the record's page"))
 	}
 }
 
@@ -254,7 +286,7 @@ func (b *Browser) Page(t *testing.T, recordID string) Response {
 	t.Helper()
 	res := b.Get(t, "/approve/"+recordID)
 	if res.Status != http.StatusOK {
-		t.Fatalf("GET /approve/%s = %d, want the page:\n%s", recordID, res.Status, res.Body)
+		t.Fatalf("GET /approve/%s = %d, want the page:\n%s", recordID, res.Status, res.text("the record's page"))
 	}
 	return res
 }
@@ -273,7 +305,8 @@ func (b *Browser) Decide(t *testing.T, recordID string, approve bool) {
 	}
 	res := b.FromPage(t, "/approve", Decision(form, value))
 	if want := "/approve/" + recordID + "?decided=" + recordID; res.Status != http.StatusSeeOther || res.Header.Get("Location") != want {
-		t.Fatalf("%s %s = %d to %q, want 303 to %s:\n%s", value, recordID, res.Status, res.Header.Get("Location"), want, res.Body)
+		t.Fatalf("%s %s = %d to %q, want 303 to %s:\n%s", value, recordID, res.Status, res.Header.Get("Location"), want,
+			res.text("a redirect to the record's page"))
 	}
 }
 

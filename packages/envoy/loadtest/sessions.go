@@ -167,7 +167,7 @@ func (r *registrar) register(ctx context.Context, i int) error {
 	ans, err := r.listener.Subscribe(ctx, body)
 	var refusal *listenerclient.Refusal
 	if errors.As(err, &refusal) {
-		return fmt.Errorf("%d %s", refusal.Status, trunc(refusal.Body))
+		return fmt.Errorf("%d %s", refusal.Status, answerText(refusal.Body, "the listener's error JSON", r.listener.Token))
 	}
 	if err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/excerpt"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
@@ -150,14 +151,22 @@ func (c *operatorCall) request(ctx context.Context, op operator, method, path st
 		return 0, nil, false
 	}
 	if status/100 != 2 {
-		fmt.Fprintf(c.stderr, "%s: %s\n", c.name(), refusal(status, answer))
+		fmt.Fprintf(c.stderr, "%s: %s\n", c.name(), refusal(status, answer, op.carried()...))
 		return 0, nil, false
 	}
 	return status, answer, true
 }
 
-// printAnswer hands a 2xx answer path served to print; one it cannot read fails the command.
+// printAnswer hands a 2xx answer path served to print; one it cannot read fails the command. Every
+// answer of the daemon's API is JSON, so a body that is not was written by something in the
+// daemon's place, such as a proxy, which can echo the request back: it is named in one line with
+// what the request carried redacted (excerpt.BodyForText), and never handed to print, which may
+// write it as it came.
 func (c *operatorCall) printAnswer(op operator, path string, answer []byte, print func(io.Writer, []byte) error) int {
+	if len(bytes.TrimSpace(answer)) > 0 && !json.Valid(answer) {
+		fmt.Fprintf(c.stderr, "%s: %s%s answered with %s\n", c.name(), op.base, path, excerpt.BodyForText(string(answer), "the daemon's JSON", op.carried()...))
+		return 1
+	}
 	if err := print(c.stdout, answer); err != nil {
 		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, path, err)
 		return 1
@@ -166,11 +175,17 @@ func (c *operatorCall) printAnswer(op operator, path string, answer []byte, prin
 }
 
 // operator is a daemon's API root, and the operator bearer that opens its operator routes — ""
-// for a request that authenticates otherwise (a grant in its body).
+// for a request that authenticates otherwise: inBody, the credentials its body carries, a grant
+// that sets an issue's status.
 type operator struct {
 	base   string
 	bearer string
+	inBody []string
 }
+
+// carried is every credential op's requests carry, which a message naming an answer not the
+// daemon's own redacts (refusal): the bearer and what the body holds.
+func (op operator) carried() []string { return append([]string{op.bearer}, op.inBody...) }
 
 // do is one request to the daemon: body as JSON when it is not nil, the bearer as its
 // Authorization when op carries one. It answers the status and the body the daemon served; only a
@@ -234,12 +249,14 @@ func daemonURL() string {
 }
 
 // refusal is an answer outside 2xx as the operator reads it: the status, and the sentence the
-// daemon's `{"error"}` body carries — or the body itself when it carries none, so nothing the
-// daemon said is lost.
-func refusal(status int, body []byte) string {
+// daemon's `{"error"}` body carries. Any other body was written by something in the daemon's place,
+// such as a proxy, which can echo the request back, so it is named in one line with carried, every
+// credential the request carried, and any Authorization or Bearer value redacted
+// (excerpt.BodyForText), rather than lost.
+func refusal(status int, body []byte, carried ...string) string {
 	refused := legionclaim.Refusal{Status: status}
-	if err := json.Unmarshal(body, &refused); err != nil || refused.Message == "" {
-		refused.Message = strings.TrimSpace(string(body))
+	if err := json.Unmarshal(body, &refused); (err != nil || refused.Message == "") && len(bytes.TrimSpace(body)) > 0 {
+		refused.Message = excerpt.BodyForText(string(body), "the daemon's error JSON", carried...)
 	}
 	answered := fmt.Sprintf("the daemon answered %d %s", refused.Status, http.StatusText(refused.Status))
 	if refused.Message == "" {

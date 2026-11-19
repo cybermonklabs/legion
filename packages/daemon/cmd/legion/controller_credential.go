@@ -82,7 +82,7 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 				message: fmt.Sprintf("%s%s: %s", daemonURL, route, failure.Error),
 			}
 		}
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s: %s", daemonURL, route, refusal(status, body))
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s: %s", daemonURL, route, refusal(status, body, secret))
 	}
 	var answer api.ControllerCredentialResponse
 	if err := json.Unmarshal(body, &answer); err != nil {

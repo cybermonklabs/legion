@@ -568,7 +568,7 @@ func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string,
 		if status == http.StatusForbidden {
 			hint = " — the operator token does not match the daemon's operator_token_file"
 		}
-		return "", nil, fmt.Errorf("%s%s: %s%s", daemonURL, route, refusal(status, body), hint)
+		return "", nil, fmt.Errorf("%s%s: %s%s", daemonURL, route, refusal(status, body, operatorToken), hint)
 	}
 	var answer api.ControllerSecretResponse
 	if err := json.Unmarshal(body, &answer); err != nil {

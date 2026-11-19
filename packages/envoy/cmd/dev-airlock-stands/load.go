@@ -30,6 +30,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/excerpt"
 )
 
 // loadOptions is what the flags say, and the roots read out of the file --ca names. Every mode
@@ -121,7 +123,10 @@ func (o *loadOptions) say(stdout io.Writer, result map[string]any) {
 }
 
 // connect opens one tunnel to the bound host through the proxy and answers the connection the
-// CONNECT left behind.
+// CONNECT left behind. A refusal names the airlock's own refusal text as it came (airlockRefusal);
+// any other body was written by something in the airlock's place, which can echo the CONNECT back,
+// its Proxy-Authorization included, so it is named in one line with that credential and the
+// password in it redacted (excerpt.BodyForText).
 func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 	u, err := url.Parse(o.proxyURL)
 	if err != nil {
@@ -133,9 +138,8 @@ func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 	}
 	target := o.host + ":443"
 	request := "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n"
+	credential, password := basicCredential(u)
 	if u.User != nil {
-		password, _ := u.User.Password()
-		credential := base64.StdEncoding.EncodeToString([]byte(u.User.Username() + ":" + password))
 		request += "Proxy-Authorization: Basic " + credential + "\r\n"
 	}
 	request += "\r\n"
@@ -152,9 +156,40 @@ func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 	if answer.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(answer.Body, 300))
 		conn.Close()
-		return nil, fmt.Errorf("the CONNECT answered %d %s", answer.StatusCode, strings.TrimSpace(string(body)))
+		if airlockRefusal(body) {
+			return nil, fmt.Errorf("the CONNECT answered %d %s", answer.StatusCode, strings.TrimSpace(string(body)))
+		}
+		return nil, fmt.Errorf("the CONNECT answered %d with %s", answer.StatusCode, excerpt.BodyForText(string(body), "the airlock's refusal", credential, password))
 	}
 	return conn, nil
+}
+
+// basicCredential is the Proxy-Authorization: Basic value a CONNECT sends for u's user, and the
+// password in it; both empty for a URL with no user.
+func basicCredential(u *url.URL) (credential, password string) {
+	if u.User == nil {
+		return "", ""
+	}
+	password, _ = u.User.Password()
+	return base64.StdEncoding.EncodeToString([]byte(u.User.Username() + ":" + password)), password
+}
+
+// credentials is every credential one call of this check sends: the bearer each request inside
+// the tunnel carries (--header), and the Basic credential each CONNECT carries for the proxy URL's
+// user, with the password in it.
+func (o *loadOptions) credentials() []string {
+	u, err := url.Parse(o.proxyURL)
+	if err != nil {
+		return []string{o.header}
+	}
+	credential, password := basicCredential(u)
+	return []string{o.header, credential, password}
+}
+
+// airlockRefusal reports whether body is the airlock's own refusal: http.Error's text, which
+// starts "airlock: " for every refusal the airlock's proxy port writes (airlockproxy's refuse).
+func airlockRefusal(body []byte) bool {
+	return strings.HasPrefix(string(body), "airlock: ")
 }
 
 // speak is one tunnel with TLS to the bound host on top of it.
@@ -360,7 +395,11 @@ func (o *loadOptions) gapMode(stdout io.Writer) {
 	o.say(stdout, map[string]any{"first": first.StatusCode, "second": second.StatusCode, "gap": o.gap})
 }
 
-// upgrade is one WebSocket upgrade and, when the service answers 101, one frame each way.
+// upgrade is one WebSocket upgrade and, when the service answers 101, one frame each way. The
+// frame that comes back is printed as one line with every credential the call sent redacted
+// (excerpt.Text), and an answer that is not a 101 names the airlock's own refusal as it came and
+// any other body in one line with those credentials redacted (excerpt.BodyForText): whatever
+// answers on the tunnel's far side can echo the request back, its bearer included.
 func (o *loadOptions) upgrade(stdout io.Writer) {
 	conn, reader, err := o.speak(30 * time.Second)
 	if err != nil {
@@ -383,11 +422,15 @@ func (o *loadOptions) upgrade(stdout io.Writer) {
 		} else if line, err := reader.ReadString('\n'); err != nil {
 			result["frames"] = "no frame came back: " + err.Error()
 		} else {
-			result["frames"] = strings.TrimSpace(line)
+			result["frames"] = excerpt.Text(line, o.credentials()...)
 		}
 	} else {
 		body, _ := io.ReadAll(io.LimitReader(answer.Body, 200))
-		result["body"] = strings.TrimSpace(string(body))
+		if airlockRefusal(body) {
+			result["body"] = strings.TrimSpace(string(body))
+		} else {
+			result["body"] = excerpt.BodyForText(string(body), "the airlock's refusal", o.credentials()...)
+		}
 	}
 	o.say(stdout, result)
 }
