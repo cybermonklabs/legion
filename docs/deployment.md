@@ -209,11 +209,11 @@ its own state directory, and whose mise reads the operator's own config, since t
 the operator's `HOME` and `XDG_CONFIG_HOME`. `LEGION_OMP_PATH` names `omp` directly, with nothing
 between the launch and Oh My Pi, so Oh My Pi holds the launch's `PATH` unchanged.
 
-In a pod, a knives ledger sweep (`skills/legion-worker/references/tools.md`, "Working on a fork
-with knives in a pod") pushes the fork's ledger repository with plain git from a directory that is
-no clone. The git configuration entries every role is given (`gitConfigPairs`,
-[kubernetes.md](kubernetes.md)) name this helper there too, so it answers that push by the same
-rule, and no person's token is used.
+In a pod, the sweep that knives runs after each write to a fork's shared ledger (`knives ledger
+sweep`) pushes the fork's ledger repository with plain git from a directory that is no clone. The
+git configuration entries every role is given (`gitConfigPairs`, [kubernetes.md](kubernetes.md))
+name `!legion git-credential` there too, so it answers that push as it answers the shared clone's,
+and no person's token is used.
 
 The `git` in `bin/` runs `legion git --after <state_dir>/bin` (`packages/daemon/cmd/legion/git.go`).
 The daemon writes it at boot, unless the first `git` on the daemon's own `PATH` is the worker
