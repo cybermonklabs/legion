@@ -4425,11 +4425,11 @@ describe("executeDispatchTool", () => {
     expect(requests).toEqual(["/api/v1/limits"]);
     expect(result.details).toEqual(bounds);
     expect(result.text.split("\n")).toEqual([
-      "One block of a body - a paragraph, list, quote, table or code block: 32,000 characters (UTF-16 units).",
+      "One block of a body - a paragraph, list, quote, table or code block: 32,000 UTF-16 code units.",
       "Blocks in one body: 32,768.",
-      "An ask's question and its options together: 32,000 characters (UTF-16 units).",
+      "An ask's question and its options together: 32,000 UTF-16 code units.",
       "Options on one ask: 8.",
-      "The body an event carries whole: 32,000 characters (UTF-16 units); a longer body reaches a reader cut, and the item itself holds the rest.",
+      "The body an event carries whole: 32,000 UTF-16 code units; a longer body reaches a reader cut, and the item itself holds the rest.",
       "One request: 1,048,576 bytes.",
       "One markdown document: 1,048,576 bytes.",
       "One handoff body: 32,768 bytes.",

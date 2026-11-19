@@ -107,11 +107,11 @@ export async function limitsCommand(context: SessionContext): Promise<DispatchTo
   const count = (value: number) => value.toLocaleString("en-US");
   return {
     text: [
-      `One block of a body - a paragraph, list, quote, table or code block: ${count(limits.block_units)} characters (UTF-16 units).`,
+      `One block of a body - a paragraph, list, quote, table or code block: ${count(limits.block_units)} UTF-16 code units.`,
       `Blocks in one body: ${count(limits.item_blocks)}.`,
-      `An ask's question and its options together: ${count(limits.ask_units)} characters (UTF-16 units).`,
+      `An ask's question and its options together: ${count(limits.ask_units)} UTF-16 code units.`,
       `Options on one ask: ${count(limits.ask_options)}.`,
-      `The body an event carries whole: ${count(limits.event_body_units)} characters (UTF-16 units); a longer body reaches a reader cut, and the item itself holds the rest.`,
+      `The body an event carries whole: ${count(limits.event_body_units)} UTF-16 code units; a longer body reaches a reader cut, and the item itself holds the rest.`,
       `One request: ${count(limits.request_bytes)} bytes.`,
       `One markdown document: ${count(limits.document_bytes)} bytes.`,
       `One handoff body: ${count(limits.handoff_bytes)} bytes.`,

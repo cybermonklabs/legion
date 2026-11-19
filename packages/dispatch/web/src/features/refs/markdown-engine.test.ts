@@ -112,7 +112,7 @@ test("a parse the engine refuses leaves the next parses of unrelated text intact
 describe("the parse worker's threshold", () => {
   afterEach(restoreParseWorker);
 
-  test("a body of exactly the threshold parses on the page, one character more in the worker", async () => {
+  test("a body of exactly the threshold parses on the page, one ASCII character more in the worker", async () => {
     await warmMarkdownRenderer();
     const worker = installFakeParseWorker();
     // One paragraph of one word, so each body is exactly as long as the count under test.
