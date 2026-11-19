@@ -1280,11 +1280,10 @@ func withoutUnadmittedWaitAnswer(issue Issue, restore int) (Issue, bool) {
 // word is one restore's reader does not admit. It follows the declared table (answers.go's
 // lineKinds) and takes any word the table holds back from restore (fieldArrivals.heldBack says
 // which words and why): today the `waiting_on_issue` of waitingOnIssueContract, and tomorrow any
-// word the table gives a later arrival. It is named for the one word it takes today, the name
-// packages/pi-legion/AGENTS.md gives contract 132's strip. Every other field of the member
-// stays, since each is a field of whyAndLineFieldsContract, and so does every member whose word
-// restore's reader admits. `kind` is `omitempty`, so the emptied field writes no key, and every
-// reader from 85 up takes `kind` as optional.
+// word the table gives a later arrival. It is named for the one word it takes today. Every other
+// field of the member stays, since each is a field of whyAndLineFieldsContract, and so does every
+// member whose word restore's reader admits. `kind` is `omitempty`, so the emptied field writes no
+// key, and every reader from 85 up takes `kind` as optional.
 //
 // The four words of whyAndLineFieldsContract arrived with the field, so they are no strip's:
 // they ride the band of that contract, which takes `kind` with the rest of the line's fields

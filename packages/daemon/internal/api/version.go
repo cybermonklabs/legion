@@ -1631,10 +1631,11 @@ package api
 // not done, or an open child its own first phase waits for (record.LineWaitingOnIssue). It
 // stands in the returned part with `since` the moment its row was taken
 // (record.Issue.ReleasedForWaitAt) and `holdsSlot` false (the rule: admit.releaseSlotsForWaits,
-// and "Admission" in the root AGENTS.md). Such an issue stands in `admission.waiting` and, where
-// what it waits on is a Dispatch blocker or an open child, in `admission.blocked`, and so in no
-// row of 98's `admission.held`, which names no issue `active` or `waiting` names. An issue past
-// its review holds no slot on 111's rule, so it has none to give back and never reads this word.
+// and `docs/site/src/content/docs/legion/concepts.md`, "Admission and the `legion` label"). Such
+// an issue stands in `admission.waiting` and, where what it waits on is a Dispatch blocker or an
+// open child, in `admission.blocked`, and so in no row of 98's `admission.held`, which names no
+// issue `active` or `waiting` names. An issue past its review holds no slot on 111's rule, so it
+// has none to give back and never reads this word.
 // A plugin from 85 through 131, INFRA-714's 86, INFRA-3219's 87, INFRA-2800's 94, INFRA-3107's
 // 98, INFRA-3161's 104, INFRA-2560's 111 and INFRA-3146's 123 above among them, reads `kind`
 // with a `z.enum` of the
@@ -1756,11 +1757,12 @@ package api
 // declares. This change keeps its number while it stands above its base, even when another open
 // head declares the same one: check-daemon-api-contract.sh compares a change with its base alone, a
 // renumber costs a push, a full check run and a test round, and the change that lands second is the
-// one renumbered (AGENTS.md). When the base declares this change's number or a higher one, the base
-// has taken it, and this change takes the free number at its next forward merge, from a census read
-// then, in one push. The readings that chose this change's earlier numbers are in its implement
-// handoffs on dispatch://INFRA-3027 rather than here, since each merge would make them false, and
-// the entries above keep the numbers they were read at. Read the base's own number and every open
+// one renumbered (`.github/scripts/check-daemon-api-contract.sh`). When the base declares this
+// change's number or a higher one, the base has taken it, and this change takes the free number at
+// its next forward merge, from a census read then, in one push. The readings that chose this
+// change's earlier numbers are in its implement handoffs on dispatch://INFRA-3027 rather than
+// here, since each merge would make them false, and the entries above keep the numbers they were
+// read at. Read the base's own number and every open
 // head again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
