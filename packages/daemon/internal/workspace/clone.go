@@ -50,7 +50,11 @@ type remote struct {
 // credential. The Go daemon keeps the token in a 0600 file under parent, so the processes it is
 // handed to receive only a file pointer and never a secret environment value. GIT_ASKPASS is set
 // empty, which git reads as no askpass at all — neither core.askPass nor SSH_ASKPASS — and terminal
-// prompts are off.
+// prompts are off. parent is the operator's root, not a role's: the tmux daemon's state
+// directory (FromGitHub) or a pod's TMPDIR (Fetch, the repository cache), either of which may be
+// reached through a symlink. It is resolved once here, so the credential directory is made, and
+// removed (rolefile.RemoveTree, which refuses a parent that is a link), under the directory the
+// operator's link names, and no link below it is followed.
 func newProvisioningCredential(parent, token string) (remote, error) {
 	if token == "" {
 		return remote{}, errors.New("workspace provisioning token is required")
@@ -58,7 +62,11 @@ func newProvisioningCredential(parent, token string) (remote, error) {
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return remote{}, fmt.Errorf("create provisioning credential parent %s: %w", parent, err)
 	}
-	directory, err := os.MkdirTemp(parent, "provisioning-credential-")
+	root, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return remote{}, fmt.Errorf("resolve provisioning credential parent %s: %w", parent, err)
+	}
+	directory, err := os.MkdirTemp(root, "provisioning-credential-")
 	if err != nil {
 		return remote{}, fmt.Errorf("create provisioning credential directory: %w", err)
 	}
