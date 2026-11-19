@@ -17,7 +17,15 @@ Run this pass on the first turn of every UTC day and after every directive from 
 
 1. Read the weekly-planning issue and select its newest `plan-week-*` artifact by its latest
    `artifact.version` event. Read that artifact before changing any issue.
-2. For every plan line whose issue key carries this project's prefix (`daemon.project` in
+2. Read the deployment's priorities with `dispatch priorities --project <KEY>`. A person ranks
+   them for the whole deployment, and the plan's order follows theirs: work that advances a higher
+   priority stands above work that advances a lower one, and work that advances none stands below
+   all of it. An issue's `Advances:` line names the priorities it advances, its own and inherited.
+   When you rank the plan, rank it this way. When a plan line breaks this order and no person's
+   request stands behind that line, move the line, and name the move in the day's report. Name in
+   the day's report, too, this project's count of work in flight under no priority, which the same
+   read prints.
+3. For every plan line whose issue key carries this project's prefix (`daemon.project` in
    `read_state`), make the project's board order match the line order exactly, because board rank
    is the order Legion admits by: an issue whose first phase can start takes the rank of its
    tree's root, and an issue whose work came back goes ahead of all of them. Set the priority the
@@ -26,7 +34,7 @@ Run this pass on the first turn of every UTC day and after every directive from 
    several issues, keep them in that order. Take the order from the plan alone, never from a
    title or a route. Reorder with
    `dispatch issue-update --issue <KEY> --before <OTHER>` or `--after <OTHER>`.
-3. Reconcile the plan's one-owner map. `envoy_sessions` gives each session a `state` (`live`,
+4. Reconcile the plan's one-owner map. `envoy_sessions` gives each session a `state` (`live`,
    `unresponsive` or `gone`) and a `last_seen`; read the state, never the presence or absence of
    the row. A `live` or `unresponsive` owner still owns its work: change nothing for it. Only an
    owner that reads `gone`, or that the registry has no record of, is without a session. For
@@ -36,7 +44,7 @@ Run this pass on the first turn of every UTC day and after every directive from 
    `You own <KEY>: <title>.`. Routing starts nothing on Legion and sets no label. Never route an
    issue that carries the `legion` label, because Legion's own roles work it. Do not change the
    human `Assignee:` field: it decides who receives asks, not who works the issue.
-4. Edit that issue's line in the plan artifact (its owner column) with `dispatch doc-edit`,
+5. Edit that issue's line in the plan artifact (its owner column) with `dispatch doc-edit`,
    guarded by the document token from the current `dispatch doc-read`. Replace superseded text
    instead of keeping a change log in it, because the artifact states the current rule. A comment
    or message does not update the one-owner map.
@@ -132,7 +140,7 @@ defer that root instead:
 4. On `Defer it`, when the check of step 2 still holds, park the root as
    above, and cite the answer in a comment on the issue. On `Defer it` in any other case, move
    nothing, and say in your reply what you checked. On `Let it run`, move nothing, and take the
-   deferral off that plan row with `dispatch doc-edit`, as step 4 of
+   deferral off that plan row with `dispatch doc-edit`, as step 5 of
    [Reconcile the weekly plan](#reconcile-the-weekly-plan) edits a row, so that the next backlog
    pass asks nothing. In each case, reply under the ask with what you did, its first line exactly
    `Deferred dispatch://<root>`, `Not deferred dispatch://<root>` or `Let run dispatch://<root>`:
