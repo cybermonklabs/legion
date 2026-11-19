@@ -113,8 +113,10 @@ type toldCredit struct {
 // its credit is folded nor owes it again where that credit is given back. The rule is the SQL
 // function design_news_opening_settled, the gate's settlement, which the close calls too
 // (CloseOpenings); a delivery settles the opening it carried through design_news_opening_told
-// alone (the claim store's settleDesignNews). Its one caller is the opening's own (workflow's
-// tellGateMoved).
+// alone (the claim store's settleDesignNews). Outside tests it has two callers, both the opening's
+// own, in workflow: tellGateMoved, for each holder and the root's architect it addresses, and
+// settleChildArchitectOpenings, as owed, for each member in accepting below the root that a
+// child's architect holds.
 func (s *Postgres) SettleOpening(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, owed bool) error {
 	if _, err := tx.Exec(ctx, `select design_news_opening_settled($1, $2, $3)`, issue, string(audience), owed); err != nil {
 		return fmt.Errorf("settle the opening on %s's %s: %w", issue, audience, err)

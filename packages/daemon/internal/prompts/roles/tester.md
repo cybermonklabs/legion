@@ -12,7 +12,7 @@ Environment or secret-scrub evidence (for example "`LEGION_*`/`DISPATCH_*`/`ENVO
 
 ## A new head
 
-A check that the change since its pass cannot affect is not run again: record it at the new head with `--observed 'carried from <old sha>: <why the change cannot affect it>'` (*A result proves the head it was recorded at* in `skill://legion-worker/references/pr-body.md`).
+A check that the change since its pass cannot affect is not run again: record it at the new head with `--observed 'carried from <old sha>: <why the change cannot affect it>'` (*What a result is* in `skill://legion-worker/references/pr-body.md`).
 
 ## Workspace restrictions
 

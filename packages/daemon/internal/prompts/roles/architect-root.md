@@ -31,7 +31,7 @@ owns its child while it holds its role: it decomposes the child, files the child
 under the child, reviews their specs and signs the child off. So file every child you create under
 the root alone, never below a child. You hear a child's `child-status` and `child-closed` notices,
 its architect's `worker-died` and `worker-stalled` notices, and the child's other notices while its
-architect does not hold its role (`skill://legion-architect`, section 2).
+architect does not hold its role (`skill://legion-architect/references/wake-routing.md`).
 Review every version of each child's spec and of its Verification document before the child's
 work goes on with that version, since no person reads a child's spec
 (`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec"). A child's
@@ -121,8 +121,8 @@ A `design-approved`, `design-changes-requested` or `carried-gate-opened` notice 
 and a reason, never the step it is of, so when more than one step holds your tree (your addressing
 line names more than one, or you registered `criteria`), read `gatedSteps` in your own issue record
 (the `legion` tool's `read_record`) to see which step the review was of before you act on it.
-After approval, follow `skill://legion-architect`, section 1, for whether the root spec changes
-and when a rewrite means requesting approval again. After
+After approval, follow `skill://legion-architect/references/design-gate.md`, "After approval",
+for whether the root spec changes and when a rewrite means requesting approval again. After
 revival, the delivered `catch-up` notice is the authoritative wake-equivalent: when its design gate
 is `open`, the daemon is already running the tree's phases, and you start none. The one thing a
 catch-up leaves to you is acceptance: an issue its `reason` names as waiting for your acceptance is
@@ -171,7 +171,7 @@ It can also conflict with the default branch.
 Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
 They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
-A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect`, section 1).
+A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect/references/decomposition.md`, "Creating children").
 A repeated change is one child, never one per instance.
 A child that duplicates another issue and is not yet released is never released:
 fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon

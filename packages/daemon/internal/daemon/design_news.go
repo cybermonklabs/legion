@@ -22,11 +22,11 @@ import (
 // with the last error, and a question of the review history is recorded unread with it
 // (record.DesignHistoryUnread). A failure Dispatch may stop giving is ridden out on the row's
 // backoff, and a run of three, with about three seconds of backoff between the first and the last
-// (retryBackoff), is no longer a moment's fault. Recording it is what lets the news go, naming why
-// the change list, or the version the holder last took, could not be read, and what releases a
-// merger held for it (mergerWaitsForTheDesignGate). An unread history is still asked again by
-// every later reconcile, since a read that failed says nothing about the document, and nothing is
-// told from it while such a reconcile is pending (readNewsRecorded).
+// (record.RetryBackoff), is no longer a moment's fault. Recording it is what lets the news go,
+// naming why the change list, or the version the holder last took, could not be read, and what
+// releases a merger held for it (mergerWaitsForTheDesignGate). An unread history is still asked
+// again by every later reconcile, since a read that failed says nothing about the document, and
+// nothing is told from it while such a reconcile is pending (readNewsRecorded).
 const designChangesAttempts = 3
 
 // toldKey names one told row: an audience of one issue (record.DesignTold).
