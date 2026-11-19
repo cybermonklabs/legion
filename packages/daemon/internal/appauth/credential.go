@@ -299,19 +299,26 @@ func (l *LeftOut) left(dir string, roles []AppRole) bool {
 	return false
 }
 
-// Installed is the daemon's record of the owner accounts each App's last bundle build read from
-// GitHub (OwnerInstallations): one record per project, made by internal/daemon beside the
-// LeftOut record and handed to the same three, so the drift check has an owner set to compare a
-// pod against without asking GitHub for one.
+// Installed is the daemon's record of the owner accounts each App was last read installed on
+// (OwnerInstallations), kept as two reads apart: the read of that App's last bundle build
+// (Record), and the read the boot's proof of that App's key made (RecordProof). One record per
+// project, made by internal/daemon beside the LeftOut record and handed to the same three, so
+// the drift check has an owner set to compare a pod against without asking GitHub for one, and
+// a launch's addressing has its App's owners from the first launch on.
 //
 // It is what it says and no more: the installations as the last bundle build of that App read
 // them, which may be a minute old and may have been read for another role of the same App.
 // That is what an honest comparison a pod is replaced on may use, while every bundle reads
 // GitHub itself: a pod is a thing of the last launch, so comparing it against the last read is
 // the question the drift check asks, and the bundle a replacement pod is handed is read fresh
-// whenever it is built. A role whose App no bundle has built for yet is recorded nothing, and
-// GitHubDirs then names no directory at all and leaves every pod where it is, as it does for a
-// bundle it cannot describe.
+// whenever it is built. The boot's read is no such comparison: no mint has run at boot, so
+// nothing says which of its owners a bundle leaves out (LeftOut, which only a bundle's mint
+// fills), and a set built from it would name an owner whose mint GitHub refuses and read every
+// pod as lacking that owner's directory. So the drift check reads the bundles' reads alone: a
+// role whose App no bundle has built for yet is recorded nothing there, and GitHubDirs then
+// names no directory at all and leaves every pod where it is, as it does for a bundle it cannot
+// describe. The boot's read stands in for a bundle's only where a launch's addressing asks
+// (Owners, AddressingDirs) and no bundle of the App has been built yet.
 //
 // A nil record records nothing and answers for nothing, as a nil LeftOut does: the API's
 // controller route builds a bundle of its own per request (internal/api's
@@ -319,19 +326,23 @@ func (l *LeftOut) left(dir string, roles []AppRole) bool {
 type Installed struct {
 	mu sync.Mutex
 	// owners holds, per App role, the owner accounts that App's last bundle build read,
-	// lowercased and sorted.
+	// lowercased and sorted (Record).
 	owners map[AppRole][]string
+	// proved holds, per App role, the owner accounts the boot's proof of that App's key read, in
+	// the same form (RecordProof).
+	proved map[AppRole][]string
 }
 
 // NewInstalled is a record of nothing: no App has been read yet, so no pod is compared against
-// anything until the first bundle of its Apps is built.
-func NewInstalled() *Installed { return &Installed{owners: map[AppRole][]string{}} }
+// anything until the first bundle of its Apps is built, whatever the boot's proof records in it.
+func NewInstalled() *Installed {
+	return &Installed{owners: map[AppRole][]string{}, proved: map[AppRole][]string{}}
+}
 
-// Record holds the owners role's App was read installed on, replacing what an earlier read held:
-// an account that removed the App is gone from the answer at once, as it is from the bundle that
-// read it. The two readers that write it are a bundle's build (installedLayout) and the daemon's
-// boot, whose proof of each App's key reads the same installations (internal/daemon's
-// proveAppKeys), so a launch's addressing has its App's owners from the first launch on.
+// Record holds the owners role's App was read installed on by a bundle's build
+// (installedLayout), replacing what an earlier build's read held: an account that removed the
+// App is gone from the answer at once, as it is from the bundle that read it. It is the one read
+// a pod is compared against (GitHubDirs); the boot's read is RecordProof's.
 func (i *Installed) Record(role AppRole, owners []string) {
 	if i == nil {
 		return
@@ -344,29 +355,59 @@ func (i *Installed) Record(role AppRole, owners []string) {
 	i.owners[role] = slices.Clone(owners)
 }
 
-// Owners is the owner accounts role's App was installed on when its last bundle was built, and
-// whether any bundle of it has been built at all: what internal/daemon tells a launch its own
-// App reaches (daemon.RepositoriesClause), which may be a minute old and may have been read for
-// another role of the same App, as this record's own doc says. It is no set to mint from — a
-// bundle reads GitHub itself, at every build (GitHubCredential) — and the answer is the
-// record's own slice copied, so a caller that sorts or appends to it moves nothing here.
+// RecordProof holds the owners role's App was read installed on by the boot's proof of its key
+// (internal/daemon's proveAppKeys), which reads the same installations a bundle does, so a
+// launch's addressing has its App's owners from the first launch on (Owners, AddressingDirs). It
+// is kept apart from a bundle's read and is never what a pod is compared against (GitHubDirs):
+// no mint has run yet, so nothing says which of those owners a bundle leaves out.
+func (i *Installed) RecordProof(role AppRole, owners []string) {
+	if i == nil {
+		return
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.proved == nil {
+		i.proved = map[AppRole][]string{}
+	}
+	i.proved[role] = slices.Clone(owners)
+}
+
+// Owners is the owner accounts role's App was installed on when its last bundle was built, or,
+// while no bundle of it has been built, when the boot proved its key (RecordProof), and whether
+// either has read it at all: what internal/daemon tells a launch its own App reaches
+// (daemon.RepositoriesClause), which may be a minute old and may have been read for another role
+// of the same App, as this record's own doc says. It is no set to mint from — a bundle reads
+// GitHub itself, at every build (GitHubCredential) — and the answer is the record's own slice
+// copied, so a caller that sorts or appends to it moves nothing here.
 func (i *Installed) Owners(role AppRole) ([]string, bool) {
 	if i == nil {
 		return nil, false
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	owners, read := i.owners[role]
+	owners, read := i.lastRead(role, true)
 	return slices.Clone(owners), read
 }
 
+// lastRead is the owners role's App was last read installed on, and whether it has been read: by
+// its last bundle build, or, where proofs and no bundle of it has been built yet, by the boot's
+// proof of its key. The caller holds mu.
+func (i *Installed) lastRead(role AppRole, proofs bool) ([]string, bool) {
+	if owners, built := i.owners[role]; built || !proofs {
+		return owners, built
+	}
+	owners, proved := i.proved[role]
+	return owners, proved
+}
+
 // shared is the owners every one of roles' Apps was last read installed on — their
-// intersection — and whether every one of them has been read at all. A pod's gh projection is
-// its roles' bundles intersected (sandbox's gitHubBundles), so an owner one of its Apps is not
-// installed on is in no such pod's projection however readily the other App mints it. A role
-// nothing has been read for leaves the answer unknown: a set built without it would name a pod
-// lacking for a directory an App that has never been read may well not hold.
-func (i *Installed) shared(roles []AppRole) ([]string, bool) {
+// intersection — and whether every one of them has been read at all, by a bundle build or,
+// where proofs, by the boot's proof of its key (lastRead). A pod's gh projection is its roles'
+// bundles intersected (sandbox's gitHubBundles), so an owner one of its Apps is not installed on
+// is in no such pod's projection however readily the other App mints it. A role nothing has been
+// read for leaves the answer unknown: a set built without it would name a pod lacking for a
+// directory an App that has never been read may well not hold.
+func (i *Installed) shared(roles []AppRole, proofs bool) ([]string, bool) {
 	if i == nil {
 		return nil, false
 	}
@@ -374,7 +415,7 @@ func (i *Installed) shared(roles []AppRole) ([]string, bool) {
 	defer i.mu.Unlock()
 	var shared []string
 	for at, role := range roles {
-		owners, read := i.owners[role]
+		owners, read := i.lastRead(role, proofs)
 		if !read {
 			return nil, false
 		}
@@ -393,9 +434,9 @@ func (i *Installed) shared(roles []AppRole) ([]string, bool) {
 // creation. A zero repo is the controller's owner-only set, the bundle its pod was launched with.
 //
 // roles are the App roles of the pod that pod projection belongs to, which both records are read
-// for: the owners those Apps were last read installed on, intersected (installed, Installed),
-// less every directory a mint of those Apps could not fill (left, LeftOut). An issue pod
-// runs both Apps and projects what both their bundles hold, so an owner either App is not
+// for: the owners the last bundle of each of those Apps read installed, intersected (installed,
+// Installed), less every directory a mint of those Apps could not fill (left, LeftOut). An issue
+// pod runs both Apps and projects what both their bundles hold, so an owner either App is not
 // installed on, and a directory either App left out, is in no projection of it; the project
 // controller's pod runs the review App alone and is handed every directory that App mints,
 // whatever the implement App's installation reaches (sandbox's movedGhDirs, which maps its pod's
@@ -411,10 +452,32 @@ func (i *Installed) shared(roles []AppRole) ([]string, bool) {
 //
 // Two answers are no set at all, and leave every pod where it is: an App no bundle has read the
 // installations of yet (Installed.shared), and a bundle no launch could write — a default
-// directory ghconfig refuses a name for, which is what GitHubCredential fails on. Any other
-// owner ghconfig refuses a name for is in no bundle and so in no answer here (bundleDirs).
+// directory ghconfig refuses a name for, which is what GitHubCredential fails on. An App the
+// boot's proof of its key has read (Installed.RecordProof) is still the first: that read is no
+// bundle's, and before any mint of the App nothing says which of its owners a bundle leaves out,
+// so a set built from it would name an owner whose mint GitHub refuses (INFRA-513) and read every
+// pod as lacking that owner's directory, sending an issue pod an update round and replacing the
+// controller's pod at its relaunch. Any other owner ghconfig refuses a name for is in no bundle
+// and so in no answer here (bundleDirs).
 func GitHubDirs(served func(ghrepo.Repository) bool, renames ghrepo.Renames, installed *Installed, left *LeftOut, roles []AppRole, repo ghrepo.Repository) []string {
-	owners, read := installed.shared(roles)
+	return gitHubDirs(served, renames, installed, left, roles, repo, false)
+}
+
+// AddressingDirs is GitHubDirs as a launch's addressing asks it (internal/daemon's
+// plan.appOwners): the same rule over the same description, but an App of roles no bundle has
+// been built of yet is read as the boot's proof of its key read it (Installed.RecordProof), so a
+// launch from the first one on is told the owners its container holds a directory for. No mint of
+// such an App has left anything out yet (LeftOut), so its read stands for every directory its
+// installations make; once a bundle of each App of roles is built, the answer is GitHubDirs' own.
+// It is never what a pod is compared against, for the reason GitHubDirs gives.
+func AddressingDirs(served func(ghrepo.Repository) bool, renames ghrepo.Renames, installed *Installed, left *LeftOut, roles []AppRole, repo ghrepo.Repository) []string {
+	return gitHubDirs(served, renames, installed, left, roles, repo, true)
+}
+
+// gitHubDirs is GitHubDirs and AddressingDirs, which differ only in proofs: whether the boot's
+// proof of an App's key stands in for a bundle of it not built yet (Installed.shared).
+func gitHubDirs(served func(ghrepo.Repository) bool, renames ghrepo.Renames, installed *Installed, left *LeftOut, roles []AppRole, repo ghrepo.Repository, proofs bool) []string {
+	owners, read := installed.shared(roles, proofs)
 	if !read {
 		return nil
 	}

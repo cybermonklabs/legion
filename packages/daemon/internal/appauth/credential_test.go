@@ -1270,6 +1270,82 @@ func TestGitHubDirsAnswersFromWhatTheLastBundleOfEachAppRead(t *testing.T) {
 	}
 }
 
+// The boot's proof of each App's key reads the same installations a bundle does, and the record
+// keeps that read apart from a bundle's (Installed.RecordProof): a launch's addressing reads it
+// from the first launch on (Owners, AddressingDirs), while the drift check never compares a pod
+// against it (GitHubDirs). No mint has run at boot, so nothing is recorded left out (LeftOut),
+// and a set built from the boot's read would name an owner whose mint GitHub refuses and read
+// every pod as lacking that owner's directory: an issue pod would be sent an update round and
+// the controller's pod replaced at its relaunch (INFRA-513). So GitHubDirs names nothing until a
+// bundle of each of a pod's Apps is built, and then names what those bundles read, as Owners
+// then answers.
+//
+// The case: the boot read both Apps installed on acme and globex. The implement App's first
+// bundle reads it installed on acme and sjawhar, and the review App's bundle, built after it,
+// reads the same two.
+//
+// The control is shared reading the boot's owners for the drift check too (GitHubDirs passing
+// proofs true to gitHubDirs): GitHubDirs then names acme, globex and sjawhar from the boot's
+// read alone, and the first assertion fails.
+func TestTheBootsReadOfEachAppIsNoSetAPodIsComparedAgainst(t *testing.T) {
+	served := servesOneOf("sjawhar/legion", "acme/widgets")
+	issue := ghrepo.MustParse("sjawhar/legion")
+	installed := NewInstalled()
+	booted := []string{"acme", "globex"}
+	for _, role := range Roles {
+		installed.RecordProof(role, booted)
+	}
+	for _, roles := range [][]AppRole{Roles, {Implement}, {Review}} {
+		if dirs := GitHubDirs(served, ghrepo.Renames{}, installed, nil, roles, issue); dirs != nil {
+			t.Errorf("GitHubDirs for %v after the boot's proof alone = %q, want none: no bundle of those Apps has been built", roles, dirs)
+		}
+	}
+	for _, role := range Roles {
+		if owners, read := installed.Owners(role); !read || !slices.Equal(owners, booted) {
+			t.Errorf("Owners(%s) after the boot's proof = %q (read %v), want %q: a launch's addressing names its App's owners from the first launch on",
+				role, owners, read, booted)
+		}
+	}
+	if dirs := AddressingDirs(served, ghrepo.Renames{}, installed, nil, Roles, ghrepo.Repository{}); !slices.Equal(dirs, booted) {
+		t.Errorf("AddressingDirs after the boot's proof = %q, want the boot's owners %q: what a launch's addressing names them against", dirs, booted)
+	}
+
+	implement := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners("acme", "sjawhar")), served, ghrepo.Renames{}, installed, nil, quietBundleLog())
+	bundle, err := implement(context.Background(), claim.RoleImplementer, issue)
+	if err != nil {
+		t.Fatalf("the implementer's bundle: %v", err)
+	}
+	if owners, _ := installed.Owners(Implement); !slices.Equal(owners, []string{"acme", "sjawhar"}) {
+		t.Errorf("Owners(implement) after its bundle = %q, want the bundle's read, acme and sjawhar", owners)
+	}
+	if dirs := GitHubDirs(served, ghrepo.Renames{}, installed, nil, []AppRole{Implement}, issue); !slices.Equal(dirs, bundle.DirNames()) {
+		t.Errorf("GitHubDirs for the implement App after its bundle = %q, want the bundle's own %q", dirs, bundle.DirNames())
+	}
+	if dirs := GitHubDirs(served, ghrepo.Renames{}, installed, nil, Roles, issue); dirs != nil {
+		t.Errorf("GitHubDirs for a pod of both Apps = %q, want none: the review App has the boot's read alone", dirs)
+	}
+	if owners, _ := installed.Owners(Review); !slices.Equal(owners, booted) {
+		t.Errorf("Owners(review) = %q, want the boot's %q: no bundle of the review App has been built", owners, booted)
+	}
+	if dirs, want := AddressingDirs(served, ghrepo.Renames{}, installed, nil, Roles, ghrepo.Repository{}), []string{"acme"}; !slices.Equal(dirs, want) {
+		t.Errorf("AddressingDirs for a pod of both Apps = %q, want %q: the implement App's bundle read intersected with the review App's boot read", dirs, want)
+	}
+
+	review := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners("acme", "sjawhar")), served, ghrepo.Renames{}, installed, nil, quietBundleLog())
+	reviewed, err := review(context.Background(), claim.RoleReviewer, issue)
+	if err != nil {
+		t.Fatalf("the reviewer's bundle: %v", err)
+	}
+	for name, dirs := range map[string][]string{
+		"GitHubDirs":     GitHubDirs(served, ghrepo.Renames{}, installed, nil, Roles, issue),
+		"AddressingDirs": AddressingDirs(served, ghrepo.Renames{}, installed, nil, Roles, issue),
+	} {
+		if !slices.Equal(dirs, reviewed.DirNames()) {
+			t.Errorf("%s for a pod of both Apps after both bundles = %q, want what both bundles read %q", name, dirs, reviewed.DirNames())
+		}
+	}
+}
+
 // leftOutLines is every line of said naming owner as the directory left out.
 func leftOutLines(said *bytes.Buffer, owner string) []string {
 	var lines []string

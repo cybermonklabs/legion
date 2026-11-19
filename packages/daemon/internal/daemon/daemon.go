@@ -763,21 +763,24 @@ type plan struct {
 	repositories *repositories
 	// installed is the record of the owner accounts each App was last read installed on, made here
 	// rather than inside a runtime factory because more than one reader shares it: the boot's proof
-	// of each App's key writes it first (proveAppKeys), the credentials the factory builds write it
-	// at every bundle (appauth.GitHubCredential, with the LeftOut record beside it), and every
-	// launch's addressing reads its own App's owners out of it (appOwners,
-	// daemon.RepositoriesClause). Never nil: a daemon with no GitHub Apps proves no key and builds
-	// no bundle, so nothing is ever recorded in it and its addressing names no owner.
+	// of each App's key writes its own read first (proveAppKeys, appauth.Installed.RecordProof),
+	// the credentials the factory builds write theirs at every bundle (appauth.GitHubCredential,
+	// with the LeftOut record beside it), every launch's addressing reads its own App's owners out
+	// of it (appOwners, daemon.RepositoriesClause), the boot's read until a bundle of the App is
+	// built, and the drift check reads the bundles' reads alone (appauth.GitHubDirs). Never nil: a
+	// daemon with no GitHub Apps proves no key and builds no bundle, so nothing is ever recorded
+	// in it and its addressing names no owner.
 	installed *appauth.Installed
 	// left is the record of the gh bundle directories a mint could not fill (appauth.LeftOut),
 	// made here beside installed, and not inside a runtime factory, for the same reason: more
 	// than one reader shares it. The credentials the factory builds write it, and what a bundle
 	// of an App really holds is the installed owners less what this record names
 	// (appauth.GitHubDirs): the Kubernetes runtime's drift check reads that, and a launch's
-	// addressing can read it here (appOwners), so that it names no owner the role's bundle
-	// holds no directory for. A record each factory made for itself would be one the plan
-	// could not reach. The configured renames that rule also reads are the repository state's own
-	// (repositories.renames, which is cfg.RepositoryRenames). Never nil, as installed is not.
+	// addressing reads the same rule here (appOwners, appauth.AddressingDirs), so that it names no
+	// owner the role's bundle holds no directory for. A record each factory made for itself
+	// would be one the plan could not reach. The configured renames that rule also reads are the
+	// repository state's own (repositories.renames, which is cfg.RepositoryRenames). Never nil,
+	// as installed is not.
 	left *appauth.LeftOut
 	// phaseHolds, rootHears, rootTask and treeClosable are the workflow's answers to the
 	// supervisor's predicates; nil without a workflow, where every delivery is sent as it was
@@ -896,9 +899,9 @@ type plan struct {
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
 // of a role names as the ones its own GitHub App is installed on and its token reaches
 // (specs.appOwners, daemon.RepositoriesClause): the owners that App was last read installed on
-// (appauth.Installed: the boot's proof of its key first, then the last gh bundle of it), which
-// costs the launch no read of its own, less every one the role's container holds no directory
-// for.
+// (appauth.Installed: the last gh bundle of it, or, while none has been built, the boot's proof
+// of its key), which costs the launch no read of its own, less every one the role's container
+// holds no directory for.
 //
 // An installed owner is not always one the role's container holds a directory for. A mint GitHub
 // answers definitively about the owner's installation — not installed there after all,
@@ -912,14 +915,17 @@ type plan struct {
 // bundle and no other, so there the role's own App is the whole answer. The clause says the
 // role's token reaches every repository of each owner it names, which is false of any such
 // owner, so it is not named. The rule is asked of the one place that holds it and not written
-// a second time: appauth.GitHubDirs is the directories a bundle of those Apps built now would
-// hold, which is what the Kubernetes drift check reads a pod against, and the owners kept are
-// the installed ones it names. It names one more directory for each owner a configured rename
-// moved a repository away from, which is no installed owner and so is never one of these.
+// a second time: appauth.AddressingDirs is the directories a bundle of those Apps built now would
+// hold — GitHubDirs' set, which is what the Kubernetes drift check reads a pod against, but read
+// from the boot's proof of an App's key while no bundle of it has been built — and the owners
+// kept are the installed ones it names. It names one more directory for each owner a configured
+// rename moved a repository away from, which is no installed owner and so is never one of these.
 //
 // The boot's proof of each App's key records its owners before any launch (proveAppKeys), so
 // every launch of a daemon with a workflow has an answer to name; a daemon with no GitHub Apps has
-// none, and its addressing names no owner.
+// none, and its addressing names no owner. GitHubDirs itself names nothing until a bundle of
+// those Apps is built, since no pod may be compared against the boot's read, so it is not what
+// this asks.
 func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
 	return func(role claim.Role) []string {
 		app := appauth.AppRoleFor(role)
@@ -936,7 +942,7 @@ func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
 		if !read {
 			return nil
 		}
-		held := appauth.GitHubDirs(p.repositories.servesRepository, p.repositories.renames, p.installed, p.left, apps, ghrepo.Repository{})
+		held := appauth.AddressingDirs(p.repositories.servesRepository, p.repositories.renames, p.installed, p.left, apps, ghrepo.Repository{})
 		return slices.DeleteFunc(owners, func(owner string) bool { return !slices.Contains(held, owner) })
 	}
 }

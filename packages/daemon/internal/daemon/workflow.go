@@ -378,9 +378,12 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger)
 // stops the boot with a refusal that names the App. A key GitHub takes is the whole proof: an App
 // with no installation boots, and one WARN line names it, since a project works in each repository
 // both role Apps reach and an operator may install an App after the daemon is up. The owners each
-// read answers are recorded as that App's installations (appauth.Installed.Record) once both are
-// proved, so every launch's addressing names its App's own owners from the first launch on
-// (plan.appOwners), and nothing of the boot mints a token for an owner.
+// read answers are recorded as the boot's read of that App's installations
+// (appauth.Installed.RecordProof) once both are proved, so every launch's addressing names its
+// App's own owners from the first launch on (plan.appOwners). That read is kept apart from a
+// bundle's: the drift check never compares a pod against it (appauth.GitHubDirs), since no mint
+// has run at boot to say which of those owners a bundle leaves out. Nothing of the boot mints a
+// token for an owner.
 func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installed *appauth.Installed, log *slog.Logger) error {
 	owners := make(map[appauth.AppRole][]string, len(appauth.Roles))
 	err := bootprobe.Run(ctx, "GitHub App key proof", appMintRetry, log, appAttempt(func(ctx context.Context) error {
@@ -400,7 +403,7 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 		return err
 	}
 	for _, role := range appauth.Roles {
-		installed.Record(role, owners[role])
+		installed.RecordProof(role, owners[role])
 		if len(owners[role]) == 0 {
 			log.Warn("workflow: a GitHub App is installed on no account, so its role reaches no repository until an account installs it",
 				"app", string(role))

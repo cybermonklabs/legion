@@ -63,9 +63,9 @@ type roleOwners struct{ implementer, reviewer, controller []string }
 // owner the other App is not installed on, or one the other App's mint left out, is in no
 // container of that pod, whichever App the role runs as. The project controller's pod holds the
 // review App alone and answers alike under both runtimes. The owners an App was read installed on
-// come from the boot's proof of its key first (proveAppKeys, appauth.Installed.Record) and then
-// from its last bundle; until either has read every App the container's directories come from,
-// there is no read to report and the answer is none.
+// come from the boot's proof of its key first (proveAppKeys, appauth.Installed.RecordProof) and
+// then from its last bundle; until either has read every App the container's directories come
+// from, there is no read to report and the answer is none.
 func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *testing.T) {
 	moved := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
 	for _, tc := range []struct {
@@ -158,7 +158,7 @@ func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *te
 			}
 			if tc.proved {
 				for _, app := range appauth.Roles {
-					p.installed.Record(app, tc.source.installed[app])
+					p.installed.RecordProof(app, tc.source.installed[app])
 				}
 			}
 			// Each bundle is built as a runtime builds it, over the plan's own two records, so
