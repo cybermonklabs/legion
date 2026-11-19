@@ -23,6 +23,7 @@ type idleRigSaveWatch struct {
 	runtime.Runtime
 	bundler   runtime.WorkspaceBundler
 	suspender runtime.IssueSuspender
+	releaser  runtime.IssueReleaser
 	pods      issuePods
 	observe   func()
 }
@@ -34,6 +35,10 @@ func (w *idleRigSaveWatch) BundleWorkspace(ctx context.Context, issue string, ro
 
 func (w *idleRigSaveWatch) SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
 	return w.suspender.SuspendIssue(ctx, issue, tree, authorize)
+}
+
+func (w *idleRigSaveWatch) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
+	return w.releaser.ReleaseIssue(ctx, issue, tree, authorize)
 }
 
 func (w *idleRigSaveWatch) IssuePodRunsConfiguredImage(issue string) bool {
@@ -63,13 +68,17 @@ func TestTheReleaseSavesTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testin
 	if !ok {
 		t.Fatal("the rig's runtime suspends no issue")
 	}
+	releaser, ok := inner.(runtime.IssueReleaser)
+	if !ok {
+		t.Fatal("the rig's runtime releases no issue")
+	}
 	podRuntime, ok := inner.(issuePods)
 	if !ok {
 		t.Fatal("the rig's runtime reads no issue pod")
 	}
 	var saves int
 	var atSave supervise.Claim
-	rig.sup.deps.Runtime = &idleRigSaveWatch{Runtime: inner, bundler: bundler, suspender: suspender, pods: podRuntime,
+	rig.sup.deps.Runtime = &idleRigSaveWatch{Runtime: inner, bundler: bundler, suspender: suspender, releaser: releaser, pods: podRuntime,
 		observe: func() {
 			saves++
 			atSave = rig.machine.Claim()

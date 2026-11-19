@@ -813,19 +813,21 @@ func (r *Runtime) sandboxManifest(l launch) sandbox {
 }
 
 // podTemplate is the pod a launch runs (decisions 7 and 10). Every pod mounts one disk at the same
-// volume name (issueVolume), from the source its kind gives it (podKind.disk): an issue
-// pod's is its own ephemeral claim, made with the pod and deleted with it, the controller's the
-// claim its Sandbox owns and that outlives every pod it makes. The pod runs as the operator's
-// ServiceAccount (the namespace's default when the operator names none), and its launcher
-// containers mount the providers Secret's configured keys and the operator's mounts, are told the
-// operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
+// volume name (issueVolume), from the source its kind gives it (podKind.disk): an issue pod's is
+// its own ephemeral claim, made with the pod and deleted with it, or, where the pod keeps its
+// volume (keptVolume), the kept claim its Sandbox owns and that outlives the pod; the
+// controller's is the claim its Sandbox owns and that outlives every pod it makes. The pod runs as
+// the operator's ServiceAccount (the namespace's default when the operator names none), and its
+// launcher containers mount the providers Secret's configured keys and the operator's mounts, are
+// told the operator's variables, and start Oh My Pi on the pod's baseline (`--pod-safety`,
 // internal/podsafety). Its init containers and the volumes only they mount are its kind's
 // (podKind). Beyond the Legion pool's selector and tolerations, and a microVM pod's ComputeClass
-// (placement), it asks nothing of its placement: every pod owns a disk of its own and shares
-// nothing with another pod, so the scheduler puts it wherever the pool has room. The controller
-// applies a template only to the next pod it creates, so the template is rebuilt for every
-// relaunch. Its metadata carries, beside the two stop-eviction annotations, the configuration the
-// pod is built from (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
+// (placement), it asks nothing of its placement: an ephemeral disk is made where the pod is
+// scheduled, so the scheduler puts such a pod wherever the pool has room. A claim that outlives
+// its pods binds each later pod to the zones of its volume. The controller applies a template only
+// to the next pod it creates, so the template is rebuilt for every relaunch. Its metadata
+// carries, beside the two stop-eviction annotations, the configuration the pod is built from
+// (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
 // (launch.shapeKey): the one write of it, so that a later sweep can read what a pod was built from
 // without rebuilding the launch that built it (drift.go). A microVM pod's labels carry
 // labelSandbox beside its kind's, on the template alone, so the Sandbox and its Secrets carry

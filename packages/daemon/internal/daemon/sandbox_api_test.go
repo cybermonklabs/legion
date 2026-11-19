@@ -143,6 +143,29 @@ func issueSandbox(name, uid, tree, issue string) map[string]any {
 	}
 }
 
+// keptIssueSandbox is issueSandbox in mode for an issue whose microVM pod keeps its volume: the
+// Sandbox owns the one `issue` claim template of that volume, labelled with the project, the issue
+// and legion.dev/volume=kept and with no tree, as the sandbox runtime's issuePod.disk writes it.
+// Its pod template projects the session database's URL file from the providers Secret, as the pod
+// of every deployment whose sessions are in Postgres does: the runtime reads that template before
+// it deletes a Sandbox that owns a volume (guardSessionVolumeReap).
+func keptIssueSandbox(name, uid, tree, issue, mode string) map[string]any {
+	object := issueSandbox(name, uid, tree, issue)
+	spec := object["spec"].(map[string]any)
+	spec["operatingMode"] = mode
+	spec["volumeClaimTemplates"] = []any{map[string]any{
+		"metadata": map[string]any{"name": "issue", "labels": map[string]any{
+			"legion.dev/project": "legion", "legion.dev/issue": issue, "legion.dev/volume": "kept"}},
+		"spec": map[string]any{"accessModes": []any{"ReadWriteOnce"}, "storageClassName": "example-microvm-rwo",
+			"resources": map[string]any{"requests": map[string]any{"storage": "1Gi"}}},
+	}}
+	spec["podTemplate"] = map[string]any{"spec": map[string]any{"volumes": []any{map[string]any{
+		"name": "providers", "secret": map[string]any{"secretName": "legion-legion-providers",
+			"items": []any{map[string]any{"key": "SESSION_DSN", "path": "OMP_SESSION_SQL_DSN"}}},
+	}}}}
+	return object
+}
+
 // run reconciles every Sandbox until t ends: the controller stand-in.
 func (a *issueSandboxAPI) run(t *testing.T) {
 	t.Helper()

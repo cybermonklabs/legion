@@ -1143,6 +1143,59 @@ func TestPodUpdateWritesOnTheIssueWhenThePodWentWithoutItsRound(t *testing.T) {
 	}
 }
 
+// A pod whose disk is a kept volume can go before its round is over, and its disk does not go with
+// it: the volume is the issue's Sandbox's own, and the issue's next pod mounts it. The message on
+// the issue then says that the work the roles did not push is still on that volume. The runtime
+// answers whether the issue's Sandbox kept the pod's volume, asked with the time the round opened
+// (runtime.IssueVolumeReader): a Sandbox made after the round opened, by a reset or a change of
+// the disk's shape, holds a new volume, and the work is lost as it is for an ephemeral volume. In
+// both of those cases the message is the one every other pod's issue is told, word for word.
+func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
+	const opened = "The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (" + podUpdateRound + "). " +
+		"The reasons were: " + podUpdateDrift + ". The pod went before the round was over.\n\n"
+	const restarted = "\n\nThe daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed."
+	const lost = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
+		"The pod's disk went with the pod. Work that these roles did not push is lost." + restarted
+	const stays = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
+		"The pod's disk is a kept volume, and the volume is still there. Work that these roles did not push is on that volume. " +
+		"The next pod of this issue mounts the volume." + restarted
+	for _, tc := range []struct {
+		name string
+		// created is when the issue's kept Sandbox was made, zero for none.
+		created time.Time
+		want    string
+	}{
+		{"a kept volume made before the round opened", podUpdateStart.Add(-time.Hour), stays},
+		{"a kept volume made after the round opened", podUpdateStart.Add(time.Minute), lost},
+		{"an ephemeral volume", time.Time{}, lost},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+			rig.drifts(podUpdateDrift)
+			if !tc.created.IsZero() {
+				rig.rt.ScriptKeptVolume(podUpdateIssue, tc.created)
+			}
+
+			rig.tick()
+			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+			rig.awaitRound(claim.RoleTester, podUpdateRound)
+			rig.signal(claim.RoleTester, "a1b2c3d")
+			rig.tickBackIn(podUpdateReplacementPod)
+
+			messages := rig.messages()
+			if len(messages) != 1 {
+				t.Fatalf("the issue was written on %d times, want once for the pod that went", len(messages))
+			}
+			if messages[0] != tc.want {
+				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], tc.want)
+			}
+			for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+				rig.awaitClaim(role, "its round to end with the pod", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+			}
+		})
+	}
+}
+
 // tickBackIn is one sweep over claims that record pod rather than the one their round was opened
 // over: the pod went, and the displaced path brought each role back into the pod that replaced
 // it. The claims the store holds still record the old pod, so what the sweep reads is the whole

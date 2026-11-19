@@ -97,7 +97,9 @@ const (
 	// that any claim of it ever ran in.
 	IdleHoldUnownedNoClaim
 	// IdleHoldUnownedSandboxGone: the cluster holds no Sandbox for the issue, so the pod this
-	// rule would release is already gone and nothing of it is reserved.
+	// rule would release is already gone and nothing of it is reserved. The hold also means a
+	// Sandbox that owns the issue's kept volume, kept Suspended by an earlier release, that runs
+	// no pod: its volume waits for the issue's next pod, and there is no pod to release.
 	IdleHoldUnownedSandboxGone
 	// IdleHoldUnownedClaimProcess: a stopped claim of the pod still records a process in it
 	// (pods.IdleClaim.HasProcess), so something the daemon started is still running there and a

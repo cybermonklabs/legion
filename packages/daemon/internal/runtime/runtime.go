@@ -219,13 +219,36 @@ type LaunchSessionNamer interface {
 // IssueSuspender stops an issue's pod once authorize, called under the runtime's issue launch
 // lock, says the issue's durable close and its complete stored role population allow it (false
 // finishes the close without acting). Once the pod is stopped, the issue's Sandbox is deleted
-// with everything it owns — the role Secrets holding each launcher's token and credentials — and
-// the call returns once the cluster no longer has it; a Sandbox already gone is success, so a
-// retried close finishes. Nothing durable is kept by keeping it: an issue pod's disk is the pod's
-// own and went with the pod, so the issue's next launch makes the Sandbox again.
+// with everything it owns — the role Secrets holding each launcher's token and credentials, and a
+// kept volume (IssueReleaser) — and the call returns once the cluster no longer has it; a Sandbox
+// already gone is success, so a retried close finishes. A close keeps nothing: the issue has left
+// the workflow, and its next launch, if a person sets it todo again, makes the Sandbox again.
 // Process-only runtimes have no shared issue resources to suspend.
 type IssueSuspender interface {
 	SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
+}
+
+// IssueReleaser stops an issue's pod for a release, which leaves the issue in the workflow: the
+// idle release, and the release of a pod no claim of the issue can use. It is named apart from
+// Runtime.Release, which ends one claim's process. It stops the pod once authorize, called under
+// the runtime's issue launch lock, says the release still stands (false finishes the release
+// without acting). Then it keeps what the issue's next pod can use: a Sandbox that owns the
+// issue's kept volume stays, Suspended, with that volume, and the Secrets that the next launch
+// writes again are deleted. Every other Sandbox is deleted, as IssueSuspender deletes it. A Sandbox
+// already gone is success, so a retried release finishes. Process-only runtimes have no pod to
+// release.
+type IssueReleaser interface {
+	ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
+}
+
+// IssueVolumeReader says whether the issue's Sandbox holds a kept volume that it held already at
+// since: the runtime's stored Sandbox of the issue owns a kept volume and was made before since. A
+// Sandbox made at or after since holds a new volume, which holds nothing of a pod before it. The
+// daemon asks it when a pod goes before its update round is over, with the time the round opened,
+// to tell the issue whether the work its roles did not push is still on the volume. A runtime
+// whose pods keep no volume implements nothing here, and the daemon then reads no kept volume.
+type IssueVolumeReader interface {
+	IssueKeepsVolume(issue string, since time.Time) bool
 }
 
 // WorkspaceBundler asks one live role's process to bundle the unpushed work of the issue

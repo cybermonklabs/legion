@@ -1092,9 +1092,9 @@ func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
 
 // IssueSuspend stops an issue's pod after its close has stopped every role, and deletes the
 // Sandbox the roles ran in (runtime.IssueSuspender). Both workflow generations and this row's ID
-// fence a later re-admission or start. The issue keeps nothing: its disk is its pod's own and
-// goes with the pod, so a later todo re-enters the issue fresh on a Sandbox its next launch
-// makes.
+// fence a later re-admission or start. The issue keeps nothing: an ephemeral disk is its pod's own
+// and goes with the pod, and a kept volume goes with the Sandbox, so a later todo re-enters the
+// issue fresh on a Sandbox its next launch makes.
 type IssueSuspend struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
@@ -1123,9 +1123,10 @@ type IssueBundle struct {
 func (IssueBundle) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 
 // IssueRelease is the last act of an idle pod's release, queued behind the save (IssueBundle) and
-// the per-role `release` supervise rows that stopped the pod's role processes: it suspends the
-// issue's Sandbox, waits its pod out and deletes the Sandbox with the role Secrets it owns
-// (runtime.IssueSuspender), and records the release with the size of the bundle the save stored.
+// the per-role `release` supervise rows that stopped the pod's role processes: it asks the
+// runtime's release (runtime.IssueReleaser), which suspends the issue's Sandbox and waits its pod
+// out, keeps a Sandbox that owns the issue's kept volume and deletes every other Sandbox with the
+// role Secrets it owns, and records the release with the size of the bundle the save stored.
 // Both workflow generations and this row's ID fence a start or a re-admission that came after, as
 // an IssueSuspend's do.
 //

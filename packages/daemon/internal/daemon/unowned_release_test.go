@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -234,6 +235,9 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 		bundled, suspended := rig.rt.reads()
 		if suspended != 1 {
 			t.Fatalf("Sandbox teardowns = %d, want the one this release is made of", suspended)
+		}
+		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {
+			t.Fatalf("teardowns asked = %v, want the release's alone: the issue stays in the workflow", asked)
 		}
 		if len(bundled) != 0 {
 			t.Fatalf("the bundle was asked of %v, want no role: no shim is left to build one", bundled)
@@ -472,5 +476,64 @@ func TestThePassDecidesOnlyTheIssuesTheRuleCouldRelease(t *testing.T) {
 	if len(records.Releases) != 0 || len(records.Holds) != 0 {
 		t.Fatalf("records = %+v / %+v, want neither: the pass wrote nothing for a pod that is gone",
 			records.Releases, records.Holds)
+	}
+}
+
+// The release of a pod no claim owns keeps the Sandbox of a kept volume, Suspended, for the issue's
+// next pod (sandbox.Runtime.ReleaseIssue), and it changes no claim, so the issue stands in the
+// candidate answer of every later pass. Such a Sandbox runs no pod, so there is nothing of it to
+// release: the runtime answers it absent (sandbox.Runtime.IssueSandbox), and the pass holds the
+// issue as unowned_sandbox_gone and writes no release row for it, where a release row a minute
+// would suspend a Sandbox already Suspended for ever. The answer is the real runtime's, read over
+// the test's API. A kept volume's Sandbox that is Running, and a Suspended Sandbox with an
+// ephemeral volume, are each answered present and released, as every Sandbox was before.
+func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name     string
+		sandbox  func(name, tree, issue string) map[string]any
+		released bool
+	}{
+		{"a kept volume's Sandbox, Suspended, that runs no pod", func(name, tree, issue string) map[string]any {
+			return keptIssueSandbox(name, "sandbox-uid", tree, issue, "Suspended")
+		}, false},
+		{"a kept volume's Sandbox, Running", func(name, tree, issue string) map[string]any {
+			return keptIssueSandbox(name, "sandbox-uid", tree, issue, "Running")
+		}, true},
+		{"a Sandbox with an ephemeral volume, Suspended", func(name, tree, issue string) map[string]any {
+			object := issueSandbox(name, "sandbox-uid", tree, issue)
+			object["spec"].(map[string]any)["operatingMode"] = "Suspended"
+			return object
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			rig.stoppedImplementer(t, false)
+			api := newIssueSandboxAPI(tc.sandbox(sandbox.SandboxName(rig.token), rig.issue.Tree, rig.issue.Key))
+			rig.w.idleRuntime = issueSandboxRuntime(t, api, rig.st)
+
+			var hold workflow.IdleHold
+			var released bool
+			queued := rig.queuedBy(t, func() { hold, released = rig.w.releaseUnownedPod(ctx, rig.issue.Key) })
+
+			if !tc.released {
+				if hold != workflow.IdleHoldUnownedSandboxGone || released {
+					t.Fatalf("the pass = %s, released %t; want the pod held as %s", hold, released, workflow.IdleHoldUnownedSandboxGone)
+				}
+				if len(queued) != 0 {
+					t.Fatalf("queued rows = %v, want none: the Sandbox runs no pod to release", queued)
+				}
+				if rig.marked(t) {
+					t.Fatal("a release was marked for a kept volume's Sandbox that runs no pod")
+				}
+				if records := rig.records(t); len(records.Releases) != 0 || len(records.Holds) != 0 {
+					t.Fatalf("records = %+v / %+v, want neither", records.Releases, records.Holds)
+				}
+				return
+			}
+			if !released || len(queued) != 1 || queued[0] != "issue_release" {
+				t.Fatalf("the pass = %s, released %t, queued %v; want the release's teardown queued", hold, released, queued)
+			}
+		})
 	}
 }
