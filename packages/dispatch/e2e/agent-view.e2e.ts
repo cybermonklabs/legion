@@ -1089,12 +1089,12 @@ test("a silent session says so in the header and in a line above its messages, i
     await disconnectLiveSockets();
     await expect.poll(() => reconnectHeld).toBe(true);
     await expect(connection(page)).toHaveAttribute("title", CONNECTION_RECONNECTING);
-    await expect(view.getByTestId("agent-not-answering")).toHaveText(NOT_ANSWERING_ABOVE_TURNS);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(NOT_ANSWERING_ABOVE_TURNS);
     await expect(view.getByTestId("agent-dispatch-reply")).toContainText("Yes, at noon.");
     holdReconnect = false;
     reconnectReleased.resolve();
     await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING);
-    await expect(view.getByTestId("agent-not-answering")).toHaveText(NOT_ANSWERING_ABOVE_TURNS);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(NOT_ANSWERING_ABOVE_TURNS);
 
     await page.goto(`/agents/${empty.session_id}/live`);
     await expect(view.getByTestId("agent-thread-empty")).toHaveText(NOT_ANSWERING);
@@ -1123,7 +1123,7 @@ test("a silent session says so in the header and in a line above its messages, i
     const unresponsive = view.getByTestId("agent-unresponsive");
     await expect(unresponsive).toHaveText(/^Unresponsive/, { timeout: REGISTRY_POLL_TIMEOUT });
     await expect(connection(page)).toHaveCount(0);
-    await expect(view.getByTestId("agent-not-answering")).toHaveText(MISSED_HEARTBEATS);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(MISSED_HEARTBEATS);
     expect(subscribed()).toBe(1);
 
     // It still streams: a new turn, with an id and a time of its own, so it is a second message
@@ -1139,7 +1139,7 @@ test("a silent session says so in the header and in a line above its messages, i
     );
     await expect(unresponsive).toHaveText(/^Unresponsive/);
     await expect(connection(page)).toHaveCount(0);
-    await expect(view.getByTestId("agent-not-answering")).toHaveText(MISSED_HEARTBEATS);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(MISSED_HEARTBEATS);
     await expect(view.getByText(NOT_ANSWERING_ABOVE_TURNS)).toHaveCount(0);
     expect(subscribed()).toBe(1);
 
@@ -1152,7 +1152,7 @@ test("a silent session says so in the header and in a line above its messages, i
     });
     await expect(unresponsive).toHaveText(/^Unresponsive/);
     await expect(connection(page)).toHaveCount(0);
-    await expect(view.getByTestId("agent-not-answering")).toHaveText(MISSED_HEARTBEATS);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(MISSED_HEARTBEATS);
     expect(subscribed()).toBe(1);
     await setListsState("ok");
     await expect(view.getByTestId("agent-list-refilling")).toHaveCount(0, {
@@ -1164,7 +1164,7 @@ test("a silent session says so in the header and in a line above its messages, i
     await expect(connection(page)).toHaveAttribute("title", CONNECTION_LIVE, {
       timeout: REGISTRY_POLL_TIMEOUT,
     });
-    await expect(view.getByTestId("agent-not-answering")).toHaveCount(0);
+    await expect(view.getByTestId("agent-silence-line")).toHaveCount(0);
     await expect(unresponsive).toHaveCount(0);
     expect(subscribed()).toBe(1);
 
@@ -1175,7 +1175,7 @@ test("a silent session says so in the header and in a line above its messages, i
     await expect(connection(page)).toHaveAttribute("title", NOT_LISTED, {
       timeout: REGISTRY_POLL_TIMEOUT,
     });
-    await expect(view.getByTestId("agent-not-answering")).toHaveText(LEFT_LIST);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(LEFT_LIST);
     expect(subscribed()).toBe(1);
 
     // The listener goes down. The header says the list is unreachable, and the list's last word
@@ -1185,7 +1185,7 @@ test("a silent session says so in the header and in a line above its messages, i
       timeout: REGISTRY_POLL_TIMEOUT,
     });
     await expect(connection(page)).toHaveAttribute("title", NOT_LISTED);
-    await expect(view.getByTestId("agent-not-answering")).toHaveText(LEFT_LIST);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(LEFT_LIST);
     expect(subscribed()).toBe(1);
     await setListsState("ok");
   } finally {

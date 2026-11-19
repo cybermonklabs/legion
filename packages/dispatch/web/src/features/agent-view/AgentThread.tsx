@@ -492,7 +492,7 @@ export function AgentThread({
               assistant-ui applies it in a passive effect (`useExternalStoreRuntime`), and for that
               commit the line showed beside the empty slot. */}
           {notice === undefined || threadEmpty ? null : (
-            <p className={`mt-3 text-sm ${textMutedOnCanvas}`} data-testid="agent-not-answering">
+            <p className={`mt-3 text-sm ${textMutedOnCanvas}`} data-testid="agent-silence-line">
               {notice}
             </p>
           )}

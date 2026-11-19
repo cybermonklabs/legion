@@ -45,6 +45,7 @@ import {
 import {
   AgentConversationPage,
   LEFT_LIST_TEXT,
+  LEFT_LIST_WORDS,
   MISSED_HEARTBEATS_TEXT,
   NOT_ANSWERING_EMPTY_TEXT,
   NOT_ANSWERING_NOTICE,
@@ -1857,7 +1858,7 @@ test("a session not answering the live view keeps the empty transcript's explana
     "This session is not answering the live view"
   );
   expect(screen.getByTestId("agent-thread-empty")).toHaveTextContent(NOT_ANSWERING_EMPTY_TEXT);
-  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-silence-line")).not.toBeInTheDocument();
   expect(screen.queryByTestId("agent-settings-notice")).not.toBeInTheDocument();
   expect(connectionStatus()).toEqual(["Not answering"]);
   expect(screen.getByTitle("Connection to the session's conversation: Not answering")).toBeTruthy();
@@ -1877,16 +1878,16 @@ test("a session not answering the live view shows Dispatch's messages under a li
   const thread = await screen.findByTestId("agent-thread");
   await within(thread).findByText("Where is the dashboard?");
   expect(within(thread).getAllByTestId("agent-dispatch-reply")).toHaveLength(2);
-  const line = screen.getByTestId("agent-not-answering");
+  const line = screen.getByTestId("agent-silence-line");
   expect(line.textContent).toBe(NOT_ANSWERING_NOTICE);
-  expect(within(thread).queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+  expect(within(thread).queryByTestId("agent-silence-line")).not.toBeInTheDocument();
   expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
   expect(connectionStatus()).toEqual(["Not answering"]);
   expect(screen.getByTitle("Connection to the session's conversation: Not answering")).toBeTruthy();
 
   view.respond(true);
   expect(connectionStatus()).toEqual(["Live"]);
-  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-silence-line")).not.toBeInTheDocument();
   expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
 });
 
@@ -1925,18 +1926,18 @@ test("a session the relay says is silent keeps the line above Dispatch's message
     responding: false,
   });
   await within(await screen.findByTestId("agent-thread")).findByText("Where is the dashboard?");
-  expect(screen.getByTestId("agent-not-answering").textContent).toBe(NOT_ANSWERING_NOTICE);
+  expect(screen.getByTestId("agent-silence-line").textContent).toBe(NOT_ANSWERING_NOTICE);
 
   const first = sockets.latest();
   act(() => first.restart());
   expect(connectionStatus()).toEqual(["Reconnecting"]);
-  expect(screen.getByTestId("agent-not-answering").textContent).toBe(NOT_ANSWERING_NOTICE);
+  expect(screen.getByTestId("agent-silence-line").textContent).toBe(NOT_ANSWERING_NOTICE);
   expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
 
   await waitFor(() => expect(sockets.latest()).not.toBe(first));
   act(() => sockets.latest().open());
   expect(connectionStatus()).toEqual(["Not answering"]);
-  expect(screen.getByTestId("agent-not-answering").textContent).toBe(NOT_ANSWERING_NOTICE);
+  expect(screen.getByTestId("agent-silence-line").textContent).toBe(NOT_ANSWERING_NOTICE);
 });
 
 // A session that answers shows neither line, with turns or without, and reads live.
@@ -1951,7 +1952,7 @@ test("a session answering the live view shows no not-answering line and reads li
   await within(screen.getByTestId("agent-thread")).findByText("Where is the dashboard?");
   expect(connectionStatus()).toEqual(["Live"]);
   expect(screen.getByTitle("Connection to the session's conversation: Live")).toBeTruthy();
-  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-silence-line")).not.toBeInTheDocument();
   expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
 });
 
@@ -1971,12 +1972,12 @@ test("a listed session the registry next holds as unresponsive is named so in th
   await within(screen.getByTestId("agent-thread")).findByText("Planning the change.");
   expect(connectionStatus()).toEqual(["Live"]);
   expect(screen.queryByTestId("agent-unresponsive")).not.toBeInTheDocument();
-  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-silence-line")).not.toBeInTheDocument();
 
   await nextRegistryRead(view, [{ ...agent, state: "unresponsive" }]);
   await screen.findByTestId("agent-unresponsive");
   expect(connectionStatus()).toEqual([]);
-  expect(screen.getByTestId("agent-not-answering").textContent).toBe(MISSED_HEARTBEATS_TEXT);
+  expect(screen.getByTestId("agent-silence-line").textContent).toBe(MISSED_HEARTBEATS_TEXT);
   expect(screen.queryByText(NOT_ANSWERING_NOTICE)).not.toBeInTheDocument();
   expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
   expect(screen.getByText("Planning the change.")).toBeTruthy();
@@ -1984,7 +1985,7 @@ test("a listed session the registry next holds as unresponsive is named so in th
   await nextRegistryRead(view, [agent]);
   await waitFor(() => expect(connectionStatus()).toEqual(["Live"]));
   expect(screen.queryByTestId("agent-unresponsive")).not.toBeInTheDocument();
-  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-silence-line")).not.toBeInTheDocument();
 });
 
 // R2. No frame ends the registry's word: a session the list holds as unresponsive has not ended
@@ -2011,19 +2012,19 @@ test("a session the registry holds as unresponsive shows the turns it still stre
   expect(within(thread).getByText("Planning the change.")).toBeTruthy();
   expect(connectionStatus()).toEqual([]);
   expect(screen.getByTestId("agent-unresponsive")).toBeTruthy();
-  expect(screen.getByTestId("agent-not-answering").textContent).toBe(MISSED_HEARTBEATS_TEXT);
+  expect(screen.getByTestId("agent-silence-line").textContent).toBe(MISSED_HEARTBEATS_TEXT);
   expect(screen.queryByText(NOT_ANSWERING_NOTICE)).not.toBeInTheDocument();
 
   const first = sockets.latest();
   act(() => first.restart());
   expect(connectionStatus()).toEqual(["Reconnecting"]);
   expect(screen.getByTestId("agent-unresponsive")).toBeTruthy();
-  expect(screen.getByTestId("agent-not-answering").textContent).toBe(MISSED_HEARTBEATS_TEXT);
+  expect(screen.getByTestId("agent-silence-line").textContent).toBe(MISSED_HEARTBEATS_TEXT);
 
   await waitFor(() => expect(sockets.latest()).not.toBe(first));
   act(() => sockets.latest().open());
   expect(connectionStatus()).toEqual([]);
-  expect(screen.getByTestId("agent-not-answering").textContent).toBe(MISSED_HEARTBEATS_TEXT);
+  expect(screen.getByTestId("agent-silence-line").textContent).toBe(MISSED_HEARTBEATS_TEXT);
 });
 
 // R2. A session the view has seen listed and the registry's next read no longer holds has left
@@ -2043,21 +2044,21 @@ test("a listed session the registry next leaves out reads not in the session lis
 
   await nextRegistryRead(view, []);
   await waitFor(() => expect(connectionStatus()).toEqual(["Not in the session list"]));
-  expect(screen.getByTitle("The live session list no longer holds this session")).toBeTruthy();
+  expect(screen.getByTitle(LEFT_LIST_WORDS)).toBeTruthy();
   expect(screen.getByTestId("agent-thread-empty").textContent).toBe(LEFT_LIST_TEXT);
   expect(screen.queryByText(NOT_ANSWERING_EMPTY_TEXT)).not.toBeInTheDocument();
-  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-silence-line")).not.toBeInTheDocument();
 
   view.frame(assistantFrame(1, Date.parse("2026-09-27T21:16:16Z"), "Still here."));
   await within(screen.getByTestId("agent-thread")).findByText("Still here.");
   expect(connectionStatus()).toEqual(["Not in the session list"]);
-  expect(screen.getByTestId("agent-not-answering").textContent).toBe(LEFT_LIST_TEXT);
+  expect(screen.getByTestId("agent-silence-line").textContent).toBe(LEFT_LIST_TEXT);
   expect(screen.queryByText(NOT_ANSWERING_NOTICE)).not.toBeInTheDocument();
   expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
 
   await nextRegistryRead(view, [agent]);
   await waitFor(() => expect(connectionStatus()).toEqual(["Live"]));
-  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-silence-line")).not.toBeInTheDocument();
 });
 
 // R2. Only a session the view has seen listed can leave the list: one the registry never held
@@ -2073,7 +2074,7 @@ test("a session the registry never listed whose relay answers reads live", async
   await screen.findByTestId("agent-not-listed");
   expect(connectionStatus()).toEqual(["Live"]);
   expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOTHING_YET_TEXT);
-  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-silence-line")).not.toBeInTheDocument();
 });
 
 // R2 (INFRA-4325, the tester's red test of the review round at ead082ee). A failed read of the

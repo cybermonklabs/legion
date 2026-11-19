@@ -43,39 +43,64 @@ import { type AgentStreamStatus, useAgentStream } from "./useAgentStream";
  *  `livePresence`). Not whether the agent is running, which the header's `AgentName` mark shows. */
 type Presence = AgentStreamStatus | "not-listed";
 
-/** Each presence's dot, its words, and how it reads to a screen reader. One with no `title` of
- *  its own names the connection, and is titled and read as one; `not-listed` names a fact of the
- *  list instead. */
-const STATUS: Record<Presence, { dot: string; label: string; title?: string }> = {
-  connecting: { dot: connectionDotConnecting, label: "Connecting to the session" },
-  live: { dot: liveDotBg, label: "Live" },
-  "not-answering": { dot: connectionDotFailed, label: "Not answering" },
+/** What the registry's last list shows of a session this view saw it hold, once it no longer
+ *  holds it: the one wording of that fact, which the header's title says as it stands (`STATUS`)
+ *  and the transcript as a sentence (`LEFT_LIST_TEXT`). */
+export const LEFT_LIST_WORDS = "The live session list no longer holds this session";
+
+/** How the header draws a presence: its dot, its words, its title, and what it names. A
+ *  `connection` presence is the view's connection to the session's conversation, titled so and
+ *  read to a screen reader after "Connection: "; a `list` presence is a fact of the registry's
+ *  list, which is no connection, so it is titled with what the list shows and read as its words
+ *  alone. */
+interface PresenceView {
+  readonly dot: string;
+  readonly kind: "connection" | "list";
+  readonly label: string;
+  readonly title: string;
+}
+
+/** A presence that names the view's connection to the session's conversation. */
+function connectionPresence(dot: string, label: string): PresenceView {
+  return {
+    dot,
+    kind: "connection",
+    label,
+    title: `Connection to the session's conversation: ${label}`,
+  };
+}
+
+/** Each presence as the header draws it. */
+const STATUS: Record<Presence, PresenceView> = {
+  connecting: connectionPresence(connectionDotConnecting, "Connecting to the session"),
+  live: connectionPresence(liveDotBg, "Live"),
+  "not-answering": connectionPresence(connectionDotFailed, "Not answering"),
   "not-listed": {
     dot: connectionDotFailed,
+    kind: "list",
     label: "Not in the session list",
-    title: "The live session list no longer holds this session",
+    title: LEFT_LIST_WORDS,
   },
-  reconnecting: { dot: connectionDotConnecting, label: "Reconnecting" },
-  unavailable: { dot: connectionDotFailed, label: "This session's conversation is unavailable" },
+  reconnecting: connectionPresence(connectionDotConnecting, "Reconnecting"),
+  unavailable: connectionPresence(
+    connectionDotFailed,
+    "This session's conversation is unavailable"
+  ),
 };
 
 /** What the registry says of the session: the word of the last list a read of it returned, which
- *  `useAgents` keeps in `agents` through a failed read. A failed read - the list refilling, the
- *  listener down - brings no list, so it neither ends a fact nor starts one: only a later read
- *  that returns a list does. A frame of the session's does not either, so a session that still
- *  streams keeps the list's word until the list says otherwise. */
-interface RegistryFacts {
-  /** The list holds the session as missing its heartbeats. */
-  readonly unresponsive: boolean;
-  /** The list no longer holds the session, which this view has seen it hold: it left the
-   *  registry. */
-  readonly gone: boolean;
-}
+ *  `useAgents` keeps in `agents` through a failed read. `unresponsive`: the list holds the
+ *  session as missing its heartbeats. `gone`: the list no longer holds the session, which this
+ *  view has seen it hold - it left the registry. A failed read - the list refilling, the listener
+ *  down - brings no list, so it neither ends a fact nor starts one: only a later read that returns
+ *  a list does. A frame of the session's does not either, so a session that still streams keeps
+ *  the list's word until the list says otherwise. */
+type ListFact = "gone" | "unresponsive";
 
 /** Why the view takes the session to be silent: the relay hears nobody on its control subject
  *  (`responding === false`), or the registry's last list holds the session as unresponsive, or no
- *  longer holds it. */
-type Silence = "relay" | "unresponsive" | "gone";
+ *  longer holds it (`ListFact`). */
+type Silence = "relay" | ListFact;
 
 /**
  * Whether the session is silent, and by whose word. The relay and the registry each see a session
@@ -84,20 +109,21 @@ type Silence = "relay" | "unresponsive" | "gone";
  * silent once the first of them notices. The relay's word comes first: it is the one that says
  * nothing streams. This reads the relay's last answer, not the socket, which a reconnect leaves in
  * place until the relay answers again, so a lost socket takes back no text the view showed; and
- * the registry's last list (`RegistryFacts`), so a failed read of it takes back none either.
+ * the registry's last list (`ListFact`), so a failed read of it takes back none either.
  */
-function silenceOf(responding: boolean | undefined, facts: RegistryFacts): Silence | undefined {
-  if (responding === false) return "relay";
-  if (facts.unresponsive) return "unresponsive";
-  if (facts.gone) return "gone";
-  return undefined;
+function silenceOf(
+  responding: boolean | undefined,
+  listFact: ListFact | undefined
+): Silence | undefined {
+  return responding === false ? "relay" : listFact;
 }
 
 /**
- * What the header's presence says, or undefined for none. A refusal and a lost socket are the
- * view's own connection, which no silence changes, so they stand as they are, and the transcript
- * goes on saying the silence beneath them. Over a connection that stands, the relay's silence
- * reads Not answering, and a session the registry's last list no longer holds reads as that fact
+ * What the header's presence says, or undefined for none. The stream's status stands as it is
+ * wherever the view's connection does not: a refusal and a lost socket are the view's own
+ * connection, and Not answering is the relay's word, which `streamStatus` already reads; no fact
+ * of the list changes them, and the transcript goes on saying the silence beneath them. Over a
+ * connection that stands, a session the registry's last list no longer holds reads as that fact
  * rather than Live. A session the list holds as unresponsive gets no presence: the header's
  * `AgentUnresponsiveNote` names its state and when it was last seen, and is the header's word on
  * it, where Live would deny what the list says and Not answering would deny the turns it may
@@ -107,12 +133,11 @@ function silenceOf(responding: boolean | undefined, facts: RegistryFacts): Silen
  */
 function livePresence(
   status: AgentStreamStatus,
-  silence: Silence | undefined
+  listFact: ListFact | undefined
 ): Presence | undefined {
   if (status !== "live" && status !== "connecting") return status;
-  if (silence === "unresponsive") return undefined;
-  if (silence === "gone") return "not-listed";
-  return silence === "relay" ? "not-answering" : status;
+  if (listFact === "unresponsive") return undefined;
+  return listFact === "gone" ? "not-listed" : status;
 }
 
 /** The relay's causes for a session nobody answers on its control subject, which both of the
@@ -121,7 +146,7 @@ function livePresence(
 const NOT_ANSWERING_WHY =
   "This session is not answering the live view: its plugin does not stream its conversation, or the session is no longer running.";
 
-/** What an empty transcript says while the relay hears nobody from the session (`emptyText`). */
+/** What an empty transcript says while the relay hears nobody from the session (`SILENCE_TEXT`). */
 export const NOT_ANSWERING_EMPTY_TEXT = `${NOT_ANSWERING_WHY} Nothing appears here until it answers.`;
 
 /** The line above a transcript that holds turns while the relay hears nobody from the session:
@@ -142,7 +167,7 @@ export const MISSED_HEARTBEATS_TEXT =
  *  silent: what the list shows, and neither that the session ended nor anything of its stream,
  *  which the list does not say. No frame ends the list's word, so the line stays true above turns
  *  that arrive under it. */
-export const LEFT_LIST_TEXT = "The live session list no longer holds this session.";
+export const LEFT_LIST_TEXT = `${LEFT_LIST_WORDS}.`;
 
 /** What an empty transcript says of a session that answers the view, or has not said yet. */
 export const NOTHING_YET_TEXT = "Nothing yet. This session's next turn appears here as it happens.";
@@ -171,22 +196,6 @@ function deliveryModes(capabilities: readonly string[]): MessageDeliveryMode[] {
     (left, right) => MODE_ORDER[left] - MODE_ORDER[right]
   );
   return advertised.length === 0 ? ["aside"] : advertised;
-}
-
-/**
- * What an empty transcript means for this session: it answers the view, or it is silent
- * (`silenceOf`). Saying "the next turn appears here" to a viewer of a silent session was a
- * promise the page could not keep. A session the relay hears nobody from is not always one with a
- * newer plugin to install - it may have been started without its plugin, or have ended - so the
- * relay's text names what may be true of the session rather than telling its reader to upgrade,
- * and the list's texts say only what the list shows. The relay keeps asking and the registry is
- * read again on its poll, so a session that answers again turns this around without a reload, and
- * the wording stays neutral until either says it is silent. A resumed session answers with the
- * conversation since its process started, so this text is also what a reader sees until such a
- * session takes its next turn. A transcript holding turns says why above them (`SILENCE_TEXT`).
- */
-function emptyText(silence: Silence | undefined): string {
-  return silence === undefined ? NOTHING_YET_TEXT : SILENCE_TEXT[silence].empty;
 }
 
 export function AgentConversationPage({
@@ -221,17 +230,33 @@ export function AgentConversationPage({
   const writePin = useAgentPinWrite();
 
   const { conversation, replays, responding, status } = useAgentStream(sessionId);
-  // Whether the session is silent, and by whose word: the relay's, or the registry's last list
-  // holding the session as unresponsive or no longer at all. That list's word stands through a
-  // failed read - refilling or unreachable - since only a read that returns a list changes it, as
-  // it does for the header's `AgentUnresponsiveNote`, which reads the same kept rows: the header
-  // never reads Live beside that note. The header's presence reads it over a connection that
-  // stands; the empty slot and the line read it whatever the socket does.
-  const silence = silenceOf(responding, {
-    gone: agent === undefined && seenListed === sessionId,
-    unresponsive: agent?.state === "unresponsive",
-  });
-  const shown = livePresence(status, silence);
+  // What the registry's last list says of the session, read from the kept rows: it holds the
+  // session as unresponsive, or no longer at all. That list's word stands through a failed read -
+  // refilling or unreachable - since only a read that returns a list changes it, as it does for
+  // the header's `AgentUnresponsiveNote`, which reads the same kept rows: the header never reads
+  // Live beside that note. The header's presence reads it over a connection that stands; the
+  // empty slot and the line read it, after the relay's word, whatever the socket does.
+  const listFact: ListFact | undefined =
+    agent?.state === "unresponsive"
+      ? "unresponsive"
+      : agent === undefined && seenListed === sessionId
+        ? "gone"
+        : undefined;
+  // Whether the session is silent, and by whose word: the relay's, or the registry's last list.
+  const silence = silenceOf(responding, listFact);
+  const shown = livePresence(status, listFact);
+  // What the transcript says in its empty slot and in the line above its turns: the silence's
+  // texts, or, for a session that answers the view or has not said yet, `NOTHING_YET_TEXT` in
+  // the slot and no line. Saying "the next turn appears here" to a viewer of a silent session
+  // was a promise the page could not keep. A session the relay hears nobody from is not always
+  // one with a newer plugin to install - it may have been started without its plugin, or have
+  // ended - so the relay's texts name what may be true of the session rather than telling their
+  // reader to upgrade, and the list's texts say only what the list shows. The relay keeps asking
+  // and the registry is read again on its poll, so a session that answers again turns this
+  // around without a reload, and the wording stays neutral until either says it is silent. A
+  // resumed session answers with the conversation since its process started, so the empty
+  // slot's text is also what a reader sees until such a session takes its next turn.
+  const texts = silence === undefined ? undefined : SILENCE_TEXT[silence];
   // The model and thinking level the session runs now (INFRA-195), next to its title: what its
   // newest `settings` frame reports, or, for a session that reports none, the most recent
   // assistant turn's own model (LEGION-548), nothing guessed for a client that never sends one.
@@ -346,16 +371,15 @@ export function AgentConversationPage({
           <AgentName kind="static" sessionId={sessionId} storedTitle={undefined} />
         </h1>
         {presence === undefined ? null : (
-          <span
-            className="flex items-center gap-1.5"
-            title={presence.title ?? `Connection to the session's conversation: ${presence.label}`}
-          >
+          <span className="flex items-center gap-1.5" title={presence.title}>
             <span
               aria-hidden="true"
               className={`inline-block h-2 w-2 rounded-full ${presence.dot}`}
             />
             <span className={`text-xs ${textMutedOnCanvas}`}>
-              {presence.title === undefined ? <span className="sr-only">Connection: </span> : null}
+              {presence.kind === "connection" ? (
+                <span className="sr-only">Connection: </span>
+              ) : null}
               {presence.label}
             </span>
           </span>
@@ -423,9 +447,9 @@ export function AgentConversationPage({
         <AgentRuntimeThread
           commands={commands}
           conversation={conversation}
-          empty={emptyText(silence)}
+          empty={texts?.empty ?? NOTHING_YET_TEXT}
           front={front}
-          notice={silence === undefined ? undefined : SILENCE_TEXT[silence].notice}
+          notice={texts?.notice}
           onSend={onSend}
           ownSendCount={ownSendCount}
           sends={sends}
@@ -471,8 +495,10 @@ export function AgentConversationPage({
               </option>
             ))}
           </select>
-          {/* Only a current list says the session is gone; one that failed or is refilling says
-              nothing here, and the header already names why it has no list to read. */}
+          {/* A claim that the session is gone starts only from a current list. The header's
+              presence and the transcript's line keep that fact through a failed read, from the
+              kept rows of the last read that returned a list; this line waits for a current one,
+              and while the list refills or is unreachable the header names why it has none. */}
           {agent === undefined && current ? (
             <span
               className={`shrink-0 whitespace-nowrap ${textMutedOnCanvas}`}
