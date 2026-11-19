@@ -225,13 +225,13 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 	}
 }
 
-// A retro runs again in its run when the merge finds the head conflicting with its base and sends
-// the work back: the work comes through testing, review and acceptance to the retro once more, and
-// that retro's completion rates the plan again. Each rating lands on the record of its own run of
-// the retro, the id of that run's end, from the count of the retro's starts, and the first rating
-// stays as it was written. The run is the issue's third, so the generation in each id is a number
-// neither retro's count of starts is, and each retro is completed by a new engine over the same
-// store, as after a restart.
+// A retro runs again in its run when the merger sends the work back from merging (a backward
+// move, as after a second conflict removal of the same head): the work comes through testing,
+// review and acceptance to the retro once more, and that retro's completion rates the plan again.
+// Each rating lands on the record of its own run of the retro, the id of that run's end, from the
+// count of the retro's starts, and the first rating stays as it was written. The run is the issue's
+// third, so the generation in each id is a number neither retro's count of starts is, and each
+// retro is completed by a new engine over the same store, as after a restart.
 func TestASecondRetroOfARunRatesItsOwnRecord(t *testing.T) {
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Accepting)
@@ -248,7 +248,8 @@ func TestASecondRetroOfARunRatesItsOwnRecord(t *testing.T) {
 	}
 	retro(2, "The plan put the tests after the review.")
 	engine := stepEngine(nil)
-	for _, trigger := range []TriggerKind{TriggerConflict, TriggerImplementationReady, TriggerTesterPassed, TriggerReviewApproved} {
+	move(t, pool, engine, root.Key, TriggerBackward, phase.Implementing, record.PhaseRow{})
+	for _, trigger := range []TriggerKind{TriggerImplementationReady, TriggerTesterPassed, TriggerReviewApproved} {
 		move(t, pool, engine, root.Key, trigger, "", record.PhaseRow{})
 	}
 	assertPhase(t, pool, phase.Accepting)

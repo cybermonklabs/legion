@@ -149,6 +149,25 @@ func seedAwaitingPullRequest(t *testing.T, pool *pgxpool.Pool) {
 	})
 }
 
+// awaitingFirstRead is when the first read conflictReadOfAwaiting records found head-5
+// conflicting: two minutes before fixedNow. A second read's row names it
+// (record.ConflictConfirm.FirstReadAt), and so does the fact the row applies at its end.
+var awaitingFirstRead = fixedNow.Add(-2 * time.Minute)
+
+// conflictReadOfAwaiting gives the member in merging its open pull request #5 onto main with a
+// first read that found head-5 conflicting at awaitingFirstRead, the state a second read of that
+// head applies on (dispatch://INFRA-4374 R2). Its arguments are a row's arrange's.
+func conflictReadOfAwaiting(t *testing.T, pool *pgxpool.Pool, _ *Admission, _ intake.Handler) {
+	t.Helper()
+	inTx(t, pool, func(tx pgx.Tx) {
+		if err := record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{Issue: awaiting, Repo: "acme/widgets", Number: 5,
+			Branch: "legion/LEGION-5", Base: "main", HeadSHA: "head-5", Generation: 1, State: record.PullRequestOpen, Failing: []string{},
+			ConflictRead: &record.ConflictRead{Head: "head-5", Base: "main", At: awaitingFirstRead}}); err != nil {
+			t.Fatalf("seed the pull request of %s with its first conflicting read: %v", awaiting, err)
+		}
+	})
+}
+
 // A member's linger ends its step (the settle of the fact that lingers its tree), and the hand-over
 // at the close of that linger re-admits it, which raises its generation: the settle of that fact
 // finds the run ended already, by the mark the store keeps, and writes no second end, and the

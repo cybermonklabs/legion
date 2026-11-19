@@ -142,8 +142,8 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 
 // idleRigOutboxWakesJustReleased drives the fourth of those pods, the one the daemon's own
 // messages are for: the release's stop of its process is what deletes its registration, so its
-// session reads gone, and the daemon then queues its role a phase-ended message and a hook
-// prompt, each a row of the role-message lane, as a conflict and a hook's firing queue them. No
+// session reads gone, and the daemon then queues its role two hook prompts, each a row of the
+// role-message lane, as two hooks of the deployment firing on one move back queue them. No
 // sender tries either again. The first row's first attempt wakes the pod (wakeForDelivery) and
 // waits on its backoff, and each row's first attempt after that resume has launched publishes,
 // with keep, while the woken session has not claimed the role yet: its process is held before it
@@ -169,26 +169,26 @@ func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 
 	// 2. The woken process will hold before Envoy, and the two rows are written through the
 	//    record store the daemon writes them through, each for the issue's implementer, the role
-	//    its pod runs: the end of the implementer's retro phase and the prompt of a hook that fired
-	//    on a move back from reviewing.
+	//    its pod runs: the prompts of two hooks that fired on one move back from reviewing.
 	rig.agents.setPlan(issue.key, string(issue.role), idleRigPlan{TakeTurn: true, ExitsAsReleasedInProduction: true, HoldsBeforeEnvoy: true})
-	ended := record.PhaseEnded{Role: issue.role, From: phase.Retro, To: phase.Implementing,
-		Reason: "the head conflicts with main: merge main forward"}
+	counts := map[string]int{"reviewing-implementing": 1}
 	hook := record.HookPrompt{Hook: "back-to-implementing", Role: issue.role, From: phase.Reviewing, To: phase.Implementing,
-		Count: 1, Counts: map[string]int{"reviewing-implementing": 1}, Prompt: "Read the reviewer's thread before you write anything."}
+		Count: 1, Counts: counts, Prompt: "Read the reviewer's thread before you write anything."}
+	loop := record.HookPrompt{Hook: "review-loop", Role: issue.role, From: phase.Reviewing, To: phase.Implementing,
+		Count: 1, Counts: counts, Prompt: "Say what the reviewer asked for last time and what you did about it."}
 	now := time.Now().UTC()
-	enqueueOutbox(t, rig.pool, rig.records, mustOutboxRow(t, issue.key, ended, now))
 	enqueueOutbox(t, rig.pool, rig.records, mustOutboxRow(t, issue.key, hook, now))
+	enqueueOutbox(t, rig.pool, rig.records, mustOutboxRow(t, issue.key, loop, now))
 
 	// 3. The woken process registers with the daemon and holds, and both rows end while it does:
 	//    each publish meets a role no live session holds.
 	idleRigEventually(t, idleRigPodWait, "the woken process of "+issue.key+" registered with the daemon", func() bool {
 		return rig.agents.role(issue.key, string(issue.role)).Registered > registered
 	})
-	idleRigEventually(t, idleRigRecordWait, "the phase-ended and hook-prompt rows of "+issue.key+" finished", func() bool {
+	idleRigEventually(t, idleRigRecordWait, "the two hook-prompt rows of "+issue.key+" finished", func() bool {
 		var left int
-		if err := rig.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = any($2)`,
-			issue.key, []string{string(record.OutboxKindPhaseEnded), string(record.OutboxKindHookPrompt)}).Scan(&left); err != nil {
+		if err := rig.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = $2`,
+			issue.key, string(record.OutboxKindHookPrompt)).Scan(&left); err != nil {
 			t.Fatalf("read the outbox rows of %s: %v", issue.key, err)
 		}
 		return left == 0
@@ -209,8 +209,8 @@ func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 	//    message's text as its payload too, which the listener carries as a JSON document
 	//    (notify's Publish), and the session records that payload, so it is the text's JSON
 	//    encoding that is counted.
-	idleRigDeliveredOnce(t, rig, issue, idleRigPublishedText(t, ended.Message(issue.key)))
 	idleRigDeliveredOnce(t, rig, issue, idleRigPublishedText(t, hook.Message(issue.key)))
+	idleRigDeliveredOnce(t, rig, issue, idleRigPublishedText(t, loop.Message(issue.key)))
 }
 
 // idleRigPublishedText is text as a role session records a message the daemon published: the

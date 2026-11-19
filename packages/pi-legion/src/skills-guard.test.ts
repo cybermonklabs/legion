@@ -283,9 +283,9 @@ test("no staged skill or daemon prompt says what a pull request body `CI` line h
 // Background work is on for every role: Legion writes no Oh My Pi settings
 // overlay, so a long bash call becomes a background job and a `task` subagent runs as one, and a
 // role reads a result with the `wait` tool, which a message to its session also returns from. No
-// task agent declares `blocking`, and nothing interrupts a turn: a CI red that ends a
-// phase starts the implementer at once and tells the role whose phase ended by one message, which
-// stops nothing of its. So no skill, no shipped agent and no file of the plugin a Claude Code role
+// task agent declares `blocking`, and nothing interrupts a turn: a message the daemon sends a role,
+// a merge-forward message among them, stops nothing of its. So no skill, no shipped agent and no
+// file of the plugin a Claude Code role
 // loads may say that a takeover cancels a turn or tell a role to keep its work in
 // the foreground, and each that dispatches a task subagent names the tool that reads its result.
 //
@@ -428,24 +428,18 @@ test("a check that cannot fail is not a result, and a documented procedure count
   );
 });
 
-// R3: the unchanged-diff fingerprint covers the branch's own diff alone, so a forward merge can
-// bring a new instance of a class the branch already answered (dispatch://INFRA-83). The `E2E`
-// re-check wording carries the class search in both files that hold it.
-test("the forward-merge re-check searches the new head for each earlier finding's class", () => {
+// R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
+// merge can bring a new instance of a class the branch already answered (dispatch://INFRA-83). The
+// rule that searches the merge head for each earlier finding's class stays in both files that hold
+// it.
+test("a forward merge searches the new head for each earlier finding's class", () => {
   expect(
     collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
   ).toContain(
-    "The fingerprint answers one question only: whether the branch's own diff changed. It cannot show an instance the merge brought in from the base"
+    "A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round"
   );
-  expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(
-    "the tester re-runs the bare gates only and the class search of every earlier round's findings at the new head;"
-  );
-  countedOncePerFile(
-    "forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean",
-    [
-      "skills/legion-worker/references/pr-body.md",
-      "packages/daemon/internal/prompts/roles/tester.md",
-    ]
+  expect(collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"))).toContain(
+    "Search the merge head for the class of every finding of every earlier review round"
   );
 });
 
@@ -511,7 +505,7 @@ test("a later review round reads from the commit its task names, and the pair re
     "The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other"
   );
   expect(mergeGate).toContain(
-    "Read the whole change again, and give the pair the whole change, in three cases: the task names no commit; the commit is not an ancestor of the head (`git merge-base --is-ancestor <sha> <head>` does not exit 0); or a forward merge of the base changed the fingerprint, as the end of the item above decides."
+    "Read the whole change again, and give the pair the whole change, in two cases: the task names no commit, or the commit is not an ancestor of the head (`git merge-base --is-ancestor <sha> <head>` does not exit 0)."
   );
   const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
   expect(prBody).not.toContain(

@@ -29,7 +29,7 @@ const (
 	askLeftLine      = "outbox update ask finished without a publish: the claim no longer records its round"
 )
 
-// askRunner is an outbox runner as phase_ended_test.go's unit case builds one — a project, a
+// askRunner is an outbox runner as hook_prompt_test.go's unit case builds one — a project, a
 // publisher and a log — with the claim supervisor the executor reads the round from. Each role in
 // rounds gets a claim on LEGION-208 in the round given, "" for no round; a role not in rounds has
 // no claim this daemon supervises.
@@ -200,7 +200,7 @@ func (w *wakeCountingTrees) taken() int {
 // no live session, so its topic answers notify.ErrNoHolder and the row finishes there: no pod
 // wake is taken, no process is resumed, and the claim stays released. The round ends at its
 // bound whether or not that role answers. The negative control is c-one-channel's: an executor
-// that called wakeForDelivery first, as phaseEnded does, takes a wake and resumes the claim here.
+// that called wakeForDelivery first, as hookPrompt does, takes a wake and resumes the claim here.
 func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()

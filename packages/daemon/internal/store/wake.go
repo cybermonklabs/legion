@@ -127,9 +127,9 @@ func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string,
 }
 
 // TakePodWake takes one wake outside any fact transaction, for the wakes the outbox takes: a
-// notice, a phase-ended message, a hook prompt or a merge-queue removal that found the role it is
-// for released (internal/daemon's wakeForDelivery). Inside a fact's transaction the workflow takes
-// its wakes through PodRecords.TakePodWake, which is where taking a wake is written out.
+// notice, a hook prompt, a merge-queue removal or a merge forward's message that found the role it
+// is for released (internal/daemon's wakeForDelivery). Inside a fact's transaction the workflow
+// takes its wakes through PodRecords.TakePodWake, which is where taking a wake is written out.
 //
 // token is the claim the wake brings back, and the role it names is the role woken: a token that
 // names no role is an error. mark is the pause that held the outbox row the wake is taken for

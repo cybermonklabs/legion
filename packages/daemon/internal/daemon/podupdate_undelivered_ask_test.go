@@ -326,10 +326,11 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 // The ask is published and marked under the claim's own lock, and that lock is taken without
 // waiting (supervise's Machine.PublishUpdateAsk). An issue's role-message lane runs one row at a
 // time (record.LaneKey), and a Sandbox relaunch holds a claim's lock for minutes while the runtime
-// waits out its pod, so a row that waited for that lock would hold every phase-ended message, hook
-// prompt and ask of that issue behind one relaunch. Here the claim's machine is held inside a
-// Resume: the row returns a wait at once, having published nothing and marked nothing, and the
-// row's next attempt once the relaunch is over publishes the ask, which is delivered once in all.
+// waits out its pod, so a row that waited for that lock would hold every hook prompt, merge
+// forward's message and ask of that issue behind one relaunch. Here the claim's machine is held
+// inside a Resume: the row returns a wait at once, having published nothing and marked nothing,
+// and the row's next attempt once the relaunch is over publishes the ask, which is delivered once
+// in all.
 //
 // The negative control is a row that takes the lock with waiting: the run below does not return
 // while the relaunch is held inside its Resume. On 74ab1cd3, which published with no lock held,
