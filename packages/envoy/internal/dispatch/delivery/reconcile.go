@@ -56,7 +56,7 @@ type Reconcile struct {
 }
 
 // NewReconcile builds a Reconcile, which attributes pull requests and keys their head rows with
-// attributor, the process's one Attributor of the rename pairs it read at boot.
+// attributor, the Attributor of the rename pairs the process read at boot.
 func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker, attributor *Attributor) *Reconcile {
 	return &Reconcile{pool: pool, github: github, events: broker, attributor: attributor}
 }

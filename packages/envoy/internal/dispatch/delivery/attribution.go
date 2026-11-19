@@ -398,10 +398,9 @@ func attributionBatchQuery(renames refs.Renames) string {
 // Attributor attributes pull requests to issues by the rename pairs this process read at boot
 // (refs.Renames), and keys every pull_request_heads row it writes by the canonical name of the
 // row's repository (canonical). NewAttributor builds its two statements once from those pairs.
-// The process builds one Attributor (cmd/dispatch's main) and gives it to each part that
-// attributes: the delivery reconcile (NewReconcile), the intake (StartIntakes) and the API
-// (api.DepsInput). No package variable holds the pairs, so a test builds an Attributor from pairs
-// of its own.
+// cmd/dispatch's main builds one Attributor and gives it to the delivery reconcile (NewReconcile)
+// and the intakes (StartIntakes); the API builds its own of the same pairs (api.NewDeps). No
+// package variable holds the pairs, so a test builds an Attributor from pairs of its own.
 type Attributor struct {
 	renames         refs.Renames
 	candidatesQuery string

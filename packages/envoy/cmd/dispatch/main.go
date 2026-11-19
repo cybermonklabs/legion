@@ -381,11 +381,11 @@ func main() {
 
 	// The rename pairs are read once, here, before any part that reads them is built: the API,
 	// the delivery reconcile and intakes and the CI reconcile are each given this one value
-	// (refs.Renames), and the API, the delivery reconcile and the intakes share the one
-	// Attributor built of it (delivery.NewAttributor). A read that fails does not stop the boot:
-	// it is logged, it is one failure in the rename pass's summary below (renameRepositories), and
-	// the process serves with no pairs, so an old name reads as a repository of its own until a
-	// later boot reads the pairs.
+	// (refs.Renames). The delivery reconcile and the intakes share the one Attributor built of it
+	// here (delivery.NewAttributor), and the API builds its own of the same pairs (api.NewDeps).
+	// A read that fails does not stop the boot: it is logged, it is one failure in the rename
+	// pass's summary below (renameRepositories), and the process serves with no pairs, so an old
+	// name reads as a repository of its own until a later boot reads the pairs.
 	renamesCtx, cancelRenames := context.WithTimeout(ctx, repoRenamesReadTimeout)
 	renamePairs, renamesErr := store.ReadRepoRenames(renamesCtx, database.Pool)
 	cancelRenames()
@@ -545,7 +545,6 @@ func main() {
 		Embedder:       embedder,
 		Events:         broker,
 		Renames:        renames,
-		Attributor:     attributor,
 		App:            appCfg,
 		AgentStream:    agentStream,
 		AgentPublisher: agentPublisher,

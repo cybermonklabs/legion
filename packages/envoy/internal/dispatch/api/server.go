@@ -122,7 +122,8 @@ type Deps struct {
 	// a link stored under either name of a pair. The zero value holds no pairs.
 	Renames refs.Renames
 	// Attributor attributes the pull requests a results read or a recorded result reads through
-	// for (delivery.Attributor.ReadThroughCommitPulls), by Renames. It is DepsInput.Attributor.
+	// for (delivery.Attributor.ReadThroughCommitPulls). NewDeps builds it of Renames, so it
+	// attributes by the same pairs renamedRepo and resolveIssueRef read.
 	Attributor *delivery.Attributor
 	// OIDC verifies a JWT-shaped bearer as a Kubernetes pod's projected
 	// service-account token; nil is the unconfigured deployment, where a
@@ -232,11 +233,8 @@ type DepsInput struct {
 	Answerer Answerer
 	Events   *events.Broker
 	// Renames is the rename pairs the boot read; see Deps.Renames. The zero value holds none.
+	// NewDeps builds Deps.Attributor of them.
 	Renames refs.Renames
-	// Attributor is the process's one Attributor of Renames, which cmd/dispatch's main builds and
-	// also gives to the delivery reconcile and intakes; see Deps.Attributor. nil builds one of
-	// Renames, as a test's server does.
-	Attributor *delivery.Attributor
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -297,9 +295,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
-	if input.Attributor == nil {
-		input.Attributor = delivery.NewAttributor(input.Renames)
-	}
 	if input.Docs == nil {
 		input.Docs = docs.New(docs.Deps{
 			Store:     input.Store,
@@ -349,7 +344,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		GitHub:                 github,
 		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
 		Renames:                input.Renames,
-		Attributor:             input.Attributor,
+		Attributor:             delivery.NewAttributor(input.Renames),
 		OIDC:                   input.OIDC,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,

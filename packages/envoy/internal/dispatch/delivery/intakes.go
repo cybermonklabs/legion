@@ -82,8 +82,8 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // time settingsWake is signalled -- in the server, the shared listener's wake on SettingsChannel --
 // so no message and no timer reads the row. A nil settingsWake reads it once.
 //
-// attributor is the process's one Attributor of the rename pairs it read at boot. Intake
-// attributes each pull request and keys its head row with it.
+// attributor is the Attributor of the rename pairs the process read at boot. Intake attributes
+// each pull request and keys its head row with it.
 //
 // The returned stop, called once ctx is cancelled, waits for both intakes' Runs and the cache's,
 // then closes both clients. Each Run returns only once it has stopped delivering and released its
