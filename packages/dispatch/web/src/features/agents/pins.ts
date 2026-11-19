@@ -14,6 +14,7 @@ import { useCallback, useMemo } from "react";
 
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { UserAgentState, UserAgentStates } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { useAgentText } from "../refs/AgentName";
@@ -100,7 +101,7 @@ export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Prom
     onError: reread,
     onMutate: ({ pinned, sessionId }) => {
       const at = new Date().toISOString();
-      queryClient.setQueryData<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
+      replaceQueryData<UserAgentStates>(queryClient, userAgentStateQuery().queryKey, (current) => ({
         ...current,
         [sessionId]: withPin(current?.[sessionId], pinned, at),
       }));

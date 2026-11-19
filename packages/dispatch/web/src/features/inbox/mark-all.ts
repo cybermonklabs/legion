@@ -23,6 +23,7 @@ import {
   myRepliesKey,
   userAgentStateQuery,
 } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   InboxReadRequest,
   InboxReadResponse,
@@ -160,13 +161,13 @@ export function useMarkAllRead({
       );
       const through = input.read_through;
       if (threads !== undefined && through !== undefined && through !== null) {
-        queryClient.setQueryData(threadsKey, applyMarkAll(threads, marked, through));
+        replaceQueryData(queryClient, threadsKey, applyMarkAll(threads, marked, through));
       }
       // The count every badge shares drops by what this press marks, clamped at zero: an
       // unfiltered press marks every unread row and reads zero, and a filtered one takes away
       // only its own rows rather than counting the rest of the Inbox away.
       if (count !== undefined) {
-        queryClient.setQueryData(countKey, Math.max(0, count - marked.size));
+        replaceQueryData(queryClient, countKey, Math.max(0, count - marked.size));
       }
       return { count, threads };
     },

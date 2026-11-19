@@ -17,6 +17,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { LegionSetting } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
@@ -140,10 +141,11 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.setQueryData(key, optimistic);
       return { previous };
     },
-    // A landing with no answer keeps the optimistic row; `onSettled` reads the project again.
+    // A landing with no answer keeps the optimistic row; `onSettled` reads the project again. An
+    // answer goes over any read of the project still out, asked before it (`replaceQueryData`).
     onSuccess: (setting) => {
       if (setting !== null) {
-        queryClient.setQueryData(daemonKey(setting.project), setting);
+        replaceQueryData(queryClient, daemonKey(setting.project), setting);
       }
       setFailedAction(undefined);
       setProject("");

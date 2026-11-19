@@ -4,6 +4,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { RepoProject } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -115,10 +116,11 @@ export function SettingsPage(): ReactNode {
       );
       return { previous };
     },
-    // A landing with no answer keeps the optimistic row; `onSettled` reads them all again.
+    // A landing with no answer keeps the optimistic row; `onSettled` reads them all again. An
+    // answer goes over any read of the mappings still out, asked before it (`replaceQueryData`).
     onSuccess: (mapping, variables) => {
       if (mapping !== null) {
-        queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
+        replaceQueryData<RepoProject[]>(queryClient, ["repo-projects"], (current = []) =>
           withMapping(current, mapping)
         );
       }

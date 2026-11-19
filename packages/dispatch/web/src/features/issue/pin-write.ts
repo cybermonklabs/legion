@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { ApiError, api, type WriteBounds } from "../../api/client";
+import { replaceQueryData } from "../../api/query-client";
 import type { UserIssueState, UserState } from "../../api/types";
 import { type Shape, shape } from "../writes/write-storage";
 import { defineWriteKind, isLive, ofKind, type Writes, writesOf } from "../writes/write-store";
@@ -81,9 +82,10 @@ function pinsOut(writes: Writes, issueKey: string): boolean {
  * A pin or an unpin, one write of the store each, ordered on its issue (`pin:<issue>`), shown in
  * the shell's indicator and kept across a reload. The surface applies it to `["user-state"]` at
  * once; once the issue's last pin lands, the state Dispatch answered replaces what the page
- * showed and the next pin reads the state afresh, and a refused, discarded or dropped one has the
- * page read its state again. The states pins' answers left go with the person signed in
- * (`reset`), so another person's next pin never writes over them.
+ * showed, over any read of it still out, which was asked before the answer (`replaceQueryData`),
+ * and the next pin reads the state afresh, and a refused, discarded or dropped one has the page
+ * read its state again. The states pins' answers left go with the person signed in (`reset`), so
+ * another person's next pin never writes over them.
  */
 const pinWrite = defineWriteKind<PinWrite>({
   kept: keptPin,
@@ -95,7 +97,7 @@ const pinWrite = defineWriteKind<PinWrite>({
       void client.invalidateQueries({ queryKey: ["user-state"] });
       return;
     }
-    client.setQueryData<UserState>(["user-state"], (current) => ({
+    replaceQueryData<UserState>(client, ["user-state"], (current) => ({
       ...current,
       [issueKey]: answer as UserIssueState,
     }));
@@ -118,7 +120,7 @@ export function writePin(
   operation: PinStateOperation | ((dismissed: string[]) => PinStateOperation)
 ): void {
   let applied: PinStateOperation | undefined;
-  client.setQueryData<UserState>(["user-state"], (current) => {
+  replaceQueryData<UserState>(client, ["user-state"], (current) => {
     const state = stateForIssue(current, issueKey);
     applied = typeof operation === "function" ? operation(state.dismissed ?? []) : operation;
     return {

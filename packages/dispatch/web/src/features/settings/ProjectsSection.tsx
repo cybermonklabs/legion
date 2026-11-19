@@ -10,6 +10,7 @@ import {
   usersQuery,
   whoAmIQuery,
 } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { CreateProjectInput, ProjectDefaultAssignee } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -389,14 +390,17 @@ function useDefaultAssigneeWrite(project: string): {
       }
       return api.putProjectDefaultAssignee(project, { assignee: pick.assignee }, bounds);
     },
-    // A defaults read already out was asked before this save and could land over its answer.
+    // A defaults read already out was asked before this save and could land over its answer. One
+    // asked after the press can be out still when the answer lands - the save may wait its turn
+    // behind another in the scope - so the answer is put over the reads out then as well
+    // (`replaceQueryData`).
     onMutate: () => queryClient.cancelQueries({ queryKey: defaultsKey }),
     onSuccess: (saved) => {
       // Saved with no answer to give: the store reads every query again.
       if (saved === null || "superseded" in saved) {
         return;
       }
-      queryClient.setQueryData<ProjectDefaultAssignee[]>(defaultsKey, (rows) => {
+      replaceQueryData<ProjectDefaultAssignee[]>(queryClient, defaultsKey, (rows) => {
         if (rows === undefined) {
           return rows;
         }

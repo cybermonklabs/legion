@@ -3,6 +3,7 @@ import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
 import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   AnswerAskInput,
   Ask,
@@ -204,7 +205,9 @@ export function useAskAnswerForm({
       if (changed || updatedAsk === null) {
         if (updatedAsk?.answer != null) {
           const changedAnswer = updatedAsk.answer;
-          queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
+          // Over any read of the thread still out, which was asked before the change and would
+          // put back the answer it replaced (`replaceQueryData`).
+          replaceQueryData<AskRead>(queryClient, ["ask-thread", ask.id], (current) =>
             current === undefined
               ? undefined
               : {
