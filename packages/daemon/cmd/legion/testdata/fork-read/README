@@ -1,0 +1,48 @@
+GitHub's answers to `GET /repos/<owner>/<name>`, as `curl --include` prints them (the status line,
+the headers and the body, with CRLF line ends). The credential helper's fork read
+(gitcredential_fork.go) reads them, and the tests of gitcredential_test.go serve them from a
+stand-in curl.
+
+This repository is public, so no file here carries an outside person's login or the company's
+name, and this file names the captured repositories by what they are rather than by their names.
+Each capture was copied in with only these values replaced: each replaced account's login, its
+numeric id, its node_id and its avatar id, and the host of the repository's homepage.
+
+  - the person whose fork is captured           -> outside-author (id 1000001)
+  - the owner of the fork of a fork             -> outside-author (id 1000001)
+  - the organization that fork was made from    -> outside-org (id 1000002)
+  - the organization of the repository no fork  -> Outside-Org (id 1000002), its case kept
+  - the organization the forks are made from    -> acme (id 1000003)
+  - the homepage's host                         -> acme.example
+
+The captures were made on 2026-11-19 between 22:13:13Z and 22:13:36Z, in an INFRA issue pod, with
+this command and the implement App's installation token on curl's standard input:
+
+  agent-secrets LEGION_IMPLEMENT_APP --github-owner cybermonklabs --github-repo legion \
+    --github-read-only --github-token --ttl 15m --reason '<why>' -- sh -c \
+    'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | /usr/bin/curl -q --no-netrc -sS \
+     --include --proto =https -H @- -H "Accept: application/vnd.github+json" \
+     -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/<repository>'
+
+  fork-of-a-served-repository.http  a person's fork, whose parent and source are both the
+                                    repository it was made from (acme/oss-verify).
+  fork-of-a-fork.http               a fork of an organization's fork, whose parent
+                                    (outside-org/oss-verify) and source (acme/oss-verify) differ.
+  not-a-fork.http                   an organization's repository that is no fork, asked for in
+                                    lower case: its full_name differs from the name asked in case
+                                    alone (Outside-Org/libdiginet).
+  not-found.http                    a repository of the same person that does not exist: 404.
+  moved.http                        repos/sjawhar/legion, which GitHub moved to another owner: 301,
+                                    which curl does not follow.
+  bad-credentials.http              the person's fork, read with a bearer token GitHub does not
+                                    know, an invented word in place of the secret: 401.
+
+Two answers GitHub cannot be made to give on demand are derived from not-found.http. Each has the
+status line `HTTP/2 403`, the headers and the body named here, and content-length set to the new
+body's length:
+
+  core-limit-spent.http             x-ratelimit-remaining: 0 and x-ratelimit-reset: 1794636000, and
+                                    the body of curlRateLimited
+                                    (internal/leakguard/visibility_transport_test.go).
+  secondary-limit.http              retry-after: 60, and a body whose message is the secondary
+                                    limit's words in internal/leakguard/visibility_graphql_test.go.
