@@ -27,14 +27,14 @@ package ghconfig
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // HostsFile is the name of gh's per-host credential file under GH_CONFIG_DIR.
@@ -132,10 +132,11 @@ func Render(token, app string, expiresAt time.Time) Rendered {
 	return Rendered{Hosts: Hosts(token), Config: Config, App: app, ExpiresAt: expiresAt}
 }
 
-// Write brings dir, one directory of a gh bundle, to rendered: the directory made 0700 if
-// it is gone, config.yml written once when absent or different, and hosts.yml replaced
-// (replaceFile), so the gh reading it never sees a half-written file, only when its content
-// differs. It reports whether hosts.yml changed. WriteBundle calls it for each directory of a
+// Write brings dir, one directory of a gh bundle, to rendered: the directory made 0700 if it is
+// gone, and config.yml and hosts.yml each replaced (replaceFile) when absent or different, so the
+// gh reading them never sees a half-written file and nothing the pane left at either name is
+// followed or waited on. It reports whether hosts.yml changed, the file a lease's turn rewrites;
+// a config.yml replaced is no change it reports. WriteBundle calls it for each directory of a
 // bundle.
 func Write(dir string, rendered Rendered) (changed bool, err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -144,27 +145,28 @@ func Write(dir string, rendered Rendered) (changed bool, err error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return false, err
 	}
-	config := filepath.Join(dir, ConfigFile)
-	if current, err := os.ReadFile(config); err != nil || string(current) != rendered.Config {
-		if err := os.WriteFile(config, []byte(rendered.Config), 0o600); err != nil {
-			return false, err
-		}
+	if _, err := replaceFile(filepath.Join(dir, ConfigFile), rendered.Config); err != nil {
+		return false, err
 	}
 	return replaceFile(filepath.Join(dir, HostsFile), rendered.Hosts)
 }
 
 // replaceFile brings path to content and reports whether it changed: a temporary file beside it
 // (0600, as os.CreateTemp makes it) renamed over it, so a reader of the file — the gh of a pane
-// reading a hosts.yml, the `legion gh` or `legion git-credential` of one reading the bundle's
-// pairs file — never sees a half-written one. A file whose content already is content is left
-// alone, which is what keeps a bundle's writer from touching the files a lease's turn did not
-// change (WriteBundle, Write).
+// reading a hosts.yml or a config.yml, the `legion gh` or `legion git-credential` of one reading
+// the bundle's pairs file — never sees a half-written one. A regular file whose content already
+// is content is left alone, which is what keeps a bundle's writer from touching the files a
+// lease's turn did not change (WriteBundle, Write).
+//
+// The pane's own user can write every path handed here, so the file at path is read as
+// rolefile.Read reads one, bounded to the length of content, since a longer file cannot equal
+// it: a link there is never followed, and a fifo or a device never waited on. Anything at path
+// but a regular file equal to content — no file, a link, a fifo, a socket, a device, a file
+// longer than content or one that cannot be read — is replaced by the rename, which replaces
+// what is at path itself and follows nothing there. A directory at path is no file a rename can
+// replace, and the rename's error is answered.
 func replaceFile(path, content string) (changed bool, err error) {
-	current, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return false, err
-	}
-	if err == nil && bytes.Equal(current, []byte(content)) {
+	if current, err := rolefile.Read(path, len(content)); err == nil && string(current) == content {
 		return false, nil
 	}
 	dir := filepath.Dir(path)

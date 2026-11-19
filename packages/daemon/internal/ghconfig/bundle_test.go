@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -517,6 +518,151 @@ func TestWriteBundleRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
 	kept(t)
 	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("the planted link is %v (%v), want it left as it was", info, err)
+	}
+}
+
+// WriteBundle is the one function both the tmux daemon and `legion controller start` write a
+// role's gh bundle through, and the pane's own user can write each of the three files it writes:
+// an owner's config.yml and hosts.yml, and the root's pairs file. Whatever the pane left at one
+// of them, a fifo, a link to /dev/zero or a link to a file outside the root, is replaced by
+// rename, never waited on or followed: WriteBundle answers within a second, the path is then a
+// regular file holding what the bundle renders for it, and the file a link named is as it was.
+// A bundle written again over its own untouched files leaves every one of them as it was. Read
+// with os.ReadFile, as all three were, a fifo waits for a writer for as long as none comes and
+// /dev/zero has no end; written with os.WriteFile, as config.yml was, a fifo waits for a reader
+// and a link has the file it names truncated.
+func TestWriteBundleReplacesAFifoOrALinkAtEachFileItWrites(t *testing.T) {
+	bundle := twoOwnerBundle("ghs_acme_write")
+	bundle.Pairs = []ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "CyberMonkLabs/legion")}
+	files := []struct {
+		name string // the file as the subtests name it
+		rel  string // its path under the root
+		want string // what the bundle renders for it
+	}{
+		{"acme's config.yml", filepath.Join("acme", ConfigFile), Config},
+		{"acme's hosts.yml", filepath.Join("acme", HostsFile), Hosts("ghs_acme_write")},
+		{"the root's pairs file", PairsFile, RenderPairs(bundle.Pairs)},
+	}
+	shapes := []struct {
+		name string
+		// plant puts the shape at path and answers the check of what it must leave as it was,
+		// or nil.
+		plant func(t *testing.T, path string) (kept func(t *testing.T))
+	}{
+		{"a fifo", func(t *testing.T, path string) func(t *testing.T) {
+			if err := syscall.Mkfifo(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return nil
+		}},
+		{"a link to dev zero", func(t *testing.T, path string) func(t *testing.T) {
+			if err := os.Symlink("/dev/zero", path); err != nil {
+				t.Fatal(err)
+			}
+			return nil
+		}},
+		{"a link to a file outside the root", func(t *testing.T, path string) func(t *testing.T) {
+			precious := filepath.Join(t.TempDir(), "precious")
+			if err := os.WriteFile(precious, []byte("precious\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(precious, path); err != nil {
+				t.Fatal(err)
+			}
+			return func(t *testing.T) {
+				t.Helper()
+				if body, err := os.ReadFile(precious); err != nil || string(body) != "precious\n" {
+					t.Fatalf("%s, the file the link named, is %q (%v), want it as it was", precious, body, err)
+				}
+			}
+		}},
+	}
+
+	t.Run("an ordinary bundle is written as before", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "gh")
+		if _, err := WriteBundle(root, bundle); err != nil {
+			t.Fatalf("first WriteBundle: %v", err)
+		}
+		written := make([]fs.FileInfo, len(files))
+		for i, file := range files {
+			info, err := os.Lstat(filepath.Join(root, file.rel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			written[i] = info
+		}
+		if changed, err := WriteBundle(root, bundle); err != nil || len(changed) != 0 {
+			t.Fatalf("WriteBundle of the bundle the root holds = %q, %v, want no directory changed", changed, err)
+		}
+		for i, file := range files {
+			path := filepath.Join(root, file.rel)
+			if info, err := os.Lstat(path); err != nil || !os.SameFile(info, written[i]) {
+				t.Fatalf("%s was replaced (%v), want the file the first write made left alone", path, err)
+			}
+			if body, err := os.ReadFile(path); err != nil || string(body) != file.want {
+				t.Fatalf("%s holds %q (%v), want %q", path, body, err, file.want)
+			}
+		}
+	})
+
+	for _, file := range files {
+		for _, shape := range shapes {
+			t.Run(file.name+" is "+shape.name, func(t *testing.T) {
+				root := filepath.Join(t.TempDir(), "gh")
+				if _, err := WriteBundle(root, bundle); err != nil {
+					t.Fatalf("first WriteBundle: %v", err)
+				}
+				path := filepath.Join(root, file.rel)
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				kept := shape.plant(t, path)
+				answered := make(chan error, 1)
+				go func() {
+					_, err := WriteBundle(root, bundle)
+					answered <- err
+				}()
+				var err error
+				select {
+				case err = <-answered:
+				case <-time.After(time.Second):
+					// The write waits in an open of the fifo. An open of it for reading and
+					// writing waits on nothing and is the writer or the reader that open waits
+					// for, so the goroutine ends before the test does. It is asked again until
+					// the write answers, since a write that read the fifo can wait again to
+					// write it.
+					released := time.After(10 * time.Second)
+					for {
+						if fifo, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {
+							_ = fifo.Close()
+						}
+						select {
+						case err := <-answered:
+							t.Fatalf("WriteBundle over %s waited more than a second, and answered %v only once the open it waited in was released", path, err)
+						case <-released:
+							t.Fatalf("WriteBundle over %s has not answered in 11 seconds", path)
+						case <-time.After(10 * time.Millisecond):
+						}
+					}
+				}
+				if err != nil {
+					t.Fatalf("WriteBundle over %s = %v, want it replaced", path, err)
+				}
+				if kept != nil {
+					kept(t)
+				}
+				info, err := os.Lstat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !info.Mode().IsRegular() {
+					t.Fatalf("%s is %v after WriteBundle, want a regular file", path, info.Mode())
+				}
+				if body, err := os.ReadFile(path); err != nil || string(body) != file.want {
+					t.Fatalf("%s holds %q (%v) after WriteBundle, want %q", path, body, err, file.want)
+				}
+			})
+		}
 	}
 }
 
