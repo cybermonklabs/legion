@@ -518,7 +518,10 @@ type Config struct {
 	// BROKER_NATS_SERVICES entry names, because the NATS auth service would then answer a
 	// connection of the person's pod with a service's NATS grant. It refuses a mapped account that
 	// a BROKER_API_ACCOUNTS entry names, because that caller's routes relay decisions in the name
-	// the caller gives. Unset, the setting maps no account.
+	// the caller gives. It refuses a mapped account that either side of a
+	// BROKER_SESSION_ACCOUNT_PAIRS pair names, because a pair lets another account take the session
+	// names the account holds, and the person's pod the other account's. Unset, the setting maps no
+	// account.
 	PodOperators map[string]string
 	// BROKER_SESSION_ACCOUNT_PAIRS: pairs of Kubernetes service accounts that take each other's
 	// session names, whitespace-separated <account>=<account> entries, each account
@@ -537,8 +540,9 @@ type Config struct {
 	// BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_EXCHANGE_WORKFLOWS or
 	// BROKER_VM_EXCHANGE_ACCOUNTS names, is never taken. An account may be in several pairs. An
 	// entry not of that form, a namespace's default account, an account paired with itself and a
-	// pair given twice, in either order, are refused. Each pair is held as its two accounts, in
-	// the order the setting gives them.
+	// pair given twice, in either order, are refused, and so is an account BROKER_POD_OPERATORS
+	// maps to a person, on either side, since a person's account shares no session name with
+	// another account. Each pair is held as its two accounts, in the order the setting gives them.
 	//
 	// It is for an operator moving a deployment's pods from one account to another, and it must
 	// be live on the broker before the deployment moves its pods to the new account: until then
@@ -1367,7 +1371,10 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // refuses a mapped account that a BROKER_API_ACCOUNTS entry names (cfg.APIAccounts), because the
 // named-caller routes it reaches act on the caller's word: the approval relays take the deciding
 // person's name from the caller, so the person's pod could decide any request in any person's
-// name.
+// name. It refuses a mapped account that either side of a BROKER_SESSION_ACCOUNT_PAIRS pair names
+// (cfg.SessionAccountPairs), because a pair lets one account take the session names the other
+// holds, with what each name carries: the person's pod would take a service's session names, or
+// the other account's pods the person's.
 func mappedAccountRefusal(cfg *Config) error {
 	const setting = "BROKER_POD_OPERATORS"
 	if len(cfg.PodOperators) == 0 {
@@ -1389,6 +1396,14 @@ func mappedAccountRefusal(cfg *Config) error {
 	for _, text := range strings.Fields(cfg.NATS.Services) {
 		if _, account, ok := strings.Cut(text, "="); ok {
 			natsEntries[account] = text
+		}
+	}
+	pairs := make(map[string]string)
+	for _, pair := range cfg.SessionAccountPairs {
+		for _, side := range pair {
+			if _, named := pairs[side]; !named {
+				pairs[side] = pair[0] + "=" + pair[1]
+			}
 		}
 	}
 	for _, account := range slices.Sorted(maps.Keys(cfg.PodOperators)) {
@@ -1414,6 +1429,9 @@ func mappedAccountRefusal(cfg *Config) error {
 		}
 		if entry, names := natsEntries[account]; names {
 			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the NATS auth service would answer a connection of the person's pod with that service's NATS grant, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
+		}
+		if pair, paired := pairs[account]; paired {
+			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_SESSION_ACCOUNT_PAIRS pair %q names it; a pair lets either account take the session names the other holds, with their grants and pending requests, and a person's account shares no session with another account, so take the account out of the pair or out of %s", setting, account, person, pair, setting)
 		}
 	}
 	return nil

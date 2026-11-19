@@ -16,6 +16,9 @@ const (
 	adaSecondAccount = "system:serviceaccount:people:ada-batch"
 	graceAccount     = "system:serviceaccount:people:grace"
 	adaLoginService  = "person-ada"
+	// adaWorker is a service's worker account that a BROKER_SESSION_ACCOUNT_PAIRS row pairs with
+	// ada's account.
+	adaWorker = "system:serviceaccount:people:ada-worker"
 )
 
 // adaPodOperator is the one BROKER_POD_OPERATORS entry the refusal tests set: ada's own account,
@@ -203,6 +206,36 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 						len(cfg.ServicesByAccount) == 0 && len(cfg.VMServicesByAccount) == 0 && len(cfg.ExchangeAccounts) == 0 && !cfg.NATS.Enabled()
 			},
 			names: []string{"BROKER_API_ACCOUNTS names it as the caller " + strconv.Quote("dispatch")},
+		},
+		{
+			name: "a BROKER_SESSION_ACCOUNT_PAIRS pair names it as the first account",
+			env: func() map[string]string {
+				e := withK8sIssuer()
+				e["BROKER_SERVICE_LOGINS"] = adaLoginService + "=" + adaAccount
+				e["BROKER_SESSION_ACCOUNT_PAIRS"] = adaAccount + "=" + adaWorker
+				return e
+			},
+			reachable: func(cfg Config) (string, bool) {
+				return "BROKER_SESSION_ACCOUNT_PAIRS pairs " + adaAccount + " with " + adaWorker + ", and no other setting gives the account a role",
+					len(cfg.SessionAccountPairs) == 1 && strings.Join(cfg.SessionAccountPairs[0][:], "=") == adaAccount+"="+adaWorker && cfg.ServiceLogins[adaAccount] == adaLoginService &&
+						len(cfg.ServicesByAccount) == 0 && len(cfg.APIAccounts) == 0 && !cfg.NATS.Enabled()
+			},
+			names: []string{"the BROKER_SESSION_ACCOUNT_PAIRS pair " + strconv.Quote(adaAccount+"="+adaWorker) + " names it"},
+		},
+		{
+			name: "a BROKER_SESSION_ACCOUNT_PAIRS pair names it as the second account",
+			env: func() map[string]string {
+				e := withK8sIssuer()
+				e["BROKER_SERVICE_LOGINS"] = adaLoginService + "=" + adaAccount
+				e["BROKER_SESSION_ACCOUNT_PAIRS"] = adaWorker + "=" + adaAccount
+				return e
+			},
+			reachable: func(cfg Config) (string, bool) {
+				return "BROKER_SESSION_ACCOUNT_PAIRS pairs " + adaAccount + " with " + adaWorker + ", and no other setting gives the account a role",
+					len(cfg.SessionAccountPairs) == 1 && strings.Join(cfg.SessionAccountPairs[0][:], "=") == adaWorker+"="+adaAccount && cfg.ServiceLogins[adaAccount] == adaLoginService &&
+						len(cfg.ServicesByAccount) == 0 && len(cfg.APIAccounts) == 0 && !cfg.NATS.Enabled()
+			},
+			names: []string{"the BROKER_SESSION_ACCOUNT_PAIRS pair " + strconv.Quote(adaWorker+"="+adaAccount) + " names it"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
