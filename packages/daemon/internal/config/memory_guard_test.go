@@ -10,15 +10,13 @@ import (
 
 // memoryGuardKinds are the two pod kinds runtime.kubernetes.memory_guard is keyed by, each with
 // the settled block of its own (block), so a test sets one kind's block of an expected
-// configuration and holds the other kind's at what it was, and its highest act share (actMax):
-// the wire's for issue pods, 90 for the controller's pod (INFRA-3531 R4 of spec version 40).
+// configuration and holds the other kind's at what it was.
 var memoryGuardKinds = []struct {
-	name   string
-	block  func(*MemoryGuardConfig) *MemoryGuardPodConfig
-	actMax int
+	name  string
+	block func(*MemoryGuardConfig) *MemoryGuardPodConfig
 }{
-	{"issue_pods", func(c *MemoryGuardConfig) *MemoryGuardPodConfig { return &c.IssuePods }, shimwire.MemoryGuardActMax},
-	{"controller_pod", func(c *MemoryGuardConfig) *MemoryGuardPodConfig { return &c.ControllerPod }, shimwire.MemoryGuardControllerActMax},
+	{"issue_pods", func(c *MemoryGuardConfig) *MemoryGuardPodConfig { return &c.IssuePods }},
+	{"controller_pod", func(c *MemoryGuardConfig) *MemoryGuardPodConfig { return &c.ControllerPod }},
 }
 
 // memoryGuardBlock is a runtime.kubernetes.memory_guard block holding one pod kind's members as
@@ -177,11 +175,11 @@ func TestMemoryGuardEnabledFalseTurnsTheGuardOff(t *testing.T) {
 	}
 }
 
-// Each number of either pod kind is held to the wire's range, and the controller pod's act share
-// to its own highest, 90, so that its urgent share stays at most 95% of the limit (INFRA-3531 R4
-// of spec version 40), while issue pods keep the wire's 95: both ends load, one past either end
-// is refused naming the whole key and the range, so `legion config check` exits 1 saying where to
-// look.
+// Each number of either pod kind is held to the wire's range, and the act share of both kinds to
+// 90, below the wire's 95, so that the urgent share stays at most 95% of the limit (INFRA-3531 R4
+// of spec version 43): both ends load, one past either end is refused naming the whole key and the
+// range, so `legion config check` exits 1 saying where to look. The act share's 90 is written out
+// rather than read from shimwire.MemoryGuardConfigActMax, so a bound moved there fails here.
 func TestMemoryGuardRefusesEachNumberOutsideItsRangeNamingTheKey(t *testing.T) {
 	for _, kind := range memoryGuardKinds {
 		for _, number := range []struct {
@@ -189,7 +187,7 @@ func TestMemoryGuardRefusesEachNumberOutsideItsRangeNamingTheKey(t *testing.T) {
 			min, max int
 			get      func(MemoryGuardPodConfig) int
 		}{
-			{"act_percent", shimwire.MemoryGuardActMin, kind.actMax, func(c MemoryGuardPodConfig) int { return c.ActPercent }},
+			{"act_percent", shimwire.MemoryGuardActMin, 90, func(c MemoryGuardPodConfig) int { return c.ActPercent }},
 			{"floor_percent", shimwire.MemoryGuardFloorMin, shimwire.MemoryGuardFloorMax, func(c MemoryGuardPodConfig) int { return c.FloorPercent }},
 			{"wait_seconds", shimwire.MemoryGuardWaitMin, shimwire.MemoryGuardWaitMax, func(c MemoryGuardPodConfig) int { return c.WaitSeconds }},
 			{"interval_milliseconds", shimwire.MemoryGuardIntervalMin, shimwire.MemoryGuardIntervalMax, func(c MemoryGuardPodConfig) int { return c.IntervalMilliseconds }},

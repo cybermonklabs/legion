@@ -274,18 +274,17 @@ func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 	}
 }
 
-// The example's memory_guard block, uncommented with either pod kind's act_percent one above that
-// kind's range, 96 for issue pods past the wire's 95 and 91 for the controller's pod past its own
-// 90 (INFRA-3531 R4 of spec version 40), is refused by the same check: exit 1 and one line naming
-// that kind's whole key and both ends of its range, which is what an operator who edits the
-// shipped block past that range reads. It checks the loader's refusal, not the range the block's
-// own comment states. The block stays commented in the file itself: its values are the defaults,
-// which apply without it.
+// The example's memory_guard block, uncommented with either pod kind's act_percent at 91, one
+// above the 90 both kinds take (INFRA-3531 R4 of spec version 43), is refused by the same check:
+// exit 1 and one line naming that kind's whole key and both ends of its range, which is what an
+// operator who edits the shipped block past that range reads. It checks the loader's refusal, not
+// the range the block's own comment states. The block stays commented in the file itself: its
+// values are the defaults, which apply without it.
 func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T) {
 	for _, kind := range []struct {
 		name string
 		max  int
-	}{{"issue_pods", 95}, {"controller_pod", 90}} {
+	}{{"issue_pods", 90}, {"controller_pod", 90}} {
 		t.Run(kind.name, func(t *testing.T) {
 			config := stageShippedExample(t, func(example string) string {
 				example = uncommentExample(t, example, memoryGuardExampleLines...)

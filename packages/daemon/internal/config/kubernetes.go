@@ -1062,10 +1062,10 @@ func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
 	if err != nil {
 		return MemoryGuardConfig{}, err
 	}
-	if settled.IssuePods, err = readMemoryGuardPod(fields["issue_pods"], key+".issue_pods", settled.IssuePods, shimwire.MemoryGuardActMax, issuePodsGuardMembers); err != nil {
+	if settled.IssuePods, err = readMemoryGuardPod(fields["issue_pods"], key+".issue_pods", settled.IssuePods, issuePodsGuardMembers); err != nil {
 		return MemoryGuardConfig{}, err
 	}
-	if settled.ControllerPod, err = readMemoryGuardPod(fields["controller_pod"], key+".controller_pod", settled.ControllerPod, shimwire.MemoryGuardControllerActMax, controllerPodGuardMembers); err != nil {
+	if settled.ControllerPod, err = readMemoryGuardPod(fields["controller_pod"], key+".controller_pod", settled.ControllerPod, controllerPodGuardMembers); err != nil {
 		return MemoryGuardConfig{}, err
 	}
 	return settled, nil
@@ -1088,13 +1088,12 @@ func readMemoryGuard(value *yaml.Node) (MemoryGuardConfig, error) {
 // the launcher's guard checks the settings against a second time on its side of the connection: a
 // range widened here alone would load cleanly and then be refused by every pod's guard, which
 // keeps the settings it ran by and logs the refusal instead (memoryguard's Guard.Apply). The act
-// share's highest is actMax, the kind's own: the wire's for `issue_pods`, and for `controller_pod`
-// shimwire.MemoryGuardControllerActMax, 90, so that the controller's urgent share stays at most 95%
-// of the limit, below the kill point measured at 4 GiB (INFRA-3531 R4 of spec version 40); a range
-// narrowed here alone loads nothing the launcher refuses. A refusal names the whole key and both
-// ends of its range, as the loader's other range refusals do (agent_secrets'
-// token_expiry_seconds).
-func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConfig, actMax int, described func(*yaml.Node, string) (map[string]*yaml.Node, error)) (MemoryGuardPodConfig, error) {
+// share's highest is shimwire.MemoryGuardConfigActMax, 90, below the wire's 95, for both kinds, so
+// that the urgent share stays at most 95% of the limit, below the kill point measured at 4 GiB
+// (INFRA-3531 R4 of spec version 43); a range narrowed here alone loads nothing the launcher
+// refuses. A refusal names the whole key and both ends of its range, as the loader's other range
+// refusals do (agent_secrets' token_expiry_seconds).
+func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConfig, described func(*yaml.Node, string) (map[string]*yaml.Node, error)) (MemoryGuardPodConfig, error) {
 	if value == nil || value.Tag == "!!null" {
 		return settled, nil
 	}
@@ -1117,7 +1116,7 @@ func readMemoryGuardPod(value *yaml.Node, key string, settled MemoryGuardPodConf
 		min, max int
 		into     *int
 	}{
-		{"act_percent", shimwire.MemoryGuardActMin, actMax, &settled.ActPercent},
+		{"act_percent", shimwire.MemoryGuardActMin, shimwire.MemoryGuardConfigActMax, &settled.ActPercent},
 		{"floor_percent", shimwire.MemoryGuardFloorMin, shimwire.MemoryGuardFloorMax, &settled.FloorPercent},
 		{"wait_seconds", shimwire.MemoryGuardWaitMin, shimwire.MemoryGuardWaitMax, &settled.WaitSeconds},
 		{"interval_milliseconds", shimwire.MemoryGuardIntervalMin, shimwire.MemoryGuardIntervalMax, &settled.IntervalMilliseconds},
