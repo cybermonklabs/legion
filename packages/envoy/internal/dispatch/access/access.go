@@ -223,17 +223,17 @@ func RoleClause(roleExpr, viewerParam string) string {
 }
 
 // PartyClause passes a conversation that belongs to no project, by its parties ("person:<login>",
-// "session:<id>"), to the viewer when its own person or session is a party, or to an open viewer
-// when every session party passes SessionClause. A restricted member and a credential that lists
-// projects so read only their own direct conversations.
+// "session:<id>"), when the viewer's own person or session is a party, or the viewer is open, and
+// every session party passes SessionClause.
 func PartyClause(partiesExpr, viewerParam string) string {
 	return clause("PartyClause", fmt.Sprintf(`(%[2]s
-		or ('person:' || (%[4]s::jsonb->>'person')) = any(%[1]s)
-		or ('session:' || (%[4]s::jsonb->>'session')) = any(%[1]s)
-		or (%[3]s and not exists (
-			select 1 from unnest(%[1]s) party
-			where party like 'session:%%' and not %[5]s
-			offset 0)))`,
+		or ((('person:' || (%[4]s::jsonb->>'person')) = any(%[1]s)
+				or ('session:' || (%[4]s::jsonb->>'session')) = any(%[1]s)
+				or %[3]s)
+			and not exists (
+				select 1 from unnest(%[1]s) party
+				where party like 'session:%%' and not %[5]s
+				offset 0)))`,
 		partiesExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), viewerParam,
 		SessionClause("substr(party, 9)", viewerParam)))
 }

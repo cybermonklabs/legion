@@ -267,9 +267,10 @@ func TestTheProjectClauseHidesAPrivateNode(t *testing.T) {
 		{kind: "comment_block", id: "comment/" + pubComment + "#b1", held: true, sees: seesPublic},
 		{kind: "message_block", id: "message/" + pubMessage + "#b1", held: true, sees: seesPublic},
 		{kind: "component", id: "PUB/storage", sees: seesPublic},
-		// A conversation of no project: its parties, every credential of a person party, and an
-		// open viewer, which sees every session party.
-		{kind: "message", id: conversation, held: true, sees: append(slices.Clone(open), "carol's token that lists PRIV")},
+		// A conversation of no project: an open viewer, which sees every session party, and a
+		// party or a credential of a person party only when it sees each session party too
+		// (access.PartyClause): carol's token that lists PRIV does not see ses_pub, of PUB.
+		{kind: "message", id: conversation, held: true, sees: open},
 		// Nothing wrote these: a node of a project kind the store holds no row of is visible
 		// only to an open viewer while no project is private.
 		{kind: "issue", id: "PRIV-404"},

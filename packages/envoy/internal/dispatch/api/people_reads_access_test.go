@@ -500,16 +500,17 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 // and by a caller that may see every one of its recipients; to anyone else GET
 // /api/v1/broadcasts leaves it out and GET /api/v1/broadcasts/{id} answers it as an id nobody
 // holds. session-priv has acted in PRIV, so an open viewer that does not see PRIV (alice) may not
-// see it (access.SessionClause), and reads neither broadcast that went to it; carol's token that
-// lists no project acts for carol, who sent both, and reads them as their author.
-// The replies under a copy are a conversation of no project, read by its parties
-// or an open viewer (PartyClause): no caller reads what session-priv answered carol unless it reads
-// that conversation, neither in the reply list, nor as the attempt's reply id, nor in the list's
-// count of recipients who answered. session-priv answers under the one credential that proves it
-// in PRIV (asSession): the shared token, which sees no private project, reads no conversation of
-// PRIV's session. Both routes are deployment reads (readClasses), so a viewer that is
-// not open, a restricted member or a credential that lists projects, is refused them whole, the
-// same bytes for a broadcast it wrote, one it could not see and an id nobody holds.
+// see it (access.SessionClause), and reads neither broadcast that went to it;
+// carol's token that lists no project acts for carol, who sent both, and reads them as their
+// author. The replies under a copy are a conversation of no project, read when the caller's person
+// or session is a party, or the caller is open, and it may see every session party (PartyClause):
+// no caller reads what session-priv answered carol unless it reads that conversation, neither in
+// the reply list, nor as the attempt's reply id, nor in the list's count of recipients who
+// answered, so carol's token that lists no project, which does not see PRIV, reads none of it.
+// session-priv answers under the one credential that proves it in PRIV (asSession). Both routes
+// are deployment reads (readClasses), so a viewer that is not open, a restricted member or a
+// credential that lists projects, is refused them whole, the same bytes for a broadcast it wrote,
+// one it could not see and an id nobody holds.
 func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
@@ -544,7 +545,7 @@ func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 		{callerCarol, false, []string{toBoth.ID, toPrivate.ID}, true},
 		{callerCarolPrivToken, true, nil, false},
 		{callerAlicePrivToken, true, nil, false},
-		{callerCarolToken, false, []string{toBoth.ID, toPrivate.ID}, true},
+		{callerCarolToken, false, []string{toBoth.ID, toPrivate.ID}, false},
 	} {
 		t.Run(string(test.caller), func(t *testing.T) {
 			if test.refused {

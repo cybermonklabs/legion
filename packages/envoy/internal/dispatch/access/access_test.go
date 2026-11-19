@@ -308,17 +308,18 @@ func passes(callers ...string) map[string]bool {
 }
 
 // TestTheClausesOverTheSeededCallers: the clauses a read binds answer each seeded viewer as the
-// rule says. A project row passes ProjectClause when the viewer sees it. A person and a direct
-// conversation of no session pass for an open viewer. A session passes for the viewer's own and
-// the server's; for any other viewer, never when it acted in a private project the viewer does not
-// see (a session_projects pair: ses_priv and ses_both to the open viewers that do not see PRIV,
-// ses_priv_other, which acted in PRIV and in OTHER, to every caller here), and otherwise for an
-// open viewer, and for a restricted viewer or one that lists projects when it acted in a project
-// the viewer sees. A role passes for an open viewer unless a session that holds it now does not
-// pass (priv-architect, held by ses_priv), and for any other viewer when a session that holds it
-// now passes. For a restricted viewer or one that lists projects, a person passes when it sees a
-// project the viewer sees or is the viewer, and a conversation when the viewer is one of its
-// parties.
+// rule says. A project row passes ProjectClause when the viewer sees it. A person passes for an
+// open viewer. A session passes for the viewer's own and the server's; for any other viewer, never
+// when it acted in a private project the viewer does not see (a session_projects pair: ses_priv and
+// ses_both to the open viewers that do not see PRIV, ses_priv_other, which acted in PRIV and in
+// OTHER, to every caller here), and otherwise for an open viewer, and for a restricted viewer or
+// one that lists projects when it acted in a project the viewer sees. A role passes for an open
+// viewer unless a session that holds it now does not pass (priv-architect, held by ses_priv), and
+// for any other viewer when a session that holds it now passes. For a restricted viewer or one that
+// lists projects, a person passes when it sees a project the viewer sees or is the viewer. A
+// conversation of no project passes when the viewer's own person or session is a party, or the
+// viewer is open, and every session party passes SessionClause: carol's token that lists no project
+// does not read her own conversation with ses_priv, nor bob his with ses_pub.
 func TestTheClausesOverTheSeededCallers(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
@@ -366,8 +367,9 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 		{"SessionClause ses_priv_other", SessionClause("$2", "$1"), "ses_priv_other", passes()},
 		{"RoleClause priv-architect", RoleClause("$2", "$1"), "priv-architect", passes(byBob, byCarol, byCarolPriv)},
 		{"RoleClause pub-architect", RoleClause("$2", "$1"), "pub-architect", passes(byAlice, byCarol, byCarolUnlisted, byShared)},
-		{"PartyClause bob and ses_pub", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_pub"}, passes(byAlice, byBob, byCarol, byCarolUnlisted, byShared)},
-		{"PartyClause carol and ses_priv", PartyClause("$2", "$1"), []string{"person:" + carol, "session:ses_priv"}, passes(byCarol, byCarolPriv, byCarolUnlisted)},
+		{"PartyClause bob and ses_pub", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_pub"}, passes(byAlice, byCarol, byCarolUnlisted, byShared)},
+		{"PartyClause bob and ses_priv", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_priv"}, passes(byBob, byCarol)},
+		{"PartyClause carol and ses_priv", PartyClause("$2", "$1"), []string{"person:" + carol, "session:ses_priv"}, passes(byCarol, byCarolPriv)},
 	}
 	for name, actor := range callers {
 		viewer, err := Resolve(ctx, database.Pool, actor)
