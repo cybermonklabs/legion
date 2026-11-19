@@ -267,7 +267,8 @@ func retryableDeliveryFailure(failure string) bool {
 // takeoverRetry paces one sender's tries at a listener that is being replaced, from the moment of
 // its first try. A comment mention's first try is its resolution before the comment's transaction
 // (resolveThroughTakeover), so its window spans that resolution and the sender's tries after the
-// commit together.
+// commit together, unless the send waits on a held lane first, which starts a window of its own at
+// its delivery (mentionSend.takeover).
 type takeoverRetry struct {
 	first   time.Time
 	backoff time.Duration
@@ -323,8 +324,8 @@ func (r *takeoverRetry) retry(ctx context.Context, try func() string, renew func
 // in it (deliverResolvedCommentMention) rather than opening a window of its own: a resolution that
 // already waited the window out settles with its outcome on that sender's first try, so a comment's
 // request waits about one window for a take-over, however long it spent resolving. A send that
-// waits on a held lane before its delivery starts a window of its own there, as that wait has no
-// bound (mentionSend.takeover).
+// waits on a held lane starts a window of its own at its delivery, as that wait has no bound
+// (mentionSend.takeover).
 func (s *server) resolveThroughTakeover(
 	ctx context.Context, target, delivery string, wait bool,
 ) (ResolvedMention, takeoverRetry) {

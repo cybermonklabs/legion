@@ -452,9 +452,11 @@ type commentRoute struct {
 // commentResolution is what the Envoy listener said about a comment before its transaction
 // opened: the session each mention names, and the owner's route with the session it names.
 // takeovers is each mention's take-over pacing (resolveThroughTakeover), which its sender carries
-// on in after the commit. decidesRoutes is set when the comment reaches sessions beyond its
-// mentions, so the mentions were resolved through a take-over and the comment's other routes are
-// decided on them; the comment.created event records it (mentions_decide_routes).
+// on in after the commit, unless the send waits on a held lane first, which starts a window of its
+// own at its delivery (mentionSend.takeover). decidesRoutes is set when the comment reaches
+// sessions beyond its mentions, so the mentions were resolved through a take-over and the
+// comment's other routes are decided on them; the comment.created event records it
+// (mentions_decide_routes).
 type commentResolution struct {
 	mentions      []ResolvedMention
 	takeovers     []takeoverRetry
