@@ -346,10 +346,9 @@ const outboxErrorInFull = "outbox row's error in full; the row and the lines abo
 // A run's error is a far side's text, which can carry a relayed command's whole stderr. Every
 // line about it carries it as the row keeps it (storetext.FarSideError, record.Store.RetryOutbox),
 // this function's own and finishRefused's alike, so no line holds more than a log entry takes.
-// This is the one place the whole text is logged, once for each failed attempt and only when that
-// bound cuts it (storetext.LogWhole): every failed attempt passes here once, retried or finished
-// refused, and the whole text is in the log even where the retry's or the finish's own write then
-// fails.
+// This is the one place the whole text is logged (storetext.LogWhole), once for each failed
+// attempt: every failed attempt passes here once, retried or finished refused, and the whole text
+// is in the log even where the retry's or the finish's own write then fails.
 func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 	if err != nil {
 		r.noteLimit(row, err)
@@ -701,10 +700,10 @@ func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) e
 }
 
 // retryAt returns row to the outbox, due again at nextAt, with cause as its last error. The row
-// keeps the start of cause's text (record.Store.RetryOutbox stores storetext.FarSideError of it).
-// The whole text is logged where the failed attempt is settled (settle), not here: a deferral
-// behind another row's GitHub rate limit, the one other caller (outbox_lanes.go), made no attempt,
-// and the error its cause wraps is the limited row's own, which that row's settle logged.
+// keeps cause's text as record.Store.RetryOutbox stores it (storetext.FarSideError). The whole
+// text is logged where the failed attempt is settled (settle), not here: a deferral behind
+// another row's GitHub rate limit, the one other caller (outbox_lanes.go), made no attempt, and
+// the error its cause wraps is the limited row's own, which that row's settle logged.
 func (r *outbox) retryAt(ctx context.Context, row record.OutboxRow, nextAt time.Time, cause error) error {
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		return r.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, cause.Error())

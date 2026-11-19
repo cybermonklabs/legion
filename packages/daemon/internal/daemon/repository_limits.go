@@ -252,8 +252,7 @@ func (w *workflowRuntime) waitOutLimits(ctx context.Context, unheld []limitedRea
 // since GitHub answered so before the default branch was read (checkMapping accepted it): legion
 // state reports what GitHub answered of the Apps on every refusal it has an answer for, so this
 // one row cannot read as an App missing (refusedRepository.apps). The Reason legion state serves
-// holds err's text as the daemon keeps any far side's error text (storetext.FarSideError):
-// cleaned, its URL credentials removed, and bounded.
+// holds err's text as the daemon keeps any far side's error text (storetext.FarSideError).
 func unreadDefaultBranch(mapped mappedRepository, err error) refusedRepository {
 	return refusedRepository{Repo: mapped.Repo.String(), Reason: fmt.Sprintf("GitHub did not answer the read of its default branch: %s; Legion reads it again", storetext.FarSideError(err.Error())),
 		apps: appAnswers{answered: true, implement: true, review: true}, readErr: err, mappedDefault: mapped.Default}

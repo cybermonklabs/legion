@@ -59,7 +59,7 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 //
 // The message is the provider's text, so it is kept as the daemon keeps a far side's text
 // (storetext.FarSideText) before it is cut: the window in memory is the window the store holds,
-// a NUL as U+FFFD and a URL with no credentials, and the cut cannot leave half a credential.
+// and the cut cannot leave half a credential.
 func (m *Machine) recordTurnOutcome(o TurnOutcome) {
 	o.Message = storetext.FarSideText(o.Message)
 	if len(o.Message) > maxRefusalMessage {

@@ -324,12 +324,12 @@ type Claim struct {
 	// ready (launchAfter's error). They are two answers to two questions, kept apart because a
 	// claim that cannot start and a claim that keeps dying are different faults, and each is kept
 	// until another of its own kind replaces it. Both are a far side's text, kept as such:
-	// LastStartFailure as any far side's error text is (storetext.FarSideError, which keeps its
-	// start), and LastDeathCause cleaned and its URL credentials removed under the runtime's own
-	// bound (deathCause). LastReady is when the agent last said it could be prompted, which is what
-	// says how old either cause is. All three are persisted: the operator reading a claim after a
-	// restart is the one who has to act on them, and the death's cause is what the record of that
-	// death names (endDied, EndedWork), which the restarted worker is told (RelaunchSentence,
+	// LastStartFailure as any far side's error text is (storetext.FarSideError), and LastDeathCause
+	// as a far side's text (storetext.FarSideText) under the runtime's own bound (deathCause).
+	// LastReady is when the agent last said it could be prompted, which is what says how old
+	// either cause is. All three are persisted: the operator reading a claim after a restart is
+	// the one who has to act on them, and the death's cause is what the record of that death
+	// names (endDied, EndedWork), which the restarted worker is told (RelaunchSentence,
 	// interruptedTask).
 	LastDeathCause   string
 	LastStartFailure string
@@ -3077,10 +3077,9 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 // deathCause is what the claim records of a death: the runtime's own account of it, behind the
 // verdict it reached, so a cause reads as a sentence wherever it is repeated. A runtime that gave
 // no detail leaves the verdict alone. The account is a pod's events and the last lines of its log,
-// so it is made storable and loses the credentials a URL in it carries (storetext.FarSideText)
-// before the claim, the state, the store and ended work repeat it. It keeps the runtime's own bound
-// rather than taking FarSideError's: that bound keeps the last lines, which are what name the
-// death, where FarSideError's would keep the start.
+// so it is kept as a far side's text (storetext.FarSideText) before the claim, the state, the
+// store and ended work repeat it. It keeps the runtime's own bound rather than taking
+// FarSideError's: that bound keeps the last lines, which are what name the death.
 func deathCause(observation runtime.Observation) string {
 	if observation.Detail == "" {
 		return string(observation.Kind)
@@ -3291,11 +3290,11 @@ const farSideErrorInFull = "supervise: a far side's error in full; the line it i
 // logFarSideError writes msg at level with args and then "error": err's text as the claim keeps a
 // far side's error text (storetext.FarSideError), so the line holds no more of a relayed command's
 // output than the store does and stays within what one log entry takes. It returns that text, so a
-// caller that keeps the error keeps the text its line carries. Where that bound cut the text, the
-// whole of it follows at Info in parts (storetext.LogWhole) under farSideErrorInFull rather than
-// msg, each with "of": msg and then args: a reader that counts msg counts one line for each error,
-// however long, and a reader of the whole text joins the parts to their line by "of" and args.
-// Nothing of the far side's answer is lost, only moved.
+// caller that keeps the error keeps the text its line carries. The whole text follows as
+// storetext.LogWhole writes it, under farSideErrorInFull rather than msg, each part with "of": msg
+// and then args: a reader that counts msg counts one line for each error, however long, and a
+// reader of the whole text joins the parts to their line by "of" and args. Nothing of the far
+// side's answer is lost, only moved.
 func (m *Machine) logFarSideError(ctx context.Context, level slog.Level, msg string, err error, args ...any) string {
 	text := err.Error()
 	kept := storetext.FarSideError(text)

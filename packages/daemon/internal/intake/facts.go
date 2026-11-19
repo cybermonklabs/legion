@@ -1530,9 +1530,9 @@ type Pool interface {
 // store's own rule (storetext.Text, storetext.Strings), so MarkProcessed, settleObserved and every
 // handler see the fact as the store keeps it. A handler compares what the fact says with what the
 // store holds of it — a title, a check run's name, a head, a changes request's reason — and the
-// store writes U+FFFD for each NUL and each run of bytes that is not UTF-8: compared as it arrived,
-// a fact holding one would differ from its own stored copy every time it was delivered again, and
-// be written again, or become another step of a pull request's head run. Every fact of GitHub,
+// store keeps each text as the rule makes it: compared as it arrived, a fact holding a text the
+// rule changes would differ from its own stored copy every time it was delivered again, and be
+// written again, or become another step of a pull request's head run. Every fact of GitHub,
 // Dispatch, Envoy, the API and supervision passes here, so the rule is given to facts here once;
 // the boot's Dispatch listing, which admission applies outside ApplyFact, takes it in admission's
 // Reconcile.

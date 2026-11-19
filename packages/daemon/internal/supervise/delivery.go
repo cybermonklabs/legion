@@ -132,9 +132,8 @@ type Delivery struct {
 	// is read there rather than in this record of the silent ones. All three are written
 	// together on every send that fails in refused, and cleared together where the budgets are
 	// cleared (confirm), so a task that got through carries zeroes. LastSendError is the far
-	// side's text as the daemon keeps any far side's error text (storetext.FarSideError: cleaned,
-	// its URL credentials removed, and cut to storetext.FarSideErrorRunes keeping its start), set
-	// so in memory as well as in the store, and the whole text is in the log (table.go's refused).
+	// side's text as the daemon keeps any far side's error text (storetext.FarSideError), set so in
+	// memory as well as in the store, and the whole text is in the log (table.go's refused).
 	SendFailures      int
 	LastSendFailureAt time.Time
 	LastSendError     string
@@ -460,9 +459,10 @@ func pendingID(p *Delivery) string {
 // The task is as the store keeps it: a deliver's request comes through Handle, which gives every
 // event's text through the store's rule, and the daemon's own delivery of a relaunch's record
 // (queueRelaunch) is written from the claim's record, which holds only text the store keeps. An
-// operator's task can hold a NUL, which the request already holds as U+FFFD, as the stored
-// delivery does and a restart reads back. So the comparison with the pending task, the delivery
-// written and the prompt the agent is sent all read the stored text, before a restart as after one.
+// operator's task can hold a NUL, which the request already holds as the store keeps it
+// (storetext.Strings, at Handle), as the stored delivery does and a restart reads back. So the
+// comparison with the pending task, the delivery written and the prompt the agent is sent all
+// read the stored text, before a restart as after one.
 func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	id, task := request.ID, request.Task
 	queued := m.given(request)

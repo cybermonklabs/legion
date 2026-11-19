@@ -3142,8 +3142,7 @@ func (s *Postgres) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, 
 
 // RetryOutbox returns row id to the outbox, due again at nextAt, while leaseToken holds it: one
 // more attempt, its lease cleared, and lastErr as its last error. lastErr is a far side's error
-// text, so the row holds storetext.FarSideError of it: cleaned, its URL credentials removed and cut
-// to storetext.FarSideErrorRunes keeping its start. The caller logs what the cut leaves out
+// text, so the row holds storetext.FarSideError of it, and the caller logs the whole text
 // (storetext.LogWhole).
 func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error {
 	if _, err := tx.Exec(ctx, `update outbox set attempts = attempts + 1, next_at = $3, last_error = $4,

@@ -46,10 +46,10 @@ type Failure struct {
 // tells it, since the code is in hand here and the writer would otherwise read the body back.
 type refusalNoter interface{ noteRefusal(code string) }
 
-// writeFailure writes the refusal of code with message. The message loses the query and the
-// userinfo of every URL it names (redact.URLCredentials): a refusal can quote a far side's error,
-// a Dispatch or GitHub transport error that names the URL it asked (dispatch_url's user name, a
-// redirect's query), and the answer goes to an agent.
+// writeFailure writes the refusal of code with message. The message passes the URL rule
+// (redact.URLCredentials): a refusal can quote a far side's error, a Dispatch or GitHub transport
+// error that names the URL it asked (dispatch_url's user name, a redirect's query), and the answer
+// goes to an agent.
 func writeFailure(w http.ResponseWriter, status int, code, message string) {
 	if noter, ok := w.(refusalNoter); ok {
 		noter.noteRefusal(code)

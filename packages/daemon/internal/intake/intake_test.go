@@ -109,10 +109,10 @@ func TestAppliedNamesOnlyTheFactsApplyFactAppliedFromTheSource(t *testing.T) {
 }
 
 // An event id is built of what the fact's source sent — the API's from a reported commit, the
-// daemon's reads from what GitHub answered — so it can hold a NUL, and the store records it with
-// U+FFFD in its place. Applied answers each id under the id its caller gave, so a caller that
-// looks its own id up finds the fact applied: a completion the workflow already took reads as
-// taken, not as new.
+// daemon's reads from what GitHub answered — so it can hold a NUL, and the store records the id
+// as storetext.Text makes it. Applied answers each id under the id its caller gave, so a caller
+// that looks its own id up finds the fact applied: a completion the workflow already took reads
+// as taken, not as new.
 func TestAppliedAnswersAnIDHoldingNULThatApplyFactRecordedAsApplied(t *testing.T) {
 	pool := store.NewPool(migratedPool(t))
 	ctx := context.Background()

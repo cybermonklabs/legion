@@ -802,8 +802,8 @@ func requireGeneration(w http.ResponseWriter, generation uint64) bool {
 	return true
 }
 
-// errorBody is the refusal shape of the claim and operator routes, its message with the query and
-// the userinfo of every URL it names removed, as writeFailure's is.
+// errorBody is the refusal shape of the claim and operator routes, its message through the URL
+// rule (redact.URLCredentials), as writeFailure's is.
 func errorBody(message string) map[string]string {
 	return map[string]string{"error": redact.URLCredentials(message)}
 }

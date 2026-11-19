@@ -1457,8 +1457,8 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // and a refused prompt Oh My Pi's decoded `error` — so the delivery holds it, in memory as in the
 // store, as the daemon keeps any far side's error text: the text the split's line carries, which
 // logFarSideError writes and returns, so the line, the record and the charge's own line carry one
-// text. That is why the split chooses its line before the record is written. Where the bound cut
-// the text, its whole follows the line in parts under a message of its own (logFarSideError).
+// text. That is why the split chooses its line before the record is written. The whole text
+// follows the line under a message of its own (logFarSideError).
 //
 // The write may still fail — the store has its own weather — and a failed write is logged and
 // carried past rather than returned, so what the split decided is always done. A return there would
@@ -2329,8 +2329,8 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 // (holdRecorded): a session another claim recorded first, by its id or by its file, is refused
 // before anything of the registration is recorded or enrolled. The session id and the file arrive
 // as the store keeps them, as every event's text does (Handle), so the hold, the claim in memory
-// and the stored claim name the same session, and a restart reads back what was held: a name
-// holding a NUL is held and stored with U+FFFD in its place. The boot intervals end with the
+// and the stored claim name the same session, and a restart reads back what was held: a session
+// id or a file holding a NUL is held as it is stored. The boot intervals end with the
 // registration, but not the deadline: it is armed again at its base bound, and only the agent's
 // ready ends it. A registration whose answer never reached its agent leaves a claim no ready will
 // ever come for, and from here that looks exactly like an agent slow to boot. A registration whose

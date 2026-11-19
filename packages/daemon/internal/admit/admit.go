@@ -849,9 +849,9 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 //
 // The listing reaches admission outside intake.ApplyFact, so each summary takes the store's own
 // rule here as a fact takes it there (storetext.Strings), before anything compares it with a
-// record: a title, a rank or a status holding a NUL or a byte that is not UTF-8 is stored with
-// U+FFFD in its place, and compared as listed it would be written again at every boot. That holds
-// for a summary Reconcile defers too, which release applies later from memory.
+// record: a title, a rank or a status the rule changes is stored as the rule makes it, and
+// compared as listed it would be written again at every boot. That holds for a summary Reconcile
+// defers too, which release applies later from memory.
 func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake.DispatchIssue, target int64, position intake.DispatchConsumerPosition) error {
 	summaries = storetext.Strings(summaries)
 	issues, err := a.store.LiveIssues(ctx, tx, a.project)
