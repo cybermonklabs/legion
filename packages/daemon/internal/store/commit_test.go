@@ -37,6 +37,11 @@ const (
 // commitMatch is the SQL every commit test's body sends, which each fault is armed on.
 const commitMatch = "insert into commit_probe"
 
+// poolCloseBound is how long the rig's pool may take to close at the test's end. A pool closes
+// once every connection it handed out is given back, so a transaction that kept its connection
+// would hold the test's end for good; this bound names it instead.
+const poolCloseBound = 10 * time.Second
+
 // commitRig is one database holding commit_probe, the daemon's guarded pool reaching it through
 // the fault proxy, a direct pool that observes what committed, and the count of hooks that ran.
 type commitRig struct {
@@ -64,7 +69,18 @@ func newCommitRig(t *testing.T) *commitRig {
 		t.Fatalf("open the pool through the fault proxy: %v", err)
 	}
 	pool := NewPool(faulted)
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() {
+		closed := make(chan struct{})
+		go func() {
+			pool.Close()
+			close(closed)
+		}()
+		select {
+		case <-closed:
+		case <-time.After(poolCloseBound):
+			t.Errorf("the pool did not close within %s: a connection it handed out was never given back", poolCloseBound)
+		}
+	})
 	return &commitRig{pool: pool, observer: observer, fault: fault}
 }
 

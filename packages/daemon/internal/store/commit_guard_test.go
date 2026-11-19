@@ -13,8 +13,9 @@ import (
 )
 
 // scopeOpenersOutsideTransact parses each non-test Go file of dir and walks every function
-// declaration for calls of withCommitHooks: a call inside Transact counts in inside, and any other
-// is listed as "<file>:<line> in <func>".
+// declaration for calls of withCommitHooks: a call inside a declaration named Transact counts in
+// inside, so a second such call, in a method of that name too, raises inside past the one
+// TestOnlyTransactOpensACommitScope admits; any other is listed as "<file>:<line> in <func>".
 func scopeOpenersOutsideTransact(t *testing.T, dir string) (outside []string, inside int) {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -33,10 +34,10 @@ func scopeOpenersOutsideTransact(t *testing.T, dir string) (outside []string, in
 		}
 		for _, decl := range file.Decls {
 			function, ok := decl.(*ast.FuncDecl)
-			if !ok || function.Body == nil {
+			if !ok {
 				continue
 			}
-			ast.Inspect(function.Body, func(node ast.Node) bool {
+			ast.Inspect(function, func(node ast.Node) bool {
 				call, ok := node.(*ast.CallExpr)
 				if !ok {
 					return true
@@ -44,7 +45,7 @@ func scopeOpenersOutsideTransact(t *testing.T, dir string) (outside []string, in
 				if callee, ok := call.Fun.(*ast.Ident); !ok || callee.Name != "withCommitHooks" {
 					return true
 				}
-				if function.Recv == nil && function.Name.Name == "Transact" {
+				if function.Name.Name == "Transact" {
 					inside++
 					return true
 				}
