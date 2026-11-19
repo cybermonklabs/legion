@@ -1158,7 +1158,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   waiting on capacity; running it again` with the scheduler's reason and creates the pod again every
   5 minutes, serving nothing until one is placed and passes, and then reports the `pool-capacity`
   capability open with the count and the reason. Make room in the pool, or raise its limits; the
-  probe pod itself needs only 250m and 1Gi.
+  probe pod itself needs only 500m and 1Gi.
 - **The `workspace-init` container fails.** It provisions the issue's workspace on the pod's own
   disk, and its refusals name what to do, sometimes a `jj` command to run against the issue's
   clone (a local bookmark deleted and never pushed, or a conflicted one). Read it with

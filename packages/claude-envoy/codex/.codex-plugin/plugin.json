@@ -1,0 +1,63 @@
+{
+  "name": "codex-envoy",
+  "version": "1.0.0",
+  "description": "Put Envoy and Dispatch messages into the Codex session's own conversation, show it on Dispatch's Agents page, and expose the Envoy and dispatch tools.",
+  "author": {
+    "name": "Legion",
+    "url": "https://github.com/cybermonklabs/legion"
+  },
+  "license": "Apache-2.0",
+  "repository": "https://github.com/cybermonklabs/legion",
+  "keywords": ["envoy", "dispatch", "legion"],
+  "skills": "./skills/",
+  "mcpServers": {
+    "envoy": {
+      "command": "bun",
+      "args": ["./dist/envoy-channel.js", "--host", "codex"],
+      "cwd": "./",
+      "env_vars": [
+        "AGENTBOX_HOST",
+        "AGENT_SECRETS_MACHINE_AUDIENCE",
+        "AGENT_SECRETS_MACHINE_IDENTITY",
+        "AGENT_SECRETS_MACHINE_TOKEN_FILE",
+        "AGENT_SECRETS_URL",
+        "CODEX_HOME",
+        "DISPATCH_PUBLIC_URL",
+        "DISPATCH_STATE_DIR",
+        "DISPATCH_TOKEN",
+        "DISPATCH_TOKEN_BROKER",
+        "DISPATCH_TOKEN_FILE",
+        "DISPATCH_URL",
+        "ENVOY_CONFIG_FILE",
+        "ENVOY_HEARTBEAT_MS",
+        "ENVOY_MACHINE_ID",
+        "ENVOY_NATS_URL",
+        "ENVOY_SESSION_TITLE",
+        "ENVOY_TOKEN",
+        "ENVOY_TOKEN_FILE",
+        "ENVOY_URL",
+        "NATS_NKEY_SEED",
+        "NATS_NKEY_SEED_FILE",
+        "TMUX",
+        "TMUX_PANE",
+        "XDG_CONFIG_HOME",
+        "XDG_RUNTIME_DIR",
+        "XDG_STATE_HOME"
+      ],
+      "tools": {
+        "dispatch": {
+          "approval_mode": "approve"
+        }
+      }
+    }
+  },
+  "interface": {
+    "displayName": "Envoy",
+    "shortDescription": "This session on Dispatch's Agents page, with its messages",
+    "longDescription": "Registers this Codex session with Envoy under its own session id, so it shows on Dispatch's Agents page with a live view of its conversation. Messages sent to the session from the Agents page (Aside, BTW and Steer) and messages on Dispatch issues routed to it arrive in its conversation, and the dispatch tool runs the dispatch command as this session. Ships the Dispatch skills.",
+    "developerName": "Legion",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": ["Use $dispatch-first to find the Dispatch issue for this work."]
+  }
+}

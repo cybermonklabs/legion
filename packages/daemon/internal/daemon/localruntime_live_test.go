@@ -1,11 +1,13 @@
 //go:build e2e
 
 // The runtime a live proof uses when it needs a real Oh My Pi pane and the host has no tmux. A
-// Legion pod carries no tmux and may not have one added for a test (a sixth client in the worker
-// image is an image change, skill://legion-worker/references/tools.md), so
+// Legion pod on a worker image from before dispatch://INFRA-3257 carries no tmux and may not have
+// one added for a test (a tool the worker image lacks is an image change,
+// skill://legion-worker/references/tools.md), and LINUX's worker-lean image, which copies the
+// worker image's /usr/local/bin and not its /usr/bin, carries none either. So
 // provider_error_retry_live_test.go — the one proof that must watch a real agent's turns fail —
 // starts each worker as a child process group of the test process instead of as a pane on the
-// daemon's private tmux server.
+// daemon's private tmux server, wherever it runs.
 //
 // Everything below the pane is the real thing: the command is the one a pane runs,
 // `legion worker-shim --connect unix://<the daemon's stream socket> --boot-token-file <file> --

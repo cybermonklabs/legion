@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -505,13 +506,15 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 	if f.read(t, "prefixed") == "" {
 		t.Error("the probe did not run through the launch prefix")
 	}
-	env := f.read(t, "env.1")
+	// Each variable is read whole, by name (envlisting): a listing also holds PWD and TMPDIR,
+	// whose values can contain any text, and env can print any variable first.
+	env := envlisting.Vars(f.read(t, "env.1"))
 	for name, value := range gate.env {
-		if name != "PATH" && !strings.Contains(env, name+"="+value+"\n") {
+		if got, set := env[name]; name != "PATH" && (!set || got != value) {
 			t.Errorf("the probe's environment lacks the pane's %s=%s", name, value)
 		}
 	}
-	if strings.Contains(env, "LEGION_DAEMON_ONLY_SECRET") {
+	if _, set := env["LEGION_DAEMON_ONLY_SECRET"]; set {
 		t.Error("the probe ran with a variable of the daemon's own environment")
 	}
 	if info, err := os.Stat(gate.env["XDG_DATA_HOME"]); err != nil || !info.IsDir() {
@@ -755,7 +758,7 @@ func TestTheGateRefusesAMissingEnvoyBeforeTheMissingSkills(t *testing.T) {
 	if strings.Contains(err.Error(), "dispatch") {
 		t.Errorf("err = %v, which names the skill dispatch, a remedy behind the missing plugin's", err)
 	}
-	if skills := f.read(t, "env.1"); !strings.Contains(skills, "LEGION_PROMPT_SKILLS=dispatch\n") {
+	if skills := f.read(t, "env.1"); envlisting.Vars(skills)["LEGION_PROMPT_SKILLS"] != "dispatch" {
 		t.Errorf("the load probe was not asked for the skill dispatch:\n%s", skills)
 	}
 }

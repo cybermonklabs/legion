@@ -669,6 +669,18 @@ func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Nod
 	return found, nil
 }
 
+// namesKey reports whether the mapping value names the key name, whatever value follows it. It
+// reads the mapping's own keys, since describedMembers leaves out a member whose value is null, so
+// a key written with nothing after it counts as named.
+func namesKey(value *yaml.Node, name string) bool {
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == name {
+			return true
+		}
+	}
+	return false
+}
+
 // readNatsURLs is `nats_urls`: valid URLs, in order, each once.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	read, err := readStrings(value, key)

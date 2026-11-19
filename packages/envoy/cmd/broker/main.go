@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -62,6 +63,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/wake"
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -678,6 +680,10 @@ func main() {
 			// broker_answers_total, which counts the proxy's answers under caller class
 			// airlock beside the API port's.
 			Answers: answers,
+			// The broker cluster's own ranges (BROKER_AIRLOCK_CLUSTER_RANGES), which the proxy
+			// refuses to dial beside every private address. config.Load has already refused a
+			// start in a cluster whose ranges miss its Service range.
+			ClusterRanges: cfg.AirlockClusterRanges,
 			// The local stack's settings for the proxy, every one of them refused on a
 			// production start (refuseAirlockTestSettingsInProduction): where a name is, the
 			// addresses it may dial anyway, the roots it trusts upstream, the two negative
@@ -983,9 +989,19 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 }
 
 // validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
-// that the boot and airlock-check refuse the same file in the same words: airlock.Validate's
-// answer, which is the Lean model's, and then the one refusal that is this program's own and not
-// that model's — an entry whose name is not a name a session can ask for.
+// that the boot and airlock-check refuse the same file in the same words: a host the proxy
+// never compares a request's host with (ruleHostRefusal), then airlock.Validate's answer, which
+// is the Lean model's, then the two refusals that are this program's own and not that model's —
+// an entry whose name is not a name a session can ask for, and guidance longer than the judge is
+// shown (maxGuidanceRunes). The hosts come first because ruleHostRefusal names each host's reason
+// and repeats no text of the file, where Validate's refusal of a host HostShapeOK refuses quotes
+// the host as written; and because every host ruleHostRefusal accepts HostShapeOK accepts too,
+// Validate then refuses no host. So a file with two faults reports its first bad host ahead of
+// any other fault Validate finds (a repeated name, a judge above 900 seconds, another kind). An
+// entry with no hosts has no host to refuse, and Validate accepts it: it says who decides its key
+// and binds the value nowhere. Two of the host refusals are this program's own and not the Lean
+// model's: a last label that is 0x and hex digits (0x1f, a.0x7f000001), which HostShapeOK accepts
+// as no all-digit label but clients read as an IPv4 address, and a wildcard over one.
 //
 // Rules.Lookup compares an entry's name with a released name exactly, and a released name is
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
@@ -994,6 +1010,13 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 // in airlock.Validate because the airlock knows nothing of how a secret is named under the
 // policy's prefix, and config.go refuses BROKER_AZURE_LOGIN_SECRET by the same NameToSlug.
 func validateRulesFile(rules airlock.Rules) error {
+	for i, s := range rules.Secrets {
+		for j, h := range s.Hosts {
+			if why := ruleHostRefusal(fold.ASCII(h)); why != "" {
+				return fmt.Errorf("secrets[%d] %q: hosts[%d] %s", i, s.Name, j, why)
+			}
+		}
+	}
 	if err := airlock.Validate(rules); err != nil {
 		return err
 	}
@@ -1001,8 +1024,108 @@ func validateRulesFile(rules airlock.Rules) error {
 		if _, err := policy.NameToSlug(s.Name); err != nil {
 			return fmt.Errorf("secrets[%d] %q: %w, so the entry matches no name a session can ask for and holds nothing back", i, s.Name, err)
 		}
+		if n := utf8.RuneCountInString(s.Guidance); n > maxGuidanceRunes {
+			return fmt.Errorf("secrets[%d] %q: guidance is %d characters, longer than the %d the judge is shown", i, s.Name, n, maxGuidanceRunes)
+		}
 	}
 	return nil
+}
+
+// maxGuidanceRunes is the longest guidance a rules entry may give the judge. The judge shows the
+// whole text to its model beside the request's reason and what Dispatch holds of it, all within
+// one bounded prompt, so a text past this would be cut rather than read; it is refused instead,
+// at the boot and in airlock-check, where its author reads why.
+const maxGuidanceRunes = 2000
+
+// ruleHostRefusal is why validateRulesFile refuses one host of an entry, h as fold.ASCII writes
+// it, or "" for a host it serves.
+//
+// An IP address binds no secret in any spelling. In its canonical form the proxy decrypts a
+// CONNECT to it, but a TLS client sends no server name for an address (RFC 6066 section 3; Go's
+// crypto/tls and curl send none), so airlock.Decide refuses every such request "sni mismatch";
+// airlock.HostShapeOK refuses every address for that reason, in the Lean model's validation. In
+// any other spelling it matches no request at all, because the proxy takes a CONNECT host's port
+// and brackets off (net.SplitHostPort) and writes an address as netaddr.Host writes it before
+// airlock.HostBound compares (airlockproxy's serveConnect and servePlain): not netaddr.Host's
+// form (2001:db8:7:0::1, 2001:0db8:7::1, ::ffff:192.0.2.10, an embedded IPv4 part, a zone),
+// in brackets, after a trailing dot, or with a port. Each is refused with one reason, which
+// repeats nothing of the host as written, whose zone is any text, and names the service's host
+// name as what to write.
+//
+// A host name with a trailing dot (api.github.com.) is the name a client writes without one, and
+// matches only a request that writes the dot, so for the requests clients make it binds nothing:
+// it is refused naming the name without the dot when that name is one airlock.HostShapeOK
+// accepts (its letters, digits, hyphens and dots are all a refusal may repeat, since h arrives
+// folded by fold.ASCII), and naming no form otherwise. An empty host names nothing a request can
+// reach.
+//
+// The rest are hosts no request names, each refused naming no form, since all they hold is the
+// file's own text: a host with a scheme; a host with a port; a bracket or a % around no address;
+// a colon in no address, which no host name holds; a last label that is a number, which no host
+// name has and which is an IPv4 address netip does not read (a leading zero, fewer than four
+// parts, a hex part), that one client reads as one address and the next as another or as a name;
+// and a wildcard over such a label, which HostBound would match against addresses by their text.
+// Last, a host airlock.HostShapeOK refuses for any other reason (an empty label, a label opening
+// or closing with "-", a character no label holds, "*" anywhere but a leading "*.") is refused as
+// no DNS name, naming nothing of it, so no host this function accepts is one HostShapeOK refuses:
+// Validate, which runs after it, then refuses no host of a file this function passed.
+func ruleHostRefusal(h string) string {
+	if strings.Contains(h, "://") {
+		return "holds a scheme, and a host is a name alone, so it binds nothing; write the service's host name with no scheme, path or port"
+	}
+	if _, err := netip.ParseAddr(h); err == nil {
+		return ipAddressHost
+	}
+	bare, port := h, false
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		bare, port = host, true
+	}
+	bare = strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(bare, "["), "]"), ".")
+	if _, err := netip.ParseAddr(bare); err == nil {
+		return ipAddressHost
+	}
+	numeric := numericLabel(bare[strings.LastIndexByte(bare, '.')+1:])
+	switch {
+	case port:
+		return "holds a port, and the proxy compares a CONNECT's host without its port, so the host binds nothing; write the host name alone"
+	case strings.ContainsAny(h, "[]%"):
+		return "holds a bracket or a % and is no IP address without its brackets, so it matches no host the proxy compares and binds nothing; write the service's host name"
+	case strings.Contains(bare, ":"):
+		return "holds a colon and is no IP address, and no host name holds one, so it matches no host the proxy compares and binds nothing; write the service's host name"
+	case numeric && strings.HasPrefix(bare, "*."):
+		return "is a wildcard whose last label is a number, which no host name has, so it would match addresses by their text; name the service by its host name"
+	case numeric:
+		return "ends in a number, which no host name does, and is no IP address netip reads: clients read a leading zero, fewer than four parts or a hex part as different addresses, and an address binds no secret in any form, so the host binds nothing; write the service's host name"
+	case h == "":
+		return "is empty, so it names no host a request can reach and binds nothing; write the service's host name"
+	case strings.HasSuffix(h, ".") && airlock.HostShapeOK(bare):
+		return "is a host name with a trailing dot, and a client writes a name without one, so the host binds nothing it asks for; write it as " + bare
+	case !airlock.HostShapeOK(h):
+		return "is no DNS name: a host is labels of letters, digits and hyphens between single dots, none empty and none opening or closing with a hyphen, after an optional leading wildcard label, so the airlock binds it nowhere; write the service's host name"
+	}
+	return ""
+}
+
+// ipAddressHost is ruleHostRefusal's refusal of a host that is an IP address in any spelling.
+const ipAddressHost = "is an IP address, and an address binds no secret in any spelling: a client sends no TLS server name for one, so the proxy refuses every request to its canonical form \"sni mismatch\", and compares no other form at all; write the service's host name"
+
+// numericLabel reports whether one label of a host is a number as inet_aton reads one, decimal or
+// 0x and hex digits: never the last label of a host name, and always part of an IPv4 address.
+func numericLabel(label string) bool {
+	digits, hex := label, false
+	if rest, ok := strings.CutPrefix(label, "0x"); ok {
+		digits, hex = rest, true
+	}
+	if digits == "" {
+		return false
+	}
+	for i := range len(digits) {
+		c := digits[i]
+		if !('0' <= c && c <= '9' || hex && 'a' <= c && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // readAirlockRules reads the airlock's rules file, the path BROKER_AIRLOCK_RULES_FILE names. An

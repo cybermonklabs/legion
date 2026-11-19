@@ -21,7 +21,6 @@ package airlockproxy
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -44,6 +43,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/fold"
@@ -160,6 +160,14 @@ type Options struct {
 	// services on loopback reachable, and the broker's own loopback port still refused.
 	// BROKER_AIRLOCK_TEST_DIAL_ALLOW is it.
 	DialAllow []string
+	// ClusterRanges is BROKER_AIRLOCK_CLUSTER_RANGES: the broker cluster's own Service, pod and
+	// node ranges. Such a range can be global unicast - a GKE Service range such as
+	// 34.118.224.0/20 is - so none of localRule's fixed rules refuses an address in it, and a
+	// tunnel there reaches a ClusterIP of the cluster the broker runs in. An address inside any
+	// of them is refused as a private one is, after those fixed rules; DialAllow still opens
+	// one it names. Nil refuses nothing beyond the fixed rules, which is a broker outside a
+	// cluster.
+	ClusterRanges []netip.Prefix
 	// KeepValues keeps a grant's values across the reread of one of its names and past the
 	// five-minute margin of a minted token's expiry, so a run can show what the airlock does
 	// when neither happens. BROKER_AIRLOCK_TEST_KEEP_VALUES is it, the negative control of
@@ -199,6 +207,9 @@ type Server struct {
 	// resolve answers the addresses a host has, the ones refuseLocalAddress reads. It is
 	// Options.Resolve, and net.DefaultResolver's lookup for a proxy given none.
 	resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+	// clusterRanges is Options.ClusterRanges, the broker cluster's own ranges, which localRule
+	// refuses after its fixed rules.
+	clusterRanges []netip.Prefix
 	// hashBudget is the bytes of AWS body the proxy may hold at once to hash
 	// (hashedBodyBudget, aws.go). One semaphore for the whole Server, because what it bounds
 	// is the pod's memory, which every connection shares.
@@ -217,9 +228,12 @@ type Server struct {
 	outer   *http.Server
 	inner   *http.Server
 	innerLn *chanListener
-	// upstream carries every request to a service. Its TLSClientConfig trusts the host's roots
-	// as any client does, or Options.UpstreamRoots when a caller named roots of its own.
+	// upstream carries every request to a bound host's service, and the Azure token exchange.
+	// Its TLSClientConfig trusts the host's roots as any client does, or Options.UpstreamRoots
+	// when a caller named roots of its own. forward carries every plain-HTTP request the proxy
+	// forwards, a socket of its own for each (New).
 	upstream *http.Transport
+	forward  *http.Transport
 	serveOne sync.Once
 
 	// conns is the CONNECT target and the grant of each decrypted connection, which
@@ -287,23 +301,24 @@ type decryptedKey struct{}
 // New builds the proxy. Nothing is bound and nothing is served until Serve.
 func New(o Options) *Server {
 	s := &Server{
-		rules:      o.Rules,
-		grants:     o.Grants,
-		ca:         o.CA,
-		idle:       o.Idle,
-		watch:      o.Watch,
-		log:        o.Log,
-		answers:    o.Answers,
-		dial:       o.Dial,
-		now:        o.Now,
-		resolve:    o.Resolve,
-		dialAllow:  o.DialAllow,
-		keepValues: o.KeepValues,
-		noKind:     o.NoKind,
-		innerLn:    newChanListener(),
-		open:       map[io.Closer]struct{}{},
-		values:     map[string]*grantValues{},
-		access:     map[accessKey]*accessHeld{},
+		rules:         o.Rules,
+		grants:        o.Grants,
+		ca:            o.CA,
+		idle:          o.Idle,
+		watch:         o.Watch,
+		log:           o.Log,
+		answers:       o.Answers,
+		dial:          o.Dial,
+		now:           o.Now,
+		resolve:       o.Resolve,
+		clusterRanges: o.ClusterRanges,
+		dialAllow:     o.DialAllow,
+		keepValues:    o.KeepValues,
+		noKind:        o.NoKind,
+		innerLn:       newChanListener(),
+		open:          map[io.Closer]struct{}{},
+		values:        map[string]*grantValues{},
+		access:        map[accessKey]*accessHeld{},
 	}
 	if o.HashBudget <= 0 {
 		o.HashBudget = hashedBodyBudget
@@ -312,6 +327,9 @@ func New(o Options) *Server {
 	if s.log == nil {
 		s.log = slog.Default()
 	}
+	// Every line this package writes - net/http's through slogWriter among them - is written
+	// with each placeholder in its text masked (maskedHandler).
+	s.log = slog.New(maskedHandler{s.log.Handler()})
 	if s.resolve == nil {
 		s.resolve = ResolveHost
 	}
@@ -340,6 +358,25 @@ func New(o Options) *Server {
 		ForceAttemptHTTP2:   true,
 		MaxIdleConnsPerHost: upstreamIdleConns,
 		IdleConnTimeout:     upstreamIdleTimeout,
+	}
+	// The transport an absolute-URL request is forwarded on, built here rather than cloned from
+	// upstream so that nothing of upstream's can make it speak HTTP/2: dialled by dialForwarded,
+	// which writes the line of each socket it opens, with upstream's TLS configuration, keeping
+	// no connection for a later request, and speaking HTTP/1.1 alone. A kept connection would
+	// carry the next request to its host with no dial and so with no line, a request of another
+	// caller's among them, so each request opens a socket of its own and its line names its own
+	// caller. HTTP/2 would undo that: with keep-alives off an h2 connection still carries every
+	// request the transport hands it while it is open, and a request of another caller can be
+	// handed one a first request dialled. TLSNextProto is an empty map, never nil, since net/http
+	// negotiates h2 over TLS only when it is nil, and Protocols names HTTP/1 alone.
+	var forwardProtocols http.Protocols
+	forwardProtocols.SetHTTP1(true)
+	s.forward = &http.Transport{
+		DialContext:       s.dialForwarded,
+		TLSClientConfig:   s.upstream.TLSClientConfig.Clone(),
+		DisableKeepAlives: true,
+		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+		Protocols:         &forwardProtocols,
 	}
 	// net/http writes a line of its own through ErrorLog: for example for a connection that fails
 	// before a handler sees it, for a handler's panic it recovers, or for an accept that failed;
@@ -470,6 +507,10 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// Every dial below this point is made for this grant, and the lines it writes name it
+	// (dialFields): the CONNECT's own check and its tunnel's dial run under this context, and a
+	// plain-HTTP request's transport dials under it too.
+	r = r.WithContext(withCaller(r.Context(), grant))
 	if r.Method == http.MethodConnect {
 		s.serveConnect(w, r, placeholder, grant)
 		return
@@ -602,13 +643,26 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	}
 	// The authority, with its host ASCII lower-cased: it is the URL and the Host header of
 	// every request this connection carries, and the one string the entry's hosts and the
-	// request's own Host header are compared against.
+	// request's own Host header are compared against. The reason quotes it lowercased too, as
+	// every line names a host the command wrote: a command may write anything here, its own
+	// placeholder among it.
 	host, port, err := net.SplitHostPort(target)
 	if err != nil {
-		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, http.StatusBadRequest, codeConnectTarget, r.Host+" is no host and port")
+		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, http.StatusBadRequest, codeConnectTarget, fold.ASCII(r.Host)+" is no host and port")
 		return
 	}
-	host = fold.ASCII(host)
+	// An address literal written as every address check reads it (netaddr.Host): the bound-host
+	// check, the certificate and the dial below all read this one spelling of the host.
+	host = netaddr.Host(fold.ASCII(host))
+	// And the port as the number it names, in the one spelling of that number, before the check,
+	// the bound-host decision, the dial and the lines read it (portNumber). The refusal names no
+	// port: the text that is no port is the command's own, which may be anything at all.
+	connectPort, ok := portNumber(port)
+	if !ok {
+		s.refuse(w, r, call{grant: grant, host: host}, http.StatusBadRequest, codeConnectTarget, "the CONNECT to "+host+" names no port from 1 to 65535")
+		return
+	}
+	port = strconv.FormatUint(uint64(connectPort), 10)
 	target = net.JoinHostPort(host, port)
 	// The addresses this name has, read and checked once: the tunnel below dials these and
 	// resolves nothing of its own, and a bound host's requests are checked and dialled the
@@ -635,23 +689,26 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	// port is in it because every name the decision compares - the CONNECT host, the TLS name
 	// and the Host header - carries no port, so 443 is the only port an entry's hosts speak
 	// about and another port of one name is another service.
-	connectPort := connectPortOf(port)
 	if len(s.candidates(grant, host, connectPort)) > 0 {
 		s.connectBound(w, hijacker, placeholder, grant, target, host, connectPort)
 		return
 	}
-	s.connectTunnel(w, r, hijacker, target, addrs, port)
+	s.connectTunnel(w, r, hijacker, target, host, addrs, port)
 }
 
-// connectPortOf is a CONNECT authority's port as a number, and 0 for a port that is no
-// number at all ("https") or does not fit in 16 bits. Only 443 is a bound host's port, so a
-// port this cannot read is a tunnel's.
-func connectPortOf(port string) uint16 {
+// portNumber is the port a caller wrote as the number it names, and false for text that names no
+// port: anything but decimal digits, 0, or a number past 16 bits. A command writes the port it
+// asks for, and the dialer reads more than one spelling of one port - leading zeros, a service
+// name such as "https", a sign - so a port the proxy did not read for itself could reach a bound
+// host's 443 as a tunnel, or be written on a line as text no query for its number finds. The
+// proxy reads it once, here, and writes it back as strconv.FormatUint spells the number before
+// anything checks it, dials it or logs it.
+func portNumber(port string) (uint16, bool) {
 	number, err := strconv.ParseUint(port, 10, 16)
-	if err != nil {
-		return 0
+	if err != nil || number == 0 {
+		return 0, false
 	}
-	return uint16(number)
+	return uint16(number), true
 }
 
 // connectBound answers a CONNECT to a host one of the grant's names is bound to, on port 443:
@@ -708,12 +765,20 @@ func (s *Server) connectBound(w http.ResponseWriter, hijacker http.Hijacker, pla
 // read. The dial comes before the hijack, so a service that cannot be reached is a 502 the
 // command's own HTTP client reports, rather than a tunnel that opens and then dies. It dials
 // the addresses serveConnect checked, in order, and resolves nothing of its own.
-func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker http.Hijacker, target string, addrs []netip.Addr, port string) {
-	upstream, err := s.dialAddrs(r.Context(), "tcp", addrs, port)
+//
+// The socket that opened writes one line (logTunnel) as soon as it is open, and a dial that
+// failed writes one (logUnreachable): no request of a tunnel is read, so these are the whole of
+// what the broker knows about where a command went through it. The line comes before the hijack
+// and the 200, so a command that went away between its dial and its answer, whose tunnel never
+// carries a byte, still leaves the line of the socket the proxy opened for it.
+func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker http.Hijacker, target, host string, addrs []netip.Addr, port string) {
+	upstream, dialed, err := s.dialAddrs(r.Context(), "tcp", addrs, port)
 	if err != nil {
+		s.logUnreachable(r.Context(), host, port, addrs, err)
 		fail(w, http.StatusBadGateway, codeUpstream, "dial "+target+": "+err.Error())
 		return
 	}
+	s.logTunnel(r.Context(), host, port, dialed)
 	client, err := hijack(hijacker)
 	if err != nil {
 		upstream.Close()
@@ -768,9 +833,34 @@ func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker 
 }
 
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked
-// for http:// rather than https://.
+// for http:// rather than https://, or that sent an https URL to the proxy as it is rather than
+// as a CONNECT.
 func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection) {
-	host := fold.ASCII(r.URL.Hostname())
+	host := netaddr.Host(fold.ASCII(r.URL.Hostname()))
+	// The port as the number it names (portNumber), and the scheme's own for a URL that names
+	// none, which is the port the transport dials for it.
+	port := r.URL.Port()
+	if port == "" {
+		port = "80"
+		if r.URL.Scheme == "https" {
+			port = "443"
+		}
+	}
+	number, ok := portNumber(port)
+	if !ok {
+		s.refuse(w, r, call{grant: grant, host: host}, http.StatusBadRequest, codeProxyTarget, "the request to "+host+" names no port from 1 to 65535")
+		return
+	}
+	port = strconv.FormatUint(uint64(number), 10)
+	// The authority the transport dials, in the one spelling every check and line here reads:
+	// the host lowercased and without a zone, and the port as its number. The transport dials
+	// the URL's own authority (dialForwarded), so a URL left as the command wrote it would be
+	// dialled, and written on its lines, as that text - its own case, a zone, the port's leading
+	// zeros - rather than as what was checked. It is set on a copy of the URL, since the request
+	// this handler was handed shares its URL with the one the server read.
+	forwarded := *r.URL
+	forwarded.Host = net.JoinHostPort(host, port)
+	r.URL = &forwarded
 	// Whether any name of this grant may carry a secret to this host, from the one function
 	// that says what is bound (candidates). It is asked about 443 because that is the only
 	// port an entry's hosts speak about, while the refusal below is about no port at all: a
@@ -784,16 +874,17 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	}
 	// The name's addresses, checked before anything is forwarded so that the refusal is a 403
 	// of this proxy's rather than the transport's 502. The transport below checks and dials
-	// the name again (dialChecked), which is what makes the address it opens a socket to one
+	// the name again (dialForwarded), which is what makes the address it opens a socket to one
 	// it checked itself.
-	if _, err := s.checkedAddresses(r.Context(), host, cmp.Or(r.URL.Port(), "80")); err != nil {
+	if _, err := s.checkedAddresses(r.Context(), host, port); err != nil {
 		s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeAddressRefused, err.Error())
 		return
 	}
 	// A host no name of this grant is bound to: the proxy forwards it and puts nothing into it,
-	// exactly as the tunnel above carries what it cannot read.
+	// exactly as the tunnel above carries what it cannot read, on a socket of its own whose line
+	// is the tunnel's (Server.forward).
 	proxy := &httputil.ReverseProxy{
-		Transport:     s.upstream,
+		Transport:     s.forward,
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = r.URL
