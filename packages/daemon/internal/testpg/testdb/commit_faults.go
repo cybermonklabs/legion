@@ -8,13 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -43,7 +40,7 @@ const (
 // and a test waits on it only through Met. Arming a fault while another is still pending fails the
 // test.
 //
-// The URL comes from rewriteDSN, as Delayed's does, and its refusals print no value of the DSN.
+// The URL comes from listenProxy, as Delayed's does, and its refusals print no value of the DSN.
 // Every connection through the proxy closes when the test's context ends, before any cleanup
 // runs, and the close drops any bytes a fault holds, so a hold of an hour never holds the test's
 // end, even where a cleanup waits for the connection a held Commit has (a pool's Close). The
@@ -51,27 +48,8 @@ const (
 // is registered first, so it runs after this one).
 func CommitFaults(t testing.TB, dsn string) (string, *CommitFault) {
 	t.Helper()
-	const named = "the database URL to proxy"
-	target, err := pgconn.ParseConfig(dsn)
-	if err != nil {
-		t.Fatalf("pgx refuses %s", named)
-	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for the commit fault proxy: %v", err)
-	}
-	address := listener.Addr().(*net.TCPAddr)
-	through, err := rewriteDSN(named, dsn, rewrite{host: address.IP.String(), port: uint16(address.Port)})
-	if err != nil {
-		_ = listener.Close()
-		t.Fatal(err)
-	}
-	fault := &CommitFault{
-		t:        t,
-		listener: listener,
-		upstream: net.JoinHostPort(target.Host, strconv.Itoa(int(target.Port))),
-		links:    map[*link]struct{}{},
-	}
+	listener, upstream, through := listenProxy(t, dsn, "the commit fault proxy")
+	fault := &CommitFault{t: t, listener: listener, upstream: upstream, links: map[*link]struct{}{}}
 	fault.wg.Add(1)
 	go fault.serve()
 	context.AfterFunc(t.Context(), fault.close)
