@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+    The project controller's pod (`controller: daemon`) now runs in the project's sandbox. Where
+    `runtime.kubernetes.sandbox.type` is `microvm`, the daemon renders it as it renders a microVM
+    issue pod: the `microvm` RuntimeClass, the microVM ComputeClass selector and toleration in place
+    of the class `scheduling` names, and the label `legion.dev/sandbox: microvm`. `canary_issues`
+    never moves it, and its disk stays on `runtime.kubernetes.storage_class`. Its launcher, given
+    `--microvm`, runs the guest memory watch in place of the memory guard, and the daemon tells the
+    controller when the pod's kernel stopped one of its processes. Where `microvm.metadata` is set,
+    its launcher serves the pod-local metadata endpoint from the token mounted at
+    `/var/run/legion/workload-identity`. A change of `type` moves the controller's pod at its next
+    launch that installs nothing, and `legion claims suspend` then `legion claims resume` of its
+    claim moves it at once. Where the type is `gvisor`, the controller's pod is the pod it was.
+    Repository cache pods and the image probe stay in gVisor. Daemon API contract 167.
+custom:
+    Issue: pr4485
