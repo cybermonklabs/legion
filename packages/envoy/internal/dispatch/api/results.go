@@ -1041,18 +1041,24 @@ type lineWords struct {
 	punctuation string
 }
 
-// plainPunctuation is the punctuation a word of a pull-request body line may hold besides
-// letters and digits (unicode.IsLetter, unicode.IsDigit); a word holding any other rune is dropped
-// whole (plainWord).
+// plainPunctuation is the punctuation a word of a pull-request body line may hold besides visible
+// letters and digits (plainWord).
 // Runes: . , ; : ! ? ' " - ( ) /
-// None of these opens markup GitHub renders inside a line, and every rune outside them can: `*`,
-// `_` and `~` emphasis (`_X_` at a word's edge hides where a key ends), the backtick, `<` and `>`
-// for HTML tags and comments, `[` and `]` for links, `\` for escapes, `&` for character
-// references, `$` for math, `@` and `#` for mentions and references, and every Unicode dash,
-// quotation mark, invisible or look-alike character, which can split, join or forge a key or a
-// host where a word is read alone. Allowing these few and nothing else closes the class instead of
-// listing its members; the cost is that a word such as `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b`
-// or `it’s` leaves the line, while the record keeps the whole reading.
+// The line drops whole every word that holds any other rune: every other ASCII punctuation mark
+// and symbol (`*`, `_` and `~` emphasis, where `_X_` at a word's edge hides where a key ends; the
+// backtick; `<` and `>` for HTML tags and comments; `[` and `]` for links; `\` for escapes; `&` for
+// character references; `$` for math; `@` and `#` for mentions and references; and the rest), every
+// Unicode punctuation mark and symbol (dashes and quotation marks among them), every combining
+// mark, every invisible or default-ignorable character (a letter among them too), and every
+// separator that does not end a word. Each of these can split, join, hide or forge a key or a host
+// once GitHub renders the line, which one word read alone cannot see; allowing these few runes and
+// nothing else closes that class instead of listing its members.
+// Two look-alikes pass by design: a letter of another script that looks like a Latin one, such as
+// Cyrillic `А` in `АСМЕ-12`, and GitHub's `:name:` emoji shortcodes, such as `:one:`, a picture
+// that can look like a digit. Neither is the characters of a key, and closing them would break
+// international text: every letter of every script is kept, and `:` stays for ordinary prose.
+// The cost is that a word such as `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b` or `it’s` leaves the
+// line, while the record keeps the whole reading.
 const plainPunctuation = `.,;:!?'"-()/`
 
 // plainWord reports whether every rune of word is a visible letter, a digit or one of
