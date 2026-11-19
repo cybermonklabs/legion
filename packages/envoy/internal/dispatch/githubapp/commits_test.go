@@ -24,10 +24,12 @@ func TestHasCommitProvesAbsenceFromGitHubsNoCommitMessageAlone(t *testing.T) {
 		body   string
 		// held is the answer HasCommit must give; errorText, unreadable and limited say which
 		// error must come with it, and an empty errorText with neither flag wants no error.
+		// errorEnd, when set, is the text that failed read's error must end with.
 		held       bool
 		unreadable bool
 		limited    bool
 		errorText  string
+		errorEnd   string
 	}{
 		{
 			name:   "the repository holds the commit",
@@ -77,6 +79,13 @@ func TestHasCommitProvesAbsenceFromGitHubsNoCommitMessageAlone(t *testing.T) {
 			body:      `{"message":"Server Error"}`,
 			errorText: "status 500",
 		},
+		{
+			// StatusError's text ends at the status when GitHub answers no body (StatusText).
+			name:      "GitHub failed with no body",
+			status:    http.StatusInternalServerError,
+			errorText: "status 500",
+			errorEnd:  "/repos/legion/arch/commits/" + mainCommit + ": status 500",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var asked []string
@@ -109,6 +118,9 @@ func TestHasCommitProvesAbsenceFromGitHubsNoCommitMessageAlone(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), tc.errorText) || !strings.Contains(err.Error(), "/repos/legion/arch/commits/"+mainCommit) {
 					t.Fatalf("HasCommit on a %d: err=%v, want %q and the target named", tc.status, err, tc.errorText)
+				}
+				if !strings.HasSuffix(err.Error(), tc.errorEnd) {
+					t.Fatalf("HasCommit on a %d: err=%v, want it to end with %q", tc.status, err, tc.errorEnd)
 				}
 			default:
 				if err != nil {
