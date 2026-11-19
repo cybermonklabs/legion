@@ -7033,7 +7033,7 @@ each issue's pod (every role of it alike) and the image probe's.
   — but a mount there would still land on what that init container writes, so it is refused here rather than left to fail in a pod).
   `legion config check` runs the same check.
   `OTEL_RESOURCE_ATTRIBUTES` is composed here rather than refused, as `PI_CONFIG_FILES` is:
-  the operator sets the attributes their deployment's spend is billed under (`theorem.project=widgets`), and each launch carries them with its own `legion.issue` and `legion.role` after them.
+  the operator sets the attributes their deployment's spend is billed under (`acme.project=widgets`), and each launch carries them with its own `legion.issue` and `legion.role` after them.
   The agent's OpenTelemetry detector assigns last-wins, so the daemon's pairs come last, and a launch spec may not set the name.
   A spend row names an arm (`legion.arms`, below), an issue or a role where the collector keeps it.
   The project controller's pod serves no issue and carries the role alone, and the image probe's container, which runs no role either, keeps the operator's value as the operator wrote it.

@@ -991,7 +991,7 @@ esac
 func TestTheGateIsToldTheOperatorsSpendAttributesAlone(t *testing.T) {
 	// The live deployment's shape, with a placeholder person, as an operator writes it: the
 	// project, the lane, the credential the gateway bills and the person who owns the spend.
-	const operator = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@example.com"
+	const operator = "acme.project=legion,acme.lane=legion-infra,acme.credential=gateway,acme.person=sami@example.com"
 	block := &config.Tmux{PaneEnv: map[string]string{runtime.SpendAttributesVariable: operator}}
 	env, err := gateEnvironment([]string{"HOME=" + t.TempDir()}, t.TempDir(), "", block)
 	if err != nil {
