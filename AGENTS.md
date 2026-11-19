@@ -279,7 +279,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - `legion config check [--config <legion.yaml>]`
 
   Check that file (./legion.yaml by default) as boot reads it, starting nothing and running none of its key commands, and print its `Config OK` line (exit 0) or the first refusal (exit 1);
-  it never reads `LEGION_LISTEN_FD`, and also prints the configuration's open capability gaps after its OK line (exit 0), the intake handler limit under either runtime when `worker_rpc_timeout_seconds` derives one above the ten-minute floor (the daemon's boot log names it at every boot, derived or not), and under `runtime: kubernetes` the repository cache it keeps for each repository a live record names, and for `retain_hours` after none does (docs/kubernetes.md "The repository cache"), and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline")
+  it never reads `LEGION_LISTEN_FD`, and also prints the configuration's open capability gaps after its OK line (exit 0), the intake handler limit under either runtime when `worker_rpc_timeout_seconds` derives one above the ten-minute floor (the daemon's boot log names it at every boot, derived or not), and under `runtime: kubernetes` the repository cache each repository gets (docs/kubernetes.md "The repository cache") and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline")
 
 - `legion status <team>`
 
@@ -531,8 +531,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   - `workspace-init cache --repo <owner>/<repo> --root <dir> [--listen :8418] [--refresh 10m]` is a repository cache pod's one process, a bare clone on the cache's own volume fetched from GitHub every `--refresh` and served to its repository's issue pods as `GET /tar` (its refs, its packs and each pack's index), with `GET /readyz` its readiness and `GET /healthz` its health, `/tar` answering only the bearer token LEGION_REPOSITORY_CACHE_TOKEN_FILE holds and `/healthz`, which holds nothing secret, any request (docs/kubernetes.md "The repository cache")
 
-  - `legion controller start` resolves `omp_invocation` as the daemon does, with no pinned default, reads the `repositories` block of the daemon's unauthenticated `GET /legion/v1/state` first, as a check that the daemon answers as a conforming one does before the mint revokes the running controller (an empty `live` list, or one whose every repository a role App is missing from, still launches, since the block decides nothing of the controller's addressing, which names the owners the credential route answers the review App installed on, `installed`, that the controller's gh bundle holds a directory for;
-    a daemon that does not answer, a body with no `repositories` object, or a `live` entry that is not `owner/name` refuses, with nothing minted or written), and refuses before its one capability-minting daemon call, by launching the operator's Oh My Pi as the controller will run, a pi-legion it does not load, or loads speaking another daemon API contract, or loads without pi-envoy or with a pi-envoy at another plugin interface version, or beside the pre-split package;
+  - `legion controller start` resolves `omp_invocation` as the daemon does, with no pinned default, reads the `repositories` block of the daemon's unauthenticated `GET /legion/v1/state` first, as a check that the daemon answers as a conforming one does before the mint revokes the running controller (an empty block still launches, since the block decides nothing of the controller's addressing, which names the owners the credential route answers the review App installed on, `installed`, that the controller's gh bundle holds a directory for;
+    a daemon that does not answer, or a body without a usable block, refuses, with nothing minted or written), and refuses before its one capability-minting daemon call, by launching the operator's Oh My Pi as the controller will run, a pi-legion it does not load, or loads speaking another daemon API contract, or loads without pi-envoy or with a pi-envoy at another plugin interface version, or beside the pre-split package;
     that call names the contract, and the daemon refuses another with 409, naming both, before it mints a capability, so a `legion` and a daemon of different releases never revoke the running controller;
     and its controller registers on `/legion/v1/claims/register`, which refuses another contract naming both
 
@@ -600,8 +600,7 @@ projects:
   WIDGETS: { production_check: off }
 ```
 
-`legion.yaml` names no repository the project works in, and refuses `projects.<KEY>.repo`:
-the daemon takes each issue's repository from Dispatch's resolution of the issue (its own, else its nearest ancestor's, else the project's default repository, which is set in Dispatch).
+`legion.yaml` names no repository and refuses `projects.<KEY>.repo`: an issue's repository is the one Dispatch resolves for it.
 An issue may name any `owner/name`, and the daemon records and runs it where both role Apps are installed.
 Both role Apps are public GitHub Apps, so any GitHub account can install them, and a daemon that mints with its own App key counts every installation and keeps no list of owners.
 An account that installs the implement App gets a directory with that App's write token in the gh bundle of every implementer and merger, from the next bundle the daemon builds, and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
@@ -617,26 +616,16 @@ The controller's default owner is refused at once instead, because `ControllerCr
 A daemon that takes its tokens from the secrets broker through `token_command` is bounded by the broker, which releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing there.
 `projects.<KEY>.commit_issue_trailer_repos` is the one key of `legion.yaml` that names repositories: the ones whose commits carry their issue key, as a `Dispatch: <KEY>` trailer the pane's jj appends.
 A pane stamps the commit when its launch's repository is one of those names.
-The loader checks the list for its shape and for two names of one repository, and the daemon compares it with nothing at boot.
-At boot, the key proof under the App's JWT mints no token for an owner;
-every other step of the boot that reads GitHub or writes a cache's credential mints the token that step needs.
-One such step fills a record that lacks its repository columns: one read per such record, bounded at 15 s, a read that fails leaving the record for the refresher.
-The one-time rename pass (`repository_renames`, below) reads GitHub for a pair only while a stored row still names the pair's `from`: then it reads both role Apps' installations on the pair's two names and, where the daemon holds no spelling of the `to`, GitHub's spelling of it;
-once no row names a pair's `from`, the pass reads nothing of GitHub for that pair.
-Beside the boot, the daemon's background loop (the refresher) reads each repository again: once the API serves, it prepares each repository the records name, reading both role Apps' installations on it, its name and default branch, and Dispatch's webhook App on it;
-the daemon prepares a repository again when the first issue on it is admitted and when a launch works a repository the cache set does not hold (no live record names it).
-A boot of a project whose live records name no repository, a fresh install's, logs one line at info, `workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one`, with the project.
-`legion state --json` reports, under `repositories.live`, each repository a live record names with each App's installation (`apps`) and why GitHub's last read did not name it (`readError`), and, under `repositories.withoutWebhookApp`, each of those Dispatch's webhook App is not known to be installed on, with why (`{repo, reason}`, the shape contract 152 gave the list), which is the one place the state reports the webhook App.
-A repository a role App is not installed on, or whose installation read GitHub does not answer (any failure but a 404), changes no record and is read again, 30 s doubling to 10 min, until GitHub answers;
-one already read as installed keeps that answer while a later read does not answer.
-A repository whose default-branch read GitHub refuses for its rate limit (a 429, or a 403 whose headers or body name the limit) is served on the default branch the daemon holds for it, from its last read or a record of an issue on it, and is read again once the limit resets, with one log line that names the repository (a record that names the repository by the other name of a pair in `repository_renames`, below, holds none for it);
-the event of an issue on a repository the daemon holds no default branch for is delivered again once GitHub's wait has passed.
+The daemon reads each repository's installation of both GitHub Apps.
+`legion state --json` reports each repository with each App's installation.
+A repository whose installation read GitHub does not answer (any failure but a 404) is read again, 30 s doubling to 10 min, until GitHub answers;
+one already read as installed stays as it was read.
+A repository whose default-branch read GitHub refuses for its rate limit (a 429, or a 403 whose headers or body name the limit) never stops the boot:
+one the daemon holds a default branch for, from its last read or a record of an issue on it, is served on that branch and read again once the limit resets (a record that names the repository by the other name of a pair in `repository_renames`, below, holds none for it);
+an issue's event on one it holds none for is delivered again once GitHub's wait has passed.
 A repository that moved is named in `repository_renames`, a top-level key of `legion.yaml` (`- from: <old owner>/<name>` with `to: <new owner>/<name>`), and the daemon then treats the pair's two names as one repository wherever it compares a name, so the trees it recorded under the old name take the events GitHub sends under the new one, a pull request open at the transfer included.
-A one-time pass of this release writes each pair's `to` over its `from` on the stored records, at boot and when an issue's pod ends, for each issue with no live pod, and logs the rows still `left` on each `from`;
-a record keeps the old name until the pass writes it, so keep the pair configured until no row is left on its `from`.
-The pass writes a pair only once GitHub shows the transfer, both role Apps installed on the `to` and neither on the `from`, and writes the `to` as GitHub spells it, not as `legion.yaml` does;
-until then it leaves the pair's records as they are and logs one `rename pass: left …` line naming the pair and why.
-A pair serves no repository of its own, which is why it may be configured before the transfer, for the pass as for every other reader of it, and `legion config check` prints one line per pair.
+One pass rewrites the pair's records after the transfer, so keep the pair configured for as long as any record names the old repository;
+it serves no repository of its own, which is why a pair may be configured before the transfer, and `legion config check` prints one line per pair.
 
 `projects.<KEY>.production_check` decides whether a merge that closes one of the project's issues opens a production check and who works it:
 it takes `off` or `tester`, is `tester` by default, and the loader refuses every other value, naming the key and the value it read.
@@ -1097,8 +1086,8 @@ It waits for no slot until that release, or its parent's, brings it into the tre
 it queues as a root of its own once no live tree is left on its chain:
 each lingers or leaves the workflow, or a person moves an ancestor, recorded or not, out from under it.
 A root that ran as a tree of its own, carries a run of its own, or left another tree is never held under an unreleased child: it keeps queueing as its own root.
-An issue is recorded on the repository Dispatch resolves for it (its own, else its nearest ancestor's, else the project's default) and keeps it, but for the one-time pass of a `repository_renames` pair:
-an issue whose repository resolves to none, or to one the daemon does not serve, is not admitted, and the daemon says why on the issue, except an issue on a repository left out for now because GitHub did not answer its installation read or its read of the repository's name and default branch, on which the daemon says nothing and keeps nothing, and which it recovers from Dispatch's listing once GitHub answers (release_children answers such a child released and goes on with the wave, with a child-release-stalled notice when the recovery will not record it, and one more from the recovery for each it left unrecorded), and an issue whose repository's default-branch read GitHub's rate limit refuses with no default branch held for it, whose event is delivered again once GitHub's wait has passed;
+An issue is recorded on the repository Dispatch resolves for it (its own, else its nearest ancestor's, else the project's default) and keeps it:
+an issue whose repository resolves to none, or to one the daemon does not serve, is not admitted, and the daemon says why on the issue, except an issue on a repository left out for now because GitHub did not answer its installation read, on which the daemon says nothing and keeps nothing, and which it recovers from Dispatch's listing once GitHub answers (release_children answers such a child released and goes on with the wave, with a child-release-stalled notice when the recovery will not record it, and one more from the recovery for each it left unrecorded);
 a later change of an admitted issue's repository is not applied, which the daemon says too.
 A root that stays `done` through its linger hands every child still in the workflow to Legion as a root of its own:
 the daemon sets it `todo` with the label in one Dispatch write, and the write's event carries the child's phase, design gate, phase records and pull request into a new generation, then starts that phase's role.

@@ -71,9 +71,10 @@ reads GitHub or writes a cache's credential mints the token that step needs. One
 record that lacks its repository columns, one read per such record bounded at 15 seconds, a read
 that fails leaving the record for the daemon to fill later. The one-time rename pass of
 `repository_renames` reads GitHub for a pair only while a stored row still names the pair's
-`from`: then it reads both role Apps' installations on the pair's two names and, where the daemon
-holds no spelling of the `to`, GitHub's spelling of it, each read bounded at 15 seconds; once no
-row names a pair's `from`, the pass reads nothing of GitHub for that pair. A project with no
+`from`: then it reads both role Apps' installations on each of the pair's names that the daemon
+holds no answer for (at boot, both) and, where the daemon holds no spelling of the `to`, GitHub's
+spelling of it, each read bounded at 15 seconds; once no row names a pair's `from`, the pass reads
+nothing of GitHub for that pair. A project with no
 repository, or with no default repository, boots all the same, and when no live record names a
 repository it logs one line at info, `workflow: no live record of the project names a repository,
 so the daemon serves no repository until an issue names one`, which is no fault. Once the API

@@ -95,14 +95,8 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 173 (dispatch://INFRA-4401:
-the `repositories` block of `GET /legion/v1/state` is `{live, caches, withoutWebhookApp}`, one
-`live` entry for each repository a live record names with `servedAs`, `apps`, `readError` and
-`cache`, each absent until it holds something, in place of `owners`, `mapped` and `refused`;
-`withoutWebhookApp`, `{repo, reason}` for each of those Dispatch's webhook App is not known to be
-installed on, is the block's one report of the webhook App and keeps contract 152's shape for
-every caller, and a caller below 173 is served the block in contract 152's shape, written from the
-same entries), after contract 146 (dispatch://INFRA-2614:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 173, after
+contract 146 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its
@@ -296,8 +290,8 @@ production check as `check` on `GET /legion/v1/state`, `handoff_complete`'s opti
 `LEGION_REPOSITORY_CACHE_TOKEN_FILE`, and the state's `repositories[].cache` and `caches`), after
 contract 31's issue repository on
 `GET /legion/v1/state` and `read_record` (sjawhar/legion#1986: each issue's `repo` and
-`defaultBranch`, its pull request's `repo`, and the state's `repositories`, the repositories the
-daemon then served), after contract 30's per-owner gh bundle
+`defaultBranch`, its pull request's `repo`, and the state's `repositories`), after contract 30's
+per-owner gh bundle
 (sjawhar/legion#1986: `LEGION_GH_OWNERS_DIR` with one gh directory per owner, `LEGION_GH_PATH`,
 the `legion gh` wrapper and `legion git-credential`, and the controller's per-owner credential
 answer), after contract 29's daemon-launched controller (sjawhar/legion#1998: its pod enrolled

@@ -3688,7 +3688,7 @@ the API port is already bound by this point (the same as during the image probe,
 The key proof under the App's JWT mints no token for an owner;
 every other step of the boot that reads GitHub or writes a cache's credential mints the token that step needs.
 One such step fills a record that lacks its repository columns, one read per such record, each bounded at 15 s, and a read that fails leaves the record for the refresher.
-The one-time rename pass, before the consumers open, reads GitHub for a `repository_renames` pair only while a stored row still names the pair's `from`: then it reads both role Apps' installations on the pair's two names and, where the daemon holds no spelling of the `to`, GitHub's spelling of it, each read bounded at 15 s;
+The one-time rename pass, before the consumers open, reads GitHub for a `repository_renames` pair only while a stored row still names the pair's `from`: then it reads both role Apps' installations on each of the pair's names that the daemon holds no answer for (at boot, both) and, where the daemon holds no spelling of the `to`, GitHub's spelling of it, each read bounded at 15 s;
 once no row names a pair's `from`, the pass reads nothing of GitHub for that pair.
 The refresher's reads of each repository's installations, name and default branch run beside the boot, once the API serves, and hold neither the boot nor the port.
 A pane's `legion` tool calls (`read_record` and `handoff_complete`, the latter minting its grant in-process first) and `controller start` all wait on that same API, so none of them succeeds until the daemon actually serves;
@@ -7027,6 +7027,9 @@ each issue's pod (every role of it alike) and the image probe's.
   when the issue resolves to none, the launch is refused with `<KEY> names no repository: set the repository of <KEY>, or the default repository of project <PROJECT>, in Dispatch`, and the daemon stays up.
   **Upgrade order:** Dispatch first (it resolves each issue's repository), then set the old `projects.<KEY>.repo` as the project's default repository in Dispatch, then delete the key and start this daemon;
   its first boot fills every record written before the record carried its repository from Dispatch's resolution, and leaves, naming it in the log, each record that Dispatch resolves to none, or to another repository than the one of the issue's pull request, whose launches are refused until it is filled.
+
+- **A repository whose default-branch read GitHub refuses for its rate limit** is served on the default branch the daemon holds for it, from its last read or a record of an issue on it, and is read again once the limit resets;
+  the event of an issue on a repository the daemon holds no default branch for is delivered again once GitHub's wait has passed.
 
 - **A project with no live record** boots and serves all the same, and its boot logs one line at info, `workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one`, with the project.
 
