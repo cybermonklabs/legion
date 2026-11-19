@@ -765,34 +765,59 @@ func (m *Machine) Get(ctx context.Context, id string) (Request, error) {
 }
 
 // OwnerAndState reads whose request requestID is, its state, and whether the model judge holds it
-// (pending with judge_until ahead), in one statement. The owner is the one the enrollment it hangs
-// off now records (enrollments.owner, enroll's ownerKey), or 'enrollment:<id>' for an enrollment
-// that records none, which no other enrollment's owner can spell. A caller may read and cancel the
-// request when its own enrollment answers the same (EnrollmentOwner), so a request is any
-// enrollment's of the person, the Legion claim or the machine that made it, and an enrollment with
-// no owner's alone. It reads the request's enrollment as it stands, which an adoption rewrites, so
-// a request that moved with its session belongs to whoever it moved to. GET /v1/requests/{id}
+// (pending with judge_until ahead), in one statement. The owner is the owner of the enrollment
+// the request hangs off now (Machine.owner). A caller may read and cancel the request when its own
+// enrollment has the same owner (EnrollmentOwner). So a request is any enrollment's of the
+// person, the Legion claim or the machine that made it, and an enrollment with no owner's alone.
+// A person's pod shares its person's owner only while BROKER_POD_OPERATORS maps its account to
+// that person. It reads the request's enrollment as it stands, which an adoption rewrites, so a
+// request that moved with its session belongs to whoever it moved to. GET /v1/requests/{id}
 // checks it before it answers, and its held read reads it again at each step while the request is
 // pending. A request with no row is pgx.ErrNoRows.
 func (m *Machine) OwnerAndState(ctx context.Context, requestID string) (owner, state string, judging bool, err error) {
-	err = m.Store.Pool.QueryRow(ctx, `select `+ownerOf("e")+`, r.state, coalesce(r.state = 'pending' and r.judge_until > now(), false)
-		from requests r join enrollments e on e.id = r.enrollment_id where r.id=$1`, requestID).Scan(&owner, &state, &judging)
+	owner, err = m.scanOwner(m.Store.Pool.QueryRow(ctx, `select `+ownerColumns("e")+`, r.state, coalesce(r.state = 'pending' and r.judge_until > now(), false)
+		from requests r join enrollments e on e.id = r.enrollment_id where r.id=$1`, requestID), &state, &judging)
 	return owner, state, judging, err
 }
 
-// EnrollmentOwner is OwnerAndState's owner for an enrollment: the owner it records, or
-// 'enrollment:<id>'. A caller's proof names a live enrollment, so pgx.ErrNoRows means it ended
-// under the call.
+// EnrollmentOwner is OwnerAndState's owner for an enrollment (Machine.owner). A caller's proof
+// names a live enrollment, so pgx.ErrNoRows means it ended under the call.
 func (m *Machine) EnrollmentOwner(ctx context.Context, enrollmentID string) (string, error) {
-	var owner string
-	err := m.Store.Pool.QueryRow(ctx, `select `+ownerOf("e")+` from enrollments e where e.id=$1`, enrollmentID).Scan(&owner)
-	return owner, err
+	return m.scanOwner(m.Store.Pool.QueryRow(ctx, `select `+ownerColumns("e")+` from enrollments e where e.id=$1`, enrollmentID))
 }
 
-// ownerOf is the one SQL text for whose requests the enrollment aliased alias makes are, which
-// OwnerAndState, EnrollmentOwner and Cancel compare.
-func ownerOf(alias string) string {
-	return `coalesce(` + alias + `.owner, 'enrollment:' || ` + alias + `.id::text)`
+// ownerColumns is the one SQL text of the columns of the enrollment aliased alias that
+// Machine.owner reads: the owner it records, its id, kind, operator and subject. OwnerAndState,
+// EnrollmentOwner and Cancel select these columns first, and scanOwner reads them.
+func ownerColumns(alias string) string {
+	return alias + `.owner, ` + alias + `.id::text, ` + alias + `.kind, ` + alias + `.operator, ` + alias + `.subject`
+}
+
+// scanOwner scans row, whose first columns are ownerColumns, and answers the owner that
+// Machine.owner computes from them. It scans the columns after them into rest.
+func (m *Machine) scanOwner(row pgx.Row, rest ...any) (string, error) {
+	var recorded *string
+	var enr enrollmentRow
+	if err := row.Scan(append([]any{&recorded, &enr.ID, &enr.Kind, &enr.Operator, &enr.Subject}, rest...)...); err != nil {
+		return "", err
+	}
+	return m.owner(recorded, enr), nil
+}
+
+// owner is whose requests enrollment enr makes, which OwnerAndState, EnrollmentOwner and Cancel
+// compare. It is the owner that the enrollment records (recorded: enrollments.owner, enroll's
+// ownerKey), or 'enrollment:<id>' for an enrollment that records none. No other enrollment's
+// owner can spell that text. A person's pod records its person's owner, but it has that owner
+// only while BROKER_POD_OPERATORS maps its account to that person (unmappedPersonPod, the test
+// that requester reads too). After the setting drops the account, or maps it to another person,
+// the pod's owner is 'enrollment:<id>'. The pod then reads and cancels its own requests alone,
+// and its person reads none of them. The setting is in Go, so the owner is computed here and not
+// in SQL.
+func (m *Machine) owner(recorded *string, enr enrollmentRow) string {
+	if recorded == nil || m.unmappedPersonPod(enr) {
+		return "enrollment:" + enr.ID
+	}
+	return *recorded
 }
 
 // SessionID answers a request row's own optional session_id — an override supplied in the

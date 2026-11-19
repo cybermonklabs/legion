@@ -374,6 +374,11 @@ another person:
 - the enrollment the pod holds keeps renewing, and the broker answers each of its calls as its
   account's own, for no person, also after a move: the first person's agent-tier secrets wait for
   that person's approval, and a shared agent-tier secret is still granted;
+- the pod's requests are its own enrollment's alone. The pod no longer reads or cancels a request
+  of the person's box or of another session of the person, and those sessions no longer read or
+  cancel the pod's requests: each is refused `403 NOT_YOURS`, and the request stays pending. The
+  pod still reads and cancels its own requests. Putting the entry back gives the pod the person's
+  requests again;
 - an automatic grant of the person's own agent-tier secret, which the pod got because it acted as
   the person, stops releasing (`GRANT_NOT_LIVE`) and is not given back to a new request, so the
   pod's next request for that secret waits for the person. It is not revoked, and putting the entry

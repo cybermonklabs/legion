@@ -170,7 +170,8 @@ func textOf(p *string) string {
 // maps logs in with its own pod-bound token, and its credential carries the person. That
 // credential is a person's pod login, and the setting admits it. It enrols its own pod. The
 // enrollment records the person as its operator and the account as its subject, and it names no
-// session.
+// session. It records the person as its owner (ownerKey), as a box of the person does, so the
+// pod's requests are the person's to read and cancel.
 func TestAPersonPodLoginEnrolsItsOwnPodAsItsPerson(t *testing.T) {
 	for _, schema := range personPodSchemas() {
 		t.Run(schema.name, func(t *testing.T) {
@@ -188,14 +189,17 @@ func TestAPersonPodLoginEnrolsItsOwnPodAsItsPerson(t *testing.T) {
 				t.Fatalf("Create(ada's own pod) = operator %s, subject %s; want %s and %s", textOf(enr.Operator), textOf(enr.Subject), adaPerson, adaPodAccount)
 			}
 			var kind string
-			var operator, subject, session *string
-			if err := r.svc.Store.Pool.QueryRow(context.Background(), `select kind, operator, subject, session_id from enrollments where id=$1`, enr.ID).
-				Scan(&kind, &operator, &subject, &session); err != nil {
+			var operator, subject, session, owner *string
+			if err := r.svc.Store.Pool.QueryRow(context.Background(), `select kind, operator, subject, session_id, owner from enrollments where id=$1`, enr.ID).
+				Scan(&kind, &operator, &subject, &session, &owner); err != nil {
 				t.Fatalf("read enrollment %s: %v", enr.ID, err)
 			}
 			if kind != "pod" || textOf(operator) != adaPerson || textOf(subject) != adaPodAccount || session != nil {
 				t.Fatalf("the enrollment row = kind %s, operator %s, subject %s, session %s; want a pod of %s with subject %s and no session",
 					kind, textOf(operator), textOf(subject), textOf(session), adaPerson, adaPodAccount)
+			}
+			if want := exchange.PersonPrincipal(adaPerson); textOf(owner) != want {
+				t.Fatalf("the enrollment row records owner %s; want %s, the owner of ada's box, so that the pod's requests are ada's", textOf(owner), want)
 			}
 		})
 	}

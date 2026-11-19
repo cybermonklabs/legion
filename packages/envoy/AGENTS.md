@@ -6322,6 +6322,9 @@ Otherwise the pod acts for no person, as its account's own.
 So the pod gets its person's secrets on the terms of the person's dev box, and `checkRelease` and `reuseLiveGrant` re-check every grant such a pod holds against the current requester (`personPodGrant`) whatever the policy's version, which does not cover the setting.
 After the deployment drops or moves the entry, an automatic grant the pod got as the person stops releasing (`ErrGrantNotLive`) and is not reused, a grant a person approved still releases, and a grant whose `requesters` tag names the person ends for good (`requester-not-listed`).
 `GrantsForApprover`, `mayRevoke`, the approval record and the grant log read the enrollment row and not the setting, so they keep naming the person the enrollment was made for.
+The enrollment of a person's pod login records its person's owner (`person:<login>`, `enroll.ownerKey`), as the person's box does.
+`requests.Machine.owner` gives the pod that owner only while the setting maps its subject to that person, through the one test `requester` reads too (`unmappedPersonPod`), so only then do the pod and the person's box read and cancel each other's requests (`OwnerAndState`, `EnrollmentOwner`, `Cancel`).
+After the deployment drops or moves the entry, the pod's owner is `enrollment:<id>`, so the pod reads and cancels its own requests alone, and the person's sessions read and cancel none of them.
 `LiveCredentials`, `OwnLiveCredentials` and `RevokeCredential` read the setting by subject and not the row's operator:
 a token login whose subject the setting maps is that person's alone to list and revoke, with or without a pod and an operator on its row, because on the shipped schema a login of the account from a token bound to no pod moves the shared row to no operator.
 The pod logs in again with its token under a new credential, so a revoke ends what the login enrolled and does not keep the pod out.

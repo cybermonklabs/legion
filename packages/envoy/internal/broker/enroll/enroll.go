@@ -854,9 +854,12 @@ const claimOwnerPrefix = "claim:"
 // stated, which is the launcher's word as the session name it gives each pod is
 // (podUnderTokenLogin), and from nothing else:
 //
-//   - an enrollment under a credential that carries an operator — a person's own box, and that
-//     person's sign-in on a machine — is that person's (exchange.PersonPrincipal), whichever box
-//     or session it is;
+//   - an enrollment under a credential that carries an operator — a person's own box, that
+//     person's sign-in on a machine, and a person's pod (PersonPodLogin) — is that person's
+//     (exchange.PersonPrincipal), whichever box or session it is. A person's pod has that owner
+//     only while BROKER_POD_OPERATORS maps its account to the person (requests.Machine.owner).
+//     After the setting drops the account, or maps it to another person, the pod's requests are
+//     its own enrollment's alone;
 //   - a pod its launcher states a claim for is that claim's under the account the launcher's own
 //     token login proved, claim:<login subject>/<claim>, so a claim token is one owner however
 //     many generations and pods it runs in, and the same token stated by another login is another

@@ -302,9 +302,12 @@ type Machine struct {
 	// PodOperators is BROKER_POD_OPERATORS: each Kubernetes ServiceAccount subject that the
 	// deployment maps to a person, answering that person's login. A pod enrollment's operator
 	// is the person its pod acts for only while this map still names that person for the
-	// account the enrollment recorded (requester). It is read on every request, decision and
-	// release, as ServicesByAccount is. So when an entry is removed, or names another person, an
-	// enrolled pod of that account acts as its account's own at its next call.
+	// account the enrollment recorded (unmappedPersonPod). While it does, the pod asks as that
+	// person (requester), and its requests are that person's to read and cancel (owner). The map
+	// is read on every request, decision, release, read of a request and cancel, as
+	// ServicesByAccount is. So when an entry is removed, or names another person, an enrolled pod
+	// of that account acts as its account's own at its next call. From then on, its requests are
+	// its own enrollment's alone.
 	PodOperators map[string]string
 	// VMServicesByAccount is BROKER_VM_SERVICES, keyed by a Google service account's email: the
 	// service a machine whose Google identity token the exchange took proves, when its launcher
@@ -442,9 +445,9 @@ type enrollmentRow struct {
 // claim, which anyone signed in to Dispatch may approve, so the account is what proves the
 // service. Any other session has none.
 // A pod acts for its enrollment's operator only while `BROKER_POD_OPERATORS` (PodOperators)
-// still maps the account the enrollment recorded to that same person, both compared through
-// record.CanonicalLogin. Otherwise the pod acts for no person: it is its account's own, and its
-// service is read as above. A pod whose login carried no person acts for no person.
+// still maps the account the enrollment recorded to that same person (unmappedPersonPod).
+// Otherwise the pod acts for no person: it is its account's own, and its service is read as
+// above. A pod whose login carried no person acts for no person.
 // Every other session acts for its enrollment's operator. The enrollment row keeps the person it
 // was made for, and GrantsForApprover, mayRevoke, the approval record and the grant log read
 // that row, not this answer.
@@ -485,14 +488,8 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 		}
 	}
 	operator := deref(e.Operator)
-	if personPodGrant(e) {
-		var mapped string
-		if e.Subject != nil {
-			mapped = record.CanonicalLogin(m.PodOperators[*e.Subject])
-		}
-		if mapped == "" || mapped != record.CanonicalLogin(operator) {
-			operator = ""
-		}
+	if m.unmappedPersonPod(e) {
+		operator = ""
 	}
 	return policy.Requester{Operator: operator, Service: service, Withheld: withheld}, nil
 }
@@ -1062,10 +1059,13 @@ func lockPendingNames(ctx context.Context, tx pgx.Tx, enrollmentID string, sorte
 // transition, its audit row, and — when the request has a credential-request record — the
 // record's cancelled event, all in one transaction (store.EndPendingRequests).
 // The owner check compares the caller's owner with the owner of the enrollment the request hangs
-// off now (ownerOf, as OwnerAndState reads it), which an adoption rewrites: any enrollment of the same
-// person, Legion claim or machine cancels it, and an enrollment that records no owner cancels its
-// own requests alone, so the moved session cancels the request that moved with it and a box it
-// moved off that records no owner is ErrNotOwner.
+// off now (Machine.owner, as OwnerAndState reads it), which an adoption rewrites: any enrollment
+// of the same person, Legion claim or machine cancels it, and an enrollment that records no owner
+// cancels its own requests alone, so the moved session cancels the request that moved with it and
+// a box it moved off that records no owner is ErrNotOwner. A person's pod cancels its person's
+// requests only while BROKER_POD_OPERATORS maps its account to that person (unmappedPersonPod).
+// After the setting drops the account, or maps it to another person, the pod cancels its own
+// requests alone, and its person cancels none of the pod's requests.
 //
 // The audit row EndPendingRequests writes names the enrollment the request hangs off, and the
 // grant-log line names it too, since the line carries the ids its row names; the actor on both is
@@ -1077,13 +1077,14 @@ func (m *Machine) Cancel(ctx context.Context, id, enrollmentID string) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var owner, state, requestEnrollment string
-	if err := tx.QueryRow(ctx, `select `+ownerOf("e")+`, r.state, r.enrollment_id::text from requests r join enrollments e on e.id = r.enrollment_id
-		where r.id=$1 for update of r`, id).Scan(&owner, &state, &requestEnrollment); err != nil {
+	var state, requestEnrollment string
+	owner, err := m.scanOwner(tx.QueryRow(ctx, `select `+ownerColumns("e")+`, r.state, r.enrollment_id::text from requests r join enrollments e on e.id = r.enrollment_id
+		where r.id=$1 for update of r`, id), &state, &requestEnrollment)
+	if err != nil {
 		return err
 	}
-	var caller string
-	if err := tx.QueryRow(ctx, `select `+ownerOf("e")+` from enrollments e where e.id=$1`, enrollmentID).Scan(&caller); err != nil {
+	caller, err := m.scanOwner(tx.QueryRow(ctx, `select `+ownerColumns("e")+` from enrollments e where e.id=$1`, enrollmentID))
+	if err != nil {
 		return err
 	}
 	if owner != caller {
@@ -2373,6 +2374,23 @@ func anyListed(set *policy.Set, granted []requestedSecret) bool {
 // stops each grant the pod got only because it acted for that person.
 func personPodGrant(enr enrollmentRow) bool {
 	return enr.Kind == "pod" && enr.Operator != nil
+}
+
+// unmappedPersonPod reports whether enr is a person's pod (personPodGrant) that
+// BROKER_POD_OPERATORS (PodOperators) no longer maps to its operator. The setting must map the
+// account the enrollment recorded to that same person, both compared through
+// record.CanonicalLogin. Otherwise the pod acts for no person. It is false for every other
+// enrollment. requester and owner both read this one test, so the person a pod asks as and the
+// person whose requests it reads and cancels cannot differ.
+func (m *Machine) unmappedPersonPod(enr enrollmentRow) bool {
+	if !personPodGrant(enr) {
+		return false
+	}
+	var mapped string
+	if enr.Subject != nil {
+		mapped = record.CanonicalLogin(m.PodOperators[*enr.Subject])
+	}
+	return mapped == "" || mapped != record.CanonicalLogin(*enr.Operator)
 }
 
 // auditDetail is an audit row's non-secret detail object; audit writes it as JSON.
