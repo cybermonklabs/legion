@@ -387,9 +387,9 @@ type RequestReady struct {
 // mid-turn if the turn has not ended by then (holdSuspension); a daemon's suspension without one
 // waits for the turn however long it takes. The daemon sets one for a carried child's role still
 // running in its old tree, at the old root's linger expiry, where that tree's close would have
-// ended it (the daemon's outbox, stopCarried, which the new tree's start and the old tree's own
-// stop rows both ask). The operator's suspension sets none: it is bounded at the stop timeout from
-// its arrival.
+// ended it (the daemon's outbox, stopCarried, which the new tree's start, the old tree's own stop
+// rows and the stop the move queued all ask). The operator's suspension sets none: it is bounded
+// at the stop timeout from its arrival.
 //
 // NeverHold is a suspension that may not be held: one a caller posts only because it read the
 // claim in no turn, and whose refusal it reports to its own caller as nothing having happened. A

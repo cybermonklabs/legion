@@ -193,15 +193,30 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 	}
 
 	run("the carry's rows while the implementer's turn runs")
+	// Every suspend of the old tree for the implementer waits on it while its turn runs there: the
+	// close's own row, where the close held its suspension first, and the one the carry queued for
+	// the claim it left standing in the old tree (workflow.LeftTreeStops).
+	wantStops := 1
 	if closeHeld {
-		var lastError string
-		if err := pool.QueryRow(ctx, `select last_error from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'suspend'`,
-			childKey).Scan(&lastError); err != nil {
-			t.Fatalf("read the close's suspend row: %v", err)
-		}
-		if want := "suspend of tree " + rootKey + ", which " + childKey + " has left for tree " + childKey + ", waits for " +
-			string(implementer) + ":working in tree " + rootKey + " to stop"; !strings.Contains(lastError, want) {
-			t.Fatalf("the close's suspend row, of the earlier generation, last waited on %q; want it waiting on the implementer still running in tree %s (%q)",
+		wantStops = 2
+	}
+	rows, err := pool.Query(ctx, `select last_error from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'suspend'
+		and payload->>'tree' = $2 and payload->>'role' = 'implementer' order by id`, childKey, rootKey)
+	if err != nil {
+		t.Fatalf("read the old tree's suspend rows: %v", err)
+	}
+	waited, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the old tree's suspend rows: %v", err)
+	}
+	want := "suspend of tree " + rootKey + ", which " + childKey + " has left for tree " + childKey + ", waits for " +
+		string(implementer) + ":working in tree " + rootKey + " to stop"
+	if len(waited) != wantStops {
+		t.Fatalf("the old tree's suspend rows of the implementer last waited on %q; want %d, each waiting on %q", waited, wantStops, want)
+	}
+	for _, lastError := range waited {
+		if !strings.Contains(lastError, want) {
+			t.Fatalf("an old tree's suspend row of the implementer, of the earlier generation, last waited on %q; want it waiting on the implementer still running in tree %s (%q)",
 				lastError, rootKey, want)
 		}
 	}

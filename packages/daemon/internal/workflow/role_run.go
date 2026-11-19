@@ -11,7 +11,10 @@ import (
 // StopActs is whether a queued stop, row id, still acts on its claim when the outbox runs it, with
 // lastStart the newest start the outbox ran against the claim (its last_start_row), and root the
 // issue's tree root as recorded, read only for a tree close. The outbox executor asks it of every
-// suspend, issue close and tree close, and StartFor of every queued stop, so all read one rule. A
+// suspend, issue close and tree close of the issue's own tree, and StartFor of every queued stop, so
+// all read one rule. A suspend or tree close of a tree the issue has since left is not asked: it
+// stops a claim that still stands in that tree whatever this says, since no start of the issue's
+// new tree has run against that claim yet (the daemon outbox's stopInLeftTree, LeftTreeStops). A
 // tree close acts while its tree lingers at the root generation it names (record.Issue.LingersAt):
 // never once re-admission has moved the root on. A suspend — an issue's close, a child's leave, or
 // a re-entered child's interrupted run — a release — the idle pod's, which keeps the session and

@@ -3009,6 +3009,28 @@ func (s *Postgres) EarlierNotices(ctx context.Context, tx pgx.Tx, tree string, i
 	return earlier, nil
 }
 
+func (s *Postgres) TreeCloses(ctx context.Context, tx pgx.Tx, tree string) ([]OutboxRow, error) {
+	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
+		where kind = $1 and payload->>'op' = 'tree_close' and payload->>'tree' = $2
+		order by id`, string(OutboxKindSupervise), tree)
+	if err != nil {
+		return nil, fmt.Errorf("read the close rows of tree %s: %w", tree, err)
+	}
+	defer rows.Close()
+	closes := []OutboxRow{}
+	for rows.Next() {
+		row, err := scanOutbox(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read the close rows of tree %s: %w", tree, err)
+		}
+		closes = append(closes, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the close rows of tree %s: %w", tree, err)
+	}
+	return closes, nil
+}
+
 // ErrOutboxLeaseLost is FinishLeasedOutbox finding the row no longer held by the caller's lease:
 // another worker reclaimed it after this lease expired, or it is already gone.
 var ErrOutboxLeaseLost = errors.New("outbox row lease is no longer held")
