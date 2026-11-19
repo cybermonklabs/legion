@@ -1039,13 +1039,21 @@ func workloadIdentityVolumes(l launch) []corev1.Volume {
 	if l.microVM == nil || l.microVM.Metadata == nil {
 		return nil
 	}
+	return []corev1.Volume{projectedTokenVolume(workloadIdentityTokenVolume, l.microVM.Metadata.WorkloadPool, launcher.WorkloadIdentityTokenFile)}
+}
+
+// projectedTokenVolume is a volume of one projected ServiceAccount token for audience, at path in
+// the volume, for workloadIdentityTokenSeconds and readable by the pod's group, which is the
+// fsGroup every file of the pod's volumes carries (podTemplate): the shape of each token the
+// pod's launcher reads and no role does (workloadIdentityVolumes, sessionWriterVolumes).
+func projectedTokenVolume(name, audience, path string) corev1.Volume {
 	expiry := int64(workloadIdentityTokenSeconds)
-	return []corev1.Volume{{Name: workloadIdentityTokenVolume, VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+	return corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
 		DefaultMode: new(int32(0o440)),
 		Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-			Audience: l.microVM.Metadata.WorkloadPool, ExpirationSeconds: &expiry, Path: launcher.WorkloadIdentityTokenFile,
+			Audience: audience, ExpirationSeconds: &expiry, Path: path,
 		}}},
-	}}}}
+	}}}
 }
 
 // sessionWriterAudience is the audience of the session writer token the pods of r carry
@@ -1076,13 +1084,7 @@ func (r *Runtime) sessionWriterVolumes() []corev1.Volume {
 	if audience == "" {
 		return nil
 	}
-	expiry := int64(workloadIdentityTokenSeconds)
-	return []corev1.Volume{{Name: sessionWriterTokenVolume, VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
-		DefaultMode: new(int32(0o440)),
-		Sources: []corev1.VolumeProjection{{ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-			Audience: audience, ExpirationSeconds: &expiry, Path: launcher.SessionWriterTokenFile,
-		}}},
-	}}}}
+	return []corev1.Volume{projectedTokenVolume(sessionWriterTokenVolume, audience, launcher.SessionWriterTokenFile)}
 }
 
 // exchangeTokenExpirySeconds is how long the kubelet mints a pod's exchange token for: an hour,

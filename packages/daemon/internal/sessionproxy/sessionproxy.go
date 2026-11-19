@@ -576,13 +576,10 @@ func connectorOptions(ctx context.Context, signer Signer, google googleEndpoints
 		if err != nil {
 			return nil, fmt.Errorf("exchange the writer token to impersonate %s: %w", account, err)
 		}
-		base := google.iam
-		if base == nil {
-			base = http.DefaultTransport
-		}
+		// oauth2.Transport sends over http.DefaultTransport when Base is nil, which is a pod's case.
 		iam = []option.ClientOption{option.WithHTTPClient(&http.Client{Timeout: writerCallTimeout, Transport: &oauth2.Transport{
 			Source: oauth2.ReuseTokenSourceWithExpiry(nil, federated, writerTokenEarlyRefresh),
-			Base:   base,
+			Base:   google.iam,
 		}})}
 	case google.iam != nil:
 		iam = []option.ClientOption{option.WithHTTPClient(&http.Client{Transport: google.iam})}

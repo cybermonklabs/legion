@@ -240,33 +240,47 @@ func (issuePod) initVolumes(l launch) []corev1.Volume {
 // provider and mounts the projected token it exchanges at WorkloadIdentityDir, under RolesDir,
 // where no role's namespace shows it.
 func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
-	roles, own := r.rolesDirLayout(l.roles)
-	command := slices.Concat([]string{r.tools.Legion, "launcher", connectFlag, r.streamURL, "--sandbox", l.name}, roles)
-	mounts := slices.Concat([]corev1.VolumeMount{
+	shared := []corev1.VolumeMount{
 		{Name: issueVolume, MountPath: TreeRoot},
 		{Name: configVolume, MountPath: xdgConfigHome},
 		readOnlyFeed(),
-	}, own)
+	}
+	var flags []string
+	var extra []corev1.VolumeMount
 	if r.testPostgres {
 		// The launcher serves the pod's own test database (launcher's testpg.go) and the roles
 		// container keeps its cluster here; no role's namespace shows this mount.
-		command = append(command, "--test-postgres")
-		mounts = append(mounts, corev1.VolumeMount{Name: testPGVolume, MountPath: TestPGDir})
+		flags = append(flags, "--test-postgres")
+		extra = append(extra, corev1.VolumeMount{Name: testPGVolume, MountPath: TestPGDir})
 	}
 	if l.microVM != nil {
-		command = append(command, "--microvm")
+		flags = append(flags, "--microvm")
 		if endpoint := l.microVM.Metadata; endpoint != nil {
-			command = append(command, "--metadata-workload-pool", endpoint.WorkloadPool, "--metadata-identity-provider", endpoint.IdentityProvider)
-			mounts = append(mounts, corev1.VolumeMount{Name: workloadIdentityTokenVolume, MountPath: WorkloadIdentityDir, ReadOnly: true})
+			flags = append(flags, "--metadata-workload-pool", endpoint.WorkloadPool, "--metadata-identity-provider", endpoint.IdentityProvider)
+			extra = append(extra, corev1.VolumeMount{Name: workloadIdentityTokenVolume, MountPath: WorkloadIdentityDir, ReadOnly: true})
 		}
 	}
+	return r.rolesDirLauncher(k, l, resolved, providersMounts, shared, flags, extra)
+}
+
+// rolesDirLauncher is the one container of a pod whose launcher runs the roles-dir form for the
+// roles of l (rolesDirLayout): an issue pod's `roles`, and the controller's `controller` where the
+// session database names a writer audience (controllerPod.rolesDirContainer). Both kinds build it
+// here, so the tokens no role may read (podTokenMounts) and the home's mounts (homeMountsView) are
+// laid out the same way in each. The launcher's command is the stream's address and the
+// Sandbox's name, the form's own words, the kind's flags, then the stop grace and the session
+// proxy's flags. Its mounts are shared, each role's own volumes, the kind's extra mounts, then the
+// tokens, the providers and the operator's mounts, in that order.
+func (r *Runtime) rolesDirLauncher(k podKind, l launch, resolved []corev1.EnvVar, providersMounts, shared []corev1.VolumeMount, flags []string, extra []corev1.VolumeMount) corev1.Container {
+	roles, own := r.rolesDirLayout(l.roles)
 	return corev1.Container{
-		Name:            k.container(),
-		Image:           r.image,
-		Command:         slices.Concat(command, []string{"--stop-grace", r.terminationGrace.String()}, r.sessionProxyFlags()),
+		Name:  k.container(),
+		Image: r.image,
+		Command: slices.Concat([]string{r.tools.Legion, "launcher", connectFlag, r.streamURL, "--sandbox", l.name}, roles, flags,
+			[]string{"--stop-grace", r.terminationGrace.String()}, r.sessionProxyFlags()),
 		Env:             resolved,
 		WorkingDir:      l.workspace,
-		VolumeMounts:    homeMountsView(slices.Concat(mounts, r.podTokenMounts(), providersMounts, r.pod.VolumeMounts)),
+		VolumeMounts:    homeMountsView(slices.Concat(shared, own, extra, r.podTokenMounts(), providersMounts, r.pod.VolumeMounts)),
 		Resources:       k.resources(r),
 		SecurityContext: restrictedContainer(),
 	}
@@ -518,24 +532,12 @@ func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1
 // mounts nothing at those paths, and the agent sees each where it always has. The pod's volume, the
 // config home, the tokens (podTokenMounts), the providers and the operator's mounts are mounted
 // once, and every one of them at or under the image's home through homeMountsView, as in an issue
-// pod.
+// pod: both kinds build the container in rolesDirLauncher.
 func (k controllerPod) rolesDirContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
-	roles, own := r.rolesDirLayout(l.roles)
-	mounts := slices.Concat([]corev1.VolumeMount{
+	return r.rolesDirLauncher(k, l, resolved, providersMounts, []corev1.VolumeMount{
 		{Name: issueVolume, MountPath: TreeRoot},
 		{Name: configVolume, MountPath: xdgConfigHome},
-	}, own)
-	return corev1.Container{
-		Name:  k.container(),
-		Image: r.image,
-		Command: slices.Concat([]string{r.tools.Legion, "launcher", connectFlag, r.streamURL, "--sandbox", l.name}, roles,
-			[]string{"--stop-grace", r.terminationGrace.String()}, r.sessionProxyFlags()),
-		Env:             resolved,
-		WorkingDir:      l.workspace,
-		VolumeMounts:    homeMountsView(slices.Concat(mounts, r.podTokenMounts(), providersMounts, r.pod.VolumeMounts)),
-		Resources:       k.resources(r),
-		SecurityContext: restrictedContainer(),
-	}
+	}, nil, nil)
 }
 
 // mainVolumes are none beyond the controller's own in the single-role form: its launcher has no
