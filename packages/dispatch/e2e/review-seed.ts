@@ -94,7 +94,10 @@ function createReviewPriority() {
  *  the broadcast page's read of the replies its recipients wrote (`BroadcastPage.tsx`,
  *  `useMarkShownRepliesRead`), and the Spec tab's read of the issue's spec at its newest version,
  *  in the desktop row and again in the phone row (`useSpecMarks`). These are those writes, the same
- *  requests the pages send; after them each page's own write changes nothing. */
+ *  requests the pages send; after them each page's own write changes nothing. A page of the shot
+ *  set that comes to write a mark as it draws needs that mark written here too: until it is, the
+ *  visual job's reverse-order run (`DISPATCH_E2E_VISUAL_ORDER=reverse`, e2e/visual-order.ts) fails
+ *  by the name of a row that read it. */
 async function markWhatTheShotPagesRead(broadcastId: string, issue: string): Promise<void> {
   const broadcast = await getBroadcast(broadcastId);
   let replies = 0;
