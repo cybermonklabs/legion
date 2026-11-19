@@ -86,6 +86,11 @@ type Deps struct {
 	// 4 GiB calibration (calibratedGoMemoryLimitBytes), which is what every test that does not
 	// set this runs under.
 	GoMemoryLimit int64
+	// RoomIdleTimeout is how long an idle room stays resident before ygo's idle sweeper evicts it
+	// (Server.RoomIdleTimeout); zero means roomIdleTimeout, a minute. The sweeper runs on the real
+	// clock, which nothing a test hands the service reaches, so a test whose verdict needs a room
+	// to leave residency only through a close it asked for hands a window that never ends.
+	RoomIdleTimeout time.Duration
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -982,7 +987,10 @@ func New(deps Deps) *Service {
 	// (roomServer.closeWhenFree), and its close of a room whose stored history was replaced under
 	// it runs inside its own Apply on the room (roomServer.closeInstance, ygo's CloseRoomWithin).
 	// A write's commit into a room therefore reaches that room's own persistence worker.
-	srv.RoomIdleTimeout = roomIdleTimeout
+	srv.RoomIdleTimeout = deps.RoomIdleTimeout
+	if srv.RoomIdleTimeout <= 0 {
+		srv.RoomIdleTimeout = roomIdleTimeout
+	}
 	// ygo reads a websocket message of up to 64 MiB without this floor, from any browser that
 	// opens a document socket. It is a floor against a client that is not the editor, not the
 	// bound on what a document may hold, which is the peer update hook's (maxMessageBytes).

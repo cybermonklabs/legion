@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The repair pass (RepairIssueAsks) brings the asks of an issue a release older than the
@@ -49,16 +50,21 @@ func newRepairFixtureSettlingAfter(t *testing.T, settle time.Duration) repairFix
 	return newRepairFixtureOn(t, settle, nil)
 }
 
+// repairRoomsNeverIdleOut is the repair fixture's room idle timeout (docs.Deps.RoomIdleTimeout):
+// ygo's idle sweeper, comparing a room's idle time with it on the real clock, never reaches it.
+const repairRoomsNeverIdleOut = time.Duration(1<<63 - 1)
+
 // newRepairFixtureOn is newRepairFixtureSettlingAfter on a pool tracer traces (storetest.Traced),
 // so the repair's xid window can be measured on it (issue_ask_repair_xid_window_test.go); a nil
-// tracer leaves the pool untraced.
+// tracer leaves the pool untraced. Its rooms never idle out (repairRoomsNeverIdleOut), so a room
+// of the fixture leaves residency only through a close.
 func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTracer) repairFixture {
 	t.Helper()
 	database := storetest.Open(t)
 	if tracer != nil {
 		database = &store.Store{Pool: storetest.Traced(t, database.Pool, tracer, nil)}
 	}
-	documents := docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: settle})
+	documents := docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: settle, RoomIdleTimeout: repairRoomsNeverIdleOut})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	// A close or reopen reaches the document rooms from its commit (migration 20261101181500's
 	// trigger), whoever wrote it, an older release's SQL below included.
@@ -128,14 +134,13 @@ func reopenWithoutRestoring(t *testing.T, f repairFixture, issue, status string,
 // reopen just committed reaches this process from its commit (migration 20261101181500's trigger
 // and the room-sync lane the fixture runs, runDocumentRoomSync), and that lane closes every room
 // the issue's documents held, storing what each had taken first (setRoomIssueOpen, then
-// closeRoomForIssue in internal/dispatch/docs/service.go). Nothing here loads one again meanwhile.
-//
-// The ten seconds are a hang guard, not a race against an eviction: the close is asked for before
-// this poll starts, and a notified close closes the room whatever the room's record holds, so the
-// deadline is reached only by a close that never ran, or one that never finished, which is a
-// defect rather than a slow machine. The bound stays so that such a defect fails this test by
-// name, printing the issue's documents and what is still resident, rather than hanging the
-// package's run.
+// closeRoomForIssue in internal/dispatch/docs/service.go). Nothing here loads one again meanwhile
+// (a settlement armed before a reopen would, once the reopen has closed its room: docs'
+// settlement.take; so a caller whose own writes armed one settles the issue's documents first),
+// and the fixture's rooms never idle out (repairRoomsNeverIdleOut), so that close is the only way
+// the rooms empty: a close or reopen that closed none of them fails here by name, with the issue's
+// documents and the rooms still resident when the wait gave up, rather than passing once ygo's
+// idle sweep evicted them.
 func awaitIssueRoomsClosed(t *testing.T, f repairFixture, issue string) {
 	t.Helper()
 	rows, err := f.database.Pool.Query(store.WithTransactionTracking(context.Background()),
@@ -147,15 +152,20 @@ func awaitIssueRoomsClosed(t *testing.T, f repairFixture, issue string) {
 	if err != nil {
 		t.Fatalf("list the documents of %s: %v", issue, err)
 	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		resident := f.documents.ResidentRooms()
-		if !slices.ContainsFunc(documents, func(document string) bool { return slices.Contains(resident, document) }) {
-			return
+	var resident []string
+	closed := false
+	// Eventually's failure names what it waited for; this logs beside it, as that failure ends
+	// the test, the rooms still resident when the wait gave up.
+	defer func() {
+		if !closed {
+			t.Logf("still resident when the wait for %s's rooms gave up: %v", issue, resident)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("a room of %s's documents %v stayed resident after its close or reopen (resident: %v)", issue, documents, resident)
-		}
-	}
+	}()
+	testwait.Eventually(t, fmt.Sprintf("every room of %s's documents %v to leave residency", issue, documents), func() bool {
+		resident = f.documents.ResidentRooms()
+		return !slices.ContainsFunc(documents, func(document string) bool { return slices.Contains(resident, document) })
+	})
+	closed = true
 }
 
 // appendIssueEvent appends an eventType event of issue naming actor, its payload the issue's
@@ -423,6 +433,13 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 	}
 	for _, ask := range asks {
 		requireWithdrawn(t, f.handler, issue.Key, ask, model.Actor{Kind: "user", ID: "alice", Proven: true})
+	}
+	// The close's writes leave the spec's settlement armed, and a settlement armed before a reopen
+	// outlives the reopen's close of the room and loads the room again (docs' settlement.take), so
+	// it runs here, before the reopen whose close awaitIssueRoomsClosed waits for.
+	// That re-warm is the product's design (settlement.take's own comment), not a defect.
+	if err := f.documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+		t.Fatalf("settle the closed issue's documents: %v", err)
 	}
 	reopener := repairActor("session-reopener")
 	reopenWithoutRestoring(t, f, issue.Key, "in_progress", reopener)
