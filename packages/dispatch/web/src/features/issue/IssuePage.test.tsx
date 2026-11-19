@@ -237,9 +237,9 @@ function stubIssuePage(
 }
 
 /**
- * The reads the issue page's own panels make: the header's repository and component lines, the
- * Spec tab's requirements, the Artifacts tab's lists, the issue's references, and each
- * document's own record, text, blocks and versions, with the decisions and read marks
+ * The reads the issue page's own panels make: the header's component line, the Spec tab's
+ * requirements, the Artifacts tab's lists, the issue's references, and each document's own
+ * record, text, blocks and versions, with the decisions and read marks
  * `decisionsAndReadMarkHandlers` answers. Each is answered with the API's empty shape, so a
  * panel renders its loaded-empty state rather than its error state. A test that asserts one of
  * these spies the `api` method that fetches it (`spyOn(api, "getArtifactText")`) and never
@@ -247,7 +247,6 @@ function stubIssuePage(
  */
 function answerIssuePageReads(): void {
   answerRequests(
-    http.get("/api/v1/settings/repo-projects", () => Response.json([])),
     http.get("/api/v1/projects/:project/architecture-sources", () => Response.json([])),
     http.get("/api/v1/issues/:key/coverage", ({ params }) =>
       Response.json({

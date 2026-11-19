@@ -24,6 +24,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Project created: ${event.payload.name}`;
     case "project.updated":
       return `Project updated: ${event.payload.name}`;
+    // No build writes this event now: a project's default repository is on the project. An event
+    // retained from an earlier build keeps its wording.
     case "settings.repo_project.updated":
       return `${event.payload.deleted ? "Repository mapping removed" : "Repository mapping updated"}: ${event.payload.mapping.repo}`;
     // No write clears a default now: a project always names somebody. An event retained from

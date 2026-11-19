@@ -7,11 +7,11 @@
 // No route lists every project's daemon, so the section reads each project's
 // `GET /api/v1/projects/{key}/legion/daemon` (`useLegionDaemons`), and a write changes the one
 // entry of the project it names. The two writes are `PUT` and
-// `DELETE /api/v1/projects/{key}/legion/daemon`, classed `scopeDeployment` beside the repository
-// mappings and the Delivery settings: pointing Dispatch at a host is the deployment's business,
-// not one project's. A credential naming one project is refused by the server, which is the only
-// role Dispatch has, so the controls are offered to any signed-in person (`useIsHuman`) and the
-// server refuses the rest; its refusal is shown under the form as it wrote it.
+// `DELETE /api/v1/projects/{key}/legion/daemon`, classed `scopeDeployment` beside a project's
+// default repository and the Delivery settings: pointing Dispatch at a host is the deployment's
+// business, not one project's. A credential naming one project is refused by the server, which is
+// the only role Dispatch has, so the controls are offered to any signed-in person (`useIsHuman`)
+// and the server refuses the rest; its refusal is shown under the form as it wrote it.
 import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
@@ -150,7 +150,7 @@ export function LegionDaemonsSection(): ReactNode {
       setStateUrl("");
     },
     // The answer is the row as the server saved it when it answered; reading the project again
-    // once the write settles leaves the page on the server's state, as the repository mappings do.
+    // once the write settles leaves the page on the server's state.
     onSettled: (_setting, _error, variables) =>
       queryClient.invalidateQueries({ queryKey: daemonKey(variables.project) }),
   });

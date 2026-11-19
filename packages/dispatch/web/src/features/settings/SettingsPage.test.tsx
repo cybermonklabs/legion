@@ -30,7 +30,6 @@ function stubUnrelatedQueries() {
     listArchitectureSources: spyOn(api, "listArchitectureSources").mockResolvedValue([]),
     listProjectDefaultAssignees: spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]),
     listProjects: spyOn(api, "listProjects").mockResolvedValue([]),
-    listRepoProjects: spyOn(api, "listRepoProjects").mockResolvedValue([]),
     whoAmI: spyOn(api, "whoAmI").mockResolvedValue({
       event_head: "0",
       kind: "user",

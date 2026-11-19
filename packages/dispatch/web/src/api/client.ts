@@ -985,27 +985,6 @@ export class DispatchApiClient {
     return this.post("/api/v1/projects", {}, input, bounds);
   }
 
-  listRepoProjects() {
-    return this.read("/api/v1/settings/repo-projects", {});
-  }
-
-  async putRepoProject(
-    repo: string,
-    input: Body<"/api/v1/settings/repo-projects/{owner}/{repo}", "put">,
-    bounds: WriteBounds
-  ) {
-    return this.put(
-      "/api/v1/settings/repo-projects/{owner}/{repo}",
-      repoParams(repo),
-      input,
-      bounds
-    );
-  }
-
-  async deleteRepoProject(repo: string, bounds: WriteBounds): Promise<void> {
-    await this.remove("/api/v1/settings/repo-projects/{owner}/{repo}", repoParams(repo), bounds);
-  }
-
   /** Every project with the person it defaults to: each one names somebody, so none is left out.
    *  Needs the `person` scope. */
   listProjectDefaultAssignees() {
@@ -1022,6 +1001,19 @@ export class DispatchApiClient {
     bounds: WriteBounds
   ) {
     return this.put("/api/v1/projects/{key}/default-assignee", { key: project }, input, bounds);
+  }
+
+  /** Sets the repository an issue of the project resolves to when neither the issue nor an issue
+   *  above it names one, `owner/name`. `{ repo: null }` clears it. The server stores the name in
+   *  lower case with no `.git`, and its answer holds the stored value. A name GitHub could hold no
+   *  repository at is refused `400 INVALID_PROJECT`. The write belongs to the deployment: it needs
+   *  no `person` scope, and a credential of one project is refused. */
+  putProjectDefaultRepository(
+    project: string,
+    input: Body<"/api/v1/projects/{key}/default-repository", "put">,
+    bounds: WriteBounds
+  ) {
+    return this.put("/api/v1/projects/{key}/default-repository", { key: project }, input, bounds);
   }
 
   /** Every project's architecture sources, by project and then in the order each was added. */

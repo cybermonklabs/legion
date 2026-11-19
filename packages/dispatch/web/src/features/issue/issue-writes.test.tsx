@@ -108,9 +108,6 @@ function stubIssueApi() {
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({
     "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
   });
-  // The header reads the project's repository mappings at once for an issue that resolves to
-  // none, as this one does; a project that maps none shows no repository item.
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue([]);
   // The Spec tab's requirements and the header's component line read these for the issue under
   // test; both answer the API's empty shape, which is what this fixture's issue has.
   const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
@@ -163,7 +160,6 @@ function stubIssueApi() {
       getMyState.mockRestore();
       getIssueCoverage.mockRestore();
       listProjectArchitectureSources.mockRestore();
-      listRepoProjects.mockRestore();
       patchIssue.mockRestore();
     },
   };

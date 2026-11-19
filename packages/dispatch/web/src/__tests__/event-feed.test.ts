@@ -1121,14 +1121,16 @@ const rules: Record<string, Rule> = {
     refreshes: ["comment"],
     spares: ["documentPanel"],
   },
-  "a repository mapping refreshes every issue detail": {
+  // A retained event no build writes now: a project's default repository is on the project, so an
+  // event an earlier build stored moves no read.
+  "a retained settings.repo_project.updated refreshes nothing": {
     event: event(
       "settings.repo_project.updated",
       { deleted: false, mapping: { default: true, project: "CORE", repo: "acme/widgets" } },
       { issue_key: null }
     ),
-    refreshes: ["detail", "unrelatedDetail", "projects", "projectList"],
-    spares: ["inbox", "pinned"],
+    refreshes: [],
+    spares: ["detail", "unrelatedDetail", "projects", "projectList", "inbox", "pinned"],
   },
   // The Inbox's thread rows, by the event that moves each of them.
   "an issue-less message.created naming the viewer refreshes the Inbox's Agent rows": {
@@ -1393,7 +1395,7 @@ const rules: Record<string, Rule> = {
       spares: ["threadHandedOn", "threadAnswered", "threadOnOtherProject", "threadOnOtherDocument"],
     },
   // The project list carries no default assignee, so a new project's is in the defaults read
-  // alone; an update of a project moves no default.
+  // alone; an update of a project moves no default assignee.
   "a new project refreshes the defaults read the Settings table reads its default from": {
     event: event(
       "project.created",
@@ -1403,15 +1405,31 @@ const rules: Record<string, Rule> = {
     refreshes: ["projects", "projectDefaultAssignees"],
     spares: ["inbox", "detail"],
   },
-  "a project's update leaves the defaults read alone": {
-    event: event(
-      "project.updated",
-      { created_at: "2026-10-26T00:00:00Z", key: "CORE", name: "Core" },
-      { issue_key: null }
-    ),
-    refreshes: ["projects"],
-    spares: ["projectDefaultAssignees", "inbox", "detail"],
-  },
+  // An update can move the project's default repository, which every issue of the project that
+  // names no repository resolves to: every loaded issue list and issue detail reads again.
+  "a project's update refreshes the project list and every issue list and detail, and leaves the defaults read alone":
+    {
+      event: event(
+        "project.updated",
+        {
+          created_at: "2026-10-26T00:00:00Z",
+          default_repo: "acme/widgets",
+          key: "CORE",
+          name: "Core",
+        },
+        { issue_key: null }
+      ),
+      refreshes: [
+        "projects",
+        "projectList",
+        "otherProjectList",
+        "labelledProjectList",
+        "pinned",
+        "detail",
+        "unrelatedDetail",
+      ],
+      spares: ["projectDefaultAssignees", "inbox"],
+    },
 };
 
 test.each(Object.entries(rules))("%s", (_name, rule) => {

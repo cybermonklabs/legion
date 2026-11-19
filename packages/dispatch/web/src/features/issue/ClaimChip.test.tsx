@@ -80,11 +80,8 @@ function header(
     referenced_by_count: 0,
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  // The header reads the project's repository mappings at once for an issue that resolves to
-  // none, as these do; a project that maps none shows no repository item. The components line
-  // reads the project's architecture sources the same way, and a project with none offers no
-  // picker, so neither read reaches the network.
-  const mappings = spyOn(api, "listRepoProjects").mockResolvedValue([]);
+  // The components line reads the project's architecture sources at once, and a project with
+  // none offers no picker, so the read does not reach the network.
   const architectureSources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MemoryRouter>
@@ -107,7 +104,6 @@ function header(
   return {
     unmount: () => {
       view.unmount();
-      mappings.mockRestore();
       architectureSources.mockRestore();
     },
     user,
