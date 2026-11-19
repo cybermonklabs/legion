@@ -4968,9 +4968,11 @@ A cache of an earlier release answers no `streams`, and one whose `/healthz` can
 A launch whose cache cannot be made fails, naming why.
 The cache of a repository no live record names, and no launch worked since the last read of the live records, is annotated `legion.dev/cache-unused-at` at the sweep that finds it so, kept for `runtime.kubernetes.repository_cache.retain_hours` (168 by default), and then deleted with its volume and Secret;
 named by a live record again before that, it loses the annotation and stays.
-A cache that an earlier release marked under the annotation's old name keeps the time of that first mark:
+A cache that an earlier release marked under the annotation's old name keeps the time of its first mark, the earlier of its marks that is a time:
 at the first sweep after the upgrade, one whose first mark is less than one retention old has that time written under `legion.dev/cache-unused-at` and the old annotation removed, so it retires one retention after its first mark, and one whose first mark is one retention old or more is deleted at that sweep;
-a cache that a live record names loses the old annotation at that sweep.
+one none of whose marks is a time is annotated with that sweep's time and loses the old annotation, so it is kept one retention, and the sweep logs a warning naming the cache and each value (`repository cache carries no mark that is a time`).
+A cache that a live record names loses the old annotation at that sweep.
+Each cache that loses the old annotation is logged once, at info, with its repository, the old value and what the sweep did.
 A cache the sweep cannot make or repair — its owner's token cannot be minted, say — is a warning naming it, tried again at the next sweep.
 The boot census refuses a Sandbox labelled `legion.dev/cache` that is not one this runtime builds (no repository annotation, or another container or claim template), by name.
 

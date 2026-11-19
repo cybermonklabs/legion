@@ -806,17 +806,20 @@ func (r *Runtime) refreshCacheTokens(ctx context.Context) {
 // the last read names it — is marked with now once, kept while now minus the mark is under the
 // retention, and deleted after it (deleteFenced, in the foreground, so its volume and Secret go
 // with it), logged with the repository and how long it was kept. A cache an earlier release
-// marked under annotationCacheOldUnusedAt alone has that mark read as its first mark: under the
-// retention, it is written under annotationCacheUnusedAt in the patch that removes the old
-// annotation, so the cache retires one retention after its first mark; at or past it, the cache
-// is retired at this sweep, as one whose new mark is that old. Then every member's cache is ensured
-// (EnsureRepositoryCache): one missing is made — at boot, whose reconciliation runs this, and
-// after a launch's own ensure failed — and a drifted or dead cache pod is replaced, all on the
-// sweep's schedule. Each runs under the cache's launch turn, fenced to the Sandbox as the store
-// held it. Every failure is logged, as a warning naming the cache, and tried at the next sweep;
-// none is ReconcileOrphans' error, which holds the claims' launches back at boot
-// (reconcileBootOrphans): each launch ensures its own repository's cache and fails, naming why,
-// when it cannot be made, so one repository's cache never stops another's launches.
+// marked under annotationCacheOldUnusedAt loses that annotation at the first pass that judges it
+// (sweepCache), in the set or not. Outside the set it keeps the time of its first mark, the
+// earlier of its marks that parse as a time: it is retired at that pass when that mark is one
+// retention old or more, and otherwise has that time written under annotationCacheUnusedAt in the
+// patch that removes the old annotation, so it retires one retention after its first mark; one
+// none of whose marks parses is marked with now in that patch, with a warning naming each value,
+// and kept one retention. Then every member's cache is ensured (EnsureRepositoryCache): one
+// missing is made — at boot, whose reconciliation runs this, and after a launch's own ensure
+// failed — and a drifted or dead cache pod is replaced, all on the sweep's schedule. Each runs
+// under the cache's launch turn, fenced to the Sandbox as the store held it. Every failure is
+// logged, as a warning naming the cache, and tried at the next sweep; none is ReconcileOrphans'
+// error, which holds the claims' launches back at boot (reconcileBootOrphans): each launch
+// ensures its own repository's cache and fails, naming why, when it cannot be made, so one
+// repository's cache never stops another's launches.
 func (r *Runtime) sweepCaches(ctx context.Context) {
 	cached := r.cacheRepositories()
 	for _, u := range r.storedCaches() {
@@ -832,11 +835,18 @@ func (r *Runtime) sweepCaches(ctx context.Context) {
 }
 
 // sweepCache is sweepCaches' judgement of one stored cache Sandbox, u, against cached, the cache
-// set. Outside the set, a cache's mark is its annotationCacheUnusedAt or, on a cache an earlier
-// release marked under annotationCacheOldUnusedAt alone, that old mark, the cache's first: a cache
-// the old mark keeps has it written under annotationCacheUnusedAt, in the patch that removes the
-// old annotation, and an old mark that is not a time is logged and the cache kept, as a new mark
-// that is not one is and as that release did.
+// set. In the set, a cache loses both marks. Outside it, a cache's first mark is the earlier of
+// its marks that parse as a time — its annotationCacheUnusedAt and, on a cache an earlier release
+// marked, its annotationCacheOldUnusedAt — and the cache is retired once now minus that mark
+// reaches the retention. A cache that carries the old annotation and is kept has its first mark
+// written under annotationCacheUnusedAt in the patch that removes the old annotation (markUnused
+// with that mark's time, never now), so it retires one retention after its first mark; one none
+// of whose marks parses is marked with now in that patch and logged as a warning naming each
+// value, so it is kept one retention and not retired at once. A cache that carries no old
+// annotation is marked with now when it carries no mark either, and logged and kept when its mark
+// is not a time. Each cache whose old annotation this pass removes has one INFO line naming the
+// cache, its repository, the old annotation's value and what the pass did: cleared it in the set,
+// marked the cache at its first mark, retired it, or marked it with now.
 func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, cached []ghrepo.Repository) error {
 	repo, err := cacheRepository(u.GetAnnotations())
 	if err != nil {
@@ -856,43 +866,62 @@ func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, 
 	}
 	marked := s.Annotations[annotationCacheUnusedAt]
 	old, markedBefore := s.Annotations[annotationCacheOldUnusedAt]
+	// oldMark is the old annotation and its value, which the line logged for a cache that carries
+	// it names.
+	var oldMark []any
+	if markedBefore {
+		oldMark = []any{annotationCacheOldUnusedAt, old}
+	}
 	if slices.ContainsFunc(cached, func(m ghrepo.Repository) bool { return sameRepository(m, repo) }) {
 		if marked != "" || markedBefore {
 			if _, err := r.markUnused(ctx, s, nil); err != nil {
 				return err
 			}
-			r.log.Info("sandbox runtime: repository cache back in the cache set; kept", "sandbox", s.Name, "repo", repo.String())
+			r.log.Info("sandbox runtime: repository cache back in the cache set; its marks cleared, kept",
+				append([]any{"sandbox", s.Name, "repo", repo.String()}, oldMark...)...)
 		}
 		return nil
 	}
 	now := r.now()
-	under := annotationCacheUnusedAt
-	if marked == "" && old != "" {
-		marked, under = old, annotationCacheOldUnusedAt
-	}
-	if marked == "" {
-		stamp := now.UTC().Format(time.RFC3339)
-		if _, err := r.markUnused(ctx, s, &stamp); err != nil {
-			return err
+	// first is the cache's first mark, the earlier of its marks that parse as a time; err is nil
+	// once one does.
+	first := marked
+	at, err := time.Parse(time.RFC3339, first)
+	if markedBefore {
+		if oldAt, oldErr := time.Parse(time.RFC3339, old); oldErr == nil && (err != nil || oldAt.Before(at)) {
+			first, at, err = old, oldAt, nil
 		}
-		r.log.Info("sandbox runtime: repository cache no longer in the cache set; kept for its retention", "sandbox", s.Name, "repo", repo.String(), "retain", r.cacheConfig.Retain.String())
+	}
+	if err == nil {
+		if kept := now.Sub(at); kept >= r.cacheConfig.Retain {
+			return r.deleteFenced(ctx, s, "sandbox runtime: retired a repository cache no longer in the cache set",
+				append([]any{"repo", repo.String(), "kept", kept.Truncate(time.Second).String()}, oldMark...)...)
+		}
+		if markedBefore {
+			if _, err := r.markUnused(ctx, s, &first); err != nil {
+				return err
+			}
+			r.log.Info("sandbox runtime: repository cache marked at its first mark, its old annotation removed; kept for the rest of its retention",
+				"sandbox", s.Name, "repo", repo.String(), annotationCacheOldUnusedAt, old, annotationCacheUnusedAt, first, "retain", r.cacheConfig.Retain.String())
+		}
 		return nil
 	}
-	at, err := time.Parse(time.RFC3339, marked)
-	if err != nil {
-		return fmt.Errorf("%s is %q, not a time: %w; kept", under, marked, err)
+	if marked != "" && !markedBefore {
+		return fmt.Errorf("%s is %q, not a time: %w; kept", annotationCacheUnusedAt, marked, err)
 	}
-	if kept := now.Sub(at); kept >= r.cacheConfig.Retain {
-		return r.deleteFenced(ctx, s,
-			"sandbox runtime: retired a repository cache no longer in the cache set", "repo", repo.String(), "kept", kept.Truncate(time.Second).String())
+	stamp := now.UTC().Format(time.RFC3339)
+	if _, err := r.markUnused(ctx, s, &stamp); err != nil {
+		return err
 	}
-	if under == annotationCacheOldUnusedAt {
-		if _, err := r.markUnused(ctx, s, &marked); err != nil {
-			return err
+	if markedBefore {
+		values := []any{"sandbox", s.Name, "repo", repo.String(), annotationCacheOldUnusedAt, old}
+		if marked != "" {
+			values = append(values, annotationCacheUnusedAt, marked)
 		}
-		r.log.Info("sandbox runtime: repository cache marked under the old annotation; marked under the new one at its first mark, kept for the rest of its retention",
-			"sandbox", s.Name, "repo", repo.String(), "marked", marked, "retain", r.cacheConfig.Retain.String())
+		r.log.Warn("sandbox runtime: repository cache carries no mark that is a time; marked with this sweep's time, its old annotation removed", values...)
 	}
+	r.log.Info("sandbox runtime: repository cache no longer in the cache set; kept for its retention",
+		append([]any{"sandbox", s.Name, "repo", repo.String(), "retain", r.cacheConfig.Retain.String()}, oldMark...)...)
 	return nil
 }
 
