@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // A send or publish the stream refused because it holds its byte limit (bus.ErrStreamFull) was
@@ -56,7 +57,7 @@ func TestAFullStreamIsAnsweredAsFullNotAsABusThatDidNotAnswer(t *testing.T) {
 				if got := recorder.Header().Get("Retry-After"); got == "" {
 					t.Fatalf("Retry-After is unset, want one: the same send is taken once the stream has room")
 				}
-				var refusal apiError
+				var refusal listenerwire.APIError
 				if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 					t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 				}

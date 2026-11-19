@@ -58,10 +58,10 @@ func reservations() PodResources {
 }
 
 // probeReservation is the image probe's own reservation as the daemon hands it
-// (internal/daemon/kubernetes.go, probeReservation), translated the same way: 250m and 1Gi, with a
+// (internal/daemon/kubernetes.go, probeReservation), translated the same way: 500m and 1Gi, with a
 // 5Gi disk bound over a 1Gi request — not a pod's share, written here as data as the defaults are.
 func probeReservation() corev1.ResourceRequirements {
-	return requirementsOf(config.Reservation{CPU: "250m", CPURequest: "250m", Memory: "1Gi", MemoryRequest: "1Gi", EphemeralStorage: "5Gi", EphemeralStorageRequest: "1Gi"})
+	return requirementsOf(config.Reservation{CPU: "500m", CPURequest: "500m", Memory: "1Gi", MemoryRequest: "1Gi", EphemeralStorage: "5Gi", EphemeralStorageRequest: "1Gi"})
 }
 
 // requirementsOf is reservation as a container's requirements, translated as the daemon's

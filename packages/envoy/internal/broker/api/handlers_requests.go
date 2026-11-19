@@ -81,8 +81,13 @@ type createRequestResponse struct {
 	Detail *string `json:"detail"`
 	// While it is pending, its record's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>,
 	// where a person signed in to the broker decides it; absent when the policy decided it at once,
-	// and on a broker with BROKER_SIGNIN=off, which serves no page.
+	// on a broker with BROKER_SIGNIN=off, which serves no page, and while the model judge holds
+	// it, which judge_deciding says instead.
 	ApproveURL string `json:"approve_url,omitempty"`
+	// True while the model judge holds the request: its keys are ones the judge decides, and no
+	// person is asked unless the judge cannot decide it, when the request comes back with its
+	// approve_url. Absent for every other request.
+	JudgeDeciding bool `json:"judge_deciding,omitempty"`
 }
 
 // createRequest requests secrets for the proof-verified caller, never for an enrollment named in
@@ -159,7 +164,8 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		LifetimeSeconds: req.LifetimeSeconds,
 		Coalesced:       req.Coalesced,
 		Detail:          req.Detail,
-		ApproveURL:      s.pendingApproveURL(req.State, req.RecordID),
+		ApproveURL:      s.pendingApproveURL(req),
+		JudgeDeciding:   req.JudgeDeciding,
 	})
 }
 
@@ -205,8 +211,12 @@ type requestStatusResponse struct {
 	Detail *string `json:"detail"`
 	// While it is pending, its record's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>,
 	// where a person signed in to the broker decides it; absent once it is no longer pending, when
-	// the policy decided it at once, and on a broker with BROKER_SIGNIN=off, which serves no page.
+	// the policy decided it at once, on a broker with BROKER_SIGNIN=off, which serves no page, and
+	// while the model judge holds it.
 	ApproveURL string `json:"approve_url,omitempty"`
+	// True while the model judge holds the request, as POST /v1/requests answers it; absent for
+	// every other request.
+	JudgeDeciding bool `json:"judge_deciding,omitempty"`
 }
 
 // grantValuesBody is POST /v1/grants/{id}/values's optional body: no body at all, or one with no
@@ -457,7 +467,7 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 	}
 	resp := requestStatusResponse{
 		State: req.State, GrantID: req.GrantID, RecordID: req.RecordID, Approver: req.Approver, LifetimeSeconds: req.LifetimeSeconds,
-		DecidedAt: req.DecidedAt, Detail: req.Detail, ApproveURL: s.pendingApproveURL(req.State, req.RecordID),
+		DecidedAt: req.DecidedAt, Detail: req.Detail, ApproveURL: s.pendingApproveURL(req), JudgeDeciding: req.JudgeDeciding,
 	}
 	if req.DecidedBy != nil && req.DecidedAt != nil {
 		resp.Decision = &requestDecision{By: *req.DecidedBy, At: *req.DecidedAt}
@@ -479,25 +489,31 @@ func requestWait(w http.ResponseWriter, raw string) (time.Duration, bool) {
 	return time.Duration(seconds) * time.Second, true
 }
 
-// readHeld reads request id for enrollmentID. It reads the request's owner and state
-// (Machine.OwnerAndState, one statement), refusing requests.ErrNotYours when the owner is another
-// enrollment; while the state is pending and deadline has not passed, it reads them again every
-// requestWaitStep; then it reads the whole request (Machine.Get) once. A deadline already passed
-// is the one read. The owner is checked at every step, so a request that moves to another
-// enrollment while the read is held (adopt moves a predecessor's requests to its successor) is
-// refused at the next step, as a new read of it is. Any other error is the store's, or ctx's when
-// ctx ended first.
+// readHeld reads request id for enrollmentID. It reads the request's owner, state and whether the
+// model judge holds it (Machine.OwnerAndState, one statement), refusing requests.ErrNotYours when
+// the owner is another enrollment; while the state is pending and deadline has not passed, it
+// reads them again every requestWaitStep; then it reads the whole request (Machine.Get) once. A
+// request the judge held at the first read and holds no more has been handed to its person, still
+// pending: that ends the hold too, so the caller learns at once who decides it now and where. A
+// deadline already passed is the one read. The owner is checked at every step, so a request that
+// moves to another enrollment while the read is held (adopt moves a predecessor's requests to its
+// successor) is refused at the next step, as a new read of it is. Any other error is the store's,
+// or ctx's when ctx ended first.
 func (s *server) readHeld(ctx context.Context, id, enrollmentID string, deadline time.Time) (requests.Request, error) {
+	first, heldByJudge := true, false
 	for {
-		owner, state, err := s.deps.Machine.OwnerAndState(ctx, id)
+		owner, state, judging, err := s.deps.Machine.OwnerAndState(ctx, id)
 		if err != nil {
 			return requests.Request{}, err
 		}
 		if owner != enrollmentID {
 			return requests.Request{}, requests.ErrNotYours
 		}
+		if first {
+			first, heldByJudge = false, judging
+		}
 		left := time.Until(deadline)
-		if state != "pending" || left <= 0 {
+		if state != "pending" || left <= 0 || (heldByJudge && !judging) {
 			return s.deps.Machine.Get(ctx, id)
 		}
 		select {

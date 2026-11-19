@@ -1101,9 +1101,10 @@ check_k5() {
 ###############################################################################################
 #
 # k6 drives real clients: the Azure CLI through sjawhar/dotfiles' scripts/az-broker, and the AWS
-# CLI and boto3 against the stack's stand-in AWS service. A Legion issue pod has neither az nor
-# boto3, so the check installs them with scripts/airlock-clients.sh, which pins a version and
-# checks its SHA-256 before anything of it runs, and reads that script's exports.
+# CLI and boto3 against the stack's stand-in AWS service. A Legion issue pod has no boto3, and a
+# pod on a worker image from before dispatch://INFRA-3257 has no az, so the check installs both
+# with scripts/airlock-clients.sh, which pins a version and checks its SHA-256 before anything of
+# it runs, and reads that script's exports, whose PATH puts its az ahead of any az the image has.
 #
 # The stack's stand-ins play the two clouds whole, so both clients run as they do in anger: the
 # Microsoft stand answers the tenant's OpenID configuration document and the token endpoint,

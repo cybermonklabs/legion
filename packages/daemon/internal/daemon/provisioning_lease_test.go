@@ -180,11 +180,13 @@ func provisioningRefusal(w http.ResponseWriter) {
 
 // The Sandbox runtime's provisioning token is a reading lease: implementTokens mints the
 // implement App's installation token on the owner of the repository the pod clones, narrowed to
-// contents, pull requests, Actions and metadata at read, which is all a clone, a fetch and a
-// repository cache do (INFRA-1254, INFRA-513).
+// the read lease's set cut to what the installation is granted — here contents, pull requests,
+// Actions, metadata, checks and commit statuses — each at read: reads alone, which is all a
+// clone, a fetch and a repository cache need (INFRA-1254, INFRA-513).
 // Four installations, one per case, so no case's mints or cached leases reach another's:
 //
-//   - one granted the implement App's whole set: the one request names the reading set and no
+//   - one granted writeSet, the implement App's write set less issues, security events and
+//     attestations: the one request names the reading set cut to that grant (readingSet) and no
 //     repository, and that token is served;
 //   - one not granted Actions: the mint asks for what the installation is granted of the reading
 //     set, so the one request leaves actions out and the adapter is served that token, with no
@@ -212,11 +214,15 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 	narrowRepo := ghrepo.MustParse(narrowOwner + "/legion")
 	refusedRepo := ghrepo.MustParse(refusedOwner + "/legion")
 	flakyRepo := ghrepo.MustParse(flakyOwner + "/legion")
-	readingSet := map[string]string{"contents": "read", "pull_requests": "read", "actions": "read", "metadata": "read"}
-	withoutActions := map[string]string{"contents": "read", "pull_requests": "read", "metadata": "read"}
-	// writeSet is what the implement App's write token asks for (appauth's writePermissions),
-	// which is what each installation below is granted, bar the one its own case takes a
-	// permission from.
+	// readingSet is the read lease's set cut to writeSet, which holds no issues and no
+	// attestations; withoutActions is the same cut to withoutActionsGranted.
+	readingSet := map[string]string{"contents": "read", "pull_requests": "read", "actions": "read",
+		"metadata": "read", "checks": "read", "statuses": "read"}
+	withoutActions := map[string]string{"contents": "read", "pull_requests": "read", "metadata": "read",
+		"checks": "read", "statuses": "read"}
+	// writeSet is what each installation below is granted, bar the one its own case takes a
+	// permission from: the implement App's write set less issues, security events and
+	// attestations.
 	writeSet := map[string]string{"actions": "write", "checks": "read", "contents": "write",
 		"metadata": "read", "pull_requests": "write", "statuses": "write", "workflows": "write"}
 	withoutActionsGranted := map[string]string{"checks": "read", "contents": "write",
