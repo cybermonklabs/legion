@@ -12,6 +12,7 @@ import {
 } from "../../api/queries";
 import type { CreateProjectInput, ProjectDefaultAssignee } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   borderDefault,
@@ -40,7 +41,9 @@ import {
  * nobody holds reaches. Every project names one and no write clears it, so each row of the table
  * and the create form below it name a person. The Settings route's repository mapping form reads
  * the same `["projects"]` query, so a project created here is immediately selectable there
- * without any explicit wiring between the two sections. */
+ * without any explicit wiring between the two sections. A new project belongs to the deployment,
+ * whose writes Dispatch refuses a restricted member (403 RESTRICTED_MEMBER), so their page lists
+ * the projects that name them and offers no create form. */
 export function ProjectsSection(): ReactNode {
   const queryClient = useQueryClient();
   const [projectKey, setProjectKey] = useState("");
@@ -50,6 +53,7 @@ export function ProjectsSection(): ReactNode {
   const [projectAssignee, setProjectAssignee] = useState<string | null>(null);
   const projectSubmitGuard = useSubmitGuard();
   const projects = useQuery(projectsQuery());
+  const restricted = useRestrictedMember();
   // The form shows a refused create beside the key it was refused over.
   const createProject = useKeyedWrite({
     inline: true,
@@ -184,86 +188,90 @@ export function ProjectsSection(): ReactNode {
             </div>
           ) : null}
 
-          <form
-            className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_2fr_1fr_auto] sm:items-end ${borderDefault}`}
-            onSubmit={submitProject}
-          >
-            <label className={settingsFieldLabel} htmlFor="project-key">
-              Key
-              <input
-                className={settingsMonoInput}
-                disabled={createProject.isPending}
-                id="project-key"
-                onChange={(event) => {
-                  createProject.forgetUnanswered();
-                  setProjectKey(event.target.value.trim().toUpperCase());
-                }}
-                placeholder="CORE"
-                required
-                value={projectKey}
-              />
-            </label>
-            <label className={settingsFieldLabel} htmlFor="project-name">
-              Name
-              <input
-                className={`rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
-                disabled={createProject.isPending}
-                id="project-name"
-                maxLength={PROJECT_NAME_MAX}
-                onChange={(event) => setProjectName(event.target.value)}
-                placeholder="Core"
-                required
-                value={projectName}
-              />
-            </label>
-            <label className={settingsFieldLabel} htmlFor="project-default-assignee">
-              Default assignee
-              <select
-                className={`w-full min-w-0 rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
-                disabled={createProject.isPending || newProjectAssignee === ""}
-                id="project-default-assignee"
-                onChange={(event) => setProjectAssignee(event.target.value)}
-                onFocus={() => setWantUsers(true)}
-                onPointerEnter={() => setWantUsers(true)}
-                onTouchStart={() => setWantUsers(true)}
-                required
-                value={newProjectAssignee}
+          {restricted ? null : (
+            <>
+              <form
+                className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_2fr_1fr_auto] sm:items-end ${borderDefault}`}
+                onSubmit={submitProject}
               >
-                {/* The viewer is a person who has signed in, so they are in the list once it is
-                    read; until it is, they are the only option. An empty value is nobody picked
-                    yet, which is the page before the viewer resolves. */}
-                {assigneeOptions(
-                  newProjectAssignee === "" ? undefined : newProjectAssignee,
-                  logins
-                ).map((login) => (
-                  <option key={login} value={login}>
-                    {login}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              className={settingsSubmitButton}
-              disabled={createProject.isPending}
-              type="submit"
-            >
-              New project
-            </button>
-          </form>
-          {createProject.unanswered === undefined ? null : (
-            <div className="mt-4">
-              <LandedWithoutAnswer what={`Project ${createProject.unanswered.variables.key}`} />
-            </div>
+                <label className={settingsFieldLabel} htmlFor="project-key">
+                  Key
+                  <input
+                    className={settingsMonoInput}
+                    disabled={createProject.isPending}
+                    id="project-key"
+                    onChange={(event) => {
+                      createProject.forgetUnanswered();
+                      setProjectKey(event.target.value.trim().toUpperCase());
+                    }}
+                    placeholder="CORE"
+                    required
+                    value={projectKey}
+                  />
+                </label>
+                <label className={settingsFieldLabel} htmlFor="project-name">
+                  Name
+                  <input
+                    className={`rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+                    disabled={createProject.isPending}
+                    id="project-name"
+                    maxLength={PROJECT_NAME_MAX}
+                    onChange={(event) => setProjectName(event.target.value)}
+                    placeholder="Core"
+                    required
+                    value={projectName}
+                  />
+                </label>
+                <label className={settingsFieldLabel} htmlFor="project-default-assignee">
+                  Default assignee
+                  <select
+                    className={`w-full min-w-0 rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+                    disabled={createProject.isPending || newProjectAssignee === ""}
+                    id="project-default-assignee"
+                    onChange={(event) => setProjectAssignee(event.target.value)}
+                    onFocus={() => setWantUsers(true)}
+                    onPointerEnter={() => setWantUsers(true)}
+                    onTouchStart={() => setWantUsers(true)}
+                    required
+                    value={newProjectAssignee}
+                  >
+                    {/* The viewer is a person who has signed in, so they are in the list once it
+                        is read; until it is, they are the only option. An empty value is nobody
+                        picked yet, which is the page before the viewer resolves. */}
+                    {assigneeOptions(
+                      newProjectAssignee === "" ? undefined : newProjectAssignee,
+                      logins
+                    ).map((login) => (
+                      <option key={login} value={login}>
+                        {login}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className={settingsSubmitButton}
+                  disabled={createProject.isPending}
+                  type="submit"
+                >
+                  New project
+                </button>
+              </form>
+              {createProject.unanswered === undefined ? null : (
+                <div className="mt-4">
+                  <LandedWithoutAnswer what={`Project ${createProject.unanswered.variables.key}`} />
+                </div>
+              )}
+              {createProject.isError ? (
+                <div className="mt-4">
+                  <QueryError
+                    message={apiErrorMessage(createProject.error, "Couldn't create the project.")}
+                    onRetry={() => projectSubmitGuard.retryLast(createProject)}
+                    retrying={createProject.isPending}
+                  />
+                </div>
+              ) : null}
+            </>
           )}
-          {createProject.isError ? (
-            <div className="mt-4">
-              <QueryError
-                message={apiErrorMessage(createProject.error, "Couldn't create the project.")}
-                onRetry={() => projectSubmitGuard.retryLast(createProject)}
-                retrying={createProject.isPending}
-              />
-            </div>
-          ) : null}
         </>
       ) : null}
     </section>

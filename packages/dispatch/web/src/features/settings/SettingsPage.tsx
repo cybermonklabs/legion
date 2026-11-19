@@ -285,32 +285,44 @@ export function SettingsPage(): ReactNode {
                             {mapping.project}
                           </td>
                           <td className="px-4 py-3">
-                            <input
-                              aria-label={`Default repository of ${mapping.project}: ${mapping.repo}`}
-                              checked={mapping.default}
-                              className="size-4 cursor-pointer disabled:cursor-not-allowed"
-                              disabled={deleteMapping.isPending || putMapping.isPending}
-                              name={`default-repository-${mapping.project}`}
-                              onChange={() =>
-                                putMapping.mutate({
-                                  default: true,
-                                  project: mapping.project,
-                                  repo: mapping.repo,
-                                })
-                              }
-                              type="radio"
-                            />
+                            {/* A mapping belongs to the deployment, whose writes Dispatch refuses
+                                a restricted member (403 RESTRICTED_MEMBER): their row says which
+                                mapping is the default and offers no control to change or delete
+                                it, and their page no form to add one. */}
+                            {restricted ? (
+                              mapping.default ? (
+                                <span className={textSecondaryOnSurface}>Default</span>
+                              ) : null
+                            ) : (
+                              <input
+                                aria-label={`Default repository of ${mapping.project}: ${mapping.repo}`}
+                                checked={mapping.default}
+                                className="size-4 cursor-pointer disabled:cursor-not-allowed"
+                                disabled={deleteMapping.isPending || putMapping.isPending}
+                                name={`default-repository-${mapping.project}`}
+                                onChange={() =>
+                                  putMapping.mutate({
+                                    default: true,
+                                    project: mapping.project,
+                                    repo: mapping.repo,
+                                  })
+                                }
+                                type="radio"
+                              />
+                            )}
                           </td>
                           <td className="px-4 py-3 text-right">
-                            <button
-                              aria-label={`Delete mapping for ${mapping.repo}`}
-                              className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                              disabled={deleteMapping.isPending || putMapping.isPending}
-                              onClick={() => deleteMapping.mutate(mapping.repo)}
-                              type="button"
-                            >
-                              Delete
-                            </button>
+                            {restricted ? null : (
+                              <button
+                                aria-label={`Delete mapping for ${mapping.repo}`}
+                                className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
+                                disabled={deleteMapping.isPending || putMapping.isPending}
+                                onClick={() => deleteMapping.mutate(mapping.repo)}
+                                type="button"
+                              >
+                                Delete
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))
@@ -319,39 +331,41 @@ export function SettingsPage(): ReactNode {
                 </table>
               </div>
 
-              <form
-                className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end ${borderDefault}`}
-                onSubmit={submit}
-              >
-                <label className={settingsFieldLabel} htmlFor="repository">
-                  Repository
-                  <input
-                    className={settingsMonoInput}
-                    id="repository"
-                    onChange={(event) => setRepository(event.target.value)}
-                    pattern={ownerRepoPattern}
-                    placeholder="owner/repo"
-                    required
-                    value={repository}
-                  />
-                </label>
-                <label className={settingsFieldLabel} htmlFor="project">
-                  Project
-                  <ProjectSelect
-                    id="project"
-                    onChange={setProject}
-                    projects={projects.data}
-                    value={project}
-                  />
-                </label>
-                <button
-                  className={settingsSubmitButton}
-                  disabled={putMapping.isPending || deleteMapping.isPending}
-                  type="submit"
+              {restricted ? null : (
+                <form
+                  className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end ${borderDefault}`}
+                  onSubmit={submit}
                 >
-                  Add mapping
-                </button>
-              </form>
+                  <label className={settingsFieldLabel} htmlFor="repository">
+                    Repository
+                    <input
+                      className={settingsMonoInput}
+                      id="repository"
+                      onChange={(event) => setRepository(event.target.value)}
+                      pattern={ownerRepoPattern}
+                      placeholder="owner/repo"
+                      required
+                      value={repository}
+                    />
+                  </label>
+                  <label className={settingsFieldLabel} htmlFor="project">
+                    Project
+                    <ProjectSelect
+                      id="project"
+                      onChange={setProject}
+                      projects={projects.data}
+                      value={project}
+                    />
+                  </label>
+                  <button
+                    className={settingsSubmitButton}
+                    disabled={putMapping.isPending || deleteMapping.isPending}
+                    type="submit"
+                  >
+                    Add mapping
+                  </button>
+                </form>
+              )}
               {failedAction !== undefined ? (
                 <div className="mt-4">
                   <QueryError

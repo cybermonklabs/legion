@@ -397,6 +397,91 @@ test("a restricted member's Settings asks no deployment read, and keeps their ow
   }
 });
 
+/** Which controls of the two Settings writes that belong to the deployment rather than to a
+ *  project are drawn: a new project's, and a repository mapping's (its form, and a listed mapping's
+ *  Default and Delete). */
+function deploymentWriteControls() {
+  return {
+    addMapping: screen.queryByRole("button", { name: "Add mapping" }) !== null,
+    deleteMapping:
+      screen.queryByRole("button", { name: "Delete mapping for acme/reefrepo" }) !== null,
+    mappingDefault:
+      screen.queryByRole("radio", { name: "Default repository of PRIV: acme/reefrepo" }) !== null,
+    newProject: screen.queryByRole("button", { name: "New project" }) !== null,
+  };
+}
+
+// A new project and a repository mapping belong to the deployment, and Dispatch refuses a
+// restricted member every such write (403 RESTRICTED_MEMBER), so their Settings offers none: no New
+// project form, no Add mapping form, and a listed mapping with no control to make it the default or
+// delete it, while the mapping and its default still show. A full member's page offers all four.
+test("a restricted member's Settings offers no project or mapping write, which Dispatch refuses them", async () => {
+  const unrelated = stubUnrelatedQueries();
+  unrelated.listProjects.mockResolvedValue([
+    {
+      created_at: "2026-11-19T00:00:00Z",
+      gated_steps: [],
+      key: "PRIV",
+      name: "Reef",
+      open_asks: 0,
+    },
+  ]);
+  unrelated.listRepoProjects.mockResolvedValue([
+    {
+      created_at: "2026-11-19T00:00:00Z",
+      created_by: { id: "carol@example.com", kind: "user" },
+      default: true,
+      project: "PRIV",
+      renamed_to: null,
+      repo: "acme/reefrepo",
+    },
+  ]);
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({ grants: [] });
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
+    pending: [],
+  });
+
+  try {
+    renderPage({
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: "restricted",
+    });
+    expect(await screen.findByText("acme/reefrepo")).toBeDefined();
+    expect(await screen.findByText("Reef")).toBeDefined();
+    expect(deploymentWriteControls()).toEqual({
+      addMapping: false,
+      deleteMapping: false,
+      mappingDefault: false,
+      newProject: false,
+    });
+    // The column's heading and the mapping's own cell, which says it is the default in words.
+    expect(screen.getAllByText("Default").map((node) => node.closest("th, td")?.tagName)).toEqual([
+      "TH",
+      "TD",
+    ]);
+    cleanup();
+
+    renderPage({ event_head: "0", kind: "user", login: "alice" });
+    expect(await screen.findByText("acme/reefrepo")).toBeDefined();
+    expect(await screen.findByRole("button", { name: "New project" })).toBeDefined();
+    expect(deploymentWriteControls()).toEqual({
+      addMapping: true,
+      deleteMapping: true,
+      mappingDefault: true,
+      newProject: true,
+    });
+  } finally {
+    cleanup();
+    getCredentialGrants.mockRestore();
+    getCredentialPending.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
 // On a Dispatch with no secrets broker the grants read answers 404 FEATURE_OFF, which is how a
 // restricted member's Settings learns there is nothing to list: neither broker section is drawn,
 // and no failure is shown for a feature the deployment does not have.
