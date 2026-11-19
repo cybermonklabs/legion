@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  Under `NATS_AUTH=broker`, the Agents page live view of a Claude Code session takes the new id's
+  control subject after a `/clear` only once the session's NATS connection has moved to the new
+  id's token. It used to subscribe at once, while the connection was still the old id's, so the
+  server refused and closed the subscription and the view was asked again a second later, each
+  time until the move landed. The old id's control subject is given up at the `/clear` itself.
+time: 2026-11-19T00:37:48Z
+custom:
+    Issue: pr4140
