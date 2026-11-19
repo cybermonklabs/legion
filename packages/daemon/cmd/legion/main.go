@@ -208,12 +208,11 @@ func pluginsLine(cfg config.Config) string {
 // secretsd read, then every refusal boot makes from the configuration, the environment and the
 // files they name before it writes anything (daemon.CheckStart, the reads boot's own prepare
 // starts with, the daemon's own NATS nkey seed among them, then the store's refusals of a
-// postgres_dsn: one pgx cannot parse, such as a malformed URL, a bad pool_* key or an sslrootcert,
-// sslcert or sslkey file it cannot read, or one whose default_query_exec_mode its text rule cannot
-// run in; pgx fills what the DSN leaves unset from the process's PG* environment variables, as it
-// does at boot), and nothing else: no store connection, no team, no file written, and no process
-// but `mise where <tool>` when a tmux configuration's omp_invocation names a mise tool. The OK
-// line names the design-gate steps the file resolved to, in the order it named them
+// postgres_dsn, which daemon.CheckStart lists), and nothing else: no store connection, no team, no
+// file written, and no process but `mise where <tool>` when a tmux configuration's omp_invocation
+// names a mise tool. Each refusal is written to stderr through printRefusal, as `legion start`
+// writes its own, so a URL a refusal quotes loses its query and its userinfo in both commands.
+// The OK line names the design-gate steps the file resolved to, in the order it named them
 // (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS nkey seed's
 // public key when there is one, never the seed.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
@@ -256,7 +255,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		paneNatsUser, daemonNatsUser, err = daemon.CheckStart(cfg, os.LookupEnv)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "legion config check: %v\n", err)
+		printRefusal(stderr, "legion config check", err)
 		return 1
 	}
 	ok := "Config OK: project=" + cfg.Project + " design-gate-steps=" + designGateSteps(cfg.Gates.Steps())
@@ -440,7 +439,9 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 // rule the log's handler applies to every record: the daemon's stderr is its log, and an error of
 // the configuration's read or of the boot can wrap a *url.Error, which keeps the URL's query and
 // its user name (Go's client masks only a password). probe-boot writes its refusals through it
-// too (runProbeBoot).
+// too (runProbeBoot), and so does `legion config check` (checkConfig): its store refusal of a
+// postgres_dsn pgx cannot parse quotes the DSN with its user name and its query (pgx masks only
+// the password), and config check removes them as start does.
 func printRefusal(stderr io.Writer, prefix string, err error) {
 	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
 }

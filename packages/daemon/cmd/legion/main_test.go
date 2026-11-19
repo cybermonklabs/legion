@@ -967,9 +967,11 @@ func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 
 // `legion config check` makes every refusal boot makes from the configuration, the environment and the
 // files they name before boot writes anything (daemon.CheckStart, which boot's prepare shares): the
-// operator bearer's file, the Dispatch bearer's file, the instructions file, the OMP invocation and
-// the real gh every pane's `legion gh` runs, which a script heading PATH (a gh wrapper) is not.
-// Each is refused in boot's words, no App key command runs, and no state directory is made.
+// operator bearer's file, the Dispatch bearer's file, the instructions file, the OMP invocation, the
+// real gh every pane's `legion gh` runs, which a script heading PATH (a gh wrapper) is not, and a
+// postgres_dsn pgx cannot parse. Each is refused in boot's words, written through the URL rule boot
+// writes its own refusals through (printRefusal), so the refusal of such a DSN names neither the
+// DSN's user name nor its query (never). No App key command runs, and no state directory is made.
 func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct {
@@ -977,29 +979,30 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 		extra  string
 		change func(t *testing.T, dir string)
 		says   func(dir string) string
+		never  []string
 	}{
 		{"a missing operator token file", "", func(t *testing.T, dir string) { remove(t, filepath.Join(dir, "operator-token")) },
 			func(dir string) string {
 				return "legion config check: operator_token_file names " + filepath.Join(dir, "operator-token") + ", which could not be read: "
-			}},
+			}, nil},
 		{"no operator token file", "", func(t *testing.T, dir string) {
 			rewrite(t, filepath.Join(dir, "legion.yaml"), "operator_token_file: ./operator-token\n", "")
 		},
 			func(string) string {
 				return "legion config check: operator_token_file is required: the operator routes that spawn and drive claims authenticate against the bearer it names\n"
-			}},
+			}, nil},
 		{"a missing Dispatch token file", "", func(t *testing.T, dir string) { remove(t, filepath.Join(dir, "dispatch-token")) },
 			func(dir string) string {
 				return "legion config check: dispatch_token_file names " + filepath.Join(dir, "dispatch-token") + ", which could not be read: "
-			}},
+			}, nil},
 		{"a missing instructions file", "instructions: ./instructions.md\n", func(*testing.T, string) {},
 			func(dir string) string {
 				return "legion config check: instructions file " + filepath.Join(dir, "instructions.md") + " could not be read: "
-			}},
+			}, nil},
 		{"no OMP invocation", "", func(t *testing.T, _ string) { t.Setenv("LEGION_OMP_PATH", "") },
 			func(string) string {
 				return "legion config check: omp_invocation is not set: set it to 'mise x <tool> -- omp', or set LEGION_OMP_PATH to an absolute executable path\n"
-			}},
+			}, nil},
 		{"a script as the first gh on PATH", "", func(t *testing.T, dir string) {
 			shims := filepath.Join(dir, "shims")
 			if err := os.MkdirAll(shims, 0o700); err != nil {
@@ -1013,7 +1016,14 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 		},
 			func(dir string) string {
 				return "legion config check: the first gh on PATH, " + filepath.Join(dir, "shims", "gh") + ", is a script, not the real gh"
-			}},
+			}, nil},
+		{"a postgres_dsn pgx cannot parse", "", func(t *testing.T, dir string) {
+			replaceLine(t, filepath.Join(dir, "legion.yaml"), "postgres_dsn: ",
+				"postgres_dsn: postgres://legion-reader@127.0.0.1:1/legion?token=planted-query-token-4193&pool_max_conns=not-a-number")
+		},
+			func(string) string {
+				return "legion config check: connect to Postgres at 127.0.0.1:1: cannot parse `postgres://127.0.0.1:1/legion`: "
+			}, []string{"legion-reader", "planted-query-token-4193"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config, marker := workflowConfig(t, 13370, tc.extra)
@@ -1023,6 +1033,11 @@ func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 			var out, errb bytes.Buffer
 			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
+			for _, never := range tc.never {
+				if strings.Contains(errb.String(), never) {
+					t.Fatalf("stderr %q holds %q, which the URL rule removes", errb.String(), never)
+				}
+			}
 			if want := tc.says(dir); code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), want) {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
 			}
@@ -1050,6 +1065,24 @@ func rewrite(t *testing.T, path, old, replacement string) {
 		t.Fatalf("%s does not hold %q (%v)", path, old, err)
 	}
 	if err := os.WriteFile(path, []byte(strings.Replace(string(body), old, replacement, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// replaceLine replaces the whole line of path that starts with prefix by line.
+func replaceLine(t *testing.T, path, prefix, line string) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	start := strings.Index(string(body), "\n"+prefix)
+	if err != nil || start < 0 {
+		t.Fatalf("%s holds no line starting %q (%v)", path, prefix, err)
+	}
+	end := strings.IndexByte(string(body[start+1:]), '\n')
+	if end < 0 {
+		end = len(body) - start - 1
+	}
+	replaced := string(body[:start+1]) + line + string(body[start+1+end:])
+	if err := os.WriteFile(path, []byte(replaced), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
