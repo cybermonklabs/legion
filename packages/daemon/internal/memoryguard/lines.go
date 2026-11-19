@@ -92,12 +92,15 @@ const (
 // reading the guard would end a process at, the processes it may end hold less than the floor
 // between them, or there are none. It is given up with reasonNotFallen where the wait after a
 // kill has passed with the reading not below the reading at the kill, and either no process the
-// guard may end has grown since that kill (grownSinceKill) or they hold less than the floor:
-// the guard goes on after a kill that lowered nothing only while one of them has grown since it
-// (INFRA-3531 R1 of spec version 25), so below the urgent share a rise that is a protected
-// process's own, which no kill of the guard's lowers, ends at most one process before this reason;
-// at or above it, in a stay with history, the urgent rule can end beside that one each process new
-// to the stay with memory of its own (spec version 43).
+// guard may end has grown since that kill (grownSinceKill) and, at a reading at or above the urgent
+// share in a stay with history, none is new to the stay with memory of its own (urgentNew), or
+// they hold less than the floor: the guard goes on after a kill that lowered nothing only while
+// one of them has grown since it (INFRA-3531 R1 of spec version 25) or, at such a reading, one is
+// new to the stay with memory of its own, which the urgent rule ends (spec version 43,
+// verification version 36). So below the urgent share a rise that is a protected process's own,
+// which no kill of the guard's lowers, ends at most one process before this reason; at or above
+// it, in a stay with history, it can also end each process new to the stay with memory of its own,
+// at the reading of that kill or at a later reading of the wait at or above that share.
 const (
 	reasonNotFallen    = "not fallen"
 	reasonNothingToEnd = "nothing to end"
