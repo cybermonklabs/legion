@@ -538,7 +538,7 @@ func roomFramesUnderTheBudget(budget int64) int64 {
 //
 // The budget is the one bound that does not follow the Go memory limit, so the arithmetic is
 // weighed at the calibration and at the production pod's limit, where the room budget and the
-// frames its rooms can send are eight times larger and these twenty queues are not. The
+// frames its rooms can send are five times larger and these twenty queues are not. The
 // calibration's own figures, which the constant's comment quotes, are held here exactly, and so
 // is the one the comment makes of 64 MiB: under the one price it would fit the limit too, and the
 // budget stays at 60 MiB because that is where the measurements were taken.

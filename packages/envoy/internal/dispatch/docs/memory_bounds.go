@@ -37,9 +37,9 @@ type MemoryBounds struct {
 	// little of the pool free waits for the rest before it takes a database connection, its
 	// request's own deadline answering 503 (errWriteBusy). It is what the limit leaves above the
 	// room budget and the cold reads' cache, three quarters of it, divided by loadSlotBytes: 1
-	// at the calibration and 16 at the 32Gi production limit (30,923,764,531, whose
-	// 13,475,459,890 above the two leaves 10,106,594,917 to the slots). The quarter left out is
-	// the collector's and the request path's.
+	// at the calibration and 10 at the production pod's limit (19,327,352,832, 90 per cent of its
+	// 20Gi, whose 8,321,499,135 above the two leaves 6,241,124,351 to the slots). The quarter left
+	// out is the collector's and the request path's.
 	//
 	// One slot at the calibration is not only a memory bound: it is the second half of what
 	// keeps A3's "the refusals begin within one room of the budget's own arithmetic" true. An
@@ -102,8 +102,9 @@ func BoundsForLimit(limit int64) MemoryBounds {
 // calibratedGoMemoryLimitBytes is the Go memory limit every bound in this package is calibrated
 // at, and the limit a service runs under when its process holds none: 90 per cent of a
 // container's 4 GiB, 3,865,470,566 bytes, which is what Dispatch's deployment gave it while these
-// figures were measured. The production pod is larger now - 32Gi, whose 90 per cent is
-// 30,923,764,531 (setGoMemoryLimit, cmd/dispatch/main.go) - and a process holding another limit
+// figures were measured. The production pod is larger now - 20Gi since 2026-11-05
+// (theorem-labs/agent-infra dispatch/Pulumi.prod.yaml's appMemory), whose 90 per cent is
+// 19,327,352,832 (setGoMemoryLimit, cmd/dispatch/main.go) - and a process holding another limit
 // runs under this calibration scaled to that limit (BoundsForLimit), not under these figures.
 const calibratedGoMemoryLimitBytes = 4 << 30 * 9 / 10
 

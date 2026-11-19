@@ -3698,7 +3698,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/artifacts/_test/room-budget` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
-  Set the open documents' memory budget to `bytes`, or restore the real one with `0` - the share of this process's Go memory limit the budget takes, 2 GiB at the 4 GiB limit the figures are calibrated on and 16 GiB on the production pod - and answer the budget it set, so a browser test can fill the budget with a few small documents and drive the editor's handling of `4503 DOC_BUSY`;
+  Set the open documents' memory budget to `bytes`, or restore the real one with `0` - the share of this process's Go memory limit the budget takes, 2 GiB at the 4 GiB limit the figures are calibrated on and 10 GiB on the production pod's 20Gi - and answer the budget it set, so a browser test can fill the budget with a few small documents and drive the editor's handling of `4503 DOC_BUSY`;
   the real-process drives use the real budget.
   Not mounted otherwise.
 
@@ -5130,7 +5130,7 @@ Each item below names a status and code, then its meaning.
 
   The memory budget over the documents this server holds open is full and no room can be closed:
   a browser asking for one more document is closed with code `4503` (`DOCUMENT_BUSY_CLOSE_CODE` and `DOCUMENT_BUSY_CLOSE_REASON` in `packages/contracts`) before any room is made for it, once its admission has waited for the sweep it started, and an update into a document already open is closed with it too unless it integrates no struct, cuts no item the room holds and adds no byte of content, since an insert of fewer bytes than it deletes can still multiply what the room holds.
-  The budget is the share of the server's Go memory limit the open rooms are charged together (2 GiB at the 4 GiB limit the figures are calibrated on, 16 GiB on the production pod; the boot line `dispatch: the document service's memory bounds` names it), and the one update admitted while it is full is one that grows the room in no measure - a delete of whole items, or a frame of structs the room already holds - so a full document can still be cut.
+  The budget is the share of the server's Go memory limit the open rooms are charged together (2 GiB at the 4 GiB limit the figures are calibrated on, 10 GiB on the production pod's 20Gi; the boot line `dispatch: the document service's memory bounds` names it), and the one update admitted while it is full is one that grows the room in no measure - a delete of whole items, or a frame of structs the room already holds - so a full document can still be cut.
   The 4500-4599 band is transient, so the dashboard keeps the edit it could not send and lets the provider's own backoff retry.
   The same close refuses for now an update whose rendering would end past the 1 MiB bound and its creep in a room that has just taken a write of the server's own its rendered copy has not taken yet, where what the update found is not known;
   the edit is sent again on the backoff and weighed once the room's rendering is known, an edit that shortens the document taken and one that grows it past the bound refused `DOC_TOO_LARGE`.

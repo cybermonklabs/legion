@@ -9,10 +9,10 @@ import (
 )
 
 // productionGoMemoryLimitBytes is the Go memory limit of Dispatch's production pod: 90 per cent of
-// the 32Gi its container is given (theorem-labs/agent-infra dispatch/Pulumi.prod.yaml's appMemory,
-// setGoMemoryLimit's ratio), 30,923,764,531 bytes, eight times the calibration and three bytes
-// more.
-const productionGoMemoryLimitBytes = 30_923_764_531
+// the 20Gi its container has been given since 2026-11-05 (theorem-labs/agent-infra
+// dispatch/Pulumi.prod.yaml's appMemory, setGoMemoryLimit's ratio), 19,327,352,832 bytes, five
+// times the calibration and two bytes more.
+const productionGoMemoryLimitBytes = 19_327_352_832
 
 // The bounds at the calibration are the constants this package calibrated at 4 GiB, each exactly,
 // so every figure measured and every drive written against them still stands: a pod of that size,
@@ -46,16 +46,16 @@ func TestTheMemoryBoundsAtTheCalibrationAreTodaysConstants(t *testing.T) {
 	}
 }
 
-// At the production pod's limit the room budget is that same share of it, 16 GiB and a byte, and
+// At the production pod's limit the room budget is that same share of it, 10 GiB and a byte, and
 // the load slots are what three quarters of what the limit leaves above the budget and the cache
-// divides by loadSlotBytes: sixteen of them, where the calibration has one. The cold reads' cache
+// divides by loadSlotBytes: ten of them, where the calibration has one. The cold reads' cache
 // and the write-queue budget are the two bounds that do not follow the limit.
 func TestTheMemoryBoundsAtTheProductionPodsLimit(t *testing.T) {
 	want := MemoryBounds{
 		Limit:             productionGoMemoryLimitBytes,
-		RoomBudget:        17_179_869_185,
+		RoomBudget:        10_737_418_241,
 		DocumentReadCache: 268_435_456,
-		LoadSlots:         16,
+		LoadSlots:         10,
 		PeerWriteQueue:    73_400_320,
 	}
 	got := BoundsForLimit(productionGoMemoryLimitBytes)
@@ -63,8 +63,8 @@ func TestTheMemoryBoundsAtTheProductionPodsLimit(t *testing.T) {
 		t.Fatalf("the bounds at %d bytes are %+v, want %+v", int64(productionGoMemoryLimitBytes), got, want)
 	}
 	above := got.Limit - got.RoomBudget - got.DocumentReadCache
-	if above != 13_475_459_890 || above*3/4 != 10_106_594_917 {
-		t.Fatalf("the production limit leaves %d bytes above the room budget and the cache, three quarters of it %d: want 13,475,459,890 and 10,106,594,917",
+	if above != 8_321_499_135 || above*3/4 != 6_241_124_351 {
+		t.Fatalf("the production limit leaves %d bytes above the room budget and the cache, three quarters of it %d: want 8,321,499,135 and 6,241,124,351",
 			above, above*3/4)
 	}
 	// The quarter left out is the collector's and the request path's: the slots account for no
@@ -101,7 +101,7 @@ func TestTheMemoryBoundsWithoutAReadableLimit(t *testing.T) {
 // A service built at the production pod's limit admits rooms by that limit's budget, not by the
 // calibration's: where the calibration admits twenty-one documents of a mebibyte of prose and
 // refuses the twenty-second (TestTheRoomBudgetsArithmetic, which says why the last one is
-// admitted over the limit), the production pod admits 167. This is the budget's own arithmetic,
+// admitted over the limit), the production pod admits 105. This is the budget's own arithmetic,
 // not a drive of the memory itself.
 func TestAServiceAtTheProductionLimitAdmitsFarMoreRoomsThanTheCalibration(t *testing.T) {
 	// A mebibyte of prose: a state of 3,035,240 bytes over 77,600 structs, the shape
@@ -119,7 +119,7 @@ func TestAServiceAtTheProductionLimitAdmitsFarMoreRoomsThanTheCalibration(t *tes
 		admits int64
 	}{
 		{"the calibration", calibratedGoMemoryLimitBytes, 21},
-		{"the production pod's limit", productionGoMemoryLimitBytes, 167},
+		{"the production pod's limit", productionGoMemoryLimitBytes, 105},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			restorePodLoadSlots(t)
@@ -151,8 +151,8 @@ func TestAServiceAtTheProductionLimitAdmitsFarMoreRoomsThanTheCalibration(t *tes
 			if admitted != row.admits {
 				t.Errorf("the budget admitted %d such rooms, want %d", admitted, row.admits)
 			}
-			if admitted <= 26 && row.limit == productionGoMemoryLimitBytes {
-				t.Errorf("the production pod admitted %d rooms, no more than the 4 GiB calibration's twenty-six", admitted)
+			if admitted <= 21 && row.limit == productionGoMemoryLimitBytes {
+				t.Errorf("the production pod admitted %d rooms, no more than the 4 GiB calibration's twenty-one", admitted)
 			}
 		})
 	}

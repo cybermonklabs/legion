@@ -3019,7 +3019,7 @@ func TestABurstOfStructDenseDocumentsStaysUnderThePodsMemory(t *testing.T) {
 			// such line is the pod's load concurrency: at the calibration's one slot an
 			// admission behind a heavy handoff or a struct-dense load waits for a slot until its
 			// own request ends and is answered then (docs' loadSlots, errWriteBusy). Both are
-			// the design working, and the second is far rarer at the sixteen slots the
+			// the design working, and the second is far rarer at the ten slots the
 			// production pod's limit gives (MemoryBounds.LoadSlots).
 			refusal, logged := refusals[opened.room]
 			if !logged {
@@ -3362,7 +3362,7 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 			// refusal with the budget's figures is the budget's; one with no such line is a
 			// wait for a slot that outlasted the request (docs' errWriteBusy), which at the
 			// calibration's one slot a browser behind three handoffs of the heaviest state
-			// meets, and which the production pod's sixteen make far rarer.
+			// meets, and which the production pod's ten make far rarer.
 			refusal, logged := refusals[lastRooms[index]]
 			if !logged {
 				t.Logf("the browser of agent-rewritten document %d was refused in %s with no budget line, which is the pod's %d load slots", index, result.took.Round(time.Millisecond), loadSlotsForTest)
@@ -3382,8 +3382,8 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 	// A cold read behind the handoffs waits for the pod's one slot and is answered 503
 	// DOC_SERVICE_UNAVAILABLE at its own deadline where the wait outlasts it (docs' loadSlots,
 	// errWriteBusy). That is the load concurrency working, not a failure: one slot is what makes
-	// A3's arithmetic true at a 4 GiB pod, and the production pod's limit gives sixteen, where
-	// a read waits behind at most a sixteenth of this. So the drive counts the two answers and
+	// A3's arithmetic true at a 4 GiB pod, and the production pod's limit gives ten, where
+	// a read waits behind at most a tenth of this. So the drive counts the two answers and
 	// holds only that no read failed any other way.
 	coldRead, coldBusy := 0, 0
 	for index, result := range read {

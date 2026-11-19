@@ -240,8 +240,8 @@ type bootConfig struct {
 // collector works harder as the heap nears it rather than letting garbage pile up until the
 // container is killed at its limit (the deployment's appMemory, which sizedResources sets as the
 // container's limit for newDispatchKubernetes: 4Gi where the stack leaves it
-// unset, defaultDispatchAppMemory, and 32Gi in production, theorem-labs/agent-infra
-// dispatch/Pulumi.prod.yaml); nothing else tells the runtime that limit
+// unset, defaultDispatchAppMemory, and 20Gi in production since 2026-11-05, theorem-labs/agent-infra
+// dispatch/Pulumi.prod.yaml's appMemory); nothing else tells the runtime that limit
 // exists. The ratio is automemlimit's default, 0.9. provider reads the
 // container's limit: main passes memlimit.FromCgroup, which reads memory.max under control group
 // v2 and memory.limit_in_bytes under v1, takes the smallest in the hierarchy and reports `max` as

@@ -2748,11 +2748,12 @@ Compare the right rows:
 
 `cluster/cluster.sh` runs this load on a full-size copy of Dispatch in a Kubernetes namespace
 ([INFRA-598](dispatch://INFRA-598)). It runs from a Legion worker pod. The copy is Postgres at the
-Cloud SQL tier's size, Dispatch at the size of production's pod, the Envoy listener, a three-pod
-NATS JetStream hub, and a runner pod in which `loadgen` runs. Every pod of the copy carries the
-label `dispatch-loadtest/run=<run id>`. The copy holds the harness's synthetic seed and, for the
-replay, INFRA-639's seed of LINUX (The replay on the copy, below). It takes no production
-credential: every token and password is random and made for the run.
+Cloud SQL tier's size, Dispatch at 16 CPU / 32Gi, production's size until 2026-11-05 (production
+has run 20Gi since: `theorem-labs/agent-infra` `dispatch/Pulumi.prod.yaml`), the Envoy listener,
+a three-pod NATS JetStream hub, and a runner pod in which `loadgen` runs. Every pod of the copy
+carries the label `dispatch-loadtest/run=<run id>`. The copy holds the harness's synthetic seed
+and, for the replay, INFRA-639's seed of LINUX (The replay on the copy, below). It takes no
+production credential: every token and password is random and made for the run.
 
 ### Prerequisites
 

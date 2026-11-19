@@ -30,7 +30,7 @@ import (
 // A write holds a grant of the pod's load concurrency for its fork's whole life (loadSlots),
 // and at the calibration the pod's whole pool is one slot (MemoryBounds.LoadSlots), which such
 // a nesting of two heavy documents would deadlock. So the binary runs with the production pod's
-// sixteen; what the pool itself bounds is weighed by MemoryBounds' own arithmetic and by the
+// ten; what the pool itself bounds is weighed by MemoryBounds' own arithmetic and by the
 // tests that swap in a concurrency of their own (useLoadSlots).
 func TestMain(m *testing.M) {
 	podLoadSlots.Store(newLoadSlots(BoundsForLimit(productionGoMemoryLimitBytes).LoadSlots))

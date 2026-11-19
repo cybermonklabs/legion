@@ -1113,11 +1113,11 @@ func TestMain(m *testing.M) {
 }
 
 // The boot path sets the runtime's memory limit to 90% of what its provider reads: a container
-// limited to 4 GiB gives 3.6 GiB, the production pod's 32Gi gives 30.9 GB
-// (infra/gcp/dispatch_kube.go's appMemory, 32Gi in theorem-labs/agent-infra
-// dispatch/Pulumi.prod.yaml), and the boot line names both figures. A provider that reports no
-// limit, or finds no control group to read, leaves the runtime with none, and the boot line says
-// so.
+// limited to 4 GiB gives 3.6 GiB, the production pod's 20Gi gives 18 GiB, 19,327,352,832 bytes
+// (infra/gcp/dispatch_kube.go's appMemory, 20Gi in theorem-labs/agent-infra
+// dispatch/Pulumi.prod.yaml since 2026-11-05), and the boot line names both figures. A provider
+// that reports no limit, or finds no control group to read, leaves the runtime with none, and the
+// boot line says so.
 //
 // A second line names the memory bounds the document service derives from the limit the runtime
 // then holds (docs.BoundsForLimit), so an operator reads from the boot log what the pod's rooms,
@@ -1150,10 +1150,10 @@ func TestTheGoMemoryLimitIsNinetyPercentOfTheContainers(t *testing.T) {
 			"level": "INFO", "msg": "dispatch: go memory limit set from the container's",
 			"container_limit_bytes": float64(4294967296), "go_memory_limit_bytes": float64(3865470566),
 		}, calibration},
-		{"a container limited to 32Gi, as the production pod is", memlimit.Limit(32 << 30), 30923764531, map[string]any{
+		{"a container limited to 20Gi, as the production pod is", memlimit.Limit(20 << 30), 19327352832, map[string]any{
 			"level": "INFO", "msg": "dispatch: go memory limit set from the container's",
-			"container_limit_bytes": float64(34359738368), "go_memory_limit_bytes": float64(30923764531),
-		}, boundsLine(30923764531)},
+			"container_limit_bytes": float64(21474836480), "go_memory_limit_bytes": float64(19327352832),
+		}, boundsLine(19327352832)},
 		{"a container whose memory is not limited", func() (uint64, error) { return 0, memlimit.ErrNoLimit }, math.MaxInt64, map[string]any{
 			"level": "INFO", "msg": noLimitLine, "reason": memlimit.ErrNoLimit.Error(),
 		}, calibration},
