@@ -2,7 +2,9 @@
 # packages/envoy/scripts/lib/daemon-release-gate-cases-project-fields.sh
 #
 # The scenarios of a project's fields, read by the daemon leg and --clients alike.
-# daemon-release-gate.test.sh sources this file with the harness's fakes; it is not run on its own.
+# daemon-release-gate.test.sh sources this file after the harness and the client fixtures
+# (daemon-release-gate-fixtures-clients.sh), whose clients_background it uses; it is not run on its
+# own.
 #
 # A field of the wrong type is never a reason to skip a project, and an image reference with a tab
 # in it is never read as the reference before the tab: YAML's false equals 0 in Python, and a tab

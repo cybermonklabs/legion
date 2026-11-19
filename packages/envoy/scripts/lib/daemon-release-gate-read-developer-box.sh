@@ -25,7 +25,8 @@ release_commit() {
 }
 
 # A release version, as Semantic Versioning writes one with no build metadata: no leading zero in a
-# number, no empty identifier in a pre-release.
+# number, no empty identifier in a pre-release. It is the one grammar of a version here: the order of
+# the versions npm answers (dotfiles_claude_envoy) compiles it too, adding only build metadata.
 readonly release_version='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
 
 # judge_release <label> <package> <version> [<note>]: compares the commit <package>'s release
@@ -236,7 +237,7 @@ dotfiles_clients() {
 # legion-plugins serves to a new install. A copy recorded in any other Claude Code configuration,
 # ~/.claude or the CLAUDE_CONFIG_DIR this run is given, is UNKNOWN.
 dotfiles_claude_envoy() {
-  local root=$1 label="dotfiles .claude/settings.json" record state own_record=absent name version enabled others marketplace repo ref plugin range served
+  local root=$1 label="dotfiles .claude/settings.json" record state own_record=absent name version enabled others marketplace repo ref query plugin range served tags latest
   for record in "$HOME/.claude/plugins/installed_plugins.json" ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"} "$root/.claude/plugins/installed_plugins.json"; do
     state=$(entry_state "$record")
     if [ "$state" = absent ]; then
@@ -292,14 +293,21 @@ dotfiles_claude_envoy() {
     printf 'SKIPPED: %s enables no claude-envoy@legion-plugins\n' "$label"
     return
   fi
-  marketplace=$(jq -c '.extraKnownMarketplaces["legion-plugins"].source // {}' "$root/.claude/settings.json")
+  if ! marketplace=$(jq -c '.extraKnownMarketplaces["legion-plugins"].source // {}' "$root/.claude/settings.json" 2>"$work/err"); then
+    printf 'UNKNOWN: %s: cannot read the marketplace legion-plugins it names: %s\n' "$label" "$(first_line "$work/err")"
+    unknown=$((unknown + 1))
+    return
+  fi
   if [ "$(jq -r '.source // ""' <<<"$marketplace")" != github ] || ! repo=$(jq -er '.repo | strings' <<<"$marketplace"); then
     printf 'UNKNOWN: %s: the marketplace legion-plugins it names is %s, which is no GitHub repository this gate reads\n' "$label" "$marketplace"
     unknown=$((unknown + 1))
     return
   fi
   ref=$(jq -r '.ref // ""' <<<"$marketplace")
-  if ! gh api -H "Accept: application/vnd.github.raw+json" "repos/$repo/contents/.claude-plugin/marketplace.json${ref:+?ref=$ref}" >"$work/marketplace.json" 2>"$work/err"; then
+  # The ref is one query value, so every character a URL reserves in it is percent-encoded.
+  query=""
+  [ -z "$ref" ] || query="?ref=$(jq -rn --arg ref "$ref" '$ref | @uri')"
+  if ! gh api -H "Accept: application/vnd.github.raw+json" "repos/$repo/contents/.claude-plugin/marketplace.json${query}" >"$work/marketplace.json" 2>"$work/err"; then
     printf 'UNKNOWN: %s: cannot read %s .claude-plugin/marketplace.json%s: %s\n' "$label" "$repo" "${ref:+ at $ref}" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
     return
@@ -317,37 +325,72 @@ dotfiles_claude_envoy() {
     unknown=$((unknown + 1))
     return
   fi
-  # The version served is taken as the highest npm matches by semantic-version precedence, where a
-  # release ranks above its own pre-release (`sort -V` ranks them the other way). npm's own install
-  # prefers the `latest` dist-tag when it matches the range, which is the same version while `latest`
-  # is the highest match. Each answer must be one whole version, so no answer splits.
-  if ! python3 - "$served" >"$work/served" 2>/dev/null <<'PY'; then
+  # npm's install takes the `latest` dist-tag when it matches the range, else the highest version
+  # that matches, so both are judged: `latest` when it is among the versions npm answers for the
+  # range, and the highest of those by semantic-version precedence, where a release ranks above its
+  # own pre-release (`sort -V` ranks them the other way). Each answer must be one whole version, so
+  # no answer splits.
+  if ! tags=$(npm view @sjawhar/claude-envoy dist-tags --json 2>"$work/err"); then
+    printf 'UNKNOWN: %s: npm cannot read the dist-tags of @sjawhar/claude-envoy: %s\n' "$label" "$(first_line "$work/err")"
+    unknown=$((unknown + 1))
+    return
+  fi
+  if ! latest=$(jq -er '.latest | strings' <<<"$tags" 2>/dev/null); then
+    printf 'UNKNOWN: %s: npm answers no latest dist-tag of @sjawhar/claude-envoy\n' "$label"
+    unknown=$((unknown + 1))
+    return
+  fi
+  if ! python3 - "$served" "$release_version" "$latest" >"$work/served" 2>/dev/null <<'PY'; then
 import json
 import re
 import sys
 
-answer = json.loads(sys.argv[1])
+answer, latest = json.loads(sys.argv[1]), sys.argv[3]
+# The gate's own release_version, so a version reads one way here and in judge_release. npm may also
+# answer a version with build metadata, which Semantic Versioning orders as the version without it;
+# judge_release still refuses one, since no release tag carries it.
+release = re.compile(sys.argv[2])
+build = re.compile(r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*")
 versions = [answer] if isinstance(answer, str) else answer
-number = r"(0|[1-9][0-9]*)"
-identifier = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
-build = r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*"
-form = re.compile(rf"{number}\.{number}\.{number}(?:-({identifier}(?:\.{identifier})*))?(?:\+{build})?")
-if not isinstance(versions, list) or not versions or not all(isinstance(v, str) and form.fullmatch(v) for v in versions):
+
+
+def core(version):
+    """version with its build metadata removed, or None when it is no such version."""
+    if not isinstance(version, str):
+        return None
+    head, plus, meta = version.partition("+")
+    if plus and not build.fullmatch(meta):
+        return None
+    return head if release.fullmatch(head) else None
+
+
+if not isinstance(versions, list) or not versions or any(core(v) is None for v in versions):
     sys.exit(1)
 
 
 def precedence(version):
-    major, minor, patch, pre = form.fullmatch(version).groups()
-    parts = [(0, int(p), "") if p.isascii() and p.isdigit() else (1, 0, p) for p in pre.split(".")] if pre else []
-    return (int(major), int(minor), int(patch), not pre, parts)
+    numbers, _, pre = core(version).partition("-")
+    major, minor, patch = (int(n) for n in numbers.split("."))
+    parts = [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split(".")] if pre else []
+    return (major, minor, patch, not pre, parts)
 
 
-print(max(versions, key=precedence))
+# The highest match, then `latest` when it is another of the matches.
+highest = max(versions, key=precedence)
+print(highest)
+if latest in versions and latest != highest:
+    print(latest)
 PY
     printf 'UNKNOWN: %s: npm answers no version of @sjawhar/claude-envoy for %s\n' "$label" "$range"
     unknown=$((unknown + 1))
     return
   fi
-  served=$(<"$work/served")
-  judge_release "$label" claude-envoy "$served" "; the version legion-plugins serves for $range"
+  served=$(sed -n 1p "$work/served")
+  latest=$(sed -n 2p "$work/served")
+  if [ -z "$latest" ]; then
+    judge_release "$label" claude-envoy "$served" "; the version legion-plugins serves for $range"
+    return
+  fi
+  judge_release "$label" claude-envoy "$latest" "; the version legion-plugins serves for $range, npm's latest dist-tag"
+  judge_release "$label" claude-envoy "$served" "; the highest version npm matches to $range"
 }

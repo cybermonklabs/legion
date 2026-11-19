@@ -794,6 +794,10 @@ check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the file in one line" \
   "$(has_line "UNKNOWN: envoy-cluster: cannot read envoy-cluster/Pulumi.prod.yaml: it is not UTF-8 text")"
 
+# The --clients fixtures every scenario file below may use; they define and run nothing.
+# shellcheck source=lib/daemon-release-gate-fixtures-clients.sh
+source "${project_root}/packages/envoy/scripts/lib/daemon-release-gate-fixtures-clients.sh"
+
 # The --listeners leg's VM-hub scenarios.
 # shellcheck source=lib/daemon-release-gate-cases-vm-hub.sh
 source "${project_root}/packages/envoy/scripts/lib/daemon-release-gate-cases-vm-hub.sh"

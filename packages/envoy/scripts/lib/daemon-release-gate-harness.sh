@@ -117,6 +117,8 @@ EOF
 # and platforms, the index's platform list as the range format prints it; and, for `run`, fs/<path>
 # for `--entrypoint cat <path>` and legion-version for `--entrypoint /opt/legion/bin/legion version`.
 # A ref with no fs/ is one the registry does not hold, and docker answers `run` as it does then.
+# `run` takes the options the gate runs an image under (--rm, --quiet, --network, --read-only,
+# --cap-drop, --security-opt) and refuses any other.
 cat >"${temporary_dir}/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 printf 'docker %s\n' "$*" >>"${FAKE_CALLS:?}"
@@ -125,8 +127,8 @@ if [ "$1" = run ]; then
   entrypoint=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --rm | --quiet) shift ;;
-      --network) shift 2 ;;
+      --rm | --quiet | --read-only) shift ;;
+      --network | --cap-drop | --security-opt) shift 2 ;;
       --entrypoint) entrypoint=$2 && shift 2 ;;
       -*) echo "fake docker: unexpected run option: $1" >&2; exit 2 ;;
       *) break ;;
@@ -181,13 +183,18 @@ case "$6" in
 esac
 EOF
 # The fake npm. `npm view <spec> version --json` answers FAKE_ROOT/npm/<spec with / @ < > = as _>,
-# and fails as an unreachable registry when FAKE_NPM_DOWN=1.
+# and `npm view <spec> dist-tags --json` that file with `.dist-tags` added; each fails as an
+# unreachable registry when FAKE_NPM_DOWN=1.
 cat >"${temporary_dir}/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
-[ "$1 $3 $4" = "view version --json" ] || { echo "fake npm: unexpected command: $*" >&2; exit 2; }
+case "$1 $3 $4" in
+  "view version --json") suffix="" ;;
+  "view dist-tags --json") suffix=".dist-tags" ;;
+  *) echo "fake npm: unexpected command: $*" >&2; exit 2 ;;
+esac
 [ "${FAKE_NPM_DOWN:-0}" != 1 ] || { echo "npm error code ENOTFOUND" >&2; exit 1; }
-file="${FAKE_ROOT:?}/npm/$(printf '%s' "$2" | tr '/@<>=' '_____')"
+file="${FAKE_ROOT:?}/npm/$(printf '%s' "$2" | tr '/@<>=' '_____')${suffix}"
 [ -f "$file" ] || { echo "npm error code E404" >&2; exit 1; }
 cat "$file"
 EOF
@@ -270,11 +277,14 @@ labels() {
   local IFS=,
   printf '{\n  %s\n}\n' "${fields[*]}"
 }
-# worker_image <ref> <build commit> [no-pi-envoy|no-claude-envoy|no-commit]: a worker image's files
-# as `docker run` reads them: the two clients the build puts at /opt/legion, each manifest at the
-# version a build outside a release leaves it (pi-envoy at the source's 16.12.1, claude-envoy at the
-# source's static 1.0.0), and a legion whose `version` names <build commit>. The option leaves that
-# client out, or makes `legion version` name no commit.
+# worker_image <ref> <build commit> [no-pi-envoy|no-claude-envoy|no-commit|no-plugins]: a worker
+# image's files as `docker run` reads them: the two clients the build puts at /opt/legion, each
+# manifest at the version a build outside a release leaves it (pi-envoy at the source's 16.12.1,
+# claude-envoy at the source's static 1.0.0), and a legion whose `version` names <build commit> on
+# its first line and, on its second, the plugin pair a release build links into it (pi-envoy
+# 17.42.0, linked_envoy). The option leaves that client out, makes `legion version` name no
+# commit, or leaves its second line out, as a build that links no pair prints.
+readonly linked_envoy="17.42.0"
 worker_image() {
   local dir
   dir=$(image_dir "$1")
@@ -282,17 +292,24 @@ worker_image() {
   mkdir -p "$dir/fs/opt/legion/pi-envoy" "$dir/fs/opt/legion/claude-envoy"
   printf '{"name": "@sjawhar/pi-envoy", "version": "16.12.1"}\n' >"$dir/fs/opt/legion/pi-envoy/package.json"
   printf '{"name": "@sjawhar/claude-envoy", "version": "1.0.0"}\n' >"$dir/fs/opt/legion/claude-envoy/package.json"
-  printf 'legion (devel) commit %s\nplugins @sjawhar/pi-legion 19.28.1 @sjawhar/pi-envoy 16.12.1\n' "$2" >"$dir/legion-version"
+  printf 'legion (devel) commit %s\nplugins @sjawhar/pi-legion 19.28.1 @sjawhar/pi-envoy %s\n' "$2" "$linked_envoy" >"$dir/legion-version"
   case "${3:-}" in
     no-pi-envoy) rm "$dir/fs/opt/legion/pi-envoy/package.json" ;;
     no-claude-envoy) rm "$dir/fs/opt/legion/claude-envoy/package.json" ;;
     no-commit) printf 'legion (devel)\n' >"$dir/legion-version" ;;
+    no-plugins) printf 'legion (devel) commit %s\n' "$2" >"$dir/legion-version" ;;
   esac
+}
+# plugins_line <ref> <line>: the second line <ref>'s `legion version` prints, in place of its own.
+plugins_line() {
+  local file
+  file="$(image_dir "$1")/legion-version"
+  printf '%s\n%s\n' "$(head -n 1 "$file")" "$2" >"$file"
 }
 # dotfiles <pi-envoy pin> [<claude-envoy enabled>]: the developer box's ~/.dotfiles, with
 # ~/.omp/plugins linked to its plugin tree, the pin installed there, and a settings.json whose
 # marketplace legion-plugins is example-org/plugins, serving @sjawhar/claude-envoy at >=1.0.0,
-# which npm matches to 3.3.0 and 4.0.0.
+# which npm matches to 3.3.0 and 4.0.0, its `latest` dist-tag 4.0.0.
 dotfiles() {
   local home="${case_root}/home" plugins="${case_root}/home/.dotfiles/omp/plugins"
   mkdir -p "$plugins/node_modules/@sjawhar/pi-envoy" "$home/.dotfiles/.claude" "$home/.omp" "${case_root}/marketplaces/example-org"
@@ -304,6 +321,7 @@ dotfiles() {
   printf '{"name": "legion-plugins", "plugins": [{"name": "claude-envoy", "source": {"source": "npm", "package": "@sjawhar/claude-envoy", "version": ">=1.0.0"}}]}\n' \
     >"${case_root}/marketplaces/example-org/plugins.json"
   printf '["3.3.0", "4.0.0"]\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
+  printf '{"latest": "4.0.0"}\n' >"${case_root}/npm/_sjawhar_claude-envoy.dist-tags"
 }
 # legion_stack <yaml body> [<project>]: legion/Pulumi.prod.yaml, its projects list being the body,
 # its keys under <project>, by default the name legion/Pulumi.yaml declares.

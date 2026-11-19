@@ -41,27 +41,56 @@
 # NewNatsHub declares it. Declared, it prints `VM HUB: <file>:<line> at <sha> uses NewNatsHub` and
 # reads the pin, a stack that sets none staying UNKNOWN; used nowhere, every file read, it prints
 # `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and reads no VM pin. What it cannot fetch or
-# read is UNKNOWN, so a missing pin never reads as a hub that is gone.
+# read is UNKNOWN, a repository that declares submodules (.gitmodules) among it, since the archive
+# holds none of their code; so a missing pin never reads as a hub that is gone.
 #
 # With --clients it reads the clients that deliver to a session, each of which must carry the
 # client follow filter of <commit>, since an older one passes a frame in a form it does not match in
-# silence:
-#   - in each image a running project names, its `daemonImage` and its `image` (each read once
-#     however many projects name it), the two clients the worker build puts at /opt/legion,
-#     /opt/legion/pi-envoy and /opt/legion/claude-envoy (packages/daemon/docker/worker.Dockerfile),
-#     each of which must be there, judged by the commit that build ran at, which the image's own
-#     /opt/legion/bin/legion prints (`legion version`), never by its manifests' versions
-#     (lib/daemon-release-gate-read-image-clients.sh). A project that runs no daemon is SKIPPED,
-#     and one on a tmux host is UNKNOWN: its sessions run the host's clients.
+# silence (lib/daemon-release-gate-read-image-clients.sh and
+# lib/daemon-release-gate-read-developer-box.sh):
+#   - in each `image` a running project names (each read once however many projects name it), and
+#     in the agent-session image the deployment's sessions/ stack pins (sessions/Pulumi.prod.yaml
+#     `<project>:image`, under the name sessions/Pulumi.yaml declares; that image is built FROM the
+#     worker image and links its /opt/legion/pi-envoy), the two clients the worker build puts at
+#     /opt/legion, /opt/legion/pi-envoy and /opt/legion/claude-envoy
+#     (packages/daemon/docker/worker.Dockerfile), each of which must be there, judged by the commit
+#     that build ran at, which the image's own /opt/legion/bin/legion prints (`legion version`),
+#     never by its manifests' versions. A sessions/ stack or pin it cannot read is UNKNOWN by name.
+#     The pins are what the gate reads: a session launched with an image of its own (`--image`)
+#     runs clients outside them.
+#   - for each running project's daemon, its `daemonImage`, else its `image`: no session loads the
+#     clients of a daemon's own container, but the daemon installs `@sjawhar/pi-envoy@<version>`
+#     into a kept session pod on a stale-plugin relaunch (packages/daemon/internal/daemon/
+#     kubernetes.go, ResolvedPlugins). That version is the project's runtime.kubernetes.plugins
+#     when its legion.yaml sets one, else the pair linked into the image's legion, its `legion
+#     version` second line (`plugins @sjawhar/pi-legion <v> @sjawhar/pi-envoy <v>`), and it is
+#     judged by the commit of its release tag, never by the image's build commit. The gate reads a
+#     project's legion.yaml from the deployment's rendering of it,
+#     legion/testdata/<key in lower case>-legion.yaml: the deployment's TestCommittedStackConfig
+#     holds that file byte for byte to what its legion program renders (renderLegionYAML), and the
+#     project files themselves carry no legion.yaml key. That program renders no plugins key today
+#     (renderLegionYAML, legion/main.go:2743-2892 when this was written) and refuses a project field
+#     it does not know (parseProjects' DisallowUnknownFields, legion/main.go:4771-4774), so the
+#     linked pair decides; reading the rendering keeps the gate right if the program starts to set
+#     the key. A rendering it cannot read, a legion that links no pair where the rendering sets
+#     none, and a second line that names no pi-envoy version are UNKNOWN. A project with no
+#     daemonImage runs its daemon from its image, which is then judged both ways.
+#   - A project that runs no daemon is SKIPPED, and one on a tmux host is UNKNOWN: its sessions run
+#     the host's clients. Each command runs in the image with `docker run --rm --quiet --network
+#     none --read-only --cap-drop ALL --security-opt no-new-privileges`, and every text read from
+#     an image is printed with its control characters written as \x<hh>, so no image can print a
+#     line of the gate's own.
 #   - on this developer box, under --dotfiles (default ~/.dotfiles): the `@sjawhar/pi-envoy` pin of
 #     omp/plugins/package.json and the copy installed beside it; each claude-envoy@legion-plugins
 #     install the dotfiles' Claude Code plugin record holds, by its manifest; and the claude-envoy
-#     version the marketplace legion-plugins serves to .claude/settings.json, the highest version
-#     npm matches to the range the marketplace names. Each version is judged by the commit of its
-#     release tag (`pi-envoy-v<version>`, `claude-envoy-v<version>`). A client installed where the
-#     dotfiles' pins say nothing about it (~/.omp/plugins or a profile's plugin tree, ~/.claude,
-#     another CLAUDE_CONFIG_DIR), and a link that does not resolve, are UNKNOWN
-#     (lib/daemon-release-gate-read-developer-box.sh).
+#     version the marketplace legion-plugins serves to .claude/settings.json. npm's install takes
+#     the `latest` dist-tag when it matches the range the marketplace names, else the highest
+#     version that matches, so the gate judges both: `latest` when it is among the versions npm
+#     matches, and the highest match. Each version is judged by the commit of its release tag
+#     (`pi-envoy-v<version>`, `claude-envoy-v<version>`). A client installed where the dotfiles'
+#     pins say nothing about it (~/.omp/plugins or a profile's plugin tree, ~/.claude, another
+#     CLAUDE_CONFIG_DIR), a link that does not resolve, and a marketplace entry it cannot read are
+#     UNKNOWN.
 #
 # Each pin's org.opencontainers.image.source and .revision labels are read with `docker buildx
 # imagetools inspect`. A single image is read whole; an OCI image index, which carries no image
@@ -88,11 +117,17 @@
 #
 # It needs bash, gh (signed in with read access to the deployment repository and cybermonklabs/legion),
 # docker with buildx, jq, base64, python3 with PyYAML and, for --clients, npm. Docker must be able to
-# read each pin's registry (and, for --clients, to pull and run each image): for ghcr.io, a login
-# with a token holding read:packages, made into a config directory of your own so the shared one is
-# untouched:
+# read each pin's registry (and, for --clients, to pull and run each image), with logins made into a
+# config directory of your own so the shared one is untouched. For ghcr.io, a token holding
+# read:packages; for the Artifact Registry images (`<region>-docker.pkg.dev`), a Google login that
+# may read them, in the same DOCKER_CONFIG. For example:
 #   export DOCKER_CONFIG=$(mktemp -d)
 #   gh auth token | docker login ghcr.io -u x --password-stdin
+#   gcloud auth print-access-token | docker login <region>-docker.pkg.dev -u oauth2accesstoken --password-stdin
+# Any read-only token holding read:packages serves where `gh auth token` is not allowed, and
+# `gcloud auth configure-docker <region>-docker.pkg.dev`, run with that DOCKER_CONFIG set, makes
+# docker ask docker-credential-gcloud instead of keeping a token that expires within the hour.
+# With only the ghcr.io login, every Artifact Registry image prints UNKNOWN.
 # A pin docker cannot read prints UNKNOWN with docker's own answer, never GATE OPEN.
 set -euo pipefail
 
@@ -131,6 +166,9 @@ done
 [ "$clients" = 0 ] || mode=clients
 readonly commit=$1 deployment dotfiles mode
 readonly legion_source="https://github.com/cybermonklabs/legion"
+# A plain image reference: nothing in it a shell, docker's own options or a tab-separated line of
+# the gate's could read as anything else.
+readonly image_reference='^[A-Za-z0-9][A-Za-z0-9._/:@+-]*$'
 
 work=$(mktemp -d)
 readonly work
@@ -318,15 +356,18 @@ PY
 # daemon_pins <daemons|clients>: one line per project of $work/entries.json, tab-separated: the
 # project's key, then READ and the image that runs its daemon, SKIP and why it runs none, HOST for a
 # project whose daemon runs on a tmux host, RUNTIME and a runtime the gate does not know, NOIMAGE,
-# or INVALID and the field it cannot take. With clients, a running project's READ lines are one for
-# each image it names, its daemonImage and its image, keyed `<key> daemonImage` and `<key> image`,
-# since a session pod runs the second and the daemon the first. A field of the wrong type (a
-# replicas that is no count, as YAML's false would equal 0; a daemon that is no boolean) or an image
-# that is no plain reference (a tab in it would cut this line, and the gate would read another
-# image) is INVALID, never a project skipped or an image cut short. When the deployment declares no
-# project it prints ERROR and where it looked.
+# or INVALID and the field it cannot take. With clients, a running project's lines are keyed by the
+# field they read, `<key> daemonImage` or `<key> image`: READ and its image, whose clients a session
+# pod loads; and DAEMON, the image that runs its daemon (its daemonImage, else its image), and the
+# project's rendered legion.yaml, legion/testdata/<key in lower case>-legion.yaml, since what that
+# daemon gives a session is the pi-envoy it installs on a relaunch. A key that is no project key
+# names no such file, and is INVALID. A field of the wrong type (a replicas that is no count, as
+# YAML's false would equal 0; a daemon that is no boolean) or an image that is no plain reference (a
+# tab in it would cut this line, and the gate would read another image) is INVALID, never a project
+# skipped or an image cut short. When the deployment declares no project it prints ERROR and where
+# it looked.
 daemon_pins() {
-  python3 - "$work/entries.json" "$1" <<'PY'
+  python3 - "$work/entries.json" "$1" "$image_reference" <<'PY'
 import json
 import re
 import sys
@@ -334,7 +375,7 @@ import sys
 with open(sys.argv[1]) as handle:
     loaded = json.load(handle)
 clients = sys.argv[2] == "clients"
-reference = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@+-]*")
+reference = re.compile(sys.argv[3])
 if not loaded["found"]:
     print(f"ERROR\tdeclares no project: {loaded['missing']}")
     sys.exit(0)
@@ -362,8 +403,17 @@ for entry in loaded["entries"]:
     elif not images:
         print(f"{key}\tNOIMAGE")
     elif clients:
-        for field, image in images.items():
-            print(f"{key} {field}\tREAD\t{image}")
+        named = entry.get("key")
+        if not (isinstance(named, str) and re.fullmatch(r"[A-Z][A-Z0-9]*", named)):
+            print(f"{key}\tINVALID\tkey {json.dumps(named)}, which is no project key, so no legion/testdata golden is its own")
+            continue
+        golden = f"legion/testdata/{named.lower()}-legion.yaml"
+        if "daemonImage" in images:
+            print(f"{key} daemonImage\tDAEMON\t{images['daemonImage']}\t{golden}")
+        if "image" in images:
+            print(f"{key} image\tREAD\t{images['image']}")
+            if "daemonImage" not in images:
+                print(f"{key} image\tDAEMON\t{images['image']}\t{golden}")
     else:
         print(f"{key}\tREAD\t{images.get('daemonImage') or images['image']}")
 PY
@@ -592,32 +642,41 @@ compare_revision() {
   esac
 }
 
-# listener <key> <stack> <setting>: judges the listener pin of <stack> (envoy, envoy-cluster or
-# dispatch), the value its Pulumi.prod.yaml sets for <setting> under the project name its
-# Pulumi.yaml declares (`<project>:<setting>`).
-listener() {
-  local key=$1 stack=$2 setting=$3 ref
+# stack_pin <key> <stack> <setting>: sets $pin to the value <stack>/Pulumi.prod.yaml sets for
+# <setting> under the project name its Pulumi.yaml declares (`<project>:<setting>`, $project the
+# name) and returns 0; or prints <key>'s UNKNOWN line naming what it could not read, counts it, and
+# returns 1.
+stack_pin() {
+  local key=$1 stack=$2 setting=$3
+  pin=""
   if ! project_of "$stack"; then
     printf 'UNKNOWN: %s: %s\n' "$key" "$project_error"
     unknown=$((unknown + 1))
-    return
+    return 1
   fi
   setting="${project}:${setting}"
   if ! stack_file "$stack/Pulumi.prod.yaml"; then
     unknown=$((unknown + 1))
-    return
+    return 1
   fi
-  if ! ref=$(config_value "$setting" 2>"$work/err"); then
+  if ! pin=$(config_value "$setting" 2>"$work/err"); then
     printf 'UNKNOWN: %s: cannot read %s/Pulumi.prod.yaml: %s\n' "$key" "$stack" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
-    return
+    return 1
   fi
-  if [ -z "$ref" ]; then
+  if [ -z "$pin" ]; then
     printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets no %s\n' "$key" "$stack" "$setting"
     unknown=$((unknown + 1))
-    return
+    return 1
   fi
-  judge "$key" "$ref"
+}
+
+# listener <key> <stack> <setting>: judges the listener pin of <stack> (envoy, envoy-cluster or
+# dispatch), the value its Pulumi.prod.yaml sets for <setting> (stack_pin).
+listener() {
+  if stack_pin "$@"; then
+    judge "$1" "$pin"
+  fi
 }
 
 # The readers in lib/: the VM hub, which --listeners decides before it reads envoy's pin, and the
@@ -660,10 +719,11 @@ else
     printf 'UNKNOWN: cannot read %s legion projects: %s\n' "$deployment" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
   fi
-  while IFS=$'\t' read -r key what detail; do
+  while IFS=$'\t' read -r key what detail golden; do
     case "$what:$mode" in
       SKIP:*) printf 'SKIPPED: %s runs no daemon (%s)\n' "$key" "$detail" ;;
       READ:clients) client_image "$key" "$detail" ;;
+      DAEMON:clients) client_daemon "$key" "$detail" "$golden" ;;
       READ:*) judge "$key" "$detail" ;;
       NOIMAGE:*)
         printf 'UNKNOWN: %s runs a daemon and names neither daemonImage nor image\n' "$key"
@@ -695,8 +755,12 @@ else
     echo "UNKNOWN: the deployment's Legion projects run no daemon, so no pin was read"
     unknown=1
   fi
-  # The developer box delivers to its own sessions through the clients its dotfiles install.
-  [ "$mode" != clients ] || dotfiles_clients
+  if [ "$mode" = clients ]; then
+    # The agent sessions the deployment's sessions/ stack launches run the image it pins, and the
+    # developer box delivers to its own sessions through the clients its dotfiles install.
+    sessions_image
+    dotfiles_clients
+  fi
 fi
 
 if [ "$shut" -gt 0 ]; then

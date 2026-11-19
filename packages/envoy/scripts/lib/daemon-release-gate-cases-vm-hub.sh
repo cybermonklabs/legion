@@ -329,3 +329,24 @@ PY
   check "refuses UNKNOWN naming the member" "$(has_line "$want")"
   check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
 done
+
+# GitHub's archive holds no submodule's files, only an empty directory at its path, so a repository
+# that declares submodules (.gitmodules) holds code the gate cannot read, a use of NewNatsHub among
+# what it could hold. Its program declaring no hub elsewhere, the gate still says UNKNOWN.
+echo "case: --listeners, a deployment repository that declares submodules"
+new_case listeners-submodules
+listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
+envoy_program none
+printf '[submodule "vendor/sdk"]\n\tpath = vendor/sdk\n\turl = https://github.com/example-org/sdk\n' >"${case_root}/files/.gitmodules"
+mkdir -p "${case_root}/files/vendor/sdk"
+index "$envoy_pin" "$legion" "$behind_rev"
+index "$cluster_pin" "$legion" "$ahead_rev"
+index "$dispatch_listener_pin" "$legion" "$ahead_rev"
+compare "$behind_rev" behind 4
+compare "$ahead_rev" ahead 0
+run_gate -- --listeners "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the submodules" \
+  "$(has_line "UNKNOWN: envoy: cannot read the Go files of ${deployment} at ${deployment_head}: the repository holds .gitmodules, and submodule code is not in the archive")"
+check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"

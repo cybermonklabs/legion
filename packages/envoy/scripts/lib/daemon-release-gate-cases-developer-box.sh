@@ -2,8 +2,8 @@
 # packages/envoy/scripts/lib/daemon-release-gate-cases-developer-box.sh
 #
 # The --clients scenarios of the developer box. daemon-release-gate.test.sh sources this file after
-# the image scenarios, whose clients_background it uses, with the harness's fakes; it is not run on
-# its own.
+# the harness and the client fixtures (daemon-release-gate-fixtures-clients.sh), whose box_case and
+# claude_install it uses; it is not run on its own.
 #
 # On the developer box --clients reads the dotfiles' pins and what is installed from them: the
 # pi-envoy pin of omp/plugins/package.json and the copy installed beside it, each claude-envoy
@@ -13,34 +13,6 @@
 # (~/.omp/plugins or a profile's tree, ~/.claude, another CLAUDE_CONFIG_DIR) is UNKNOWN, and so is
 # anything the gate cannot tell is there or not. Each run's HOME is the case's own (run_bare).
 # shellcheck disable=SC2154 # every variable read here is set by the harness or the test that sources this file
-
-readonly envoy_behind_rev="ffffffffffffffffffffffffffffffffffffffff"
-readonly pi_envoy_ahead="pi-envoy 17.40.0 from pi-envoy-v17.40.0 at ${ahead_rev} (ahead of ${commit})"
-readonly claude_note="; the version legion-plugins serves for >=1.0.0"
-readonly claude_served="claude-envoy 4.0.0 from claude-envoy-v4.0.0 at ${identical_rev} (identical to ${commit})${claude_note}"
-# box_case <name>: a case whose fleet and developer box carry the commit (clients_background), with
-# a release tag behind it for pi-envoy 17.39.0 and claude-envoy 3.3.0.
-box_case() {
-  new_case "$1"
-  clients_background
-  tag pi-envoy-v17.39.0 "$envoy_behind_rev"
-  tag claude-envoy-v3.3.0 "$behind_rev"
-  compare "$envoy_behind_rev" behind 300
-}
-# claude_install <version in the record> <version of the manifest at its path> [<installPath>]: one
-# claude-envoy@legion-plugins install in the dotfiles' Claude Code plugin record, its copy under
-# the dotfiles' plugins/cache unless an installPath is given.
-claude_install() {
-  local config="${case_root}/home/.dotfiles/.claude" path="${3:-}"
-  if [ -z "$path" ]; then
-    path="${config}/plugins/cache/legion-plugins/claude-envoy/$2"
-    mkdir -p "$path"
-    printf '{"name": "@sjawhar/claude-envoy", "version": "%s"}\n' "$2" >"$path/package.json"
-  fi
-  mkdir -p "${config}/plugins"
-  printf '{"version": 2, "plugins": {"claude-envoy@legion-plugins": [{"scope": "user", "installPath": "%s", "version": "%s"}]}}\n' \
-    "$path" "$1" >"${config}/plugins/installed_plugins.json"
-}
 
 echo "case: --clients, the developer box at or after the commit"
 box_case box-open
@@ -57,6 +29,8 @@ check "asks npm for the range the marketplace names" \
   "$(grep -qxF "npm view @sjawhar/claude-envoy@>=1.0.0 version --json" "$calls" && echo true || echo false)"
 check "resolves each version through its release tag" \
   "$(grep -qF "repos/cybermonklabs/legion/commits/refs/tags/pi-envoy-v17.40.0" "$calls" && grep -qF "repos/cybermonklabs/legion/commits/refs/tags/claude-envoy-v4.0.0" "$calls" && echo true || echo false)"
+check "asks npm for the latest dist-tag, and judges it once, it being the highest match" \
+  "$(grep -qxF "npm view @sjawhar/claude-envoy dist-tags --json" "$calls" && is "$(grep -c '^PASS: dotfiles .claude/settings.json runs claude-envoy ' "$out")" 1)"
 
 echo "case: --clients, the developer box's pi-envoy pin behind the commit"
 box_case box-pin-behind
@@ -114,6 +88,28 @@ run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the marketplace's source" \
   "$(has_line 'UNKNOWN: dotfiles .claude/settings.json: the marketplace legion-plugins it names is {"source":"directory","path":"/srv/plugins"}, which is no GitHub repository this gate reads')"
+
+# A marketplace entry jq cannot index (a string where Claude Code takes an object) is refused by
+# name, never a gate that stops with no verdict.
+echo "case: --clients, a marketplace legion-plugins that is no object"
+box_case box-marketplace-string
+printf '{"extraKnownMarketplaces": {"legion-plugins": "sjawhar/legion"}, "enabledPlugins": {"claude-envoy@legion-plugins": true}}\n' \
+  >"${case_root}/home/.dotfiles/.claude/settings.json"
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the marketplace and jq's answer" \
+  "$(grep -q '^UNKNOWN: dotfiles \.claude/settings\.json: cannot read the marketplace legion-plugins it names: jq: error' "$out" && echo true || echo false)"
+check "asks npm nothing" "$(lacks "npm view" "$calls")"
+check "the verdict is the last line" "$(last_line_is "UNKNOWN")"
+
+echo "case: --clients, a marketplace at a ref that holds a URL's reserved characters"
+box_case box-marketplace-ref
+printf '{"extraKnownMarketplaces": {"legion-plugins": {"source": {"source": "github", "repo": "example-org/plugins", "ref": "v1&path=x #y"}}}, "enabledPlugins": {"claude-envoy@legion-plugins": true}}\n' \
+  >"${case_root}/home/.dotfiles/.claude/settings.json"
+run_gate -- --clients "$commit"
+check "exits 0" "$(is "$status" 0)"
+check "reads the marketplace at that ref, encoded as one query value" \
+  "$(grep -qF "repos/example-org/plugins/contents/.claude-plugin/marketplace.json?ref=v1%26path%3Dx%20%23y" "$calls" && echo true || echo false)"
 
 echo "case: --clients, the dotfiles' installed pi-envoy behind its pin"
 box_case box-installed-behind

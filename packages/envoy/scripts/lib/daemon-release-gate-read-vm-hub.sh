@@ -22,6 +22,7 @@
 # into a comment or a string. A link that leaves the repository, a Go file that is a link to no file
 # of it, and an archive member git never writes (a hard link, a second copy of one path, a directory
 # or device under a Go file's name) are UNKNOWN, since the gate cannot read what they name; so are a
+# repository that declares submodules (.gitmodules), whose code GitHub's archive does not hold, a
 # local replace or use of envoy/go.mod, or of a go.work at the repository's root or in envoy/, that
 # leaves the repository, a head that cannot be read or is no commit id, an archive it cannot fetch
 # or unpack, and an envoy/ with no Go file or no go.mod. A module fetched from outside the
@@ -68,6 +69,9 @@ try:
                 continue
             if name in members:
                 sys.exit(f"the archive holds {name} twice, which a repository cannot")
+            # GitHub's archive holds a submodule as an empty directory, so its code is never read.
+            if name == ".gitmodules":
+                sys.exit("the repository holds .gitmodules, and submodule code is not in the archive")
             if member.islnk():
                 sys.exit(f"the archive holds {name} as a hard link, which git never writes")
             if wanted(name) and not (member.isfile() or member.issym()):

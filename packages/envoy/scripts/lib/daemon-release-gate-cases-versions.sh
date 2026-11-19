@@ -2,13 +2,16 @@
 # packages/envoy/scripts/lib/daemon-release-gate-cases-versions.sh
 #
 # The --clients scenarios of the developer box's versions. daemon-release-gate.test.sh sources this
-# file after the developer-box scenarios, whose box_case it uses; it is not run on its own.
+# file after the client fixtures (daemon-release-gate-fixtures-clients.sh), whose box_case it uses;
+# it is not run on its own.
 #
 # A version is judged by the commit of its release tag, so it must be one exact release version, as
-# Semantic Versioning writes one. The version the marketplace serves is the highest npm matches to
-# the marketplace's range by semantic-version precedence, where a release ranks above its own
-# pre-release and numbers compare as numbers; an npm answer holding anything that is no such
-# version is unreadable whole, and a marketplace that names claude-envoy twice is read as neither.
+# Semantic Versioning writes one. npm's install takes the package's `latest` dist-tag when it
+# matches the marketplace's range, else the highest version that matches, so the gate judges both:
+# `latest` when it is among the versions npm answers for the range, and the highest of them by
+# semantic-version precedence, where a release ranks above its own pre-release and numbers compare
+# as numbers. An npm answer holding anything that is no such version is unreadable whole, and a
+# marketplace that names claude-envoy twice is read as neither.
 # shellcheck disable=SC2154 # every variable read here is set by the harness or the test that sources this file
 
 readonly npm_answer="_sjawhar_claude-envoy___1.0.0"
@@ -39,6 +42,37 @@ printf '"4.0.0"\n' >"${case_root}/npm/${npm_answer}"
 run_gate -- --clients "$commit"
 check "exits 0" "$(is "$status" 0)"
 check "judges that version" "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served}")"
+
+echo "case: --clients, npm's latest dist-tag below the highest match and behind the commit"
+box_case versions-npm-latest-lower
+printf '{"latest": "3.3.0"}\n' >"${case_root}/npm/_sjawhar_claude-envoy.dist-tags"
+run_gate -- --clients "$commit"
+check "exits 1" "$(is "$status" 1)"
+check "shuts naming latest, the version npm installs" \
+  "$(has_line "GATE SHUT: dotfiles .claude/settings.json runs claude-envoy 3.3.0 from claude-envoy-v3.3.0 at ${behind_rev} (behind ${commit} by 12); the version legion-plugins serves for >=1.0.0, npm's latest dist-tag")"
+check "still judges the highest match on its own line" \
+  "$(has_line "PASS: dotfiles .claude/settings.json runs claude-envoy 4.0.0 from claude-envoy-v4.0.0 at ${identical_rev} (identical to ${commit}); the highest version npm matches to >=1.0.0")"
+check "the verdict is GATE SHUT" "$(last_line_is "GATE SHUT")"
+
+echo "case: --clients, npm's latest dist-tag outside the marketplace's range"
+box_case versions-npm-latest-outside
+printf '{"latest": "0.9.0"}\n' >"${case_root}/npm/_sjawhar_claude-envoy.dist-tags"
+tag claude-envoy-v0.9.0 "$behind_rev"
+run_gate -- --clients "$commit"
+check "exits 0" "$(is "$status" 0)"
+check "asks npm for the latest dist-tag" \
+  "$(grep -qxF "npm view @sjawhar/claude-envoy dist-tags --json" "$calls" && echo true || echo false)"
+check "judges the highest match alone, as the version served" "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served}")"
+check "never judges latest" "$([ "$(lacks "claude-envoy-v0.9.0" "$calls")" = true ] && lacks "0.9.0" "$out" || echo false)"
+
+echo "case: --clients, npm answers no latest dist-tag"
+box_case versions-npm-no-latest
+printf '{"next": "4.0.0"}\n' >"${case_root}/npm/_sjawhar_claude-envoy.dist-tags"
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the dist-tag" \
+  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: npm answers no latest dist-tag of @sjawhar/claude-envoy")"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
 for answer in '["4.0.0-01"]' '["4.0.0-rc..1"]' '["4.0.0-."]' '["3.0.0-01", "4.0.0"]' '["3.0.0+..", "4.0.0"]' '["1.0.0\n4.0.0"]' '["4.0.0", {"version": "1.0.0"}]' 'text'; do
   echo "case: --clients, npm answers ${answer}"
