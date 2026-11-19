@@ -51,6 +51,9 @@
 # installs (az, gcloud, pulumi and boto3), k9 needs git, and k15 needs lake from the Lean
 # toolchain this environment names. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh as it
 # is, so a pod with no container runtime names its test server there.
+# k7 also requires AIRLOCK_GWS_READ_SECRET and AIRLOCK_GWS_ADMIN_SECRET (the operator's
+# Google Workspace broker names), and AIRLOCK_GWS_TIER_KEY (the account key in gws/accounts.json
+# whose tiers.read.command is used). No broker name or account key is supplied by default.
 #
 # k9 is a long run: ten minutes of connections and two stacks, about twenty-five minutes in all.
 set -euo pipefail
@@ -115,6 +118,19 @@ k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8a | k9 | k15) ;;
 	exit 2
 	;;
 esac
+
+if [ "$CHECK_ID" = k7 ]; then
+	missing=()
+	for input in AIRLOCK_GWS_READ_SECRET AIRLOCK_GWS_ADMIN_SECRET AIRLOCK_GWS_TIER_KEY; do
+		if [ -z "${!input:-}" ]; then
+			missing+=("$input")
+		fi
+	done
+	if [ "${#missing[@]}" -ne 0 ]; then
+		printf 'airlock-check: k7 requires operator inputs: %s\n' "${missing[*]}" >&2
+		exit 2
+	fi
+fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/airlock-check-$CHECK_ID.XXXXXX")"
 STACK_LOG="$WORK_DIR/stack.log"
@@ -1411,9 +1427,9 @@ check_k6() {
 # manager, whose Cloud KMS call the proxy carries in HTTP/2.
 #
 # The names are the consumers' own - GITHUB_ADMIN_PAT, the gcloud login k7_names lists,
-# GWS_THEOREM_READ_OAUTH and the rest - and the hosts are the real ones, so this check needs a
-# rules file the stack's does not hold. That is one broker process of this check's own, on the
-# stack's own database, store, certificate authority and stand-ins, with its rules file, its own
+# and the operator-supplied Google Workspace logins - and the hosts are the real ones, so this
+# check needs a rules file the stack's does not hold. That is one broker process of this check's
+# own, on the stack's own database, store, certificate authority and stand-ins, with its rules file, its own
 # two ports and its own public URL changed - the same device k4's control uses for one setting,
 # with the public URL changed too because this broker must serve the release as well as the proxy,
 # and a session's proof is verified against the public URL it was signed for. Its whole
@@ -1472,13 +1488,13 @@ k7_broker() {
 k7_names() {
 	local d="$WORK_DIR/k7"
 	mkdir -p "$d"
-	jq '.secrets += [
+	jq --arg read "$AIRLOCK_GWS_READ_SECRET" --arg admin "$AIRLOCK_GWS_ADMIN_SECRET" '.secrets += [
 	     {"name": "SLACK_BOT_TOKEN", "hosts": ["slack.com"]},
 	     {"name": "GITHUB_ADMIN_PAT", "hosts": ["api.github.com", "github.com"]},
 	     {"name": "TAILSCALE_API_KEY", "hosts": ["api.tailscale.com"]},
 	     {"name": "GCLOUD_SAMI", "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"]},
-	     {"name": "GWS_THEOREM_READ_OAUTH", "hosts": ["www.googleapis.com", "oauth2.googleapis.com"]},
-	     {"name": "GWS_THEOREM_ADMIN_OAUTH", "hosts": ["admin.googleapis.com"]}
+	     {"name": $read, "hosts": ["www.googleapis.com", "oauth2.googleapis.com"]},
+	     {"name": $admin, "hosts": ["admin.googleapis.com"]}
 	   ]' "$AIRLOCK_RULES_FILE" >"$d/rules.json"
 	K7_SLACK="xoxb-the-fake-slack-token-$RANDOM$RANDOM"
 	K7_GITHUB="ghp_thefakegithubadminpat$RANDOM$RANDOM"
@@ -1492,8 +1508,12 @@ k7_names() {
 	google='{"owner":"legion-daemon","tier":"agent","type":"google-login"}'
 	login='{"type":"authorized_user","client_id":"the-stand-in-client","client_secret":"the-stand-in-client-secret","refresh_token":"the-stand-in-refresh-token"}'
 	add_fake_secret "${STACK_SECRETS_PREFIX}gcloud-sami" "$google" "$login"
-	add_fake_secret "${STACK_SECRETS_PREFIX}gws-theorem-read-oauth" "$google" "$login"
-	add_fake_secret "${STACK_SECRETS_PREFIX}gws-theorem-admin-oauth" "$google" "$login"
+	# policy.NameToSlug: lower-case the broker name and replace underscores with hyphens.
+	local name slug
+	for name in "$AIRLOCK_GWS_READ_SECRET" "$AIRLOCK_GWS_ADMIN_SECRET"; do
+		slug="${name,,}"
+		add_fake_secret "${STACK_SECRETS_PREFIX}${slug//_/-}" "$google" "$login"
+	done
 }
 
 # k7_pulumi writes the Pulumi program the Tailscale provider's getDevices is called from: a YAML
@@ -1517,9 +1537,15 @@ EOF
 # k7_steps writes every consumer's own command into one file, as k3's and k4's steps are
 # written, so one grant of the seven names covers them all.
 k7_steps() {
-	local d="$WORK_DIR/k7"
+	local d="$WORK_DIR/k7" read_secret admin_secret tier_key
+	printf -v read_secret '%q' "$AIRLOCK_GWS_READ_SECRET"
+	printf -v admin_secret '%q' "$AIRLOCK_GWS_ADMIN_SECRET"
+	printf -v tier_key '%q' "$AIRLOCK_GWS_TIER_KEY"
 	cat >"$d/steps.sh" <<EOF
 set -u
+gws_read_secret=$read_secret
+gws_admin_secret=$admin_secret
+gws_tier_key=$tier_key
 out=$d/out
 : >"\$out"
 say() { printf '%s\n' "\$1" >>"\$out"; }
@@ -1557,14 +1583,14 @@ say "kms=\$(cd $d/pulumi && export PULUMI_BACKEND_URL=file://$d/pulumi/state GOO
 # gcloud-broker with gcloud projects list.
 say "gcloud=\$(GCLOUD_BROKER_INNER=1 GCLOUD_SAMI="\$GCLOUD_SAMI" bash $K7_DOTFILES/scripts/gcloud-broker -- gcloud projects list --format=json 2>&1 | grep -iE 'ERROR|reason:' | head -n 1 | tr -d '\r')"
 
-# One gws call under the theorem read tier: that tier's own command out of gws/accounts.json,
+# One gws call under the operator's read tier: that tier's own command out of gws/accounts.json,
 # running the Drive call gws makes, since gws itself is no file of that repository.
-say "gws_tier=\$(jq -r '.theorem.tiers.read.command | @tsv' $K7_DOTFILES/gws/accounts.json 2>&1 | tr '\t' ' ')"
-say "gws=\$(secret-run --reason 'gws theorem read' GWS_THEOREM_READ_OAUTH -- sh -c 'printf "Authorization: Bearer %s" "\$GWS_THEOREM_READ_OAUTH" | curl -sS -o /dev/null -w %{http_code} -H @- "https://www.googleapis.com/drive/v3/about?fields=user"' 2>&1 | tail -n 1 | tr -d '\r')"
+say "gws_tier=\$(jq -r --arg key "\$gws_tier_key" '.[\$key].tiers.read.command | @tsv' $K7_DOTFILES/gws/accounts.json 2>&1 | tr '\t' ' ')"
+say "gws=\$(secret-run --reason 'gws operator read' "\$gws_read_secret" -- bash -c 'printf "Authorization: Bearer %s" "\${!1}" | curl -sS -o /dev/null -w %{http_code} -H @- "https://www.googleapis.com/drive/v3/about?fields=user"' gws "\$gws_read_secret" 2>&1 | tail -n 1 | tr -d '\r')"
 
 # The google-workspace skill's Bearer call to admin.googleapis.com. Its domain is a placeholder:
 # Google refuses the fake token (401) before it reads the query, which is the answer k7 reads.
-say "admin=\$(printf 'Authorization: Bearer %s' "\$GWS_THEOREM_ADMIN_OAUTH" | curl -sS -o /dev/null -w %{http_code} -H @- "https://admin.googleapis.com/admin/directory/v1/users?domain=example.com" 2>&1 | tail -n 1)"
+say "admin=\$(printf 'Authorization: Bearer %s' "\${!gws_admin_secret}" | curl -sS -o /dev/null -w %{http_code} -H @- "https://admin.googleapis.com/admin/directory/v1/users?domain=example.com" 2>&1 | tail -n 1)"
 
 # git push --dry-run through scripts/airlock/credential-helper, which answers the placeholder,
 # with the proxy in git's own configuration. The pod's own GIT_CONFIG_* settings are cleared for
@@ -1647,7 +1673,7 @@ check_k7() {
 	# AGENT_SECRETS_URL is this check's own broker, the one whose rules name the real hosts.
 	AGENT_SECRETS_URL="$K7_API_URL" agent-secrets \
 		SLACK_BOT_TOKEN GITHUB_ADMIN_PAT TAILSCALE_API_KEY GCLOUD_SAMI \
-		GWS_THEOREM_READ_OAUTH GWS_THEOREM_ADMIN_OAUTH AIRLOCK_DEMO_TOKEN \
+		"$AIRLOCK_GWS_READ_SECRET" "$AIRLOCK_GWS_ADMIN_SECRET" AIRLOCK_DEMO_TOKEN \
 		--ttl 30m -- bash "$WORK_DIR/k7/steps.sh" >"$WORK_DIR/k7/cli.out" 2>"$WORK_DIR/k7/cli.err"
 	declare -A K7
 	local key value
@@ -1669,7 +1695,7 @@ check_k7() {
 	observe "pulumi preview with the Tailscale provider calling tailscale:getDevices: ${K7[pulumi]-}"
 	observe "pulumi stack init with a gcpkms secrets provider, Cloud KMS over gRPC: ${K7[kms]-}"
 	observe "gcloud projects list under gcloud-broker: ${K7[gcloud]-}"
-	observe "the gws theorem read tier (${K7[gws_tier]-}) answered: ${K7[gws]-}"
+	observe "the gws operator read tier (${K7[gws_tier]-}) answered: ${K7[gws]-}"
 	observe "the google-workspace skill's Bearer call to admin.googleapis.com answered: ${K7[admin]-}"
 	observe "git push --dry-run through a credential helper answering the placeholder: ${K7[git]-}"
 	observe "the plain clients to S: curl ${K7[curl]-}, wget ${K7[wget]-}, node ${K7[node]-}, bun ${K7[bun]-}, python urllib ${K7[urllib]-}, python requests ${K7[requests]-}, Go ${K7[go]-}"

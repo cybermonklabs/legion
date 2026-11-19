@@ -231,6 +231,21 @@ consumers (`scripts/az-broker`, `scripts/secret-run`, `shims/gh`,
 model with `lake`, prints its theorem statements and their axioms, runs the comparison
 fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`.
 
+Before starting `k7`, set these operator inputs. An absent or empty input is a usage
+error (exit 2), reported before setup starts:
+
+- `AIRLOCK_GWS_READ_SECRET`: the broker name of the operator's Google Workspace
+  read login, for example `GWS_OPERATOR_READ_OAUTH`.
+- `AIRLOCK_GWS_ADMIN_SECRET`: the broker name of the operator's Google Workspace
+  administrator login, for example `GWS_OPERATOR_ADMIN_OAUTH`.
+- `AIRLOCK_GWS_TIER_KEY`: the account key in `gws/accounts.json` whose
+  `tiers.read.command` the check reads, for example `operator`.
+
+The check uses fake login values in its local store. These inputs identify the
+consumer's existing broker names and account; they do not rename the operator's logins.
+`bash packages/envoy/scripts/airlock-check.test.sh` checks the required inputs, fake
+broker rules, store names and generated consumer commands without starting a stack.
+
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-airlock-stands`, the binary `dev-broker.sh`
 builds and `dev-airlock.sh` runs: `probe-private` is `k4`'s private-address probe,

@@ -577,8 +577,8 @@ provider_keys:
   arm it runs in (`legion.arms=memory:memory` once decoded), so each model call says which arm's
   files it ran with. The agent keeps the last value a key is
   given, so the daemon's pairs come last. A spend row names an issue, a role or an arm only
-  where the spend collector keeps that key: a collector that keeps a list of `theorem.*`
-  attributes alone drops all three (dispatch://INFRA-1835). A controller pane serves no issue and carries the
+  where the spend collector keeps that key. A deployment's collector may keep a fixed list of
+  attributes; include all three in that list to group spend by them. A controller pane serves no issue and carries the
   role alone, and the boot gate's probe runs no role, so it carries the operator's value with its
   trailing commas and whitespace dropped and nothing added.
   The loader reads this one value for its content as well as its name: it
