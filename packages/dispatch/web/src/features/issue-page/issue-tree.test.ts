@@ -1438,19 +1438,27 @@ test("a plan task written `**1\\. …**` keeps its label in its line, from its r
 
 // A title is no markdown: the header draws the issue's as written, and the list of an issue's
 // children each child's (`slots/header.tsx`, `ChildrenTab.tsx`). The line of the issue and of a
-// child issue is so its text as written, each run of white space one space. Read as markdown,
-// `1. Migrate the table` would be a list item with no label, ``Add `x` flag`` would lose its
-// backticks and `Fix <script> handling` its tag, a title with a line feed or a blank line would
-// lose what follows it, and an address in a title would be written short.
-test("the line of the issue and of a child issue is its title as written", () => {
-  for (const [title, words] of [
+// child issue is so its text as written, each run of white space one space, but for a bare
+// address, which reads as its target's short form, as it does on every other node's line (R22).
+// Read as markdown, `1. Migrate the table` would be a list item with no label, ``Add `x` flag``
+// would lose its backticks and `Fix <script> handling` its tag, and a title with a line feed or a
+// blank line would lose what follows it. A caller that names each reference itself reads the
+// line with every address as written (`lineWordsRaw`).
+test("the line of the issue and of a child issue is its title as written, its addresses short", () => {
+  const titles: readonly (readonly [title: string, words: string, raw?: string])[] = [
     ["1. Migrate the table", "1. Migrate the table"],
     ["Add `x` flag", "Add `x` flag"],
     ["Fix <script> handling", "Fix <script> handling"],
-    ["Follow dispatch://CORE-3 up", "Follow dispatch://CORE-3 up"],
+    ["Follow dispatch://CORE-3 up", "Follow CORE-3 up", "Follow dispatch://CORE-3 up"],
+    [
+      "1. Fix `x` for dispatch://CORE-3/spec#b-r1",
+      "1. Fix `x` for CORE-3 spec block",
+      "1. Fix `x` for dispatch://CORE-3/spec#b-r1",
+    ],
     ["Migrate the table\n- then drop it", "Migrate the table - then drop it"],
     ["  Migrate   the\n\ntable  ", "Migrate the table"],
-  ] as const) {
+  ];
+  for (const [title, words, raw = words] of titles) {
     const root = buildIssueTree({
       issue: {
         ...issueDetails([]),
@@ -1469,10 +1477,11 @@ test("the line of the issue and of a child issue is its title as written", () =>
       },
     });
     expect(lineWords(root), title).toBe(`${KEY} ${words}`);
+    expect(lineWordsRaw(root), title).toBe(`${KEY} ${raw}`);
     const child = nodeOf(root, "CORE-2");
     expect(child?.type, title).toBe("child_issue");
     expect(child === undefined ? "" : lineWords(child), title).toBe(words);
-    expect(child === undefined ? "" : lineWordsRaw(child), title).toBe(words);
+    expect(child === undefined ? "" : lineWordsRaw(child), title).toBe(raw);
   }
 });
 

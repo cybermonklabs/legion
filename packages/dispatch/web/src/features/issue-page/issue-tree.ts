@@ -268,7 +268,8 @@ export interface TreeNode {
    *  the build before sends none of; a result whose read sent none draws its stored `text` read
    *  as markdown (`storedReading`). Neither the issue nor a child issue carries one: its `text`
    *  names it by its title, which is no markdown, so such a node draws `text` as written, and its
-   *  one line is that text with each run of white space one space (`lineWords`). */
+   *  one line is that text with each run of white space one space and each bare address written
+   *  short (`lineWords`). */
   readonly tree?: DisplayTree;
   /** Whether this placement is a transclusion rather than the node's edited place. */
   readonly transcluded: boolean;
@@ -450,19 +451,22 @@ export function nodeWords(node: TreeNode): string {
  *
  * A bare `dispatch://` address in these words reads as its target's short form, as a link to it
  * draws it (`addressesAsShortForms`): the server's reading keeps one as a plain
- * text run, which is no link, a stored text holds it as written, and no one-line view draws a
- * raw address (R22). An address in code stays as its author wrote it, as a rendered body draws
- * it. The first block is written short text run by text run (`firstBlockWords`), from a reading
- * and from a stored text's reading alike.
+ * text run, which is no link, a stored text and a title hold it as written, and no one-line view
+ * draws a raw address (R22). An address in code stays as its author wrote it, as a rendered body
+ * draws it. The first block is written short text run by text run (`firstBlockWords`), from a
+ * reading, from a stored text's reading and from a title's alike.
  *
- * A title is the one text read as written. The `text` of the issue, its key and title, and of a
- * child issue, its title, is no markdown and carries no reading, and every other place draws a
- * title as written: the header (`slots/header.tsx`) and the list of an issue's children
- * (`ChildrenTab.tsx`). Its line is that text with each run of white space one space and the ends
- * trimmed, nothing in it parsed and no address in it written short, so `1. Migrate the table`
- * keeps its label, ``Add `x` flag`` its backticks and `Fix <script> handling` its tag, where a
- * parse would read the first as a list item with no label and leave out the marks of the other
- * two.
+ * A title is read as written, but for its addresses. The `text` of the issue, its key and
+ * title, and of a child issue, its title, is no markdown and carries no reading, and the places
+ * that draw a whole title draw it as written: the header (`slots/header.tsx`) and the list of an
+ * issue's children (`ChildrenTab.tsx`). Its line is read from that text as a reading of one
+ * paragraph holding one text run, so nothing in it is parsed, each run of white space is one
+ * space and the ends are trimmed, and a bare address in it is written short as on every other
+ * node's line. So `1. Migrate the table` keeps its label, ``Add `x` flag`` its backticks and
+ * `Fix <script> handling` its tag, where a parse would read the first as a list item with no
+ * label and leave out the marks of the other two, and the address of
+ * ``Fix `x` for dispatch://CORE-3`` is written short beside the backticks it keeps:
+ * ``Fix `x` for CORE-3``.
  *
  * Every place that draws one line for a node cuts it from these words: a parent's line under a
  * filter (`presets.ts`) and a chip naming a block (`buildIssueTree`) here, and a row's first
@@ -479,7 +483,7 @@ export function lineWords(node: TreeNode): string {
  *  `firstBlockWordsRaw`, so a bare address stays as written. A caller that names each reference
  *  itself reads these, since a short form leaves it no address to name. A `TreeNode` passes as
  *  it is, and a decision as `{ text, tree: text_tree }`; a title node's line is its text as
- *  written here too, as in `lineWords`. */
+ *  `lineWords` reads it, its addresses as written. */
 export function lineWordsRaw(node: {
   readonly text: string;
   readonly tree?: DisplayTree;
@@ -489,16 +493,21 @@ export function lineWordsRaw(node: {
 }
 
 /** `lineWords`' walk, the one both `lineWords` and `lineWordsRaw` read by: a title node's text
- *  as written (`lineWords`' doc says why), else the first block of the node's reading read to
- *  words by `firstBlock`, and where the node has none the first block of its stored text's
- *  reading (`storedReading`) read the same way, its white space collapsed either way. The node
- *  holds that reading, so it is remembered while the node lives. */
+ *  read as a reading of one paragraph holding one text run (`lineWords`' doc says why), else the
+ *  first block of the node's reading, and where the node has none the first block of its stored
+ *  text's reading (`storedReading`), each read to words by `firstBlock`, the white space of a
+ *  title and of a stored text collapsed. The node holds its stored text's reading, so it is
+ *  remembered while the node lives. */
 function lineWordsBy(
   node: { readonly text: string; readonly tree?: DisplayTree; readonly type?: NodeType },
   firstBlock: (reading: DisplayTree) => string
 ): string {
   if (node.type === "issue" || node.type === "child_issue") {
-    return node.text.replace(/\s+/gu, " ").trim();
+    const title: DisplayTree = {
+      content: [{ content: [{ text: node.text, type: "text" }], type: "paragraph" }],
+      type: "doc",
+    };
+    return firstBlock(title).replace(/\s+/gu, " ").trim();
   }
   if (node.tree !== undefined) return firstBlock(node.tree);
   return firstBlock(storedReading(node.text, node)).replace(/\s+/gu, " ").trim();
