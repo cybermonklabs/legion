@@ -1204,6 +1204,10 @@ type prefixWriter struct {
 	out     io.Writer
 	prefix  string
 	partial []byte
+	// scanned is how much of partial is known to hold no newline, so a line written in many small
+	// writes is searched once, byte by byte, rather than again from its start at every write: the
+	// search runs under the role log's one lock, which every role's lines wait on.
+	scanned int
 	// line is the buffer each prefixed line is built in, reused from one line to the next.
 	line []byte
 }
@@ -1212,20 +1216,23 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 	w.log.mu.Lock()
 	defer w.log.mu.Unlock()
 	w.partial = append(w.partial, p...)
-	start := 0
+	start, scanned := 0, w.scanned
 	for {
 		rest := w.partial[start:]
-		end := bytes.IndexByte(rest, '\n')
+		end := bytes.IndexByte(rest[scanned:], '\n')
 		switch {
 		case end >= 0:
+			end += scanned
 			w.emit(rest[:end+1], false)
-			start += end + 1
+			start, scanned = start+end+1, 0
 		case len(rest) >= maxLogLine:
 			cut := logLineCut(rest[:maxLogLine])
 			w.emit(rest[:cut], true)
-			start += cut
+			// rest holds no newline, so neither does what follows the cut.
+			start, scanned = start+cut, len(rest)-cut
 		default:
 			w.partial = w.partial[:copy(w.partial, rest)]
+			w.scanned = len(rest)
 			return len(p), nil
 		}
 	}
@@ -1265,7 +1272,7 @@ func (w *prefixWriter) flush() {
 	defer w.log.mu.Unlock()
 	if len(w.partial) > 0 {
 		w.emit(w.partial, true)
-		w.partial = w.partial[:0]
+		w.partial, w.scanned = w.partial[:0], 0
 	}
 }
 

@@ -934,7 +934,9 @@ func TestTheContainersLogKeepsEveryLineWholeAcrossGenerations(t *testing.T) {
 // name in the first line, where the rule read it as the URL's host, and the rest of the URL in the
 // second, which held no "://" for the rule to find its query by. A run of maxLogLine bytes with no
 // such byte is cut at the mark still. The line arrives in writes of 4 KiB, as a pipe's reads give
-// it.
+// it, and in writes of 7 bytes and of one, as a child that writes a byte at a time gives it: the
+// writer keeps how much of what it holds it has searched for a newline, and every size of write
+// gives the same log.
 func TestALongRoleLineIsCutWhereTheURLRuleReadsEachURLWhole(t *testing.T) {
 	filler := strings.Repeat("x", maxLogLine-len(" https://planted-user"))
 	for _, tc := range []struct {
@@ -948,21 +950,23 @@ func TestALongRoleLineIsCutWhereTheURLRuleReadsEachURLWhole(t *testing.T) {
 		line: strings.Repeat("y", maxLogLine+5) + "\n",
 		want: "tester: " + strings.Repeat("y", maxLogLine) + "\n" + "tester: yyyyy\n",
 	}} {
-		t.Run(tc.name, func(t *testing.T) {
-			out := &lockedBuffer{}
-			log := &roleLog{stdout: redact.Writer(out), stderr: redact.Writer(out)}
-			stdout, _ := log.writers("tester")
-			for chunk := range slices.Chunk([]byte(tc.line), 4<<10) {
-				_, _ = stdout.Write(chunk)
-			}
-			got := out.String()
-			if at := strings.Index(got, "planted"); at >= 0 {
-				t.Fatalf("the container's log holds %q, part of the URL's user name or query", got[max(0, at-40):min(len(got), at+60)])
-			}
-			if got != tc.want {
-				t.Fatalf("the container's log is %v, want %v", logLines(got), logLines(tc.want))
-			}
-		})
+		for _, size := range []int{4 << 10, 7, 1} {
+			t.Run(fmt.Sprintf("%s, in writes of %d bytes", tc.name, size), func(t *testing.T) {
+				out := &lockedBuffer{}
+				log := &roleLog{stdout: redact.Writer(out), stderr: redact.Writer(out)}
+				stdout, _ := log.writers("tester")
+				for chunk := range slices.Chunk([]byte(tc.line), size) {
+					_, _ = stdout.Write(chunk)
+				}
+				got := out.String()
+				if at := strings.Index(got, "planted"); at >= 0 {
+					t.Fatalf("the container's log holds %q, part of the URL's user name or query", got[max(0, at-40):min(len(got), at+60)])
+				}
+				if got != tc.want {
+					t.Fatalf("the container's log is %v, want %v", logLines(got), logLines(tc.want))
+				}
+			})
+		}
 	}
 }
 
