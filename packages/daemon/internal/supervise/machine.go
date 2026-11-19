@@ -3031,8 +3031,11 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// report's; a suspension over a dead process writes the account alone
 	// (suspendOverADeadProcess). It is written before any branch below returns: each of them
 	// persists the claim or leaves it to the next decision's write, and every path out of here has
-	// had the end recorded.
-	m.claim.PodEnd = observation.PodEnd
+	// had the end recorded. The end is the kubelet's text, so the claim keeps it as the store keeps
+	// a far side's text (storetext.FarSideText): the failure's fact, written from the claim in
+	// memory, names the pod end the store holds and a restart's replay reads back. The rule never
+	// adds a rune, so the runtime's bound (runtime.PodEndRunes) still holds.
+	m.claim.PodEnd = storetext.FarSideText(observation.PodEnd)
 	ended := endDied(m.claim.LastDeathCause)
 	m.recordGoneEnd(ctx, ended)
 	m.sessionGone(ctx)
