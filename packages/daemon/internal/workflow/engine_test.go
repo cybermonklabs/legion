@@ -87,7 +87,7 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 	// phase worker are written in internal/admit, never here. The registration binds the spec step
 	// to its document, which moves the issue's step-to-document pairs, so it queues the publication
 	// of that set as well (record.PublishChangedGates).
-	assertOutboxKinds(t, pool, []string{"design_gates_publish", "gate_seed", "notice", "issue_branch", "supervise", "notice"})
+	assertOutboxKinds(t, pool, []string{"design_gates_publish", "gate_seed", "notice", "issue_branch", "plan_record", "supervise", "notice"})
 }
 
 // A child entering an open gate is recorded by its own fact and starts planning when the waiting
@@ -119,7 +119,7 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 	// The first supervise row is the child's own architect's start, before its planner's
 	// (Engine.gateOpened). The second notice is the child-status that every child the line starts
 	// tells the architect above it (ChildStartedNotice).
-	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
 	var branchIssue string
 	var generation int
 	if err := pool.QueryRow(ctx, "select issue, (payload->>'generation')::int from outbox where kind = 'issue_branch'").Scan(&branchIssue, &generation); err != nil {

@@ -92,8 +92,8 @@ func TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain(t *testing.T) {
 			t.Fatalf("the root after its todo under a full cap = %s at %s lingering until %v, want it re-admitted and waiting in the line at admitted in todo",
 				root.Status, root.Phase, root.LingerUntil)
 		}
-		// The start runs again on its backoff (retryBackoff) while the root waits: it is drained
-		// until at least one more attempt has run, and none of them created the claim.
+		// The start runs again on its backoff (record.RetryBackoff) while the root waits: it is
+		// drained until at least one more attempt has run, and none of them created the claim.
 		before := architectStartAttempts(rig)
 		testwait.Eventually(t, "another attempt of the waiting start of the child's architect while its root waits for a slot", func() bool {
 			rig.drain()
@@ -211,8 +211,8 @@ func reopenTheRoot(rig *childArchitectRig) {
 // wantTheWaitingStartToAct is the waiting start of the child's architect run once its tree runs
 // again: it spawns one fresh claim (token) among the runtime's calls after its first called, and
 // the booted architect is told the child (wantChildsArchitectToldItsIssues). The start runs again
-// on its backoff (retryBackoff), a few seconds after its last attempt, so the outbox is drained
-// until that attempt has come and gone.
+// on its backoff (record.RetryBackoff), a few seconds after its last attempt, so the outbox is
+// drained until that attempt has come and gone.
 func wantTheWaitingStartToAct(rig *childArchitectRig, token claim.Token, called int) {
 	rig.t.Helper()
 	testwait.Eventually(rig.t, "the waiting start of the child's architect to run once the tree runs again", func() bool {

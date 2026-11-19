@@ -2085,7 +2085,7 @@ The roll-forward appends one pair again to each task a reviewer's row stores, so
 
 This release adds two outbox kinds, and its migration `20261114031356_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, `update_ask` among its kinds, and its version stands above the update round's `20261113082214`, so the update round's list never runs after it.
-Three migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record` and then `20261117133401_design_news`, and each list keeps both names.
+Four migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record` and then `20261117133401_design_news`, and each list keeps both names.
 A `merge_queue_read` row is the daemon's read of a pull request that GitHub reported out of the merge queue: one read, or up to five in all while the reads fail.
 A `merge_queue_removal` row is the message that tells the issue's merger of that removal.
 The migration changes no column.
@@ -2114,7 +2114,7 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, and its version stands above `20261114031356`, so the merge-queue list never runs after it.
-Two migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record` and then `20261117133401_design_news`, and each list keeps the name.
+Three migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record` and then `20261117133401_design_news`, and each list keeps the name.
 A `role_holders_publish` row publishes the session of each live role of one issue to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
 The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
 The migration changes no column.
@@ -2172,7 +2172,7 @@ The rollback needs no statement.
 
 This release adds one outbox kind, `step_record`, the tables `step_starts` and `step_starts_rollback`, and the function `step_run_witness`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and the two merge-queue kinds among its kinds, and its version stands above `20261116165926_role_holders_publish`, so the role-holders list never runs after it.
-Only `20261117133401_design_news` writes the list after it, and that list keeps the name.
+Two migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record` and then `20261117133401_design_news`, and each list keeps the name.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
@@ -2181,7 +2181,7 @@ A Dispatch without the route answers `404 NOT_FOUND` "no route for …", and the
 While it waits, each issue's row logs `outbox row waits` and no ERROR line: INFO at its first run, DEBUG after, and from its seventh retry, about two minutes after the first run, one WARN line at each run.
 That WARN line means a fault only once the Dispatch release that has the route is live: then the daemon reaches a Dispatch that does not serve the route.
 The daemon retries a `5xx` as a failure, with one ERROR line `outbox row failed` at each run.
-A refusal no retry changes ends the row (`stepRecordRefused` in `internal/daemon/outbox.go`): `404 ISSUE_NOT_FOUND`, a coded `400` such as `STEP_INPUT`, `403 STEP_WRITER` and `409 STEP_OTHER_ISSUE`; the record keeps what reached Dispatch before it.
+A refusal no retry changes ends the row (`recordRefused` in `internal/daemon/outbox.go`): `404 ISSUE_NOT_FOUND`, a coded `400` such as `STEP_INPUT`, `403 STEP_WRITER` and `409 STEP_OTHER_ISSUE`; the record keeps what reached Dispatch before it.
 
 The rollback needs no statement for the kind's rows: they stay in the outbox.
 An earlier release puts the kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and a row left in place holds back no other row.
@@ -2226,10 +2226,44 @@ A daemon left on this release while another rolls back would read the other proj
 No statement can scope the roll forward to one project, since the database records each migration once.
 Roll back and roll forward every daemon of one database in the same change, and run the block above only when all of them are stopped.
 
+#### Rolling back the release that rates each plan
+
+This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
+That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so the step record's list never runs after it.
+Only `20261117133401_design_news` writes the list after it, and that list keeps the name.
+A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts.
+This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
+That migration changes no column.
+The daemon and Dispatch deploy in either order: a Dispatch without the plan route or the rating route answers `404 NOT_FOUND` "no route for …", and the row waits as a role holders' publication does ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)), logging `outbox row waits` and no ERROR line, until Dispatch has the route.
+
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
+
+```sql
+-- The writes of the runs' plans and of the retros' ratings onto Dispatch, of one project.
+delete from outbox where kind = 'plan_record' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'step_record' and payload->>'rating' is not null
+  and split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+The header of `20261117023932_outbox_kinds_with_the_plan_record.up.sql` carries this same block.
+
+**Each project rolls back on its own.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the outbox is one table for all of them, but each daemon runs only its own project's rows (`DueRows` in `record/store.go`).
+So one project can roll back while another stays on this release, and each delete names the project: a daemon left on this release still sends its own plans and ratings.
+
+Each deleted row is a write the daemon does not send again; the rollback deletes no node of Dispatch.
+A deleted `plan_record` row whose plan had not reached Dispatch leaves that run with no plan: the read of the project's finished issues then shows the plan of the highest generation Dispatch holds for the issue, whether that run came before the deleted one or after it (`madePlan.newerThan` in `workflowstore/read.go`), and no plan where Dispatch holds none.
+A deleted rating row whose rating had not reached Dispatch leaves that retro's record with no rating, and nothing else of the issue changes.
+A row can stand after its write reached Dispatch, when the daemon stopped, or failed to record the row as done, after the write (it runs such a row again when its lease expires, `settle` in `daemon/outbox.go`); that plan or rating stays in Dispatch.
+An earlier release puts `plan_record` in no outbox lane (`laneKinds` in `record/outbox.go`), so a `plan_record` row left in place is never decoded or run, and it writes its plan at the roll forward.
+A rating row left in place is not harmless in the same way: the release that records each step decodes a `step_record` row strictly and knows no `rating`, so it fails that row's decode at every attempt, logs the failure each time and retries it on its backoff until the roll forward.
+
+The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
+
 #### Rolling back the release that tells a holder of an approved new version
 
 This release's migration `20261117133401_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`, `design_news_credits`, `design_news_openings` and `design_news_told_in`, and the outbox kind `design_changes`.
-No statement of the release before this one names the three tables, the four new columns or the eight functions, and this migration's kind list names every kind of the list the release before set, `step_record` of `20261117000528_outbox_kinds_with_the_step_record` among them, with `design_changes` added, so the schema needs no restore.
+No statement of the release before this one names the three tables, the four new columns or the eight functions, and this migration's kind list names every kind of the list the release before set, `step_record` of `20261117000528_outbox_kinds_with_the_step_record` and `plan_record` of `20261117023932_outbox_kinds_with_the_plan_record` among them, with `design_changes` added, so the schema needs no restore.
 A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
 
 **Four statements must run before the earlier image is pinned.**
@@ -2798,8 +2832,9 @@ Neither has cybermonklabs/legion#3983, which landed after it at the same contrac
 Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
 Contract 123, cybermonklabs/legion#3793, has no section of its own here either: the header of its migration, `20261113090512_phase_entry_moved_back.up.sql`, gives its steps, which are none at the rollback and one statement, `update phases set entry_moved_back = true;`, before a roll-forward across it.
 To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone, after cybermonklabs/legion#3995's four statements where the store carries that release: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
-A rollback of the release that records each step to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), whose way back runs first: its witness reads `phases.entry`, which the phase entry's block, the eleven statements of the rollback to contract 87 below, drops.
-cybermonklabs/legion#3995's four statements and that way back touch no row in common, so either runs first.
+A rollback of the release that rates each plan to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan).
+A rollback of the release that records each step to any release before it also takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), whose way back runs first: its witness reads `phases.entry`, which the phase entry's block, the eleven statements of the rollback to contract 87 below, drops.
+cybermonklabs/legion#3995's four statements and those two ways back touch no row in common, so any of the three runs first.
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
@@ -2861,8 +2896,8 @@ Neither `architect_stalled_notices` nor the wake stood, the claims table held no
 Running `Migrate` again applied five migrations, 20261111225552, 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the store reported 20261114061900 with 147 versions recorded, the architect's row and claim at entry 1 again and the row unmarked, its two marks again at the root's generation, and its claim with no handshake.
 The counts are those of the 147 migrations the tree of that run carried.
 A migration added after it that neither block touches adds one to every count from the step that applies it, and the store reports it after the two blocks only where its version is above 20261114031356.
-cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions and cybermonklabs/legion#3995's 20261117133401_design_news are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
-That is 20261116165926 on a store #4228's release migrated, and 20261117200337 on one that #4337's release or a later one migrated: #4220 merged onto a main that already carried #4337, and #3995 is built on such a main, so every release that carries 20261116144907 or 20261117133401 carries 20261117200337 too, which stands above both.
+cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions, cybermonklabs/legion#4488's 20261117023932_outbox_kinds_with_the_plan_record and cybermonklabs/legion#3995's 20261117133401_design_news are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
+That is 20261116165926 on a store #4228's release migrated, and 20261117200337 on one that #4337's release or a later one migrated: #4220 and #4488 merged onto a main that already carried #4337, and #3995 is built on such a main, so every release that carries 20261116144907, 20261117023932 or 20261117133401 carries 20261117200337 too, which stands above all three.
 `internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the two blocks the store records every migration this tree embeds but the five the blocks delete (`leftStanding`, against the five versions the test writes in `wayBackVersions`), and reports the highest of them, which on this tree is 20261117200337.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
@@ -2871,7 +2906,7 @@ The eleven statements, after that block where it runs, leave the store at the ea
 20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552;
 20261114031356, the highest row neither block deletes, on a store #3711's release at contract 146 migrated;
 20261116165926, cybermonklabs/legion#4228's role-holders publication, on a store that release migrated;
-and 20261117200337, dispatch://INFRA-4109's update ask mark (cybermonklabs/legion#4337), on a store that release or a later one migrated, cybermonklabs/legion#4328's, cybermonklabs/legion#4299's, cybermonklabs/legion#4400's, cybermonklabs/legion#4220's and cybermonklabs/legion#3995's among them: no way back deletes its row, the ways back of #4328's 20261116234034, #4299's 20261117112334 and #4400's 20261117064152 each delete only that migration's own, #4220's 20261116144907 has no way back, and #3995's four statements delete none.
+and 20261117200337, dispatch://INFRA-4109's update ask mark (cybermonklabs/legion#4337), on a store that release or a later one migrated, cybermonklabs/legion#4328's, cybermonklabs/legion#4299's, cybermonklabs/legion#4400's, cybermonklabs/legion#4220's, cybermonklabs/legion#4488's and cybermonklabs/legion#3995's among them: no way back deletes its row, the ways back of #4328's 20261116234034, #4299's 20261117112334 and #4400's 20261117064152 each delete only that migration's own, #4220's 20261116144907 has no way back, and #4488's way back, which deletes outbox rows alone, and #3995's four statements delete none.
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -2930,9 +2965,10 @@ The migrations recorded above this one are these.
 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and `pending_task_deliveries.round_named`, and appends the review round's two sentences to each task a reviewer's row stores in `phases.entry_task`, one of the six, building nothing on it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the two columns again at their defaults and, after this block's own roll-forward fills the tasks afresh, appends the sentences to them.
 20261117000528_outbox_kinds_with_the_step_record writes the outbox's kind check again with `step_record` added to the role-holders publication's list and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
 20261117004117_step_starts adds the tables `step_starts` and `step_starts_rollback` and the function `step_run_witness`, which reads `phases.entry` and writes none of the six, so the block holds over it and leaves the three standing, which the earlier release names in no statement; the way back of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), runs before the block, while `phases.entry` stands.
+20261117023932_outbox_kinds_with_the_plan_record writes the outbox's kind check again with `plan_record` added to the step record's list and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan).
 20261117064152_step_starts_roll_forward writes `step_starts`, `step_starts_rollback` and the `step_record` rows it adds to `outbox`, reads `phases.entry` through `step_run_witness` and writes none of the six, so the block holds over it, and the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), re-arm it for the roll forward.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
-20261117133401_design_news, of cybermonklabs/legion#3995, adds three tables, four columns of `pending_task_deliveries` and eight functions, and writes the outbox's kind check again with `design_changes` added to the step record's list, and touches none of the six, so the block holds over it and leaves all of them standing; its own four statements, which run before the contract 146 block, are its way back ("Rolling back the release that tells a holder of an approved new version" above).
+20261117133401_design_news, of cybermonklabs/legion#3995, adds three tables, four columns of `pending_task_deliveries` and eight functions, and writes the outbox's kind check again with `design_changes` added to the plan record's list, and touches none of the six, so the block holds over it and leaves all of them standing; its own four statements, which run before the contract 146 block, are its way back ("Rolling back the release that tells a holder of an approved new version" above).
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
@@ -3077,6 +3113,8 @@ Its other calls get the same sentence — a claim route answers `{"error": …}`
 the operator's own controller instead gets `…: run legion controller start from the release built with this daemon`, since there is no pod for the daemon to relaunch it in.
 A claim whose launch installs no plugin (a Claude Code role in a pod) is never refused on its contract: nothing relaunches it, so it is served on its old contract until the update round over its pod brings a new image.
 Every other undecodable request body is logged `api: refused an undecodable request body` naming the route and the decoder's error.
+A string anywhere in a request body, a member's name or its value, that holds a NUL character (U+0000), which PostgreSQL's text and jsonb cannot hold, makes the body undecodable too:
+its route acts on nothing in it, and it is answered 400 `invalid request body: <place> holds a NUL character (U+0000) at character <n>, which the daemon cannot store` (or a stale caller's refusal, as any undecodable body is), naming the string's place in the body (`planReason`, `tasks[0].text`) and the character's place in the string, counted from 1 in code points, and never the string itself.
 A relaunched process that registers still on the old contract is charged as a launch failure (the claim remembers `PluginRelaunchFor`), ending, like any other exhausted budget, in a `worker-died`.
 The contract shows on every claim view — `GET /legion/v1/state`, `legion state --json`, `read_record`'s `pluginContract` field
 — on `legion claims list`'s line, whose last three columns are the claim's `updateRound`, the `updateHead` its worker reported (`-` for neither) and the tool call its agent is in (`-` for none), and on the state's controller locator.

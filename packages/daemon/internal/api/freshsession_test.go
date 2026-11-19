@@ -698,7 +698,7 @@ func TestAFreshSessionIsRefusedForAClaimInATurn(t *testing.T) {
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
+			refusedSaying(t, recorder, http.StatusConflict, claimInATurn,
 				inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches))
 			if after := h.stored(token); after.Session != "ses_implementer" || after.State != supervise.StateWorking {
 				t.Errorf("the refused claim is %s recording session %q, want it working on the session it had", after.State, after.Session)
@@ -723,7 +723,7 @@ func TestAFreshSessionOfAReadyClaimUnderAHeldSuspensionIsRefused(t *testing.T) {
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
 				heldSuspensionRefusal(token, freshSessionName, "a fresh session", wantFreshSessionLive))
 			m, _ := h.supervisor.Machine(token)
 			if view := m.View(); view.State != supervise.StateReady || !view.SuspensionHeld {
@@ -793,7 +793,7 @@ func TestAFreshSessionRefusedForATurnThatStartedUnderItHoldsNoSuspension(t *test
 			if race.failed != nil {
 				t.Fatalf("start the turn under the route: %v", race.failed)
 			}
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
+			refusedSaying(t, recorder, http.StatusConflict, claimInATurn,
 				inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches))
 			if c := m.Claim(); c.State != supervise.StateWorking || c.SuspensionHeld || c.Session != "ses_implementer" {
 				t.Fatalf("the refused claim is %s recording session %q, suspension held %t; want it working on the session it had with none held",
@@ -824,7 +824,7 @@ func TestTheControllersFreshSessionRefusesTheRoleController(t *testing.T) {
 	recorder := h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
 		ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
 
-	wantFreshSessionRefusal(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
+	refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
 		"role must be one of architect, planner, implementer, tester, reviewer, merger; "+
 			"the project's controller is none of them, and its own claim takes no fresh session")
 }
@@ -840,7 +840,7 @@ func TestAFreshSessionRefusesTheControllersOwnClaim(t *testing.T) {
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", RetryRequest{FreshSession: true})
 
-	assertFailure(t, recorder, http.StatusConflict, "NOT_THE_CONTROLLER")
+	refused(t, recorder, http.StatusConflict, "NOT_THE_CONTROLLER")
 }
 
 // A fresh session is refused for a claim no launch has registered yet: its suspension would be
@@ -856,7 +856,7 @@ func TestAFreshSessionIsRefusedForAClaimWhoseLaunchIsInFlight(t *testing.T) {
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", RetryRequest{FreshSession: true})
 
-	wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+	refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
 		unsettledRefusal(token, supervise.StateLaunching, wantFreshSessionReaches))
 }
 
@@ -875,25 +875,11 @@ func TestTheControllersFreshSessionNeedsAControllerGrantAndAClaim(t *testing.T) 
 	}
 	decodeInto(t, minted, &worker)
 
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
+	refused(t, h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
 		ClaimRequest{GrantID: worker.GrantID, Issue: "LEGION-209", Role: string(claim.RoleImplementer)}, nil),
 		http.StatusForbidden, "CONTROLLER_REQUIRED")
 
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
+	refused(t, h.request(http.MethodPost, "/legion/v1/claims/fresh-session",
 		ClaimRequest{GrantID: controllerGrant(t, h).GrantID, Issue: "LEGION-777", Role: string(claim.RoleTester)}, nil),
 		http.StatusNotFound, "NO_CLAIM")
-}
-
-// wantFreshSessionRefusal holds a refusal to its status, its code and its sentence: the shape
-// both doors give the refusals the fresh session writes itself.
-func wantFreshSessionRefusal(t *testing.T, recorder *httptest.ResponseRecorder, status int, code, message string) {
-	t.Helper()
-	if recorder.Code != status {
-		t.Fatalf("status = %d, want %d; body %s", recorder.Code, status, recorder.Body)
-	}
-	var failure Failure
-	decodeInto(t, recorder, &failure)
-	if failure.Code != code || failure.Error != message {
-		t.Fatalf("refusal = %+v, want %q and %q", failure, code, message)
-	}
 }

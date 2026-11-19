@@ -58,6 +58,26 @@
 # shellcheck source-path=SCRIPTDIR source=loopback-dsn.sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"
 
+# require_dispatch_cli refuses a host where the proof's driver could not run the `dispatch` CLI,
+# with exit 1 and a FAIL line of its own, before the run builds or starts anything: that CLI is
+# this checkout's (packages/envoy-client/bin/dispatch.ts), which runs under bun out of the
+# checkout's node_modules. It then exports LEGION_E2E_REPO_ROOT, the checkout the driver builds
+# Dispatch from and runs the CLI out of, which the driver binary needs because it runs from the
+# directory the caller ran the entry script in, not the package's. An entry script whose driver
+# drives the CLI calls it after sourcing this file and before live_daemon_proof, so the refusal
+# comes before the run's own checks.
+require_dispatch_cli() {
+  command -v bun >/dev/null || {
+    echo "FAIL prerequisites: bun is not on PATH; the dispatch CLI the proof drives runs under it" >&2
+    exit 1
+  }
+  [ -d "$root/node_modules" ] || {
+    echo "FAIL prerequisites: $root/node_modules is missing; run \`bun install\` at the checkout's root first" >&2
+    exit 1
+  }
+  export LEGION_E2E_REPO_ROOT="$root"
+}
+
 # The nats-server the run installs when the caller names none: the hub's v2.15.1, the version
 # packages/envoy/go.mod pins. The daemon refuses a nats-server below v2.11.12, v2.12.4 or v2.14.0
 # (packages/envoy/natsversion).

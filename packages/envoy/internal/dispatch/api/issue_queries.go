@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // issueStatusOrderSQL derives the SQL ordering from Dispatch's canonical lifecycle.
@@ -440,24 +441,6 @@ func parseAdvancesFilter(values []string) (ids []string, none, some bool, err er
 	return slices.Compact(ids), none, some, nil
 }
 
-// microsecondCeiling is a listing's time bound as the statement compares it. Postgres stores a
-// timestamptz to the microsecond and pgx encodes a bound by truncating its nanoseconds, which
-// lowers it: an issue stored at the truncated microsecond, before the bound the caller named,
-// would be kept by `>= since` and dropped by `< before`. Every stored time is a whole
-// microsecond, so it is at or after a bound exactly when it is at or after the bound rounded up
-// to the next microsecond, and before the bound exactly when it is before that: rounding up keeps
-// both meanings. nil is no bound.
-func microsecondCeiling(bound *time.Time) *time.Time {
-	if bound == nil {
-		return nil
-	}
-	ceiling := bound.Truncate(time.Microsecond)
-	if ceiling.Before(*bound) {
-		ceiling = ceiling.Add(time.Microsecond)
-	}
-	return &ceiling
-}
-
 // claimScan reads an issue's two claim columns as one nullable claim. A row has both or
 // neither (the issues_claim_complete constraint), so either absent means unclaimed.
 type claimScan struct {
@@ -643,8 +626,8 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// The move into `backlog` or `icebox` is read only when the request asks for it, and a row
 	// carries its two cells only then (model.IssueSummary's MovedAt and MovedBy).
 	moved := query.Get("moved") == "true"
-	arguments := []any{project, statuses, parent, microsecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
-		microsecondCeiling(closedSince), microsecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved}
+	arguments := []any{project, statuses, parent, store.MicrosecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
+		store.MicrosecondCeiling(closedSince), store.MicrosecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved}
 	if pinned {
 		arguments = append(arguments, login)
 	}

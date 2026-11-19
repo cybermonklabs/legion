@@ -82,11 +82,11 @@ const cutoverStoredSeq = 5
 // that a closed design gate held: once the gate opens the test makes the row due at once, and the
 // outbox's sweep, every outboxLease (30 seconds), wakes the row's lane to run it. A try of that
 // row that read the gate closed just before the test opened it can still record its retry after
-// the test made the row due, which puts the row back on its backoff, up to the outbox's 64 seconds
-// (retryBackoff), so the bound stays above that. It is the bound a fault is reported at, so a slow
-// machine is no failure, and a start that never comes fails here rather than at the package's
-// deadline. cutoverPoll is how often a wait asks: most questions are a read of the daemon's claims
-// over its API or of its database.
+// the test made the row due, which puts the row back on its backoff, up to the outbox's 64
+// seconds (record.RetryBackoff), so the bound stays above that. It is the bound a fault is
+// reported at, so a slow machine is no failure, and a start that never comes fails here rather
+// than at the package's deadline. cutoverPoll is how often a wait asks: most questions are a read
+// of the daemon's claims over its API or of its database.
 const (
 	cutoverWait = 90 * time.Second
 	cutoverPoll = 100 * time.Millisecond
@@ -313,8 +313,8 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	approved := 2
 	putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: rig.e.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + rig.e.key,
 		LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
-	// The held start waits on its row's backoff, up to the outbox's 64 seconds (retryBackoff):
-	// made due now, it runs at the outbox's next sweep.
+	// The held start waits on its row's backoff, up to the outbox's 64 seconds
+	// (record.RetryBackoff): made due now, it runs at the outbox's next sweep.
 	if _, err := rig.pool.Exec(ctx, "update outbox set next_at = now() where issue = $1 and kind = 'supervise'", rig.e.key); err != nil {
 		t.Fatalf("let the backoff of E's merger start go: %v", err)
 	}

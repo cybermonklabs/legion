@@ -390,9 +390,9 @@ func testReleaseClaimRecord(t *testing.T) {
 // refusal no retry repairs ends the row with that refusal logged; and an outage, whatever its
 // shape, is ridden out and the next attempt releases the claim.
 func testReleaseClaimAnswers(t *testing.T) {
-	// A claim release's backoff climbs to retryBackoff's cap, so one advance of the cap brings
+	// A claim release's backoff climbs to record.RetryBackoffMost, so one advance of the cap brings
 	// every attempt but the one the hour ends on due again.
-	const capped = 64 * time.Second
+	const capped = record.RetryBackoffMost
 	for _, tc := range []struct {
 		name string
 		// age is how old the row already is at its first attempt.
@@ -499,7 +499,7 @@ func testReleaseClaimLane(t *testing.T) {
 	runLanes(t, runner, clock)
 
 	commitRows(t, pool, runner.records, "release", mustOutboxRow(t, claimIssue, record.ClaimRelease{}, clock.Now()))
-	backoff := retryBackoff(0)
+	backoff := record.RetryBackoff(0)
 	testwait.Eventually(t, "the release waited on its holder and its lane armed the backoff", func() bool {
 		live, _ := clock.armed(backoff)
 		return live == 1 && len(client.releases()) == 1
