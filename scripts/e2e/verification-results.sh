@@ -27,10 +27,10 @@
 # three checks compare with, read through the `dispatch results` command and through the API,
 # with no commit named, with a commit every check is compared with instead, and again after an
 # event moves one head; and what decides a pull request's issue, where a branch, a body and a
-# person's link each decide one row and the reconcile re-judges two stored rows of the rule before
-# this build's. Three more cases run the `dispatch` command as a process against the
-# run's server and judge each step by its exit code and what it printed: `dash-refused`, where the
-# reported call `dispatch result ... --run - --observed - --negative-control -`, `--run=-`,
+# person's link each decide one row as the intake stores it. Three more cases run the `dispatch`
+# command as a process against the run's server and judge each step by its exit code and what it
+# printed: `dash-refused`, where the reported call
+# `dispatch result ... --run - --observed - --negative-control -`, `--run=-`,
 # `--observed -` with `--dry-run`, `dispatch comment --body -`, `dispatch message --body -` and
 # `dispatch issue --title -` each exit 2 with the spec's line for each flag and leave no result,
 # comment, message or issue, while the call the refusal leads to records what two files and stdin
@@ -42,6 +42,13 @@
 # Each case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>`; the first case
 # failing stops the run, since every later case records a result too, and any FAIL exits 1.
 #
+# Then the one-pass phases run (one_pass_phase). Each one stops the server, has the driver write
+# its fixture while no server runs, starts the server with a pass at its start and the next pass
+# an hour away, and has the driver assert after that one pass. The phase `boundary` checks that
+# boundary itself: one record of the pass in duty_passes, the lease free, and one attribution line
+# in the log. The phase `k-attribution` stores two rows as the release before writes them, with
+# no texts, and after one pass reads the issue that each row of the attribution case records.
+#
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] \
 #     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
@@ -51,11 +58,11 @@
 # (127.0.0.1, localhost or ::1, as scripts/e2e/lib/loopback-dsn.py reads the DSN with libpq's own
 # parser) whose `public` schema this run empties before the server migrates it, keeping the
 # extensions that schema holds, and it leaves what the run wrote there for inspection. The driver
-# reads it too, for the one fixture no route of Dispatch can write: a stored pull request row of
-# the attribution rule before this build's. DISPATCH_BIN is optional and names a prebuilt
-# envoy-dispatch: built from the base commit it is this change's negative control, and it fails at
-# the first result write, the route it does not serve; unset, the script builds ./cmd/dispatch from
-# this checkout.
+# reads it too, for the fixtures and the answers no route of Dispatch carries (its header lists
+# them). DISPATCH_BIN is optional and names a prebuilt envoy-dispatch, which the run copies to
+# $work/bin/envoy-dispatch, the binary of every start: built from the base commit it is this
+# change's negative control, and it fails at the first result write, the route it does not serve;
+# unset, the script builds ./cmd/dispatch from this checkout to that path.
 # VERIFICATION_RESULTS_E2E_DISPATCH_CLI is optional and names the bin/dispatch.ts the driver runs
 # in place of this checkout's packages/envoy-client/bin/dispatch.ts; the run refuses a value that
 # is not a readable file and makes it absolute, since `dash-refused` runs the command in another
@@ -69,9 +76,10 @@
 #
 # The ports are VERIFICATION_RESULTS_E2E_DISPATCH_PORT (19061), VERIFICATION_RESULTS_E2E_ENVOY_PORT
 # (19063) and VERIFICATION_RESULTS_E2E_GITHUB_PORT (19065), each refused when something already
-# answers on it; NATS listens on a port the kernel picks. The work directory, under TMPDIR, holds
-# the binaries and every process's log: removed when the run passes, kept and printed when it
-# fails.
+# answers on it. The server's port is refused inside the kernel's ephemeral range too, since each
+# one-pass phase starts the server on it again. NATS listens on a port the kernel picks. The work
+# directory, under TMPDIR, holds the binaries, the driver's state file and every process's log, the
+# server's of every start in one: removed when the run passes, kept and printed when it fails.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -175,6 +183,13 @@ for port in "$dispatch_port" "$envoy_port" "$github_port"; do
 done
 [ "$(printf '%s\n' "$dispatch_port" "$envoy_port" "$github_port" | sort -u | wc -l)" -eq 3 ] ||
   fail "the Dispatch, fake Envoy and fake GitHub ports are not three different ports"
+# Each one-pass phase starts the server again on its port. The kernel gives any port of its
+# ephemeral range to an outgoing connection, so such a connection can take the port between two
+# starts, and the next start fails with "address already in use".
+if read -r ephemeral_low ephemeral_high </proc/sys/net/ipv4/ip_local_port_range 2>/dev/null &&
+  [ "$dispatch_port" -ge "$ephemeral_low" ] && [ "$dispatch_port" -le "$ephemeral_high" ]; then
+  fail "VERIFICATION_RESULTS_E2E_DISPATCH_PORT=$dispatch_port is in the kernel's ephemeral range ($ephemeral_low to $ephemeral_high); the server starts on it again for each one-pass phase, so give a port outside that range"
+fi
 note "database host $db_host (URL not printed)"
 pass
 
@@ -184,12 +199,14 @@ evidence=$work
 note "work directory $work"
 mkdir -p "$work/bin" "$work/web-dist" "$work/logs"
 if [ -z "$dispatch_bin" ]; then
-  dispatch_bin=$work/bin/envoy-dispatch
-  go -C "$root/packages/envoy" build -o "$dispatch_bin" ./cmd/dispatch || fail "./cmd/dispatch did not build"
+  go -C "$root/packages/envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch ||
+    fail "./cmd/dispatch did not build"
   note "built envoy-dispatch from $root/packages/envoy"
 else
-  note "envoy-dispatch is DISPATCH_BIN=$dispatch_bin"
+  cp "$dispatch_bin" "$work/bin/envoy-dispatch" || fail "could not copy DISPATCH_BIN=$dispatch_bin"
+  note "envoy-dispatch is a copy of DISPATCH_BIN=$dispatch_bin"
 fi
+dispatch_bin=$work/bin/envoy-dispatch
 go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||
   fail "./internal/testnats/cmd/natsd did not build"
 pass
@@ -237,51 +254,92 @@ begin dispatch
 # The delivery reconcile runs every two seconds here, under the test hooks, in place of the five
 # minutes a deployment runs it at (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL,
 # packages/dispatch/e2e/run-server.sh runs it the same way), and its first pass runs as the server
-# starts: the attribution case waits for a pass to re-judge two stored rows, and a run that waited
-# five minutes for one would be no proof a reader runs.
+# starts: the cases' answers hold while passes run beside them, as passes run beside every read of
+# a deployment. A case that reads the answers of exactly one pass is a one-pass phase below, which
+# starts the server again with the next pass an hour away.
 agent_token=$(openssl rand -hex 24)
 app_pem=$(openssl genrsa 2048 2>/dev/null) || fail "could not generate the throwaway App key"
 dispatch_url=http://127.0.0.1:$dispatch_port
-start_process dispatch env -i \
-  PATH="$PATH" \
-  TMPDIR="$work" \
-  HOME=/nonexistent \
-  XDG_CACHE_HOME=/nonexistent \
-  XDG_CONFIG_HOME=/nonexistent \
-  XDG_DATA_HOME=/nonexistent \
-  DATABASE_URL="$database_url" \
-  DISPATCH_AGENT_TOKEN="$agent_token" \
-  DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
-  DISPATCH_APP_PEM_B64="$app_pem" \
-  DISPATCH_DEV_SIGNIN=1 \
-  DISPATCH_GITHUB_API_BASE="$github_url" \
-  DISPATCH_IDENTITY=cookie \
-  DISPATCH_INSECURE_COOKIE=1 \
-  DISPATCH_LISTEN_HOST=127.0.0.1 \
-  DISPATCH_PORT="$dispatch_port" \
-  DISPATCH_SERVER_URL="$dispatch_url" \
-  DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=2s \
-  DISPATCH_TEST_HOOKS=1 \
-  DISPATCH_TEST_RECONCILE_AT_START=1 \
-  DISPATCH_WEB_DIST="$work/web-dist" \
-  ENVOY_URL="http://127.0.0.1:$envoy_port" \
-  NATS_URLS="$nats_url" \
-  "$dispatch_bin"
-await_start dispatch "$dispatch_pid" 60 "envoy-dispatch to answer /healthz" \
-  curl -fsS --max-time 2 "$dispatch_url/healthz"
+# start_dispatch INTERVAL starts envoy-dispatch with the delivery reconcile ticking every INTERVAL
+# and its first pass as it starts, and waits for it to answer /healthz. Each start appends to
+# $work/logs/dispatch.log, which the driver reads (VERIFICATION_RESULTS_E2E_DISPATCH_LOG).
+start_dispatch() {
+  start_process dispatch env -i \
+    PATH="$PATH" \
+    TMPDIR="$work" \
+    HOME=/nonexistent \
+    XDG_CACHE_HOME=/nonexistent \
+    XDG_CONFIG_HOME=/nonexistent \
+    XDG_DATA_HOME=/nonexistent \
+    DATABASE_URL="$database_url" \
+    DISPATCH_AGENT_TOKEN="$agent_token" \
+    DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
+    DISPATCH_APP_PEM_B64="$app_pem" \
+    DISPATCH_DEV_SIGNIN=1 \
+    DISPATCH_GITHUB_API_BASE="$github_url" \
+    DISPATCH_IDENTITY=cookie \
+    DISPATCH_INSECURE_COOKIE=1 \
+    DISPATCH_LISTEN_HOST=127.0.0.1 \
+    DISPATCH_PORT="$dispatch_port" \
+    DISPATCH_SERVER_URL="$dispatch_url" \
+    DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL="$1" \
+    DISPATCH_TEST_HOOKS=1 \
+    DISPATCH_TEST_RECONCILE_AT_START=1 \
+    DISPATCH_WEB_DIST="$work/web-dist" \
+    ENVOY_URL="http://127.0.0.1:$envoy_port" \
+    NATS_URLS="$nats_url" \
+    "$dispatch_bin"
+  await_start dispatch "$dispatch_pid" 60 "envoy-dispatch to answer /healthz" \
+    curl -fsS --max-time 2 "$dispatch_url/healthz"
+}
+start_dispatch 2s
 note "envoy-dispatch on $dispatch_url, NATS on, delivery intake reading $nats_url, delivery reconcile every 2s"
 pass
 
+export VERIFICATION_RESULTS_E2E_DISPATCH_LOG=$work/logs/dispatch.log
+
+# driver ARG... runs the driver with ARG... before its three URLs. The state file carries what one
+# run of the driver leaves for a later one. A server that exited during the run fails the check,
+# and so does the driver's status: 1 is a case that failed, any other a step outside the cases.
+driver() {
+  local status=0
+  VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
+    VERIFICATION_RESULTS_E2E_DATABASE_URL=$database_url \
+    VERIFICATION_RESULTS_E2E_DISPATCH_CLI=$dispatch_cli \
+    VERIFICATION_RESULTS_E2E_STATE=$work/driver-state.json \
+    bun "$root/scripts/e2e/verification-results.ts" "$@" "$dispatch_url" "$nats_url" "$github_url" ||
+    status=$?
+  if [ -n "$dispatch_pid" ] && ! kill -0 "$dispatch_pid" 2>/dev/null; then
+    fail "envoy-dispatch exited during the run; see $work/logs/dispatch.log"
+  fi
+  case "$status" in
+    0) ;;
+    1) fail "a case failed (above)" ;;
+    *) fail "the driver stopped before its cases (status $status)" ;;
+  esac
+}
+
+# dispatch_port_closed succeeds once nothing answers on the server's port.
+dispatch_port_closed() { ! port_answers "$dispatch_port"; }
+
+# one_pass_phase PHASE runs the driver's phase PHASE around one complete pass of the delivery
+# reconcile (the driver's section "the tooling of one complete pass"). It stops the server by its
+# recorded pid and has the driver write the phase's fixture while no server runs. Then it starts
+# the server with a pass at its start and the next pass an hour away, and has the driver assert
+# after that one pass.
+one_pass_phase() {
+  begin "$1"
+  stop_pid "$dispatch_pid"
+  dispatch_pid=''
+  until_true 30 "envoy-dispatch to stop listening on $dispatch_port" dispatch_port_closed
+  driver --phase "$1-fixture"
+  start_dispatch 1h
+  note "envoy-dispatch started again, its delivery reconcile every 1h after its start pass"
+  driver --phase "$1-assert"
+  pass
+}
+
 check=cases
-status=0
-VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
-  VERIFICATION_RESULTS_E2E_DATABASE_URL=$database_url \
-  VERIFICATION_RESULTS_E2E_DISPATCH_CLI=$dispatch_cli \
-  bun "$root/scripts/e2e/verification-results.ts" "$dispatch_url" "$nats_url" "$github_url" ||
-  status=$?
-kill -0 "$dispatch_pid" 2>/dev/null || fail "envoy-dispatch exited during the run; see $work/logs/dispatch.log"
-case "$status" in
-  0) ;;
-  1) fail "a case failed (above)" ;;
-  *) fail "the driver stopped before its cases (status $status)" ;;
-esac
+driver
+one_pass_phase boundary
+one_pass_phase k-attribution

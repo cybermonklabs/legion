@@ -7,19 +7,32 @@
 // server: a bare `-` given to a text flag is refused, on every text flag the command's help
 // lists, and every other value of a text flag is kept byte for byte.
 //
+// The shell script runs the driver again for each one-pass phase (onePassPhases): with
+// `--phase <phase>-fixture` while no server runs, and with `--phase <phase>-assert` after it
+// starts the server again with a start pass and an interval of one hour. That is the boundary of
+// one complete pass (prepareOnePass, awaitOnePass). Before its first case the driver checks its
+// counter of pull request reads, and the phase `boundary` checks the boundary of one pass.
+//
 //   VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> \
 //     VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> \
+//     VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<the server's log> \
+//     VERIFICATION_RESULTS_E2E_STATE=<a JSON file> \
 //     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
-//     bun scripts/e2e/verification-results.ts <dispatch-url> <nats-url> <fake-github-url>
+//     bun scripts/e2e/verification-results.ts [--phase <phase>-fixture|<phase>-assert] \
+//       <dispatch-url> <nats-url> <fake-github-url>
 //
 // The `dispatch` command is the bin/dispatch.ts VERIFICATION_RESULTS_E2E_DISPATCH_CLI names, an
 // absolute path the shell script made, else this checkout's packages/envoy-client/bin/dispatch.ts.
+// The log is the file every start of the server writes to, which attributionLines reads. The state
+// file holds what one process of the driver leaves for a later one: the issues a case seeded, and
+// the length of the log at each phase's fixture.
 //
 // The database URL is the run's own, which the shell script resets before the server migrates it.
-// The driver writes SQL for one fixture and reads it for one answer: a stored pull request row of
-// the attribution rule before this build's, which no route of Dispatch can write, since every
-// write stamps the rule this build judges by; and the issue and the source that row holds now,
-// which no route answers either.
+// The driver writes SQL for the fixtures that no route of Dispatch can write: stored pull request
+// rows as the release before writes them, with no texts, and the delete of the reconcile's records
+// of its passes at each phase's boundary. It reads SQL for the answers that no route gives: the
+// issue and the source a row records, whether its texts are stored, the records of the passes and
+// whether a process holds the reconcile's lease.
 //
 // Each case prints `== <case>`, what it read, then `ok <case>` or `FAIL <case>: <why>`; a summary
 // follows, and the exit status is 1 when any case failed. The first case,
@@ -28,12 +41,13 @@
 // which serves no such route, the run stops there, since every later case records a result too.
 // Each later case seeds the issue it drives, with the spec and the Verification document that
 // case needs. A step outside the cases that fails (the sign-in, the projects, the fake GitHub's
-// seed, the probe issue) exits 2 naming it.
+// seed, the probe issue, the counter of reads, a phase's fixture, the boundary of one pass) exits
+// 2 naming it.
 //
 // The run writes no delivery settings, as a deployment that never configured the delivery timeline
 // holds none: the intake writes a pull request's head row from its envelope all the same, and
 // every head below reaches Dispatch that way.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -49,18 +63,28 @@ import { connect, StringCodec } from "nats";
 // it here. The type import above is erased before the driver runs.
 import { MAX_ISSUE_PAGE_LIMIT } from "../../packages/contracts/src/dispatch-api-limits";
 
-const [dispatchUrl, natsUrl, githubUrl] = process.argv.slice(2);
+/** The arguments: `--phase <name>-fixture` or `--phase <name>-assert` where the shell runs one half
+ *  of a one-pass phase, and the three URLs. */
+const args = process.argv.slice(2);
+const phaseAt = args.indexOf("--phase");
+const phaseArg = phaseAt === -1 ? undefined : args.splice(phaseAt, 2)[1];
+const [dispatchUrl, natsUrl, githubUrl] = args;
 const agentToken = process.env.VERIFICATION_RESULTS_E2E_AGENT_TOKEN ?? "";
 const databaseUrl = process.env.VERIFICATION_RESULTS_E2E_DATABASE_URL ?? "";
+const dispatchLog = process.env.VERIFICATION_RESULTS_E2E_DISPATCH_LOG ?? "";
+const statePath = process.env.VERIFICATION_RESULTS_E2E_STATE ?? "";
 if (
   dispatchUrl === undefined ||
   natsUrl === undefined ||
   githubUrl === undefined ||
   !agentToken ||
-  !databaseUrl
+  !databaseUrl ||
+  !dispatchLog ||
+  !statePath ||
+  (phaseAt !== -1 && phaseArg === undefined)
 ) {
   process.stderr.write(
-    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> bun verification-results.ts <dispatch-url> <nats-url> <fake-github-url>\n"
+    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<log> VERIFICATION_RESULTS_E2E_STATE=<file> bun verification-results.ts [--phase <phase>-fixture|<phase>-assert] <dispatch-url> <nats-url> <fake-github-url>\n"
   );
   process.exit(2);
 }
@@ -72,9 +96,11 @@ const origin = new URL(dispatchUrl).origin;
  *  start, takes the envelope, reads the pull request from GitHub and writes its head row;
  *  nothing else is waited on, since every other answer is computed while the results are read. */
 const headAfterEventMs = 5_000;
-/** How long a wait for the delivery reconcile may take: the server runs a pass every two seconds
- *  (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL), and a pass reads GitHub for each row it takes. */
-const reconcileWaitMs = 30_000;
+/** The interval the shell starts the server with for a one-pass phase
+ *  (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=1h), in the nanoseconds duty_passes stores. */
+const onePassPeriodNs = String(3_600_000_000_000);
+/** How long a phase's start pass may take to end: it reads GitHub for each row it takes. */
+const onePassWaitMs = 120_000;
 const pollMs = 250;
 
 const person = "alice";
@@ -161,6 +187,13 @@ const commits = {
   unheld: "a".repeat(40),
 };
 
+/** The two rows the phase k-attribution stores as the release before writes them, credited to the
+ *  attribution case's parent with no texts, and the state GitHub answers for each. */
+const storedAttributionRows = [
+  { head: commits.attributionStoredOpen, merged: false, number: 45, state: "open" },
+  { head: commits.attributionStoredMerged, merged: true, number: 46, state: "merged" },
+] as const;
+
 type Json = Record<string, unknown>;
 
 const codec = StringCodec();
@@ -236,11 +269,14 @@ function setupFailed(step: string, error: unknown): never {
   process.exit(2);
 }
 
-const personCookie = await signIn(person).catch((error: unknown) => setupFailed("sign-in", error));
+/** The person's session cookie, signed in at the first request that needs one: a phase's fixture
+ *  runs while no server runs, and a server that starts again signs its cookies with a new key. */
+let personCookie: Promise<string> | undefined;
 
 /** The person's request: the session cookie, and the dashboard origin every cookie write needs. */
-function asPerson(method: string, path: string, body?: Json): Promise<unknown> {
-  return call(method, path, { Cookie: personCookie, Origin: origin }, body);
+async function asPerson(method: string, path: string, body?: Json): Promise<unknown> {
+  personCookie ??= signIn(person).catch((error: unknown) => setupFailed("sign-in", error));
+  return call(method, path, { Cookie: await personCookie, Origin: origin }, body);
 }
 
 function issuePath(key: string, rest = ""): string {
@@ -544,8 +580,8 @@ function commandHeadLines(printed: string): string[] {
 }
 
 /** Runs one statement against the run's own database and answers what psql printed, rows bare
- *  and columns separated by `|` (`-tA`). The driver reads and writes one table this way,
- *  pull_request_heads, for the one fixture and the one answer no route of Dispatch carries. */
+ *  and columns separated by `|` (`-tA`), for the fixtures and the answers no route of Dispatch
+ *  carries (the header lists them). */
 async function sql(statement: string): Promise<string> {
   const child = Bun.spawn(
     ["psql", databaseUrl, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-tA", "-c", statement],
@@ -560,37 +596,73 @@ async function sql(statement: string): Promise<string> {
   return stdout.trim();
 }
 
-/** One stored pull request row, as pull_request_heads holds it: the issue it credits, the
- *  source that decided that issue, its state, the head commit and the attribution rule that
- *  judged it. "absent" where no row is stored yet. */
-async function storedHead(number: number): Promise<string> {
-  const row = await sql(
-    `select coalesce(issue_key, 'nobody'), attribution_source, state, head_sha, attribution_rule
-     from pull_request_heads where repo = '${repo}' and number = ${number}`
-  );
-  if (row === "") return "absent";
-  const [issue, source, state, head, rule] = row.split("|");
-  return `${issue} by ${source} (${state} at ${String(head).slice(0, 12)}, rule ${rule})`;
+/** Whether the database holds pull_request_texts, the table of the texts a read of GitHub stores:
+ *  the build of a commit before it, which a negative control runs, has none. */
+async function textsTableExists(): Promise<boolean> {
+  return (await sql("select to_regclass('pull_request_texts') is not null")) === "t";
 }
 
-/** Waits, until the deadline `by`, for the stored row of `number` to read as `want`, and answers
- *  what it last read. The intake or the reconcile is the writer here, so this polls and writes
- *  nothing. The answer it accepts is held to the deadline too, as awaitCommitStands holds its
- *  own: a row that reads `want` after `by` answers that it was late, so a writer that writes
- *  right but late meets no bound. */
-async function awaitStoredHead(number: number, want: string, by: number): Promise<string> {
+/** One stored pull request row, as pull_request_heads holds it: the issue it records and the
+ *  source of that issue, which a pass of the reconcile writes from the statement's answer
+ *  (SyncAttributions), its state and head commit, which a read of GitHub writes, and whether its
+ *  texts are stored. "absent" where no row is stored yet. */
+async function storedHead(number: number): Promise<string> {
+  const texts = (await textsTableExists())
+    ? "exists (select 1 from pull_request_texts t where t.repo = h.repo and t.number = h.number)"
+    : "null";
+  const row = await sql(
+    `select coalesce(h.issue_key, 'nobody'), coalesce(h.attribution_source, 'no source'), h.state,
+       h.head_sha, ${texts}
+     from pull_request_heads h where h.repo = '${repo}' and h.number = ${number}`
+  );
+  if (row === "") return "absent";
+  const [issue, source, state, head, stored] = row.split("|");
+  const shown = { f: "no texts", t: "texts stored" }[stored ?? ""] ?? "no texts table";
+  return `${issue} by ${source} (${state} at ${String(head).slice(0, 12)}, ${shown})`;
+}
+
+/** Waits, until the deadline `by`, for the stored row of `number` to hold the facts `facts` (the
+ *  part of storedHead in parentheses), and answers what it last read. The intake writes the facts
+ *  of an event at once, and a pass writes the issue later, so this waits on the facts alone. It
+ *  polls and writes nothing. The answer it accepts is held to the deadline too, as
+ *  awaitCommitStands holds its own: a row that reads `facts` after `by` answers that it was late,
+ *  so a writer that writes right but late meets no bound. */
+async function awaitStoredHead(number: number, facts: string, by: number): Promise<string> {
+  const holds = (seen: string) => seen.endsWith(`(${facts})`);
   let seen = await storedHead(number);
-  while (seen !== want && Date.now() < by) {
+  while (!holds(seen) && Date.now() < by) {
     await Bun.sleep(pollMs);
     seen = await storedHead(number);
   }
   const late = Date.now() - by;
-  return seen === want && late > 0 ? `${seen}, read ${late} ms past the deadline` : seen;
+  return holds(seen) && late > 0 ? `${seen}, read ${late} ms past the deadline` : seen;
+}
+
+/** Waits, until the deadline `by`, for the check `blockID` of `key` to compare with `commit`, and
+ *  answers the bases it last read, and whether they hold `commit` by the deadline. The statement
+ *  gives a pull request's issue at the read, so the reader answers before any pass writes that
+ *  issue on the row. */
+async function awaitComparedWith(
+  key: string,
+  blockID: string,
+  commit: string,
+  by: number
+): Promise<{ readonly held: boolean; readonly shown: string }> {
+  const holds = (check: CheckBlock) =>
+    (check.compared_with ?? []).some((basis) => basis.commit === commit);
+  let check = await checkOf(key, blockID);
+  while (!holds(check) && Date.now() < by) {
+    await Bun.sleep(pollMs);
+    check = await checkOf(key, blockID);
+  }
+  const late = Date.now() - by;
+  const shown = late > 0 ? `${comparedOf(check)}, read ${late} ms late` : comparedOf(check);
+  return { held: holds(check) && late <= 0, shown };
 }
 
 /** Every `issue.pull_request_attribution_changed` event on one issue, oldest first, in the
  *  words a case compares with: the pull request, the issue it left, the issue it reached and
- *  the source that decided the new one. */
+ *  the source that decided the new one. A pass of the reconcile appends them. */
 async function attributionMoves(key: string): Promise<string[]> {
   const events = (await asSession("GET", issuePath(key, "/events?limit=200"))) as {
     type: string;
@@ -602,18 +674,6 @@ async function attributionMoves(key: string): Promise<string[]> {
       (event) =>
         `#${event.payload.number} ${event.payload.from ?? "nobody"} → ${event.payload.to ?? "nobody"} by ${event.payload.source}`
     );
-}
-
-/** Waits, bounded by reconcileWaitMs, for one issue to carry `want` attribution events, and
- *  answers what it last read: the reconcile's pass is what appends them. */
-async function awaitAttributionMoves(key: string, want: number): Promise<string[]> {
-  const deadline = Date.now() + reconcileWaitMs;
-  let seen = await attributionMoves(key);
-  while (seen.length < want && Date.now() < deadline) {
-    await Bun.sleep(pollMs);
-    seen = await attributionMoves(key);
-  }
-  return seen;
 }
 
 function note(line: string): void {
@@ -644,6 +704,203 @@ function summarise(stopped?: string): never {
   process.exit(failed.length === 0 ? 0 : 1);
 }
 
+// --- the tooling of one complete pass ----------------------------------------------------------
+//
+// A check that says "after one pass" reads the answers at this boundary, in five steps:
+//   1. The driver writes the fixture while no server runs (`--phase <phase>-fixture`).
+//   2. It deletes the reconcile's records of its passes, and reads the database's clock
+//      (prepareOnePass).
+//   3. The shell starts the server with a pass at its start and an interval of one hour, so that
+//      start pass is the one pass of the phase.
+//   4. The pass ends when a record of the lease appears (awaitOnePass). Step 2 deleted every
+//      record, so the first one is the start pass's. duty.Exclusive records a pass after the pass
+//      runs, and gives the lease back after the record.
+//   5. The driver asserts (`--phase <phase>-assert`). The next tick is an hour away.
+// A record's boundary is the aligned start of its hour, not the end of the pass, so the driver
+// does not compare it with the clock that it read in step 2.
+
+/** What one process of the driver leaves for a later one in the state file, by key. */
+function readState(): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return {};
+    throw error;
+  }
+}
+
+/** Every read of pull requests the fake GitHub has answered since resetPullReads, summed over its
+ *  repositories and its routes: the read of one pull request, the read of its commits, the read of
+ *  the pull requests of a commit, and each pull request that a GraphQL query asks for. */
+async function pullReads(): Promise<number> {
+  const response = await fetch(new URL("/__fixture/requests", githubUrl));
+  if (!response.ok) {
+    throw new Error(`GET /__fixture/requests: ${response.status} ${await response.text()}`);
+  }
+  const { pulls } = (await response.json()) as { pulls: Record<string, Record<string, number>> };
+  return Object.values(pulls)
+    .flatMap((routes) => Object.values(routes))
+    .reduce((sum, reads) => sum + reads, 0);
+}
+
+/** Empties the fake GitHub's counts of reads: the reads of pull requests, and of check runs. */
+async function resetPullReads(): Promise<void> {
+  const response = await fetch(new URL("/__fixture/requests", githubUrl), { method: "DELETE" });
+  if (!response.ok) {
+    throw new Error(`DELETE /__fixture/requests: ${response.status} ${await response.text()}`);
+  }
+}
+
+/** The lease of the delivery reconcile (delivery.ReconcileLease), and the rows of duty_passes
+ *  that record its passes: one by the lease's name, which the release before reads, and one for
+ *  each period, `<name>/<period_ns>` (duty.passKey). */
+const reconcileLease = "delivery-reconcile";
+const reconcileRecords = `lease = '${reconcileLease}' or lease like '${reconcileLease}/%'`;
+
+/** Step 2 of one complete pass: deletes every record of the reconcile's passes, and answers the
+ *  database's clock at that moment. */
+async function prepareOnePass(): Promise<string> {
+  return sql(
+    `with gone as (delete from duty_passes where ${reconcileRecords} returning 1)
+     select clock_timestamp()`
+  );
+}
+
+/** Step 4 of one complete pass, and its self-check: waits, bounded by onePassWaitMs, for the
+ *  record of the start pass, and then for the lease to be free. Then it holds the pass to the
+ *  boundary. duty.Exclusive's recordPass writes two records of one pass, by the lease's name and
+ *  by its period: both must be there, at one boundary, at the period of one hour. The lease must
+ *  be free, and the log must hold one more attribution line than at the fixture (linesBefore).
+ *  Every phase's answer rests on this boundary, so any other reading stops the driver
+ *  (setupFailed). It answers what it read. */
+async function awaitOnePass(linesBefore: number): Promise<string> {
+  const deadline = Date.now() + onePassWaitMs;
+  const records = () =>
+    sql(
+      `select lease, period_ns, boundary from duty_passes where ${reconcileRecords}
+       order by lease collate "C"`
+    );
+  let recorded = await records();
+  while (recorded === "" && Date.now() < deadline) {
+    await Bun.sleep(pollMs);
+    recorded = await records();
+  }
+  // duty.leaseHeld: the lease is a session's two-key advisory lock, the namespace "LOOP"
+  // (duty.leaseNamespace) and the hashtext of the lease's name.
+  const held = async () =>
+    (await sql(
+      `select exists (select 1 from pg_locks
+         where locktype = 'advisory' and granted and objsubid = 2
+           and database = (select oid from pg_database where datname = current_database())
+           and classid = ${0x4c4f4f50}::oid and objid = hashtext('${reconcileLease}')::oid)`
+    )) === "t";
+  let leaseHeld = await held();
+  while (leaseHeld && Date.now() < deadline) {
+    await Bun.sleep(pollMs);
+    leaseHeld = await held();
+  }
+  const rows = recorded === "" ? [] : recorded.split("\n").map((row) => row.split("|"));
+  const shown =
+    rows.map(([lease, period, at]) => `${lease} (period ${period} ns, at ${at})`).join(", ") ||
+    "no record";
+  const kept = rows.map(([lease, period]) => `${lease} ${period}`).join(", ");
+  const wanted = `${reconcileLease} ${onePassPeriodNs}, ${reconcileLease}/${onePassPeriodNs} ${onePassPeriodNs}`;
+  const lines = attributionLines().length - linesBefore;
+  if (
+    kept !== wanted ||
+    new Set(rows.map((row) => row[2])).size !== 1 ||
+    leaseHeld ||
+    lines !== 1
+  ) {
+    setupFailed(
+      "the boundary of one pass",
+      `duty_passes holds ${shown}, want ${reconcileLease} and ${reconcileLease}/${onePassPeriodNs} at one boundary, each of period ${onePassPeriodNs} ns; the lease is ${leaseHeld ? "still held" : "free"}; the log holds ${lines} more attribution line(s) than at the fixture, want 1`
+    );
+  }
+  return `one pass: duty_passes holds ${shown}; the lease is free; the log holds 1 more attribution line`;
+}
+
+/** Each line `dispatch delivery: pull request attribution` of the server's log, oldest first, as
+ *  its attributes. A pass writes one, with its counts (facts_left_before, facts_left, reads_left,
+ *  facts_refused, changes, events, moves_queued) and the scope of the first rate limit that it met
+ *  (rate_limit_scope). The log holds every start of the server in the run. */
+function attributionLines(): Record<string, string>[] {
+  return readFileSync(dispatchLog, "utf8")
+    .split("\n")
+    .filter((line) => line.includes('msg="dispatch delivery: pull request attribution"'))
+    .map((line) =>
+      Object.fromEntries(
+        [...line.matchAll(/(\w+)=("(?:[^"\\]|\\.)*"|\S*)/g)].map(([, key = "", value = ""]) => [
+          key,
+          value.startsWith('"') ? (JSON.parse(value) as string) : value,
+        ])
+      )
+    );
+}
+
+/** What `dispatch attribution` prints, as numbers where its lines count: each of its seven lines,
+ *  read by its words (attributionCommand, packages/envoy-client/src/dispatch-commands/session.ts). */
+interface AttributionCounts {
+  readonly facts_left: number;
+  readonly facts_refused: number;
+  readonly keys_on_another_reading: number;
+  readonly links_in_two_cases: number;
+  readonly moves_queued: number;
+  readonly owed_failures: number;
+  readonly owed_refusals: number;
+  readonly reading: string;
+  readonly reads_left: number;
+}
+
+/** Runs `dispatch attribution` through the driver's runner of the command (runDispatch), and reads
+ *  its seven lines. A line that it does not print fails the read, naming the line and the output. */
+async function attributionCounts(): Promise<AttributionCounts> {
+  const run = await runDispatch(["attribution"]);
+  if (run.code !== 0) {
+    throw new Error(`dispatch attribution exited ${run.code}: ${run.stderr.trim()}`);
+  }
+  const line = (pattern: RegExp): string[] => {
+    const found = run.stdout.match(pattern);
+    if (found === null) {
+      throw new Error(
+        `dispatch attribution printed no line ${pattern.source}: ${JSON.stringify(run.stdout)}`
+      );
+    }
+    return found.slice(1);
+  };
+  const count = (printed: string | undefined) => Number(printed?.replaceAll(",", ""));
+  const [factsLeft] = line(/^Pull requests that wait for their facts from GitHub: ([\d,]+)\.$/m);
+  const [readsLeft, factsRefused] = line(
+    /^Pull requests that a pass still reads from GitHub: ([\d,]+) \(([\d,]+) of them refused\)\.$/m
+  );
+  const [keysWait] = line(/^Pull requests whose keys wait to be read again: ([\d,]+)\.$/m);
+  const [movesWait] = line(/^Changes of attribution whose events wait: ([\d,]+)\.$/m);
+  const [reading] = line(/^The key reading: (.*)\.$/m);
+  const [links] = line(/^Links that more than one issue holds in other letter cases: ([\d,]+)\.$/m);
+  const [failures, refusals] = line(
+    /^Pull requests whose head is not read while a read is owed: ([\d,]+) that GitHub did not answer.*, and ([\d,]+) that GitHub refuses/m
+  );
+  return {
+    facts_left: count(factsLeft),
+    facts_refused: count(factsRefused),
+    keys_on_another_reading: count(keysWait),
+    links_in_two_cases: count(links),
+    moves_queued: count(movesWait),
+    owed_failures: count(failures),
+    owed_refusals: count(refusals),
+    reading: reading ?? "",
+    reads_left: count(readsLeft),
+  };
+}
+
+/** One phase that the shell runs around one complete pass: the fixture it writes while no server
+ *  runs, and the case that asserts after the start pass, given what awaitOnePass read. */
+interface OnePassPhase {
+  readonly assert: (pass: string) => Promise<string | undefined>;
+  readonly caseName: string;
+  readonly fixture?: () => Promise<void>;
+}
+
 // --- setup ---------------------------------------------------------------------------------------
 
 // The fake GitHub answers for two repositories: the one the proof's issues resolve to, whose
@@ -670,10 +927,14 @@ function summarise(stopped?: string): never {
 
 /** One pull request the fake answers for, as its single-pull-request route reads a fixture:
  *  the head commit and branch, the repository the head branch is in, the base branch, the
- *  state, the title and body, the time GitHub last updated it, and the merge's own commit. */
+ *  state, the title and body, the time GitHub last updated it, and the merge's own commit; and
+ *  as its commits read and its GraphQL route read it: the messages of its commits, and the status
+ *  the commits read answers in place of them. */
 interface FakePullRequest {
   readonly base_ref?: string;
   readonly body?: string;
+  readonly commit_messages?: readonly string[];
+  readonly commits_status?: number;
   readonly head_ref?: string;
   readonly head_repo: string;
   readonly head_sha: string;
@@ -707,6 +968,100 @@ async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise
     method: "PUT",
   }).catch((error: unknown) => setupFailed("fake GitHub seed", error));
   if (!seeded.ok) setupFailed("fake GitHub seed", `${seeded.status} ${await seeded.text()}`);
+}
+
+// One half of a one-pass phase: the fixture while no server runs, or the case after the start
+// pass. The process first takes the pull requests the fake answers, as an earlier process of the
+// driver seeded them, so a seed of this process keeps them.
+if (phaseArg !== undefined) {
+  const onePassPhases: Record<string, OnePassPhase> = {
+    // The self-check of the boundary: a fixture of nothing, then one start of the server.
+    boundary: {
+      assert: async (pass) => {
+        note(pass);
+        return undefined;
+      },
+      caseName: "one-pass-boundary",
+    },
+    "k-attribution": {
+      assert: kAttributionAfterOnePass,
+      caseName: "k-attribution-after-one-pass",
+      fixture: kAttributionFixture,
+    },
+  };
+  const [, name = "", half] = /^(.+)-(fixture|assert)$/.exec(phaseArg) ?? [];
+  const phase = onePassPhases[name];
+  if (phase === undefined || half === undefined) {
+    setupFailed(
+      `phase ${phaseArg}`,
+      `no one-pass phase answers --phase ${phaseArg}; the phases are ${Object.keys(onePassPhases).join(", ")}, each with -fixture or -assert`
+    );
+  }
+  const seeded = await fetch(new URL("/__fixture/repos", githubUrl)).catch((error: unknown) =>
+    setupFailed("read of the fake GitHub's seed", error)
+  );
+  if (!seeded.ok)
+    setupFailed("read of the fake GitHub's seed", `${seeded.status} ${await seeded.text()}`);
+  const repositories = (await seeded.json()) as Record<
+    string,
+    { pulls?: Record<string, FakePullRequest> }
+  >;
+  Object.assign(githubPulls, repositories[repo]?.pulls ?? {});
+  const passKey = `${name}/pass`;
+  if (half === "fixture") {
+    try {
+      await phase.fixture?.();
+      const fixtureAt = await prepareOnePass();
+      const linesBefore = attributionLines().length;
+      writeFileSync(
+        statePath,
+        JSON.stringify({ ...readState(), [passKey]: { fixtureAt, linesBefore } })
+      );
+      note(`${phaseArg}: the fixture is written, and no pass is recorded, at ${fixtureAt}`);
+    } catch (error) {
+      setupFailed(`fixture of the phase ${name}`, error);
+    }
+    void nats.close();
+    process.exit(0);
+  }
+  const fixture = readState()[passKey] as { readonly linesBefore?: number } | undefined;
+  if (fixture?.linesBefore === undefined) {
+    setupFailed(
+      `phase ${phaseArg}`,
+      `the state file holds no fixture of ${name}: run --phase ${name}-fixture first`
+    );
+  }
+  const pass = await awaitOnePass(fixture.linesBefore);
+  await runCase(phase.caseName, () => phase.assert(pass));
+  summarise();
+}
+
+// The counter's self-check: one read of a seeded pull request, made here and not by Dispatch,
+// counts as one read. The fake holds that pull request alone until the seed below replaces it.
+// Dispatch holds no row of a pull request yet, so it reads none beside it.
+try {
+  const counterSeed = await fetch(new URL("/__fixture/repos", githubUrl), {
+    body: JSON.stringify({
+      [repo]: {
+        contents: "read",
+        installation_id: 256,
+        pulls: { "1": { head_sha: commits.mainHead, state: "open", title: "The counter's read" } },
+      },
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!counterSeed.ok) throw new Error(`the seed answered ${counterSeed.status}`);
+  await resetPullReads();
+  const read = await fetch(new URL(`/repos/${repo}/pulls/1`, githubUrl));
+  const counted = await pullReads();
+  if (!read.ok || counted !== 1) {
+    throw new Error(
+      `one GET /repos/${repo}/pulls/1 answered ${read.status} and counts ${counted} read(s), want 200 and 1`
+    );
+  }
+} catch (error) {
+  setupFailed("the counter of pull request reads", error);
 }
 await seedRepositories({});
 
@@ -773,7 +1128,7 @@ const probeIssue = String(
 );
 
 console.log(
-  `setup: person ${person}; session ${session}; probe issue ${probeIssue}; repositories ${repo} (default branch main) and ${hiddenRepo} (no installation); dispatch command ${dispatchCommand} (${dispatchCommandInput === "" ? "this checkout's" : "VERIFICATION_RESULTS_E2E_DISPATCH_CLI"}). Each case seeds the issue it drives.`
+  `setup: person ${person}; session ${session}; probe issue ${probeIssue}; repositories ${repo} (default branch main) and ${hiddenRepo} (no installation); dispatch command ${dispatchCommand} (${dispatchCommandInput === "" ? "this checkout's" : "VERIFICATION_RESULTS_E2E_DISPATCH_CLI"}); the fake GitHub counts one direct read of a pull request as 1 read. Each case seeds the issue it drives.`
 );
 
 // --- cases ---------------------------------------------------------------------------------------
@@ -1511,16 +1866,22 @@ A check of an issue whose repository Dispatch cannot read compares with nothing 
 
 // k-attribution. What decides a pull request's issue: the five ranked sources
 // (delivery/attribution.go), of which a person's link to the pull request's own URL ranks above
-// the head branch, and the head branch above a key in the title or the body. Five pull requests
+// the head branch, and the head branch above a key in the title or the body. Six pull requests
 // drive it: one its branch credits to a child while its title names the parent first, one its
-// body credits, one whose link beats its branch, one whose link beats its title, and two stored
-// rows of the rule before this build's, which the reconcile re-judges.
+// body credits, one whose link beats its branch, one whose link beats its title, and two rows
+// stored as the release before writes them, with no texts, which one pass reads and records again.
+//
+// This case drives the four pull requests of events, against the server that runs a pass every
+// two seconds. The intake stores the facts and the texts of each one at once, and the statement
+// gives its issue at each read. The phase k-attribution then stores the two rows of the release
+// before, and after one pass it reads the issue that each of the six rows records
+// (kAttributionFixture, kAttributionAfterOnePass).
 //
 // The case's negative controls are in it: the pull request whose body decides is on a branch
 // that names no issue, so the branch rule swallows no other source; the pull request a person
-// linked is on the child's own branch, so the link stands above it; and the last envelope moves
-// a head without moving its attribution, which appends no event, so an event marks a change and
-// never a pass.
+// linked is on the child's own branch, so the link stands above it and the child does not compare
+// with it; the issue a linked title names does not compare with it either; and the last envelope
+// moves a head and not its attribution, so the pass of the phase appends no event for it.
 await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
   // A check's id must be one among the issue and the issues above it: a result naming an id the
   // child and the parent both carry is refused 409 CHECK_AMBIGUOUS, so each issue's check is
@@ -1575,35 +1936,39 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
   const envelopes = [
     {
       body: `This carries part of ${parent}, and ${child} is the issue it closes.`,
+      check: "child",
       head: commits.attributionBranch,
       head_ref: `legion/${child}`,
+      issue: child,
       number: 41,
       title: `${parent} and ${child}: the child's pull request`,
-      want: `${child} by branch`,
     },
     {
       body: `This one proves ${bodied}.`,
+      check: "body",
       head: commits.attributionBody,
       head_ref: "work/no-key-in-this-branch",
+      issue: bodied,
       number: 42,
       title: "A pull request whose title names no issue",
-      want: `${bodied} by title_body`,
     },
     {
       body: "A person linked this pull request to an issue of its own.",
+      check: "link-over-branch",
       head: commits.attributionLinkOverBranch,
       head_ref: `legion/${child}`,
+      issue: linkedOverBranch,
       number: 43,
       title: "A pull request on the child's branch that a person linked elsewhere",
-      want: `${linkedOverBranch} by external_link`,
     },
     {
       body: "A person linked this pull request too.",
+      check: "link-over-title",
       head: commits.attributionLinkOverTitle,
       head_ref: "work/no-key-in-this-one-either",
+      issue: linkedOverTitle,
       number: 44,
       title: `${titled} is the issue this title names`,
-      want: `${linkedOverTitle} by external_link`,
     },
   ];
   const publishedEnvelopes = new Map<number, Published>();
@@ -1625,14 +1990,42 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     });
     publishedEnvelopes.set(envelope.number, published);
   }
+  // The intake stores each pull request's facts and texts, and the reader of the check gives
+  // its issue from them, both within the bound of an event. The issue that a row records waits
+  // for a pass, which the phase reads.
   for (const envelope of envelopes) {
-    const wanted = `${envelope.want} (open at ${envelope.head.slice(0, 12)}, rule 3)`;
     const published = publishedEnvelopes.get(envelope.number);
     if (published === undefined) return `#${envelope.number} was not published`;
-    const stored = await awaitStoredHead(envelope.number, wanted, afterEvent(published));
+    const facts = `open at ${envelope.head.slice(0, 12)}, texts stored`;
+    const stored = await awaitStoredHead(envelope.number, facts, afterEvent(published));
     note(`#${envelope.number} on ${envelope.head_ref}, titled ${JSON.stringify(envelope.title)}`);
     note(`  is stored as ${stored}`);
-    if (stored !== wanted) return `#${envelope.number} is stored as ${stored}, want ${wanted}`;
+    if (!stored.endsWith(`(${facts})`)) {
+      return `#${envelope.number} is stored as ${stored}, want its facts (${facts})`;
+    }
+    const compared = await awaitComparedWith(
+      envelope.issue,
+      envelope.check,
+      envelope.head,
+      afterEvent(published)
+    );
+    note(`  ${envelope.issue} compares with ${compared.shown}`);
+    if (!compared.held) {
+      return `${envelope.issue} compares with ${compared.shown}, want the head of #${envelope.number}`;
+    }
+  }
+  // A person's link stands above the branch and the title: the child does not take the pull
+  // request on its branch that a person linked elsewhere, and the issue a title names does not
+  // take the pull request whose title names it.
+  for (const [issue, check, number, head] of [
+    [child, "child", 43, commits.attributionLinkOverBranch],
+    [titled, "title", 44, commits.attributionLinkOverTitle],
+  ] as const) {
+    const bases = await checkOf(issue, check);
+    note(`${issue} compares with ${comparedOf(bases)}`);
+    if ((bases.compared_with ?? []).some((basis) => basis.commit === head)) {
+      return `${issue} took the head of #${number}, which a person linked to another issue`;
+    }
   }
 
   // The child's own pull request answers for the child's checks and for none of the parent's.
@@ -1674,68 +2067,9 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
   note(`the parent's result at the child's head stands ${parentStands}`);
   if (parentStands !== "other_commit") return `the parent's result stands ${parentStands}`;
 
-  // Two stored rows the rule before this build's credited to the parent, which no route of
-  // Dispatch can write: every write stamps the rule this build judges by. The reconcile takes
-  // the open one because no read has reached it and the merged one because an older rule judged
-  // it, reads each pull request from GitHub, and moves both to the child the answer names.
-  await seedRepositories({
-    "45": {
-      head_repo: repo,
-      head_sha: commits.attributionStoredOpen,
-      merged: false,
-      state: "open",
-      title: `${child} the stored open pull request`,
-    },
-    "46": {
-      head_repo: repo,
-      head_sha: commits.attributionStoredMerged,
-      merged: true,
-      state: "closed",
-      title: `${child} the stored merged pull request`,
-    },
-  });
-  const stored = [
-    { head: commits.attributionStoredOpen, number: 45, state: "open" },
-    { head: commits.attributionStoredMerged, number: 46, state: "merged" },
-  ];
-  for (const row of stored) {
-    await sql(
-      `insert into pull_request_heads
-         (repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
-          title, url, attribution_rule)
-       values ('${repo}', ${row.number}, '${row.head}', 'legion/${child}', 'main', '${row.state}',
-          '${parent}', 'title_body', 'the stored pull request #${row.number}',
-          'https://github.com/${repo}/pull/${row.number}', 1)`
-    );
-    note(`#${row.number} is stored ${row.state}, credited to ${parent} by title_body under rule 1`);
-  }
-  for (const row of stored) {
-    const wanted = `${child} by title_body (${row.state} at ${row.head.slice(0, 12)}, rule 3)`;
-    const seen = await awaitStoredHead(row.number, wanted, Date.now() + reconcileWaitMs);
-    note(`the reconcile re-judged #${row.number}: ${seen}`);
-    if (seen !== wanted) return `#${row.number} reads ${seen} after the reconcile, want ${wanted}`;
-  }
-
-  // One pass re-judges both rows, in an order of the reconcile's own, so the moves are compared
-  // sorted: which of the two it read first says nothing about the rule.
-  const parentMoves = await awaitAttributionMoves(parent, 2);
-  for (const move of parentMoves) note(`${parent} records ${move}`);
-  const childMoves = await awaitAttributionMoves(child, 3);
-  for (const move of childMoves) note(`${child} records ${move}`);
-  const wantedMoves = [
-    `#45 ${parent} → ${child} by title_body`,
-    `#46 ${parent} → ${child} by title_body`,
-  ];
-  if ([...parentMoves].sort().join("; ") !== wantedMoves.join("; ")) {
-    return `${parent} records ${parentMoves.join("; ")}, want ${wantedMoves.join("; ")}`;
-  }
-  const wantedChild = [`#41 nobody → ${child} by branch`, ...wantedMoves];
-  if ([...childMoves].sort().join("; ") !== wantedChild.join("; ")) {
-    return `${child} records ${childMoves.join("; ")}, want ${wantedChild.join("; ")}`;
-  }
-
   // An attribution that does not move appends no event: the same pull request at a new head,
-  // credited to the child as before, is written and recorded nowhere.
+  // credited to the child as before. The one pass of the phase comes after this push, and appends
+  // the moves of the two stored rows alone.
   const pushed = await publishPullRequest({
     action: "synchronize",
     base_ref: "main",
@@ -1751,16 +2085,147 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     updated_at: new Date().toISOString(),
     url: `https://github.com/${repo}/pull/41`,
   });
-  const wantedHead = `${child} by branch (open at ${commits.attributionBranchMoved.slice(0, 12)}, rule 3)`;
-  const movedHead = await awaitStoredHead(41, wantedHead, afterEvent(pushed));
+  const movedFacts = `open at ${commits.attributionBranchMoved.slice(0, 12)}, texts stored`;
+  const movedHead = await awaitStoredHead(41, movedFacts, afterEvent(pushed));
   note(`#41 after the push is stored as ${movedHead}`);
-  if (movedHead !== wantedHead) return `#41 after the push is stored as ${movedHead}`;
-  const afterPush = await attributionMoves(child);
-  note(`${child} still records ${afterPush.length} move(s), the push among them appending none`);
-  return afterPush.length === childMoves.length
-    ? undefined
-    : `${child} records ${afterPush.length} moves after the push, want ${childMoves.length}`;
+  if (!movedHead.endsWith(`(${movedFacts})`)) {
+    return `#41 after the push is stored as ${movedHead}, want its facts (${movedFacts})`;
+  }
+  const afterPush = await awaitComparedWith(
+    child,
+    "child",
+    commits.attributionBranchMoved,
+    afterEvent(pushed)
+  );
+  note(`${child} compares with ${afterPush.shown}`);
+  if (!afterPush.held) {
+    return `${child} compares with ${afterPush.shown} after the push, want the new head of #41`;
+  }
+  const issues: AttributionIssues = {
+    bodied,
+    child,
+    linkedOverBranch,
+    linkedOverTitle,
+    parent,
+    titled,
+  };
+  writeFileSync(statePath, JSON.stringify({ ...readState(), "k-attribution": issues }));
+  return undefined;
 });
+
+/** The issues that the case k-attribution seeded, which its phase reads from the state file. */
+interface AttributionIssues {
+  readonly bodied: string;
+  readonly child: string;
+  readonly linkedOverBranch: string;
+  readonly linkedOverTitle: string;
+  readonly parent: string;
+  readonly titled: string;
+}
+
+/** The fixture of the phase k-attribution, which runs while no server runs: GitHub's answer for
+ *  each of the two stored rows, whose title names the child, and the two rows as the release before
+ *  writes them, credited to the parent by title_body, with no texts and no attribution_rule. No
+ *  route of Dispatch can write such a row: every write of this build stores the texts. */
+async function kAttributionFixture(): Promise<void> {
+  const { child, parent } = readState()["k-attribution"] as AttributionIssues;
+  await seedRepositories(
+    Object.fromEntries(
+      storedAttributionRows.map((row) => [
+        String(row.number),
+        {
+          head_repo: repo,
+          head_sha: row.head,
+          merged: row.merged,
+          state: row.merged ? "closed" : "open",
+          title: `${child} the stored ${row.state} pull request`,
+        },
+      ])
+    )
+  );
+  for (const row of storedAttributionRows) {
+    await sql(
+      `insert into pull_request_heads
+         (repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source, title, url)
+       values ('${repo}', ${row.number}, '${row.head}', 'legion/${child}', 'main', '${row.state}',
+          '${parent}', 'title_body', 'the stored pull request #${row.number}',
+          'https://github.com/${repo}/pull/${row.number}')`
+    );
+    note(
+      `#${row.number} is stored ${row.state}, credited to ${parent} by title_body, with no texts`
+    );
+  }
+}
+
+/** The case of the phase k-attribution, after one pass: the issue and the source that each of
+ *  the six rows records, and its texts; the moves that the pass appended; and what
+ *  `dispatch attribution` and the pass's log line count. */
+async function kAttributionAfterOnePass(pass: string): Promise<string | undefined> {
+  note(pass);
+  const { bodied, child, linkedOverBranch, linkedOverTitle, parent } = readState()[
+    "k-attribution"
+  ] as AttributionIssues;
+  const short = (commit: string) => commit.slice(0, 12);
+  const wanted: (readonly [number, string])[] = [
+    [41, `${child} by branch (open at ${short(commits.attributionBranchMoved)}, texts stored)`],
+    [42, `${bodied} by title_body (open at ${short(commits.attributionBody)}, texts stored)`],
+    [
+      43,
+      `${linkedOverBranch} by external_link (open at ${short(commits.attributionLinkOverBranch)}, texts stored)`,
+    ],
+    [
+      44,
+      `${linkedOverTitle} by external_link (open at ${short(commits.attributionLinkOverTitle)}, texts stored)`,
+    ],
+    ...storedAttributionRows.map(
+      (row) =>
+        [
+          row.number,
+          `${child} by title_body (${row.state} at ${short(row.head)}, texts stored)`,
+        ] as const
+    ),
+  ];
+  for (const [number, want] of wanted) {
+    const seen = await storedHead(number);
+    note(`#${number} records ${seen}`);
+    if (seen !== want) return `#${number} records ${seen} after one pass, want ${want}`;
+  }
+
+  // The pass reads both stored rows and moves both, in an order of its own, so the moves are
+  // compared sorted. The push of #41 moved no attribution, so the pass appended no event of it.
+  const parentMoves = await attributionMoves(parent);
+  for (const move of parentMoves) note(`${parent} records ${move}`);
+  const childMoves = await attributionMoves(child);
+  for (const move of childMoves) note(`${child} records ${move}`);
+  const wantedMoves = storedAttributionRows.map(
+    (row) => `#${row.number} ${parent} → ${child} by title_body`
+  );
+  if ([...parentMoves].sort().join("; ") !== wantedMoves.join("; ")) {
+    return `${parent} records ${parentMoves.join("; ")}, want ${wantedMoves.join("; ")}`;
+  }
+  const wantedChild = [`#41 nobody → ${child} by branch`, ...wantedMoves];
+  if ([...childMoves].sort().join("; ") !== wantedChild.join("; ")) {
+    return `${child} records ${childMoves.join("; ")}, want ${wantedChild.join("; ")}`;
+  }
+
+  // The pass read the facts of the two stored rows: the open arm reads #45, which no read has
+  // checked, before the facts line starts, so facts_left_before counts #46 alone. The pass leaves
+  // no pull request with no facts, and none that a pass still reads.
+  const line = attributionLines().at(-1) ?? {};
+  note(
+    `the pass logged facts_left_before=${line.facts_left_before} facts_left=${line.facts_left} reads_left=${line.reads_left} events=${line.events}`
+  );
+  if (line.facts_left !== "0" || line.reads_left !== "0") {
+    return `the pass logged facts_left=${line.facts_left} and reads_left=${line.reads_left}, want 0 and 0`;
+  }
+  const counts = await attributionCounts();
+  note(
+    `dispatch attribution: ${counts.facts_left} pull request(s) wait for their facts, and a pass still reads ${counts.reads_left}`
+  );
+  return counts.facts_left === 0 && counts.reads_left === 0
+    ? undefined
+    : `dispatch attribution prints ${counts.facts_left} that wait for their facts and ${counts.reads_left} that a pass still reads, want 0 and 0`;
+}
 
 // --- a bare `-` given to a text flag -----------------------------------------------------------
 //
