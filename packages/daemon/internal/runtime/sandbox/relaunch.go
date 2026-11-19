@@ -136,14 +136,27 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // moved address — comes up on the configured image, which the boot gate holds to the daemon's
 // contract, so its copies are already right; carrying the install onto a fresh pod would be
 // installing over a pair already current. l.spec.Plugins is cleared in that case before
-// launcherCommand builds its argv. A pod whose issue Sandbox is still of the release before the
-// pod-owned disk — owning the `issue` volume claim template that pod mounts — is replaced too, and
-// its Sandbox with it: that field is immutable in the CRD, so deleting the Sandbox at the issue's
-// next launch and creating one of the current shape is the only way to the pod-owned disk
-// (replaceSupersededSandbox), which carries the name the suspension wrote onto the Sandbox it
-// creates, and keeps it in the runtime's hands while the issue has no Sandbox at all (stranded), so
-// the roles that replacement ended are read as displaced rather than dead, in the gap between the
-// delete and the create too.
+// launcherCommand builds its argv.
+//
+// An issue Sandbox whose disk shape is not the one this launch renders (supersededDisk) is
+// replaced with the pod. It is one of the release before the pod-owned disk, which owns an
+// `issue` claim template with no kept label. Or it owns no template where the launch keeps its
+// volume (keptVolume). Or it owns a kept volume where the launch keeps none, or a kept volume of
+// another storage class, size or access modes. volumeClaimTemplates is immutable in the CRD, so
+// the only way to the launch's shape is to delete the Sandbox and create it again
+// (replaceSupersededSandbox). That replacement carries the name the suspension wrote onto the
+// Sandbox it creates, and keeps it in the runtime's hands while the issue has no Sandbox at all
+// (stranded), so the roles that the replacement ended are read as displaced rather than dead, in
+// the gap between the delete and the create too.
+//
+// The other disk shape alone ends no live pod whose shape record drifts (shapeDrift). Each change
+// that moves an issue's disk shape moves that record too: keep_volume, the issue's sandbox, the
+// microVM block's storage class and the disk's size. So the pod's update round asks every role in
+// it to push its work and then ends it (ReplacePod), and the launch after the round, which finds
+// no live pod, replaces the Sandbox. A live pod whose record does not drift is replaced here, with
+// its Sandbox: that is the cutover from the release before the pod-owned disk. Every launch that
+// replaces the pod, for any reason, replaces a Sandbox of the other shape with it, so the Running
+// patch never writes a pod that mounts a claim its Sandbox does not own.
 func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	ctx = launching(ctx)
 	l, err := r.prepare(spec)
@@ -181,7 +194,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	}
 	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
 	installing := l.spec.Plugins != nil
-	migrate := supersededDisk(s, l)
+	migrate := r.supersededDisk(s, l)
 	covered := roundCovers(l.kind)
 	// A live pod no round covers is this launch's to replace for every kind of drift: every facet
 	// of the pod itself but the account comes through movedInPod, the account is read here as
@@ -195,7 +208,14 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// the old account grants. A pod a round covers is kept for the account as for its other
 	// drift, and that round, which has every worker in it push its work first, is what replaces
 	// it.
-	replace := !live || (accountDrifted && !covered) || migrate ||
+	//
+	// A Sandbox of the other disk shape (migrate) ends a live pod only where the pod's shape record
+	// does not drift, the cutover from the release before the pod-owned disk. A drifted record
+	// opens the pod's update round, which ends the pod once every role in it has pushed its work
+	// (ReplacePod). A pod that this launch replaces for any other reason takes such a Sandbox with
+	// it below.
+	replace := !live || (accountDrifted && !covered) ||
+		(migrate != "" && len(r.shapeDrift(s, l.shapeKey())) == 0) ||
 		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
 		(!installing && !covered && len(r.shapeDrift(s, l.shapeKey())) > 0)
 	if !replace {
@@ -246,9 +266,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		if err != nil {
 			return fail("wait out its previous pod", err)
 		}
-		if migrate {
-			if s, err = r.replaceSupersededSandbox(bounded, l, s); err != nil {
-				return fail("replace its sandbox of the previous disk shape", err)
+		if migrate != "" {
+			if s, err = r.replaceSupersededSandbox(bounded, l, s, migrate); err != nil {
+				return fail("replace its sandbox of another disk shape", err)
 			}
 		}
 		if err := l.kind.provision(bounded, r, &l, s); err != nil {
@@ -392,11 +412,12 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // (1); provision's token mint and its Secret upsert's Get, Delete and Create (4), and its
 // repository cache's ensure (cacheEnsureCalls); the Running patch (1); the stop of an earlier
 // generation (1); the address record patch (1); the Start frame (1) — 16, the cache's ensure apart.
-// A try replacing a Sandbox of the superseded disk shape spends one call more, and so sets the
-// count at 17: its deleteStoredSandbox Get, the fenced Delete, awaitSandboxDeleted's confirming
-// Get and the Create (4) against the 3 of the 6 above that ensureSandbox's wait for a Sandbox
-// being deleted spends, which that try never takes — a Sandbox it waited out is gone, and the one
-// it creates in its place already owns no claim template (replaceSupersededSandbox).
+// A try that replaces its Sandbox for another disk shape (replaceSupersededSandbox) still spends
+// one call more, and so sets the count at 17: its deleteStoredSandbox Get, the fenced Delete,
+// awaitSandboxDeleted's confirming Get and the Create (4) against the 3 of the 6 above that
+// ensureSandbox's wait for a Sandbox being deleted spends. That try never takes that wait: a
+// Sandbox that ensureSandbox waited out is gone, and the one it creates in its place already has
+// the disk shape that the launch renders (sandboxManifest), so the launch does not replace it.
 // Per launcher role of the pod (relaunchRoleCalls, claim.Roles for an issue pod, the most any pod
 // has): launcherBound's Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get,
 // Delete and Create (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
@@ -560,16 +581,19 @@ func (r *Runtime) suspendFailedLaunch(ctx context.Context, token claim.Token, s 
 // tree left, labelled with that tree. Such a Sandbox is relabelled for this launch's tree and
 // kept, once no stored claim of the issue in another tree may still run a process there
 // (Store.IssueRunsElsewhere); the Running patch rewrites its pod template, labels included, before
-// any pod runs. None of the old tree's work comes with it: an issue pod's disk is the pod's own
-// ephemeral volume (issuePod.disk), which went with that pod, so the relabelled Sandbox's
-// first pod brings a disk of its own and provisions the issue's workspace afresh. One its old tree
-// left Running — the old tree's close suspended every role of it, but the issue's suspension never
-// ran, since the issue had moved — is suspended in the same patch, so the relaunch waits its pod
-// out. One a claim of the old tree may still run in is a refusal, since replacing it would end that
-// claim. An issue Sandbox of the release before the pod-owned disk reaches here and is returned as
-// it is, still owning the `issue` claim template: the boot census lets that one shape through by
-// name rather than refusing the daemon (treeVolumeLayout), and the relaunch replaces it, Sandbox
-// and claim together, once its pod is gone (replaceSupersededSandbox). Nothing here deletes a
+// any pod runs. Of the old tree's work, only a kept volume comes with it. An issue pod's own
+// ephemeral volume (issuePod.disk) went with that pod, so the relabelled Sandbox's first pod
+// brings a disk of its own and provisions the issue's workspace afresh. A kept volume (keptVolume)
+// is the Sandbox's own claim, whose template carries no tree label, so it stays with the Sandbox
+// and its next pod mounts it. One its old tree left Running — the old tree's close suspended every
+// role of it, but the issue's suspension never ran, since the issue had moved — is suspended in the
+// same patch, so the relaunch waits its pod out. One a claim of the old tree may still run in is a
+// refusal, since replacing it would end that claim. An issue Sandbox of another disk shape than
+// the launch renders (supersededDisk) reaches here and is returned as it is: one of the release
+// before the pod-owned disk, or one that a change of keep_volume, the issue's sandbox or the
+// volume's class, size or access modes left behind. The boot census lets it through and names it
+// rather than refusing the daemon (treeVolumeLayout), and the relaunch replaces it, Sandbox and
+// claim together, with or after its pod (replaceSupersededSandbox). Nothing here deletes a
 // Sandbox. One it creates carries the name of the pod a replacement whose own Create failed left
 // stranded (createSandbox), so the roles that replacement ended are read as displaced from it.
 func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error) {
@@ -657,50 +681,141 @@ func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error)
 	}
 }
 
-// supersededDisk reports whether s is an issue Sandbox of the release before the pod-owned disk:
-// one still owning a volume claim template, where the Sandbox this runtime now makes for an issue
-// owns none and its pod carries its disk as a generic ephemeral volume of its own
-// (issuePod.disk, sandboxManifest). The launch's kind is this Sandbox's: ensureSandbox finds
-// it by the claim's own name, and an issue's labels are what podKindOf reads an issue pod's kind
-// from. The project controller's Sandbox owns that template by design — the working root its
-// launcher runs in outlives its pods, so the claim holding it must — and is never replaced for
-// this reason.
-func supersededDisk(s *sandbox, l launch) bool {
-	_, issue := l.kind.(issuePod)
-	return issue && len(s.Spec.VolumeClaimTemplates) > 0
+// sandboxReplacement is why a launch deletes its issue's Sandbox and creates it again
+// (replaceSupersededSandbox), as the line that the replacement logs names it. The empty reason is
+// no replacement. Each reason is its own text, so a reason that names a part of the pod, such as
+// an init container, is a value built from that name.
+type sandboxReplacement string
+
+// The reasons that a Sandbox's disk shape gives (diskShapeChange).
+const (
+	// replacedFromPreviousRelease is an issue Sandbox of the release before the pod-owned disk: it
+	// owns an `issue` claim template that carries no kept label (keptTemplate).
+	replacedFromPreviousRelease sandboxReplacement = "a Sandbox of the release before the pod-owned disk"
+	// replacedToKeepVolume is a Sandbox that owns no claim template, where the launch keeps its
+	// volume (keptVolume).
+	replacedToKeepVolume sandboxReplacement = "the launch now keeps a volume"
+	// replacedToKeepNone is a Sandbox that owns a kept volume, where the launch keeps none.
+	replacedToKeepNone sandboxReplacement = "the launch now keeps no volume"
+	// replacedForVolumeChange is a Sandbox that owns a kept volume of another storage class, size
+	// or access modes than the launch renders.
+	replacedForVolumeChange sandboxReplacement = "the volume's class, size or access modes changed"
+)
+
+// supersededDisk is why the issue Sandbox s does not have the disk shape that the launch l
+// renders (podKind.disk), by diskShapeChange, or "" when it has that shape. The launch's kind is
+// this Sandbox's: ensureSandbox finds it by the claim's own name, and podKindOf reads an issue
+// pod's kind from an issue's labels. The project controller's Sandbox owns its `issue` template by
+// design: the working root that its launcher runs in outlives its pods, so the claim that holds it
+// must outlive them too. So it is never replaced for this reason.
+func (r *Runtime) supersededDisk(s *sandbox, l launch) sandboxReplacement {
+	if _, issue := l.kind.(issuePod); !issue {
+		return ""
+	}
+	want, _ := l.kind.disk(r, l)
+	return diskShapeChange(s.Spec.VolumeClaimTemplates, want)
 }
 
-// replaceSupersededSandbox deletes the issue Sandbox s, which still owns the claim template of the
-// release before the pod-owned disk, and creates one of the shape this runtime makes now in its
-// place (sandboxManifest: Suspended, owning no template), which it returns for the rest of the
-// launch to run against. spec.volumeClaimTemplates is immutable in the CRD, so no patch takes that
-// template away and delete-and-create is the only way to the new shape; the launch holds the pod's
-// launch turn and has already waited the Sandbox's pod out, so no process of the issue is running
-// while its Sandbox is away. The delete is the foreground one every Sandbox delete is
-// (deleteSandbox), so garbage collection reaps the claim the old Sandbox owned — the issue's whole
-// workspace, which the next pod provisions afresh — and the role Secrets it owned with it, before
-// the Sandbox is gone. That is why this runs before provision and writeLauncherSecrets rather than
-// after: the provisioning Secret and every role Secret of this launch are written against the new
-// Sandbox and owned by it, where ones written first would be reaped with the old one.
+// diskShapeChange is why an issue Sandbox that owns the claim templates held does not have the
+// disk shape of want, the templates that its issue's launch renders (issuePod.disk), or "" when it
+// has that shape. It is the one comparison of the two: a launch asks it (supersededDisk), and the
+// boot census asks it for each issue Sandbox that it accepts (treeVolumeLayout).
+//
+// A launch that keeps no volume renders no template, so every template held differs. A launch that
+// keeps a volume (keptVolume) renders one `issue` template that carries the kept label
+// (keptTemplate), the launch's storage class, its size and its access modes. The comparison reads
+// those and nothing else (sameClaimTemplate). It reads no other label: the project and issue labels
+// of a template are those of its Sandbox. The vendored CRD sets no default under
+// volumeClaimTemplates, so a stored template reads back as it was written.
+func diskShapeChange(held, want []volumeClaimTemplate) sandboxReplacement {
+	if slices.EqualFunc(held, want, sameClaimTemplate) {
+		return ""
+	}
+	kept := slices.ContainsFunc(held, func(t volumeClaimTemplate) bool {
+		return keptTemplate(t.Metadata.Name, t.Metadata.Labels[labelVolume])
+	})
+	switch {
+	case len(held) == 0:
+		return replacedToKeepVolume
+	case !kept:
+		return replacedFromPreviousRelease
+	case len(want) == 0:
+		return replacedToKeepNone
+	default:
+		return replacedForVolumeChange
+	}
+}
+
+// sameClaimTemplate is whether the claim templates a and b declare the same disk: the same name,
+// the same kept label (labelVolume), the same storage class as text, the same requested size by
+// value (resource.Quantity.Cmp, so 20480Mi is 20Gi), and the same access modes as a set.
+func sameClaimTemplate(a, b volumeClaimTemplate) bool {
+	return a.Metadata.Name == b.Metadata.Name &&
+		a.Metadata.Labels[labelVolume] == b.Metadata.Labels[labelVolume] &&
+		storageClassOf(a.Spec) == storageClassOf(b.Spec) &&
+		a.Spec.Resources.Requests.Storage().Cmp(*b.Spec.Resources.Requests.Storage()) == 0 &&
+		sameAccessModes(a.Spec.AccessModes, b.Spec.AccessModes)
+}
+
+// storageClassOf is the storage class a claim names, "" for none.
+func storageClassOf(spec corev1.PersistentVolumeClaimSpec) string {
+	if spec.StorageClassName == nil {
+		return ""
+	}
+	return *spec.StorageClassName
+}
+
+// sameAccessModes is whether a and b hold the same access modes, in any order and any number of
+// times.
+func sameAccessModes(a, b []corev1.PersistentVolumeAccessMode) bool {
+	for _, mode := range a {
+		if !slices.Contains(b, mode) {
+			return false
+		}
+	}
+	for _, mode := range b {
+		if !slices.Contains(a, mode) {
+			return false
+		}
+	}
+	return true
+}
+
+// replaceSupersededSandbox deletes the issue Sandbox s, for reason, and creates in its place one
+// of the disk shape that the launch renders (sandboxManifest: Suspended, owning the kept `issue`
+// template where the launch keeps its volume and no template otherwise), which it returns for the
+// rest of the launch to run against. spec.volumeClaimTemplates is immutable in the CRD, so no patch
+// changes the templates, and delete-and-create is the only way to another shape. The launch holds
+// the pod's launch turn and has already waited the Sandbox's pod out, so no process of the issue
+// runs while its Sandbox is away. The delete is the foreground one that every Sandbox delete is
+// (deleteSandbox), so garbage collection deletes the claim the old Sandbox owned, if any, and the
+// role Secrets it owned, before the Sandbox is gone. That claim holds the issue's whole workspace,
+// which the next pod provisions again. That is why this runs before provision and
+// writeLauncherSecrets and not after: the provisioning Secret and every role Secret of this launch
+// are written against the new Sandbox and owned by it, where ones written first would be deleted
+// with the old one. It logs one line that names the issue, the Sandbox, the old uid, the claim of
+// the issue's volume (IssueClaimName) and reason.
 //
 // The one piece of the predecessor's metadata that travels is the pod it names as displaced
 // (displacedAnnotation): the five roles of the pod this launch just replaced are read as ended by
-// the daemon rather than dead only while their Sandbox names that pod (observe's names), and
-// migrate is true for every issue Sandbox of the previous release, so the cutover launch of every
-// running issue comes through here. Once the foreground delete's garbage collection is done and
-// the object is gone, no Sandbox of the name exists to name it until the create lands, and the
-// observer, which takes no launch turn, reads a sibling role's end in that gap as readily as after
+// the daemon rather than dead only while their Sandbox names that pod (observe's names), and at
+// the cutover from the release before the pod-owned disk every running issue's launch comes
+// through here. Once the foreground delete's garbage collection is done and the object is gone,
+// no Sandbox of the name exists to name it until the create lands, and the observer, which takes
+// no launch turn, reads a sibling role's end in that gap as readily as after
 // it — a gap of a confirming read and a create when all goes well, and one a failed Create holds
 // open until the issue's next launch makes the Sandbox again. So the name is put in the runtime's
 // own keeping (stranded) before the delete is sent — the Sandbox carries it until it is gone, so no
 // instant is uncovered — and createSandbox sets it on the Sandbox it creates and drops it once the
 // API server holds that one. It is taken from s, not from this launch's suspension alone: a
 // launch that suspended the pod and failed before the delete left the name on the Sandbox, and the
-// next launch, finding the pod already gone, replaces that Sandbox without suspending anything.
+// next launch, finding the pod already gone, replaces that Sandbox without suspending anything. A
+// round's suspension (ReplacePod) leaves the name on the Sandbox in the same way, and the launch
+// after the round finds no pod to suspend.
 // A daemon that restarts inside the gap has neither, and reads those roles' ends as deaths.
-func (r *Runtime) replaceSupersededSandbox(ctx context.Context, l launch, s *sandbox) (*sandbox, error) {
-	r.log.Info("sandbox runtime: replacing the issue's sandbox of the disk shape before the pod-owned disk, reaping the volume claim it owns",
-		"sandbox", l.name, "uid", s.UID, "claim", IssueClaimName(l.spec.Claim), "issue", l.spec.Issue)
+func (r *Runtime) replaceSupersededSandbox(ctx context.Context, l launch, s *sandbox, reason sandboxReplacement) (*sandbox, error) {
+	r.log.Info("sandbox runtime: replacing the issue's Sandbox, with any volume claim it owns",
+		"issue", l.spec.Issue, "sandbox", l.name, "uid", s.UID, "claim", IssueClaimName(l.spec.Claim), "reason", string(reason))
 	if named := s.Annotations[displacedAnnotation]; named != "" {
 		r.strand(l.name, named)
 	}

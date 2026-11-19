@@ -771,8 +771,9 @@ func (r *Runtime) labels(l launch) map[string]string { return l.kind.labels(r.pr
 // block's for a microVM pod (MicroVM.StorageClass) and the operator's
 // runtime.kubernetes.storage_class for every other, the controller's included, so whatever
 // declares an issue's disk takes its class from here. The controller's Sandbox declares it as the
-// claim template it owns, an issue pod as the template of its own ephemeral volume, so the two
-// disks are provisioned alike and differ only in who deletes them.
+// claim template it owns, and so does the Sandbox of an issue whose pod keeps its volume
+// (keptVolume). Every other issue pod declares it as the template of its own ephemeral volume. So
+// the disks are provisioned alike and differ only in who deletes them.
 func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
 	storageClass := r.storageClass
 	if l.microVM != nil {
@@ -791,12 +792,14 @@ func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
 // before the claim's Secret is written, with whatever volume its kind has the Sandbox own
 // (podKind.disk). An issue's Sandbox owns none: its pod's disk is a generic ephemeral
 // volume the pod itself owns, created with the pod and deleted with it (INFRA-80), so nothing of
-// an issue survives the pod that did it. The controller's Sandbox still owns its one `issue`
-// template, so the working root its launcher runs in outlives the pod that left it. Its pod
-// template never runs: the relaunch's Running patch replaces it with the template the launch
-// computes before the controller creates a pod. Its metadata is a name, a namespace and the
-// launch's labels, and no annotation: the one a Sandbox is ever created carrying — the pod a
-// migrating launch displaced — is set on the object by that launch (replaceSupersededSandbox).
+// an issue survives the pod that did it. The one exception is an issue whose microVM pod keeps its
+// volume (keptVolume): its Sandbox owns the one `issue` template, labelled kept, and the claim
+// made from it outlives the issue's pods until the Sandbox goes. The controller's Sandbox still
+// owns its one `issue` template, so the working root its launcher runs in outlives the pod that
+// left it. Its pod template never runs: the relaunch's Running patch replaces it with the template
+// the launch computes before the controller creates a pod. Its metadata is a name, a namespace and
+// the launch's labels, and no annotation: the one a Sandbox is ever created carrying — the pod a
+// replacing launch displaced — is set on the object by that launch (replaceSupersededSandbox).
 func (r *Runtime) sandboxManifest(l launch) sandbox {
 	templates, _ := l.kind.disk(r, l)
 	return sandbox{

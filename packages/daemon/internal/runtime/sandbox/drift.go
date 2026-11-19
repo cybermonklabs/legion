@@ -174,20 +174,28 @@ func (l launch) shapeKey() podShapeKey {
 
 // storedShapeKey is the key of the shape the pod of the stored Sandbox u, a pod of kind, is
 // compared with now: an issue pod's in the sandbox the configuration now gives the issue the
-// Sandbox is labelled with (labelIssue, SandboxConfig.Of), the issue a launch decides its pod's
-// sandbox from (prepare), and the controller's pod's in gVisor. The label holds an issue key as
-// labelValue writes it, which past a label value's 63 characters is a hashed form, so the canary
-// list is matched through that same form and a key of any length reads as its launch decides it.
+// Sandbox is labelled with (labelIssue, SandboxConfig.ofIssueLabel), the issue a launch decides its
+// pod's sandbox from (prepare), and the controller's pod's in gVisor.
 func (r *Runtime) storedShapeKey(kind podKind, u *unstructured.Unstructured) podShapeKey {
 	if _, issue := kind.(issuePod); !issue {
 		return podShapeKey{kind: kind, sandbox: SandboxGVisor}
 	}
 	label, _, _ := unstructured.NestedString(u.Object, "metadata", "labels", labelIssue)
+	return podShapeKey{kind: kind, sandbox: r.sandboxConfig.ofIssueLabel(label)}
+}
+
+// ofIssueLabel is Of for the issue whose legion.dev/issue label holds label. The label holds an
+// issue key as labelValue writes it, which past a label value's 63 characters is a hashed form.
+// So the canary list is matched through that same form, and a key of any length reads as its
+// launch decides it (prepare). Each reader of a stored issue Sandbox that asks where its issue's
+// pod runs asks it: the shape that its pod is compared with (storedShapeKey), and the disk that the
+// boot census compares it with (IssueDisks.templates).
+func (c SandboxConfig) ofIssueLabel(label string) SandboxType {
 	issue := label
-	if i := slices.IndexFunc(r.sandboxConfig.CanaryIssues, func(key string) bool { return labelValue(key) == label }); i >= 0 {
-		issue = r.sandboxConfig.CanaryIssues[i]
+	if i := slices.IndexFunc(c.CanaryIssues, func(key string) bool { return labelValue(key) == label }); i >= 0 {
+		issue = c.CanaryIssues[i]
 	}
-	return podShapeKey{kind: kind, sandbox: r.sandboxConfig.Of(issue)}
+	return c.Of(issue)
 }
 
 // podShapeDrift names what the pod of the Sandbox read as s was built from that the runtime would

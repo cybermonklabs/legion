@@ -1213,8 +1213,9 @@ func (g *rig) sent(token claim.Token) []shimwire.Frame {
 // the API serves does. The project controller's Sandbox, which this runtime does give the `issue`
 // template its working root is on, no test starts from: a test that needs one launches it
 // (controllerSpec). A test of the cutover from the release before the pod-owned disk opts into
-// that release's issue Sandbox by name (withSupersededDisk); one of the tree-volume layout's root
-// or controller, into that layout's template (withTreeVolume).
+// that release's issue Sandbox by name (withSupersededDisk). A test of an issue that keeps its
+// volume opts into the kept template (withKeptTemplate). A test of the tree-volume layout's root
+// or controller opts into that layout's template (withTreeVolume).
 func sandboxObject(t *testing.T, name, uid, mode string, labels map[string]string, conditions ...metav1.Condition) *unstructured.Unstructured {
 	t.Helper()
 	s := sandbox{
@@ -1251,6 +1252,50 @@ func withClaimTemplate(t *testing.T, u *unstructured.Unstructured, name string) 
 		labels[key] = value
 	}
 	template := map[string]any{"metadata": map[string]any{"name": name, "labels": labels}}
+	if err := unstructured.SetNestedSlice(u.Object, []any{template}, "spec", "volumeClaimTemplates"); err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+// keptVolumes is a runtime.kubernetes.sandbox of type kind, its canary list naming canaries, whose
+// microvm block keeps an issue pod's volume (keptMicroVM): every issue pod that runs in a microVM
+// mounts a claim that its Sandbox owns (keptVolume). keptVolumes(SandboxMicroVM) keeps the volume
+// of every issue but a canary's, and keptVolumes(SandboxGVisor, "LEGION-209") keeps the volume of
+// that canary alone.
+func keptVolumes(kind SandboxType, canaries ...string) func(*Options) {
+	return func(o *Options) {
+		o.Sandbox = SandboxConfig{Type: kind, CanaryIssues: canaries, MicroVM: keptMicroVM()}
+	}
+}
+
+// withKeptTemplate is u owning the one `issue` claim template of an issue's kept volume, as
+// issuePod.disk writes it under keptVolumes: labelled with u's project and issue and, where kept is
+// true, with labelVolume=volumeKept (keptTemplate), ReadWriteOnce on the microvm block's class
+// (testMicroVMStorageClass) at the rig's issue volume size, each of edits then applied to that
+// claim. Without the label it is an `issue` template that no launch reads as kept, as the release
+// before the pod-owned disk wrote one on that class.
+func withKeptTemplate(t *testing.T, u *unstructured.Unstructured, kept bool, edits ...func(*corev1.PersistentVolumeClaimSpec)) *unstructured.Unstructured {
+	t.Helper()
+	labels := map[string]string{labelProject: u.GetLabels()[labelProject], labelIssue: u.GetLabels()[labelIssue]}
+	if kept {
+		labels[labelVolume] = volumeKept
+	}
+	class := testMicroVMStorageClass
+	spec := corev1.PersistentVolumeClaimSpec{
+		AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+		StorageClassName: &class,
+		Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: testOptions().IssueVolume}},
+	}
+	for _, edit := range edits {
+		edit(&spec)
+	}
+	template, err := k8sruntime.DefaultUnstructuredConverter.ToUnstructured(&volumeClaimTemplate{
+		Metadata: volumeClaimMetadata{Name: issueVolume, Labels: labels}, Spec: spec,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := unstructured.SetNestedSlice(u.Object, []any{template}, "spec", "volumeClaimTemplates"); err != nil {
 		t.Fatal(err)
 	}
