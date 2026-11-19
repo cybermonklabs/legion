@@ -44,7 +44,7 @@ test("a repository mapping added in Settings assigns a new external issue to its
     await mappingSaved;
     await expect(page.getByRole("cell", { exact: true, name: "owner/repo" })).toBeVisible();
 
-    const issue = await createIssue({ external: "owner/repo#1" });
+    const issue = await createIssue({ external: "owner/repo#1", project: "CORE" });
     expect(issue.key).toBe("CORE-1");
     await page.screenshot({
       path: testInfo.outputPath("repository-project-settings.png"),

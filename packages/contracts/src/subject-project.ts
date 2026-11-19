@@ -121,7 +121,7 @@ const SUBJECT_PROJECT_ROWS: readonly SubjectProjectRow[] = [
     family: "notifications.legion.>",
     read: (rest) => ({ project: rest.length >= 2 ? legionTokenProject(rest[0]) : NO_PROJECT }),
   },
-  // A repository's events: the project is the one Dispatch maps the repository to.
+  // A repository's events: the name holds no project, so the reader gets the repository alone.
   {
     family: "notifications.github.>",
     read: (rest) => ({

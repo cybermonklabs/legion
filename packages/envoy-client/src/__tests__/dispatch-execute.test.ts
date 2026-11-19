@@ -3923,33 +3923,16 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
-  test("checks the canonical project returned after Dispatch resolves an external reference", async () => {
-    const requests: string[] = [];
-    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const target = new URL(String(url));
-      requests.push(`${init?.method ?? "GET"} ${target.pathname}`);
-      if (target.pathname === "/api/v1/issues") {
-        expect(JSON.parse(String(init?.body))).toMatchObject({
-          project: "",
-          external: "owner/repo#42",
-        });
-        return response(
-          {
-            key: "LEGION-216",
-            title: "Architecture work",
-            project: "LEGION",
-            components: issueComponents("inherit", []),
-          },
-          201
-        );
-      }
-      if (target.pathname === "/api/v1/projects/LEGION/architecture-sources") {
-        return response([architectureSource("LEGION")]);
-      }
-      throw new Error(`unexpected request: ${target.pathname}`);
-    };
+  // Every create names its project, a create with external too, and the server refuses one that
+  // names none. So the executor refuses an empty project and sends nothing.
+  test("refuses an external create with an empty project before any request", async () => {
+    let requests = 0;
+    const fetchImpl = (() => {
+      requests += 1;
+      throw new Error("network must not be called");
+    }) as unknown as typeof fetch;
 
-    const result = await executeDispatchTool({
+    const refusal = await executeDispatchTool({
       tool: "dispatch_issue",
       args: { project: "", title: "Architecture work", external: "owner/repo#42" },
       cwd: "/workspace",
@@ -3957,14 +3940,18 @@ describe("executeDispatchTool", () => {
       config,
       env: {},
       exec: repoExec("owner/repo"),
-      fetchImpl: fetchImpl as typeof fetch,
-    });
+      fetchImpl,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
 
-    expect(result.text).toContain(architectureComponentsGuidance);
-    expect(requests).toEqual([
-      "POST /api/v1/issues",
-      "GET /api/v1/projects/LEGION/architecture-sources",
+    expect(refusal).toBeInstanceOf(ToolInputError);
+    if (!(refusal instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(refusal.problems).toEqual([
+      "--project: Too small: expected string to have >=1 characters",
     ]);
+    expect(requests).toBe(0);
   });
 
   test("does not guide an unassigned new issue when its project has no source", async () => {

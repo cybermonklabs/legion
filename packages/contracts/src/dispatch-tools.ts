@@ -687,7 +687,11 @@ export const dispatchToolSpecs = [
       `${RELATED_CHECK_RESULT} With --force, the result also names each issue whose title you forced past. ` +
       `Do not use it when an existing issue already covers the work; read or update that issue instead. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
-      project: z.string().describe("Project key for the new issue."),
+      project: z
+        .string({ min: 1 })
+        .describe(
+          "Project key for the new issue. Every create needs one, also a create that names external."
+        ),
       title: z
         .string({ max: ISSUE_TITLE_MAX })
         .describe("Concise issue title, at most 1,000 characters."),
