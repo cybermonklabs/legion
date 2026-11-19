@@ -5553,6 +5553,64 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.requests.map((request) => request.path)).toContain("/legion/v1/claims/ready");
   });
 
+  // A session change's re-claim holds its notices until the change's reset, but not the waiting
+  // state: a re-claim the listener answers 503 shows on the claim widget that the controller holds
+  // no Envoy role yet while it waits, and the widget comes down once the claim lands. The row reads
+  // the widget at the claim that lands, so a waiting line shown only after the claim settled fails
+  // it, and so does one left up after.
+  test("a daemon-launched controller's re-claim after a session change shows it is waiting while the listener answers 503, and takes the widget down once it claims", async () => {
+    let busy = false;
+    let claims = 0;
+    let shownAtLanding: (string[] | undefined)[] = [];
+    const controller = await launchedController({
+      sessionId: "ses_controller_reclaim_busy",
+      stateFixture: "state-controller-claim.json",
+      roleClaim: () => {
+        if (!busy) return undefined;
+        if (++claims <= LISTENER_CALL_ATTEMPTS) {
+          return Response.json(
+            { error: "envoy: the takeover record of the claim did not store" },
+            { status: 503 }
+          );
+        }
+        shownAtLanding = widgetCalls
+          .filter((call) => call.key === "legion-controller-claim")
+          .map((call) => call.lines);
+        return undefined;
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_reclaim_busy")
+      );
+      busy = true;
+      await loggedWarnings(async () => {
+        await controller.handlers.get("session_switch")?.(
+          { reason: "new" },
+          controller.context("ses_controller_reclaim_busy_new")
+        );
+      });
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
+    expect(shownAtLanding).toHaveLength(1);
+    expect(shownAtLanding[0]?.[0]).toStartWith(
+      `legion: this controller holds no Envoy role yet: claim of Envoy role ${controller.token} was answered 503 at attempt 1`
+    );
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.at(-1)?.lines).toBeUndefined();
+    expect(controller.holder()).toBe("ses_controller_reclaim_busy_new");
+    expect(controller.exits).toEqual([]);
+  });
+
   test("claims with the capability LEGION_CONTROLLER_SECRET_FILE names over LEGION_CONTROLLER_SECRET, and /legion-claim-controller moves the role to a hand-started session", async () => {
     const controller = await launchedController({ sessionId: "ses_controller_pane" });
     process.env.LEGION_CONTROLLER_SECRET = "decoy";

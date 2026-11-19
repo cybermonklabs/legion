@@ -342,23 +342,25 @@ export function createControllerSession(deps: {
     }
     // A claim the listener answered 503 wrote nothing - every try met a conflict, or the takeover
     // record a claim writes first did not store - and is made again after a growing wait
-    // (claimRoleAgainOnBusy), each wait logged with its attempt and the listener's answer. The
-    // daemon-launched controller claims again until it lands, as the claim boot does, rather than
-    // exiting for a relaunch that would meet the same 503; the daemon supervises it, and its claim
-    // widget shows it waiting on the listener until the claim lands (taken down below), so a broken
-    // listener shows on the controller's pane, not only in its log. A claim a person started
-    // (/legion-claim-controller, /legion-controller-start, a session change's re-claim) shows each
-    // wait on screen and gives up after CONTROLLER_CLAIM_BUSY_ATTEMPTS tries, so the command fails
-    // where the person sees it, with the listener's answer.
+    // (claimRoleAgainOnBusy), each wait logged with its attempt and the listener's answer, and the
+    // claim widget shows that the controller holds no Envoy role yet until the claim lands (taken
+    // down below), a session change's re-claim included, whose notices wait for the change's reset
+    // but whose widget does not. In the daemon-launched controller every claim, a command typed
+    // there included, claims again until it lands, as the claim boot does, rather than exiting for a
+    // relaunch that would meet the same 503: the daemon supervises it, and the widget shows a broken
+    // listener on its pane, not only in its log. In any other controller session (one `legion
+    // controller start` launched, or a hand-started takeover) the claim also shows each wait as a
+    // notice and gives up after CONTROLLER_CLAIM_BUSY_ATTEMPTS tries, so the command fails where
+    // the person sees it, with the listener's answer.
+    const ui: SessionContext["ui"] = context.ui;
     const showWaiting = (line: string): void => {
       const shown = `legion: this controller holds no Envoy role yet: ${line}`;
-      const setWidget = "setWidget" in context.ui ? context.ui.setWidget : undefined;
-      if (setWidget === undefined) {
-        context.ui.notify(shown, "warning");
+      if (ui.setWidget === undefined) {
+        ui.notify(shown, "warning");
         return;
       }
-      setWidget(CLAIM_WIDGET, [shown]);
-      claimWidget = { session: sessionID, clear: () => setWidget(CLAIM_WIDGET, undefined) };
+      ui.setWidget(CLAIM_WIDGET, [shown]);
+      claimWidget = { session: sessionID, clear: () => ui.setWidget?.(CLAIM_WIDGET, undefined) };
     };
     await claimRoleAgainOnBusy(
       () => claimEnvoyRole(sessionID, registration.claimToken, envoyContext),
@@ -373,7 +375,8 @@ export function createControllerSession(deps: {
         : {
             log: (line) => {
               logger.warn(`[legion] ${line}`);
-              context.ui.notify(`legion: ${line}`, "info");
+              ui.notify(`legion: ${line}`, "info");
+              if (ui.setWidget !== undefined) showWaiting(line);
             },
             maxAttempts: CONTROLLER_CLAIM_BUSY_ATTEMPTS,
           }
@@ -554,7 +557,20 @@ export function createControllerSession(deps: {
       if (shown) context.ui.notify(message, level);
       else notices.push({ message, level });
     };
-    const deferred: SessionContext = Object.create(context, { ui: { value: { notify } } });
+    // The host's widget is passed through as it is: it outlasts the session change's reset, so a
+    // claim that waits on the listener shows so at once (`claimWith`'s waiting state).
+    const { setWidget } = context.ui;
+    const deferred: SessionContext = Object.create(context, {
+      ui: {
+        value: {
+          notify,
+          setWidget:
+            setWidget === undefined
+              ? undefined
+              : (key: string, lines: string[] | undefined) => context.ui.setWidget?.(key, lines),
+        },
+      },
+    });
     // Whether this claim reached its registration: one refused after it left this session
     // registered, so its grants mint; one refused before it registered nothing for it.
     const progress: ClaimProgress = { registered: false };
