@@ -6356,7 +6356,13 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       jest.useFakeTimers();
       natsConnectGates.set("omp-ses_controller_first", async () => undefined);
       failingConnect.reject(new Error("nats: connection refused"));
-      for (let turn = 0; turn < 50; turn++) await Promise.resolve();
+      // The failed redial schedules the next one on the long interval. Wait for that timer to
+      // exist before moving the clock, not for a fixed number of turns: how many turns the
+      // failure takes to reach `retryRelay` is the dial's business.
+      for (let turn = 0; turn < 10_000 && jest.getTimerCount() === 0; turn++) {
+        await Promise.resolve();
+      }
+      expect(jest.getTimerCount()).toBeGreaterThan(0);
       jest.advanceTimersByTime(60_000);
       jest.useRealTimers();
       await reopened.promise;
