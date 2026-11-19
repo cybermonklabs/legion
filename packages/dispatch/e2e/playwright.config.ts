@@ -15,6 +15,7 @@ import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 import { stubOrigin } from "./stub/origin";
 import { stubSelection } from "./stub/selection";
+import { inVisualOrder, visualOrder } from "./visual-order";
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the
@@ -789,7 +790,9 @@ export default defineConfig({
       : [
           ...parallelProjects,
           ...aloneProjects,
-          ...visualProjects,
+          // The phone project first in a reverse run, so the whole run is the other way round
+          // (e2e/visual-order.ts). Both are declared in every run, as their comment says.
+          ...inVisualOrder(visualProjects, visualOrder()),
           ...(stub.declared ? stubProjects : []),
         ],
 });
