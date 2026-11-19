@@ -88,7 +88,7 @@ func maskLines(p []byte) ([]byte, bool) {
 		masked, kept := maskLine(line)
 		switch {
 		case !kept && out == nil:
-			out = append(append(make([]byte, 0, len(p)+len(NotJSON)), p[:start]...), masked...)
+			out = append(append(make([]byte, 0, len(p)), p[:start]...), masked...)
 		case out != nil:
 			out = append(out, masked...)
 		}
