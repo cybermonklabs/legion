@@ -76,7 +76,7 @@ too, so they get the same patch release.
 
 The Claude Code plugin, @sjawhar/claude-envoy. Its build runs from
 packages/claude-envoy/scripts/build-inputs.txt, the one statement of what can change this
-plugin's bundles and its generated legion/ plugin, so the paths of `CLAUDE_ENVOY_VERSION_ARGS` are that list's, in its
+plugin's bundles and its generated legion/ plugin, so the paths of `CLAUDE_ENVOY_VERSION_ARGS` are that list's, in this
 order: this package, the workspace packages its bundles inline, pi-legion's agents and all of
 skills/ (scripts/pi-plugin-prepack.sh stages pi-legion's share into legion/skills and this
 package's skills/ links into skills/), the notices generator, the prepack and patches/ (the
@@ -399,8 +399,8 @@ PR-authored Dockerfile. This job's permissions must cover every scope worker-ima
 `permissions:` blocks declare, even for the `attest` job this call skips: its workflow-level
 block (the build, with actions: read and checks: write for the ci-ok report its build runs
 only on ci.yaml's pull_request call) and its `attest` job's (id-token and attestations:
-write, for the image's GitHub attestation). The legion version tag and the release note,
-which need contents: write, are the worker_image_release job's.
+write, for the image's GitHub attestation). The release note, which needs contents: write,
+and the legion version tag on ghcr.io, which needs packages: write, are the worker_image_release job's.
 
 ## Why the image attestation is a second call of worker-image.yaml
 

@@ -496,6 +496,6 @@ that count beside the bound, whether the reading passes or refuses.
 ## Why the fault stops before the last steps
 
 The proxy stops with this job, and the steps after this one must not be routed through
-it: the ci-ok-report step, `Report ci-ok when this job decides a merge-group run`, runs actions/upload-artifact, which would otherwise
-upload through a proxy that is about to go. The rig writes the emptied variables, as it
+it: the ci-ok-report step, `Report ci-ok when this job decides a merge-group run`, runs ./.github/actions/ci-ok-report, whose ci-ok-report.sh reads the run's jobs and posts a check run with gh, which would otherwise
+go through a proxy that is about to go. The rig writes the emptied variables, as it
 wrote the proxy ones.

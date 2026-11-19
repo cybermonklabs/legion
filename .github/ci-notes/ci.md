@@ -175,9 +175,9 @@ the group in the first one.
 The groups the filters below share: the first step's list pattern for pattern,
 written again because a YAML anchor reaches no further than the string it is in.
 
-## ci_router: ci.yaml, which every gate filter names through
+## ci_router: ci.yaml, which every gate filter but ci_filters names through
 
-ci.yaml, which every gate filter of `.github/ci-filters.yaml` names through this anchor: every job's `if:`
+ci.yaml, which every gate filter of `.github/ci-filters.yaml` but ci_filters names through this anchor (ci_filters names it through `'.github/workflows/**'`): every job's `if:`
 is in this file, so every job reads it - which is why ci_job_reads.py declares
 CI_SELF on every gate. Each gate filter also names the `ci-job-<job id>.yaml` file
 holding its own job's steps, so a change to one of those files selects that job
@@ -384,9 +384,9 @@ private-names-port job's now, with the private_names_port filter.
 ## test: Each harness step's own gate, named here so the job runs
 
 Each harness step's own gate, named here so the job runs for the change that
-makes one of those gates true. Each of those lists names this file and
+makes one of those gates true. Each of those lists names ci.yaml, .github/ci-filters.yaml and
 ci-job-test.yaml, as every gate filter does, so the flattened list repeats the
-two patterns the `test` filter already names, `*ci_router` and `'.github/workflows/ci-job-test.yaml'`; a repeated pattern selects what it selected.
+three patterns the `test` filter already names, `*ci_router`, `*ci_filters_data` and `'.github/workflows/ci-job-test.yaml'`; a repeated pattern selects what it selected.
 
 The guide-layout step's own files, for that same reason: its gate is
 the guide_layout filter, and a guide-only change has to select this job for it.
@@ -724,7 +724,7 @@ The Envoy module, which the image's Go stage copies whole, and the envoy-infra
 module under it, which the held-port image's build copies whole with it
 (packages/envoy/infra/host/heldportwrapper/Dockerfile and its .dockerignore) and
 envoy-infra's host live tests and plugin build compile in packages/envoy/infra's own
-workspace. The envoy_smoke filter's two `!` patterns, `'!packages/envoy/deploy/**'` and `'!packages/envoy/.changes/**'`, leave out deploy and the changelog fragments,
+workspace. The envoy_smoke filter's two hand-written `!` patterns, `'!packages/envoy/deploy/**'` and `'!packages/envoy/.changes/**'`, leave out deploy and the changelog fragments,
 which neither .dockerignore lets in; the generated block leaves out the test files
 (internal/integration holds nothing else).
 
@@ -1198,9 +1198,9 @@ none of them, and ci-ok passes only when each of them succeeded — a skipped, c
 absent one fails the verdict, since nothing else says the job ran. `changes` is here because
 it selects every other job, `lint` because every change is linted. ci-ok.sh reads this list
 rather than knowing those two names, and check-ci-filters.sh holds every job of this file to
-exactly one of ci-ok's three classes: mapped by CI_OK_SELECTED_BY, named here, or named by
-ci.yaml's CI_OK_EXEMPT. The list is written as ci.yaml's CI_OK_SELECTED_BY is, a JSON array over
-lines rather than one long one.
+exactly one of ci-ok's three classes: mapped by CI_OK_SELECTED_BY, named by ci.yaml's
+CI_OK_ALWAYS_RUN, or named by ci.yaml's CI_OK_EXEMPT. The list is a JSON array written over
+lines rather than one long one, as ci.yaml's CI_OK_SELECTED_BY, a JSON object, is.
 
 ## The jobs outside ci-ok's accounting
 
@@ -1215,8 +1215,8 @@ and the queue reads it as a check of its own, so a verdict that needed it would 
 required check wait for the other.
 That check asks none of the ci-ok rules of a job named here, and refuses
 one that carries the ci-ok-report step: ci-ok.sh fails a result for a job CI_OK_SELECTED_BY
-cannot map. The list is written as ci.yaml's CI_OK_SELECTED_BY is, a JSON array over lines rather
-than one long one.
+cannot map. The list is a JSON array written over lines rather than one long one, as ci.yaml's
+CI_OK_SELECTED_BY, a JSON object, is.
 
 ## Why changes, pr-title, cancel-started and ci-ok run on arm64
 
@@ -1334,7 +1334,7 @@ and so reads the same files.
 
 ## The paths filter's own verdict for every filter, before the `full-ci` term
 
-The paths filter's own verdict for every filter, before the `full-ci` term (`contains(github.event.pull_request.labels.*.name, 'full-ci')`) rewrites
+The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci'))`) rewrites
 the eight outputs the nine slow suites run behind. On a pull request without that
 label each of those eight is `false` whether its paths matched or not, so a reader of the
 outputs alone cannot tell "the filter said no" from "the label is absent"; with this
@@ -1689,7 +1689,7 @@ them out), the architecture-note check over this repository's own .dispatch/arch
 through the composite action .github/actions/architecture-check, and the spec-file check over
 its .dispatch/spec through the composite action .github/actions/spec-check, both of which
 other repositories can call. The slow half, the envoy-go job (the module's unit tests, the
-container-backed NATS matrix and the integration suite) is one of the nine slow suites,
+container-backed NATS matrix and the integration suite), is one of the nine slow suites,
 which run in the merge queue and on a pull request labelled `full-ci`, while these checks
 must come back on every push. No Postgres service: nothing here opens a database. It
 restores go-envoy rather than go-envoy-test, the family of the slow half (the test binary of

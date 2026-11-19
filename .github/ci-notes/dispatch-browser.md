@@ -192,7 +192,7 @@ own command line, where they have always been, rather than in an `env:`.
 That command line is in .github/scripts/dispatch-browser-shard-suite.sh, which the browser step runs.
 DISPATCH_E2E_FILE_STORE_ENDPOINT and DISPATCH_E2E_FILE_STORE_BUCKET are in
 ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
-multiprocess job's pinned build step, "Build the Dispatch server", is read under this file's own `env:` and
+multiprocess job's pinned build step, "Build the Dispatch server", is read under dispatch-browser.yaml's own `env:` and
 defaults, so neither may grow a name outside that set.
 
 The browser step's budget, its `timeout-minutes: 9`, is measured, on the two runs of the head that sharded this
@@ -1018,8 +1018,8 @@ for when it takes a changed baseline out of this artifact. Delete it as unused a
 ## What the merge job reports, and why it is never skipped
 
 What the legs together ran. It joins every shard's and every alone leg's blob report into one
-report, publishes three readings of it - the rows, the flake rate and the legs that did not
-succeed - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
+report, publishes four readings of it - the rows, the flake rate, the legs that did not
+succeed and the row durations - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
 and not seven.
 
 This job must never be skipped: .github/scripts/ci-ok.sh fails a selected job whose result is
@@ -1123,8 +1123,8 @@ branch, and then this step is the only line that names the refused download.
 
 ## Why only the newest attempt of each leg is merged
 
-The newest attempt of each leg, and no other, into one directory of the shape the steps
-from "Merge the legs' blob reports into one report" on read. A leg a failed-only re-run did not run keeps the attempt that ran it, which
+The newest attempt of each leg, and no other, into one directory of the shape that the steps
+"Merge the legs' blob reports into one report", "Reading one, the rows" and "Reading three, the leg exits with no failed row" read. A leg a failed-only re-run did not run keeps the attempt that ran it, which
 is what .github/scripts/ci-ok-report.sh already does with the jobs' ci-ok reports; the
 script's head says what two attempts of one leg did to a merged report when they were
 downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own directory,

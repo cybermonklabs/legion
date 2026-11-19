@@ -1,7 +1,7 @@
 # why: .github/ci-notes/ci.md#why-the-filters-are-one-file-and-the-steps-they-stood-in
 # why: .github/ci-notes/ci.md#how-a-filter-of-this-file-is-written
 
-# why: .github/ci-notes/ci.md#ci_router-ciyaml-which-every-gate-filter-names-through
+# why: .github/ci-notes/ci.md#ci_router-ciyaml-which-every-gate-filter-but-ci_filters-names-through
 ci_router:
   - &ci_router '.github/workflows/ci.yaml'
   - &ci_filters_data '.github/ci-filters.yaml'
