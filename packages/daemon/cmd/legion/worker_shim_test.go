@@ -590,3 +590,60 @@ func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
 		})
 	}
 }
+
+// A line the daemon's side sends before its hello_ack is logged cut to its first 80 bytes
+// ("ignoring a frame received before hello_ack") before the URL rule reads it. When that cut falls
+// inside a URL's userinfo, before its "@", the rule finds no userinfo in what is left and keeps the
+// start of the user name and the password as the URL's host. The shim writes no part of either.
+func TestWorkerShimWritesNoPartOfAUserinfoCutBeforeItsAt(t *testing.T) {
+	// Built as the other tests of this package build one, so the pre-push leak check reads no
+	// credential in the source. The line's first 80 bytes end inside the password, before the "@".
+	const user, pass = "legion-reader", "demopass-not-a-secret-48c1-48c1-48c1-48c1-48c1-48c1"
+	early := strings.Replace("moved to https://d.example/launch", "://", "://"+user+":"+pass+"@", 1)
+	dir := t.TempDir()
+	socket := testtmp.Socket(t, "s")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	token := filepath.Join(dir, "token")
+	if err := os.WriteFile(token, []byte("boot-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	daemon := make(chan error, 1)
+	go func() {
+		daemon <- func() error {
+			conn, err := ln.Accept()
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			if _, err := shimwire.NewReader(conn).ReadLine(); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(conn, early+"\n"); err != nil {
+				return err
+			}
+			if err := shimwire.NewWriter(conn).WriteFrame(shimwire.HelloAck{}); err != nil {
+				return err
+			}
+			_, err = io.Copy(io.Discard, conn)
+			return err
+		}()
+	}()
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"legion", "worker-shim", "--connect", "unix://" + socket, "--boot-token-file", token, "--", "true"}, &stdout, &stderr)
+	if err := <-daemon; err != nil {
+		t.Fatalf("the daemon side: %v", err)
+	}
+	printed := stdout.String() + stderr.String()
+	if code != 0 || !strings.Contains(printed, "ignoring a frame received before hello_ack") {
+		t.Fatalf("exit %d, printed %q; want 0 with the early line ignored", code, printed)
+	}
+	for _, credential := range []string{user, pass[:12]} {
+		if strings.Contains(printed, credential) {
+			t.Errorf("the shim printed %q, which holds %q", printed, credential)
+		}
+	}
+}
