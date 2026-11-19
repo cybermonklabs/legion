@@ -24,7 +24,7 @@ export interface HostModel {
  * (`packages/coding-agent/src/session/retry-fallback-chains.ts:37-41` at the pinned tag), and the
  * suppression the host's own turn recovery reads before it picks a fallback, by the entry's own
  * selector and by the key of the model it resolves to (`isRetryFallbackEntrySuppressed`,
- * `session/turn-recovery.ts:2183-2188` at the pinned tag), so an extension stepping down the same
+ * `session/turn-recovery.ts:2194-2199` at the pinned tag), so an extension stepping down the same
  * chain can skip what the host skips. Each is a method of the live registry, which reads private
  * state of its own, so a caller calls it on the registry rather than handing it over detached. */
 export interface HostModelRegistry {
@@ -254,7 +254,7 @@ export interface AsyncJobDelivery {
  * Read out of Oh My Pi 18.16.0-sami.20261105-032528 (the fork's build of 2026-11-05), which builds
  * the extension context with `getContextUsage: () => this.#d()` over a session method answering
  * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`. The pinned
- * build (18.18.6-sami.20261119-142454, `.omp-pin`) answers undefined only before its runner is
+ * build (18.18.6-sami.20261119-162325, `.omp-pin`) answers undefined only before its runner is
  * initialised, and `contextWindow: 0` for a model with no window or for no model at all.
  * `percent` is nullable because the older build's status-line startup wiring answered
  * `{tokens: 0, contextWindow, percent: null}`: a reader of these figures handles a host that

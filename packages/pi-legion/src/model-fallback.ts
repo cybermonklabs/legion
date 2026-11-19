@@ -278,8 +278,8 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
   /**
    * The plugin's own step down the chain, for a content filter the host did not walk: the host
    * leaves a refusal that lands after the model has already sent text where it is
-   * (`turn-recovery.ts:1771-1805` and `:3142-3152` at tag
-   * `v18.18.6-sami.20261119-142454`).
+   * (`turn-recovery.ts:1782-1816` and `:3153-3163` at tag
+   * `v18.18.6-sami.20261119-162325`).
    *
    * The arming names the `model_change` entry **this** call wrote, read back from `getBranch()`
    * after it. The host's own fallback claim would not do: `pi.setModel` clears the active retry
@@ -333,7 +333,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
 
   const settled = async (event: AgentEndEvent, ctx: ModelFallbackContext): Promise<void> => {
     // The host is about to retry this turn itself, so it has not settled; acting on it would step
-    // the session down twice (`session/agent-session.ts:5878-5886` at the pinned tag).
+    // the session down twice (`session/agent-session.ts:5902-5910` at the pinned tag).
     if (event.willContinue === true) return;
     const applied = appliedThisTurn;
     appliedThisTurn = undefined;
@@ -482,7 +482,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         appliedThisTurn = { entryId: own.entry.id, reasoned: event.reason !== undefined };
         // What the host walked for, in the provider's own words: it names the reason as
         // `Request failed: ` and the error text of the message that failed
-        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261119-142454`), so
+        // (`session/turn-recovery.ts` at tag `v18.18.6-sami.20261119-162325`), so
         // `Request failed: Refusal (cyber): Declined` reads as Anthropic's `cyber` filter and
         // arms the same refusal the plugin's own walk arms, category and all.
         //
@@ -491,7 +491,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         // settled turn's last assistant message is clean and `settled` below never sees that
         // refusal. An `"other"` arming would then wait on a suppression the host never applies
         // — for a classifier refusal it pins the fallback instead
-        // (`session/turn-recovery.ts:3725` at the pinned tag) — and hand the session straight
+        // (`session/turn-recovery.ts:3736` at the pinned tag) — and hand the session straight
         // back to the model that had just refused it, with no cooldown at all.
         //
         // A host build that sends no reason arms `"other"`, as every arming did before, and

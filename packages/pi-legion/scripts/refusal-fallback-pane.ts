@@ -87,7 +87,7 @@ const WEAK = `${PROVIDER}/${WEAK_ID}`;
 
 /**
  * Oh My Pi's own floor for how long it suppresses a model it could not classify
- * (`packages/coding-agent/src/session/turn-recovery.ts:2191-2198` at the pinned tag): five
+ * (`packages/coding-agent/src/session/turn-recovery.ts:2202-2209` at the pinned tag): five
  * minutes. Without `retry.fallbackRevertPolicy: never` the host's own restore would come at about
  * this mark, so a pane with no request to the refused model between it and the cooldown's end
  * is the proof that the overlay's `never` and the plugin's ten minutes are both in force.
@@ -363,8 +363,8 @@ async function writeProfile(home: string, base: string): Promise<void> {
       "  modelFallback: true",
       "  fallbackRevertPolicy: never",
       // On, a rate limit is admitted to the chain consult rather than deferred to another attempt
-      // on the same model (`sourceRateLimited`, `session/turn-recovery.ts:3384-3386` and
-      // `:3736-3754` at the pinned tag); Oh My Pi has it off. The host spends its same-model
+      // on the same model (`sourceRateLimited`, `session/turn-recovery.ts:3395-3397` and
+      // `:3747-3765` at the pinned tag); Oh My Pi has it off. The host spends its same-model
       // retries either way — `retry.maxRetries` is 10 and each one waits out the 60 s the
       // stand-in's 429 asks for — so the walk this pane measures comes about ten minutes in.
       "  rateLimitWalksChain: true",
