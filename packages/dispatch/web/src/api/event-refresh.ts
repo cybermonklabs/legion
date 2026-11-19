@@ -1466,10 +1466,11 @@ function addressUnder(address: string, owner: string, next: string): boolean {
 /** The slug of the project document `event` is on, where its payload carries it: a renamed or
  *  removed document's own, an edited comment's document's (`artifact_slug`, absent from a
  *  comment event written before the field), and an edited ask's document's, the one its anchor
- *  quotes (`anchor_artifact`) or the one that holds its typed block (`block_artifact`), each
- *  the document the ask is on. A new version carries none, and neither does the edit of an ask
- *  that carries neither field: one asked of the document as a whole, with no anchor and no
- *  block. */
+ *  quotes (`anchor_artifact`) or, for an edit through the ask's own route, the one that holds its
+ *  typed block (`block_artifact`), each the document the ask is on. A new version carries none,
+ *  and neither does the edit of an ask asked of the document as a whole, with no anchor and no
+ *  block, nor a document version's rewording of a block ask, whose event the document's
+ *  settlement writes without `block_artifact`. */
 function projectDocumentSlug(event: DispatchEvent): string | undefined {
   switch (event.type) {
     case "artifact.removed":
@@ -1497,10 +1498,11 @@ function projectDocumentSlug(event: DispatchEvent): string | undefined {
  * a new version of the parent's spec leaves the name of that address as it was. A project
  * document's event is on the document or on an ask, a comment or a block of it, each written
  * under `dispatch://<PROJECT>/artifact/<slug>`, with `@`, `/` or `#` next. A rename, a removal,
- * a comment's edit and the edit of an anchored or a block ask carry that slug
- * (`projectDocumentSlug`); a new version and the edit of an ask asked of the document as a whole
- * name the document by its id alone, which no address is written with, so theirs are the
- * addresses of every document of the project.
+ * a comment's edit and the edit of an anchored ask, or of a block ask through its own route,
+ * carry that slug (`projectDocumentSlug`); a new version, the edit of an ask asked of the
+ * document as a whole and a version's rewording of a block ask name the document by its id
+ * alone, which no address is written with, so theirs are the addresses of every document of the
+ * project.
  */
 function eventAddresses(event: DispatchEvent): ((address: string) => boolean) | undefined {
   if (event.issue_key !== null) {
@@ -1586,12 +1588,13 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * issue passes), at most two for an open issue page - the tree's own and the one naming what a
  * typed block's words cite (`useIssueTree`) - and marks stale one the app holds and renders not.
  * A project document's new version reaches a read naming any document of its project, since it
- * does not carry the slug its addresses are written with, and so does the edit of an ask asked
- * of the document as a whole (`eventAddresses`). It refreshes through the same `refreshQueries`
- * every other rule does, so a read already out, or begun under a second ago, is fetched again
- * once those rules allow; since the rule tests the read's key against the answer that lands, a
- * first read out at the event that then fails holds no answer to test and is not read again by
- * it, and window focus or a later event reads it again (`refetchFailedOnFocus`).
+ * does not carry the slug its addresses are written with, and so do the edit of an ask asked of
+ * the document as a whole and a version's rewording of a block ask (`eventAddresses`). It
+ * refreshes through the same `refreshQueries` every other rule does, so a read already out, or
+ * begun under a second ago, is fetched again once those rules allow; since the rule tests the
+ * read's key against the answer that lands, a first read out at the event that then fails holds
+ * no answer to test and is not read again by it, and window focus or a later event reads it
+ * again (`refetchFailedOnFocus`).
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {

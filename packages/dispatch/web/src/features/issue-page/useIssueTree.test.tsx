@@ -1358,11 +1358,11 @@ const roadmap = issueDocument("artifact-roadmap", "roadmap-md", {
 
 // A project document's event is on the document and what it owns, each written under
 // `dispatch://CORE/artifact/roadmap-md`. A rename, a removal, a comment's edit and the edit of an
-// ask its anchor or its typed block puts on the document carry the slug, so they leave a read
-// naming another document of the project alone too, `roadmap-md-2` among them; a new version and
-// the edit of an ask asked of the document as a whole name the document by its id alone, so they
-// are held to the project's documents, which leaves another project's documents and every issue
-// alone.
+// ask its anchor puts on the document, or of a block ask through the ask's own route, carry the
+// slug, so they leave a read naming another document of the project alone too, `roadmap-md-2`
+// among them; a new version and the edit of an ask asked of the document as a whole name the
+// document by its id alone, as a version's rewording of a block ask does, so they are held to the
+// project's documents, which leaves another project's documents and every issue alone.
 test("a project document's event refreshes the names reads naming that document, and none naming another", () => {
   const onDocument = { artifact_id: roadmap.id, issue_key: null };
   const naming = [
