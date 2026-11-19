@@ -196,20 +196,25 @@ func (d *outboxDispatch) PutGatedSteps(_ context.Context, project string, steps 
 	d.gatedSteps = append(d.gatedSteps, append(make([]string, 0, len(steps)), steps...))
 	return d.gatedStepsErr
 }
+func (d *outboxDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
 func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
 
 // noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
 // artifacts answers none, and an upload answers the slug Dispatch files the name under, which for
-// a message's document is its name (record.MessageArtifact). Every fake of the client that no
-// test drives through a message's document embeds it.
+// a message's document is its name (record.MessageArtifact). It also takes every role-holder
+// publication and keeps none. Every fake of the client that no test drives through a message's
+// document or a role-holder publication embeds it.
 type noArtifacts struct{}
 
 func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
 func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
 	return name, nil
 }
+func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
 
 func TestOutboxStatusWriteCallsDispatchOnlyForItsObservedStatus(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now())
@@ -700,6 +705,35 @@ func TestADoneWriteWithAReasonPostsItFirstAndOnce(t *testing.T) {
 	}
 }
 
+// A workflow move that nothing else on Dispatch explains, here a head that conflicts with its base,
+// carries its reason on an ordinary row (workflow's moveReason): the runner posts it on the issue,
+// under the row's marker, before it moves the issue, as it does a done write's.
+func TestAWorkflowMoveWithAReasonPostsItBeforeItMovesTheIssue(t *testing.T) {
+	reason := "Legion moved this issue from testing back to implementing, because pull request #42 at head c0de conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward."
+	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "testing", reason), time.Now())
+	row.ID = 57
+	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "testing"}, postErr: errors.New("Dispatch refused the message")}
+	runner := &outbox{dispatch: client}
+
+	if err := runner.execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "refused the message") {
+		t.Fatalf("first attempt = %v, want the message's failure", err)
+	}
+	if len(client.statuses) != 0 {
+		t.Fatalf("status writes %v after the reason failed to post, want none: the reason goes on the issue first", client.statuses)
+	}
+
+	client.postErr = nil
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("second attempt: %v", err)
+	}
+	if want := reason + "\n\n<!-- legion-outbox:57 -->"; len(client.messages) != 2 || client.messages[1] != want {
+		t.Fatalf("messages %q, want the reason posted again under the row's marker", client.messages)
+	}
+	if fmt.Sprint(client.statuses) != "[in_progress]" {
+		t.Fatalf("statuses %v, want the one move to in_progress once its reason is on the issue", client.statuses)
+	}
+}
+
 func TestOutboxMessagePostsItsMarkerAndReturnsReadFailure(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "Dispatch message."}, time.Now())
 	row.ID = 55
@@ -1186,6 +1220,64 @@ func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 	}
 	if got := client.messages; len(got) != 0 {
 		t.Fatalf("Dispatch messages = %q, want none: a role message posts nothing to the issue", got)
+	}
+}
+
+// A role message only informs - of a CI settlement, a design gate's move, an approved round stuck
+// on its merge state - so a role whose pod was released is told nothing and is not woken for it:
+// the row ends before any publish. Published, it would meet the listener's answer for a role
+// nobody holds, which raises the role's wake, and the pod would come back for a message the row
+// had already dropped.
+func TestOutboxRoleMessageToAReleasedRoleEndsWithoutAWake(t *testing.T) {
+	ctx := context.Background()
+	publisher := &outboxPublisher{}
+	runner, sup, pool := hookRunner(t, publisher)
+	implementer := releasedClaim(t, sup, claim.RoleImplementer)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208",
+		record.RoleMessage{Role: string(token), Body: "CI settled at head"}, time.Now().Add(-time.Minute)))
+
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("drain the role message: %v", err)
+	}
+
+	if published := publisher.publishes(); len(published) != 0 {
+		t.Fatalf("publishes = %#v, want none: the released role is not told", published)
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the message finished", left)
+	}
+	// The row ends without a wake as well as without a publish: a wake here would bring the pod
+	// back for a message the row has already dropped.
+	if held := implementer.Claim(); !held.Released() {
+		t.Fatalf("the implementer is %s by %s, want it still released: the message is no wake", held.State, held.SuspendedBy)
+	}
+	if resumes := podResumes(t, pool, "LEGION-208"); resumes != 0 {
+		t.Fatalf("recorded wakes = %d, want none: the message is no wake", resumes)
+	}
+}
+
+// A role whose claim this daemon supervises and has not released is published to as before: the
+// claim read stops only the message to a released pod.
+func TestOutboxRoleMessageToAClaimNotReleasedIsPublished(t *testing.T) {
+	ctx := context.Background()
+	publisher := &outboxPublisher{}
+	runner, sup, pool := hookRunner(t, publisher)
+	startedClaim(t, sup, claim.RoleImplementer)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208",
+		record.RoleMessage{Role: string(token), Body: "CI settled at head"}, time.Now().Add(-time.Minute)))
+
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("drain the role message: %v", err)
+	}
+
+	published := publisher.publishes()
+	if len(published) != 1 || published[0].topic != notify.RoleTopicPrefix+string(token) || published[0].message != "CI settled at head" {
+		t.Fatalf("publishes = %#v, want the one message to %s", published, notify.RoleTopicPrefix+string(token))
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the message finished", left)
 	}
 }
 
@@ -2109,14 +2201,12 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			}); err != nil {
 				t.Fatalf("put the pull request: %v", err)
 			}
-			// The reviewer's claim, which the daemon started it on: its completion arrives after
-			// its own review has moved the issue, and is recorded on its row (workflow's
-			// leftItsPhase).
-			if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-				values ('reviewer', 'LEGION', 'LEGION-208', 'LEGION-208', 'reviewer', 1, '', '', 'working', 0, 0, 0, 0)`); err != nil {
-				t.Fatalf("seed the reviewer's claim: %v", err)
-			}
+			// The reviewer's claim, which the daemon started it on, under the token it names the
+			// claim by, holding the session its agent registered, which the review's footer names
+			// (workflow's ReviewerSession): its completion arrives after its own review has moved
+			// the issue, and is recorded on its row (workflow's leftItsPhase).
+			const reviewerClaim = "legion-legion-legion-208-reviewer"
+			seedReviewerSession(t, pool, "LEGION", "LEGION-208", "ses-reviewer")
 			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 			sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
 			const reviewApp = "legion-reviewer[bot]"
@@ -2162,7 +2252,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			// The review itself ended the round; the reviewer's completion follows it, recorded on
 			// the reviewer's own row with the issue already in implementing.
 			apply("handoff:reviewer:reviewing:1", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
-				Claim: "reviewer", HandoffRecord: "review-round-1", HandoffVersion: 1})
+				Claim: reviewerClaim, HandoffRecord: "review-round-1", HandoffVersion: 1})
 			due("the round-2 start")
 			machine, found := sup.Machine(implementer)
 			if !found {
@@ -2215,7 +2305,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			review.Body += legionFooter("ses-reviewer", head)
 			apply("review:after-round-2", review)
 			apply("handoff:reviewer:reviewing:2", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
-				Claim: "reviewer", HandoffRecord: "review-round-2", HandoffVersion: 2})
+				Claim: reviewerClaim, HandoffRecord: "review-round-2", HandoffVersion: 2})
 			if tc.accept {
 				apply("signoff", intake.SignOff{Issue: issue.Key})
 			}
@@ -2556,21 +2646,35 @@ func outboxTreeStore(t *testing.T, pool *store.Pool, roots ...string) *store.Sto
 	return st
 }
 
+// outboxPublisher is the listener as a publish that it answers with err meets it: every publish
+// is recorded, kept or not, and a kept publish (PublishKept) is answered as a live holder's 200
+// when err is nil, never as kept.
 type outboxPublisher struct {
 	mu      sync.Mutex
 	publish []outboxPublish
 	err     error
 }
 
+// outboxPublish is one publish a fake publisher recorded. keep is that the publish asked the
+// listener to keep the message for the role's next holder (notify.Publisher.PublishKept).
 type outboxPublish struct {
 	topic, message, key string
 	payload             any
+	keep                bool
 }
 
 func (p *outboxPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
+	return p.record(outboxPublish{topic: topic, message: message, key: key, payload: payload})
+}
+
+func (p *outboxPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
+	return false, p.record(outboxPublish{topic: topic, message: message, key: key, payload: payload, keep: true})
+}
+
+func (p *outboxPublisher) record(published outboxPublish) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.publish = append(p.publish, outboxPublish{topic: topic, message: message, key: key, payload: payload})
+	p.publish = append(p.publish, published)
 	return p.err
 }
 
@@ -2631,20 +2735,32 @@ func (h *outboxFactHandler) facts() []intake.Fact {
 
 type outboxTokens struct{}
 
-func (outboxTokens) Token(context.Context, appauth.AppRole, ghrepo.Repository) (appauth.Lease, error) {
+func (outboxTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
 	return appauth.Lease{Token: "outbox-token", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (t outboxTokens) ReadToken(context.Context, appauth.AppRole, string, []string) (appauth.Lease, error) {
+func (t outboxTokens) ReadToken(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
 	return appauth.Lease{Token: "outbox-token-read", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
+// InstalledOwners is the owners each App is installed on, which a bundle reads from GitHub at
+// every build (appauth.OwnerInstallations): the one account these rigs' project serves its
+// repository under.
+func (outboxTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"legion"}, nil
+}
+
 // legionRepos is a project whose one repository is legion/legion, as the sandbox rigs here name
-// it, and legionDirs the gh directories a bundle built over it holds.
+// it, and legionDirs the gh directories a bundle built over it holds. legionInstalled is the
+// record those bundles write and legionDirs reads, as the daemon's own three share one
+// (appauth.Installed, sandboxRuntime): before the first bundle of an App it names no directory
+// for that App and no pod is moved, as it does for a bundle it cannot describe.
+var legionInstalled = appauth.NewInstalled()
+
 func legionRepos() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("legion/legion")} }
 
 func legionDirs(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-	return appauth.GitHubDirs(legionRepos, ghrepo.Renames{}, nil, roles, repo)
+	return appauth.GitHubDirs(legionRepos, ghrepo.Renames{}, legionInstalled, nil, roles, repo)
 }
 
 type outboxSpecs struct{}

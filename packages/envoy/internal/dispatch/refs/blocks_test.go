@@ -11,13 +11,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
-
-// windowServer is the server a window test's references are read against; no test of this file
-// writes one.
-const windowServer = "https://dispatch.example"
 
 // part is one block of a test document: its id, its node type and its text.
 type part struct{ id, nodeType, text string }
@@ -152,9 +149,9 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	if _, err := IndexItem(ctx, tx, ItemComment, comment, "The first paragraph.\n\nThe second paragraph.", time.Now(), nil, nil); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
-	// An item's index writes no window: the block-index tick's window arm writes them in a
-	// transaction of its own (indexItemBlocks, WriteItemWindows). This is that arm's write,
-	// run here in the fixture's transaction, and what it writes is read below.
+	// An item's index writes no window (IndexItem): the block-index tick's window arm writes
+	// them in a transaction of its own (docs.windowItem, WriteItemWindows). This is that arm's
+	// write, run here in the fixture's transaction, and what it writes is read below.
 	if written, err := WriteItemWindows(ctx, tx, ItemComment, comment); err != nil || !written {
 		t.Fatalf("window the comment = %v, %v; want the window arm to write them", written, err)
 	}
@@ -168,10 +165,7 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	}
 
 	ask := insertAsk(t, tx, "WIND-1", "Which region?", model.AskOption{Label: "eu", Description: "for latency"})
-	reader := NewReader(ctx, tx, "ask", ask.ID, windowServer)
-	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now()); err != nil {
-		t.Fatalf("index the ask's parts: %v", err)
-	}
+	indexAskPartsAt(t, tx, ask, 1)
 	if written, err := WriteItemWindows(ctx, tx, ItemAsk, ask.ID); err != nil || !written {
 		t.Fatalf("window the ask = %v, %v; want the window arm to write them", written, err)
 	}
@@ -336,4 +330,40 @@ func TestUniqueBlocksKeepsTheFirstHolderOfEachID(t *testing.T) {
 	if !slices.Equal(nodes, want) || long != 2 || longest != 3200 {
 		t.Fatalf("uniqueBlocks = %#v, %d long, longest %d; want %#v, 2 long, longest 3200", nodes, long, longest, want)
 	}
+}
+
+// IndexBlocks is the tests' one call for a document version's whole block index: ReadBlockIndex,
+// PlanBlocks, Cited and Queue back to back, the queued statements run at once as a batch of
+// their own. It writes no window: the row it records marks the document owed them, and the
+// window arm writes them (WriteDocumentWindows).
+func IndexBlocks(
+	ctx context.Context,
+	tx pgx.Tx,
+	artifactID string,
+	version int,
+	versionAt time.Time,
+	markdown string,
+	blocks []model.ArtifactBlock,
+	located []text.Located,
+	pointers []Pointer,
+) ([]Target, error) {
+	index, err := ReadBlockIndex(ctx, tx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	indexing, err := PlanBlocks(index, artifactID, version, versionAt, markdown, blocks, located, pointers)
+	if err != nil {
+		return nil, err
+	}
+	cited, err := indexing.Cited(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		indexing.Queue(b)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return append(indexing.Moved(), cited...), nil
 }

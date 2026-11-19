@@ -27,7 +27,7 @@
 # either.
 #
 # It reads the event payload GitHub writes to GITHUB_EVENT_PATH, never the step's environment,
-# which the runner prints in the job log. A pull_request or pull_request_review payload carries
+# which the runner prints in the job log. A pull_request payload carries
 # the pull request: its number, and the base and head sha the run checks, which is the head the
 # event names rather than whatever head the pull request has by the time a route is read, since a
 # push can land while the job runs and gets a run of its own. A payload without one is refused.
@@ -41,8 +41,8 @@
 # comments, reviews and review comments from their list routes, which report no total, so each
 # is read 100 at a time until a page comes back short. There is no total to cross-check those
 # lists against, and none is
-# needed: a list that changes while a run reads it is read again by the next push, edit or review
-# run and by ci.yaml's `pr-title` job's next run (ci.yaml says when it runs), and those runs'
+# needed: a list that changes while a run reads it is read again by the next push or edit run and
+# by ci.yaml's `pr-title` job's next run (ci.yaml says when it runs), and those runs'
 # checks are the ones the merge reads. A NUL byte in any of them, which would make `grep -I`
 # treat the file as binary and skip it, is stripped first.
 #
@@ -50,12 +50,13 @@
 # CI runs it in ci.yaml's `pr-title` job at every push to a pull request that is not a draft, when
 # a draft is marked ready, and on the merge queue's group, where that job finds the queued pull
 # request with find-pr-payload.sh; that job's own check run carries the verdict as pr-title on
-# each. It runs in pr-title.yaml when a pull request is edited and when a review on it is
-# submitted or edited, the two events ci.yaml does not run on (that file's header says why it
-# runs on no other); its tests are in check-private-names.test.sh. check-private-names.sh takes
-# PRIVATE_NAME_TERMS, the deployment's own list, and GITHUB_EVENT_NAME from this script's
-# environment, so both of those steps map that secret: on the merge queue's group the list is
-# required (check-private-names.sh's header), and this script then exits 2 without it.
+# each. It runs in pr-title.yaml when a pull request is edited, the event ci.yaml does not run on
+# (that file's header says why it runs on no other); its tests are in check-private-names.test.sh,
+# and those of the term list and the issue-key rule in check-private-names-terms.test.sh.
+# check-private-names.sh takes PRIVATE_NAME_TERMS, the deployment's own list, and
+# GITHUB_EVENT_NAME from this script's environment, so both of those steps map that secret: on
+# the merge queue's group the list is required (check-private-names.sh's header), and this script
+# then exits 2 without it.
 set -euo pipefail
 
 event=${GITHUB_EVENT_PATH:?GITHUB_EVENT_PATH must name the pull request event payload}

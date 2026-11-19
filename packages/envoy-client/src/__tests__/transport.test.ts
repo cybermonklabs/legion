@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS, MINTED_DEDUPE_KEY_PATTERN } from "@legion/contracts";
+import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import { machineID } from "../machine";
@@ -740,7 +741,7 @@ describe("EnvoyClient", () => {
   // A role publish names the holder the listener resolved and the state its record put that
   // holder in, under the two names every role answer uses; a publish to a plain topic names
   // neither, since the stream stores one copy each subscribed session's own consumer delivers
-  // (`cmd/listener/api.go`'s `publishResponse`).
+  // (`listenerwire.PublishResponse`).
   test("a role publish names its holder and that holder's state, and a topic publish names neither", async () => {
     const envelope = {
       event_id: "event-stored",
@@ -1072,9 +1073,10 @@ describe("EnvoyClient", () => {
 
     // A listener that names no state lists only sessions it holds a registration for, so every
     // row of its answer is live; reading the absence as anything else buries working sessions.
+    // A row without roles or capabilities reads as holding none, so the lists are always there.
     expect(sessions).toEqual([
-      { ...unversioned, state: "live" },
-      { ...versioned, state: "live" },
+      { ...unversioned, state: "live", roles: [], capabilities: [] },
+      { ...versioned, state: "live", roles: [], capabilities: [] },
     ]);
     expect(recorded.requests[0]?.url).toBe("http://listener/v1/sessions");
   });
@@ -1102,9 +1104,9 @@ describe("EnvoyClient", () => {
     // Every row carries the state the listener put the session in, and one that names none
     // reads as live, so the delivery each row reports is read beside its state.
     expect(sessions).toEqual([
-      { ...relayed, state: "live" },
-      { ...core, state: "live" },
-      { ...unreported, state: "live" },
+      { ...relayed, state: "live", roles: [], capabilities: [] },
+      { ...core, state: "live", roles: [], capabilities: [] },
+      { ...unreported, state: "live", roles: [], capabilities: [] },
     ]);
     expect(sessions.map((session) => session.delivery)).toEqual(["consumer", "", undefined]);
   });
@@ -1151,8 +1153,102 @@ describe("EnvoyClient", () => {
 
     // A row carrying a place still parses, which is what keeps an older reader working against a
     // listener that answers one.
-    expect(sessions[0]).toEqual({ ...row, state: "live" });
-    expect(sessions[1]).toEqual({ ...row, session_id: "ses_newer", state: "live" });
+    expect(sessions[0]).toEqual({ ...row, state: "live", roles: [], capabilities: [] });
+    expect(sessions[1]).toEqual({
+      ...row,
+      session_id: "ses_newer",
+      state: "live",
+      roles: [],
+      capabilities: [],
+    });
+  });
+
+  test("reads a listener's null topics as an empty list and keeps the row's other values", async () => {
+    const recorded = recordFetch([jsonResponse([noInterestsFixture.before_this_change])]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const sessions = await client.listSessions();
+
+    // updated_at is absent: the schema does not read it, so zod drops it.
+    expect(sessions).toEqual([
+      {
+        session_id: "ses_infra742_no_interests",
+        state: "live",
+        machine_id: "envoy-fixture",
+        host: "envoy-fixture",
+        dir: "/work/infra-742-fixture",
+        port: 0,
+        title: "INFRA-742 fixture session",
+        topics: [],
+        roles: [],
+        capabilities: [],
+        self_subscribed: true,
+        last_seen: 0,
+        delivery: "consumer",
+      },
+    ]);
+  });
+
+  test("reads the fixed listener's empty lists unchanged", async () => {
+    const recorded = recordFetch([jsonResponse([noInterestsFixture.after_this_change])]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const sessions = await client.listSessions();
+
+    expect(sessions[0]).toMatchObject({ topics: [], roles: [], capabilities: [] });
+  });
+
+  // Inline rather than in the fixture: the fixture states what a listener on main writes, and
+  // these two rows — every list null, and every list's key absent — are what a tolerant reader
+  // must also accept from a listener it does not deploy with.
+  test("reads null and absent topics, roles and capabilities as empty lists", async () => {
+    const base = {
+      session_id: "ses_null",
+      machine_id: "host-a",
+      dir: "/work",
+      port: 13381,
+      title: "Envoy QA",
+      self_subscribed: false,
+    };
+    const recorded = recordFetch([
+      jsonResponse([
+        { ...base, topics: null, roles: null, capabilities: null },
+        { ...base, session_id: "ses_absent" },
+      ]),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const sessions = await client.listSessions();
+
+    const empty = { topics: [], roles: [], capabilities: [] };
+    expect(sessions).toEqual([
+      { ...base, state: "live", ...empty },
+      { ...base, session_id: "ses_absent", state: "live", ...empty },
+    ]);
+  });
+
+  // The tolerance reads a null or an absent key, nothing more: a wrong element type is still a
+  // contract break and must fail rather than read as empty.
+  test("still rejects a session row whose topics hold a wrong element type", async () => {
+    const recorded = recordFetch([
+      jsonResponse([
+        {
+          session_id: "ses_bad",
+          machine_id: "host-a",
+          dir: "/work",
+          port: 13381,
+          title: "Envoy QA",
+          topics: [1],
+          self_subscribed: false,
+        },
+      ]),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    // The row is otherwise valid, so the one issue is the element's type.
+    await expect(client.listSessions()).rejects.toMatchObject({
+      issues: [{ code: "invalid_type", path: [0, "topics", 0] }],
+    });
   });
 
   test("keeps an unresponsive row's state and its last registration, and asks for it by name", async () => {
@@ -1570,6 +1666,55 @@ describe("EnvoyClient", () => {
     expect(error).toBeInstanceOf(EnvoyApiError);
     expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
     expect((error as Error).message).toBe("no live session ses_target");
+  });
+
+  // The listener's 429 for a sender past its limit (`senderRateLimitedAnswer`,
+  // packages/envoy/cmd/listener/sender_limit.go): its sentence is what the agent reads, and its
+  // wait is what a caller times a resend by.
+  const RATE_LIMITED_SENTENCE =
+    "Your sending is rate limited. This message was not sent. This listener lets one session " +
+    "send 4 messages a minute and 2 at once. You can send it again after 15 seconds.";
+  const RATE_LIMITED_BODY = {
+    error: RATE_LIMITED_SENTENCE,
+    reason: "sender_rate_limited",
+    retry_after_seconds: 15,
+    messages_per_minute: 4,
+    burst: 2,
+  };
+
+  test("a send whose sender is rate limited is that refusal, with its wait, after one request", async () => {
+    const recorded = recordFetch([Response.json(RATE_LIMITED_BODY, { status: 429 })]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_target", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(1);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
+    expect(error).toMatchObject({ reason: "sender_rate_limited", retryAfterSeconds: 15 });
+    expect((error as Error).message).toBe(`${RATE_LIMITED_SENTENCE} (reason: sender_rate_limited)`);
+  });
+
+  test("a publish whose sender is rate limited is that refusal, with its wait, after one request", async () => {
+    const recorded = recordFetch([Response.json(RATE_LIMITED_BODY, { status: 429 })]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const error = await client
+      .publish({ sourceSessionID: "ses_sender", topic: "notifications.team.x", message: "hello" })
+      .then(
+        () => undefined,
+        (thrown: unknown) => thrown
+      );
+
+    expect(recorded.requests).toHaveLength(1);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect(error).toMatchObject({ reason: "sender_rate_limited", retryAfterSeconds: 15 });
+    expect((error as Error).message).toBe(`${RATE_LIMITED_SENTENCE} (reason: sender_rate_limited)`);
   });
 
   test("a refusal whose body does not arrive is still the listener's refusal, sent once", async () => {

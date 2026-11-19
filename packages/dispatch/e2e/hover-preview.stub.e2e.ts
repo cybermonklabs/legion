@@ -124,6 +124,7 @@ test("hovering a board card previews the issue and moving onto the card keeps it
   await page.evaluate(() => {
     document.documentElement.dataset.boardAlive = "yes";
   });
+  // The hover above waited for the link to be visible and still, so its box is there.
   const box = await link.boundingBox();
   if (box === null) {
     throw new Error("board card is not visible");
@@ -200,8 +201,10 @@ test("a card survives a held-button drag that leaves its reference and comes bac
   // itself starts Chromium's native link drag, which stops delivering boundary events. The
   // press point is inside the turn's own collapsed button, so Chromium paints no selection
   // either - what this pins is the rule the handler reads, a pointer returning to the anchor
-  // with a button held, whatever the drag means to the page.
+  // with a button held, whatever the drag means to the page. The waits above drew the link and
+  // the card, and a drawn element has a box, so the link's box is there.
   const box = await link.boundingBox();
+  // The card was waited for above as well, so its box is there as the link's is.
   const cardBox = await card.boundingBox();
   if (box === null || cardBox === null) {
     throw new Error("reference or card is not visible");
@@ -258,8 +261,10 @@ test("a card survives a held-button move from the card back onto its reference @
   // that point leaves the zone and arms a close, which the drag's entry onto the card cancels;
   // the step from the card back onto the reference is the crossing under test (`pointerout`
   // from the card naming the anchor, then `pointerover` on the anchor with the button held),
-  // and that step must arm nothing.
+  // and that step must arm nothing. The waits above drew the link and the card, and a drawn
+  // element has a box, so the link's box is there.
   const box = await link.boundingBox();
+  // The card was waited for above as well, so its box is there as the link's is.
   const cardBox = await card.boundingBox();
   if (box === null || cardBox === null) {
     throw new Error("reference or card is not visible");

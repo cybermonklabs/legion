@@ -136,6 +136,11 @@ func (s *server) promptAgentsList() []string {
 // ready: what the report says is never a reason to refuse the ready — the daemon runs the session
 // and reports what it lacks — and a row the table has no live row for is dropped and logged by its
 // name cleaned as a detail is (capabilities.Normalize).
+//
+// A ready that carries no report — a boot's, or a role-regain's — first queues the publication of
+// the issue's role sessions to Dispatch (Options.RoleHoldersChanged), before the machine takes the
+// ready and sends the first task. A queue the daemon could not write refuses the ready with 503,
+// so no task goes before the publication is queued, and the plugin tries the ready again.
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	var req claim.ReadyRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
@@ -153,6 +158,16 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, decided := s.decision(r, req.ClaimToken)
 	defer decided()
+	if req.Capabilities == nil && s.roleHoldersChanged != nil {
+		if c := m.Claim(); c.Issue != "" && c.Role != claim.RoleController {
+			if err := s.roleHoldersChanged(ctx, c); err != nil {
+				s.log.Warn("api: refused a ready: the daemon could not queue the publication of its issue's role sessions",
+					"claim", c.Token, "issue", c.Issue, "error", err)
+				writeJSON(w, http.StatusServiceUnavailable, errorBody("the daemon could not queue the role publication; try the ready again"))
+				return
+			}
+		}
+	}
 	err := m.Handle(ctx, supervise.RequestReady{
 		Claim: req.ClaimToken, Generation: req.Generation, Session: req.SessionID,
 	})

@@ -128,8 +128,8 @@ func (g *gatedSpawn) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime
 	return g.Runtime.Spawn(ctx, spec)
 }
 
-// gatedPublisher is holderPublisher with every publish behind a gate: a notice blocked in it is a
-// lane blocked on the listener.
+// gatedPublisher is holderPublisher with every publish behind a gate, kept or not: a notice
+// blocked in it is a lane blocked on the listener.
 type gatedPublisher struct {
 	*holderPublisher
 	gate *gate
@@ -138,6 +138,11 @@ type gatedPublisher struct {
 func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) error {
 	g.gate.enter()
 	return g.holderPublisher.Publish(ctx, topic, message, payload, key)
+}
+
+func (g *gatedPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
+	g.gate.enter()
+	return g.holderPublisher.PublishKept(ctx, topic, message, payload, key)
 }
 
 // postingDispatch is Dispatch as a message post meets it: the bodies posted, by issue, and no
@@ -194,6 +199,9 @@ func (d *postingDispatch) WebhookAppInstalled(context.Context, string) (bool, er
 	return true, nil
 }
 func (d *postingDispatch) PutGatedSteps(context.Context, string, []string) error {
+	return nil
+}
+func (d *postingDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
 	return nil
 }
 func (d *postingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
@@ -262,8 +270,9 @@ func (d *laneBoard) Handoff(context.Context, string) (dispatch.Handoff, error) {
 func (d *laneBoard) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
 	return nil, nil
 }
-func (d *laneBoard) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
-func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *laneBoard) WebhookAppInstalled(context.Context, string) (bool, error)         { return true, nil }
+func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error             { return nil }
+func (d *laneBoard) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
 func (d *laneBoard) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }

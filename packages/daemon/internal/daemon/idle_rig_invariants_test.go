@@ -75,8 +75,7 @@ func TestTheReleaseSavesTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testin
 			atSave = rig.machine.Claim()
 		}}
 
-	rig.w.releaseIdlePods(ctx)
-	if got := rig.rows(t); len(got) != 3 || got[0] != "issue_bundle" {
+	if got := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) }); len(got) != 3 || got[0] != "issue_bundle" {
 		t.Fatalf("queued rows = %v, want the save first", got)
 	}
 	rig.drain(t)

@@ -268,9 +268,13 @@ func (ts *testServer) record(t *testing.T, recordID string) requests.RecordDetai
 	return detail
 }
 
+// session calls method path as the session enrollmentID, with a proof signed by key over the path
+// without its query, as agent-secrets signs it: the broker checks a proof's htu against
+// BROKER_PUBLIC_URL and the request's path, never its query.
 func (ts *testServer) session(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, method, path string, body any) (int, []byte) {
 	t.Helper()
-	p, err := proof.Sign(key, enrollmentID, method, ts.URL+path, time.Now())
+	signed, _, _ := strings.Cut(path, "?")
+	p, err := proof.Sign(key, enrollmentID, method, ts.URL+signed, time.Now())
 	if err != nil {
 		t.Fatalf("proof.Sign: %v", err)
 	}
@@ -340,12 +344,14 @@ type wireRecord struct {
 }
 
 type wireCreateRequestResponse struct {
-	RequestID  string  `json:"request_id"`
-	State      string  `json:"state"`
-	GrantID    *string `json:"grant_id"`
-	RecordID   *string `json:"record_id"`
-	Coalesced  bool    `json:"coalesced"`
-	ApproveURL *string `json:"approve_url"`
+	RequestID     string  `json:"request_id"`
+	State         string  `json:"state"`
+	GrantID       *string `json:"grant_id"`
+	RecordID      *string `json:"record_id"`
+	Coalesced     bool    `json:"coalesced"`
+	ApproveURL    *string `json:"approve_url"`
+	JudgeDeciding *bool   `json:"judge_deciding"`
+	Detail        *string `json:"detail"`
 }
 
 type wireRequestDecision struct {
@@ -354,12 +360,13 @@ type wireRequestDecision struct {
 }
 
 type wireRequestStatus struct {
-	State      string               `json:"state"`
-	GrantID    *string              `json:"grant_id"`
-	RecordID   *string              `json:"record_id"`
-	DecidedAt  *time.Time           `json:"decided_at"`
-	Decision   *wireRequestDecision `json:"decision"`
-	ApproveURL *string              `json:"approve_url"`
+	State         string               `json:"state"`
+	GrantID       *string              `json:"grant_id"`
+	RecordID      *string              `json:"record_id"`
+	DecidedAt     *time.Time           `json:"decided_at"`
+	Decision      *wireRequestDecision `json:"decision"`
+	ApproveURL    *string              `json:"approve_url"`
+	JudgeDeciding *bool                `json:"judge_deciding"`
 }
 
 type wirePendingEntry struct {
@@ -369,6 +376,9 @@ type wirePendingEntry struct {
 	RequestedAt time.Time   `json:"requested_at"`
 	Session     wireSession `json:"session"`
 	ApproveURL  *string     `json:"approve_url"`
+	State       string      `json:"state"`
+	// ExpiresAt is nil for a row that carries no expires_at.
+	ExpiresAt *time.Time `json:"expires_at"`
 }
 
 // wirePageRefusal is a refusal naming the record's approval page.
@@ -992,7 +1002,7 @@ func TestCreateRequestForASecretWaitingForItsValueIs400PendingValue(t *testing.T
 
 func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 	ts := newTestServer(t)
-	limited := policytest.KindSecret("LIMITED_KEY", testApprover, policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
+	limited := policytest.TypeSecret("LIMITED_KEY", testApprover, policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 	limited.Tags[policy.TagMaxGrant] = "1h"
 	ts.Secrets.Put(limited)
 	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LIMITED_KEY/reread", nil, nil); status != http.StatusOK {
@@ -1011,7 +1021,7 @@ func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 	}
 }
 
-// TestAFailedMintIs502MintFailed: a kind secret whose minter fails, such as a Google login that
+// TestAFailedMintIs502MintFailed: a type secret whose minter fails, such as a Google login that
 // needs a new sign-in, answers the session 502 MINT_FAILED with the minter's words, so it can tell
 // its person what to fix, rather than an opaque 500; and the broker logs it at ERROR for its
 // operator, naming the secret and the error's class, never the stored value: the refresh token
@@ -1020,14 +1030,14 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 	logged := policytest.CaptureLog(t)
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
-			policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+			policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 				return secrets.Minted{}, fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant (invalid_rapt)", secrets.ErrMintRefused)
 			},
 		}
 	})
 	const canary = "refresh-not-a-secret-canary-4e1d"
 	stored := `{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"` + canary + `"}`
-	ts.Secrets.Put(policytest.KindSecret("LAPSED_LOGIN", testApprover, policy.TierAgent, policy.KindGoogleLogin, stored))
+	ts.Secrets.Put(policytest.TypeSecret("LAPSED_LOGIN", testApprover, policy.TierAgent, policy.TypeGoogleLogin, stored))
 	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LAPSED_LOGIN/reread", nil, nil); status != http.StatusOK {
 		t.Fatalf("reread LAPSED_LOGIN = %d %s", status, body)
 	}
@@ -1049,7 +1059,7 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 			line = l
 		}
 	}
-	for _, want := range []string{"ERROR " + requests.MintFailedMessage, "name=LAPSED_LOGIN", "kind=google-login", "class=refused", "invalid_rapt"} {
+	for _, want := range []string{"ERROR " + requests.MintFailedMessage, "name=LAPSED_LOGIN", "type=google-login", "class=refused", "invalid_rapt"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("mint failure log line %q does not hold %q (log: %q)", line, want, logged.String())
 		}

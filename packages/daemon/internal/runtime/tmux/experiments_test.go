@@ -158,8 +158,10 @@ func TestATreeInTwoExperimentsNamesEveryArmInTheFilesOrder(t *testing.T) {
 }
 
 // A tree drawn into a control arm — one that names neither an overlay nor an instructions file —
-// launches the pane a tree in no experiment launches, byte for byte, and is started with the same
-// system prompt: a launch names the files its arms name, and a control arm names none.
+// launches the pane a tree in no experiment launches, byte for byte but for one pair, and is
+// started with the same system prompt: a launch names the files its arms name, and a control arm
+// names none. The one pair is its spend attributes, which name the control arms in legion.arms, so
+// a call of a control tree reads as control rather than as a tree in no experiment.
 func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.T) {
 	stateDir := t.TempDir()
 	// One spec for both launches, so the two differ by the arms the spec carries alone.
@@ -172,8 +174,20 @@ func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.
 	withControl, controlPairs := newWindow(t, twoExperimentRuntime(t, stateDir, false), control)
 	controlPrompt := panePrompt(t, claim.RoleTester, withControl)
 	without, nonePairs := newWindow(t, twoExperimentRuntime(t, stateDir, false), none)
-	if !slices.Equal(withControl, without) {
-		t.Errorf("a control tree's pane =\n%q\nwant the one a tree in no experiment gets:\n%q", withControl, without)
+	const arms = "," + runtime.SpendArmsAttribute + "=alpha%3Aoff%2Cbeta%3Aoff"
+	named := 0
+	unnamed := slices.Clone(withControl)
+	for i, word := range unnamed {
+		if value, ok := strings.CutPrefix(word, runtime.SpendAttributesVariable+"="); ok && strings.HasSuffix(value, arms) {
+			unnamed[i] = strings.TrimSuffix(word, arms)
+			named++
+		}
+	}
+	if named != 1 {
+		t.Errorf("a control tree's pane names %s %d times in %s, want once:\n%q", arms, named, runtime.SpendAttributesVariable, withControl)
+	}
+	if !slices.Equal(unnamed, without) {
+		t.Errorf("a control tree's pane, its arms aside =\n%q\nwant the one a tree in no experiment gets:\n%q", unnamed, without)
 	}
 	if nonePrompt := panePrompt(t, claim.RoleTester, without); controlPrompt != nonePrompt {
 		t.Errorf("a control tree's system prompt =\n%s\nwant the one a tree in no experiment gets:\n%s", controlPrompt, nonePrompt)

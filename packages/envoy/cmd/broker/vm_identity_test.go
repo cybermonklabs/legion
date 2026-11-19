@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/config"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
+	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/judge"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -181,12 +184,47 @@ func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
 	if want := map[string]string{exampleVMAccount: "example-fleet"}; !maps.Equal(enr.VMServicesByAccount, want) {
 		t.Fatalf("the enrollment service's VMServicesByAccount = %v, want %v", enr.VMServicesByAccount, want)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil, nil)
 	if want := map[string]string{"system:serviceaccount:example:example-sa": "example-service"}; !maps.Equal(m.ServicesByAccount, want) {
 		t.Fatalf("request Machine's ServicesByAccount = %v, want %v", m.ServicesByAccount, want)
 	}
 	if want := map[string]string{exampleVMAccount: "example-fleet"}; !maps.Equal(m.VMServicesByAccount, want) {
 		t.Fatalf("request Machine's VMServicesByAccount = %v, want %v: without it no machine's session is ever its fleet's", m.VMServicesByAccount, want)
+	}
+}
+
+// TestTheRequestMachineCarriesWhoIsResponsible pins the two things the broker hands the request
+// decisions to find the person a shared secret's request is listed for: each fleet's person by
+// account (BROKER_VM_EXCHANGE_ACCOUNTS), an entry that names none left out, and the broker's one
+// read of Dispatch (judgeDispatch), which answers a Legion pod's issue's assignee, only where
+// BROKER_JUDGE_DISPATCH_URL is set, and is the very read main gives the model judge.
+func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
+	const otherAccount = "example-other@example-project.iam.gserviceaccount.com"
+	cfg := vmConfig(t, "example-vm-audience")
+	cfg.ExchangeGoogleAccounts = []exchange.GoogleEntry{
+		{Account: exampleVMAccount, Service: "example-fleet", Project: "ACME", Person: "ada@example.com"},
+		{Account: otherAccount, Service: "example-fleet"},
+	}
+	if dispatch := judgeDispatch(cfg); dispatch != nil {
+		t.Fatalf("judgeDispatch = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", dispatch)
+	}
+	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil, judgeDispatch(cfg))
+	if want := map[string]string{exampleVMAccount: "ada@example.com"}; !maps.Equal(m.VMPersonsByAccount, want) {
+		t.Fatalf("request Machine's VMPersonsByAccount = %v, want %v", m.VMPersonsByAccount, want)
+	}
+	if m.Assignees != nil {
+		t.Fatalf("request Machine's Assignees = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", m.Assignees)
+	}
+
+	cfg.JudgeDispatchURL = "https://dispatch.internal.example"
+	cfg.JudgeDispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
+	dispatch := judgeDispatch(cfg)
+	if dispatch == nil || dispatch.BaseURL != cfg.JudgeDispatchURL || dispatch.Account == nil {
+		t.Fatalf("judgeDispatch = %#v; want a read of Dispatch at %s", dispatch, cfg.JudgeDispatchURL)
+	}
+	m = newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil, dispatch)
+	if got, ok := m.Assignees.(*judge.Dispatch); !ok || got != dispatch {
+		t.Fatalf("request Machine's Assignees = %#v; want the one read of Dispatch judgeDispatch built, %p", m.Assignees, dispatch)
 	}
 }
 
@@ -256,5 +294,57 @@ func TestWithNoGoogleAudienceTheBootLogHoldsNoGoogleLine(t *testing.T) {
 		if strings.Contains(broker.Boot, never) {
 			t.Fatalf("boot log with no Google audience holds %q:\n%s", never, broker.Boot)
 		}
+	}
+}
+
+// TestTheSettingsNameOnlyAnAudienceAMachineCanTradeFor drives the real binary twice. A broker that
+// lists a VM service publishes BROKER_GOOGLE_OIDC_AUDIENCE as google_exchange_audience in GET
+// /v1/settings, and one whose only Google caller is an API account publishes none, since its
+// exchange refuses every machine and a client that read the audience would mint, trade and be
+// refused on every command. Neither names a Kubernetes exchange audience, though both set
+// BROKER_EXCHANGE_K8S_AUDIENCE: a pod's trade there mints no launcher credential, so no machine
+// could register a session under it.
+func TestTheSettingsNameOnlyAnAudienceAMachineCanTradeFor(t *testing.T) {
+	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
+	cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	google.PublishKey(t, "google-key")
+	published := func(t *testing.T, env []string) (string, bool) {
+		t.Helper()
+		broker := startBroker(t, brokerOptions{Env: env})
+		broker.Await(t, "token exchange")
+		resp, err := http.Get("http://" + broker.Addr + "/v1/settings")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var settings map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&settings); err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /v1/settings = %d, %v", resp.StatusCode, err)
+		}
+		if kubernetes, named := settings["kubernetes_exchange_audience"]; named {
+			t.Fatalf("GET /v1/settings names the Kubernetes exchange audience %v; want none, since a pod's trade mints no launcher credential", kubernetes)
+		}
+		audience, ok := settings["google_exchange_audience"].(string)
+		return audience, ok
+	}
+
+	listed := googleExchangeEnv(t, storetest.URL(t), cluster, github, google, longAccessSeconds)
+	if !slices.Contains(listed, "BROKER_EXCHANGE_K8S_AUDIENCE="+exchangeAudience) {
+		t.Fatalf("the broker's settings name no BROKER_EXCHANGE_K8S_AUDIENCE, so this row could not see it published: %v", listed)
+	}
+	if audience, ok := published(t, listed); !ok || audience != machineAudience {
+		t.Fatalf("a broker listing VM services publishes google_exchange_audience %q (%v); want %q", audience, ok, machineAudience)
+	}
+
+	apiCallerOnly := append(exchangeEnv(t, storetest.URL(t), cluster, github, longAccessSeconds),
+		"BROKER_GOOGLE_OIDC_ISSUER="+google.URL(),
+		"BROKER_GOOGLE_OIDC_AUDIENCE="+machineAudience,
+		"BROKER_API_ACCOUNTS=dispatch="+apiAccount+" listener=google:"+listenerVMAccount)
+	for _, setting := range []string{"BROKER_VM_SERVICES", "BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES", "BROKER_VM_EXCHANGE_ACCOUNTS"} {
+		apiCallerOnly = append(apiCallerOnly, setting+"=")
+	}
+	if audience, ok := published(t, apiCallerOnly); ok {
+		t.Fatalf("a broker whose only Google caller is an API account publishes google_exchange_audience %q; want none, since no machine can trade a token there", audience)
 	}
 }

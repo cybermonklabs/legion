@@ -19,8 +19,8 @@ import (
 //
 //   - a root standing at phase.Admitted, whatever its design gate. record.AtWork answers false
 //     for such a root once its gate has opened, because no phase worker of it works there; its
-//     own architect still does, since it is the only role of the tree at work, and the measured
-//     defect is a relaunched architect of such a root (dispatch://INFRA-2614).
+//     own architect still does, since it is the only role at work on the root itself, and the
+//     measured defect is a relaunched architect of such a root (dispatch://INFRA-2614).
 //   - a root a hand-over carried in, in every phase that carries a run (record.Issue.CarriesRun)
 //     at the generation the hand-over opened, which the record states as the hand-over row of
 //     this generation (ArchitectCarried, the reading the catch-up makes). R5 names a root a

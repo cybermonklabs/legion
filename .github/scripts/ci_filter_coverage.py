@@ -13,6 +13,7 @@ import ...` gets these very classes.
 from __future__ import annotations
 
 import atexit
+import itertools
 import json
 import os
 import re
@@ -27,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
 from workflow_paths import PathsFilter, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
@@ -384,17 +386,6 @@ class Session:
         return self.cache[key]
 
 
-def decode_stream(text: str) -> list:
-    decoder, index, out = json.JSONDecoder(), 0, []
-    while True:
-        while index < len(text) and text[index].isspace():
-            index += 1
-        if index >= len(text):
-            return out
-        obj, index = decoder.raw_decode(text, index)
-        out.append(obj)
-
-
 def rel(path: str) -> str | None:
     try:
         return Path(path).resolve().relative_to(REPO).as_posix()
@@ -531,14 +522,6 @@ def embedded_tree(top: Path, everything: bool) -> list:
         files += [here / n for n in sorted(names)
                   if embeddable(n) and (here / n).is_file() and not (here / n).is_symlink()]
     return files
-
-
-def go_skips_dir(parent: Path, name: str) -> bool:
-    """Whether the go command passes over a directory of a `<root>/...` pattern: testdata, a name
-    starting with `.` or `_`, node_modules, and a nested module. ci_job_reads.py walks the race
-    lane's `/...` packages by this rule too, so the two walks cannot drift."""
-    return (name == "testdata" or name.startswith((".", "_")) or name == "node_modules"
-            or (parent / name / "go.mod").is_file())
 
 
 def test_build_files(listing: list) -> dict:
@@ -2369,6 +2352,111 @@ def rewrite(path: str, lines: list, blocks: dict, wanted: dict, heads=lambda nam
         (REPO / path).write_text(text)
 
 
+# Rule 20 searches every choice of a file's own tags for one go builds it under; a file naming
+# more tags than this is refused by name rather than searched.
+MAX_TRIAL_TAGS = 6
+
+
+def check_vet_tags(session: Session, data, problems: list) -> list:
+    """Rule 20: the vets for another platform of one step - the Runs of mode vet whose env sets
+    GOOS, one per tag set the step loops over - compile between them every file of their
+    packages that go builds for that platform under some choice of tags. Such a step is its
+    module's one compile for that platform, and a file outside every set it vets under is a file
+    it never reads while it still passes: the miss a hand-kept tag list makes the day a tag
+    lands, and the one a single set makes beside a file under a negated tag.
+
+    The files are those on disk under the Runs' patterns (go_build_tags.go_files, the directories
+    `./...` walks), never go list's own package list, which leaves out a package whose every file
+    a missing tag excludes. go list then says, under each Run's platform and tags, which of them
+    it compiles. For each file none compiles that names a tag (go_build_tags.is_tag: no platform
+    or architecture feature name, none the toolchain sets), every choice of its own tags is
+    tried, and go list says again whether the file is compiled under it: one that is, is a miss,
+    named with the tags that build it. go decides each answer; this rule's own reading of a
+    constraint only chooses which tags to try, and it reads a name in any script Go accepts."""
+    groups: dict = defaultdict(list)
+    for g in data.GATES:
+        for r, step in [(r, r.step) for r in g.runs] + [(r, e.step) for e in g.exact for r in e.runs]:
+            env = dict(r.env)
+            if r.mode == "vet" and env.get("GOOS"):
+                groups[(g.job, step, r.workdir, env["GOOS"], env.get("GOARCH", ""), r.pkgs)].append(r)
+    report = []
+    for (job, step, workdir, goos, goarch, pkgs), runs in groups.items():
+        where = f'job {job} step "{step}"' if step else f"job {job}"
+        target = f"{goos}/{goarch}" if goarch else goos
+        try:
+            known = platforms(REPO / workdir)
+        except (OSError, subprocess.CalledProcessError) as failure:
+            problems.append(error(None, f"{where}: go tool dist list failed in {workdir}, so which names of a "
+                                        f"build constraint are platforms is unknown: {failure}"))
+            continue
+        disk = set()
+        for pattern in pkgs:
+            base = REPO / workdir / pattern.removesuffix("...").rstrip("/")
+            found = go_files(base) if pattern.endswith("...") else (
+                p for p in sorted(base.glob("*.go")) if not p.name.startswith(("_", ".")))
+            disk |= {rel(str(path)) for path in found}
+        if not disk:
+            problems.append(error(None, f"{where}: no .go file is on disk under {' '.join(pkgs)} in {workdir}, "
+                                        f"so rule 20 checked nothing there"))
+            continue
+        dirs = sorted({path.rsplit("/", 1)[0] for path in disk})
+        sets = [r.tags for r in runs]
+        compiled = set().union(*(compiled_files(session, r, r.tags, dirs) for r in runs))
+        tagged = misses = 0
+        trials: dict = {}
+        for path in sorted(disk - compiled):
+            names = sorted(n for n in constraint_names(REPO / path) if is_tag(n, known))
+            if not names:
+                continue
+            tagged += 1
+            if len(names) > MAX_TRIAL_TAGS:
+                problems.append(error(path, f"{where}: {path} names {len(names)} tags, more than the "
+                                            f"{MAX_TRIAL_TAGS} rule 20 tries, so whether a vet of {target} "
+                                            f"misses it is unknown"))
+                continue
+            directory = path.rsplit("/", 1)[0]
+            for bits in itertools.product((True, False), repeat=len(names)):
+                tags = ",".join(n for n, on in zip(names, bits) if on)
+                if (directory, tags) not in trials:
+                    trials[directory, tags] = compiled_files(session, runs[0], tags, [directory])
+                if path in trials[directory, tags]:
+                    misses += 1
+                    problems.append(error(path, f"{where} vets {workdir} for {target} under -tags "
+                                                f"{' and '.join(s or '(none)' for s in sets)}, and none of them "
+                                                f"compiles {path}, which go builds for {target} with -tags "
+                                                f"{tags or '(none)'}: the vet passes without reading the file. The "
+                                                f"vet steps take their tag sets from .github/scripts/"
+                                                f"go_build_tags.py, which must print a set that builds every such "
+                                                f"file"))
+                    break
+        report.append(f"{where}: vets {workdir} for {target} under -tags "
+                      f"{' and '.join(s or '(none)' for s in sets)}; go list compiles {len(compiled & disk)} of "
+                      f"the {len(disk)} .go files on disk there, {tagged} of the rest name a tag, and "
+                      f"{misses} of those build for {target} under tags no set holds")
+    return report
+
+
+def compiled_files(session: Session, r: Run, tags: str, dirs: list) -> set:
+    """The files go list compiles in `dirs`, each named as a directory and not as a pattern, under
+    the Run's platform and `tags`, as repository paths: GoFiles, CgoFiles and the test files,
+    which a vet reads too. A directory whose every file is excluded is still listed, with an
+    error -e keeps. `-find`, as go_build_tags.compiled runs it too, keeps go list from loading the
+    packages the listed ones import (Imports, Deps and DepsErrors stay empty), though in module
+    mode go still resolves each import: the file lists are the same, and the rule reads nothing
+    else."""
+    args = ["list", "-e", "-find", "-json=Dir,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles"]
+    if tags:
+        args += ["-tags", tags]
+    patterns = [f"./{Path(d).relative_to(r.workdir).as_posix()}" if d != r.workdir else "." for d in dirs]
+    out = set()
+    for pkg in decode_stream(session.go(r, args + patterns)):
+        d = rel(pkg["Dir"]) if pkg.get("Dir") else None
+        if d is not None:
+            for field in ("GoFiles", "CgoFiles", "TestGoFiles", "XTestGoFiles"):
+                out |= {f"{d}/{name}" for name in pkg.get(field) or []}
+    return out
+
+
 def check() -> int:
     # The mode check-ci-filters.sh was called in: `check`, which refuses a generated block that
     # is not what rule 17 computes, or `write`, which writes those blocks into ci.yaml instead.
@@ -2463,6 +2551,8 @@ def check() -> int:
     lines = read_repository_text(REPO / WORKFLOW).splitlines()
     listed = listed_owners(documents, lines, problems)
     check_dead_gate_patterns(data, filters, gate_files, expander, selection, listed, problems)
+    # Rule 20: a vet for another platform passes over no file a build tag would compile.
+    report += check_vet_tags(session, data, problems)
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
     report += check_tag_runs(documents, data, filters, quantifiers, gate_files, selection, listed, expander,

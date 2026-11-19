@@ -48,7 +48,7 @@ const (
 	// testGCPProject is a project NUMBER, the form the broker's gcp_project setting and the
 	// secrets' own resource-name prefix take.
 	testGCPProject = "100000000001"
-	testKMSKeyName = "projects/acme-agent-infra/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+	testKMSKeyName = "projects/acme-deployment/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 	testGCPPrefix  = "projects/100000000001/secrets/agent-secrets-"
 )
 
@@ -56,6 +56,7 @@ func gcpTestSettings() Settings {
 	return Settings{
 		Store: secrets.StoreGCP, SecretsPrefix: testGCPPrefix,
 		KMSKeyName: testKMSKeyName, GCPProject: testGCPProject,
+		SecretTypeTag: true,
 	}
 }
 
@@ -419,7 +420,7 @@ func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) Rere
 		case len(entry.versions) == 0:
 			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
-		return Reread{Name: name, Served: true, Kind: entry.secret.GetAnnotations()[policy.TagKind]}
+		return Reread{Name: name, Served: true, Type: policy.TypeFromTags(entry.secret.GetAnnotations())}
 	}
 }
 
@@ -577,7 +578,7 @@ const stubTokenPrefix = "stub-gcloud-token-for-"
 
 // machineEmail is the service account a machine's own Application Default Credentials and its
 // own gcloud login name.
-const machineEmail = "robot@acme-agent-infra.iam.gserviceaccount.com"
+const machineEmail = "robot@acme-deployment.iam.gserviceaccount.com"
 
 // machineADCKinds are the Application Default Credentials that are a machine's own identity, as
 // useGCPIdentity takes them: a service account key file, a workload identity federation credential

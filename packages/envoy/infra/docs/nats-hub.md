@@ -51,7 +51,7 @@ and `instanceGroup`, the group's name.
 | `tailnetDnsName` | unset | The tailnet's DNS name, one label under `ts.net` (`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.ts\.net$`), such as `example-tailnet.ts.net`. Required for a hub with a `listener`, since the hub renders the address that listener answers on, `<h>.<tailnetDnsName>`, from it into the listener's `ENVOY_ALLOWED_HOSTS`; a hub without a listener may leave it unset. A plain value the program knows when it runs, never another resource's output. |
 | `network` | created | The name or self link of the VPC network the VM and the firewall rule are in. Unset, the hub creates one, which has no firewall rule but the hub's. The VM has an external address and takes the network's rules for all its instances, so on a network whose firewall admits SSH from anywhere, as the default network's `default-allow-ssh` does, its sshd is reachable from the internet: see [The VM's external address](#the-vms-external-address). May come from another resource or stack. |
 | `subnetwork` | unset | The VM's subnetwork, for a network with custom subnetworks: one in `zone`'s region. Only with `network`. May come from another resource or stack. |
-| `listener` | unset | The hub's own Envoy listener: `image`, the listener's image pinned as the images above are; `seedSecret`, the id of a Secret Manager secret in the hub's project holding its NATS user's seed; `nkey`, that seed's public key; `allowedHosts`, any further address a client dials this hub by, beyond the hub's own `<h>.<tailnetDnsName>`, which it always serves; and the listener's broker check, `agentSecretsUrl`, `agentSecretsAudience` and `publicUrl`, set together or not at all. Each `allowedHosts` entry is a plain host name or IP address, rendered as written into the listener's `ENVOY_ALLOWED_HOSTS`. See [The hub's listener](#the-hubs-listener) and [The listener's broker check](#the-listeners-broker-check). |
+| `listener` | unset | The hub's own Envoy listener: `image`, the listener's image pinned as the images above are; `seedSecret`, the id of a Secret Manager secret in the hub's project holding its NATS user's seed; `nkey`, that seed's public key; `allowedHosts`, any further address a client dials this hub by, beyond the hub's own `<h>.<tailnetDnsName>`, which it always serves; and the listener's broker check, `agentSecretsUrl`, `agentSecretsAudience` and `publicUrl`, set together or not at all. Each `allowedHosts` entry is a plain host name or IP address, rendered as written into the listener's `ENVOY_ALLOWED_HOSTS`. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends. See [The hub's listener](#the-hubs-listener), [The listener's broker check](#the-listeners-broker-check) and [The listener's sender limit](#the-listeners-sender-limit). |
 | `sessionUser` | unset | `name` and `nkey`, the NATS user a client presenting no credential becomes, granted `SessionPermissions`. See [The hub's users](#the-hubs-users). |
 | `authCallout` | unset | The auth service's callout (dispatch://INFRA-840), a `nats:AuthCallout`, each of whose fields is required: `issuer`, the account public key whose seed signs the service's answers; `xkey`, the curve public key the server seals each request to, without which nats-server sends each connecting client's token to the service unsealed; and `serviceUser`, the `name` of the entry of `users` the service connects as. See [The auth service](#the-auth-service). Unset, the hub renders exactly what it rendered before callouts existed. |
 | `privateProjects` | `false` | The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862). Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. See [The auth service](#the-auth-service). |
@@ -99,7 +99,11 @@ The hub refuses these before it registers anything, with an error naming the inp
 - a `listener` whose `image` is not pinned as above, whose `seedSecret` is not a secret id
   (`^[A-Za-z0-9_-]{1,255}$`, Secret Manager's rule, so a resource path such as
   `projects/<p>/secrets/<s>` is refused) or is the hub's own `<h>-tailnet-auth-key`, or whose
-  `nkey` is empty;
+  `nkey` is empty. The hub also refuses a `listener.senderMessagesPerMinute` outside 1 to 60000,
+  a `listener.senderMessageBurst` below 1, and a `listener.senderMessageBurst` with no rate, as
+  `listener.senderMessageBurst is given without listener.senderMessagesPerMinute, and the listener
+  refuses a burst with no rate when it boots`
+  ([The listener's sender limit](#the-listeners-sender-limit));
 - a `listener` on a hub with no `tailnetDnsName`, since the hub renders the address its listener
   answers on from it, as `tailnetDnsName is required for a hub with a listener: …`. Pulumi
   refuses the hub while it previews it, before anything is registered;
@@ -336,9 +340,11 @@ that registers a port is refused: the listener answers 400 naming `port`, since 
 session's port. Register with no port and receive from the session's own NATS consumer. The
 listener's `/v1` API takes no bearer, which the listener allows on a loopback address, or off
 loopback where `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says something else fences the port, as the
-clustered hub's session listener sets it (`packages/envoy/cmd/listener/apiauth.go`). On this VM
-the listener is on loopback, so the tailnet's policy for port 9020 is the only thing that decides
-who may call it; on the clustered hub the listener's own NetworkPolicy is a second fence there.
+clustered hub's tailnet-only session listener sets it (`packages/envoy/cmd/listener/apiauth.go`).
+On this VM the listener is on loopback, so the tailnet's policy for port 9020 is the only thing that
+decides who may call it; on the clustered hub the listener's own NetworkPolicy is a second fence
+there, and a clustered hub listener that pods of the cluster reach requires a token instead
+([The session listener](#the-session-listener)).
 Either way a caller that gets through gets the whole API with no credential: it can publish to any
 topic outside the agent topics with a `source` of its choosing, under the listener's user's
 publish grant (Dispatch, GitHub, Slack, Legion and role notifications included), claim a role,
@@ -409,6 +415,52 @@ set while Pulumi previews, naming the input left out. A hub that sets none of th
 the cloud-config it rendered before these inputs existed, byte for byte, so they replaced no
 running hub's VM.
 
+### The listener's sender limit
+
+`listener.senderMessagesPerMinute` and `listener.senderMessageBurst` limit how many messages one
+agent session sends through this listener, on `/v1/messages/send` and `/v1/messages/publish`
+together. The hub renders each into the listener's `docker run` command only when it is set:
+`ENVOY_SENDER_MESSAGES_PER_MINUTE` and `ENVOY_SENDER_MESSAGE_BURST`, in that order, after
+`NATS_URLS` and before the broker check's variables. The rate is a whole number from 1 to 60000,
+and unset it sets no limit. The burst is at least 1 and only with a rate, and unset it equals the
+rate.
+
+The listener keeps one count for each sending session. The count starts at the burst and gains
+one message every 60 seconds divided by the rate, up to the burst. The counts are the listener
+process's own, so a restart of the listener, or a new VM, fills each count again. The sender is
+the session that a secrets-broker token proves, else the request's `source_session`. A message
+with another `source`, such as `dispatch` or `envoy`, is not counted, with a secrets-broker token
+or without one. Neither is a message with no sender, which is how the Legion daemon sends its
+notices.
+
+A message that finds its sender's count at 0 is answered HTTP `429`. The listener does not store
+it, keep it for a later holder of a role or report a wake for it. `Retry-After` gives the whole
+seconds, rounded up and at least 1, until the count holds one message again. The JSON body holds
+`reason: "sender_rate_limited"`, `retry_after_seconds`, `messages_per_minute`, `burst`, and an
+`error` that is the sentence `Your sending is rate limited. This message was not sent. This
+listener lets one session send <rate> messages a minute and <burst> at once. You can send it again
+after <seconds> seconds.` with the values filled in. Where a value in the sentence is 1, its noun
+is singular: `1 message a minute`, `after 1 second`. The request's log line has the outcome
+`sender_rate_limited` and the field `sender`.
+
+A counted message costs one when the listener stores it, may have stored it (any answer after an
+earlier forward of the same role send, or a `503` after the listener sent the message to the
+stream and the write's acknowledgement did not arrive in time) or reports a wake for it. A role
+send's `504` costs one whether or not a forward went out, also when the window ended before the
+first forward. The listener does not tell a `504` that forwarded nothing from one whose forward
+the stream may hold. A refusal before any store or wake report, such as a `400`, `403`, `413` or
+a `503` before the listener sent anything (one while it waits for NATS to reconnect), costs
+nothing. A repeat the listener recognises costs nothing too: the stream's `duplicate` answer, a
+repeat of a role message kept for the role's next holder, and a repeat of a role forward the route
+made in the last 10 minutes. So does an echo, a role message from the session that holds the role.
+A `duplicate` that answers the listener's own second send, made after its connection to NATS
+closed under the first, costs one, since the first may have stored the message. A role send's
+echo, repeat or `403` costs nothing only while the send has made no forward, since an earlier
+forward may have stored the message. A repeat that finds the count at 0 is refused as a new
+message is. The clients show the sentence and do not send the message again by themselves, except
+the Legion stall notice, whose sender waits the seconds and sends it again at most 3 times
+([The listener's sender limit](../README.md#the-listeners-sender-limit)).
+
 ## What the hub's VM runs
 
 The VM boots Container-Optimized OS (COS), which mounts `/` read-only and keeps `/etc` and
@@ -458,7 +510,7 @@ order. They are started and never enabled, since `/etc` does not outlive the boo
 | `tailnet-joined.service` | Started after `tailscaled`, on a mounted data disk without the marker: `/etc/envoy/tailnet-joined /mnt/disks/data/tailnet-joined /run/envoy/tailnet-auth-key`. Every 5 seconds the script asks the Tailscale container's CLI for `status --json`, and once its `BackendState` is `Running` it empties the key file, which stays for the container's bind mount, and only once that has succeeded writes the marker. A simple service, so its start returns at once; a run that fails, as one whose key drop fails does, is run again 10 seconds later. |
 | `nats-firewall.service` | A oneshot that stays active once it exits: it adds `INPUT -p tcp -s 130.211.0.0/22,35.191.0.0/16 --dport 8222 -j ACCEPT` and `INPUT -i tailscale0 -p tcp --dport 4222 -j ACCEPT` to the host's iptables with COS's own `/sbin/iptables`, each unless it is there. COS's host firewall accepts incoming connections for SSH alone ([COS firewall](https://cloud.google.com/container-optimized-os/docs/how-to/firewall)): it filters with nf_tables and drops INPUT by default. So without the first rule the health check never reaches NATS, and without the second the tailnet never does either, since Tailscale's image writes its own accept rule for `tailscale0` with iptables-legacy, which does not admit what nf_tables drops. |
 | `nats.service` | `docker run --name nats` of `natsImage` on the host's network, with `/mnt/disks/data/nats` as `/data` and the configuration file mounted read-only, and the arguments `-c /etc/nats/nats-server.conf -js --store_dir /data -m 8222 --server_name <h>`. It is stopped with `docker stop -t 30`. It wants `nats-firewall` and starts after it. |
-| `envoy-listener.service` | Only with a `listener`. Before each start, `/etc/envoy/listener-seed-env /run/envoy/listener.env <seedSecret>` writes the seed to that env file; then `docker run --name envoy-listener` of `listener.image` on the host's network, with `--env-file /run/envoy/listener.env`, `PORT=9020`, `ENVOY_LISTEN_HOST=127.0.0.1`, `ENVOY_ALLOWED_HOSTS=<h>.<tailnetDnsName>` and each of `listener.allowedHosts` after it, comma-separated, `ENVOY_MACHINE_ID=<h>` and `NATS_URLS=nats://127.0.0.1:4222`, in that order, as `gcp/testdata/cloud-config.golden` shows. `TimeoutStartSec=600` exceeds the fetcher's 590-second maximum: six attempts, each with three 30-second curl limits, separated by five 10-second waits. A seed that cannot be fetched fails the start, and the restart fetches again. It is stopped with `docker stop -t 30`, since the listener's own shutdown takes up to about 20 seconds. It wants `nats` and starts after it. |
+| `envoy-listener.service` | Only with a `listener`. Before each start, `/etc/envoy/listener-seed-env /run/envoy/listener.env <seedSecret>` writes the seed to that env file; then `docker run --name envoy-listener` of `listener.image` on the host's network, with `--env-file /run/envoy/listener.env`, `PORT=9020`, `ENVOY_LISTEN_HOST=127.0.0.1`, `ENVOY_ALLOWED_HOSTS=<h>.<tailnetDnsName>` and each of `listener.allowedHosts` after it, comma-separated, `ENVOY_MACHINE_ID=<h>` and `NATS_URLS=nats://127.0.0.1:4222`, in that order, as `gcp/testdata/cloud-config.golden` shows. `ENVOY_SENDER_MESSAGES_PER_MINUTE` and `ENVOY_SENDER_MESSAGE_BURST` follow them, each only when its input is set ([The listener's sender limit](#the-listeners-sender-limit)). `TimeoutStartSec=600` exceeds the fetcher's 590-second maximum: six attempts, each with three 30-second curl limits, separated by five 10-second waits. A seed that cannot be fetched fails the start, and the restart fetches again. It is stopped with `docker stop -t 30`, since the listener's own shutdown takes up to about 20 seconds. It wants `nats` and starts after it. |
 
 The container units require `docker.service`, refuse to start unless `/mnt/disks/data` is a mount
 point, so that their state never lands on the tmpfs beneath, and restart 10 seconds after their
@@ -695,6 +747,11 @@ The release that adds `envoy_known_sessions` to `bus.ListenerBuckets()` adds tha
 `DispatchPermissions`, which changes the rendered users of every hub with a `listener`, a
 `machineId`, a `listenerMachineId` or a `dispatchMachineId` user: upgrading such a hub to it
 replaces its VM once, with the outage below, and a hub with none of them keeps its VM.
+The release that adds `listener.senderMessagesPerMinute` and `listener.senderMessageBurst` renders
+neither variable for a hub that sets neither input, so such a hub keeps its VM. Setting, changing
+or removing either input changes the listener's `docker run` command in the cloud-config, so it
+replaces the VM once, with the outage below, and the new VM's listener starts with every sender's
+count full.
 The cloud-config is the instance
 template's `user-data`, and a template cannot change. The group then replaces its VM at once
 (`PROACTIVE`, minimal action `REPLACE`), deleting it before it creates the next (`RECREATE`, no
@@ -921,8 +978,9 @@ Both hubs render their users through one function, `authorization` in `gcp/natsh
 `core`'s `Render` under the same header, so the same `users`, listener and `sessionUser` give the
 same authorization byte for byte (`TestClusteredNatsHubRendersTheVMHubsAuthorization`). Everything
 [The hub's users](#the-hubs-users) says holds for the clustered hub, with one difference: the
-listener's user is named after `tailnet.listener.machineId`, which defaults to
-`tailnet.serviceName`, where the VM names it after its `hostname`. A deployment that moves from a
+listener's user is named after its `machineId` (`listener.machineId` or `tailnet.listener.machineId`,
+wherever the listener is declared), which defaults to `tailnet.serviceName` with `tailnet` and is
+required without it, where the VM names it after its `hostname`. A deployment that moves from a
 `gcp:NatsHub` whose `hostname` is `envoy-hub` keeps the machine id `envoy-hub`, by naming its
 Tailscale Service `envoy-hub` or by setting `machineId`: the listener's user is then the one the
 VM rendered, with `ListenerPermissions(envoy-hub)`, and its durable is the VM listener's
@@ -1025,11 +1083,15 @@ servers on the rendered configuration, the route through a proxy limited to 0.4 
 a 40 MB burst does not close the route as stale within 60 s of the burst's start, and without it
 the top-level 20 s ping does, within 60.5 s of the moment the sending server has queued the burst.
 
-The session listener's `/v1` on 9020 is the second port a policy guards. That listener carries
+The session listener's `/v1` on 9020 is the second port a policy guards. Declared as
+`tailnet.listener` with no `clientNamespaces`, that listener carries
 `ENVOY_API_ALLOW_UNAUTHENTICATED=1` and no `ENVOY_API_TOKEN`, and the component takes no token
 input for it, so its `/v1` answers with no credential at all. The NetworkPolicy `<n>-listener`
-admits TCP 9020 from the tailnet hosts' pods alone, and that is what keeps every other pod of the
-cluster off `/v1` ([The session listener](#the-session-listener)).
+then admits TCP 9020 from the tailnet hosts' pods alone, and that is what keeps every other pod of
+the cluster off `/v1`. A listener declared as the hub's own `listener`, or given
+`clientNamespaces`, is admitted to by the pods of those namespaces as well, and requires each
+caller's projected ServiceAccount token instead of the flag, so the policy is not its only guard
+([The session listener](#the-session-listener)).
 
 Both guards need a cluster that enforces NetworkPolicy, as GKE Autopilot does with GKE Dataplane
 V2. A cluster whose network plugin does not enforce it accepts both objects and admits every
@@ -1046,8 +1108,11 @@ client to a host, not to a host per port, so every host serves both of the Servi
 forwarded as TCP to the hub's client Service, and 9020, forwarded to the session listener's own
 cluster Service. Clients reach them as the hub's `tailnetNatsUrl`,
 `nats://<tailnet.serviceName>.<tailnetDnsName>:4222`, and `tailnetEnvoyUrl`, the same name on
-9020. The listener's `/v1` takes no bearer there, as on the VM, so
-[The hub's listener](#the-hubs-listener) holds for port 9020 of the Service as written.
+9020. A `tailnet.listener` with no `clientNamespaces` takes no bearer there, as on the VM, so
+[The hub's listener](#the-hubs-listener) holds for port 9020 of the Service as written. A
+listener declared as the hub's own `listener`, or given `clientNamespaces`, requires each tailnet
+caller's token too, as it requires every other caller's ([The session
+listener](#the-session-listener)).
 
 Each host's advertiser advertises the Service as soon as its node may. So a listener fault leaves
 the hub's 4222 on the tailnet, and every host keeps serving both ports while the listener's own
@@ -1066,7 +1131,7 @@ seconds of it.
 ### The session listener
 
 The session listener runs in a workload of its own, the Deployment `<n>-listener`, and in no host
-pod. One pod runs it, as machine `tailnet.listener.machineId`, and no input changes that count.
+pod. One pod runs it, as its `machineId`, and no input changes that count.
 Two copies would contend for the one durable `listener-<machine id>`: the second waits 135
 seconds for it (`cmd/listener/durable.go`, `durableBindDeadline`), then exits, and is restarted
 again and again. That holds until cybermonklabs/legion#2404 gives the listener a delivery lease.
@@ -1074,15 +1139,35 @@ The module's README lists the five objects the listener's name carries
 ([The session listener](../README.md#the-session-listener)).
 
 How it is reached. Each host forwards the Tailscale Service's port 9020 to the Service
-`<n>-listener` in the hub's namespace. The NetworkPolicy `<n>-listener` admits TCP 9020 from the
-tailnet hosts' pods alone, and every other port of the listener's pod is admitted to nobody. The
-listener binds `0.0.0.0` and carries `ENVOY_API_ALLOW_UNAUTHENTICATED=1`, which is what lets its
-`/v1` answer with no credential off loopback. It carries no `ENVOY_API_TOKEN`: the NetworkPolicy
-is what keeps `/v1` to the hosts, and it keeps it only where the cluster enforces NetworkPolicy.
-The listener answers 421 to every `Host` that is neither a loopback name or address nor one of
-`ENVOY_ALLOWED_HOSTS`, which stops a page that rebinds its own name rather than a caller the
-NetworkPolicy admits, since such a caller reaches `/v1` with `Host: localhost`. The hub's own
-NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the hosts.
+`<n>-listener` in the hub's namespace, and the pods of `clientNamespaces` dial that Service at
+`<n>-listener.<namespace>.svc.cluster.local:9020`. The NetworkPolicy `<n>-listener` admits TCP
+9020 from the tailnet hosts' pods with `tailnet`, then from the pods of each `clientNamespaces`
+namespace, and every other port of the listener's pod is admitted to nobody. The listener binds
+`0.0.0.0` and carries no `ENVOY_API_TOKEN`. What lets its `/v1` answer off loopback depends on who
+reaches it:
+
+- A `tailnet.listener` with no `clientNamespaces` is reached by the tailnet hosts alone and
+  carries `ENVOY_API_ALLOW_UNAUTHENTICATED=1`, so its `/v1` answers with no credential. The
+  NetworkPolicy is what keeps `/v1` to the hosts, and it keeps it only where the cluster enforces
+  NetworkPolicy. The listener answers 421 to every `Host` that is neither a loopback name or
+  address nor one of `ENVOY_ALLOWED_HOSTS`, which stops a page that rebinds its own name rather
+  than a caller the NetworkPolicy admits, since such a caller reaches `/v1` with `Host:
+  localhost`.
+- A listener declared as the hub's own `listener`, with or without `tailnet`, or a
+  `tailnet.listener` with `clientNamespaces`, carries the token check instead:
+  `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` and `ENVOY_OIDC_ACCOUNTS`, from its `oidcIssuer`,
+  `oidcAudience` and `oidcAccounts`. Every caller, a tailnet host's included, presents a
+  projected ServiceAccount token that issuer signed for that audience, of a subject the list
+  names; any other request gets 401, whatever the NetworkPolicy admits. It renders no
+  `ENVOY_ALLOWED_HOSTS`, since a listener that requires a bearer serves `/v1` to any `Host`.
+  Its image must be `legion-envoy-v30.32.0` or later, the first release whose listener reads
+  `ENVOY_OIDC_ACCOUNTS`. An older listener reads the issuer and audience, so it still requires a
+  bearer, but takes no account list and admits every subject that issuer signs a token for the
+  audience, so any pod the NetworkPolicy admits could call `/v1` as any session. The component
+  reads the image only as a digest, which says nothing of its release, so it cannot refuse an
+  older one: the deployment pins a digest of that release or later.
+
+The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the hosts.
 
 How it is updated. A change of the listener's image, size or environment rolls the one pod with
 `maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. Readiness
@@ -1100,7 +1185,10 @@ deadline, counted from its own start, not the old pod's grace. A hung old pod ho
 for all 40 seconds, which leaves the new pod 95 seconds to its first `/healthz` answer. A new
 pod that never becomes Ready leaves the old one serving: nothing stops it, and the new one
 restarts on its bind deadline. The Tailscale Service's port 9020 refuses connections while no
-listener pod is ready, and its port 4222 serves through it.
+listener pod is ready, and its port 4222 serves through it. Setting, changing or removing
+the listener's `senderMessagesPerMinute` or `senderMessageBurst` is a change
+of the listener's environment, so it rolls the pod the same way. The new pod's listener starts
+with every sender's count full, as any restart of the listener does.
 
 What is watched. The startup and liveness probes read `/livez` with `curl -sS`, which the
 listener answers 204 without reading the bus, and which exits 0 whatever the HTTP status, so a

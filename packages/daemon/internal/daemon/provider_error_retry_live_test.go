@@ -10,10 +10,11 @@
 // so the proof exercises the real configuration, the real store and its migrations, the real HTTP
 // API, the real claim supervision and its worker stream, and the real workflow. Each worker is a
 // real `omp --mode rpc` under the real `legion worker-shim`, started by localruntime_live_test.go
-// — this pod carries no tmux, so the pane is a child process group instead of a window — with this
-// checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` installed into an Oh My Pi profile of the
-// run's own. The agents register, report ready and take their tasks over the daemon's own routes
-// and stream, as they do in production.
+// — a pod on a worker image from before dispatch://INFRA-3257 carries no tmux, so the pane is a
+// child process group instead of a window — with this checkout's `@sjawhar/pi-envoy` and
+// `@sjawhar/pi-legion` installed into an Oh My Pi profile of the run's own. The agents register,
+// report ready and take their tasks over the daemon's own routes and stream, as they do in
+// production.
 //
 // What stands in is the model endpoint and nothing else. Three HTTP stand-ins of the test's own
 // answer the panes' provider requests, over the live-proof base this proof shares with the
@@ -262,7 +263,7 @@ func (r *providerErrorLive) registerController() {
 // ladder's clock, the API listener the fixture holds, and the workflow's App tokens stood in for.
 func (r *providerErrorLive) overrides() overrides {
 	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Tokens,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
 			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 			r.built.mu.Lock()
 			defer r.built.mu.Unlock()

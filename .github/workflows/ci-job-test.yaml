@@ -254,7 +254,7 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # No step here carries a -timeout of its own any more: the two go test steps that did, and
     # the Stage 1 proof beside them, are .github/workflows/ci-job-daemon-go.yaml's now. What is
     # left is the Bun install, the Claude Code plugin build, the thirty-two shell-script harnesses
@@ -561,8 +561,9 @@ jobs:
         run: .github/scripts/check-ts-filters.test.sh
 
       # Beside the two checks above, and needing no Go either: every case is one line of text,
-      # read by the line reader of .github/scripts/go-test-step-expansion.py, whose own run
-      # compiles the three Go modules it covers and is run by hand rather than by any job.
+      # read by the line reader of .github/scripts/go-test-step-expansion.py, or the hash of a
+      # script that file's AUDITED_SCRIPTS pins. The script's own run compiles the three Go
+      # modules it covers and is run by hand rather than by any job.
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/go-test-step-expansion.test.sh

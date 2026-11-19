@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -170,6 +171,22 @@ put(
   ].join("\n"),
   0o755
 );
+// bun: the Bun that runs this file, so the rig's `bun` (load_label's read of the profile settings,
+// the server and the seeds) does not depend on how the caller installed one. On a devbox bun is a
+// mise shim, which finds its version in mise's global config under the developer's home, not under
+// the HOME below: there the shim exits 1 ("No version is set for shim: bun"), and load_label reads
+// that as settings without the handler limit. The link is here, not a directory added to PATH,
+// because python3 is a mise shim there too, and mise drops its install directories from the PATH
+// of what a shim runs, which is the rig.
+stagings.push(() => symlinkSync(process.execPath, path.join(bin, "bun")));
+// A bun that cannot run, as a mise shim with no version set answers: the stand-in the row below
+// puts ahead of the link above.
+const brokenBun = path.join(scratch, "broken-bun");
+put(
+  path.join(brokenBun, "bun"),
+  ["#!/usr/bin/env bash", 'echo "No version is set for shim: bun" >&2', "exit 1", ""].join("\n"),
+  0o755
+);
 
 // The work directory: the label's profile, and the batch's services file and Dispatch token.
 const work = path.join(scratch, "work");
@@ -234,6 +251,14 @@ const setpgid = [
   "sys.exit(128 + os.WTERMSIG(status) if os.WIFSIGNALED(status) else os.WEXITSTATUS(status))",
 ].join("\n");
 
+/** The interpreter python3 reports as sys.executable, resolved in the hook with the caller's
+ * environment, before the rig changes HOME and PATH. The rig's parent runs as that file, not as the
+ * first python3 on PATH: a version manager's shim there (mise's, with no python selected) runs
+ * under the HOME above and refuses the user's mise config as untrusted when the checkout is under
+ * the user's home, or elsewhere runs python with mise's tool directories gone from PATH, so the
+ * rig's own tools (bun) then have no version either. */
+let python = "";
+
 /** Runs the rig, in a process group of its own, and returns its exit status and its stderr.
  *
  * The rig stops its own tree before it exits (stop_tree, scripts/e2e/lib/rig.sh), and a process
@@ -263,7 +288,7 @@ const setpgid = [
  * it, `python3 --version`, in the runtime image's toolchain step). The rig's own shell runs with
  * job control off, as it always has. */
 async function runRig(args: string[], vars: Record<string, string> = {}) {
-  const child = Bun.spawn(["python3", "-I", "-c", setpgid, "bash", rig, ...args], {
+  const child = Bun.spawn([python, "-I", "-c", setpgid, "bash", rig, ...args], {
     env: { ...env, ...vars },
     stdout: "pipe",
     stderr: "pipe",
@@ -289,6 +314,14 @@ beforeAll(async () => {
   // Nothing is staged and no rig is started where the rows do not run: python3 starts every one
   // of them, and this hook would throw on a host that does not have it.
   if (withoutPython) return;
+  const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
+  const executable = resolved.stdout.toString().trim();
+  if (resolved.exitCode !== 0 || !path.isAbsolute(executable)) {
+    throw new Error(
+      `could not resolve the python3 interpreter (exit ${resolved.exitCode}): ${resolved.stderr.toString() || "no absolute executable path"}`
+    );
+  }
+  python = executable;
   // A staging may queue another, so the queue is drained until it is empty.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
   mkdirSync(env.HOME);
@@ -384,6 +417,29 @@ test.skipIf(withoutPython)(
     expect(stderr).toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
     expect(existsSync(path.join(work, "runs", "askgate-facts-stale-1"))).toBe(false);
     expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("stale");
+  }
+);
+
+// The read of a profile's settings is bun's, and a bun that cannot run says nothing of the key: the
+// rig names bun's failure and its error, and never the key, for a profile that sets the limit and
+// for one that does not. The second is the control of the row above, whose refusal names the key
+// only where bun read the settings.
+test.skipIf(withoutPython)(
+  "a run whose bun cannot read the profile settings is refused, naming bun's failure and not the key",
+  async () => {
+    for (const [name, index] of [
+      ["on", "4"],
+      ["stale", "5"],
+    ]) {
+      const { code, stderr } = await runRig(["run", "askgate", name, "9", index, start], {
+        PATH: `${brokenBun}:${env.PATH}`,
+      });
+      expect(code).toBe(1);
+      expect(stderr).toContain(`label ${name}: bun could not read the profile settings`);
+      expect(stderr).toContain("No version is set for shim: bun");
+      expect(stderr).not.toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
+      expect(existsSync(path.join(work, "runs", `askgate-facts-${name}-9`))).toBe(false);
+    }
   }
 );
 

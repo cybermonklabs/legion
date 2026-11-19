@@ -204,8 +204,8 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+14 {
-		t.Fatalf("test hooks add fourteen routes: got %d, want %d", got, len(routes)+14)
+	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+15 {
+		t.Fatalf("test hooks add fifteen routes: got %d, want %d", got, len(routes)+15)
 	}
 }
 
@@ -608,6 +608,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"GET /api/v1/credential-requests",
 		"POST /api/v1/credential-requests/{id}/approve",
 		"POST /api/v1/credential-requests/{id}/deny",
+		// The dismissal of an expired request is this change's own row, and the person's for the
+		// reason the decisions above it are: Dispatch names the caller as the one who dismissed.
+		"POST /api/v1/credential-requests/{id}/dismiss",
 		"POST /api/v1/credential-requests/machine-lookup",
 		"GET /api/v1/credential-grants",
 		"POST /api/v1/credential-grants/{id}/revoke",

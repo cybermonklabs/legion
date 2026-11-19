@@ -159,8 +159,8 @@ func WithPoolMaxConns(n int) Option {
 	return func(c *rigConfig) { c.maxConns = n }
 }
 
-// WithMinters gives the broker a minter for each kind minters names, as cmd/broker/main.go's
-// kindMinters does, so a test releases a kind secret through a minter aimed at its own stub
+// WithMinters gives the broker a minter for each type minters names, as cmd/broker/main.go's
+// typeMinters does, so a test releases a type secret through a minter aimed at its own stub
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }

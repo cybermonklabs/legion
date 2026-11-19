@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -306,10 +307,9 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 			t.Fatalf("the rig's issue is %q, want one still in the workflow", rig.issue.Status)
 		}
 
-		rig.w.releaseIdlePods(ctx)
-
-		if got := rig.rows(t); len(got) != 3 || got[0] != "issue_bundle" || got[1] != "supervise:release" || got[2] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the save, the role stop and the teardown and nothing else", got)
+		queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
+		if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+			t.Fatalf("queued rows = %v, want the save, the role stop and the teardown and nothing else", queued)
 		}
 		rig.drain(t)
 		if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {

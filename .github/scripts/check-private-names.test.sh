@@ -589,14 +589,6 @@ run_pr_text
 check "an item whose id is not a whole number fails" "$(is "$status" 1)"
 check "names the cause" "$(contains "$out" 'whose id is not a whole number')"
 
-echo "case: the review event pr-title.yaml runs on"
-clean_pr
-as_review_event
-items 202 "Blocking: see $key-7." > "$work/reviews.1"
-run_pr_text
-check "a pull_request_review payload is checked like a pull_request one" "$(is "$status" 1)"
-check "names the review" "$(contains "$out" 'review:202:1: names the private deployment repository')"
-
 clean_pr
 jq '{action: "created", comment: {id: 101, body: "fine"}, issue: {number: 7, title: "a plain issue"}}' \
   "$work/event.json" > "$work/event.next"
@@ -654,7 +646,6 @@ for author in "dev-app[bot] Bot CONTRIBUTOR" "new-app[bot] Bot NONE" "owner User
 done
 
 clean_pr
-as_review_event
 items 405 "As $company_proper Labs found." 406 "All clear now." > "$work/comments.1"
 by drive-by User NONE "$work/comments.1" 1
 run_pr_text

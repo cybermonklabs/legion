@@ -180,6 +180,11 @@ type harness struct {
 	// context was the agent's request's or one that outlives its connection.
 	reported           *[]capabilities.Report
 	reportedContextErr *[]error
+	// roleHolders is each claim RoleHoldersChanged was told of, in order, as the route handed it
+	// over, and roleHoldersErr what the hook answers: nil takes the call, an error is a queue the
+	// store refused.
+	roleHolders    *[]supervise.Claim
+	roleHoldersErr *error
 	// podUpdateRounds is what Options.PodUpdateRounds answers, which a test writes before it lists
 	// the claims: the sweep that fills it in production is the daemon's, which this package has
 	// none of.
@@ -244,12 +249,15 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 	}
 	readied := &[]supervise.Claim{}
 	reported, reportedContextErr := &[]capabilities.Report{}, &[]error{}
+	roleHolders, roleHoldersErr := &[]supervise.Claim{}, new(error)
 	rounds := &PodUpdateRounds{}
 	h := &harness{
 		t: t, ctx: ctx, store: st, runtime: rt, conns: conns, tokens: tokens, supervisor: sup,
 		readied:            readied,
 		reported:           reported,
 		reportedContextErr: reportedContextErr,
+		roleHolders:        roleHolders,
+		roleHoldersErr:     roleHoldersErr,
 		podUpdateRounds:    rounds,
 	}
 	server := NewServer("127.0.0.1", 8437, Options{
@@ -263,6 +271,10 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 		CapabilityReported: func(ctx context.Context, _ supervise.Claim, report capabilities.Report) {
 			*reported = append(*reported, report)
 			*reportedContextErr = append(*reportedContextErr, ctx.Err())
+		},
+		RoleHoldersChanged: func(_ context.Context, c supervise.Claim) error {
+			*roleHolders = append(*roleHolders, c)
+			return *roleHoldersErr
 		},
 	})
 	h.handler = server.Handler

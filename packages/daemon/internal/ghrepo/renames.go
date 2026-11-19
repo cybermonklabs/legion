@@ -49,10 +49,10 @@ type Renames struct {
 // owner's directory would carry a token minted for whichever pair the map happened to keep, and
 // the other pair's repository would be unreachable from it with nothing said. Which repository a
 // recorded name resolves to no longer turns on that map — `Serving` reads the pair itself and the
-// repositories the project serves — so this refusal guards the alias map alone. Several pairs out
-// of one owner to that one owner are a transfer of several repositories, which is configured as
-// it is, and several owners moving to one owner key one alias each, so only this shape is
-// refused.
+// repositories Dispatch maps to the project — so this refusal guards the alias map alone.
+// Several pairs out of one owner to that one owner are a transfer of several repositories, which
+// is configured as it is, and several owners moving to one owner key one alias each, so only
+// this shape is refused.
 func NewRenames(pairs []Rename) (Renames, error) {
 	for index, pair := range pairs {
 		switch {
@@ -165,17 +165,18 @@ func Under[T comparable](r Renames, name string, read func(string) (T, error)) (
 	return read(partner.String())
 }
 
-// OwnerAliases is the owner each configured rename moved a repository away from, keyed by that
-// owner, lowercased, and answering the owner it moved to, lowercased too — one entry for each
-// pair that resolves, which is each pair whose `to` the project serves and whose `from` it does
-// not. A pair whose two owners are one owner is no alias, since a rename inside one owner moves
-// nothing between installations.
+// Moving is each configured pair that resolves and moves a repository from one owner to another,
+// in configured order: each pair whose `to` the project serves, whose `from` it does not
+// (`Serving`), and whose two owners are two owners, since a rename inside one owner moves nothing
+// between installations. It is the one walk of the pairs the rename rule's owner-side callers
+// take, and `OwnerAliases` is it keyed by owner.
 //
 // A GitHub App is installed on an owner, so once a transfer moves a repository to another owner,
 // the installation that covers it is that owner's: a token minted for the owner a record names
-// would be minted on an installation the repository has left. The alias is how a caller that
-// holds an owner and no repository — a role's gh bundle, which is one directory per owner — names
-// the owner whose installation holds the moved repository now.
+// would be minted on an installation the repository has left. A caller that holds the repository
+// a request names — `legion gh` and `legion git-credential`, which route by repository (the gh
+// bundle's pairs file, ghconfig.Bundle) — reads these pairs to find the owner whose installation
+// holds it now, and a caller that holds an owner and no repository reads `OwnerAliases`.
 //
 // A pair resolves here exactly when the rename rule resolves it, so this loop asks that one rule
 // rather than writing it a second time: `Serving` answers the pair's `to` for its `from` when
@@ -183,17 +184,32 @@ func Under[T comparable](r Renames, name string, read func(string) (T, error)) (
 // the reason `served` is asked of a pair's two repositories, and never of their owners, is
 // written. A deployment that configures no rename holds no pair, so it asks `served` nothing
 // and answers nil.
-func (r Renames) OwnerAliases(served func(Repository) bool) map[string]string {
-	var aliases map[string]string
+func (r Renames) Moving(served func(Repository) bool) []Rename {
+	var moving []Rename
 	for _, pair := range r.pairs {
-		from, to := strings.ToLower(pair.From.Owner()), strings.ToLower(pair.To.Owner())
-		if from == to || r.Serving(pair.From, served) != pair.To {
+		if strings.EqualFold(pair.From.Owner(), pair.To.Owner()) || r.Serving(pair.From, served) != pair.To {
 			continue
 		}
+		moving = append(moving, pair)
+	}
+	return moving
+}
+
+// OwnerAliases is the owner each configured rename moved a repository away from, keyed by that
+// owner, lowercased, and answering the owner it moved to, lowercased too — one entry for each
+// pair that moves a repository between two owners (Moving).
+//
+// The alias is how a caller that holds an owner and no repository — a role's gh bundle, which is
+// one directory per owner — names the owner whose installation holds the moved repository now.
+// A deployment that configures no rename holds no pair, so it asks `served` nothing and answers
+// nil.
+func (r Renames) OwnerAliases(served func(Repository) bool) map[string]string {
+	var aliases map[string]string
+	for _, pair := range r.Moving(served) {
 		if aliases == nil {
 			aliases = make(map[string]string, len(r.pairs))
 		}
-		aliases[from] = to
+		aliases[strings.ToLower(pair.From.Owner())] = strings.ToLower(pair.To.Owner())
 	}
 	return aliases
 }
@@ -212,12 +228,12 @@ func (r Renames) OwnerAliases(served func(Repository) bool) map[string]string {
 // cannot do without, and its name, which keeps a write off a redirect and names the repository
 // GitHub holds in whatever the caller writes down.
 //
-// The rule reads the repositories the project serves, one at a time, and never the set of owners
-// those repositories have. The owner is the wrong question to ask: a project that serves one more
-// repository of the old owner serves no more of the moved one, yet an owner test reads that as
-// the old owner being the project's own and stops resolving the pair. That is the production
-// failure this rule replaces — one repository added to a project's mapping turned a live pair off
-// and left 47 trees unable to push for 42 minutes.
+// The rule reads the repositories Dispatch maps to the project, one at a time, and never the set
+// of owners those repositories have. The owner is the wrong question to ask: a project that
+// serves one more repository of the old owner serves no more of the moved one, yet an owner test
+// reads that as the old owner being the project's own and stops resolving the pair. That is the
+// production failure this rule replaces — one repository added to a project's mapping turned a
+// live pair off and left 47 trees unable to push for 42 minutes.
 //
 // The rule is directional, and each of its clauses earns its keep. A record naming the pair's
 // `to` is never answered with the `from`: the `to` is the name GitHub has, so that record needs

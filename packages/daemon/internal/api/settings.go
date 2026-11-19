@@ -171,11 +171,6 @@ type KubernetesSettings struct {
 	// Setup is the argv every role runs before each start of its Oh My Pi, `[]` while the
 	// file sets none: every pod runs it, so every pod knows it, as with `omp_launch_prefix`.
 	Setup []string `json:"setup"`
-	// SkillsRepository is the skills marketplace every issue pod's roles install from
-	// (`runtime.kubernetes.skills_repository`), as `<owner>/<name>`; empty while the file names
-	// none. It is a public repository name, not a credential, and every pod's init container
-	// carries it on its command line already.
-	SkillsRepository string `json:"skills_repository"`
 	// TestPostgres is whether every issue pod serves its own PostgreSQL for tests, which every
 	// role of such a pod is told as LEGION_TEST_PG_DSN, so every pod may read it.
 	TestPostgres    bool                    `json:"test_postgres"`
@@ -191,6 +186,36 @@ type KubernetesSettings struct {
 	// credential, and a role reads it to know when a process of its own may be ended under it, so
 	// every pod may read it.
 	MemoryGuard MemoryGuardSettings `json:"memory_guard"`
+	// Sandbox is the settled `runtime.kubernetes.sandbox`: the sandbox of the project's issue
+	// pods, the issues whose pods run in the other one, and where a microVM pod runs. Every
+	// member is a word, an issue key, a class name, or the cluster's Workload Identity pool and
+	// identity provider, which name the cluster and grant nothing, so no member is a credential.
+	Sandbox SandboxSettings `json:"sandbox"`
+}
+
+// SandboxSettings is the settled `runtime.kubernetes.sandbox`: `type` is gvisor when the file
+// names none, `canary_issues` is `[]` when it names none, and `microvm` is absent when the file
+// names no such block.
+type SandboxSettings struct {
+	Type         string           `json:"type"`
+	CanaryIssues []string         `json:"canary_issues"`
+	MicroVM      *MicroVMSettings `json:"microvm,omitempty"`
+}
+
+// MicroVMSettings is `runtime.kubernetes.sandbox.microvm`: the ComputeClass of the microVM pods'
+// nodes, absent in a block no issue pod uses that names none; their workspace volume's class,
+// `runtime.kubernetes.storage_class` when the block names none; and the metadata endpoint's two
+// members, absent while the block names none.
+type MicroVMSettings struct {
+	ComputeClass string            `json:"compute_class,omitempty"`
+	StorageClass string            `json:"storage_class"`
+	Metadata     *MetadataSettings `json:"metadata,omitempty"`
+}
+
+// MetadataSettings is `runtime.kubernetes.sandbox.microvm.metadata`.
+type MetadataSettings struct {
+	WorkloadPool     string `json:"workload_pool"`
+	IdentityProvider string `json:"identity_provider"`
 }
 
 // IdleReleaseSettings is the settled `runtime.kubernetes.idle_release`. Zero `idle_minutes` is
@@ -275,8 +300,8 @@ type PluginsSettings struct {
 	PiEnvoy  string `json:"pi_envoy"`
 }
 
-// ProjectSettings is one `projects.<KEY>` entry; its repositories are Dispatch's mapping, which
-// the state's `repositories` shows, never this file's.
+// ProjectSettings is one `projects.<KEY>` entry. Dispatch holds the project's repository mapping,
+// which the state's `repositories` shows, and this file holds none of it.
 type ProjectSettings struct {
 	SlackChannels []string       `json:"slack_channels"`
 	Memory        MemorySettings `json:"memory"`
@@ -608,10 +633,9 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			Issue:      reservationSettingsOf(block.Resources.Issue),
 			Controller: reservationSettingsOf(block.Resources.Controller),
 		},
-		SessionStore:     string(block.SessionStore.Kind),
-		Setup:            stringsOf(block.Setup),
-		SkillsRepository: skillsRepositorySetting(block.SkillsRepository),
-		TestPostgres:     block.TestPostgres,
+		SessionStore: string(block.SessionStore.Kind),
+		Setup:        stringsOf(block.Setup),
+		TestPostgres: block.TestPostgres,
 		RepositoryCache: RepositoryCacheSettings{
 			Volume:         block.RepositoryCache.Volume,
 			RefreshMinutes: block.RepositoryCache.RefreshMinutes,
@@ -621,6 +645,10 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 		IdleRelease: IdleReleaseSettings{
 			IdleMinutes:     block.IdleRelease.IdleMinutes,
 			BackstopMinutes: block.IdleRelease.BackstopMinutes,
+		},
+		Sandbox: SandboxSettings{
+			Type:         string(block.Sandbox.Type),
+			CanaryIssues: stringsOf(block.Sandbox.CanaryIssues),
 		},
 		MemoryGuard: MemoryGuardSettings{IssuePods: MemoryGuardPodSettings{
 			Enabled:              block.MemoryGuard.IssuePods.Enabled,
@@ -639,6 +667,12 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 	}
 	if plugins := block.Plugins; plugins != nil {
 		settings.Plugins = &PluginsSettings{PiLegion: pluginSourceOf(plugins.PiLegion), PiEnvoy: pluginSourceOf(plugins.PiEnvoy)}
+	}
+	if microVM := block.Sandbox.MicroVM; microVM != nil {
+		settings.Sandbox.MicroVM = &MicroVMSettings{ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass}
+		if metadata := microVM.Metadata; metadata != nil {
+			settings.Sandbox.MicroVM.Metadata = &MetadataSettings{WorkloadPool: metadata.WorkloadPool, IdentityProvider: metadata.IdentityProvider}
+		}
 	}
 	return settings
 }
@@ -687,16 +721,6 @@ func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 		declared = append(declared, entry)
 	}
 	return declared
-}
-
-// skillsRepositorySetting is repository as `<owner>/<name>`, and "" for the zero repository, which
-// is what a file naming no skills marketplace leaves: ghrepo's own String() of the zero value is
-// not the empty string.
-func skillsRepositorySetting(repository ghrepo.Repository) string {
-	if repository.IsZero() {
-		return ""
-	}
-	return repository.String()
 }
 
 // endpointOf is one address key's value as the state shows it: the scheme, the host and the path,

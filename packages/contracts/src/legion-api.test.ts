@@ -1170,7 +1170,7 @@ test("a claim carries the leak check's cause beside its failure", () => {
     throw new Error("state fixture lacks LEGION-210's implementer");
   }
   const sentence =
-    "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found";
+    "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found";
   expect(refused.leakCheckCause).toBe(sentence);
   expect(
     LegionStateResponse.parse(state).issues["LEGION-210"]?.workers.implementer?.claim.leakCheckCause
@@ -1528,11 +1528,16 @@ test("a Stage 3 issue without its Dispatch status is refused", () => {
 
 // Contract 31: every recorded issue carries the repository it targets and its default branch, its
 // pull request the repository it is in, and the state the project's repository mapping as the
-// daemon serves it, each left-out repository named with the App it lacks. Contract 32: each mapped
+// daemon serves it, each left-out repository named with the App it lacks. Contract 32: each served
 // repository carries its cache under the Kubernetes runtime, Ready with its last health read or
-// the read's failure, and the caches of repositories no longer mapped are listed with when they go.
-// A state without the mapping, or without its caches, is refused.
-test("the state golden carries each issue's repository and the project's mapping", () => {
+// the read's failure, and the caches of repositories no longer served are listed with when they go.
+// Contract 152: the block is every repository the daemon serves, the mapping's and the records'
+// alike, and each entry says which role App is installed on it (`apps`), which is what decides
+// whether the project can work there. A refused entry says what GitHub answered of each App on it
+// wherever GitHub answered both reads, and nothing where a read failed, its reason saying so. A
+// state without the block, or without its caches, is refused. An entry without `apps` is read all
+// the same, with that one answer absent: a daemon of an earlier contract writes none.
+test("the state golden carries each issue's repository and the repositories it serves", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
   expect(state.issues["LEGION-208"]?.repo).toBe("acme/widgets");
@@ -1540,10 +1545,14 @@ test("the state golden carries each issue's repository and the project's mapping
   expect(state.issues["LEGION-210"]?.defaultBranch).toBe("release/v7.1");
   expect(state.repositories.owners).toEqual(["acme", "zeta"]);
   expect(
-    state.repositories.mapped.map(({ repo, default: isDefault }) => ({ repo, default: isDefault }))
+    state.repositories.mapped.map(({ repo, default: isDefault, apps }) => ({
+      repo,
+      default: isDefault,
+      apps,
+    }))
   ).toEqual([
-    { repo: "acme/widgets", default: true },
-    { repo: "zeta/tools", default: false },
+    { repo: "acme/widgets", default: true, apps: { implement: true, review: true } },
+    { repo: "zeta/tools", default: false, apps: { implement: true, review: true } },
   ]);
   expect(state.repositories.mapped[0]?.cache).toEqual({
     repo: "acme/widgets",
@@ -1563,9 +1572,19 @@ test("the state golden carries each issue's repository and the project's mapping
     reason:
       "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
   });
-  expect(state.repositories.refused[0]?.reason).toBe(
-    "the review App is not installed on acme/gadgets"
-  );
+  expect(state.repositories.refused).toEqual([
+    {
+      repo: "acme/gadgets",
+      reason: "the review App is not installed on acme/gadgets",
+      apps: { implement: true, review: false },
+    },
+    {
+      repo: "zeta/archive",
+      reason:
+        "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again",
+    },
+  ]);
+  expect(state.repositories.refused[1]?.apps).toBeUndefined();
   expect(state.repositories.caches).toEqual([
     {
       repo: "acme/legacy",
@@ -1592,6 +1611,16 @@ test("the state golden carries each issue's repository and the project's mapping
   expect(LegionStateResponse.parse(refused).repositories.caches[0]?.state).toBe("refused");
   Object.assign(refused.repositories.caches[0] ?? {}, { state: "gone" });
   expect(LegionStateResponse.safeParse(refused).success).toBeFalse();
+  // An entry a daemon of an earlier contract wrote carries no `apps`, and the window a roll of
+  // the daemon and the worker image opens is exactly that pairing, so the reader loses that one
+  // answer and keeps the state rather than refusing the whole body.
+  const halfRead = fixture("state.json") as {
+    repositories: { mapped: Array<Record<string, unknown>> };
+  };
+  delete halfRead.repositories.mapped[0]?.apps;
+  const withoutApps = LegionStateResponse.parse(halfRead);
+  expect(withoutApps.repositories.mapped[0]?.apps).toBeUndefined();
+  expect(withoutApps.repositories.mapped[0]?.repo).toBe(state.repositories.mapped[0]?.repo);
 });
 
 // The state's capability report (contract 16): the golden carries a decided row with the operator's

@@ -182,15 +182,18 @@ func admissionPass(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 // and the line judged again after both releases (record.Waiting) says which issues' first phase
 // starts, which Engine.StartFirstPhase starts — a root a shorter step list left at admitted
 // among them. It leaves out what the cap decides: it promotes every candidate it reaches,
-// grants no slot, starts no architect and resumes no returning issue, so an issue that gave its
-// row back for a wait stands in the line (record.LineWaitingOnIssue) and is started by nothing
-// here. It leaves out these steps of the real pass too: ReconcileAwaiting (run first there),
-// adoptQueuedRoots, finishFencedStarts, releaseUnslotted, tellChildrenFirst, the second loop of
-// releaseSlots (which clears record.Issue.ReleasedForWaitAt) and the re-read rounds, so it cannot
-// prove what any of them does. internal/admit's own tests run the real pass with its cap.
+// grants no slot, starts no root's architect (a child's own architect is started by
+// Engine.StartFirstPhase, so the pass queues that start) and resumes no returning issue, so an
+// issue that gave its row back for a wait stands in the line (record.LineWaitingOnIssue) and is
+// started by nothing here. It leaves out these steps of the real pass too: ReconcileAwaiting (run
+// first there), adoptQueuedRoots, finishFencedStarts, releaseUnslotted, tellChildrenFirst, the
+// second loop of releaseSlots (which clears record.Issue.ReleasedForWaitAt) and the re-read
+// rounds, so it cannot prove what any of them does. internal/admit's own tests run the real pass
+// with its cap.
 func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held func(string) bool) {
 	t.Helper()
 	scoped, committed := intake.WithCommitHooks(context.Background())
+	scoped = engine.OpenFact(scoped)
 	tx, err := pool.Begin(scoped)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
@@ -269,6 +272,9 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		if err := engine.StartFirstPhase(scoped, tx, entry.Issue, rows[entry.Issue.Key].Blockers); err != nil {
 			t.Fatalf("StartFirstPhase %s: %v", entry.Issue.Key, err)
 		}
+	}
+	if err := engine.SettleFact(scoped, tx); err != nil {
+		t.Fatalf("settle: %v", err)
 	}
 	if err := tx.Commit(scoped); err != nil {
 		t.Fatalf("commit: %v", err)

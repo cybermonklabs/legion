@@ -105,9 +105,9 @@
 # (each one's message, author and committer), issue comments, reviews and review comments through
 # check-pr-text.sh (ci.yaml's pr-title job at each push to a pull request that is not a draft, when
 # a draft is marked ready and on the merge queue's group, and pr-title.yaml when the pull request
-# is edited or a review on it is submitted or edited); and in its tests, in ci.yaml's test job and
-# its private-names-port job, which run with placeholder terms of their own and no secret. Each
-# step that runs it with the secret maps PRIVATE_NAME_TERMS.
+# is edited); and in its tests, in ci.yaml's test job and its private-names-port job, which run
+# with placeholder terms of their own and no secret. Each step that runs it with the secret maps
+# PRIVATE_NAME_TERMS.
 set -euo pipefail
 # No tracing: a traced run (`bash -x`, or xtrace in SHELLOPTS) would print each term, and the forms
 # a test or a match makes of it, wherever the lines below expand one. This comes before the first.

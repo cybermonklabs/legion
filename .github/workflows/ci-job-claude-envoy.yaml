@@ -29,7 +29,7 @@ on:
 
 jobs:
   claude-envoy:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,6 +61,14 @@ jobs:
         working-directory: packages/claude-envoy
       - name: Pack Claude Envoy plugin
         run: bun pm pack --destination ../../out/pr-artifacts
+        working-directory: packages/claude-envoy
+      # The Codex plugin's package, built from the checked dist/ and packed and checked as
+      # release.yaml's claude_envoy_build does, into the same artifact.
+      - name: Build, pack and check the Codex plugin as the release does
+        run: |
+          bun scripts/build.ts --codex-out "$RUNNER_TEMP/codex-envoy" --dist dist
+          (cd "$RUNNER_TEMP/codex-envoy" && bun pm pack --destination "$GITHUB_WORKSPACE/out/pr-artifacts")
+          scripts/check-packed-skills.sh "$GITHUB_WORKSPACE"/out/pr-artifacts/sjawhar-codex-envoy-*.tgz
         working-directory: packages/claude-envoy
       # `overwrite` lets a re-run of this job replace its first attempt's copy, which the
       # private-names job below reads.

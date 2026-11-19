@@ -163,14 +163,15 @@ const timeFormat = "2006-01-02T15:04:05.999999999Z07:00"
 // registration that minted it; the credential routes check that again after their GitHub await. A
 // claim grant whose claim speaks another plugin contract than the daemon's is refused the
 // stale-caller 409 here, once every other check has passed: every grant-bearing route takes its
-// claim caller's staleness from this one place.
+// claim caller's staleness from this one place. A claim grant it takes notes its claim as the
+// request's requester (noteRequester), whose stream apply waits for.
 //
 // A controller grant is returned here without consulting the controller record at all (LEGION-164):
 // its own staleness is refused at mint (controllerSessionGrant -> refuseIfStaleController), grants
 // live in process memory and die with a daemon restart, and a registration that changes the
 // record's contract comes after a mint that revokes every controller grant (RevokeControllers), so
 // a redeemable controller grant was always minted for a controller current at the time. Refusing
-// here on the record's contract would also catch the operator-bearer grant `legion status`
+// here on the record's contract would also catch the operator-bearer grant `legion issue status`
 // redeems on this route — also Controller: true — which after migration 0042 leaves every existing
 // controllers row at plugin_contract 0 until its next registration, refusing the operator's own
 // call at the first boot on this release.
@@ -195,6 +196,7 @@ func (s *server) redeem(w http.ResponseWriter, r *http.Request, id string) (cred
 	if s.refuseIfStaleClaimFailure(w, r, machine.Claim()) {
 		return credential.Grant{}, false
 	}
+	noteRequester(r.Context(), grant.Claim)
 	return grant, true
 }
 
@@ -249,7 +251,7 @@ func (s *server) appLease(w http.ResponseWriter, r *http.Request, role appauth.A
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")
 		return appauth.Lease{}, false
 	}
-	lease, err := s.tokens.Token(r.Context(), role, repo)
+	lease, err := s.tokens.Token(r.Context(), role, repo.Owner())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: mint GitHub App token", "role", logRole, "repo", repo.String())
 		writeFailure(w, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")

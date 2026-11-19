@@ -113,8 +113,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-docs-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-docs-{0}-', runner.os) || '' }}
+          key: go-docs-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-docs-{0}-{1}-', runner.os, runner.arch) || '' }}
       - run: bun install --frozen-lockfile
       - name: Typecheck the docs site
         run: bun run typecheck

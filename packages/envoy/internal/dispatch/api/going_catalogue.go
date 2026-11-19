@@ -6,7 +6,7 @@ package api
 // The catalogue is the dispatch tools that write, all but one: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
 // each carried whole through contracts.DispatchTools — its own curated description, which is
-// what a model chooses on, and its own argument schema. Twenty-one of the thirty-five tools
+// what a model chooses on, and its own argument schema. Twenty-one of the thirty-six tools
 // write, and the catalogue holds twenty of them, which is under the count where a model's choice
 // measurably falls apart, so the list is read whole: nothing searches it, and no second schema
 // is authored per route. The one it leaves out is dispatch_review, on purpose: a review records
@@ -178,9 +178,9 @@ var goingToolRoutes = map[string][]goingToolRoute{
 	},
 	// The issue-less send to one session. Its path names the session the tool was asked to
 	// reach, not the calling session, so the placeholder binds to the tool's own argument. The
-	// body is indexed without its references counted (indexMessage: a message with no issue
-	// takes refs.IndexItem), so this write makes no mention edge; a send naming in_reply_to
-	// makes the replies_to edge every message reply makes.
+	// body is indexed without its references counted (createStoredMessage: a message with no
+	// issue takes refs.IndexItem alone), so this write makes no mention edge; a send naming
+	// in_reply_to makes the replies_to edge every message reply makes.
 	"dispatch_send_to_agent": {{
 		Method: http.MethodPost, Pattern: "/api/v1/agents/{session_id}/messages",
 		Path: map[string]string{"session_id": "session"}, Relations: []string{"replies_to"},

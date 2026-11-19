@@ -185,6 +185,17 @@ func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 	return intake.Result{Refusal: refusal}, a.wakeForFreeSlot(ctx, tx, released)
 }
 
+// OpenFact and SettleFact are the engine's (intake.Settler): admission writes issues through it —
+// a re-admission's new generation, a promotion's starts — so the runs those writes end are settled
+// whichever of the two a fact applies through, once. Every admission holds an engine (New).
+func (a *Admission) OpenFact(ctx context.Context) context.Context {
+	return a.engine.OpenFact(ctx)
+}
+
+func (a *Admission) SettleFact(ctx context.Context, tx pgx.Tx) error {
+	return a.engine.SettleFact(ctx, tx)
+}
+
 // applyFact is Apply's work, and reports the issues whose slots it released and the refusal of a
 // release's adoption.
 func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) ([]string, *intake.Refusal, error) {
@@ -753,13 +764,14 @@ func (a *Admission) rootArchitectOf(project string, issue record.Issue) (phaseWo
 // reconcileOrphans, at orphanSweepInterval), so a tick can name a worker that passed its bound
 // since the last sweep up to a minute before the next one writes its architect's notice.
 //
-// Why the controller is told at all, when the issue's own architect already was or is within the
-// minute: that architect may be failed or gone, so its notice reaches nobody, and the controller
-// is the role that holds `fresh_session` and reads the whole project (this root's architect ruled
-// it on 2026-11-12, dispatch://INFRA-3163). The tick carries the list. The state route gains no
-// field for it; the state's settings gain the two bounds, `worker_silence_minutes` and
-// `worker_background_hours`, as two keys of a loose object, so no daemon API contract number is
-// taken for either.
+// Why the controller is told at all, when the architect that owns the issue already was or is
+// within the minute: a child's architect that does not hold its role is passed over for the one
+// above it, but the notice can end at a tree root's architect claim that has failed or is gone,
+// where it reaches nobody. The controller is the role that holds `fresh_session` and reads the
+// whole project (this root's architect ruled it on 2026-11-12, dispatch://INFRA-3163). The tick
+// carries the list. The state route gains no field for it; the state's settings gain the two
+// bounds, `worker_silence_minutes` and `worker_background_hours`, as two keys of a loose object,
+// so no daemon API contract number is taken for either.
 //
 // What that costs, plainly: record.DecodeOutboxPayload refuses a field and a notice kind it
 // does not know, so a daemon of an older release that met a queued row carrying this list, or a
@@ -914,17 +926,20 @@ func parentsFirst(summaries []intake.DispatchIssue) []intake.DispatchIssue {
 }
 
 // putNewRoot records an unrecorded root or orphan handed to Legion in todo, on the repository its
-// observation resolves to and that repository's default branch (workflow's ResolveRepository).
-// One whose repository resolves to none, or to one Legion does not serve, is not recorded: the
-// daemon says why on the issue, once for that resolution, and the issue's next observation in
-// todo is admission's next look at it.
+// observation resolves to and that repository's default branch (workflow's
+// ResolveIssueRepository, which takes the refusal the observation's own preparation read from
+// GitHub when it carries one). One whose repository resolves to none, or one GitHub does not
+// answer for as a repository a role App reaches, is not recorded: the daemon says why on the
+// issue, once for that resolution, and the issue's next observation in todo is admission's next
+// look at it. A root recorded on a repository nothing named before has that repository heard and
+// cached from here (workflow.Engine.HearRepository).
 //
 // This is where a root is first recorded, so it is where the issue-unit experiments the project
 // declares are drawn for it (drawExperiments): every issue the daemon records is drawn for at the
 // moment it records it, and a root is an issue like any other. Its tree's own experiments are
 // another draw, made when its tree is opened (promoteHolds).
 func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intake.DispatchIssue, logOrphan bool) error {
-	resolution, err := a.engine.ResolveRepository(observation.ResolvedRepo)
+	resolution, err := a.engine.ResolveIssueRepository(observation)
 	if err != nil {
 		return fmt.Errorf("resolve the repository of %s: %w", observation.Key, err)
 	}
@@ -935,7 +950,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 		}
 		if noted {
 			intake.OnCommit(ctx, func() {
-				a.log.Info("admission: not admitted; its repository is not one Legion serves", "issue", observation.Key,
+				a.log.Info("admission: not admitted; GitHub does not answer for its repository as one Legion's Apps reach", "issue", observation.Key,
 					"resolved", observation.ResolvedRepo, "reason", resolution.Refusal)
 			})
 		}
@@ -964,6 +979,7 @@ func (a *Admission) putNewRoot(ctx context.Context, tx pgx.Tx, observation intak
 	if err := a.store.PutIssue(ctx, tx, issue); err != nil {
 		return fmt.Errorf("record admitted root %s: %w", observation.Key, err)
 	}
+	a.engine.HearRepository(ctx, issue.GitHubRepo)
 	if err := a.drawExperiments(ctx, tx, issue.Key, config.ExperimentIssue); err != nil {
 		return err
 	}
@@ -2158,10 +2174,14 @@ func (a *Admission) catchingUpFor(key string) bool {
 	return holding
 }
 
-// tellChildrenFirst tells the architect of each parent whose own first phase now waits for its
-// Dispatch children, once per issue and per run (record.Store.TellChildrenFirst). The notice
-// names the parent, each open child with the Dispatch status that holds it, and each cycle
-// among them (workflow.ChildrenFirstNotice).
+// tellChildrenFirst tells the architect that owns each parent whose own first phase now waits for
+// its Dispatch children, once per issue and per run (record.Store.TellChildrenFirst): a root's own
+// architect, and for a child the architect above it, since the child's own starts only with the
+// first phase this wait holds. A child a person set back to todo while it ran or was held is the
+// exception: that re-entry starts and stops nothing (workflow's ReenterChild), so a child's own
+// architect that held its role still holds it and is told. The notice names the parent, each
+// open child with the Dispatch status that holds it, and each cycle among them
+// (workflow.ChildrenFirstNotice).
 //
 // The wait is judged again every pass and the telling is written once, which is the whole of
 // why the two are recorded differently: every fact, tick, hold release and boot runs this pass,
@@ -2459,11 +2479,13 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // that phase on. A hand-over turns a child into that root while preserving its phase, so its phase
 // role needs the same resume start ordinary mid-phase children receive
 // (workflow.ResumePhaseTask, which says to carry the phase's work on and names no head, since a
-// merger reads the head it merges on GitHub). A root promoted held, which only a
-// hand-over leaves (every other re-admission starts its root at admitted), starts no worker, and
-// the hold's notice went to the architect of the tree it was handed over from, so its own
-// architect is told of the hold (workflow.HeldNotice), whether or not it carried a gate.
-// Promotion already queued the root's branch; each other member queues its own before starting.
+// merger reads the head it merges on GitHub). A root promoted held, which only a hand-over leaves
+// (every other re-admission starts its root at admitted), starts no worker. The hold's first
+// notice was routed in the tree the root was handed over from, where it reached the root's own
+// architect only if that claim held its role then, and else an architect above it, so its
+// architect is told of the hold again as a root's (workflow.HeldNotice), whether or not it carried
+// a gate. Promotion already queued the root's branch; each other member queues its own before
+// starting.
 // No member's phase is rewritten on the way back: the phase its record carries is the phase it
 // stands in, since the merge is what ends merging and no phase of this workflow is a wait for
 // one. A child of a re-admitted tree, and a root a hand-over created, come back in merging where
@@ -2496,7 +2518,7 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 //
 // What an issue waits on is deliberately not read here: every member this starts is mid-phase,
 // work already under way, and a member standing at admitted is passed over, since nothing of it
-// has run and its first phase is the waiting line's to start.
+// has run in this generation and its first phase is the waiting line's to start.
 //
 // root is the promoted root as the promotion has just written it, and issues the pass's own
 // records, which still carry that root as the pass read it. The caller passes both and appends
@@ -2517,8 +2539,8 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	}
 	type midPhaseMember struct {
 		issue record.Issue
-		// owner is the role whose phase the member stands in, empty where that phase is the
-		// tree architect's.
+		// owner is the role whose phase the member stands in, empty where that phase is an
+		// architect's (accepting).
 		owner claim.Role
 		roles []roleToken
 	}
@@ -2538,16 +2560,18 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		if member.Tree != root.Tree || record.OutOfWorkflow(member.Status) {
 			return nil
 		}
-		// A member standing at admitted has run nothing in this generation: it holds no session
-		// to bring back, and its own first phase starts when the waiting line gives it a slot
-		// (record.LineFirstPhase). A root whose tree is opened for the first time is exactly
-		// that, so admitting a fresh root relaunches nobody and creates no claim for a worker
-		// that has never worked.
+		// A member standing at admitted has run nothing in this generation, and nothing of it is
+		// brought back here: its own first phase starts when the waiting line gives it a slot
+		// (record.LineFirstPhase), and a claim it kept from an earlier run comes back on its kept
+		// session when a start of its role reaches it. A root whose tree is opened for the first
+		// time is exactly that, so admitting a fresh root relaunches nobody and creates no claim
+		// for a worker that has never worked.
 		if member.Phase == phase.Admitted {
 			return nil
 		}
-		// Accepting's role is the tree's architect, which promotion already started: nothing of
-		// that phase is resumed here.
+		// Accepting's role is an architect, which no phase start brings back here: the root's is
+		// promotion's own start, and a child's own comes back below with the member's other roles
+		// that have run.
 		owner := phase.RoleFor(member.Phase)
 		if owner == claim.RoleArchitect {
 			owner = ""
@@ -2569,7 +2593,8 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		standing := midPhaseMember{issue: member, owner: owner}
 		for _, role := range claim.Roles {
 			// The tree's architect is promotion's own start, with the task that hands it its
-			// tree; a member's own sub-architect is no phase worker and comes back with the rest.
+			// tree; a member's own architect, which the daemon started with that member's first
+			// phase, is no phase worker and comes back with the rest.
 			if claim.IsTreeArchitect(role, member.Key, member.Tree) {
 				continue
 			}
@@ -2640,6 +2665,17 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			if err := a.engine.StartPromotedWorker(ctx, tx, member, held.role); err != nil {
 				return err
 			}
+		}
+		// The member's step starts again with the tree, whatever the promotion starts of it: a
+		// phase worker's start above began its run already, and accepting's (whose role is the
+		// architect that owns the member, workflow's acceptingAgent: its own where a start of it
+		// queued above will run), a held member's (whose hold starts none) and a role
+		// workflow.StartFor finds already started begin it here. The store's run mark decides
+		// (workflow's StartStepRecord): a run still open goes on and gets no second start — the
+		// one a start above began, and the merge step of a member held from merging, which the
+		// linger left open and the hold's retry goes on with.
+		if err := a.engine.StartStepRecord(ctx, tx, member); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -2764,17 +2800,17 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 //
 // The per-issue tests of the shared selection (phaseWorkerOf) bound the phase workers it names,
 // and they are what keeps it from starting a worker the cap has not admitted:
-// workflow.OpenPhaseRole answers no worker role for accepting, the tree's architect's own phase,
-// so the selection passes over it, and record.AtWork is false for accepting. So the widening
-// reaches the worker of a retro and of a merging, where the merger's own work ends the phase, and
-// no other phase worker. An issue at work that holds no row because it waits in the line is not
-// reached, which is the cap bypass this repair must never be.
+// workflow.OpenPhaseRole answers no worker role for accepting, which is the own phase of the
+// architect that owns the issue, so the selection passes over it, and record.AtWork is false for
+// accepting. So the widening reaches the worker of a retro and of a merging, where the merger's
+// own work ends the phase, and no other phase worker. An issue at work that holds no row because
+// it waits in the line is not reached, which is the cap bypass this repair must never be.
 //
 // The root's own architect is the second role, and record.AtWork is not its reading: that rule
 // answers false for a root at admitted once its design gate has opened, where the architect is
-// still the only role of the tree at work, and a relaunched architect of exactly such a root is
-// the measured defect (dispatch://INFRA-2614). The architect of every root of the domain is
-// weighed here, slotted, past its review or released for a wait, and the reach that decides
+// still the only role at work on the root itself, and a relaunched architect of exactly such a
+// root is the measured defect (dispatch://INFRA-2614). The architect of every root of the domain
+// is weighed here, slotted, past its review or released for a wait, and the reach that decides
 // which of them is owed anything is read once its claim is behind (architectReached,
 // workflow.ArchitectAtWork): a root at admitted whatever its gate, a root a hand-over carried in
 // while it stands in the run that hand-over carried it into, and a root past admitted under its
@@ -2986,10 +3022,10 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		// cutover left stopped (workflow's cutoverMergerRepair), which no wake would start.
 
 		// A claim an operator suspended is passed over whatever entry it stands on: `legion
-		// claims stop` stopped that worker and only the operator's own resume starts it again
-		// (supervise's RuleHolds, which no start the daemon queues gets past). A claim the
-		// daemon itself suspended is repaired, which is what the idle rule's release and the
-		// daemon's own suspend both leave behind.
+		// claims suspend` suspended that worker, and an operator's suspension holds against every
+		// rule of the daemon's (supervise's RuleHolds, which no start the daemon queues gets
+		// past). A claim the daemon itself suspended is repaired, which is what the idle rule's
+		// release and the daemon's own suspend both leave behind.
 		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByOperator {
 			continue
 		}
@@ -3060,7 +3096,8 @@ func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record
 // (workflow.ArchitectHearsSlotted, the slotted form of the daemon's one reading of that
 // question, workflow.ArchitectHears: a root that lingers, one Dispatch has taken out of the
 // workflow, and an issue that is not its tree's root, which is what leaves a child's own
-// sub-architect claim outside the rule, since no daemon start creates one). The slotted form
+// sub-architect claim outside the rule, since its start, which the child's first phase start
+// queues (workflow's gateOpened), carries no task and raises no entry). The slotted form
 // reads nothing, because root is one readSlotHolders holds: it holds one of the slots this pass
 // read, or stands past its review in a tree that runs, or was released for a wait in a tree that
 // runs (record.TreeRuns, which no queued root does), and so waits for none. And the root must be

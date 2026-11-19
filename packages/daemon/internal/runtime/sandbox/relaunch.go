@@ -17,9 +17,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -102,12 +102,14 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // the old account grants, so an old account can be deleted only once every pod of it has gone.
 //
 // Replacing a live pod — its Sandbox Running, the pod its own, not ended, its init containers
-// passed — ends the process of every role
-// still running in it, wherever its turn stood, so the Suspended patch that replaces it names it
-// on the Sandbox in the same write (suspendDisplacing): evaluate then reports each of those roles
+// passed, and not a pod its node never started (neverStarted) — ends the process of every role
+// still running in it, wherever its turn stood, so the Suspended patch that replaces it names it on
+// the Sandbox in the same write (suspendDisplacing): evaluate then reports each of those roles
 // ended by the daemon's replacement (Displaced), which the supervisor resumes uncharged
-// (LEGION-729). A pod already ended, or never the Sandbox's, is named nothing. Before each start
-// the Sandbox records the addresses the generation is handed (recordAddresses). A new pod is
+// (LEGION-729). A pod already ended, or never the Sandbox's, is named nothing, and nor is a pod
+// that never started, where no role ran: the launch that waited the boot timeout on such a pod was
+// charged, and the next one replaces it rather than waiting on it again. Before each start the
+// Sandbox records the addresses the generation is handed (recordAddresses). A new pod is
 // provisioned by its kind (podKind.provision), under nothing but the pod's own launch turn: an
 // issue pod has its workspace's provisioning token minted, the controller's pod needs nothing. A
 // workflow claim passed its tree's lifecycle check before the call (supervise's checkLaunch), so
@@ -125,17 +127,18 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // relaunch stops only the child it may itself have started: a Start the launcher received but did
 // not answer in time (stopIssuedChild). A launch installs its plugin pair (launcherCommand) only
 // when spec.Plugins is set and the pod was kept rather than replaced: a pod replaced for any other
-// reason — a suspended Sandbox, a lost launcher binding, a failed init, a moved address — comes up
-// on the configured image, which the boot gate holds to the daemon's contract, so its copies are
-// already right; carrying the install onto a fresh pod would be installing over a pair already
-// current. l.spec.Plugins is cleared in that case before launcherCommand builds its argv. A pod
-// whose issue Sandbox is still of the release before the pod-owned disk — owning the `issue`
-// volume claim template that pod mounts — is replaced too, and its Sandbox with it: that field is
-// immutable in the CRD, so deleting the Sandbox at the issue's next launch and creating one of the
-// current shape is the only way to the pod-owned disk (replaceSupersededSandbox), which carries
-// the name the suspension wrote onto the Sandbox it creates, and keeps it in the runtime's hands
-// while the issue has no Sandbox at all (stranded), so the roles that replacement ended are read as
-// displaced rather than dead, in the gap between the delete and the create too.
+// reason — a suspended Sandbox, a lost launcher binding, a failed init, a pod that never started, a
+// moved address — comes up on the configured image, which the boot gate holds to the daemon's
+// contract, so its copies are already right; carrying the install onto a fresh pod would be
+// installing over a pair already current. l.spec.Plugins is cleared in that case before
+// launcherCommand builds its argv. A pod whose issue Sandbox is still of the release before the
+// pod-owned disk — owning the `issue` volume claim template that pod mounts — is replaced too, and
+// its Sandbox with it: that field is immutable in the CRD, so deleting the Sandbox at the issue's
+// next launch and creating one of the current shape is the only way to the pod-owned disk
+// (replaceSupersededSandbox), which carries the name the suspension wrote onto the Sandbox it
+// creates, and keeps it in the runtime's hands while the issue has no Sandbox at all (stranded), so
+// the roles that replacement ended are read as displaced rather than dead, in the gap between the
+// delete and the create too.
 func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	ctx = launching(ctx)
 	l, err := r.prepare(spec)
@@ -160,6 +163,17 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	pod := r.storedPod(s.Name)
 	_, initExit := failedInit(pod)
 	live := s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
+	// A pod its node never started (neverStarted) is not live either: no launcher connects from it,
+	// so a launch that kept it would wait out the boot timeout on it, be charged a launch failure,
+	// and leave it for the next try to find again. It is replaced as a pod whose init failed is,
+	// and names nothing displaced, since no role ever ran in it. The warning gives the pod's age
+	// and how long its node has had it, which is what says whether that node is the one to look at.
+	if unstarted, scheduledFor, stuck := neverStarted(pod, r.now(), r.bootTimeout); live && stuck {
+		r.log.Warn("sandbox runtime: replacing a pod older than the boot timeout that its node has not made ready to start its containers",
+			"pod", pod.Name, "uid", pod.UID, "node", pod.Spec.NodeName, "notStartedFor", unstarted.Round(time.Second),
+			"scheduledFor", scheduledFor.Round(time.Second), "bootTimeout", r.bootTimeout, "claim", spec.Claim)
+		live = false
+	}
 	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
 	installing := l.spec.Plugins != nil
 	migrate := supersededDisk(s, l)
@@ -178,7 +192,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// it.
 	replace := !live || (accountDrifted && !covered) || migrate ||
 		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
-		(!installing && !covered && len(r.shapeDrift(s, l.kind)) > 0)
+		(!installing && !covered && len(r.shapeDrift(s, l.shapeKey())) > 0)
 	if !replace {
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {
@@ -303,9 +317,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
 // volumes the pod carries), which of the role's own overlays and of every declared variant's
 // overlays
-// its container holds (heldRoleOverlays), the skills repository its recorded pod shape names, and
-// the session store it was built under (heldSessionStore, the URL file its generation is pointed
-// at). A launch that keeps such a pod
+// its container holds (heldRoleOverlays), and the session store it was built under
+// (heldSessionStore, the URL file its generation is pointed at). A launch that keeps such a pod
 // builds its start command from these rather than from the configuration as it now reads, so the
 // role is started as its pod was built (launcherCommand, roleOperatorEnv, mainEnvironment) and
 // runs degraded until the update round replaces the pod — able to push its work and answer that
@@ -314,11 +327,10 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // The same enrollment decision writes the generation's address record (recordAddresses), so the
 // record says what the start said.
 //
-// It reads the Sandbox's stored pod template and its pod-shape annotation. Overlays and session
-// storage predate that annotation and are read from the template; skills_repository is recorded
-// there when the skills volume is built. A missing field names no skills, so an old pod's role
-// can still answer the ordinary update round instead of looking for a volume it does not carry.
-// readable is false when the template
+// It reads the Sandbox's stored pod template, the build of the pod the controller made from it,
+// and not the pod-shape annotation (podShapeAnnotation), which records the configuration the pod
+// was built from rather than what its container holds, and which a pod created before the
+// annotation existed does not carry. readable is false when the template
 // holds no container for the role — a template of another shape, or one this daemon cannot read:
 // the daemon then cannot tell what the pod carries, and relaunch replaces the pod.
 func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
@@ -327,22 +339,8 @@ func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 	if !readable {
 		return keptPod{}, false
 	}
-	var shape podShapeRecord
-	if record := s.Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation]; record != "" {
-		if err := json.Unmarshal([]byte(record), &shape); err != nil {
-			return keptPod{}, false
-		}
-	}
-	var skills ghrepo.Repository
-	if shape.SkillsRepository != "" {
-		var err error
-		skills, err = ghrepo.Parse("the stored pod's skills repository", shape.SkillsRepository)
-		if err != nil {
-			return keptPod{}, false
-		}
-	}
 	kind, _, _ := heldSessionStore(spec)
-	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind, skills: skills}, true
+	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind}, true
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
@@ -441,20 +439,18 @@ func launcherBackstop(boot, bound time.Duration) time.Duration {
 
 // awaitRoleLauncher waits until loc's role launcher has connected, reporting false, or loc's pod
 // has ended, reporting true, and returns the deadline the wait stood at when it stopped. The
-// launcher starts only once every init container of the pod has finished, however many the
-// deployment gives it, and the three steps whose duration follows the repository's size —
-// workspace-fetch's whole fetch — its stream from the repository cache, which no clock ends
-// while it keeps receiving (workspace.CacheStreamLowSpeedBytes), its transfers with their
-// retries, and the restarts the grace covers (fetchRestartGrace) — then workspace-init's
-// shared clone of the feed
-// and the issue's own checkout of it — may take up to ProvisionBound from the fetch's own start,
-// a sum that counts no term for the commands which keep CommandTimeout, skills-fetch's one
-// shallow clone among them (ProvisionBound, manifest.go). So until the wait
-// first sees the pod provisioning (an init container running, or a fetch between those restarts:
-// provisioning) it gives the pod the
-// boot timeout, the image pull's; from then on, the boot timeout from the last moment it saw the
-// pod provisioning, never past the boot timeout plus ProvisionBound from the first
-// (launcherDeadline). A pod that never provisions past the boot timeout waits it alone.
+// launcher starts only once every init container of the pod has finished (an issue pod's two; the
+// controller's pod has none), and the three steps whose duration follows the repository's size —
+// workspace-fetch's whole fetch — its stream from the repository cache, which no clock ends while
+// it keeps receiving (workspace.CacheStreamLowSpeedBytes), its transfers with their retries, and
+// the restarts the grace covers (fetchRestartGrace) — then workspace-init's shared clone of the
+// feed and the issue's own checkout of it — may take up to ProvisionBound from the fetch's own
+// start, a sum that counts no term for the commands which keep CommandTimeout (ProvisionBound,
+// manifest.go). So until the wait first sees the pod provisioning (an init container running, or a
+// fetch between those restarts: provisioning) it gives the pod the boot timeout, the image pull's;
+// from then on, the boot timeout from the last moment it saw the pod provisioning, never past the
+// boot timeout plus ProvisionBound from the first (launcherDeadline). A pod that never provisions
+// past the boot timeout waits it alone.
 func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator) (bool, time.Time, error) {
 	what := "role launcher " + string(loc.Claim)
 	start := time.Now()
@@ -864,7 +860,8 @@ func (r *Runtime) waitedOut(ctx context.Context, s *sandbox) string {
 // authenticate with tokens no earlier pod held; a role's launch credentials travel in its
 // launcher's start command instead (launcherCommand). The Secret also carries the role's GitHub
 // credential, its gh bundle (gitHubBundles): each directory of that role's own bundle as its
-// hosts.yml and config.yml (GitHubHostsKey, GitHubConfigKey) and the default owner
+// hosts.yml and config.yml (GitHubHostsKey, GitHubConfigKey), the bundle's configured renames
+// (GitHubPairsKey, empty where the project has none that resolve) and the default owner
 // (GitHubDefaultKey), which its container projects at GHConfigDir.
 //
 // The Secret holds the role's own directories, where the pod projects only the ones every role
@@ -882,7 +879,11 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 			return err
 		}
 		bundle := bundles[role]
-		data := map[string][]byte{LauncherTokenFile: []byte(token), GitHubDefaultKey: []byte(bundle.Default)}
+		data := map[string][]byte{
+			LauncherTokenFile: []byte(token),
+			GitHubDefaultKey:  []byte(bundle.Default),
+			GitHubPairsKey:    []byte(ghconfig.RenderPairs(bundle.Pairs)),
+		}
 		for _, dir := range bundle.DirNames() {
 			rendered := bundle.Dirs[dir]
 			data[GitHubHostsKey(dir)], data[GitHubConfigKey(dir)] = []byte(rendered.Hosts), []byte(rendered.Config)
@@ -925,18 +926,29 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // bundles' default, an empty set included — GH_CONFIG_DIR would then name a directory the pod
 // does not carry — and where a role's own default is not the pod's, which would leave that
 // role's Secret recording a directory its container never reads from (refreshGitHubCredential).
-// A refused write lease still fails its own bundle (appauth's mintBundle), so every role that
-// reaches here holds the directory it writes to.
+// A lease GitHub refuses costs that owner's directory alone (appauth's mintBundle). The bundle
+// fails only where the directory left out is the one it was asked for, the default that
+// GH_CONFIG_DIR names (appauth's bundleDefault). Every role that reaches here therefore holds
+// the directory it works its issue's repository in.
 //
 // The controller's bundle is asked for by owner (Options.ControllerCredential), the one function
 // a controller's bundle is made from here, by this launch and by the refresh of the pod it makes
-// (refreshGitHubCredential). The launch asks for no owner, which takes the first owner the
-// project serves that the mint answered for, sorted, and records it as the pod's default; a
-// controller works no repository, so its every directory is read-only.
+// (refreshGitHubCredential). The launch asks for no owner, which takes the first DIRECTORY of the
+// bundle, sorted (appauth's bundleDefault), and records it as the pod's default. That is usually
+// an owner the review App is installed on that the mint answered for, but a configured rename
+// also puts the pair's `from` owner in the bundle as an alias directory (bundleDirs), and such a
+// name can sort first and be taken; a controller works no repository, so its every directory is
+// read-only.
+//
+// The launch's roles run as two Apps and work the one repository, and a bundle is that pair and
+// nothing else, so the six roles of an issue pod are two bundles built once each (appauth.Bundles):
+// the launch opens with two live reads of the Apps' installations rather than six serial round
+// trips to GitHub before its first role starts.
 func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]ghconfig.Bundle, error) {
 	l.gitHubDirs, l.gitHubDefault = nil, ""
 	bundles := make(map[claim.Role]ghconfig.Bundle, len(l.roles))
 	held := make(map[claim.Role][]string, len(l.roles))
+	memo := appauth.NewBundles(r.gitHubCredential)
 	for i, role := range l.roles {
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
@@ -944,7 +956,7 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 		if role == claim.RoleController {
 			bundle, err = r.controllerCredential(minting, "")
 		} else {
-			bundle, err = r.gitHubCredential(minting, role, l.spec.Repository)
+			bundle, err = memo.Bundle(minting, role, l.spec.Repository)
 		}
 		cancel()
 		switch {

@@ -26,7 +26,7 @@ import (
 func openKnown(t *testing.T, now func() time.Time) *KnownSessions {
 	t.Helper()
 	client := setupNATS(t)
-	known, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now))
+	known, err := OpenKnownSessions(t.Context(), client.Conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 	logged := logs.String
 
 	started := time.Now()
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		// The production schedule's first wait is a second and its cap five minutes, which a
@@ -310,7 +310,7 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 	// whole question, and a handful of records would be filled whether it waits or not.
 	const records = 2000
 	const topic = "notifications.team.late-open"
-	filling, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 
 	// The grant goes away, as it is away on every listener started before it is applied.
 	grant.Grant(t, "nothing.this.store.uses")
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
 	if err != nil {
@@ -415,7 +415,7 @@ func TestAStoreWhoseFirstScanTimedOutOpensOnlyOnceItsRescanCompletes(t *testing.
 	client := setupNATS(t)
 	const topic = "notifications.team.timed-out-scan"
 	ids := []string{"ses_timeout_1", "ses_timeout_2", "ses_timeout_3"}
-	filling, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), client.Conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -488,7 +488,7 @@ func knownOverGrant(t *testing.T, first, longest time.Duration, extra ...KnownSe
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		withKnownSessionRetry(first, longest),
 	}, extra...)
-	known, err := OpenKnownSessions(conn, options...)
+	known, err := OpenKnownSessions(t.Context(), conn, options...)
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -669,10 +669,11 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 // (kvwatch.Watcher.Servable), and past it answers nothing: Opened is false, so a publish leaves its
 // counts out, and Get answers no record, so a send to a session with no entry answers 404, exactly
 // as on a listener with no bucket. Once the retry has moved the watcher and the moved watcher's
-// read has completed, the store answers again. The watcher's clock is the test's, so the bound is
-// passed without waiting it out.
+// read has completed, the store answers again. The watcher's clock is the test's, and it moves only
+// when the test moves it, so the bound is passed without waiting it out, and a failed move that
+// takes minutes on a busy machine does not pass it before the test asks the store inside it.
 func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
-	watcherClock := &clock{}
+	watcherClock := &heldClock{now: time.Now()}
 	known, conn, grant, logged := knownOverGrant(t, 200*time.Millisecond, time.Second, withKnownSessionWatch(kvwatch.WithNow(watcherClock.Now)))
 	const stale = "ses_stale_store"
 	const topic = "notifications.team.stale-store"
@@ -713,9 +714,38 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	if _, ok := known.Get(stale); !ok {
 		t.Error("the repaired store answers no record of the session written before the failed move")
 	}
+	// Opened is the moved watcher's read completed, on the watcher's own goroutine, and the line
+	// saying the store is back is written by the retry once its move has returned (attemptRepair),
+	// so the two are not ordered: a count read when Opened turns true can find no line yet. The
+	// retry retires at an attempt after the one that wrote the line, both under repairMu, so its
+	// retirement is what the count waits for, and no attempt after it writes a second line.
+	awaitKnown(t, 60*time.Second, "the repair did not retire once it had nothing left to repair", func() bool {
+		return !repairRunning(known)
+	})
 	if lines := strings.Count(logged(), knownBackLine); lines != 1 {
 		t.Errorf("the repair logged %d lines saying the store is back, want one:\n%s", lines, logged())
 	}
+}
+
+// heldClock is a clock that moves only when the test advances it, as kvwatch's own tests hold
+// theirs: a stale bound measured on it is passed by the test's advance, never by how long the
+// steps before that advance took. The package's other clock (clock) follows the real time, which
+// a stale episode would then measure too.
+type heldClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *heldClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *heldClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
 }
 
 // A stop ends the retry wherever it is, and a store that stopped repairs nothing afterwards: its
@@ -778,7 +808,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	// The records the late open is to answer once the store is repaired.
 	const topic = "notifications.team.late-open-repair"
 	held := []string{"ses_late_repair_1", "ses_late_repair_2", "ses_late_repair_3"}
-	filling, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -804,7 +834,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	grant.Grant(t, "nothing.this.store.uses")
 	logs := &lockedWriter{}
 	logged := logs.String
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond),
@@ -897,7 +927,7 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 		t.Fatalf("connect as the user whose grant does not carry the bucket: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
 	if err != nil {

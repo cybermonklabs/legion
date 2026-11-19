@@ -20,13 +20,15 @@ type Enrollment struct {
 }
 
 // PodEnrollment is what the machine hands the broker for one process generation: the pod UID the
-// runtime recorded as the locator's incarnation, the identity the shim's hello carried, and the
-// agent's session id. The real pod UID stays the verified runtime identity, while Slot is a
-// daemon-derived role/generation label for several private enrollments in one pod; tmux leaves
-// Slot empty. It carries no issue: each secret's owner and tier tags pick a request's approver at
+// runtime recorded as the locator's incarnation, the identity the shim's hello carried, the
+// agent's session id, and the claim's token. The real pod UID stays the verified runtime identity,
+// while Slot is a daemon-derived role/generation label for several private enrollments in one pod;
+// tmux leaves Slot empty. Claim is what the broker files the process's requests under, so the next
+// process of the claim, in this pod or a replacement, reads and cancels them and takes what this
+// one leaves. It names no approver: each secret's owner and tier tags pick a request's approver at
 // request time, never at enrollment.
 type PodEnrollment struct {
-	PodUID, Slot, Thumbprint, PodToken, Session string
+	PodUID, Slot, Thumbprint, PodToken, Session, Claim string
 }
 
 // AgentSecretsIdentity is the pod identity a shim's hello2 carried (stream.AgentSecretsIdentity).
@@ -161,6 +163,7 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 		enrolling, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
 		id, err := m.deps.Secrets.Enroll(enrolling, PodEnrollment{
 			PodUID: podUID, Slot: slot, Thumbprint: m.identity.Thumbprint, PodToken: m.identity.PodToken, Session: m.claim.Session,
+			Claim: string(m.claim.Token),
 		})
 		cancel()
 		if err != nil {
