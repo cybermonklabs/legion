@@ -12,7 +12,7 @@
 -- trade under it.
 --
 -- A binding is never swept and no route moves or removes it: a daemon that stops using a name
--- keeps it. The operator's move of a binding to another daemon is the plan's task t-e-55 (INFRA-840),
+-- keeps it. The operator's move of a binding to another daemon is the plan's task t-e-70 (INFRA-840),
 -- which needs an operator's token no broker route verifies yet. The table starts empty, with no
 -- backfill from oauth_pod_sessions, because no deployment registers pods today.
 --
