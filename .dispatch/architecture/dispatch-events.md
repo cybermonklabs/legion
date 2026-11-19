@@ -4,7 +4,7 @@ parent: dispatch-server
 depends_on: [contracts, dispatch-model, dispatch-store]
 paths: [packages/envoy/internal/dispatch/events, packages/envoy/internal/dispatch/envoy]
 ---
-The append-only event log nearly every Dispatch write lands in (a settings write such as `putDeliverySettings` or `putRepoProject` is a bare pool write with no event).
+The append-only event log nearly every Dispatch write lands in (a settings write such as `putDeliverySettings` is a bare pool write with no event).
 An append (`Broker.QueueAppend`) puts its statements on the write phase's batch (`store.WriteBatch`):
 the event owner's advisory lock (`store.QueueLockOwner`, which returns at once when the transaction took it in its read phase), then the owner's row `for no key update`, which takes the transaction id (`pg_current_xact_id`) in the same statement, so the transaction holds an id before the insert draws an event id whether or not an earlier write gave it one, then one insert that takes the next sequence from the owner row and, in the same statement, advances the row's `last_seq` (and an issue's `updated_at`) to the row it inserted.
 It takes no other lock (an ownerless, session-addressed event takes neither, only its transaction id, in a statement of its own queued before the insert), so one owner's events commit in id order while two owners' writes never wait for each other and can commit out of id order.
