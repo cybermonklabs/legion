@@ -443,7 +443,7 @@ func TestReplacementJudgesAPodItsNodeNeverStartedByOneReadingOfTheClock(t *testi
 				t.Fatal(err)
 			}
 
-			never := strings.Contains(decided.why, "has not started its containers")
+			never := decided.unstarted > 0
 			switch {
 			case decided.displacesRoles:
 				t.Fatalf("replacement = %+v, want it to name nothing displaced: no role ran in a pod its node never started", decided)
