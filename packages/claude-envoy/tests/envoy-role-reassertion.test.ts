@@ -525,3 +525,96 @@ test("the age sweep does not reach the record of a process still pressing its re
     await session.shutdown()
   }
 })
+
+// A role the session takes while a heartbeat's claim of its old role is still out: the heartbeat
+// then learns another session holds the old role and removes the record, so the new role's record
+// must be written after that removal, not before it, or it is removed with the old one and the
+// session no longer holds the role it just took. `rememberRole` writes it in the registry chain,
+// behind the heartbeat, so the order holds however the two calls interleave.
+test("a role taken while a heartbeat's refused claim of the old role is still out keeps its record", async () => {
+  const stateDirectory = scratchState()
+  const OLD = "reviewer"
+  const NEW = "legion-claim"
+  // The heartbeat's soft claim of the old role, held until the test answers it.
+  const oldClaim = Promise.withResolvers<{ claimed: false; holder: string }>()
+  const oldClaimAsked = Promise.withResolvers<void>()
+  let interestReads = 0
+  const client: FakeClient = {
+    subscribe: async () => registered(),
+    getInterest: async () => {
+      interestReads += 1
+      return interest()
+    },
+    unsubscribe: async () => undefined,
+    unregisterSession: async () => undefined,
+    setRole: async (input) => {
+      if (input.role !== OLD) return { claimed: true, interest: interest() }
+      oldClaimAsked.resolve()
+      return oldClaim.promise
+    },
+    // Another live session holds the old role, so the heartbeat claims it again; the new role is
+    // this process's own.
+    getRole: async (role) =>
+      role === OLD
+        ? { role, holder: "ses_newer", last_seen: 1, state: "live" as const }
+        : {
+            role,
+            holder: "ses_current",
+            client_instance_id: INSTANCE,
+            last_seen: 1,
+            state: "live" as const,
+          },
+  }
+  const session = await startChannelSession({
+    identity: new SessionIdentity("ses_current", "/tmp"),
+    connection: new IdleNats(),
+    notifier,
+    capabilities: testCapabilities,
+    client,
+    heartbeatMs: 25,
+    configFile: { path: join(stateDirectory, "envoy.json"), error: null },
+    stateDirectory,
+    clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
+    pluginVersion: "source",
+  })
+  const roleFile = roleStateFile(stateDirectory, "ses_current")
+
+  try {
+    // 1. The session holds the old role, and a heartbeat's claim of it is out, unanswered.
+    await session.rememberRole(OLD)
+    await oldClaimAsked.promise
+
+    // 2. The session takes the new role meanwhile. A write made at once lands now; one made in
+    //    order waits behind the heartbeat. Either way the claim is answered next: at once once
+    //    the write has landed, else after a second, which only bounds how long the test waits
+    //    for a write that is not coming before the claim is answered.
+    const remembering = session.rememberRole(NEW)
+    const window = Promise.withResolvers<void>()
+    const timer = setTimeout(window.resolve, 1_000)
+    await Promise.race([remembering, window.promise])
+    clearTimeout(timer)
+
+    // 3. The old claim is refused: another live session holds that role.
+    const readsBeforeRefusal = interestReads
+    oldClaim.resolve({ claimed: false, holder: "ses_newer" })
+
+    // 4. The heartbeat reads the interests after its role claim, so a read after the refusal
+    //    means its removal of the old role's record has finished.
+    await waitFor(
+      async () => interestReads > readsBeforeRefusal,
+      "the heartbeat's next interest read",
+    )
+
+    // 5. The new role's record is on disk.
+    await remembering
+    expect(await readPersistedRole(roleFile)).toEqual({
+      session_id: "ses_current",
+      role: NEW,
+      client_instance_id: INSTANCE,
+    })
+  } finally {
+    oldClaim.resolve({ claimed: false, holder: "ses_newer" })
+    await session.shutdown()
+  }
+})

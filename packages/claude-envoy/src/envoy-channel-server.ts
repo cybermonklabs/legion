@@ -2501,9 +2501,6 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       return turns?.messageOf(row)
     },
     async rememberRole(role) {
-      // In the registry chain, as the heartbeat's reassertion and its refusal's removal of the
-      // record are: a write outside it could land after that removal, and leave a record of a role
-      // this process no longer holds, which nothing would remove.
       await serialized(async () => {
         heldRole = role
         await writeRoleRecord(roleStateFile(options.stateDirectory, identity.id), role)
