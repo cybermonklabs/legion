@@ -14,6 +14,7 @@ import {
   awaitDecisionBlock,
   awaitPostgres,
   awaitSeededInbox,
+  boundRefusalText,
   databaseUrlRefusal,
   type InboxRowRead,
   Interrupted,
@@ -613,6 +614,24 @@ describe("agentViewRefusal", () => {
     rowLimit("short")
   );
 
+  // The text the bound's refusal names for each count of other frames, read from the pure
+  // function agentViewRefusal's timer calls: no socket, no clock, so no order of events decides it.
+  // The never-answers row below allows either received-text; this row holds what each one says.
+  test("the bound's refusal names what the socket received instead", () => {
+    const head =
+      "Dispatch's first frame for the agent view of ses-1 (subscription sub-1) had not come " +
+      "after 2.5 s; ";
+    expect(boundRefusalText("ses-1", "sub-1", 2_500, 0, "")).toBe(
+      `${head}the socket received nothing`
+    );
+    expect(boundRefusalText("ses-1", "sub-1", 2_500, 1, '{"a":1}')).toBe(
+      `${head}the socket received 1 other frame, the last {"a":1}`
+    );
+    expect(boundRefusalText("ses-1", "sub-1", 2_500, 2, '{"b":2}')).toBe(
+      `${head}the socket received 2 other frames, the last {"b":2}`
+    );
+  });
+
   test(
     "a Dispatch that never answers is the refusal of the client's own 2 s bound, naming what came instead",
     async () => {
@@ -626,8 +645,14 @@ describe("agentViewRefusal", () => {
       const { elapsedMs, refusal } = await answerFrom(dispatch.url, {}, SESSION, neverHoldsBoundMs);
       // The refusal is the client's own bound's, by its text. How long the call took past the
       // bound is no part of it: a loaded machine runs the timer late (the row below). The one
-      // reading kept is the client's own: it does not answer before its bound.
-      expect(refusal).toBe(boundRefusal(`the socket received 1 other frame, the last ${other}`));
+      // reading kept is the client's own: it does not answer before its bound. Whether the
+      // stand-in's frame reached the client before its timer fired is an order load decides, so
+      // either received-text is the bound's refusal here; what each one says is held by "the
+      // bound's refusal names what the socket received instead".
+      expect([
+        boundRefusal("the socket received nothing"),
+        boundRefusal(`the socket received 1 other frame, the last ${other}`),
+      ]).toContain(refusal ?? "no refusal");
       expect(elapsedMs).toBeGreaterThanOrEqual(neverHoldsBoundMs);
     },
     rowLimit("short")
