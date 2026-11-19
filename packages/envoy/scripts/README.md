@@ -395,9 +395,9 @@ failed test fails the count, read from a report as in a run. It exits 0 only whe
 none skipped but the expected ones, none failed, and go test passed. A failure prints, on
 stderr, each failed test, each test a failed package never finished, that package's output
 from its first `panic: ` on, that of its tests that did not pass, and any line test2json files
-under a test after that test's own `--- PASS` (a timed-out binary's goroutine dump and a data
-race report among them), the build output and, for a run of its own, go test's stderr. A run of
-its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
+under a test after that test's own `--- PASS` or `--- SKIP` (a timed-out binary's goroutine
+dump and a data race report among them), the build output and, for a run of its own, go test's
+stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
 
 `ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
 `--timeout 20m`, the unit step's own `-timeout`, and a step limit of its own

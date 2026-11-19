@@ -37,8 +37,8 @@
 # prints each listed package's `pass|fail PACKAGE <seconds>s` on stderr. On a failure it prints,
 # on stderr, each failed test, each test a failed package never finished, the failed packages'
 # output (a timed-out binary's goroutine dump, a data race, and any line test2json files under a
-# test after that test's own `--- PASS`), go test's build output and, for a run of its own, its
-# stderr.
+# test after that test's own `--- PASS` or `--- SKIP`), go test's build output and, for a run of
+# its own, its stderr.
 set -euo pipefail
 # sort and comm compare the test lists under one collation, whatever the caller's locale.
 export LC_ALL=C
