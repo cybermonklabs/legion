@@ -11,6 +11,8 @@ import (
 	"testing"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // lineIssueKeys are the issue keys the tests below write into a reading or a check's words, each
@@ -42,7 +44,7 @@ func requireNoPrivateReference(t *testing.T, line string) {
 // issue key of a project this Dispatch holds, in any case, and cuts what is left to the budget. A
 // plain hyphenated word that is no such key stays: one whose first part names no project, and a
 // project's name followed by a version.
-func TestThePullRequestLineDropsIssueKeysAndLinksFromTheReading(t *testing.T) {
+func TestThePullRequestLineDropsPrivateReferencesFromTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESK", "Line", "A spec\n")
 	createProjects(t, handler, "ACME", "KERNEL")
@@ -507,5 +509,70 @@ func TestThePlainPunctuationIsWhatItsDocCommentLists(t *testing.T) {
 	}
 	if listed != plainPunctuation {
 		t.Fatalf("the doc comment lists %q, the set is %q", listed, plainPunctuation)
+	}
+}
+
+// hostTexts are a reading or a check's words that hold a host written with no scheme: a bare
+// `www.` address and a schemeless host and path.
+var hostTexts = []struct{ name, text string }{
+	{"a bare www. address", "see www.example.com for logs"},
+	{"a schemeless host and path", "example.com/logs"},
+}
+
+// A host written with no scheme, through both lines, with and without the markdown parse a
+// check's words go through. On the real paths a reading reaches the recorded line unparsed
+// (checkResultLine, through the record route), and a check's words reach the CI line through the
+// document's markdown parse and blockWords (ciVerdictLine, through the results read). The other
+// two pairings run the same line builders on the other form of the text: the record route given
+// the parsed words as its reading, and ciVerdictLine given the raw words. Neither line drops a
+// public host by lineWords; the parse reads a bare `www.` address as a link, as GFM does, and
+// blockWords drops link text, so the parsed form holds no `www.` host while the raw form keeps it.
+func TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt(t *testing.T) {
+	ciHandler, database, fake := resultsGitHubCheckRuns(t)
+	ciIssue := issueInRepository(t, ciHandler, "RESWC", "acme/widgets", "CI hosts")
+	var document strings.Builder
+	for index, host := range hostTexts {
+		fmt.Fprintf(&document, ":::check{#c%d %s}\n%s\n:::\n\n", index+1, ciCheckKept, host.text)
+	}
+	uploadDocument(t, ciHandler, "/api/v1/issues/"+ciIssue.Key, "verification.md", document.String())
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", ciIssue.Key)
+	fake.set(headCommit, completedRun(31, ciCheckRun, "success"))
+	read := readResults(t, ciHandler, ciIssue.Key)
+
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	issue := createInteractionIssue(t, handler, "RESW", "Hosts", "A spec\n")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	recordedPrefix := "- Check k1 (before_merge): pass at " + headCommit + ", recorded by implementer. "
+	recordedLine := func(observed string) string {
+		t.Helper()
+		recorded := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, map[string]any{"observed": observed}))
+		if recorded.Code != http.StatusCreated {
+			t.Fatalf("record a result: status=%d body=%s", recorded.Code, recorded.Body.String())
+		}
+		return decodeBody[recordedResult](t, recorded).Line
+	}
+
+	for index, host := range hostTexts {
+		check := checkOf(t, read, fmt.Sprintf("c%d", index+1))
+		if check.CI == nil {
+			t.Fatalf("%s carries no ci", check.BlockID)
+		}
+		ciPrefix := "- Check " + check.BlockID + " (before_merge): pass at " + headCommit + ", from CI run " + ciCheckRun + ". "
+		raw := model.CheckBlock{BlockID: check.BlockID, When: check.When, Text: host.text}
+		parsedTail := host.text
+		if host.name == "a bare www. address" {
+			parsedTail = "see for logs"
+		}
+		for _, pairing := range []struct{ line, parse, got, want string }{
+			{"recorded", "unparsed", recordedLine(host.text), recordedPrefix + host.text},
+			{"recorded", "parsed", recordedLine(check.Text), recordedPrefix + parsedTail},
+			{"CI", "parsed", check.CI.Line, ciPrefix + parsedTail},
+			{"CI", "unparsed", ciVerdictLine(raw, ciCheckRun, "pass", headCommit, lineWordsFor(nil, testServerURL)), ciPrefix + host.text},
+		} {
+			t.Logf("%s | %s line | %s -> %q", host.name, pairing.line, pairing.parse, pairing.got)
+			if pairing.got != pairing.want {
+				t.Errorf("%s, %s line, %s: got %q, want %q", host.name, pairing.line, pairing.parse, pairing.got, pairing.want)
+			}
+		}
 	}
 }

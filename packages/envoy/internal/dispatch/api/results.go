@@ -991,9 +991,11 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 }
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single
-// blanks, with the text of a link and every word holding `://` (holdsLink) dropped. It is a
-// check's `text`, whose words the line of a check CI proves keeps by lineWords (ciVerdictLine); a
-// public host written as `www.` and a domain, which GitHub renders as a link, is kept there.
+// blanks, with the text of a link and every word holding `://` (holdsLink) dropped. Dispatch reads
+// the markdown as GFM does, so a bare `www.` address is link text and is dropped too, while a host
+// written with neither a scheme nor `www.`, such as `example.com/logs`, stays
+// (TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt). It is a check's or a requirement's
+// `text`, and the line of a check CI proves keeps a check's words by lineWords (ciVerdictLine).
 // blockContent is the same block with both kept.
 func blockWords(node *pmdoc.Node) string {
 	var words []string
