@@ -81,14 +81,14 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		failed := func(err error) {
+		refreshFailed := func(err error) {
 			r.log.Warn("tmux runtime: github credential refresh failed", "claim", token, "role", role, "err", err)
 		}
 		repo := entry.ghRepo
 		if entry.issue == "" && role != claim.RoleController {
 			recorded, err := r.claimRepository(ctx, token)
 			if err != nil {
-				failed(fmt.Errorf("the claim's repository: %w", err))
+				refreshFailed(fmt.Errorf("the claim's repository: %w", err))
 				continue
 			}
 			repo = recorded
@@ -104,19 +104,19 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 			continue
 		}
 		if err != nil {
-			failed(err)
+			refreshFailed(err)
 			continue
 		}
 		if !repo.IsZero() {
 			if routed, _, _ := ghconfig.RouteDir(bundle.Pairs, repo.Owner(), repo.Name()); bundle.Default != routed {
-				failed(fmt.Errorf("the credential's default owner %s is not the pane's own owner %s", bundle.Default, routed))
+				refreshFailed(fmt.Errorf("the credential's default owner %s is not the pane's own owner %s", bundle.Default, routed))
 				continue
 			}
 		}
 		root := runtime.GHConfigDir(r.stateDir, token)
 		changed, err := ghconfig.WriteBundle(root, bundle)
 		if err != nil {
-			failed(fmt.Errorf("write the github credential: %w", err))
+			refreshFailed(fmt.Errorf("write the github credential: %w", err))
 			continue
 		}
 		if len(changed) > 0 {

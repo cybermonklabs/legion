@@ -70,7 +70,7 @@ const CloneTimeout = 30 * time.Minute
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
 // repository's tree into a workspace that holds none — which is the issue's checkout alone today
 // (`jj sparse reset`, Provision), so the next such command takes this constant rather than a third
-// one. One write of the largest repository mapped, theorem-labs/oss-verify-proofs-internal, 282,134
+// one. One write of the largest repository mapped, example-org/oss-verify-proofs-internal, 282,134
 // files and 11.56 GiB, took 548.8 s and 554.9 s in an issue pod: this is 6.5 times that measured
 // run, and three times it at the worst rate measured over a 60-second window of it (10.0 MiB/s,
 // which writes the 11.56 GiB in 19.7 minutes).
@@ -103,7 +103,8 @@ type Command struct {
 var exitedHook atomic.Pointer[func(Command, *os.ProcessState)]
 
 // Result is the process result. A non-zero ExitCode, or TimedOut, is a process failure; a
-// non-nil Run error means the process could not be started or observed.
+// non-nil Run error means the process could not be started or observed, or a signal other than
+// its timeout's ended it, which leaves it no exit code of its own.
 type Result struct {
 	Stdout   string
 	Stderr   string
@@ -751,19 +752,45 @@ func runCheckedInWithin(ctx context.Context, run Runner, ws Workspace, timeout t
 	return checkedResult(argv, result, err)
 }
 
-// checkedResult is the checked runners' shared answer: a process that could not
-// start, exited non-zero, or outlived its budget is an error naming the command. A clean exit
-// whose I/O draining outlived WaitDelay (exec.ErrWaitDelay) is not this: execRunner.Run already
-// reads that as the process's own true ExitCode, so it passes through the same as any other
-// answer.
+// checkedResult is the checked runners' shared answer: a process that could not start, that a
+// signal ended, that exited non-zero, or that outlived its budget is an error naming the command
+// (answered, commandFailure). A clean exit whose I/O draining outlived WaitDelay
+// (exec.ErrWaitDelay) is not this: execRunner.Run already reads that as the process's own true
+// ExitCode, so it passes through the same as any other answer.
 func checkedResult(argv []string, result Result, err error) (Result, error) {
-	if err != nil {
-		return Result{}, fmt.Errorf("run %s: %w", strings.Join(argv, " "), err)
+	if err := answered(argv, result, err); err != nil {
+		return Result{}, err
 	}
-	if result.ExitCode != 0 || result.TimedOut {
+	if result.ExitCode != 0 {
 		return Result{}, commandFailure(argv, result)
 	}
 	return result, nil
+}
+
+// answered is nil when a run's status is an answer to read, and otherwise the error naming the
+// command: a run that could not start or that a signal ended (runFailure), and one its budget
+// ended (commandFailure). A read whose non-zero exit can mean something calls this first, since
+// the exit such a run leaves is no answer: 0 for a run that erred, and for one its budget ended,
+// whatever its kill left (-1 when the signal ended it, or the code of a git that handled its
+// SIGTERM and exited inside the grace). Then it reads its answer.
+func answered(argv []string, result Result, err error) error {
+	if err != nil {
+		return runFailure(argv, result, err)
+	}
+	if result.TimedOut {
+		return commandFailure(argv, result)
+	}
+	return nil
+}
+
+// runFailure is a run that answered no status of its own, as an error naming the command: `run
+// <argv>: <err>`, and beneath it the stderr the command wrote when a signal ended it
+// (procgroup.Said). The runner leaves that stderr out of its own error, so a caller whose command
+// can echo a credential scrubs result.Stderr before it reaches here, as Fetch's transfers
+// (transferWithRetries), the shared clone's steps (cloneSteps.runIn) and its fetch
+// (ensureFetchConfiguration) do.
+func runFailure(argv []string, result Result, err error) error {
+	return fmt.Errorf("run %s: %w", strings.Join(argv, " "), procgroup.Said(err, result.Stderr))
 }
 
 func commandFailure(argv []string, result Result) error {
@@ -828,6 +855,7 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 		return err
 	}
 	result, runErr := runCommand(ctx, run, argv, source.env, cloneDir)
+	result.Stderr = source.scrub(result.Stderr)
 	_, err = checkedResult(argv, result, runErr)
 	return err
 }
@@ -858,11 +886,12 @@ func ConfigureRepositoryCredential(ctx context.Context, run Runner, cloneDir str
 		{"credential.useHttpPath", "true"},
 	} {
 		// `git config --get-all` exits 1 for a key the clone never set, which is as stale as an old
-		// helper; a run that failed to start is an error. Each read runs in the clone itself, the
+		// helper, once the read answered (answered). Each read runs in the clone itself, the
 		// directory --git-dir names the repository of: the daemon runs this over a clone it has
 		// just provisioned or found, so it is there.
-		result, err := runCommand(ctx, run, []string{"git", "--git-dir=" + gitDir, "config", "--get-all", check.key}, nil, cloneDir)
-		if err != nil {
+		argv := []string{"git", "--git-dir=" + gitDir, "config", "--get-all", check.key}
+		result, err := runCommand(ctx, run, argv, nil, cloneDir)
+		if err := answered(argv, result, err); err != nil {
 			return false, fmt.Errorf("read the shared clone's %s: %w", check.key, err)
 		}
 		values := strings.Split(strings.TrimRight(result.Stdout, "\n"), "\n")
@@ -931,7 +960,7 @@ func removeRepositoryIdentity(ctx context.Context, run Runner, cloneDir string) 
 		}
 		removed, err := runCommand(ctx, run, unset, nil, cloneDir)
 		if err != nil {
-			return fmt.Errorf("run %s: %w", strings.Join(unset, " "), err)
+			return runFailure(unset, removed, err)
 		}
 		if removed.ExitCode == 0 {
 			continue

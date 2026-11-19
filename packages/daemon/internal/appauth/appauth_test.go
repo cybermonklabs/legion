@@ -150,8 +150,9 @@ func askedInExchange(t *testing.T, r *http.Request) (string, accessTokensBody) {
 // at the highest access any of them names: what an installation whose account has approved all
 // of Legion's grants is granted.
 var grantedEverythingAsked = map[string]string{
-	"actions": "write", "checks": "write", "contents": "write", "issues": "write", "metadata": "read",
-	"pull_requests": "write", "security_events": "write", "statuses": "write", "workflows": "write",
+	"actions": "write", "attestations": "read", "checks": "write", "contents": "write", "issues": "write",
+	"metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "write",
+	"workflows": "write",
 }
 
 // installationGranting is GitHub's GET /app/installations/{id}: the installation and the
@@ -520,11 +521,11 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	// json.Marshal of a map sorts its keys, so each body is this exact text: the permissions and
-	// nothing else — the five read ones a reading lease carries, actions and issues among them and
-	// nothing writable, and the implement App's write set.
+	// nothing else — the read set a reading lease carries, each at read and nothing writable, and
+	// the implement App's write set.
 	want := []string{
-		`{"permissions":{"actions":"read","contents":"read","issues":"read","metadata":"read","pull_requests":"read"}}`,
-		`{"permissions":{"actions":"write","checks":"read","contents":"write","issues":"write","metadata":"read","pull_requests":"write","security_events":"read","statuses":"write","workflows":"write"}}`,
+		`{"permissions":{"actions":"read","attestations":"read","checks":"read","contents":"read","issues":"read","metadata":"read","pull_requests":"read","statuses":"read"}}`,
+		`{"permissions":{"actions":"write","attestations":"read","checks":"read","contents":"write","issues":"write","metadata":"read","pull_requests":"write","security_events":"read","statuses":"write","workflows":"write"}}`,
 	}
 	if len(bodies) != len(want) || bodies[0] != want[0] || bodies[1] != want[1] {
 		t.Fatalf("exchange bodies = %q, want %q", bodies, want)
@@ -532,8 +533,8 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 }
 
 // A write mint asks for what the installation is granted of the role's set and leaves the rest
-// out: an account that has approved three of the implement App's nine permissions gets a token
-// holding those three, in one exchange, where asking for all nine would make GitHub refuse the
+// out: an account that has approved three of the implement App's ten permissions gets a token
+// holding those three, in one exchange, where asking for all ten would make GitHub refuse the
 // mint whole and cost the role its gh bundle. Each permission left out is logged once at warn,
 // issues among them, so an installation whose account has not approved a grant is named.
 func TestGrantedWriteSetAsksForTheThreeTheInstallationGrants(t *testing.T) {
@@ -665,11 +666,12 @@ func TestGrantedAnAccessThisDoesNotKnowIsGrantedNone(t *testing.T) {
 	}
 }
 
-// An account approves each of an App's grants, so an installation may be granted no actions at
-// all. The read mint leaves actions out of the request and asks for the other four in one
-// exchange, so every owner's read token is served rather than the first such owner's mint
-// failing. What the token cannot read is logged once at warn per App role and owner: a second
-// mint of the same scope logs nothing again, since the grant is the installation's.
+// An account approves each of an App's grants, so an installation may be granted no Actions, no
+// checks, no commit statuses and no attestations at all. The read mint leaves them out of the
+// request and asks for the four it is granted in one exchange, so every owner's read token is
+// served rather than the first such owner's mint failing. What the token cannot read is logged
+// once at warn per App role, owner and permission: a second mint of the same scope logs nothing
+// again, since the grant is the installation's.
 func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
@@ -679,8 +681,12 @@ func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 		grants: map[string]string{"contents": "read", "issues": "read", "metadata": "read", "pull_requests": "read"},
 	}
 	github.answer = func(exchange int, body accessTokensBody) (int, string) {
-		if body.Permissions["actions"] != "" {
-			return http.StatusUnprocessableEntity, `{"message":"The permissions requested are not granted to this installation."}`
+		// GitHub's own answer to a request naming a permission the installation is not granted:
+		// no token at all, rather than a token without that permission.
+		for permission := range body.Permissions {
+			if github.grants[permission] == "" {
+				return http.StatusUnprocessableEntity, `{"message":"The permissions requested are not granted to this installation."}`
+			}
 		}
 		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "legion")
 	}
@@ -712,13 +718,15 @@ func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 	}
 	records := loggedRecords(t, &stderr)
 	for _, owner := range []string{"acme", "sjawhar"} {
-		line := fmt.Sprintf("appauth: the review App's installation on %s is granted no actions, where its token asks for actions: read, so the token is minted without it; grant the App actions: read and approve it on that account", owner)
-		if count := shortfallLogged(records, line, Review, owner, "actions", "read", ""); count != 1 {
-			t.Errorf("the log holds %d warn records of %q with its fields, want exactly one:\n%s", count, line, stderr.String())
+		for _, left := range []string{"actions", "attestations", "checks", "statuses"} {
+			line := fmt.Sprintf("appauth: the review App's installation on %s is granted no %s, where its token asks for %s: read, so the token is minted without it; grant the App %s: read and approve it on that account", owner, left, left, left)
+			if count := shortfallLogged(records, line, Review, owner, left, "read", ""); count != 1 {
+				t.Errorf("the log holds %d warn records of %q with its fields, want exactly one:\n%s", count, line, stderr.String())
+			}
 		}
 	}
-	if len(records) != 2 {
-		t.Errorf("the log holds %d records, want one for each of the two owners:\n%s", len(records), stderr.String())
+	if len(records) != 8 {
+		t.Errorf("the log holds %d records, want one for each of the two owners and each of the four permissions:\n%s", len(records), stderr.String())
 	}
 }
 
@@ -851,7 +859,7 @@ func TestASuspensionIsReadFromTheInstallationAndNeverFromTheWordsOfA403(t *testi
 // A 422 carrying GitHub's rate limit says nothing about what the installation is granted: it is
 // GitHub's trouble (TransientError), no lease is served, and nothing is said of a grant. GitHub
 // documents its limits on a 429 and a 403, so the three ways a 422 can still carry one are each
-// checked. The mint asked for the five reads whole, which this installation is granted, so the
+// checked. The mint asked for the whole read set, which this installation is granted, so the
 // answer is about the limit alone.
 func TestARateLimited422IsGitHubsTroubleAndNotAGrant(t *testing.T) {
 	for _, tc := range []struct {
@@ -1298,13 +1306,18 @@ func shortfallLogged(records []loggedRecord, line string, app AppRole, owner, pe
 // reaches is what the account chose when it installed the App, and what the token may do there
 // is these permissions. Each App's write lease asks for that App's own set, issues: write among
 // it, since the implementer's code, and the tester running that code under the review App, post
-// on an issue of the repository they work in. Either App's read lease asks for the five reads a
-// role and a controller need of a repository that is not their own issue's, issues: read among
-// them and nothing writable. Every other permission of each set is the one it was before issues
-// joined it. The installation holds more, such as projects and packages, and a token that asks
-// for none of it cannot be made to use them.
+// on an issue of the repository they work in, and attestations: read among it, since a role
+// reads the attestations of an artifact. The review App's set also asks for statuses: read, since
+// its roles read the commit statuses of a head and post none. Either App's read lease asks for
+// the read set a controller and a provisioning token need of a repository they only read —
+// contents, metadata, pull requests, issues, Actions, checks, commit statuses and attestations —
+// each at read and nothing writable. The installation holds more, such as projects and packages,
+// and a token that asks for none of it cannot be made to use them.
 func TestEachLeaseAsksForItsSetIssuesIncluded(t *testing.T) {
-	reads := map[string]string{"actions": "read", "contents": "read", "issues": "read", "metadata": "read", "pull_requests": "read"}
+	reads := map[string]string{
+		"actions": "read", "attestations": "read", "checks": "read", "contents": "read", "issues": "read",
+		"metadata": "read", "pull_requests": "read", "statuses": "read",
+	}
 	for _, tc := range []struct {
 		name string
 		role AppRole
@@ -1313,12 +1326,13 @@ func TestEachLeaseAsksForItsSetIssuesIncluded(t *testing.T) {
 		want map[string]string
 	}{
 		{"implement write", Implement, "legion-implementer", false, map[string]string{
-			"actions": "write", "checks": "read", "contents": "write", "issues": "write", "metadata": "read",
-			"pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write",
+			"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write",
+			"metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write",
+			"workflows": "write",
 		}},
 		{"review write", Review, "legion-reviewer", false, map[string]string{
-			"actions": "write", "checks": "write", "contents": "write", "issues": "write", "metadata": "read",
-			"pull_requests": "write", "security_events": "write",
+			"actions": "write", "attestations": "read", "checks": "write", "contents": "write", "issues": "write",
+			"metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read",
 		}},
 		{"implement read", Implement, "legion-implementer", true, reads},
 		{"review read", Review, "legion-reviewer", true, reads},

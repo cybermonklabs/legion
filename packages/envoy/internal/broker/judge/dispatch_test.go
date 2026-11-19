@@ -85,9 +85,9 @@ func TestIssueReadsTheTokenAgainForEveryCall(t *testing.T) {
 	}
 }
 
-// TestIssueTellsAMissingIssueFromAFailedRead: a 404 on the issue is ErrNoIssue, which is the
-// judge's issue check, the last of its six, failing, and every other refusal is a failure of the
-// read, which is a judge that cannot tell whether the issue is open.
+// TestIssueTellsAMissingIssueFromAFailedRead: a 404 on the issue is ErrNoIssue, which the judge
+// shows the model as an issue that is not found, and every other refusal is a failure of the
+// read, which hands the request to its person.
 func TestIssueTellsAMissingIssueFromAFailedRead(t *testing.T) {
 	for _, c := range []struct {
 		status int
@@ -163,4 +163,117 @@ func TestIssueRefusesAnUnreadableToken(t *testing.T) {
 	if calls := stand.got(); len(calls) != 0 {
 		t.Errorf("Dispatch got %d calls with no token to present; want none", len(calls))
 	}
+}
+
+// TestAssigneeReadsTheIssueAlone: the broker asks Dispatch whose issue a Legion pod's claim names
+// in one GET of the issue, with the projected token, and never reads its spec. The answer is the
+// issue's assignee, and an issue nobody is assigned to answers "". A 404 is ErrNoIssue and any
+// other refusal a failure of the read, as for Issue.
+func TestAssigneeReadsTheIssueAlone(t *testing.T) {
+	stand := newDispatch(t, "doing", testSpec)
+	stand.issue["assignee"] = "ada@example.com"
+	dispatch := newDispatchClient(t, stand, "projected-token")
+	if got, err := dispatch.Assignee(t.Context(), testIssue); err != nil || got != "ada@example.com" {
+		t.Fatalf("Assignee = %q, %v; want ada@example.com", got, err)
+	}
+	if calls := stand.got(); len(calls) != 1 || calls[0] != (dispatchCall{http.MethodGet, "/api/v1/issues/" + testIssue, "Bearer projected-token"}) {
+		t.Fatalf("Dispatch got %+v; want exactly the one issue read", calls)
+	}
+
+	stand.issue["assignee"] = nil
+	if got, err := dispatch.Assignee(t.Context(), testIssue); err != nil || got != "" {
+		t.Fatalf("Assignee of an unassigned issue = %q, %v; want \"\"", got, err)
+	}
+	stand.issueStatus = http.StatusNotFound
+	if _, err := dispatch.Assignee(t.Context(), testIssue); !errors.Is(err, ErrNoIssue) {
+		t.Fatalf("Assignee of an issue Dispatch does not hold = %v; want ErrNoIssue", err)
+	}
+	stand.issueStatus = http.StatusInternalServerError
+	if _, err := dispatch.Assignee(t.Context(), testIssue); err == nil || errors.Is(err, ErrNoIssue) {
+		t.Fatalf("Assignee with Dispatch answering 500 = %v; want a failure of the read", err)
+	}
+}
+
+// TestTheJudgesIssueReadDoesNotReadTheAssignee: the judge's Issue decodes the issue's key, title
+// and status and nothing else, so an assignee Dispatch answers in another shape than a string
+// leaves the judge's read as it is, and fails the assignee read alone.
+func TestTheJudgesIssueReadDoesNotReadTheAssignee(t *testing.T) {
+	stand := newDispatch(t, "doing", testSpec)
+	stand.issue["assignee"] = map[string]any{"login": "ada@example.com"}
+	dispatch := newDispatchClient(t, stand, "projected-token")
+	if issue, err := dispatch.Issue(t.Context(), testIssue); err != nil || issue.Key != testIssue || issue.Status != "doing" || !issue.HasSpec {
+		t.Fatalf("Issue with an assignee that is no string = %+v, %v; want the issue read as before", issue, err)
+	}
+	if got, err := dispatch.Assignee(t.Context(), testIssue); err == nil {
+		t.Fatalf("Assignee with an assignee that is no string = %q, nil; want a failure of the read", got)
+	}
+}
+
+// TestDispatchReadsAnAsk: the third read, GET /api/v1/asks/{id}, which the judge makes when a
+// request's reason cites an ask. It presents the same projected token, reads the ask
+// out of the body the route answers with, tells an ask Dispatch does not hold (404, ErrNoAsk)
+// from a read that failed, and refuses an answer that is no JSON object.
+func TestDispatchReadsAnAsk(t *testing.T) {
+	t.Run("the route, the token and the fields", func(t *testing.T) {
+		stand := newDispatch(t, "doing", testSpec)
+		ask, err := newDispatchClient(t, stand, "projected-token").Ask(t.Context(), testAsk)
+		if err != nil {
+			t.Fatalf("Ask: %v", err)
+		}
+		if ask.ID != testAsk || ask.IssueKey != testIssue || ask.State != "answered" || ask.Question != testQuestion {
+			t.Errorf("Ask = %+v; want the id, issue, state and question Dispatch showed", ask)
+		}
+		if ask.AnsweredBy != testApprover || len(ask.Selected) != 1 || ask.Selected[0] != "Spend it" || ask.Text != testAnswerText {
+			t.Errorf("the answer reads %q / %v / %q; want the person, their option and their text", ask.AnsweredBy, ask.Selected, ask.Text)
+		}
+		if len(ask.Options) != 2 || ask.Options[0] != "Spend it" || ask.Options[1] != "Leave it" {
+			t.Errorf("the options read %v; want the labels the ask offered", ask.Options)
+		}
+		calls := stand.got()
+		want := dispatchCall{http.MethodGet, "/api/v1/asks/" + testAsk, "Bearer projected-token"}
+		if len(calls) != 1 || calls[0] != want {
+			t.Errorf("Dispatch got %+v; want exactly %+v", calls, want)
+		}
+	})
+
+	t.Run("an ask Dispatch does not hold, and a read that failed", func(t *testing.T) {
+		for _, c := range []struct {
+			status int
+			want   error
+		}{
+			{http.StatusNotFound, ErrNoAsk},
+			{http.StatusUnauthorized, nil},
+			{http.StatusInternalServerError, nil},
+		} {
+			stand := newDispatch(t, "doing", testSpec)
+			stand.askStatus = c.status
+			_, err := newDispatchClient(t, stand, "projected-token").Ask(t.Context(), testAsk)
+			switch {
+			case err == nil:
+				t.Errorf("Dispatch answering %d read as an ask; want a failure", c.status)
+			case c.want != nil && !errors.Is(err, c.want):
+				t.Errorf("Dispatch answering %d = %v; want %v", c.status, err, c.want)
+			case c.want == nil && errors.Is(err, ErrNoAsk):
+				t.Errorf("Dispatch answering %d read as no such ask; want a failure of the read", c.status)
+			}
+		}
+	})
+
+	t.Run("an answer that is no JSON object", func(t *testing.T) {
+		stand := newDispatch(t, "doing", testSpec)
+		stand.askRaw = "the stand-in forgot how to write JSON"
+		if _, err := newDispatchClient(t, stand, "projected-token").Ask(t.Context(), testAsk); err == nil {
+			t.Error("Ask read an ask out of an answer that is no JSON; want a failure of the read")
+		}
+	})
+
+	t.Run("a token the broker cannot read", func(t *testing.T) {
+		stand := newDispatch(t, "doing", testSpec)
+		if _, err := newDispatchClient(t, stand, "").Ask(t.Context(), testAsk); err == nil {
+			t.Error("Ask read an ask with no token; want a refusal")
+		}
+		if calls := stand.got(); len(calls) != 0 {
+			t.Errorf("Dispatch got %d calls with no token to present; want none", len(calls))
+		}
+	})
 }

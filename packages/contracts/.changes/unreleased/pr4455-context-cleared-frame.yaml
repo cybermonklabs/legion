@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  The agent stream's `context-cleared` frame: a session whose host reports no context window, or
+  no usage, sends it in place of a `context` reading, and a viewer then draws no context ring. It
+  shares the `context` frame's slot, and a viewer applies whichever of the two has the higher
+  `seq`. A viewer that does not know the frame drops it.

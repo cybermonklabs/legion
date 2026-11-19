@@ -107,7 +107,7 @@ func (s *Sweeper) Tick(ctx context.Context) {
 	for _, e := range ended {
 		slog.Info("broker sweeper: ended an enrollment whose lease lapsed", "enrollment_id", e.ID, "kind", e.Kind,
 			"runtime_id", e.RuntimeID, "slot", e.Slot, "lease_expired_at", e.LeaseExpires,
-			"grants_revoked", e.GrantsRevoked, "requests_cancelled", e.RequestsCancelled, "left_dormant", e.Dormant)
+			"grants_revoked", e.GrantsRevoked, "requests_cancelled", e.RequestsCancelled, "left_dormant", e.Dormant, "handed_to", e.HandedTo)
 	}
 	s.settle(ctx, sweepLapsedEnrollments, err)
 	carried, err := s.Enrollments.EndCarried(ctx, s.SessionCarry)

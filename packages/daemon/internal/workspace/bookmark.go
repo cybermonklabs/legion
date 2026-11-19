@@ -165,7 +165,7 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 	// there, since the clone is what this workspace is added to.
 	result, err := runCommand(ctx, run, add, nil, cloneDir)
 	if err != nil {
-		return fmt.Errorf("run %s: %w", strings.Join(add, " "), err)
+		return runFailure(add, result, err)
 	}
 	forgotten := result.ExitCode != 0
 	if forgotten {
@@ -346,7 +346,7 @@ func readBookmark(ctx context.Context, run Runner, workspace Workspace, name str
 	}
 	result, err := runCommand(ctx, run, list, nil, workspace.Clone)
 	if err != nil {
-		return bookmarkRows{}, fmt.Errorf("run %s: %w", strings.Join(list, " "), err)
+		return bookmarkRows{}, runFailure(list, result, err)
 	}
 	if result.ExitCode != 0 {
 		return bookmarkRows{}, fmt.Errorf("Bookmark %s could not be resolved; workspace %s was not created: %w", name, workspace.Dir, commandFailure(list, result))

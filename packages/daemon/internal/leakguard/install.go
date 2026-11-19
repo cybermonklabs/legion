@@ -3,6 +3,7 @@ package leakguard
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -400,10 +401,9 @@ func verifyServed(ctx context.Context, start procgroup.Starter, check, parent st
 	cmd.Dir = parent
 	var printed strings.Builder
 	cmd.Stdout, cmd.Stderr = &printed, &printed
-	if err := procgroup.Err(procgroup.Run(cmd, start)); err != nil {
-		return fmt.Errorf("the served check could not be run: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
+	runErr := procgroup.Err(procgroup.Run(cmd, start))
+	// A context that ended killed the run itself, so its end, not the kill, is the cause.
+	if err := cmp.Or(ctx.Err(), procgroup.Said(runErr, printed.String())); err != nil {
 		return fmt.Errorf("the served check could not be run: %w", err)
 	}
 	answer := printed.String()

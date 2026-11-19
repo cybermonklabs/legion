@@ -439,8 +439,9 @@ func followHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 	if target == "" {
 		return nil
 	}
-	current, err := runCommandTimeout(ctx, run, []string{"git", "--git-dir=" + gitDir, "symbolic-ref", "--quiet", "HEAD"}, isolatedGitConfig, gitDir, run.Timeout())
-	if err != nil {
+	symbolicRef := []string{"git", "--git-dir=" + gitDir, "symbolic-ref", "--quiet", "HEAD"}
+	current, err := runCommandTimeout(ctx, run, symbolicRef, isolatedGitConfig, gitDir, run.Timeout())
+	if err := answered(symbolicRef, current, err); err != nil {
 		return err
 	}
 	was := strings.TrimSpace(current.Stdout)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -92,7 +95,8 @@ type workflowRuntime struct {
 	// outboxWake is the outbox as the records' wake reaches it (wakeOutbox): the records are built
 	// at open, before the outbox exists, and the facts the boot applies before attach write rows
 	// through them, so the wake forwards to whatever attach has stored, and to nothing before
-	// then — the outbox's boot sweep finds every row written before it ran.
+	// then — the outbox's boot sweep finds every row written before it ran. The engine's read of a
+	// step's agent reaches the supervisor through it too (stepAgent), and reads nothing before.
 	outboxWake atomic.Pointer[outbox]
 	// limits are where the deployment's claim budgets run out (supervise.Limits, built once at
 	// daemon.go's Deps), taken from the supervisor at attach: a failed claim's fact carries them
@@ -481,6 +485,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	}
 	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
 	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeState, w.hearRecorded
+	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
@@ -668,6 +673,51 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 	if r := w.outboxWake.Load(); r != nil {
 		r.wake(issue, kind)
 	}
+}
+
+// stepAgent is the engine's read of the agent of a step where it writes the step's end, the one
+// write of the record that names a session or a model (workflow.Config.StepAgent): the session the
+// claim's machine published (supervise.Machine.View) and the model that answered last in that
+// session (supervise.Machine.LastAnswer). It reaches the supervisor through the outbox attach
+// stored, so a fact the boot applies before attach reads nothing, as does a claim this daemon does
+// not supervise. It finds the machine without the supervisor's lock (supervisedMachine), since the
+// engine reads here inside a fact's transaction, which holds the fact lock that a Create holding
+// that lock waits on. Neither read of the machine waits on a decision in flight, so the engine's
+// transaction may make them. The session is read on both sides of the model, and a model read while
+// the session changed is left out, so the pair never names a model with a session it did not serve;
+// the end is the record's one write of either, so that record then names no model.
+//
+// Both come from the agent's own frames, so each is held here to the form Dispatch holds a step's
+// agent text to (steprecord.AgentTextHolds), and one outside it is left out of the record rather
+// than sent: Dispatch would refuse the whole record over it, and a space or a newline in it would
+// shift the columns of `dispatch steps` or forge a line of it.
+func (w *workflowRuntime) stepAgent(token claim.Token) workflow.StepAgent {
+	r := w.outboxWake.Load()
+	if r == nil || r.supervisor == nil {
+		return workflow.StepAgent{}
+	}
+	machine, ok := r.supervisor.supervisedMachine(token)
+	if !ok {
+		return workflow.StepAgent{}
+	}
+	session := machine.View().Session
+	model := machine.LastAnswer().Model
+	if machine.View().Session != session {
+		model = ""
+	}
+	return workflow.StepAgent{Session: w.agentText(token, "session", session), Model: w.agentText(token, "model", model)}
+}
+
+// agentText is text when it is in the form of a step's agent text (steprecord.AgentTextHolds), and
+// "" when it is not, logged with its length and its first 256 bytes, quoted, so an operator can see
+// what the record leaves out without the log carrying text of any length.
+func (w *workflowRuntime) agentText(token claim.Token, field, text string) string {
+	if text == "" || steprecord.AgentTextHolds(text) {
+		return text
+	}
+	w.log.Warn("legion step record leaves out an agent's text outside its form", "claim", string(token), "field", field,
+		"bytes", len(text), "text", strconv.Quote(text[:min(len(text), 256)]))
+	return ""
 }
 
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
@@ -1063,8 +1113,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	// The reconcile is its own transaction, so it owns the commit hooks its admission and workflow
 	// changes register (intake.OnCommit), as ApplyFact does for a fact, and it records issues, so it
 	// takes the lock every fact applies under: a mapping refresh never unsubscribes a repository it
-	// is recording an issue on.
+	// is recording an issue on. It settles the runs its writes end as a fact does
+	// (intake.OpenSettlers), before it commits.
 	scoped, committed := intake.WithCommitHooks(ctx)
+	scoped, settle := intake.OpenSettlers(scoped, w.handlers...)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
 			return fmt.Errorf("serialize the reconcile with every fact: %w", err)
@@ -1087,7 +1139,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 				return err
 			}
 		}
-		return w.admission.Reconcile(scoped, tx, listed, target, position)
+		if err := w.admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+			return err
+		}
+		return settle(scoped, tx)
 	}); err != nil {
 		return fmt.Errorf("reconcile admission: %w", err)
 	}
@@ -1373,6 +1428,31 @@ func (w *workflowRuntime) repairCutoverMergers(ctx context.Context) error {
 	return nil
 }
 
+// openUncountedRuns gives each run no start of this release counted, which an issue of the
+// project stands in at the boot, an open row in step_starts (workflow's OpenUncountedRuns), in one
+// transaction of its own under the lock every fact applies under. run runs it before the listing's
+// reconcile, the boot's first admission pass, and before any fact, so each fact's settle ends such
+// a run as an open run, and a fact its agent's request applies waits for that agent's stream
+// first. It queues nothing, and a boot that runs again opens nothing; it logs how many runs it
+// opened when it opened any.
+func (w *workflowRuntime) openUncountedRuns(ctx context.Context) error {
+	var opened int
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("serialize the open of the uncounted runs with every fact: %w", err)
+		}
+		var err error
+		opened, err = w.engine.OpenUncountedRuns(ctx, tx)
+		return err
+	}); err != nil {
+		return fmt.Errorf("open the runs of %s no start of this release counted: %w", w.dispatchProject, err)
+	}
+	if opened != 0 {
+		w.log.Info("opened the runs a start of an earlier release began", "count", opened)
+	}
+	return nil
+}
+
 // terminal applies a claim's ready or failure as it happens, on a context the daemon's stop does
 // not end: the fact is the supervisor's observation of a claim that has already reached that
 // state, so it is worth landing even while the daemon is going down, and nothing of the stop can
@@ -1454,7 +1534,12 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 		}
 		fact = ready
 	case supervise.StateFailed:
-		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure,
+		// Everything the claim persists about its end: the sentence the supervisor wrote when it
+		// gave up (Claim.Failure), what the runtime last said of the death and of the start that
+		// never produced an agent (Claim.LastDeathCause, Claim.LastStartFailure), and the pod end
+		// its process was last observed to have died of (Claim.PodEnd), so a notice written after
+		// a daemon restart still names the cause the role never chose — an eviction above all.
+		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, PodEnd: c.PodEnd,
 			Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
 			Cause: c.FailureCause, Budgets: c.Budgets, Limits: w.limits}
 	default:
