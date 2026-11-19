@@ -824,7 +824,7 @@ func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentI
 	return result.LeaseExpiresAt, nil
 }
 
-// --- GET /v1/settings, POST /v1/secrets/{name}/reread (public: no proof) ---
+// --- GET /v1/settings (public), POST /v1/secrets/{name}/reread (in full to a session's proof) ---
 
 // Settings is GET /v1/settings's exact response shape: the store and namespace every agent secret
 // lives under and, per store, the key they are encrypted with and where they are; on either store,
@@ -870,28 +870,48 @@ func (c *client) Settings(ctx context.Context) (Settings, error) {
 	return settings, nil
 }
 
-// Reread is POST /v1/secrets/{name}/reread's exact response shape: whether the broker serves the
-// secret now, as which type ("" for a stored secret, and from a broker older than the field), and,
-// when it does not serve it, why.
+// Reread is POST /v1/secrets/{name}/reread's exact response shape to a call a session signed:
+// whether the broker serves the secret now, as which type ("" for a stored secret, and from a
+// broker older than the field), and, when it does not serve it, why. Told is whether the broker
+// said so at all: a broker answers a call with no proof 202, the same for every name, and says
+// nothing of what it serves, only that it took the reread.
 type Reread struct {
 	Name   string `json:"name"`
 	Served bool   `json:"served"`
 	Reason string `json:"reason"`
 	Type   string `json:"type"`
+	Told   bool   `json:"-"`
 }
 
-// RereadSecret asks the broker to read the secret name from Secrets Manager now, as whoever just
-// wrote it does, so the write is served (or gone) at once instead of at its next reload. name is a
-// validated agent secret name, so it needs no escaping in the path.
-func (c *client) RereadSecret(ctx context.Context, name string) (Reread, error) {
-	raw, err := c.do(ctx, http.MethodPost, c.route("/v1/secrets/"+name+"/reread"), nil, nil)
+// RereadSecret asks the broker to read the secret name from its store now, as whoever just wrote
+// it does, so the write is served (or gone) at once instead of at its next reload. name is a
+// validated agent secret name, so it needs no escaping in the path. With signer the call is a
+// session's, and the broker answers it once the reread is done with what it now serves (Told); a
+// signer that can register its session again does so once, as on every session call. With a nil
+// signer the call carries no proof, and a broker of this release answers 202 at once, before it
+// reads the store, and says nothing more (Told false); a broker from before that answer says what
+// it serves to either call.
+func (c *client) RereadSecret(ctx context.Context, signer proofSigner, name string) (Reread, error) {
+	path := "/v1/secrets/" + name + "/reread"
+	var status int
+	var raw []byte
+	var err error
+	if signer != nil {
+		status, raw, err = c.doProofStatus(ctx, signer, http.MethodPost, path, nil)
+	} else {
+		status, raw, err = c.doStatus(ctx, http.MethodPost, c.route(path), nil, nil)
+	}
 	if err != nil {
 		return Reread{}, err
+	}
+	if status == http.StatusAccepted {
+		return Reread{Name: name}, nil
 	}
 	var reread Reread
 	if err := json.Unmarshal(raw, &reread); err != nil {
 		return Reread{}, fmt.Errorf("decode reread: %w", err)
 	}
+	reread.Told = true
 	return reread, nil
 }
 

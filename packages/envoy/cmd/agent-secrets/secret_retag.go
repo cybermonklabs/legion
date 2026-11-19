@@ -287,15 +287,30 @@ func rereadIfRaced(s *secretSession, stdout, stderr io.Writer, form, name string
 	}
 }
 
-// rereadRetag is rereadAfter for a retag, which also exits 1 when the broker serves the secret as
-// another type than type, the one the retag left it (after's): a reread can read the secret's
-// metadata stale (Secret Manager's is eventually consistent for up to hours), and a secret the
-// broker still serves as stored releases its stored value raw, so a key stored in it then reaches
-// every grant of it. Only this exit, not `broker: serving`, says the broker reads the new tags.
+// rereadRetag is rereadAfter for a retag, which also exits 1 when the secret does not hold type,
+// the one the retag left it (after's). A retag that leaves a type reads its type tag back from
+// the store under the sign-in that wrote it (typeTagHolds). The broker's own answer, to a
+// session's reread, must serve the secret as that type: a reread can read the secret's metadata
+// stale (Secret Manager's is eventually consistent for up to hours), and a secret the broker
+// still serves as stored releases its stored value raw, so a key stored in it then reaches every
+// grant of it. Only this exit, not `broker: serving`, says the broker reads the new tags. A reread
+// the broker took and said no more of, all a call with no proof is answered, leaves that view
+// unchecked: the retag says so, naming where to run it again, and exits 0 on the tag alone.
 func rereadRetag(s *secretSession, stdout, stderr io.Writer, form, name, secretType string) int {
-	r, ok := reread(s, stdout, stderr, form, name, true, nil)
+	r, unsigned, ok := reread(s, stdout, stderr, form, name, true, nil)
 	if !ok {
 		return 1
+	}
+	if secretType != "" && !typeTagHolds(s, stderr, form, name, secretType) {
+		return 1
+	}
+	if !r.Told {
+		if secretType == "" {
+			sayRereadUnchecked(s, stderr, form, name, unsigned)
+		} else {
+			sayTypeUnserved(s, stderr, form, name, secretType, unsigned)
+		}
+		return 0
 	}
 	if r.Type != secretType {
 		fmt.Fprintf(stderr, "agent-secrets %s: the retag in %s stands, but %s serves %s as %s, not %s: it still sees the old tags. Run this retag again to ask it to reread them, and store no value in %s until a retag exits 0\n", form, s.storeName(), s.src.brokerAt(), name, typeName(r.Type), typeName(secretType), name)

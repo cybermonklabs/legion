@@ -398,11 +398,14 @@ records() { curl -sS "$AIRLOCK_RECORDS_URL/records/$1"; }
 records_count() { records "$1" | jq 'length'; }
 
 # reread_all makes every broker read one secret's name again, which is what the release of a
-# new version of a stored value waits on.
+# new version of a stored value waits on. Each call is signed by this stack's session, one proof a
+# broker (a proof is single-use), so each broker answers once its own reread is done; a call with
+# no proof is answered at once, before the store is read, and the next check would race it.
 reread_all() { # <name>
-	local addr
+	local addr proof
 	for addr in "${BROKER_API_ADDRS[@]}"; do
-		curl -sS -o /dev/null -X POST "http://$addr/v1/secrets/$1/reread" || true
+		proof="$(agent-secrets sign --method POST --url "$AGENT_SECRETS_URL/v1/secrets/$1/reread")" || return 1
+		curl -sS -o /dev/null -X POST -H "Proof: $proof" "http://$addr/v1/secrets/$1/reread" || true
 	done
 }
 

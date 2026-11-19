@@ -153,12 +153,15 @@ const testAccount = "111122223333"
 const adaSignIn = "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/ada@example.com"
 
 // secretBroker is a fake broker for the secret forms: GET /v1/settings answers settings, and each
-// reread is answered by answer and recorded, in order, or refused with the status fail names when
-// it is set.
+// reread a session signs is answered by answer and recorded, in order, or refused with the status
+// fail names when it is set. A reread with no proof is answered 202 as the broker answers one,
+// saying nothing of what it serves, and recorded apart (unsigned).
 type secretBroker struct {
 	mu       sync.Mutex
 	rereads  []string
 	answers  []Reread
+	signers  []string
+	unsigned []string
 	answer   func(name string) Reread
 	fail     int
 	settings Settings
@@ -173,7 +176,9 @@ func (b *secretBroker) failRereads(status int) {
 
 // startSecretBroker serves a secretBroker on AGENT_SECRETS_URL for the rest of t, answering
 // GET /v1/settings with policytest's namespace in testAccount, as a broker of this release that
-// reads the type tag.
+// reads the type tag. The forms find a session's key directory as their broker identity
+// (AGENT_SECRETS_KEY_DIR, newKeyDir), so their rereads are signed and answered in full; a row
+// about a form with no identity sets up the environment that has none (withNoBrokerIdentity).
 func startSecretBroker(t *testing.T, answer func(name string) Reread) *secretBroker {
 	t.Helper()
 	return startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1", SecretTypeTag: true}, answer)
@@ -209,10 +214,20 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 				writeJSON(w, map[string]string{"code": "RATE_LIMITED", "error": "too many secret rereads; try again later"})
 				return
 			}
+			if r.Header.Get("Proof") == "" {
+				b.mu.Lock()
+				b.unsigned = append(b.unsigned, name)
+				b.mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"accepted":true}` + "\n"))
+				return
+			}
 			reread := b.answer(name)
 			b.mu.Lock()
 			b.rereads = append(b.rereads, name)
 			b.answers = append(b.answers, reread)
+			b.signers = append(b.signers, proofEID(r))
 			b.mu.Unlock()
 			writeJSON(w, reread)
 		default:
@@ -221,7 +236,34 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("AGENT_SECRETS_URL", srv.URL)
+	t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
 	return b
+}
+
+// rereadSigners is the enrollment each signed reread's proof named, in order.
+func (b *secretBroker) rereadSigners() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.signers...)
+}
+
+// rereadUnsigned is every reread the broker took with no proof, in order.
+func (b *secretBroker) rereadUnsigned() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.unsigned...)
+}
+
+// noBrokerIdentity gives the rest of t a process with no broker identity at all: no key
+// directory, no sign-in, no helper and no machine, in a home, state and runtime directory of its
+// own (isolateChain), with the broker the secret forms already point at kept.
+func withNoBrokerIdentity(t *testing.T) {
+	t.Helper()
+	broker := os.Getenv("AGENT_SECRETS_URL")
+	isolateChain(t)
+	t.Setenv("AGENT_SECRETS_URL", broker)
+	t.Setenv("AGENT_SECRETS_KEY_DIR", t.TempDir())
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 }
 
 // recorded is every reread the broker answered, and its answers, in order.

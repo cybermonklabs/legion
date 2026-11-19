@@ -450,6 +450,9 @@ type brokerProcess struct {
 	Boot string
 	// metricsAddr is what MetricsAddr read, once it has.
 	metricsAddr string
+	// databaseURL is the BROKER_DATABASE_URL it was started with, the last options.Env names: the
+	// database a row writes a session into to call it as that session (sessionReread).
+	databaseURL string
 }
 
 // metricsListenEnv is the metrics port every broker startBroker starts binds: one the kernel
@@ -469,6 +472,11 @@ func startBroker(t *testing.T, options brokerOptions) *brokerProcess {
 	cmd := exec.Command(binary)
 	cmd.Env = append(append(append(os.Environ(), productionEnv(t)...), metricsListenEnv), options.Env...)
 	p := &brokerProcess{Process: cmdtest.Start(t, "broker", cmd)}
+	for _, setting := range options.Env {
+		if value, ok := strings.CutPrefix(setting, "BROKER_DATABASE_URL="); ok {
+			p.databaseURL = value
+		}
+	}
 	// Cleanups run last-registered-first, so this one — registered after cmdtest.Start's own —
 	// asks the broker to stop and waits its whole stop budget out before cmdtest's cleanup kills
 	// the child. The signal's own error is dropped because a process that has already exited is
@@ -802,17 +810,8 @@ func TestMainLogsRealBoundAddress(t *testing.T) {
 
 	requireHealthy(t, addr)
 
-	reread, err := http.Post("http://"+addr+"/v1/secrets/SERVICE_KEY/reread", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST /v1/secrets/SERVICE_KEY/reread: %v", err)
-	}
-	defer reread.Body.Close()
-	var answer struct {
-		Served bool   `json:"served"`
-		Reason string `json:"reason"`
-	}
-	if err := json.NewDecoder(reread.Body).Decode(&answer); err != nil || reread.StatusCode != http.StatusOK || !answer.Served {
-		t.Fatalf("reread SERVICE_KEY = status %d, %+v, %v; want served, its owner a service BROKER_SERVICES registers", reread.StatusCode, answer, err)
+	if status, _, answer := broker.sessionReread(t, "SERVICE_KEY"); status != http.StatusOK || answer["served"] != true {
+		t.Fatalf("a session's reread of SERVICE_KEY = status %d, %v; want served, its owner a service BROKER_SERVICES registers", status, answer)
 	}
 }
 
@@ -896,8 +895,8 @@ func TestTheBrokerServesItsMetricsOnAPortOfItsOwn(t *testing.T) {
 	if reads[`read="list"`] < 1 {
 		t.Fatalf("after its boot the broker counts %v store reads; want its boot's whole-namespace loads as read=\"list\"", reads)
 	}
-	if status, _, _ := post(t, "http://"+broker.Addr+"/v1/secrets/SERVICE_KEY/reread"); status != http.StatusOK {
-		t.Fatalf("POST /v1/secrets/SERVICE_KEY/reread = %d; want 200", status)
+	if status, _, _ := broker.sessionReread(t, "SERVICE_KEY"); status != http.StatusOK {
+		t.Fatalf("a session's POST /v1/secrets/SERVICE_KEY/reread = %d; want 200", status)
 	}
 	after := scrapeMetric(t, metricsAddr, "broker_policy_store_reads_total")
 	if after[`read="describe"`] != reads[`read="describe"`]+1 || after[`read="list"`] != reads[`read="list"`] {
@@ -961,21 +960,12 @@ func TestFakeSecretsFileServesUnderTheGCPStore(t *testing.T) {
 		"BROKER_SECRETS_KMS_KEY_ARN=",
 		"BROKER_SECRETS_KMS_KEY_NAME=" + key,
 	}})
-	addr, boot := broker.Addr, broker.Boot
+	boot := broker.Boot
 	if strings.Contains(boot, "agent secret policy refused") {
 		t.Fatalf("boot log refuses a fake secret on the configured key:\n%s", boot)
 	}
-	reread, err := http.Post("http://"+addr+"/v1/secrets/DEMO_KEY/reread", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST /v1/secrets/DEMO_KEY/reread: %v", err)
-	}
-	defer reread.Body.Close()
-	var answer struct {
-		Served bool   `json:"served"`
-		Reason string `json:"reason"`
-	}
-	if err := json.NewDecoder(reread.Body).Decode(&answer); err != nil || reread.StatusCode != http.StatusOK || !answer.Served {
-		t.Fatalf("reread DEMO_KEY = status %d, %+v, %v; want served under the GCP store's key", reread.StatusCode, answer, err)
+	if status, _, answer := broker.sessionReread(t, "DEMO_KEY"); status != http.StatusOK || answer["served"] != true {
+		t.Fatalf("a session's reread of DEMO_KEY = status %d, %v; want served under the GCP store's key", status, answer)
 	}
 }
 

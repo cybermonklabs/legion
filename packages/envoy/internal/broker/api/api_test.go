@@ -281,6 +281,20 @@ func (ts *testServer) session(t *testing.T, key *ecdsa.PrivateKey, enrollmentID,
 	return ts.req(t, method, path, map[string]string{"Proof": p}, body)
 }
 
+// rereaderOperator is the operator of every session sessionReread enrolls: a login of its own, so
+// that no row reading an approver's or an operator's sessions meets one of them.
+const rereaderOperator = "rereader@example.com"
+
+// sessionReread asks the broker to reread name as a session of its own, freshly enrolled: the
+// caller the route answers once the reread is done, with whether the broker serves the name, why
+// not and as which type, rather than the 202 it answers at once to a caller with no proof. A row
+// that reads what the broker now serves, or that goes on to ask for the secret, rereads this way.
+func (ts *testServer) sessionReread(t *testing.T, name string) (int, []byte) {
+	t.Helper()
+	id, key := ts.newSessionEnrollment(t, "rereader-"+uuid.NewString(), rereaderOperator)
+	return ts.session(t, key, id, http.MethodPost, "/v1/secrets/"+name+"/reread", nil)
+}
+
 func (ts *testServer) launcher(t *testing.T, key *ecdsa.PrivateKey, launcherID, method, path string, body any) (int, []byte) {
 	t.Helper()
 	p, err := proof.SignLauncher(key, launcherID, method, ts.URL+path, time.Now())
@@ -1005,7 +1019,7 @@ func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 	limited := policytest.TypeSecret("LIMITED_KEY", testApprover, policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 	limited.Tags[policy.TagMaxGrant] = "1h"
 	ts.Secrets.Put(limited)
-	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LIMITED_KEY/reread", nil, nil); status != http.StatusOK {
+	if status, body := ts.sessionReread(t, "LIMITED_KEY"); status != http.StatusOK {
 		t.Fatalf("reread LIMITED_KEY = %d %s", status, body)
 	}
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
@@ -1038,7 +1052,7 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 	const canary = "refresh-not-a-secret-canary-4e1d"
 	stored := `{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"` + canary + `"}`
 	ts.Secrets.Put(policytest.TypeSecret("LAPSED_LOGIN", testApprover, policy.TierAgent, policy.TypeGoogleLogin, stored))
-	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LAPSED_LOGIN/reread", nil, nil); status != http.StatusOK {
+	if status, body := ts.sessionReread(t, "LAPSED_LOGIN"); status != http.StatusOK {
 		t.Fatalf("reread LAPSED_LOGIN = %d %s", status, body)
 	}
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
@@ -1128,17 +1142,17 @@ func TestCreateRequestWithInvalidSessionIDIs400SessionIDInput(t *testing.T) {
 	}
 }
 
-// TestEveryCallerDecidingASecretRequestGetsDecideOnBrokerPage pins that the two decide routes
-// refuse a secret request before they look at the caller at all: approve and deny of an
-// agent_secret record — naming the record's own approver, another login or none, with a code or
-// a body that is not one — each answer 403 DECIDE_ON_BROKER_PAGE carrying the record's page as
-// approve_url and in the message, and write nothing: the record stays pending, with no event, no
-// grant and no audit row. A caller with no ServiceAccount token and a caller whose account
-// BROKER_API_ACCOUNTS does not list get that same refusal, not 401 and not ACCOUNT_NOT_LISTED,
-// since no credential would let either decide one here. The same routes still decide a machine
-// login with its code, and the secret request is decided on the broker's page, after which the
-// routes still refuse it.
-func TestEveryCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T) {
+// TestAListedCallerDecidingASecretRequestGetsDecideOnBrokerPage pins that the two decide routes
+// refuse a secret request to the listed caller that relays a person's decisions: approve and deny
+// of an agent_secret record — naming the record's own approver, another login or none, with a
+// code or a body that is not one — each answer 403 DECIDE_ON_BROKER_PAGE carrying the record's
+// page as approve_url and in the message, and write nothing: the record stays pending, with no
+// event, no grant and no audit row. A caller with no ServiceAccount token and a caller whose
+// account BROKER_API_ACCOUNTS does not list are refused as unauthenticated before the record is
+// read, and are told nothing of it: not its page, not its id. The same routes still decide a
+// machine login with its code, and the secret request is decided on the broker's page, after
+// which the routes still refuse it.
+func TestAListedCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
 	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "checking who may decide this request", "DEEL_API_KEY")
@@ -1155,15 +1169,19 @@ func TestEveryCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T) {
 	}
 	before := written()
 
-	for name, headers := range map[string]map[string]string{
-		"no ServiceAccount token": nil,
-		"an unlisted account":     {"Authorization": "Bearer " + ts.accountToken(t, unlistedAccount, "", time.Hour)},
+	for name, refused := range map[string]struct {
+		headers map[string]string
+		status  int
+		code    string
+	}{
+		"no ServiceAccount token": {nil, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID"},
+		"an unlisted account": {map[string]string{"Authorization": "Bearer " + ts.accountToken(t, unlistedAccount, "", time.Hour)},
+			http.StatusForbidden, "ACCOUNT_NOT_LISTED"},
 	} {
-		status, body := ts.req(t, http.MethodPost, "/v1/credential-requests/"+recordID+"/approve", headers,
+		status, body := ts.req(t, http.MethodPost, "/v1/credential-requests/"+recordID+"/approve", refused.headers,
 			map[string]any{"approver": testApprover})
-		refusal := decode[wirePageRefusal](t, body)
-		if status != http.StatusForbidden || refusal.Code != "DECIDE_ON_BROKER_PAGE" || refusal.ApproveURL != page || !strings.Contains(refusal.Error, page) {
-			t.Fatalf("approve with %s = %d %s, want 403 DECIDE_ON_BROKER_PAGE naming %s", name, status, body, page)
+		if status != refused.status || decode[wireError](t, body).Code != refused.code || strings.Contains(string(body), recordID) {
+			t.Fatalf("approve with %s = %d %s, want %d %s naming nothing of the record", name, status, body, refused.status, refused.code)
 		}
 	}
 	for _, route := range []string{"approve", "deny"} {

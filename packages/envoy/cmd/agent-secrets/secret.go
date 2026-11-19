@@ -6,7 +6,9 @@
 // identity that is, then asks the broker to reread each one written, so the change is served at
 // once. The broker is asked only for its settings (GET /v1/settings: the namespace, key and which
 // store it uses) and for the reread; every read and write is the caller's own call to the store,
-// which the store's own IAM decides.
+// which the store's own IAM decides. The reread is signed with this process's broker identity
+// where it has one, the identity every session form signs with, since the broker says what it
+// now serves only to a session; with none it goes unsigned, and the broker takes it all the same.
 package main
 
 import (
@@ -16,6 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
@@ -33,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/buildversion"
 )
 
@@ -719,6 +723,39 @@ type secretSession struct {
 	readsTypeTag bool
 	// settings are the broker's GET /v1/settings, whose judge_keys `secret show` reads.
 	settings Settings
+	// signerOnce finds, at the first reread, the broker identity every reread is signed with,
+	// signer, or why this process has none, noSigner (rereadSigner).
+	signerOnce sync.Once
+	signer     Signer
+	noSigner   error
+}
+
+// rereadSigner is the signer this session's rereads are sent under: this process's broker
+// identity, found as every session form finds it (buildSigner), the first time a reread needs it,
+// so a form that rereads nothing looks for none. It answers nil and why where the process has no
+// identity, or its source is present but broken: the store's write has already been made then,
+// and a reread with no proof still has the broker serve it at once.
+func (s *secretSession) rereadSigner() (Signer, error) {
+	s.signerOnce.Do(func() { _, s.signer, s.noSigner = buildSigner() })
+	return s.signer, s.noSigner
+}
+
+// askReread asks the broker to reread name on ctx, signed by this process's broker identity
+// (rereadSigner), which the broker answers with what it now serves, or with no proof where the
+// process has none, or where the broker refused the one it has (401), so the write is served at
+// once all the same. unsigned is why a call went with no proof, nil for a signed one.
+func (s *secretSession) askReread(ctx context.Context, name string) (r Reread, unsigned, err error) {
+	signer, unsigned := s.rereadSigner()
+	if signer != nil {
+		r, err = s.broker.RereadSecret(ctx, signer, name)
+		var refused *apiError
+		if !errors.As(err, &refused) || refused.Status != http.StatusUnauthorized {
+			return r, nil, err
+		}
+		unsigned = fmt.Errorf("the broker refused this process's identity: %w", err)
+	}
+	r, err = s.broker.RereadSecret(ctx, nil, name)
+	return r, unsigned, err
 }
 
 // whoDecides is secret show's decides and guidance lines: who decides a request for the key, and
@@ -906,26 +943,46 @@ func displayName(prefix, id string) string {
 
 // rereadAfter asks the broker to reread name after a form's write and prints its answer: exit 0
 // when the broker now does what the write meant (serves the secret, or, after a delete, does not),
-// 1 when its answer contradicts the write or it could not be asked. restorable is when a deleted
-// secret stops being restorable, which only delete names.
+// or took the reread and said no more, as it does to a call with no proof, which it says (with
+// why the call went unsigned); 1 when its answer contradicts the write or it could not be asked.
+// restorable is when a deleted secret stops being restorable, which only delete names.
 func rereadAfter(s *secretSession, stdout, stderr io.Writer, form, name string, wantServed bool, restorable *time.Time) int {
-	if _, ok := reread(s, stdout, stderr, form, name, wantServed, restorable); !ok {
+	r, unsigned, ok := reread(s, stdout, stderr, form, name, wantServed, restorable)
+	if !ok {
 		return 1
+	}
+	if !r.Told {
+		sayRereadUnchecked(s, stderr, form, name, unsigned)
 	}
 	return 0
 }
 
 // rereadValue is rereadAfter for a write of name's value, create's or set's, which also exits 1
-// when the broker serves the secret as another type than secretType, the one it holds once the
-// write lands ("" for a stored secret), as rereadRetag does for a retag: a broker that serves a
-// type secret as stored releases the key or login it stores to every grant of it, and one that
-// serves a stored secret as a type mints from a value nobody checked as that type's. The value
-// stands, and the line names the retag that writes the secret's type as this form read it and
-// asks the broker to reread it.
+// when the secret does not hold secretType, the type it holds once the write lands ("" for a
+// stored secret), as rereadRetag does for a retag. A type secret's type tag is read back from the
+// store under the sign-in that wrote it (typeTagHolds), whatever the broker answers; and the
+// broker's own answer, to a session's reread, must serve the secret as that type: a broker that
+// serves a type secret as stored releases the key or login it stores to every grant of it, and
+// one that serves a stored secret as a type mints from a value nobody checked as that type's.
+// The value stands, and the line names the retag that writes the secret's type as this form read
+// it and asks the broker to reread it. A reread the broker took and said no more of, which is all
+// a call with no proof is answered, leaves the broker's view unchecked: the form says so, naming
+// the retag to run where this command has a broker identity, and exits 0 on the tag alone.
 func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretType string) int {
-	r, ok := reread(s, stdout, stderr, form, name, true, nil)
+	r, unsigned, ok := reread(s, stdout, stderr, form, name, true, nil)
 	if !ok {
 		return 1
+	}
+	if secretType != "" && !typeTagHolds(s, stderr, form, name, secretType) {
+		return 1
+	}
+	if !r.Told {
+		if secretType == "" {
+			sayRereadUnchecked(s, stderr, form, name, unsigned)
+		} else {
+			sayTypeUnserved(s, stderr, form, name, secretType, unsigned)
+		}
+		return 0
 	}
 	if r.Type == secretType {
 		return 0
@@ -943,13 +1000,65 @@ func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 	return 1
 }
 
-// reread is rereadAfter's reread: it asks the broker, prints its answer, and answers it, with ok
-// false when the answer contradicts the write or the broker could not be asked, which it printed.
-func reread(s *secretSession, stdout, stderr io.Writer, form, name string, wantServed bool, restorable *time.Time) (Reread, bool) {
-	r, err := s.broker.RereadSecret(s.ctx, name)
+// typeTagHolds reads name's type tag back from the store, under the sign-in the form wrote with,
+// and reports whether it is secretType, the type the form just wrote. When it is not, or the read
+// fails, it prints why, naming the secret, the type the form asked for and the tag it found
+// ("none" for no tag): a type secret whose tag the store did not keep is served as stored by any
+// broker that reads it, releasing what it stores as it is.
+func typeTagHolds(s *secretSession, stderr io.Writer, form, name, secretType string) bool {
+	slug, err := policy.NameToSlug(name)
+	if err == nil {
+		var held heldTags
+		if held, err = s.backend.currentTags(s.ctx, slug); err == nil {
+			// The type the store holds is the type tag, else the old kind tag a secret from
+			// before it may still carry, as the broker reads it (policy.TypeFromTags).
+			found := policy.TypeFromTags(held.tags)
+			if found == secretType {
+				return true
+			}
+			if found == "" {
+				found = tagNone
+			}
+			fmt.Fprintf(stderr, "agent-secrets %s: the write to %s stands, but %s's type tag there is %s, not %s. Run `%s` to write the type again, until that exits 0\n",
+				form, s.storeName(), name, found, secretType, pipeCommand(s.backend.signInPrefix(), "secret", "retag", name, "--type", secretType))
+			return false
+		}
+	}
+	fmt.Fprintf(stderr, "agent-secrets %s: the write to %s stands, but reading %s's type tag back failed, so whether the store kept the type %s is unknown: %v\n",
+		form, s.storeName(), name, secretType, s.refusedAs(err))
+	return false
+}
+
+// sayRereadUnchecked is the line a form prints for a reread the broker took and said no more of:
+// a call with no proof, and unsigned, why it carried none.
+func sayRereadUnchecked(s *secretSession, stderr io.Writer, form, name string, unsigned error) {
+	fmt.Fprintf(stderr, "agent-secrets %s: %s took the reread of %s, and says what it serves only to a call a session signs; this call carried no proof (%v)\n",
+		form, s.src.brokerAt(), name, unsigned)
+}
+
+// sayTypeUnserved is sayRereadUnchecked for a type secret whose type tag the form has read back
+// (typeTagHolds): the one line that says the broker's view of it was not checked, and the retag to
+// run where this command has a broker identity, which checks it.
+func sayTypeUnserved(s *secretSession, stderr io.Writer, form, name, secretType string, unsigned error) {
+	fmt.Fprintf(stderr, "agent-secrets %s: %s carries the type tag %s in %s, but whether %s serves it as %s was not checked: the reread carried no proof (%v). Run `%s` where this command has a broker identity (`%s`) to check it\n",
+		form, name, secretType, s.storeName(), s.src.brokerAt(), secretType, unsigned,
+		pipeCommand(s.backend.signInPrefix(), "secret", "retag", name, "--type", secretType), brokerclient.SignInCommand)
+}
+
+// reread is rereadAfter's reread: it asks the broker (askReread), prints its answer, and answers
+// it, with ok false when the answer contradicts the write or the broker could not be asked, which
+// it printed. A call that went with no proof is answered only that the broker took the reread,
+// whatever it serves, which is no contradiction: it prints that on stdout, and answers unsigned,
+// why the call carried no proof, for the caller's own line about what was left unchecked.
+func reread(s *secretSession, stdout, stderr io.Writer, form, name string, wantServed bool, restorable *time.Time) (r Reread, unsigned error, ok bool) {
+	r, unsigned, err := s.askReread(s.ctx, name)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: the write to %s stands, but %s could not be asked to reread %s, so it serves the change only from its next reload: %v\n", form, s.storeName(), s.src.brokerAt(), name, err)
-		return r, false
+		return r, nil, false
+	}
+	if !r.Told {
+		fmt.Fprintf(stdout, "broker: rereading %s from %s\n", name, s.storeName())
+		return r, unsigned, true
 	}
 	switch {
 	case r.Served && r.Type != "":
@@ -964,12 +1073,12 @@ func reread(s *secretSession, stdout, stderr io.Writer, form, name string, wantS
 	switch {
 	case wantServed && !r.Served:
 		fmt.Fprintf(stderr, "agent-secrets %s: %s refuses %s after the write to %s (reason=%s)\n", form, s.src.brokerAt(), name, s.storeName(), r.Reason)
-		return r, false
+		return r, nil, false
 	case !wantServed && r.Served:
 		fmt.Fprintf(stderr, "agent-secrets %s: %s still serves %s after its delete in %s\n", form, s.src.brokerAt(), name, s.storeName())
-		return r, false
+		return r, nil, false
 	}
-	return r, true
+	return r, nil, true
 }
 
 // secretView is what list and show print of one secret: never its value.

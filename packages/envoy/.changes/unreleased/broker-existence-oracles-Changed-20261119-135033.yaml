@@ -1,0 +1,23 @@
+kind: Changed
+body: |-
+  A caller the broker has not authenticated learns nothing from its API about which
+  credential-request records and which secret names exist. `POST /v1/credential-requests/{record}/approve`
+  and `/deny` check the caller's ServiceAccount token before they read the record, so a caller
+  with no token, or one the broker does not accept, is refused `401` or `403` alike for every
+  record id; a listed caller still gets `403 DECIDE_ON_BROKER_PAGE` for a secret request and `404`
+  for an id no record has. `POST /v1/secrets/{name}/reread` answers a call with no proof `202`
+  `{"accepted":true}` at once, the same for every name, and rereads the secret after that answer,
+  so neither the answer nor how long it takes says what the store holds; a call an enrolled
+  session signs is answered as before, once the reread is done, with whether the broker serves the
+  name, why not and as which type, and a proof the broker does not accept is `401 PROOF_INVALID`.
+  `GET /v1/settings` stays open: a machine reads its exchange audience there before it holds any
+  credential. `agent-secrets secret` signs its reread with the process's broker identity and reads
+  the answer; with none, it sends the reread unsigned, says the broker's view was not checked, and
+  exits 0. After a typed `create`, `set` or `retag` it also reads the type tag back from the
+  store under the sign-in it wrote with, and exits 1 when the store holds another type or none.
+  Upgrade `agent-secrets` with the broker: an `agent-secrets` from an earlier release sends every
+  reread with no proof, reads the `202` as a refusal with no reason, and exits 1 after every
+  write, though the write stands.
+time: 2026-11-19T13:50:33Z
+custom:
+    Issue: broker-existence-oracles

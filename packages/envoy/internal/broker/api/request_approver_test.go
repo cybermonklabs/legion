@@ -164,7 +164,7 @@ func TestARequestKeepsTheApproverItsRecordNamesAfterTheOwnerChanges(t *testing.T
 	}
 
 	ts.Secrets.Put(policytest.Secret("DEEL_API_KEY", newOwner, policy.TierHuman, "deel-v1"))
-	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/DEEL_API_KEY/reread", nil, nil); status != http.StatusOK || !decode[wireReread](t, body).Served {
+	if status, body := ts.sessionReread(t, "DEEL_API_KEY"); status != http.StatusOK || !decode[wireReread](t, body).Served {
 		t.Fatalf("reread DEEL_API_KEY after the owner change = %d %s", status, body)
 	}
 

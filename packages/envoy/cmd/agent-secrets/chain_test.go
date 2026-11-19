@@ -64,6 +64,9 @@ type chainBroker struct {
 	ended         map[string]bool
 	signedBy      []string
 	calls         int
+	// heard is every call the broker answered, in order, as "METHOD PATH" and, for a call that
+	// carried a credential of any kind (a proof, a DPoP proof or a bearer token), " +credential".
+	heard []string
 }
 
 // storeSettings is GET /v1/settings of a broker on store ("aws" or "gcp"), naming google as its
@@ -166,8 +169,13 @@ func newChainBroker(t *testing.T, settings map[string]any) *chainBroker {
 		writeJSON(w, map[string]any{"values": map[string]string{"TEST_KEY": chainValue}, "expires_at": time.Now().Add(time.Hour)})
 	})
 	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := r.Method + " " + r.URL.Path
+		if r.Header.Get("Proof") != "" || r.Header.Get("DPoP") != "" || r.Header.Get("Authorization") != "" {
+			call += " +credential"
+		}
 		b.mu.Lock()
 		b.calls++
+		b.heard = append(b.heard, call)
 		b.mu.Unlock()
 		mux.ServeHTTP(w, r)
 	}))
@@ -237,6 +245,13 @@ func (b *chainBroker) callCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.calls
+}
+
+// answered is every call the broker answered, in order, as heard records each.
+func (b *chainBroker) answered() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.heard)
 }
 
 // proofEID is the enrollment a request's session proof names (its `eid` claim), "" where it
@@ -525,6 +540,25 @@ func TestUseCommandOutsideASessionReachesTheMachineSource(t *testing.T) {
 			}
 			r.assertMachineCache()
 		})
+	}
+}
+
+// TestAMachineReadsTheBrokersSettingsBeforeItHoldsACredential is the census's answer for GET
+// /v1/settings on the client's side: a machine with no session yet reads the broker's Google
+// exchange audience there with no credential of any kind, before its first token exchange, since
+// that audience is what the identity token it trades for its first credential must carry. So the
+// route must stay open to a caller with none.
+func TestAMachineReadsTheBrokersSettingsBeforeItHoldsACredential(t *testing.T) {
+	binary := chainBinary(t)
+	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
+	r := newChainRig(t, binary, broker)
+	r.withMetadata()
+	r.mustUse()
+	heard := broker.answered()
+	exchange := slices.IndexFunc(heard, func(call string) bool { return strings.HasPrefix(call, "POST /v1/oauth/token") })
+	settings := slices.Index(heard, "GET /v1/settings")
+	if exchange < 0 || settings < 0 || settings > exchange {
+		t.Fatalf("the broker answered %v; want a GET /v1/settings with no credential before the machine's first token exchange", heard)
 	}
 }
 

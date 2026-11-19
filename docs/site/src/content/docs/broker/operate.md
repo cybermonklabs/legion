@@ -813,7 +813,11 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   endpoint (`POST /v1/oauth/token`) has its own per-address bucket in each process, a burst of 60
   refilled at two a second, far above a machine's poll every five seconds and refresh about once a
   day; a refused request is `429` `invalid_request` (`RATE_LIMITED: …`) with `Retry-After`.
-- The settings and reread routes take no credential. `GET /v1/settings` answers the store, the
+- The settings route takes no credential, and the reread route needs none. `GET /v1/settings`
+  stays open because two of its callers hold no credential of the broker's when they read it: a
+  machine's `agent-secrets` reads `google_exchange_audience` there to mint the identity token it
+  trades for its first credential, and the secret forms read the store, the prefix and the key
+  under a cloud credential alone. It answers the store, the
   namespace prefix and, per store, the agent-secrets key's ARN with its AWS account and region, or
   the Cloud KMS key's name with the project number; and, on either store,
   `google_exchange_audience` (`BROKER_GOOGLE_OIDC_AUDIENCE`, absent unless `BROKER_VM_SERVICES`
@@ -829,19 +833,23 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   for a secret and what the judge looks for. An administrator's secret is listed there when the
   rules give it seconds, and its person decides it all the same; `secret show` reads its tag and
   says so. The route answers any caller, so it tells anyone who can reach the broker which secrets
-  the judge may take and on what guidance, as the reread already tells any caller which names
-  exist. Guidance is no secret: write nothing in it that a caller of the broker may not read.
-  `POST /v1/secrets/{name}/reread` makes the broker read one secret from the store at once,
-  and answers whether it now serves it, as which type (`type`: `github-app`, `google-login`,
-  `azure-login` or `google-service-account`, absent for a stored secret) and, if not, why.
-  Neither releases a value. What a reread
-  does tell any caller who can reach the broker is whether a name under the namespace exists, the
-  type it is served as, and, when the broker leaves it out, which of its reasons applies — `absent`,
-  or a refusal such as `owner-tag-missing` or `not-on-agent-secrets-key`. That is more than
-  `UNKNOWN_SECRET`, which says
-  only that no agent secret has the name, says it only to an enrolled session, and never separates a
-  secret that does not exist from one the broker refuses; it is what anyone allowed to list the
-  namespace reads from the secrets' own names and tags (or annotations).
+  the judge may take and on what guidance. Guidance is no secret: write nothing in it that a
+  caller of the broker may not read.
+  `POST /v1/secrets/{name}/reread` makes the broker read one secret from the store, on this pod
+  and then on every other. What it answers depends on the caller and never on the name:
+  - A call with no `Proof` header is answered `202` `{"accepted":true}` at once, the same for a
+    name the store holds as for one it does not, and the reread runs after that answer, bounded
+    at 45 seconds. So neither the answer nor how long it takes tells a caller which names exist,
+    though the store takes one call to say it holds no secret by a name and more to describe one
+    it holds. A reread that fails after its answer logs `broker: reread secret failed`.
+  - A call an enrolled session signs is answered once the reread is done: whether the broker now
+    serves the secret, as which type (`type`: `github-app`, `google-login`, `azure-login` or
+    `google-service-account`, absent for a stored secret) and, if not, why (`absent`, or a
+    refusal such as `owner-tag-missing` or `not-on-agent-secrets-key`). A session learns no more
+    there than it learns by asking for the secret. A proof the broker does not accept is `401`
+    `PROOF_INVALID`, whatever the name.
+  A name no secret can carry is `400` `SECRET_NAME_INVALID` to every caller, a check of its shape
+  alone. Neither route releases a value.
   Rereads are limited twice, by limits each pod derives rather than by settings
   (`RereadOverallFor` and `RereadLimitFor` in
   `packages/envoy/internal/broker/api/limits.go`): the broker as a whole takes one reread every
@@ -934,8 +942,13 @@ legion-envoy-v16.0.0 on, would serve a secret that carries `type` alone as a sto
 `secret create --type`, `secret set` on a type secret and a `secret retag` that leaves the secret
 a type each exit 1 before they read a value or write anything, naming the release the CLI is
 from; a write that leaves no type goes ahead. After the write, `create`, `set` and `retag` each
-exit 1 when the reread names another type than the secret holds, and say the retag that asks the
-broker to read it again.
+read the secret's type tag back from the store, under the sign-in they wrote with, and exit 1
+when it is not the type they wrote, naming both; they ask the broker to reread the secret either
+way. Signed by the CLI's broker identity, the reread is answered with the type the broker serves,
+and a form exits 1 when it names another type than the secret holds, saying the retag that asks
+the broker to read it again. A CLI with no broker identity sends the reread with no proof, which
+the broker answers `202` and says no more of: the form says the broker's view was not checked,
+names the retag to run where it has an identity, and exits 0 on the tag alone.
 
 The CLI and the broker ship in one legion-envoy release, so move the broker's pin to that release
 before people use its CLI. An `agent-secrets` from an earlier release still writes `kind`, which
@@ -943,7 +956,10 @@ this broker reads where `type` is absent, but it reads the reread's old `kind` f
 broker does not answer: every `secret retag` it makes that leaves a kind exits 1 saying the broker
 still sees the old tags and to store no value until a retag exits 0, whatever the broker serves;
 and its `--kind none` removes only `kind` and the guard and exits 0, so a secret that also carries
-`type` keeps minting as that type. Use the CLI of the broker's own release.
+`type` keeps minting as that type. An `agent-secrets` from before the release whose broker
+answers a reread with no proof `202` sends every reread with no proof, reads that answer as a
+refusal with no reason, and exits 1 after every write, which stands all the same. Use the CLI of
+the broker's own release.
 
 One type is not a person's to write. A `google-service-account` secret the deployment binds to an
 account (`BROKER_SERVICE_ACCOUNT_SECRETS`) releases a token that acts as that account, and the
@@ -1109,7 +1125,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker: a Postgres listener has no connection; redialing channels=… error=… attempt=… wait_ms=…` | At WARN, from `pglisten`: this pod has lost its `LISTEN` connection and is redialing with a backoff that reaches thirty seconds. **A pod logging this is outside the fan-out for every name** — losing the `LISTEN` does not by itself fail readiness, so the pod can go on passing `/healthz` and serving the whole time while a retag another pod rereads does not reach it until its own five-minute reload. It often does fail readiness at the same time, since `/healthz` pings Postgres and a database the pod cannot reach is the commonest reason the `LISTEN` went: a 200 beside this line is the case to worry about, not the normal one. It is not the only way a pod falls outside: the three rows below leave one behind for at least one name, and of the four only `the other pods were not told to reread a secret` and `a notification's reread of a secret did not run` can be matched to a secret. Repeating lines mean the database is not carrying `LISTEN` sessions for this pod; one or two around a failover are expected. |
 | `broker: binding before the reread listener has had an answer waited=5s` | At WARN: the boot's five-second wait for that `LISTEN` ran out, so this pod began serving before it could hear its peers. It serves normally and the listener keeps redialing; what it loses is the notifications sent in the gap, with its own five-minute reload as the backstop. A pod that logs this takes no catch-up load either, there being no subscription to order a read after. |
 | `broker: serving without the boot's catch-up policy load, so a retag another pod served while this one was starting may not be in force here until its five-minute reload error=…` | At WARN: once its `LISTEN` is in place a booting pod reads the namespace a second time, so that a retag a peer served while it was still loading is in force before it binds. That read failed. The pod serves what its first load gave it and catches up at its five-minute reload; the first load succeeded, so this is never a pod with no policy at all. |
-| `broker: the other pods were not told to reread a secret secret=… error=…` | At WARN, **not a failed request**: the reread this pod was asked for read the secret's tags and answered 200, or `503 REQUEST_ENDED` when its request ended during the value read alone, and only the Postgres `NOTIFY` that tells the other pods failed. The retag is in force here and reaches the others at their own next reload. |
+| `broker: the other pods were not told to reread a secret secret=… error=…` | At WARN, **not a failed request**: the reread this pod was asked for read the secret's tags and answered a session 200, or `503 REQUEST_ENDED` when its request ended during the value read alone, or ran after the `202` a call with no proof is answered, and only the Postgres `NOTIFY` that tells the other pods failed. The retag is in force here and reaches the others at their own next reload. |
 | `broker: a notification's reread of a secret did not run secret=… sender=… error=…` | At WARN, on no request at all: another pod told this one to reread a secret and the reread failed. This pod goes on serving the tags it last read until its own five-minute reload. |
 | `broker: a second signal arrived while the broker was still starting up, so it is stopping without a drain: it had not begun serving when that signal was read` | At ERROR: two signals reached a process that had not finished booting, so it exited non-zero without draining. The line says what was true when the second signal was read, which is what the process can observe; a boot that bound its socket in the two statements after that read logs it too. The lines above it say how far the boot got. Expected only when someone or something stopped a pod twice during startup. |
 | `broker: signalled while starting up, before it had bound anything stage=…` | One signal reached the process before it bound its socket, so it finished the stage it was in and stopped cleanly, serving nothing and running no drain. `stage` is `the first policy load` or `the catch-up policy load`. |
@@ -1162,8 +1178,7 @@ Its fields:
     on the OAuth token route, where it is the OAuth client the token request named.
   - `unauthenticated`: a route that takes a credential, refused before the broker knew who sent
     the request: a missing or bad credential, a listed caller on a route its name does not
-    carry, a refusal that the two routes that decide a credential request answer before they
-    read the credential, such as `DECIDE_ON_BROKER_PAGE`, and a refusal of the approval page or
+    carry, a reread whose proof the broker did not accept, and a refusal of the approval page or
     its sign-in to a browser with no live sign-in. `caller` is empty.
   - `launcher`: a machine's launcher, by the id of its launcher credential.
   - `session`: an agent session or a pod, by its enrollment id.
@@ -1500,8 +1515,9 @@ boots and still serves; its listener redials for as long as it runs.
 
 **A reread that reaches every pod, draining ones included.** `POST /v1/secrets/{name}/reread`
 rereads the secret on the pod the load balancer picked and then, once that pod has put the tags it
-read in force (its `200` answer, or a `503 REQUEST_ENDED` whose request ended during the value
-read alone), tells every other pod serving the same database to reread the same name, over
+read in force (a session's `200` answer, a `503 REQUEST_ENDED` whose request ended during the value
+read alone, or the reread that runs after the `202` a call with no proof is answered), tells every
+other pod serving the same database to reread the same name, over
 Postgres `LISTEN`/`NOTIFY` on a channel of its own. So one call puts a retag in force across the
 fleet within seconds rather than at each pod's own next five-minute reload, and it needs no
 infrastructure beyond the database the broker already has. A pod that is draining is still one of
