@@ -87,7 +87,7 @@ func TestThePullRequestLineDropsIssueKeysAndLinksFromTheReading(t *testing.T) {
 		},
 		{
 			name:     "a Tailscale MagicDNS host written without a scheme",
-			observed: "Read dispatch.example-tailnet.ts.net/issues and it rendered.",
+			observed: "Read logs.example-tailnet.ts.net/issues and it rendered.",
 			want:     "Read and it rendered.",
 		},
 		{
@@ -99,6 +99,65 @@ func TestThePullRequestLineDropsIssueKeysAndLinksFromTheReading(t *testing.T) {
 			name:     "this Dispatch's own host written without a scheme",
 			observed: "Opened dispatch.example/projects/RESK/documents/notes again.",
 			want:     "Opened again.",
+		},
+		{
+			name:     "a host ending in .internal",
+			observed: "vm-1.us-central1-a.c.proj-1.internal answered at once.",
+			want:     "answered at once.",
+		},
+		{
+			name:     "an issue key with a non-breaking hyphen",
+			observed: "RESK\u20111's open-items v14 lists every row.",
+			want:     "open-items v14 lists every row.",
+		},
+		{
+			name:     "an issue key with an en dash",
+			observed: "All 40 cases passed (ACME\u201312) on the second run.",
+			want:     "All 40 cases passed on the second run.",
+		},
+		{
+			name:     "an issue key with a zero-width space",
+			observed: "All 40 cases passed (ACME\u200b-12) on the second run.",
+			want:     "All 40 cases passed on the second run.",
+		},
+		{
+			name:     "an issue key with a soft hyphen",
+			observed: "All 40 cases passed (AC\u00adME-12) on the second run.",
+			want:     "All 40 cases passed on the second run.",
+		},
+		{
+			name:     "dashes and invisible characters in words that name no project stay",
+			observed: "UTF\u20118 output and pages 3\u20134 match.",
+			want:     "UTF\u20118 output and pages 3\u20134 match.",
+			control:  true,
+		},
+		{
+			name:     "an issue key behind Markdown and HTML escapes",
+			observed: "ACME\\-12, ACME&#45;12 and **ACME**-12 passed; dispatch&#58;//RESK-1/spec matched.",
+			want:     "and passed; matched.",
+		},
+		{
+			name:     "escaped words that name no project stay",
+			observed: "UTF\\-8 and \\*bold\\* stay.",
+			want:     "UTF\\-8 and \\*bold\\* stay.",
+			control:  true,
+		},
+		{
+			name:     "a cut that would leave an issue key",
+			observed: strings.Repeat("=", 73) + "ACME-12xyz tail words",
+			want:     "…",
+		},
+		{
+			name:     "a cut inside a word that names no project",
+			observed: strings.Repeat("=", 73) + "abcdefgh tail words",
+			want:     strings.Repeat("=", 73) + "abcdefg…",
+			control:  true,
+		},
+		{
+			name:     "the word internal and a path under internal/ stay",
+			observed: "The .internal suffix and internal/dispatch/api stay.",
+			want:     "The .internal suffix and internal/dispatch/api stay.",
+			control:  true,
 		},
 		{
 			name:     "a public host written without a scheme stays",
@@ -249,4 +308,32 @@ func TestTheCIPullRequestLineDropsIssueKeysFromTheChecksWords(t *testing.T) {
 		t.Fatalf("c1's pull-request line = %q, want %q", check.CI.Line, want)
 	}
 	requireNoPrivateReference(t, check.CI.Line)
+}
+
+// The run a check's ci_check names is text the check's author wrote, and every line Dispatch writes
+// for such a check names it, so the line keeps of the name what it keeps of a reading. A name it
+// keeps nothing of reads as the run the check names. The run `go-test`, which names no project,
+// stays whole: the other CI tests of this package hold its lines.
+func TestTheCIPullRequestLineDropsIssueKeysFromTheRunName(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	issue := createInteractionIssue(t, handler, "RESCQ", "CI run name", "A spec\n")
+	withControl := `negative_control="` + ciCheckNegativeControl + `" `
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
+		ciCheckBlock("c1", withControl+`ci_check="e2e `+issue.Key+`"`)+"\n"+
+			ciCheckBlock("c2", withControl+`ci_check="`+issue.Key+`"`))
+
+	read := readResults(t, handler, issue.Key)
+	for _, want := range []struct{ check, line string }{
+		{"c1", "- Check c1 (before_merge): CI run e2e has no result (no_head)"},
+		{"c2", "- Check c2 (before_merge): the CI run the check names has no result (no_head)"},
+	} {
+		check := checkOf(t, read, want.check)
+		if check.CI == nil {
+			t.Fatalf("%s carries no ci", want.check)
+		}
+		if check.CI.Line != want.line {
+			t.Fatalf("%s's pull-request line = %q, want %q", want.check, check.CI.Line, want.line)
+		}
+		requireNoPrivateReference(t, check.CI.Line)
+	}
 }

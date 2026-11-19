@@ -5,15 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -1035,15 +1038,48 @@ type lineWords struct {
 }
 
 // privateHost and tailnetHost are the two host rules of .github/scripts/check-private-names.sh,
-// as that script spells them (private_host_rule, tailnet_host_rule) and read in any case as it
-// reads them: a host below `.internal.`, and a Tailscale MagicDNS host, a DNS label then `.ts.net`
-// with no letter or digit after it. That script refuses either in a pull request's text only once
-// the text is public; the line drops every word holding one, written without a scheme too, and
+// read in any case as that script reads them: a host below `.internal.`, and a Tailscale MagicDNS
+// host, a DNS label then `.ts.net` with no letter or digit after it. privateHost also takes a host
+// that ends in `.internal`, which the script does not refuse: the script guards the whole
+// repository, where names such as metadata.google.internal and host.docker.internal are well known
+// and not private, while the line is pasted into public text with no reader in between, so it is
+// stricter on purpose. The line drops every word holding one, written without a scheme too, and
 // the script's reserved example hosts with them, since no line needs a host.
 var (
-	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal[.][[:alnum:].-]+`)
+	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal([.][[:alnum:].-]+|[^[:alnum:].-]|$)`)
 	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
 )
+
+// markdownEscape is a Markdown backslash escape, a backslash before an ASCII punctuation
+// character, and htmlTag an HTML tag; the pull request renders the first as the character alone
+// and the second as nothing.
+var (
+	markdownEscape = regexp.MustCompile("\\\\([!-/:-@\\[-`{-~])")
+	htmlTag        = regexp.MustCompile(`<[^>]*>`)
+)
+
+// readerWord is word as a reader of the rendered pull request reads it, which the line judges
+// beside the word as written: HTML character references decoded, Markdown backslash escapes and
+// HTML tags taken out, the emphasis, strikethrough and code delimiters (`*`, `_`, `~` and the
+// backtick) taken out, then NFKC, every format character (unicode.Cf, the zero-width space and
+// the soft hyphen among them) taken out, and every dash (unicode.Pd) and the minus sign read as
+// `-`. So `ACME‑12` with a non-breaking hyphen, `ACME\-12`, `ACME&#45;12` and `**ACME**-12` read
+// as `ACME-12`. The line prints the word as written, never this reading.
+func readerWord(word string) string {
+	word = html.UnescapeString(word)
+	word = markdownEscape.ReplaceAllString(word, "$1")
+	word = htmlTag.ReplaceAllString(word, "")
+	word = strings.NewReplacer("*", "", "_", "", "~", "", "`", "").Replace(word)
+	return strings.Map(func(r rune) rune {
+		switch {
+		case unicode.Is(unicode.Cf, r):
+			return -1
+		case unicode.Is(unicode.Pd, r), r == '\u2212':
+			return '-'
+		}
+		return r
+	}, norm.NFKC.String(word))
+}
 
 // readLineWords is lineWords for every project q reads and for this Dispatch's own URL.
 func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error) {
@@ -1085,8 +1121,15 @@ func lineWordsFor(keys []string, serverURL string) lineWords {
 	return words
 }
 
-// drops reports whether the line leaves word out.
+// drops reports whether the line leaves word out: when the word as written, or as a reader of the
+// rendered pull request reads it (readerWord), holds what the line never carries.
 func (w lineWords) drops(word string) bool {
+	return w.holds(word) || w.holds(readerWord(word))
+}
+
+// holds reports whether word holds a link, a private host, this Dispatch's own host or an issue
+// key of a project this Dispatch holds.
+func (w lineWords) holds(word string) bool {
 	return holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||
 		(w.host != "" && strings.Contains(strings.ToLower(word), w.host)) ||
 		(w.issueKey != nil && w.issueKey.MatchString(word))
@@ -1148,17 +1191,20 @@ func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWo
 	if reading == "" {
 		return line + " The reading holds only links, hosts and issue keys, which this line leaves out."
 	}
-	return line + " " + cutWords(reading)
+	return line + " " + words.cut(reading)
 }
 
-// cutWords is s cut at a word boundary to checkResultReadingRunes, with an ellipsis where it was
-// cut, so a reader can tell a cut line from a short one (text.HeadWords).
-func cutWords(s string) string {
-	head, cut := text.HeadWords(s, checkResultReadingRunes)
-	if cut {
-		head += "…"
+// cut is kept, the words w kept of a text, cut at a word boundary to checkResultReadingRunes with
+// an ellipsis where it was cut, so a reader can tell a cut line from a short one
+// (text.HeadWords). HeadWords cuts inside a word when the budget's first runes hold no blank, and
+// what it keeps of that word can hold a key the whole word did not (`ACME-12xyz` cut to
+// `ACME-12`), so a cut text is kept by w once more.
+func (w lineWords) cut(kept string) string {
+	head, cut := text.HeadWords(kept, checkResultReadingRunes)
+	if !cut {
+		return head
 	}
-	return head
+	return w.keep(head) + "…"
 }
 
 // sessionOf is the session a result was recorded by, empty for a person's.
