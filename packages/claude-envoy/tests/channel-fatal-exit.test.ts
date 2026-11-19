@@ -239,6 +239,25 @@ async function exitWithin(server: Subprocess, ms: number): Promise<number | unde
 }
 
 /**
+ * Which event ended `started`'s server by `deadline`, a time on `performance.now()`'s clock: `exit
+ * <code>` when the process ended itself, with `after the start failed` when it wrote the failure
+ * line the entry writes for a start that failed; `killed by <signal>` when a signal ended it, which
+ * a signal it has a handler for does not; and `still running at the deadline` when neither
+ * happened by then.
+ */
+async function endedBy(started: Started, deadline: number): Promise<string> {
+  const late = Bun.sleep(Math.max(0, deadline - performance.now())).then(() => "late" as const)
+  if ((await Promise.race([started.server.exited, late])) === "late") {
+    return "still running at the deadline"
+  }
+  const { exitCode, signalCode } = started.server
+  if (signalCode !== null) return `killed by ${signalCode}`
+  return started.stderr().includes("channel server failed")
+    ? `exit ${exitCode} after the start failed`
+    : `exit ${exitCode}`
+}
+
+/**
  * Waits until `ready` holds, looking every 50 ms, with no deadline of its own: the row's timeout is
  * its only bound, so a start that a loaded machine slows takes what it takes. A server that exits
  * first ends the wait at once, naming its exit code and what it wrote to stderr.
@@ -308,18 +327,13 @@ test("a stop asked for while the dial waits on a mute hub exits 0, its socket re
     "the hub's connection and its mod socket",
   )
   started.server.kill("SIGTERM")
-  // The stop, not nats.js's dial timeout, ends the wait: the server exits before that timeout
-  // could have ended the dial (`DIAL_STOP_MARGIN_MS`), counted from the hub's first connection.
   const connected = hub.firstConnection()
   if (connected === undefined) throw new Error("the hub counted a connection it never timed")
-  const code = await exitWithin(
-    started.server,
-    Math.max(0, connected + DIAL_STOP_MARGIN_MS - performance.now()),
-  )
-  expect(
-    code,
-    `still running ${DIAL_STOP_MARGIN_MS} ms after the hub's connection: ${started.stderr()}`,
-  ).toBe(0)
-  expect(started.stderr()).not.toContain("channel server failed")
+  // The server ends through its own SIGTERM handler: the stop ends the dial's wait, and the process
+  // exits 0 by itself. One with no handler is killed by the signal. A start that failed exits 1
+  // after its failure line. And a stop that leaves the dial's wait alone ends only when nats.js's
+  // dial timeout does, about 20 s after the hub saw the connection, which the deadline
+  // (`DIAL_STOP_MARGIN_MS`) stays short of.
+  expect(await endedBy(started, connected + DIAL_STOP_MARGIN_MS), started.stderr()).toBe("exit 0")
   expect(existsSync(started.socketPath)).toBe(false)
 }, 30_000)
