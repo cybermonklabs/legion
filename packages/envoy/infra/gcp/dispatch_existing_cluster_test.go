@@ -155,6 +155,40 @@ func TestDispatchExistingClusterChildrenTakeTheLookedUpCluster(t *testing.T) {
 	require.Equal(t, member(defaults), member(m), "the seed's grant names the principal the component's own cluster gives")
 }
 
+// A stack that moves onto an existing cluster keeps its region, where its regional network and its
+// own Cloud SQL instance stay, and names a cluster in another location. The other fixtures put the
+// cluster in the component's own region, us-central1, so this one does not: region is us-west1 and
+// the cluster is in us-central1. The issuer is the cluster's, with the location getCluster
+// reports, wherever the component's region is: the Kubernetes provider's clusterIdentifier,
+// DISPATCH_OIDC_ISSUER and the serviceAccountIssuer output, in an update and in a preview, all
+// name locations/us-central1. An issuer built from the region names a cluster that does not exist,
+// so a federated credential that trusts serviceAccountIssuer would refuse the cluster's tokens.
+func TestDispatchExistingClusterIssuerTakesTheClustersLocationNotTheRegion(t *testing.T) {
+	args := existingClusterArgs()
+	args.Region = "us-west1"
+	args.OidcAudience = dispatchOidcAudience
+	m, err := runDispatch(t, args, true)
+	require.NoError(t, err)
+	identifier := unwrappedProperty(m.Named(t, kubernetesProviderType, "example-dispatch-kubernetes").Inputs["clusterIdentifier"])
+	require.True(t, identifier.IsString(), "the clusterIdentifier is a known string, not %s", identifier.TypeString())
+	require.Equal(t, existingClusterIssuer, identifier.StringValue())
+	require.Equal(t, existingClusterIssuer, appEnv(t, m)["DISPATCH_OIDC_ISSUER"])
+
+	for _, preview := range []bool{false, true} {
+		inputs := dispatchConstructBaseInputs()
+		inputs["region"] = property.New("us-west1")
+		inputs["existingCluster"] = existingClusterConstructInput()
+		constructed := newMocks()
+		constructed.Preview = preview
+		response, err := constructDispatchOnMocks(t, constructed, inputs)
+		require.NoError(t, err, "preview %t", preview)
+		issuer, ok := response.State.GetOk("serviceAccountIssuer")
+		require.True(t, ok, "serviceAccountIssuer is in the state, preview %t", preview)
+		require.True(t, issuer.IsString(), "serviceAccountIssuer is a known string, not %s, preview %t", issuer, preview)
+		require.Equal(t, existingClusterIssuer, issuer.AsString(), "preview %t", preview)
+	}
+}
+
 // existingCluster's name and location are refused by the resolver, before anything registers and
 // before the lookup asks for them, when they do not have the shape GKE gives them, each refusal a
 // core.InputError naming the field's path. The shapes GKE does give resolve.
