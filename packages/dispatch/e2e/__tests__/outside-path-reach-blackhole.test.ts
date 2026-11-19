@@ -128,8 +128,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached nats");
         expect(run.code).toBe(1);
       } finally {
-        await origin.stop();
         holding.stop(true);
+        await origin.stop();
       }
     }
   );

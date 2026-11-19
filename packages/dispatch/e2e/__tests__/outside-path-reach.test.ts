@@ -73,8 +73,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached hub");
         expect(run.code).toBe(1);
       } finally {
-        await origin.stop();
         listening.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -131,9 +131,9 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached nats-a nats-b");
         expect(run.code).toBe(1);
       } finally {
-        await origin.stop();
         first.stop(true);
         second.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -288,8 +288,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached lossy");
         expect(run.code).toBe(1);
       } finally {
-        await origin.stop();
         holding.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -400,8 +400,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         );
         expect(once.code).toBe(2);
       } finally {
-        await origin.stop();
         hub.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -444,8 +444,8 @@ describe.concurrent("outside-path-reach.sh", () => {
           [1, 2, 3, 4, 5].map((round) => `probe hub ${round}\n`).join("slept 6\n")
         );
       } finally {
-        await origin.stop();
         hub.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -543,8 +543,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached hub");
         expect(run.code).toBe(1);
       } finally {
-        await origin.stop();
         listening.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -566,8 +566,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached hub");
         expect(run.code).toBe(1);
       } finally {
-        await origin.stop();
         listening.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -608,9 +608,9 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(blind)).toBe("FAIL: reached hub");
         expect(blind.code).toBe(1);
       } finally {
-        await origin.stop();
         hub.stop(true);
         nats.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -637,8 +637,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(failing)).toBe("FAIL: reached hub");
         expect(failing.code).toBe(1);
       } finally {
-        await origin.stop();
         listening.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -683,8 +683,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(lineFor(proxy, "nats")).toContain(" REACHED; ");
         expect(verdict(proxy)).toBe("FAIL: reached nats");
       } finally {
-        await origin.stop();
         holding.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -758,8 +758,8 @@ describe.concurrent("outside-path-reach.sh", () => {
           }).toEqual({ locale, closed: true, hub: true, said: "FAIL: reached hub", code: 1 });
         }
       } finally {
-        await origin.stop();
         holding.stop(true);
+        await origin.stop();
       }
     }
   );

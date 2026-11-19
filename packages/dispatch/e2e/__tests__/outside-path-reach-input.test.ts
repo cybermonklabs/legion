@@ -260,8 +260,8 @@ describe.concurrent("outside-path-reach.sh", () => {
       expect(run.code).toBe(2);
       expect(await origin.seen()).toEqual([]);
     } finally {
-      await origin.stop();
       holding.stop(true);
+      await origin.stop();
     }
   });
 
@@ -523,8 +523,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         }
         expect(await origin.seen()).toEqual([]);
       } finally {
-        await origin.stop();
         holding.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -565,8 +565,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         }
         expect(await origin.seen()).toEqual([]);
       } finally {
-        await origin.stop();
         holding.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -659,8 +659,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         }
         expect(await origin.seen()).toEqual([]);
       } finally {
-        await origin.stop();
         holding.stop(true);
+        await origin.stop();
       }
     }
   );

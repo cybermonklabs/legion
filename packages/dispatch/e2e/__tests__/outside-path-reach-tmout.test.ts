@@ -82,8 +82,8 @@ describe.concurrent("outside-path-reach.sh under an inherited TMOUT", () => {
           expect(verdict(run)).toBe("FAIL: reached hub");
           expect(run.code).toBe(1);
         } finally {
-          await origin.stop();
           hub.stop(true);
+          await origin.stop();
         }
       }
     );

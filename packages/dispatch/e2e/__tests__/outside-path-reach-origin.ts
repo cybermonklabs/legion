@@ -5,8 +5,8 @@
  *  kernel picks, and prints that port as its first line on stdout. The script never reads that
  *  port.
  *
- *  `POST /__fake-dispatch/servers` with `{ health, projects, refusal }` starts a fake Dispatch, a
- *  `Bun.serve` on 127.0.0.1 on a port the kernel picks, and answers `{ port }`. That fake answers
+ *  `POST /` with `{ health, projects, refusal }` starts a fake Dispatch, a `Bun.serve` on
+ *  127.0.0.1 on a port the kernel picks, and answers `{ port }`. That fake answers
  *  `/healthz` with the status `health` and the body `{ ok }`, true only when `health` is 200. It
  *  answers `/api/v1/projects` with 200 and an empty list when the request carries a credential
  *  (an `Authorization` or a `Cookie`), as Dispatch would. When the request carries none, it
@@ -14,18 +14,15 @@
  *  list; for any other status, `refusal` as the body. Every other path answers 404. Like any HTTP
  *  server, it holds a connection that sends nothing, so the script's probe of its port reads
  *  REACHED through curl's exit 28. It records every request it answers:
- *  `GET /__fake-dispatch/servers/<port>/seen` answers that record, in the order it answered them,
- *  and `DELETE /__fake-dispatch/servers/<port>` stops that fake and closes its connections.
+ *  `GET /<port>/seen` answers that record, in the order it answered them, and `DELETE /<port>`
+ *  stops that fake and closes its connections.
  *
  *  The host exits once its stdin closes: the test process holds the other end of that pipe, so
- *  the host never outlives the test process. Imported, it serves nothing: `fakeDispatch` reads
- *  `serversPath`, `Answers` and `Seen` from it.
+ *  the host never outlives the test process. Imported, it serves nothing: `fakeDispatch` takes
+ *  only the types `Answers` and `Seen` from it.
  */
 
 import type { Server } from "bun";
-
-/** The control server's path for the fake Dispatches, which no request of the script names. */
-export const serversPath = "/__fake-dispatch/servers";
 
 /** What one fake Dispatch answers: `fakeDispatch`'s arguments. */
 export interface Answers {
@@ -77,7 +74,7 @@ if (import.meta.main) {
     hostname: "127.0.0.1",
     port: 0,
     routes: {
-      [serversPath]: {
+      "/": {
         async POST(request) {
           const fake = serveFake((await request.json()) as Answers);
           const { port } = fake.server.url;
@@ -85,13 +82,13 @@ if (import.meta.main) {
           return Response.json({ port: Number(port) });
         },
       },
-      [`${serversPath}/:port/seen` as const]: {
+      "/:port/seen": {
         GET(request) {
           const fake = fakes.get(request.params.port);
           return fake === undefined ? unknown(request.params.port) : Response.json(fake.seen);
         },
       },
-      [`${serversPath}/:port` as const]: {
+      "/:port": {
         async DELETE(request) {
           const { port } = request.params;
           const fake = fakes.get(port);

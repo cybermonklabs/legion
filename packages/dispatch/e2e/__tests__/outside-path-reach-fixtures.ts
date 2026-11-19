@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Subprocess, udp } from "bun";
-import { type Answers, type Seen, serversPath } from "./outside-path-reach-origin";
+import type { Answers, Seen } from "./outside-path-reach-origin";
 
 export const script = fileURLToPath(
   new URL("../acceptance/outside-path-reach.sh", import.meta.url)
@@ -114,9 +114,9 @@ export function byteRefusal(where: string, offset: number): string {
 /** The fake Dispatch host's own program, which `fakeDispatch` runs. */
 const hostProgram = fileURLToPath(new URL("./outside-path-reach-origin.ts", import.meta.url));
 
-/** A fake Dispatch host: the URL of its control server's fakes, and its process. */
+/** A fake Dispatch host: its control server's URL, and its process. */
 interface Host {
-  servers: string;
+  url: string;
   child: Subprocess;
 }
 
@@ -149,17 +149,25 @@ async function startHost(): Promise<Host> {
       `the fake Dispatch host exited ${code} with no port printed: ${JSON.stringify(printed)}`
     );
   }
-  return { servers: `http://127.0.0.1:${port}${serversPath}`, child };
+  return { url: `http://127.0.0.1:${port}`, child };
 }
 
-/** One request to the fake Dispatch host's control server, at `path` under its fakes' URL. */
+/** One request to the fake Dispatch host's control server, at `path`. */
 async function control(path: string, init?: RequestInit): Promise<Response> {
   host ??= startHost();
-  const response = await fetch(`${(await host).servers}${path}`, init);
+  const { url } = await host;
+  const call = `${init?.method ?? "GET"} ${path}`;
+  let response: Response;
+  try {
+    response = await fetch(`${url}${path}`, init);
+  } catch (error) {
+    // A host that has died or refuses: Bun's own error names neither the host nor the call, and
+    // the test runner prints it beneath this one as the cause.
+    throw new Error(`the fake Dispatch host did not answer ${call}`, { cause: error });
+  }
   if (!response.ok) {
     throw new Error(
-      `the fake Dispatch host answered ${init?.method ?? "GET"} ${serversPath}${path} with ` +
-        `${response.status}: ${await response.text()}`
+      `the fake Dispatch host answered ${call} with ${response.status}: ${await response.text()}`
     );
   }
   return response;
@@ -186,7 +194,7 @@ export async function fakeDispatch(
   refusal: object = { code: "NO_IDENTITY" }
 ) {
   const answers: Answers = { health, projects, refusal };
-  const started = await control("", { method: "POST", body: JSON.stringify(answers) });
+  const started = await control("/", { method: "POST", body: JSON.stringify(answers) });
   const { port } = (await started.json()) as { port: number };
   return {
     port,
