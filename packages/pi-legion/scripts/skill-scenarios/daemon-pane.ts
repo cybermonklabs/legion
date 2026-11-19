@@ -117,11 +117,13 @@ export interface PaneSource {
  * (`<state>/secrets/boot`, the file the stand-in checks), and PATH with the launcher directory
  * first; no grant file, since the `legion` tool mints its grants in-process and no agent runs
  * `legion` from bash; and, with `systemPrompt`, the system prompt argument. An inherited
- * `ANTHROPIC_API_KEY`, every `LEGION_*` and `DISPATCH_*` value and the caller's own GitHub
- * variables are dropped first. The profile's agent directory, and so its envoy.json, is under the
- * inherited `HOME`. Throws `envoy: <why>` when that Envoy is off with an error, or on with inbound
- * messages off (`inbound.off`: no NATS server, or its seed refused), since the pane's Legion claim
- * refuses then. */
+ * `ANTHROPIC_API_KEY`, every `LEGION_*` and `DISPATCH_*` value, the caller's own GitHub variables
+ * and its session variables (`OMP_SESSION_ID`, `TMUX`, `TMUX_PANE` and `OMP_SESSION_EXCLUSIVE`,
+ * the hold the daemon gives a resumed launch alone, where a scenario pane is a fresh launch) are
+ * dropped first. The profile's agent directory, and so its envoy.json, is under the inherited
+ * `HOME`. Throws `envoy: <why>` when that Envoy is off with an error, or on with inbound messages
+ * off (`inbound.off`: no NATS server, or its seed refused), since the pane's Legion claim refuses
+ * then. */
 export function workerPane(
   launch: WorkerLaunch,
   inherited: NodeJS.ProcessEnv,
@@ -134,7 +136,7 @@ export function workerPane(
     if (key === "ANTHROPIC_API_KEY" || key.startsWith("LEGION_") || key.startsWith("DISPATCH_"))
       continue;
     if (["GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"].includes(key)) continue;
-    if (key === "OMP_SESSION_ID" || key === "TMUX" || key === "TMUX_PANE") continue;
+    if (["OMP_SESSION_ID", "OMP_SESSION_EXCLUSIVE", "TMUX", "TMUX_PANE"].includes(key)) continue;
     env[key] = value;
   }
   const home = env.HOME ?? os.homedir();

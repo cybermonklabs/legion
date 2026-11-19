@@ -80,13 +80,13 @@ func resolveLeakCheck(environ []string) (string, error) {
 // (internal/shim/config.go:59-98), so either would open panes whose OMP lacks the key. A composed
 // name (composed) is carried by every pane as surely as a runtime-owned one — panePairs sets it
 // whatever the operator wrote — so a provider key of that name is refused here as well, at boot,
-// rather than at each pane's shim. Besides a name every pane carries and a key whose pointer every
-// pane carries, it refuses every name runtime.PaneVariableRefusal refuses with no value, with that
-// function's reason: a variable that places the session a resume reads, one a launcher tells a
-// Claude Code pane or a resumed Oh My Pi pane after the operator's variables, a launch secret's
-// pointer. Each is refused for the reason pane_env refuses it, since the shim exports a provider
-// key into Oh My Pi's environment. A pane that is told such a name itself has a second reason: its
-// shim would refuse to start over the key.
+// rather than at each pane's shim.
+// It also refuses, with runtime.PaneVariableRefusal's reason, every name that function refuses
+// with no value (a variable that places the session a resume reads, one a launcher tells a Claude
+// Code pane or a resumed Oh My Pi pane after the operator's variables, a launch secret's pointer),
+// since the shim exports a provider key into the agent's environment, where it acts as the pane
+// variable of that name; the shim of a pane told such a name itself would also refuse to start
+// over the key.
 func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
