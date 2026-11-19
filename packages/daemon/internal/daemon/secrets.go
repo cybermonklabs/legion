@@ -65,6 +65,15 @@ func (s pruningStore) RetireDelivery(ctx context.Context, c supervise.Claim, del
 	return nil
 }
 
+func (s pruningStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	freed, err := s.Store.ReleaseHolds(ctx, c, holds)
+	if err != nil {
+		return nil, err
+	}
+	s.written(c)
+	return freed, nil
+}
+
 func (s pruningStore) written(c supervise.Claim) {
 	if c.Locator == nil {
 		removeSecretFiles(s.dir, s.log, func(name string) bool { return ownedBy(name, c.Token) })

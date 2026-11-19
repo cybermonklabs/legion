@@ -274,7 +274,7 @@ type site struct {
 	callee    string
 	dir       string   // a pageAnswerers call's: the directory of the package declaring callee, "" for this one
 	sentinels []string // the messages of the errors.Is targets of the case clause around it
-	bodyType  string   // readJSON's: the request body's type
+	bodyType  string   // readJSON's or readCarriedBody's: the request body's type
 	respType  string   // writeJSON's: the response body's type, "" when refgen cannot name it; a refusal writer's, the body it answers beyond code and error
 	query     string   // r.URL.Query().Get's, or r.URL.Query()[name]'s for a repeated one: the query parameter
 	guards    []guard  // the boolean conditions it runs under
@@ -426,7 +426,7 @@ func (g *graph) collect(file *ast.File, body ast.Node, params *ast.FieldList) fu
 				}
 			case g.funcs[fun.Name] != nil:
 				s.kind, s.callee = siteCall, fun.Name
-				if fun.Name == "readJSON" && len(call.Args) > 2 {
+				if (fun.Name == "readJSON" || fun.Name == "readCarriedBody") && len(call.Args) > 2 {
 					if u, ok := call.Args[2].(*ast.UnaryExpr); ok {
 						if id, ok := u.X.(*ast.Ident); ok {
 							s.bodyType = locals[id.Name]
