@@ -102,7 +102,7 @@ func TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce(t *testing.T) {
 	useStdin(t, "fresh-v1")
 	stdout, stderr, code := runSecret("create", "FRESH_KEY", "--owner", "me", "--tier", "agent")
 	if code != 0 || !strings.Contains(stdout, "broker: rereading FRESH_KEY from ") || strings.Contains(stdout, "broker: serving") ||
-		!strings.Contains(stderr, "says what it serves only to a call a session signs; this call carried no proof (no broker identity for this process") {
+		!strings.Contains(stderr, "took the reread of FRESH_KEY, but how it serves FRESH_KEY was not checked ("+errNoHeldIdentity.Error()+"), so this exit 0 says only that the write stands") {
 		t.Fatalf("create with no broker identity: exit %d, stdout %q, stderr %q; want 0, the reread taken and why it went with no proof", code, stdout, stderr)
 	}
 	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {

@@ -288,32 +288,20 @@ func rereadIfRaced(s *secretSession, stdout, stderr io.Writer, form, name string
 }
 
 // rereadRetag is rereadAfter for a retag, which also exits 1 when the secret does not hold type,
-// the one the retag left it (after's). A retag that leaves a type reads its type tag back from
-// the store under the sign-in that wrote it (typeTagHolds). The broker's own answer, to a
-// session's reread, must serve the secret as that type: a reread can read the secret's metadata
-// stale (Secret Manager's is eventually consistent for up to hours), and a secret the broker
-// still serves as stored releases its stored value raw, so a key stored in it then reaches every
-// grant of it. Only this exit, not `broker: serving`, says the broker reads the new tags. A reread
-// the broker took and said no more of, all a call with no proof is answered, leaves that view
-// unchecked: the retag says so, naming where to run it again, and exits 0 on the tag alone.
+// the one the retag left it (after's), as rereadValue does for a value write: the store's own type
+// tag is read back whatever the broker answers (reread). Where a session's reread was answered in
+// full, the broker must serve the secret as that type too: a reread can read the secret's metadata
+// stale (Secret Manager's is eventually consistent for up to hours), and a secret the broker still
+// serves as stored releases its stored value raw, so a key stored in it then reaches every grant
+// of it. Only an exit 0 with `broker: serving … (type …)`, not an exit 0 after the line saying the
+// broker's view was not checked, says the broker reads the new tags.
 func rereadRetag(s *secretSession, stdout, stderr io.Writer, form, name, secretType string) int {
-	r, unsigned, ok := reread(s, stdout, stderr, form, name, true, nil)
+	r, ok := reread(s, stdout, stderr, form, name, secretType, true, nil)
 	if !ok {
 		return 1
 	}
-	if secretType != "" && !typeTagHolds(s, stderr, form, name, secretType) {
-		return 1
-	}
-	if !r.Told {
-		if secretType == "" {
-			sayRereadUnchecked(s, stderr, form, name, unsigned)
-		} else {
-			sayTypeUnserved(s, stderr, form, name, secretType, unsigned)
-		}
-		return 0
-	}
-	if r.Type != secretType {
-		fmt.Fprintf(stderr, "agent-secrets %s: the retag in %s stands, but %s serves %s as %s, not %s: it still sees the old tags. Run this retag again to ask it to reread them, and store no value in %s until a retag exits 0\n", form, s.storeName(), s.src.brokerAt(), name, typeName(r.Type), typeName(secretType), name)
+	if r.Told && r.Type != secretType {
+		fmt.Fprintf(stderr, "agent-secrets %s: the retag in %s stands, but %s serves %s as %s, not %s: it still sees the old tags. Run this retag again to ask it to reread them, and store no value in %s until a retag's `broker: serving %s` line says it serves %s as %s\n", form, s.storeName(), s.src.brokerAt(), name, typeName(r.Type), typeName(secretType), name, name, name, typeName(secretType))
 		return 1
 	}
 	return 0

@@ -17,8 +17,8 @@ import (
 
 // TestThePagePrintsTheRecordAfterTheBrokersOwnSignIn pins A1: a person with no session is sent to
 // the provider as the broker's own client, returning to the broker's own host, with PKCE S256, a
-// nonce, a state, the record's approver as login_hint, and no offline access or forced consent;
-// signed in, the page prints the record's facts from the broker's own record, with Approve and
+// nonce, a state, no login_hint (a signed-out sign-in reads no record), and no offline access or
+// forced consent; signed in, the page prints the record's facts from the broker's own record, with Approve and
 // Deny, every other pending request the person may decide, and "Approve all N shown". A machine
 // login's record links Dispatch's page and offers no button; a record another person must
 // decide names who and offers only the switch; an unknown record is a 404 to a signed-in person
@@ -48,8 +48,8 @@ func TestThePagePrintsTheRecordAfterTheBrokersOwnSignIn(t *testing.T) {
 		t.Errorf("PKCE = %q %q, want an S256 challenge", query.Get("code_challenge_method"), query.Get("code_challenge"))
 	case query.Get("nonce") == "" || query.Get("state") == "":
 		t.Errorf("nonce %q, state %q: want both", query.Get("nonce"), query.Get("state"))
-	case query.Get("login_hint") != ada:
-		t.Errorf("login_hint = %q, want the record's approver %s", query.Get("login_hint"), ada)
+	case query.Has("login_hint"):
+		t.Errorf("a signed-out sign-in hints %q, want no login_hint: it reads no record", query.Get("login_hint"))
 	case query.Get("hd") != domain:
 		t.Errorf("hd = %q, want %s", query.Get("hd"), domain)
 	case query.Has("access_type") || query.Has("prompt"):
@@ -169,8 +169,8 @@ func TestThePagePrintsTheRecordAfterTheBrokersOwnSignIn(t *testing.T) {
 			t.Errorf("a signed-in person's unknown record = %d, want 404", res.Status)
 		}
 		// With no session a well-formed id starts a sign-in whether or not a record has it, and
-		// that sign-in names a person only when a record does, so a machine with no person behind
-		// it learns nothing about which records exist.
+		// that sign-in names nobody, so a machine with no person behind it learns nothing about
+		// which records exist (TestASignedOutSignInIsTheSameForEveryRecordID).
 		stranger := r.browser(t)
 		res := stranger.Get(t, "/approve/"+unknown)
 		if res.Status != http.StatusFound {

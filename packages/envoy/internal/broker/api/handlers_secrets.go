@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
@@ -116,15 +118,24 @@ type rereadResponse struct {
 	Type string `json:"type,omitempty"`
 }
 
-// rereadAccepted is POST /v1/secrets/{name}/reread's answer to a caller that sends no session
-// proof: one body, the same for every name, written before the reread reads the store
+// rereadAccepted is POST /v1/secrets/{name}/reread's answer to a caller that sends no Proof
+// header: one body, the same for every name, written before the reread reads the store
 // (rereadSecret), so neither what it says nor how long it takes says whether the store holds the
 // name.
 type rereadAccepted struct {
 	// Always true: the broker took the reread and runs it after this answer. It says nothing of
 	// what the broker then serves; only a session's call is answered that.
 	Accepted bool `json:"accepted"`
+	// Always RereadAcceptedReason, the same for every name, so it tells nothing about the store.
+	// It is here for an agent-secrets from before this answer, which reads the body as a refusal
+	// and prints its reason: that line then says why, and what to do.
+	Reason string `json:"reason"`
 }
+
+// RereadAcceptedReason is the reason every 202 of the reread route carries (rereadAccepted): the
+// words an agent-secrets from before that answer prints in its `(reason=…)` slot, where it reads
+// the 202 as a refusal.
+const RereadAcceptedReason = "the reread was taken; this broker says what it serves only to a signed session, so upgrade agent-secrets to the broker's release (the write stands)"
 
 // rereadSecret is POST /v1/secrets/{name}/reread: open to any caller and rate-limited per source
 // address and broker-wide (refuseReread) before any work, it reads the one secret from the store
@@ -133,19 +144,20 @@ type rereadAccepted struct {
 // happened to pick. A name no secret can carry is 400 SECRET_NAME_INVALID, a check of the name's
 // shape alone, the same for every caller.
 //
-// What it answers depends on the caller, never on the name. A caller that sends no Proof header is
-// answered 202 and rereadAccepted at once, and the reread runs after that answer
-// (rereadAfterAnswer): the answer is the same for a name the store holds as for one it does not,
-// and so is when it comes, which a reread the caller waited on would not give, since the store
-// takes one call to say it holds no such secret and more to describe one it holds. Such callers
-// still need the reread itself — the secret forms of an `agent-secrets` with no broker identity,
-// a person's own curl after a write — so it is run, not dropped, and costs what it always did:
-// the same two buckets meter it.
+// Whether it says what the broker serves depends on the caller, never on the name. A caller that
+// sends no Proof header is answered 202 and rereadAccepted at once, and the reread runs after that
+// answer (rereadAfterAnswer): the answer is the same for a name the store holds as for one it does
+// not, and so is when it comes, which a reread the caller waited on would not give, since the
+// store takes one call to say it holds no such secret and more to describe one it holds. Such
+// callers still need the reread itself — the secret forms of an `agent-secrets` with no broker
+// identity, a person's own curl after a write — so it is run, not dropped, and costs what it
+// always did: the same two buckets meter it.
 //
 // A caller that sends a Proof header must be a session the broker authenticates, as on every
 // session route (sessionCaller: 401 PROOF_INVALID, or 503 when the proof cannot be checked), and
 // is answered as before, once the reread is done: whether the broker serves the name, why not, and
-// as which type. A session learns no more here than it could learn by asking for the secret. A
+// as which type. That is more than a request for the secret tells a session, which is refused
+// UNKNOWN_SECRET alike for a name no secret carries and for a secret the broker refuses. A
 // session's reread whose request ended first - its caller went away, or its deadline passed - is
 // the request's failure, not the broker's, so it logs nothing, as the miss path logs nothing for
 // one: anyone can end a request, and the "broker: reread secret failed" line is the one an
@@ -164,7 +176,7 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Header.Get("Proof") == "" {
-		writeJSON(w, http.StatusAccepted, rereadAccepted{Accepted: true})
+		writeJSON(w, http.StatusAccepted, rereadAccepted{Accepted: true, Reason: RereadAcceptedReason})
 		s.rereadAfterAnswer(r.Context(), name)
 		return
 	}
@@ -176,21 +188,15 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recorder.NoteCaller(answer.CallerSession, who.enrollment)
-	lk, err := s.deps.Policy.RefreshOne(r.Context(), name)
+	lk, err := s.refreshAndTell(r.Context(), name)
 	switch {
 	case err != nil && r.Context().Err() != nil:
-		// A reread that merged the tags it read before its value read was cut serves them here,
-		// so the peers hear of it as of a 200 (notifyPeers).
-		if errors.Is(err, policy.ErrValueUnchecked) {
-			s.notifyPeers(r.Context(), name)
-		}
 		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the reread finished; send it again")
 		return
 	case err != nil:
 		writeInternal(w, "reread secret", err)
 		return
 	}
-	s.notifyPeers(r.Context(), name)
 	resp := rereadResponse{Name: name, Served: lk.Served, Reason: lk.Reason}
 	if lk.Served {
 		resp.Type = lk.Secret.Type()
@@ -198,8 +204,21 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// rereadAfterAnswer runs the reread rereadSecret has already answered a caller with no session
-// proof for, and then tells the peers, on a goroutine of its own: the caller's answer is written
+// refreshAndTell rereads name on ctx (policy.Current.RefreshOne) and tells the other pods to
+// reread it too (notifyPeers) once this pod has merged what it read: when the reread succeeded,
+// and when only its value read was cut (policy.ErrValueUnchecked), since the tags it read are in
+// force here then too. It is the one place both of the route's rereads, a session's and the one
+// run after a 202, decide whether the peers are told.
+func (s *server) refreshAndTell(ctx context.Context, name string) (policy.Lookup, error) {
+	lk, err := s.deps.Policy.RefreshOne(ctx, name)
+	if err == nil || errors.Is(err, policy.ErrValueUnchecked) {
+		s.notifyPeers(ctx, name)
+	}
+	return lk, err
+}
+
+// rereadAfterAnswer runs the reread rereadSecret has already answered a caller with no Proof
+// header for, and then tells the peers, on a goroutine of its own: the caller's answer is written
 // and its handler returns without waiting on the store, so the connection the caller holds closes
 // or serves its next request at the same moment whatever the store holds. It keeps every value on
 // the request's context and drops its cancellation, as notifyPeers does, since the answer is
@@ -210,17 +229,21 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 // No caller waits on it, so its failure is the broker's, a store or a writer lock that did not
 // answer in time among them, and it logs the "broker: reread secret failed" line the reread a
 // session waits on logs. A reread whose value read alone that bound cut has merged the tags it
-// read, as a session's cut there has, so the peers are told of it all the same.
+// read, as a session's cut there has, so the peers are told of it all the same (refreshAndTell).
+// It runs outside net/http's handler goroutine, so nothing would recover a panic in it and the
+// panic would stop the broker: it recovers its own, and logs it as that same one failure line,
+// with the panic and its stack as the error.
 func (s *server) rereadAfterAnswer(ctx context.Context, name string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rereadAfterAnswerTimeout)
 	go func() {
 		defer cancel()
-		_, err := s.deps.Policy.RefreshOne(ctx, name)
-		if err != nil {
+		defer func() {
+			if p := recover(); p != nil {
+				slog.Error("broker: reread secret failed", "name", name, "error", fmt.Errorf("panic: %v", p), "stack", string(debug.Stack()))
+			}
+		}()
+		if _, err := s.refreshAndTell(ctx, name); err != nil {
 			slog.Error("broker: reread secret failed", "name", name, "error", err)
-		}
-		if err == nil || errors.Is(err, policy.ErrValueUnchecked) {
-			s.notifyPeers(ctx, name)
 		}
 	}()
 }

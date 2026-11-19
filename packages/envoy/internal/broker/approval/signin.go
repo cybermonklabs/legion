@@ -40,12 +40,12 @@ func validNext(next string) bool {
 }
 
 // beginSignIn sends the browser to the provider to sign in and come back to recordID's page,
-// holding the sign-in in its signInCookie. hint is the login_hint, the record's approver when the
-// record was read and names a person, so that person is asked nothing at a provider they are
-// already signed in to; it is empty where the record was not read, since reading it is what a
-// sign-in is for. selectAccount asks the provider for its account chooser, for a person switching
-// accounts. The session the browser may hold now is left alone: the callback ends it when it
-// makes the new one.
+// holding the sign-in in its signInCookie. hint is the login_hint: the record's approver for a
+// signed-in person switching accounts, so that person is asked nothing at a provider they are
+// already signed in to, and empty for a browser with no live session, whose sign-in reads no
+// record, so its redirect says nothing of whether the record exists. selectAccount asks the
+// provider for its account chooser, for a person switching accounts. The session the browser may
+// hold now is left alone: the callback ends it when it makes the new one.
 func (p *Page) beginSignIn(w http.ResponseWriter, r *http.Request, recordID, hint string, selectAccount bool) {
 	pending := pendingSignIn{State: randomValue(), Nonce: randomValue(), Verifier: oauth2.GenerateVerifier(), Next: approvePrefix + recordID}
 	// The one failure here is the provider's discovery document, which the sign-in's code flow

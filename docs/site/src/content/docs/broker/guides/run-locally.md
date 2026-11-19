@@ -305,15 +305,15 @@ and ask the broker to reread it, as `agent-secrets secret` does right after each
 ([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)). Signed as this
 shell's session, the broker answers once the reread is done, with what it now serves; the same
 call answered `{"name":"DEMO_NEW_TOKEN","served":false,"reason":"absent"}` before the edit. A
-call with no proof is answered `{"accepted":true}` at once, whatever the name, and the reread
-runs after that answer:
+call with no proof is answered `202` with `"accepted":true` and one fixed `reason` at once,
+whatever the name, and the reread runs after that answer:
 
 ```console
 $ reread() { curl -s -X POST -H "Proof: $(agent-secrets sign --method POST --url "$AGENT_SECRETS_URL/v1/secrets/$1/reread")" "$AGENT_SECRETS_URL/v1/secrets/$1/reread"; }
 $ reread DEMO_NEW_TOKEN
 {"name":"DEMO_NEW_TOKEN","served":true}
 $ curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/DEMO_NEW_TOKEN/reread"
-{"accepted":true}
+{"accepted":true,"reason":"the reread was taken; this broker says what it serves only to a signed session, so upgrade agent-secrets to the broker's release (the write stands)"}
 ```
 
 The registered session gets it at once:

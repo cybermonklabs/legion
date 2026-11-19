@@ -4,20 +4,33 @@ body: |-
   credential-request records and which secret names exist. `POST /v1/credential-requests/{record}/approve`
   and `/deny` check the caller's ServiceAccount token before they read the record, so a caller
   with no token, or one the broker does not accept, is refused `401` or `403` alike for every
-  record id; a listed caller still gets `403 DECIDE_ON_BROKER_PAGE` for a secret request and `404`
-  for an id no record has. `POST /v1/secrets/{name}/reread` answers a call with no proof `202`
-  `{"accepted":true}` at once, the same for every name, and rereads the secret after that answer,
-  so neither the answer nor how long it takes says what the store holds; a call an enrolled
-  session signs is answered as before, once the reread is done, with whether the broker serves the
-  name, why not and as which type, and a proof the broker does not accept is `401 PROOF_INVALID`.
-  `GET /v1/settings` stays open: a machine reads its exchange audience there before it holds any
-  credential. `agent-secrets secret` signs its reread with the process's broker identity and reads
-  the answer; with none, it sends the reread unsigned, says the broker's view was not checked, and
-  exits 0. After a typed `create`, `set` or `retag` it also reads the type tag back from the
-  store under the sign-in it wrote with, and exits 1 when the store holds another type or none.
+  record id; a listed caller still gets the answers it got before, such as
+  `403 DECIDE_ON_BROKER_PAGE` for a secret request and `404` for an id no record has.
+  `GET /approve/{record}` sends a browser with no session to sign in the same way for every id,
+  with no `login_hint`, since the page reads no record before a person signs in; a signed-in
+  person's **Sign in as someone else** still names the record's approver.
+  `POST /v1/secrets/{name}/reread` answers a call with no proof `202` at once, with
+  `"accepted":true` and one fixed `reason` that names the upgrade, the same for every name, and
+  rereads the secret after that answer, so neither the answer nor how long it takes says what the
+  store holds; a call an enrolled session signs is answered as before, once the reread is done,
+  with whether the broker serves the name, why not and as which type, and a proof the broker does
+  not accept is `401 PROOF_INVALID`. `GET /v1/settings` stays open: a machine reads its exchange
+  audience there before it holds any credential.
+  `agent-secrets secret` signs its reread with a broker identity the process already holds, with
+  no wait, no token trade and no registration, and reads the answer. Where the broker's view
+  cannot be checked (no identity, an identity that cannot sign, or a broker that cannot check or
+  does not accept the proof) it sends the reread with no proof, says in one line that the
+  broker's view was not checked, and exits on what it can check. After a typed `create`, `set` or
+  `retag` it reads the type tag back from the store under the sign-in it wrote with, whatever the
+  broker answered, and exits 1 when the store holds another type or none, or when that read fails.
+  A typed write whose broker view went unchecked exits 0 on the tag alone: that exit 0 says only
+  that the store holds the tag, so store no App key or login in the secret until a retag run with
+  a broker identity prints `broker: serving NAME from … (type …)`.
   Upgrade `agent-secrets` with the broker: an `agent-secrets` from an earlier release sends every
-  reread with no proof, reads the `202` as a refusal with no reason, and exits 1 after every
-  write, though the write stands.
+  reread with no proof and reads the `202` as a refusal, printing
+  `broker: refusing NAME … (reason=the reread was taken; … upgrade agent-secrets …)`. Its
+  `create`, `set`, `retag` and `restore` then exit 1, and its `delete` exits 0; every one of those
+  writes stands.
 time: 2026-11-19T13:50:33Z
 custom:
     Issue: pr4512

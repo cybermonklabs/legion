@@ -94,8 +94,10 @@ async function brokerSession(context: BrowserContext) {
 }
 
 /** Signs `page`'s browser in to the broker as alice through `request`'s page: no session sends it
- *  to the issuer, which signs alice in by the record's login_hint and returns it there. */
+ *  to the issuer and back there. The broker's sign-in for a browser with no session names nobody
+ *  (it reads no record first), so the issuer is told to sign alice in. */
 async function signInToBroker(page: Page, request: SeededRequest): Promise<void> {
+  await queueSignIn(aliceBrokerLogin);
   await page.goto(request.approve_url);
   await expect(page).toHaveURL(request.approve_url);
   await expect(signedInAs(page, aliceBrokerLogin)).toBeVisible();
@@ -173,6 +175,7 @@ test("from the Inbox, a lapsed broker session signs in once and returns to the s
     expect(await brokerSession(alice)).toBeUndefined();
 
     await page.goto("/");
+    await queueSignIn(aliceBrokerLogin);
     const traffic = recordTraffic(page);
     await inboxRow(page, request.approve_url).click();
     const { approve } = recordOn(page, request);
@@ -190,7 +193,8 @@ test("from the Inbox, a lapsed broker session signs in once and returns to the s
       `${realBrokerOrigin()}/signin/callback`,
       request.approve_url,
     ]);
-    expect(new URL(signIns[0] ?? "").searchParams.get("login_hint")).toBe(aliceBrokerLogin);
+    // A browser with no session is sent to sign in naming nobody: the page reads no record first.
+    expect(new URL(signIns[0] ?? "").searchParams.get("login_hint")).toBeNull();
     expect(await states(state)).toEqual(["pending"]);
   } finally {
     await alice?.close();
@@ -214,6 +218,8 @@ test("three pending requests are approved by one click on Approve all 3 shown", 
     alice = await asUser(browser, "alice");
     const page = await alice.newPage();
     await page.goto("/");
+    // A browser with no session is sent to sign in naming nobody, so the issuer is told who.
+    await queueSignIn(aliceBrokerLogin);
     await inboxRow(page, first.approve_url).click();
     await expect(page).toHaveURL(first.approve_url);
     for (const request of requests) {

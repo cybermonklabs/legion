@@ -907,8 +907,11 @@ func TestTwoBrokers(t *testing.T) {
 	// fleet would spend twice what the figure says.
 	//
 	// So the row empties A's broker-wide bucket with a burst — which is also a burst of
-	// notifications at B — and then asks B for a reread of its own, which must be answered 202
-	// straight away.
+	// notifications at B — waits until B has reread the secret for every one of them, and then
+	// asks B for a reread of its own, which must be answered 202 straight away. A answers a reread
+	// with no proof before it runs it, and sends the notification only once it has, so without
+	// that wait B could answer before a single notification had reached it, and the row would pass
+	// whatever a notification costs B.
 	//
 	// The burst is bounded well below the per-address bucket's own burst (thirty, one back every
 	// two seconds at two pods, of which the row above spent one), so the 429 this row stops on
@@ -916,8 +919,12 @@ func TestTwoBrokers(t *testing.T) {
 	// nothing in the answer would otherwise tell them apart.
 	t.Run("5_ANotificationSpendsNoRereadTokenOnTheReceivingPod", func(t *testing.T) {
 		const burstBound = 20
+		const notifiedWithin = 10 * time.Second
 		a, b := pair.Clients[0], pair.Clients[1]
 		path := "/v1/secrets/" + multiprocessSecret + "/reread"
+		// Every reread A accepts makes B read the store once, when A's notification of it
+		// reaches B (peerReread).
+		bReads := storeReads(t, pair.Processes[1])
 		var status int
 		var body []byte
 		sent := 0
@@ -938,6 +945,10 @@ func TestTwoBrokers(t *testing.T) {
 		refusal := string(body)
 		t.Logf("A (%s) served %d rereads and refused the next: %s", a.Addr, sent-1, refusal)
 
+		if !testwait.Holds(notifiedWithin, listeningPoll, func() bool { return storeReads(t, pair.Processes[1]) >= bReads+sent-1 }) {
+			t.Fatalf("%s after A (%s) accepted %d rereads, B (%s) had read the store %d times since; want once for each of A's notifications",
+				notifiedWithin, a.Addr, sent-1, b.Addr, storeReads(t, pair.Processes[1])-bReads)
+		}
 		if status, body := b.Req(t, http.MethodPost, path, nil, nil); status != http.StatusAccepted {
 			t.Fatalf("A (%s) refused its own next reread with %s, and B (%s) then answered a reread of its own %d %s; want 202 — the %d notifications B took from A must have spent nothing of B's bucket",
 				a.Addr, refusal, b.Addr, status, body, sent-1)

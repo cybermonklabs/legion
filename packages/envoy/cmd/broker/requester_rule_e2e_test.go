@@ -493,7 +493,7 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 		// so the retag is a write to it and a reread of that one name, as a `agent-secrets secret
 		// retag` would be in production.
 		fakeStore.retag(t, requesterAzureAdmin, policy.TagRequesters, requesterDaemonService+" "+sami)
-		fakeStore.reread(t, broker, requesterAzureAdmin)
+		fakeStore.reread(t, broker, databaseURL, requesterAzureAdmin)
 
 		// sami approves it on the broker's own page, as the owner does.
 		browser := brokertest.NewBrowser(t, base, http.DefaultTransport, issuer)
@@ -961,9 +961,9 @@ func (s *requesterStore) retag(t *testing.T, name, tag, value string) {
 
 // reread has the broker read one name's tags again, the route a retag is followed by, as a session
 // so the answer says what the broker serves, and fails t unless the broker still serves it.
-func (s *requesterStore) reread(t *testing.T, broker *brokerProcess, name string) {
+func (s *requesterStore) reread(t *testing.T, broker *brokerProcess, databaseURL, name string) {
 	t.Helper()
-	if status, _, answer := broker.sessionReread(t, name); status != http.StatusOK || answer["served"] != true {
+	if status, _, answer := broker.sessionReread(t, databaseURL, name); status != http.StatusOK || answer["served"] != true {
 		t.Fatalf("a session's reread of %s = status %d, %v; want it served under its new tags", name, status, answer)
 	}
 }

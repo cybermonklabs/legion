@@ -509,10 +509,12 @@ rereads at once per session in each broker process, refilled one every ten secon
 created a moment ago is served on its first request.
 
 The reread route tells a caller what the broker now serves only when an enrolled session signs
-the call. A call with no proof is answered `202` `{"accepted":true}` at once, the same for every
-name, and the reread runs after that answer, so neither its answer nor how long it takes says
-which secrets exist. `agent-secrets secret` signs its reread with the process's broker identity
-where it has one, and reads the answer; with none, it sends the reread unsigned all the same.
+the call. A call with no proof is answered `202` with `"accepted":true` and one fixed `reason` at
+once, the same for every name, and the reread runs after that answer, so neither its answer nor
+how long it takes says which secrets exist. `agent-secrets secret` signs its reread with a broker
+identity the process already holds, and reads the answer; with none, or where the broker cannot
+check the proof, it sends the reread unsigned all the same, and says the broker's view was not
+checked.
 
 A reread asked for over `POST /v1/secrets/{name}/reread` is the whole broker's, not one process's.
 A deployment may run several broker processes against one database, and the one such a reread

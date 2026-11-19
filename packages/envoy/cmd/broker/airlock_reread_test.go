@@ -207,7 +207,7 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		t.Fatalf("the proxy read the grant's values %d times for two requests; want once: the answer is held", reads)
 	}
 
-	if status, _, reread := broker.sessionReread(t, secretName); status != http.StatusOK || reread["served"] != true {
+	if status, _, reread := broker.sessionReread(t, databaseURL, secretName); status != http.StatusOK || reread["served"] != true {
 		t.Fatalf("a session's reread of %s = status %d, %v; want 200 and served", secretName, status, reread)
 	}
 

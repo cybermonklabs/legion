@@ -313,7 +313,8 @@ func routes() []apiRoute {
 		// authenticated, so a caller with no token, or one the broker does not accept, is refused
 		// the same whether the id names a record or not. A secret request is decided only on the
 		// broker's own page by a person signed in to the broker, so for one this answers the listed
-		// caller 403 DECIDE_ON_BROKER_PAGE naming that page, writing nothing.
+		// caller 403 DECIDE_ON_BROKER_PAGE naming that page (or naming none, on a broker that signs
+		// nobody in), or 403 JUDGE_DECIDES while the model judge holds it, writing nothing.
 		{http.MethodPost, "/v1/credential-requests/{record}/approve", accountAuth(relaysDecisions, (*server).approveRecord)},
 		// Deny a pending machine login as the named person, who must type its code, on the
 		// caller's word and behind the same authentication and the same power as approve. A
@@ -400,10 +401,11 @@ func routes() []apiRoute {
 		// is served, or gone, within seconds instead of at the next five-minute reload, on every pod.
 		// Open to any caller, and rate-limited both per source address and over every caller at
 		// once, since each reread holds the policy's writer lock while it reads; a reread only moves
-		// the broker toward the store's own truth. A caller with no session proof is answered 202
-		// at once, the same for every name, and the reread runs after that answer; a session that
+		// the broker toward the store's own truth. A caller that sends no proof is answered 202 at
+		// once, the same for every name, and the reread runs after that answer; a session that
 		// signs the call is answered once the reread is done, with whether the broker now serves
-		// the name, why not, and as which type.
+		// the name, why not, and as which type; and a proof the broker does not accept as a
+		// session's is 401 PROOF_INVALID, whatever the name.
 		{http.MethodPost, "/v1/secrets/{name}/reread", public((*server).rereadSecret)},
 		// A person's approval page for one credential-request record, an HTML page on the broker's
 		// own origin: the record's secret names, the enrollment the broker verified asked, the

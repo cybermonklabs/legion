@@ -10,7 +10,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
-	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -22,7 +22,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
@@ -39,46 +38,32 @@ type answerRead struct {
 	body   string
 }
 
-// readAnswer sends request and reads its answer, failing t unless the answer carries the
+// readAnswer sends req and reads its answer (send), failing t unless the answer carries the
 // broker's answer id in its header: an answer every line of the broker's own code writes, so a
 // read here is never of a body something in front of the broker wrote.
-func readAnswer(t *testing.T, request *http.Request) answerRead {
+func readAnswer(t *testing.T, req *http.Request) answerRead {
 	t.Helper()
-	resp, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("%s %s: %v", request.Method, request.URL.Path, err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(resp.Header.Get(answer.Header)) != 32 {
-		t.Fatalf("%s %s = %d %s carries no answer id; want an answer the broker wrote", request.Method, request.URL.Path, resp.StatusCode, raw)
+	got := send(t, http.DefaultClient, req)
+	if len(got.id()) != 32 {
+		t.Fatalf("%s %s = %d %s carries no answer id; want an answer the broker wrote", req.Method, req.URL.Path, got.status, got.body)
 	}
 	var fields map[string]any
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return answerRead{status: resp.StatusCode, body: string(raw)}
+	if err := json.Unmarshal(got.body, &fields); err != nil {
+		return answerRead{status: got.status, body: string(got.body)}
 	}
 	delete(fields, "answer_id")
 	normal, err := json.Marshal(fields)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return answerRead{status: resp.StatusCode, body: string(normal)}
+	return answerRead{status: got.status, body: string(normal)}
 }
 
 // requireSameAnswers fails t unless every answer in answers, keyed by what its call named, is the
 // same answer: one status, one code and one body.
 func requireSameAnswers(t *testing.T, what string, answers map[string]answerRead) {
 	t.Helper()
-	names := slices.Sorted(func(yield func(string) bool) {
-		for name := range answers {
-			if !yield(name) {
-				return
-			}
-		}
-	})
+	names := slices.Sorted(maps.Keys(answers))
 	first := answers[names[0]]
 	for _, name := range names[1:] {
 		if got := answers[name]; got != first {
@@ -88,28 +73,14 @@ func requireSameAnswers(t *testing.T, what string, answers map[string]answerRead
 	}
 }
 
-// post builds a POST of path at ts with headers and a JSON body, nil for none.
-func post(t *testing.T, ts *testServer, path string, headers map[string]string, body any) *http.Request {
+// accepted is the body of the reread's 202, as readAnswer reads it.
+func accepted(t *testing.T) string {
 	t.Helper()
-	var reader io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		reader = strings.NewReader(string(raw))
-	}
-	request, err := http.NewRequest(http.MethodPost, ts.URL+path, reader)
+	raw, err := json.Marshal(map[string]any{"accepted": true, "reason": api.RereadAcceptedReason})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	for key, value := range headers {
-		request.Header.Set(key, value)
-	}
-	return request
+	return string(raw)
 }
 
 // TestTheDecideRoutesAnswerACallerTheyDoNotAuthenticateTheSameForEveryRecordID: approve and deny,
@@ -164,7 +135,9 @@ func TestTheDecideRoutesAnswerACallerTheyDoNotAuthenticateTheSameForEveryRecordI
 			answers := map[string]answerRead{}
 			for what, id := range ids {
 				path := "/v1/credential-requests/" + id + "/" + route
-				answers[what] = readAnswer(t, post(t, ts, path, headers(path), map[string]any{"approver": testApprover, "code": code}))
+				req := request(t, http.MethodPost, ts.URL+path, jsonBody(t, map[string]any{"approver": testApprover, "code": code}), headers(path))
+				req.Header.Set("Content-Type", "application/json")
+				answers[what] = readAnswer(t, req)
 			}
 			requireSameAnswers(t, route+" with "+caller, answers)
 			got := answers["an id no record has"]
@@ -181,44 +154,6 @@ func TestTheDecideRoutesAnswerACallerTheyDoNotAuthenticateTheSameForEveryRecordI
 	}
 }
 
-// TestTheDecideRoutesStillAnswerAListedCallerAsBefore: the caller BROKER_API_ACCOUNTS lists as
-// Dispatch's server still gets every answer it got before the decide routes checked the caller
-// first. A secret request is 403 DECIDE_ON_BROKER_PAGE naming its page, an id no record has is 404
-// NOT_FOUND, a machine login without its code is 400 CODE_REQUIRED, and with its code it is
-// approved.
-func TestTheDecideRoutesStillAnswerAListedCallerAsBefore(t *testing.T) {
-	ts := newTestServer(t)
-	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
-	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
-		map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "checking what Dispatch is told of this request", "DEEL_API_KEY"), "session_id": nil})
-	secretRequest := *decode[wireCreateRequestResponse](t, body).RecordID
-	page := ts.URL + "/approve/" + secretRequest
-	for _, route := range []string{"approve", "deny"} {
-		status, body := ts.ui(t, http.MethodPost, "/v1/credential-requests/"+secretRequest+"/"+route, map[string]any{"approver": testApprover})
-		if refusal := decode[wirePageRefusal](t, body); status != http.StatusForbidden || refusal.Code != "DECIDE_ON_BROKER_PAGE" || refusal.ApproveURL != page {
-			t.Fatalf("%s of a secret request as Dispatch = %d %s; want 403 DECIDE_ON_BROKER_PAGE naming %s", route, status, body, page)
-		}
-		status, body = ts.ui(t, http.MethodPost, "/v1/credential-requests/"+strings.Repeat("0", 64)+"/"+route, map[string]any{"approver": testApprover})
-		if status != http.StatusNotFound || decode[wireError](t, body).Code != "NOT_FOUND" {
-			t.Fatalf("%s of an id no record has as Dispatch = %d %s; want 404 NOT_FOUND", route, status, body)
-		}
-	}
-	code := ts.openMachineLogin(t, newSigningKey(t), testApprover, "example-host-devbox")
-	_, body = ts.ui(t, http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": code})
-	login := decode[wireRecord](t, body).RecordID
-	if status, body := ts.ui(t, http.MethodPost, "/v1/credential-requests/"+login+"/approve", map[string]any{"approver": testApprover}); status != http.StatusBadRequest || decode[wireError](t, body).Code != "CODE_REQUIRED" {
-		t.Fatalf("approve of a machine login without its code as Dispatch = %d %s; want 400 CODE_REQUIRED", status, body)
-	}
-	status, body := ts.ui(t, http.MethodPost, "/v1/credential-requests/"+login+"/approve", map[string]any{"approver": testApprover, "code": code})
-	var decided struct {
-		State        string  `json:"state"`
-		CredentialID *string `json:"credential_id"`
-	}
-	if err := json.Unmarshal(body, &decided); err != nil || status != http.StatusOK || decided.State != "approved" || decided.CredentialID == nil {
-		t.Fatalf("approve of a machine login with its code as Dispatch = %d %s; want 200 approved with its credential", status, body)
-	}
-}
-
 // refusedSecret is a secret the broker holds and refuses to serve, for its missing owner tag: a
 // third answer a reread could give, beside served and absent.
 func refusedSecret(name string) secrets.LocalSecret {
@@ -229,7 +164,7 @@ func refusedSecret(name string) secrets.LocalSecret {
 
 // TestARereadAnswersACallerWithNoSessionTheSameForEveryName: POST /v1/secrets/{name}/reread,
 // called with no proof, answers one answer for a secret the broker serves, one it serves as a
-// type, one it refuses, and a name no secret carries: 202 and {"accepted":true}. So does a call
+// type, one it refuses, and a name no secret carries: 202, accepted and the fixed reason. So does a call
 // whose proof the broker does not accept, a proof that is no proof and a session's proof naming an
 // enrollment the broker does not hold, each its own one answer. Before, the reread answered every
 // caller whether the broker served the name, why not and as which type.
@@ -260,11 +195,11 @@ func TestARereadAnswersACallerWithNoSessionTheSameForEveryName(t *testing.T) {
 		answers := map[string]answerRead{}
 		for what, name := range names {
 			path := "/v1/secrets/" + name + "/reread"
-			answers[what] = readAnswer(t, post(t, ts, path, headers(path), nil))
+			answers[what] = readAnswer(t, request(t, http.MethodPost, ts.URL+path, nil, headers(path)))
 		}
 		requireSameAnswers(t, "a reread with "+caller, answers)
-		if got := answers["a name no secret carries"]; caller == "no proof" && (got.status != http.StatusAccepted || got.body != `{"accepted":true}`) {
-			t.Fatalf("a reread with no proof = %d %s; want 202 {\"accepted\":true}", got.status, got.body)
+		if got := answers["a name no secret carries"]; caller == "no proof" && (got.status != http.StatusAccepted || got.body != accepted(t)) {
+			t.Fatalf("a reread with no proof = %d %s; want 202 %s", got.status, got.body, accepted(t))
 		}
 	}
 }
@@ -356,8 +291,8 @@ func TestARereadAnswersACallerWithNoSessionAtOnceAndRereadsAfter(t *testing.T) {
 		case <-time.After(heldFor):
 			t.Fatalf("a reread of %s with no proof answered nothing within %s while the store held its describe; want 202 at once", name, heldFor)
 		}
-		if recorder.Code != http.StatusAccepted || strings.TrimSpace(recorder.Body.String()) != `{"accepted":true}` {
-			t.Fatalf("a reread of %s with no proof while the store held its describe = %d %s; want 202 {\"accepted\":true}", name, recorder.Code, recorder.Body.String())
+		if recorder.Code != http.StatusAccepted || strings.TrimSpace(recorder.Body.String()) != accepted(t) {
+			t.Fatalf("a reread of %s with no proof while the store held its describe = %d %s; want 202 %s", name, recorder.Code, recorder.Body.String(), accepted(t))
 		}
 	}
 	select {
@@ -429,6 +364,51 @@ func TestARereadNoCallerWaitsOnLogsTheStoresFailure(t *testing.T) {
 		return strings.Contains(text, "ERROR broker: reread secret failed") && strings.Contains(text, "NEW_KEY")
 	}) {
 		t.Fatalf("logged %q within %s of the answer; want the ERROR line naming NEW_KEY", logged.String(), heldFor)
+	}
+}
+
+// panickingDescriber panics on every DescribeSecret, as a store client with a defect of its own
+// would.
+type panickingDescriber struct{ secrets.SecretsManagerAPI }
+
+func (panickingDescriber) DescribeSecret(context.Context, *secretsmanager.DescribeSecretInput, ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+	panic("a store client's own defect")
+}
+
+// TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing: the reread run after a 202 runs on a
+// goroutine of its own, outside net/http's handler goroutine and the recover net/http gives it,
+// so a panic there would stop the whole broker. It recovers the panic and logs it as one ERROR
+// line, "broker: reread secret failed" naming the secret and the panic, and the broker goes on
+// answering.
+func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
+	local := secrets.NewLocal()
+	loader := policytest.Loader(local)
+	loader.Store = policytest.StoreThrough(local, panickingDescriber{SecretsManagerAPI: local})
+	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
+	logged := policytest.CaptureLog(t)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("a reread with no proof = %d %s; want 202", recorder.Code, recorder.Body.String())
+	}
+	if !testwait.Holds(heldFor, 10*time.Millisecond, func() bool {
+		text := logged.String()
+		return strings.Contains(text, "ERROR broker: reread secret failed") && strings.Contains(text, "NEW_KEY") && strings.Contains(text, "a store client's own defect")
+	}) {
+		t.Fatalf("logged %q within %s of the answer; want the ERROR line naming NEW_KEY and the panic", logged.String(), heldFor)
+	}
+	if lines := strings.Count(logged.String(), "broker: reread secret failed"); lines != 1 {
+		t.Fatalf("the panic logged %d failure lines; want one", lines)
+	}
+	after := httptest.NewRecorder()
+	mux.ServeHTTP(after, httptest.NewRequest(http.MethodGet, "/v1/settings", nil))
+	if after.Code != http.StatusOK {
+		t.Fatalf("GET /v1/settings after the panic = %d %s; want the broker still serving", after.Code, after.Body.String())
 	}
 }
 

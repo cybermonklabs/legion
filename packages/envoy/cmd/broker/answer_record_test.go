@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/api"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 )
 
 // TestTheBinaryRecordsARefusalAndCountsEveryAnswer drives the REAL compiled binary, whose API port
@@ -18,10 +20,10 @@ import (
 // as its body's answer_id, writes exactly one record under answer.RefusalMessage at WARNING
 // naming that id, the code, the name the request named and the caller's class, and is counted on
 // the metrics port. A reread of a well-formed name the store does not hold, sent with no proof,
-// is no refusal: it answers 202, the answer every such reread gets whatever it names, writes no
-// record and is counted served.
+// is no refusal: it answers 202 with accepted and the fixed reason, the answer every such reread
+// gets whatever it names, writes no record and is counted served.
 func TestTheBinaryRecordsARefusalAndCountsEveryAnswer(t *testing.T) {
-	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t)})
+	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t, storetest.URL(t))})
 	metricsAddr := broker.MetricsAddr(t)
 
 	status, header, body := post(t, "http://"+broker.Addr+"/v1/secrets/bad%20name/reread")
@@ -55,8 +57,8 @@ func TestTheBinaryRecordsARefusalAndCountsEveryAnswer(t *testing.T) {
 	before := scrapeMetric(t, metricsAddr, "broker_answers_total")[served]
 	status, header, body = post(t, "http://"+broker.Addr+"/v1/secrets/NO_SUCH_SECRET/reread")
 	absent := header.Get(answer.Header)
-	if status != http.StatusAccepted || body["accepted"] != true || len(body) != 1 || len(absent) != 32 {
-		t.Fatalf("POST /v1/secrets/NO_SUCH_SECRET/reread = %d %v with answer id %q; want 202, accepted and nothing else, and an id", status, body, absent)
+	if status != http.StatusAccepted || body["accepted"] != true || body["reason"] != api.RereadAcceptedReason || len(body) != 2 || len(absent) != 32 {
+		t.Fatalf("POST /v1/secrets/NO_SUCH_SECRET/reread = %d %v with answer id %q; want 202, accepted and the fixed reason and nothing else, and an id", status, body, absent)
 	}
 	// A refusal sent after it is recorded after it, so once that record is in the log a record
 	// of the absent reread would be too.
@@ -82,7 +84,7 @@ func TestTheBinaryRecordsARefusalAndCountsEveryAnswer(t *testing.T) {
 // one secret its request named, as it named it, and every line of the broker's log is one JSON
 // object.
 func TestTheBinaryKeepsARefusalsNameThatHoldsAByteItEscapes(t *testing.T) {
-	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t)})
+	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t, storetest.URL(t))})
 	status, header, body := post(t, "http://"+broker.Addr+"/v1/secrets/%1Agent-secrets-placeholder-/reread")
 	id := header.Get(answer.Header)
 	if status != http.StatusBadRequest || body["code"] != "SECRET_NAME_INVALID" || len(id) != 32 {

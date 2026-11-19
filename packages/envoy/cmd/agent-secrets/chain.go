@@ -105,6 +105,42 @@ func describeSource(dir string) (name, detail string, err error) {
 	return "", "", noBrokerIdentity(reasons)
 }
 
+// heldSigner is a broker identity this process already holds, found with no wait, no token trade
+// and no registration, for a call that signing only adds to: a secret form's reread, which the
+// broker answers in full only for a session, and which goes unsigned all the same where this finds
+// none. It looks in the chain's four sources in the chain's order and takes from each only what is
+// there now: a key directory holding key.pem and its enrollment (never waiting on a launcher still
+// enrolling), a sign-in whose enrollment is recorded (never registering one), a helper that says
+// the caller is in a session it enrolled, and the session the machine cache holds (never trading
+// for one). A source that holds nothing whole, or cannot be read, is passed over, so a process set
+// up with no identity answers errNoHeldIdentity at once, having asked nobody.
+func heldSigner() (proofSigner, error) {
+	dir := keyDir()
+	if key, err := loadKey(filepath.Join(dir, keyFile)); err == nil {
+		if id, err := readTrimmed(filepath.Join(dir, enrollmentFile)); err == nil && id != "" {
+			return &fileSigner{key: key, enrollmentID: id}, nil
+		}
+	}
+	store := brokerclient.SignIns(homeGetenv)
+	if records, err := store.List(); err == nil && len(records) > 0 {
+		if record, err := store.Choose(os.Getenv(brokerclient.PersonVar)); err == nil && record.EnrollmentID != "" {
+			if key, err := record.Key(); err == nil {
+				return &fileSigner{key: key, enrollmentID: record.EnrollmentID}, nil
+			}
+		}
+	}
+	if answer := probeHelper(); answer.answered() && answer.resp.OK {
+		return &helperSigner{sock: answer.sock}, nil
+	}
+	if cached, err := readMachineCache(); err == nil && cached != nil {
+		return cached, nil
+	}
+	return nil, errNoHeldIdentity
+}
+
+// errNoHeldIdentity is heldSigner's answer for a process that holds no broker identity now.
+var errNoHeldIdentity = errors.New("this process holds no broker identity")
+
 // noBrokerIdentity is the chain's refusal when no source had an identity: each source, and why.
 func noBrokerIdentity(reasons []string) error {
 	return fmt.Errorf("no broker identity for this process: %s", strings.Join(reasons, "; "))

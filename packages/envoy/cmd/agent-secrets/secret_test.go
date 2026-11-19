@@ -25,6 +25,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 
+	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -154,17 +155,20 @@ const adaSignIn = "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_ab
 
 // secretBroker is a fake broker for the secret forms: GET /v1/settings answers settings, and each
 // reread a session signs is answered by answer and recorded, in order, or refused with the status
-// fail names when it is set. A reread with no proof is answered 202 as the broker answers one,
-// saying nothing of what it serves, and recorded apart (unsigned).
+// fail names when it is set, or with failSigned's status and code where only a signed reread is
+// refused. A reread with no proof is answered 202 as the broker answers one, saying nothing of
+// what it serves, and recorded apart (unsigned).
 type secretBroker struct {
-	mu       sync.Mutex
-	rereads  []string
-	answers  []Reread
-	signers  []string
-	unsigned []string
-	answer   func(name string) Reread
-	fail     int
-	settings Settings
+	mu         sync.Mutex
+	rereads    []string
+	answers    []Reread
+	signers    []string
+	unsigned   []string
+	answer     func(name string) Reread
+	fail       int
+	failSigned int
+	signedCode string
+	settings   Settings
 }
 
 // failRereads makes the broker refuse every reread from now on with status.
@@ -172,6 +176,15 @@ func (b *secretBroker) failRereads(status int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.fail = status
+}
+
+// failSignedRereads makes the broker refuse every signed reread from now on with status and code,
+// as a broker answers a proof it cannot check (503 DATABASE_UNAVAILABLE) or does not accept (401
+// PROOF_INVALID), while it still takes a reread with no proof.
+func (b *secretBroker) failSignedRereads(status int, code string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.failSigned, b.signedCode = status, code
 }
 
 // startSecretBroker serves a secretBroker on AGENT_SECRETS_URL for the rest of t, answering
@@ -207,7 +220,7 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/secrets/") && strings.HasSuffix(r.URL.Path, "/reread"):
 			name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/secrets/"), "/reread")
 			b.mu.Lock()
-			fail := b.fail
+			fail, failSigned, signedCode := b.fail, b.failSigned, b.signedCode
 			b.mu.Unlock()
 			if fail != 0 {
 				w.WriteHeader(fail)
@@ -220,7 +233,12 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 				b.mu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusAccepted)
-				_, _ = w.Write([]byte(`{"accepted":true}` + "\n"))
+				writeJSON(w, map[string]any{"accepted": true, "reason": api.RereadAcceptedReason})
+				return
+			}
+			if failSigned != 0 {
+				w.WriteHeader(failSigned)
+				writeJSON(w, map[string]string{"code": signedCode, "error": "the broker did not take this proof"})
 				return
 			}
 			reread := b.answer(name)
@@ -254,7 +272,7 @@ func (b *secretBroker) rereadUnsigned() []string {
 	return append([]string(nil), b.unsigned...)
 }
 
-// noBrokerIdentity gives the rest of t a process with no broker identity at all: no key
+// withNoBrokerIdentity gives the rest of t a process with no broker identity at all: no key
 // directory, no sign-in, no helper and no machine, in a home, state and runtime directory of its
 // own (isolateChain), with the broker the secret forms already point at kept.
 func withNoBrokerIdentity(t *testing.T) {

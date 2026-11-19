@@ -380,16 +380,32 @@ records_count() { records "$1" | jq 'length'; }
 # reread_all makes every broker read one secret's name again, which is what a change to the fake
 # store waits on. Each call is signed by this stack's session, one proof a broker (a proof is
 # single-use), so each broker answers once its own reread is done; a call with no proof is
-# answered at once, before the store is read, and the next check would race it.
+# answered at once, before the store is read, and the next check would race it. A broker that is
+# down is passed over quietly (curl's 000): a check that stopped one on purpose (k10) still rereads
+# on the one that is up, and curl's own line would land in the middle of a result block. Any other
+# answer but 200, a signing failure, or no broker answering 200 at all is a failed check (fail),
+# and it returns 1 so the step stops rather than read a broker that did not reread.
 reread_all() { # <name>
-	local addr proof
+	local addr proof code reread=0
 	for addr in "${BROKER_API_ADDRS[@]}"; do
-		proof="$(agent-secrets sign --method POST --url "$AGENT_SECRETS_URL/v1/secrets/$1/reread")" || return 1
-		# Quiet, and never fatal: a check that stopped one broker on purpose (k10) still
-		# rereads on the one that is up, and curl's own line about the other would land in
-		# the middle of a result block.
-		curl -sS -o /dev/null -X POST -H "Proof: $proof" "http://$addr/v1/secrets/$1/reread" 2>/dev/null || true
+		if ! proof="$(agent-secrets sign --method POST --url "$AGENT_SECRETS_URL/v1/secrets/$1/reread")"; then
+			fail "the stack's session could not sign the reread of $1"
+			return 1
+		fi
+		code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Proof: $proof" "http://$addr/v1/secrets/$1/reread" 2>/dev/null)"
+		case "$code" in
+		200) reread=$((reread + 1)) ;;
+		000) ;;
+		*)
+			fail "the broker at $addr answered the reread of $1 $code, not 200"
+			return 1
+			;;
+		esac
 	done
+	if [ "$reread" = 0 ]; then
+		fail "no broker answered the reread of $1"
+		return 1
+	fi
 }
 
 # add_fake_secret appends one secret to the stack's fake Secrets Manager and set_fake_tags
@@ -1391,7 +1407,7 @@ check_k10e() {
 	# *store* is what a live broker rereads - here one unrelated secret's tags, which
 	# policy.Set's version digest folds in.
 	set_fake_tags "${STACK_SECRETS_PREFIX}airlock-demo-token" '{"owner":"legion-daemon","tier":"agent","max-grant":"6h"}'
-	reread_all AIRLOCK_DEMO_TOKEN
+	reread_all AIRLOCK_DEMO_TOKEN || return
 	sleep 2
 	ask 7m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET"
 	local probe_id="$ASK_ID"

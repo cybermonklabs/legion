@@ -393,10 +393,11 @@ func refuseWithoutPower(w http.ResponseWriter, who Account, needs power, route s
 	return true
 }
 
-// sessionCaller authenticates a session proof for authenticate, answering a proof whose
-// enrollment is no longer live with notLiveCode and notLiveMessage: PROOF_INVALID on every
-// session route but renew, which alone answers ENROLLMENT_NOT_LIVE so a pod renewer can stop.
-// Every other bad proof is PROOF_INVALID on both.
+// sessionCaller authenticates a session proof, for authenticate on every session route and for
+// the reread route's handler on a call that carries a Proof header (rereadSecret), answering a
+// proof whose enrollment is no longer live with notLiveCode and notLiveMessage: PROOF_INVALID on
+// every session route but renew, which alone answers ENROLLMENT_NOT_LIVE so a pod renewer can
+// stop. Every other bad proof is PROOF_INVALID on both.
 func (s *server) sessionCaller(w http.ResponseWriter, r *http.Request, notLiveCode, notLiveMessage string) (caller, bool) {
 	subject, err := s.proofSubject(r)
 	switch {

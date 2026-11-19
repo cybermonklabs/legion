@@ -576,8 +576,12 @@ application type **Web application**), with one authorized redirect URI:
 `<BROKER_PUBLIC_URL>/signin/callback`, for example `https://secrets.internal.example/signin/callback`.
 Its client id is `BROKER_SIGNIN_CLIENT_ID`, and its secret goes in the file
 `BROKER_SIGNIN_CLIENT_SECRET_FILE` names. The broker asks for `openid email profile` with PKCE,
-asks for no offline access and keeps no refresh token, and sends the request's approver as
-`login_hint`, so a person already signed in to Google is asked nothing.
+and asks for no offline access and keeps no refresh token. A browser with no session is sent to
+sign in with no `login_hint`: the page reads no record before a person signs in, so the redirect
+is the same for every record id and says nothing of whether the record exists or whose it is. The
+page's **Sign in as someone else** link, which a person already signed in follows, sends the
+record's approver as `login_hint`, so that person, if already signed in to Google, is asked
+nothing.
 
 Deploy the broker with these settings before the Dispatch release whose Inbox links the page. In
 between, an open Dispatch tab's **Approve** on a secret request gets the broker's
@@ -836,18 +840,25 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   the judge may take and on what guidance. Guidance is no secret: write nothing in it that a
   caller of the broker may not read.
   `POST /v1/secrets/{name}/reread` makes the broker read one secret from the store, on this pod
-  and then on every other. What it answers depends on the caller and never on the name:
-  - A call with no `Proof` header is answered `202` `{"accepted":true}` at once, the same for a
-    name the store holds as for one it does not, and the reread runs after that answer, bounded
-    at 45 seconds. So neither the answer nor how long it takes tells a caller which names exist,
-    though the store takes one call to say it holds no secret by a name and more to describe one
-    it holds. A reread that fails after its answer logs `broker: reread secret failed`.
+  and then on every other. Whether it says what the broker serves depends on the caller, never on
+  the name:
+  - A call with no `Proof` header is answered `202`
+    `{"accepted":true,"reason":"the reread was taken; this broker says what it serves only to a signed session, so upgrade agent-secrets to the broker's release (the write stands)"}`
+    at once, the same for a name the store holds as for one it does not, and the reread runs after
+    that answer, bounded at 45 seconds. So neither the answer nor how long it takes tells a caller
+    which names exist, though the store takes one call to say it holds no secret by a name and
+    more to describe one it holds. The `reason` is the same for every name; it is there for an
+    `agent-secrets` of an earlier release, which reads this answer as a refusal and prints its
+    reason. A reread that fails after its answer, a panic in it included, logs one
+    `broker: reread secret failed` line.
   - A call an enrolled session signs is answered once the reread is done: whether the broker now
     serves the secret, as which type (`type`: `github-app`, `google-login`, `azure-login` or
     `google-service-account`, absent for a stored secret) and, if not, why (`absent`, or a
-    refusal such as `owner-tag-missing` or `not-on-agent-secrets-key`). A session learns no more
-    there than it learns by asking for the secret. A proof the broker does not accept is `401`
-    `PROOF_INVALID`, whatever the name.
+    refusal such as `owner-tag-missing` or `not-on-agent-secrets-key`). That is more than a
+    request for the secret tells a session, whose `UNKNOWN_SECRET` never separates a secret that
+    does not exist from one the broker refuses; it is what anyone allowed to list the namespace
+    reads from the secrets' own names and tags (or annotations). A proof the broker does not
+    accept is `401` `PROOF_INVALID`, whatever the name.
   A name no secret can carry is `400` `SECRET_NAME_INVALID` to every caller, a check of its shape
   alone. Neither route releases a value.
   Rereads are limited twice, by limits each pod derives rather than by settings
@@ -943,12 +954,20 @@ legion-envoy-v16.0.0 on, would serve a secret that carries `type` alone as a sto
 a type each exit 1 before they read a value or write anything, naming the release the CLI is
 from; a write that leaves no type goes ahead. After the write, `create`, `set` and `retag` each
 read the secret's type tag back from the store, under the sign-in they wrote with, and exit 1
-when it is not the type they wrote, naming both; they ask the broker to reread the secret either
-way. Signed by the CLI's broker identity, the reread is answered with the type the broker serves,
-and a form exits 1 when it names another type than the secret holds, saying the retag that asks
-the broker to read it again. A CLI with no broker identity sends the reread with no proof, which
-the broker answers `202` and says no more of: the form says the broker's view was not checked,
-names the retag to run where it has an identity, and exits 0 on the tag alone.
+when it is not the type they wrote, when it is gone, or when the read back fails, naming the
+secret and both types; they ask the broker to reread the secret in every case, even one whose
+reread the broker refused. The CLI signs that reread only with a broker identity the process
+already holds: a key directory holding its key and enrollment, a sign-in with its enrollment, a
+helper that answers, or the machine's cached session. It waits on no launcher still enrolling,
+trades no token and registers nothing. Signed, the reread is answered with the type the broker
+serves, and a form exits 1 when it names another type than the secret holds, saying the retag that
+asks the broker to read it again. Where the broker's view cannot be checked — no identity, an
+identity that cannot sign, or a broker that cannot check or does not accept the proof — the CLI
+sends the reread again with no proof, which the broker answers `202` and says no more of. The form
+then prints one line saying the broker's view was not checked and why, and exits on the type tag
+alone: 0 when the store holds the type. That exit 0 says only that the store holds the tag, not
+that the broker serves the secret as that type, so store no App key or login in the secret until
+a retag run where the CLI has a broker identity prints `broker: serving NAME from … (type …)`.
 
 The CLI and the broker ship in one legion-envoy release, so move the broker's pin to that release
 before people use its CLI. An `agent-secrets` from an earlier release still writes `kind`, which
@@ -957,9 +976,11 @@ broker does not answer: every `secret retag` it makes that leaves a kind exits 1
 still sees the old tags and to store no value until a retag exits 0, whatever the broker serves;
 and its `--kind none` removes only `kind` and the guard and exits 0, so a secret that also carries
 `type` keeps minting as that type. An `agent-secrets` from before the release whose broker
-answers a reread with no proof `202` sends every reread with no proof, reads that answer as a
-refusal with no reason, and exits 1 after every write, which stands all the same. Use the CLI of
-the broker's own release.
+answers a reread with no proof `202` sends every reread with no proof and reads that answer as a
+refusal: its `create`, `set`, `retag` and `restore` print
+`broker: refusing NAME from … (reason=the reread was taken; … upgrade agent-secrets to the broker's release (the write stands))`
+and exit 1, and its `delete` prints the same line and exits 0. Every one of those writes stands.
+Use the CLI of the broker's own release.
 
 One type is not a person's to write. A `google-service-account` secret the deployment binds to an
 account (`BROKER_SERVICE_ACCOUNT_SECRETS`) releases a token that acts as that account, and the

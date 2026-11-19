@@ -281,17 +281,13 @@ func (ts *testServer) session(t *testing.T, key *ecdsa.PrivateKey, enrollmentID,
 	return ts.req(t, method, path, map[string]string{"Proof": p}, body)
 }
 
-// rereaderOperator is the operator of every session sessionReread enrolls: a login of its own, so
-// that no row reading an approver's or an operator's sessions meets one of them.
-const rereaderOperator = "rereader@example.com"
-
 // sessionReread asks the broker to reread name as a session of its own, freshly enrolled: the
 // caller the route answers once the reread is done, with whether the broker serves the name, why
 // not and as which type, rather than the 202 it answers at once to a caller with no proof. A row
 // that reads what the broker now serves, or that goes on to ask for the secret, rereads this way.
 func (ts *testServer) sessionReread(t *testing.T, name string) (int, []byte) {
 	t.Helper()
-	id, key := ts.newSessionEnrollment(t, "rereader-"+uuid.NewString(), rereaderOperator)
+	id, key := ts.newSessionEnrollment(t, "rereader-"+uuid.NewString(), brokertest.RereaderOperator)
 	return ts.session(t, key, id, http.MethodPost, "/v1/secrets/"+name+"/reread", nil)
 }
 
@@ -1147,11 +1143,11 @@ func TestCreateRequestWithInvalidSessionIDIs400SessionIDInput(t *testing.T) {
 // of an agent_secret record — naming the record's own approver, another login or none, with a
 // code or a body that is not one — each answer 403 DECIDE_ON_BROKER_PAGE carrying the record's
 // page as approve_url and in the message, and write nothing: the record stays pending, with no
-// event, no grant and no audit row. A caller with no ServiceAccount token and a caller whose
-// account BROKER_API_ACCOUNTS does not list are refused as unauthenticated before the record is
-// read, and are told nothing of it: not its page, not its id. The same routes still decide a
-// machine login with its code, and the secret request is decided on the broker's page, after
-// which the routes still refuse it.
+// event, no grant and no audit row. An id no record has is 404 NOT_FOUND to that caller. (A
+// caller the broker does not authenticate is refused before any record is read, alike for every
+// id: TestTheDecideRoutesAnswerACallerTheyDoNotAuthenticateTheSameForEveryRecordID.) The same
+// routes still decide a machine login with its code, and the secret request is decided on the
+// broker's page, after which the routes still refuse it.
 func TestAListedCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
@@ -1169,21 +1165,6 @@ func TestAListedCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T)
 	}
 	before := written()
 
-	for name, refused := range map[string]struct {
-		headers map[string]string
-		status  int
-		code    string
-	}{
-		"no ServiceAccount token": {nil, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID"},
-		"an unlisted account": {map[string]string{"Authorization": "Bearer " + ts.accountToken(t, unlistedAccount, "", time.Hour)},
-			http.StatusForbidden, "ACCOUNT_NOT_LISTED"},
-	} {
-		status, body := ts.req(t, http.MethodPost, "/v1/credential-requests/"+recordID+"/approve", refused.headers,
-			map[string]any{"approver": testApprover})
-		if status != refused.status || decode[wireError](t, body).Code != refused.code || strings.Contains(string(body), recordID) {
-			t.Fatalf("approve with %s = %d %s, want %d %s naming nothing of the record", name, status, body, refused.status, refused.code)
-		}
-	}
 	for _, route := range []string{"approve", "deny"} {
 		for name, decision := range map[string]any{
 			"the approver":     map[string]any{"approver": testApprover},
@@ -1198,6 +1179,10 @@ func TestAListedCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T)
 			if status != http.StatusForbidden || refusal.Code != "DECIDE_ON_BROKER_PAGE" || refusal.ApproveURL != page || !strings.Contains(refusal.Error, page) {
 				t.Fatalf("%s naming %s = %d %s, want 403 DECIDE_ON_BROKER_PAGE naming %s", route, name, status, body, page)
 			}
+		}
+		status, body := ts.ui(t, http.MethodPost, "/v1/credential-requests/"+strings.Repeat("0", 64)+"/"+route, map[string]any{"approver": testApprover})
+		if status != http.StatusNotFound || decode[wireError](t, body).Code != "NOT_FOUND" {
+			t.Fatalf("%s of an id no record has = %d %s, want 404 NOT_FOUND", route, status, body)
 		}
 	}
 	if got := ts.record(t, recordID); got.State != "pending" || got.Decided != nil {
