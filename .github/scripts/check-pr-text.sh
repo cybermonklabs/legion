@@ -204,9 +204,13 @@ fi
 # pull request's, so it also holds the lines of its commits dated before the cutoff: a pull request
 # opened after the cutoff that holds a forward merge is read whole, those older lines included.
 # That exception errs toward reading more, and each of those lines lands on main as new text
-# anyway. A commit or a net diff whose patch GitHub does not return whole is UNKNOWN, and
-# refused. The branch name is not read by this rule: the daemon names an issue's branch after its
-# key today, and the change that names branches another way adds the branch to this rule.
+# anyway. A key or a link that the same diff also removes is carried over, not new: a line edited
+# around a link it already held, or a file moved with its keys, passes (THE DIFF READING below). A
+# diff GitHub's REST answer does not hold whole (a file that adds lines with no patch, which GitHub
+# leaves out for a large file, or a list short of the diff's totals) is read from git instead, and
+# only a diff neither holds whole is UNKNOWN, and refused. The branch name is not read by this
+# rule: the daemon names an issue's branch after its key today, and the change that names branches
+# another way adds the branch to this rule.
 key_status=0
 cutoff_file=.github/issue-key-cutoff
 base_ref=$(jq -r '.base.ref // "main"' "$live")
@@ -295,40 +299,206 @@ elif [ -n "$cutoff" ]; then
   cp "$text/title" "$text/body" "$keyed/"
   for kind in "${kinds[@]}"; do cp -r "$text/$kind" "$keyed/$kind"; done
   mkdir "$keyed/commit" "$keyed/added"
-  # added_lines <patch file>: the patch's added lines at their line numbers in the new file, every
-  # other line empty, so a hit names the line the file holds it at.
-  added_lines() {
-    awk '/^@@ / { split($3, plus, ","); n = substr(plus[1], 2) + 0; next }
-         /^\+/ { while (out < n - 1) { print ""; out++ } print substr($0, 2); out++; n++; next }
-         /^ / { n++; next }' "$1"
+  # THE DIFF READING. A diff (one new commit's, or the net diff) is staged as one entry for each
+  # path it touches: <stage>/<i>.patch, its patch, with <i>.status (added, renamed, copied, removed
+  # or modified), <i>.path and <i>.old (the path before a rename or a copy, else empty), and
+  # <stage>/count. GitHub's REST answer is read first. Where it does not hold the whole diff, git
+  # reads the same diff from the pull request's head, which it never truncates. Then carry.awk
+  # (written below) writes each entry's added lines at their line numbers in the new file, every
+  # other line empty, with each issue-key-shaped word or Dispatch link that one of the diff's
+  # removed lines also holds blanked as <carried>: one removed occurrence carries one added one,
+  # across the diff's files in their order, so a key moved or a line re-worded around its link is
+  # not new text, and a second copy of it is.
+  link_scheme='dispatch'':''//'
+  : > "$work/git-error"
+  cat > "$work/carry.awk" <<'AWK'
+# scan <line> <collect>: in collect mode, counts each key-shaped word and link of the line as one
+# the diff removes; else the line with each one a removed occurrence carries blanked, and the
+# count of those none carries in `uncarried`. A key-shaped word is an upper-case run, a "-" and
+# digits, with no letter or digit on either side (the sixth rule's shape for any project, ASCII
+# letters and digits only, so it finds every word that rule can); a link is the scheme, in any
+# case, and what follows it up to a blank, a quote or a bracket.
+function scan(line, collect,    out, i, n, c, prev, j, k, tok, sl) {
+  out = ""; n = length(line); i = 1; sl = length(scheme)
+  while (i <= n) {
+    c = substr(line, i, 1)
+    if (tolower(substr(line, i, sl)) == scheme) {
+      j = i + sl
+      while (j <= n && index(stops, substr(line, j, 1)) == 0) j++
+      tok = scheme substr(line, i + sl, j - i - sl)
+      if (take(tok, collect)) out = out "<carried>"; else out = out substr(line, i, j - i)
+      i = j
+      continue
+    }
+    prev = (i == 1) ? "" : substr(line, i - 1, 1)
+    if (index(upper, c) > 0 && (prev == "" || index(alnum, prev) == 0)) {
+      j = i
+      while (j <= n && index(upper digits, substr(line, j, 1)) > 0) j++
+      if (j <= n && substr(line, j, 1) == "-") {
+        k = j + 1
+        while (k <= n && index(digits, substr(line, k, 1)) > 0) k++
+        if (k > j + 1 && (k > n || index(alnum, substr(line, k, 1)) == 0)) {
+          tok = substr(line, i, k - i)
+          if (take(tok, collect)) out = out "<carried>"; else out = out tok
+          i = k
+          continue
+        }
+      }
+    }
+    out = out c
+    i++
   }
-  # added_files <pages> <label> <part>: the added lines of every file GitHub listed in <pages> (one
-  # JSON object a page, each with its .files), each written by added_lines to <part>/<path>: under
-  # $keyed when the file is new (added, renamed or copied), its path new text too, and under
-  # $lines_only otherwise. A file that adds lines GitHub returned no patch for is UNKNOWN, named
-  # by <label> and its place in the list, and refused.
-  added_files() {
-    local pages=$1 label=$2 part=$3 files i file_status additions has_patch name dest
-    files=$(jq -s '[.[].files[]] | length' "$pages")
-    for ((i = 0; i < files; i++)); do
-      jq -s -r --argjson i "$i" '[.[].files[]][$i] | "\(.status)\t\(.additions)\t\(.patch != null)"' \
-        "$pages" > "$work/file"
-      IFS=$'\t' read -r file_status additions has_patch < "$work/file"
-      if [ "$additions" -gt 0 ] && [ "$has_patch" != true ]; then
-        echo "::error::UNKNOWN: GitHub returned no patch for file $((i + 1)) of $label, so the lines" \
-          "it adds cannot be read; it is refused, not passed" >&2
-        key_status=2
+  return out
+}
+function take(tok, collect) {
+  if (collect) { carried[tok]++; return 0 }
+  if (carried[tok] > 0) { carried[tok]--; return 1 }
+  uncarried++
+  return 0
+}
+BEGIN {
+  stops = " \t\r\"<>()[]`" sprintf("%c", 39)
+  upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"; digits = "0123456789"
+  alnum = upper tolower(upper) digits
+  # mode=path: whether a renamed or copied path's words are all carried by its old path's.
+  if (mode == "path") {
+    scan(ENVIRON["OLD_PATH"], 1)
+    scan(ENVIRON["NEW_PATH"], 0)
+    print (uncarried ? "new" : "carried")
+    exit
+  }
+  for (i = 1; i <= count; i++) {
+    file = stage "/" i ".patch"; started = 0
+    while ((getline line < file) > 0) {
+      if (line ~ /^@@ /) { started = 1; continue }
+      if (started && substr(line, 1, 1) == "-") scan(substr(line, 2), 1)
+    }
+    close(file)
+  }
+  for (i = 1; i <= count; i++) {
+    file = stage "/" i ".patch"; out = stage "/" i ".added"; started = 0; n = 0; written = 0
+    printf "" > out
+    while ((getline line < file) > 0) {
+      if (line ~ /^@@ /) {
+        split(line, parts, " "); split(parts[3], plus, ",")
+        n = substr(plus[1], 2) + 0; started = 1
         continue
+      }
+      if (!started) continue
+      first = substr(line, 1, 1)
+      if (first == "+") {
+        while (written < n - 1) { print "" > out; written++ }
+        print scan(substr(line, 2), 0) > out
+        written++; n++
+      } else if (first == " ") n++
+    }
+    close(file); close(out)
+  }
+}
+AWK
+  # stage_rest <pages> <stage> <label>: stages each file GitHub listed in <pages> (one JSON object
+  # a page, each with its .files), in one read of the pages. Fails at the first file that adds
+  # lines GitHub returned no patch for, or when the pages do not read as that, setting `reason` to
+  # name it within <label>.
+  stage_rest() {
+    local pages=$1 stage=$2 label=$3 i=0 file_status additions has_patch name old patch
+    if ! jq -s -j '[.[].files[]][] | .status, "\u0000", (.additions | tostring), "\u0000",
+        (.patch != null | tostring), "\u0000", .filename, "\u0000", (.previous_filename // ""),
+        "\u0000", ((.patch // "") | @base64), "\u0000"' "$pages" > "$stage/fields" 2> /dev/null; then
+      reason="GitHub's files of $label do not read as a list of files"
+      return 1
+    fi
+    while IFS= read -r -d '' file_status && IFS= read -r -d '' additions &&
+      IFS= read -r -d '' has_patch && IFS= read -r -d '' name && IFS= read -r -d '' old &&
+      IFS= read -r -d '' patch; do
+      i=$((i + 1))
+      if [ "$additions" -gt 0 ] && [ "$has_patch" != true ]; then
+        reason="GitHub returned no patch for file $i of $label"
+        return 1
       fi
-      jq -s -r --argjson i "$i" '[.[].files[]][$i] | .patch // ""' "$pages" | tr -d '\000' > "$work/patch"
-      jq -s -r --argjson i "$i" '[.[].files[]][$i] | .filename' "$pages" > "$work/name"
-      name=$(< "$work/name")
+      printf '%s' "$file_status" > "$stage/$i.status"
+      printf '%s' "$name" > "$stage/$i.path"
+      printf '%s' "$old" > "$stage/$i.old"
+      base64 -d <<< "$patch" | tr -d '\000' > "$stage/$i.patch"
+    done < "$stage/fields"
+    echo "$i" > "$stage/count"
+  }
+  # pr_commit <sha>: whether $history holds that commit of the pull request, having fetched the
+  # pull request's head (refs/pull/<number>/head) without blobs the first time, and the commit by
+  # its id when that ref has moved past it. Each blob a later diff reads comes from the same
+  # anonymous remote, the partial clone's own. A failure leaves git's message in
+  # $work/git-error.
+  pr_fetched=''
+  pr_commit() {
+    if [ -z "$pr_fetched" ]; then
+      pr_fetched=yes
+      git -C "$history" fetch -q --filter=blob:none --no-tags origin \
+        "+refs/pull/$number/head:refs/pull/$number/head" 2> "$work/git-error" || true
+    fi
+    git -C "$history" cat-file -e "$1^{commit}" 2> /dev/null ||
+      git -C "$history" fetch -q --filter=blob:none --no-tags origin "$1" 2> "$work/git-error"
+  }
+  # stage_git <from> <to> <stage>: stages the diff between two commits as git reads it, renames
+  # found as GitHub finds them (-M); a first whole diff fetches every blob at once.
+  stage_git() {
+    local from=$1 to=$2 stage=$3 i=0 code old name file_status
+    rm -rf "$stage" && mkdir "$stage"
+    git -C "$history" diff -M -U0 "$from" "$to" > /dev/null 2> "$work/git-error" || return 1
+    git -C "$history" diff -M -z --name-status "$from" "$to" > "$work/name-status" 2> "$work/git-error" ||
+      return 1
+    while IFS= read -r -d '' code; do
+      old=''
+      case $code in R* | C*) IFS= read -r -d '' old ;; esac
+      IFS= read -r -d '' name
+      i=$((i + 1))
+      case $code in
+        A) file_status=added ;;
+        R*) file_status=renamed ;;
+        C*) file_status=copied ;;
+        D) file_status=removed ;;
+        *) file_status=modified ;;
+      esac
+      printf '%s' "$file_status" > "$stage/$i.status"
+      printf '%s' "$name" > "$stage/$i.path"
+      printf '%s' "$old" > "$stage/$i.old"
+      git -C "$history" diff -M -U0 "$from" "$to" -- ":(literal)$name" ${old:+":(literal)$old"} \
+        > "$stage/$i.patch" 2> "$work/git-error" || return 1
+    done < "$work/name-status"
+    echo "$i" > "$stage/count"
+  }
+  # unread <reason>: neither GitHub nor git holds the whole diff, so the lines it adds cannot all
+  # be read: UNKNOWN, and refused.
+  unread() {
+    echo "::error::UNKNOWN: $1, and git could not read it either ($(head -n 1 "$work/git-error")), so" \
+      "the lines it adds cannot all be read; it is refused, not passed" >&2
+    key_status=2
+  }
+  # write_stage <stage> <part>: each staged entry's added lines, carried words blanked, under
+  # <part>/<path>: in $keyed when the path is new text (an added file, or a renamed or copied one
+  # whose path holds a word its old path does not carry), and in $lines_only otherwise. A removed
+  # file adds nothing; its removed lines still carry.
+  write_stage() {
+    local stage=$1 part=$2 count i file_status name old dest
+    count=$(< "$stage/count")
+    awk -v stage="$stage" -v count="$count" -v scheme="$link_scheme" -f "$work/carry.awk"
+    for ((i = 1; i <= count; i++)); do
+      file_status=$(< "$stage/$i.status")
+      [ "$file_status" != removed ] || continue
+      name=$(< "$stage/$i.path")
+      old=$(< "$stage/$i.old")
       case $file_status in
-        added | renamed | copied) dest="$keyed/$part/$name" ;;
+        added) dest="$keyed/$part/$name" ;;
+        renamed | copied)
+          if [ "$(OLD_PATH=$old NEW_PATH=$name awk -v mode=path -v scheme="$link_scheme" -f "$work/carry.awk")" = carried ]; then
+            dest="$lines_only/$part/$name"
+          else
+            dest="$keyed/$part/$name"
+          fi
+          ;;
         *) dest="$lines_only/$part/$name" ;;
       esac
       mkdir -p "$(dirname "$dest")"
-      added_lines "$work/patch" > "$dest"
+      mv "$stage/$i.added" "$dest"
     done
   }
   jq -r --arg cutoff "$cutoff" '.commits[] | select(.commit.committer.date >= $cutoff) | .sha' \
@@ -343,36 +513,59 @@ elif [ -n "$cutoff" ]; then
       merges=$((merges + 1))
       continue
     fi
+    stage="$work/stage-$short"
+    mkdir "$stage"
     gh api "repos/$repository/commits/$sha?per_page=100" --paginate > "$work/commit-$short"
     files=$(jq -s '[.[].files[]] | length' "$work/commit-$short")
     listed=$(jq -s '[.[].files[] | .changes] | add // 0' "$work/commit-$short")
     total=$(jq -s '.[0].stats.total // -1' "$work/commit-$short")
+    reason=''
     if [ "$listed" -ne "$total" ]; then
-      echo "::error::UNKNOWN: commit $short changes $total lines, and GitHub listed $listed of them" \
-        "in $files files, so the lines it adds cannot all be read; it is refused, not passed" >&2
-      key_status=2
-      continue
+      reason="commit $short changes $total lines, and GitHub listed $listed of them in $files files"
+    else
+      stage_rest "$work/commit-$short" "$stage" "commit $short" || true
     fi
-    added_files "$work/commit-$short" "commit $short" "added/$short"
+    if [ -n "$reason" ]; then
+      if pr_commit "$sha" && stage_git "$sha^" "$sha" "$stage"; then
+        echo "check-pr-text: $reason, so git reads that commit instead"
+      else
+        unread "$reason"
+        continue
+      fi
+    fi
+    write_stage "$stage" "added/$short"
   done < "$work/new-commits"
   # The net diff, once, for the merges above: the files route lists 100 a page, up to GitHub's
-  # limit of 3000 files, and the pull request route totals them, so a list that comes back short
-  # of those totals is refused rather than read in part. Its hits are `files:<path>:<line>`.
+  # limit of 3000 files, and the pull request route totals them. A list short of those totals, or
+  # a file with no patch, is read from git instead: the diff from where the head leaves the base
+  # branch to the head. Its hits are `files:<path>:<line>`.
   if [ "$merges" -gt 0 ]; then
+    stage="$work/stage-net"
+    mkdir "$stage"
     gh api "repos/$repository/pulls/$number/files?per_page=100" --paginate > "$work/pr-files-pages"
     jq -s '{files: [.[][]]}' "$work/pr-files-pages" > "$work/pr-files"
     files=$(jq '.files | length' "$work/pr-files")
     listed=$(jq '[.files[] | .changes] | add // 0' "$work/pr-files")
     want_files=$(jq '.changed_files // -1' "$live")
     want_lines=$(jq '(.additions // -1) + (.deletions // 0)' "$live")
+    reason=''
     if [ "$files" -ne "$want_files" ] || [ "$listed" -ne "$want_lines" ]; then
-      echo "::error::UNKNOWN: #$number holds $merges merge commit(s), so its net diff is read, and" \
-        "GitHub listed $files of its $want_files files and $listed of its $want_lines changed lines;" \
-        "the lines it adds cannot all be read, so it is refused, not passed" >&2
-      key_status=2
+      reason="#$number holds $merges merge commit(s), so its net diff is read, and GitHub listed $files"
+      reason+=" of its $want_files files and $listed of its $want_lines changed lines"
     else
-      added_files "$work/pr-files" "#$number's net diff" net
+      stage_rest "$work/pr-files" "$stage" "#$number's net diff" || true
     fi
+    if [ -n "$reason" ]; then
+      if pr_commit "$head" &&
+        fork=$(git -C "$history" merge-base "refs/heads/$base_ref" "$head" 2> "$work/git-error") &&
+        stage_git "$fork" "$head" "$stage"; then
+        echo "check-pr-text: $reason, so git reads the net diff instead"
+      else
+        unread "$reason"
+        stage=''
+      fi
+    fi
+    if [ -n "$stage" ]; then write_stage "$stage" net; fi
   fi
   # Two runs of rules 6 and 7: one over the title, body, branch, items, commit messages and the
   # files the new commits (or the net diff) add or rename, whose paths are new text too; one over

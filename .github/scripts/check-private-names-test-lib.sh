@@ -144,10 +144,16 @@ page() {
   local file="$PR_TEXT_TEST_DIR/$1.${2##*&page=}"
   if [ -e "$file" ]; then cat "$file"; else echo '[]'; fi
 }
+# The compare route is the event's own base...head, matched whole: base-sha...event-head-sha as
+# write_pr_text writes the event, or a real commit's id where a case sets one for git to read.
+compare_route="api repos/example/repo/compare/$(jq -r '.pull_request.base.sha' "$PR_TEXT_TEST_DIR/event.json")"
+compare_route+="...$(jq -r '.pull_request.head.sha' "$PR_TEXT_TEST_DIR/event.json")?per_page=100"
+if [ "$1 $2" = "$compare_route" ]; then
+  [[ " $* " == *" --paginate "* ]] || { echo "compare route read without --paginate: $*" >&2; exit 3; }
+  cat "$PR_TEXT_TEST_DIR/compare"
+  exit 0
+fi
 case "$1 $2" in
-  "api repos/example/repo/compare/base-sha...event-head-sha?per_page=100")
-    [[ " $* " == *" --paginate "* ]] || { echo "compare route read without --paginate: $*" >&2; exit 3; }
-    cat "$PR_TEXT_TEST_DIR/compare" ;;
   "api repos/example/repo/issues/7/comments?per_page=100&page="[1-9]*) page comments "$2" ;;
   "api repos/example/repo/pulls/7/reviews?per_page=100&page="[1-9]*) page reviews "$2" ;;
   "api repos/example/repo/pulls/7/comments?per_page=100&page="[1-9]*) page review-comments "$2" ;;

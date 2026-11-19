@@ -730,7 +730,8 @@ commit_file new-sha modified "docs/notes-$planted_key.md" $'@@ -1,0 +2,1 @@\n+cl
 key_run
 check "a clean line added to a file whose old path holds a key passes" "$(is "$status" 0)"
 
-echo "case: a commit whose patch GitHub does not return whole is UNKNOWN, never passed"
+echo "case: a commit neither GitHub nor git returns whole is UNKNOWN, never passed"
+# The commit ids here are no commit git can fetch, so git cannot read the commit either.
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
@@ -739,8 +740,8 @@ commit_file new-sha modified docs/big.md -
 jq -c '.files[0].additions = 5 | .files[0].changes = 5 | .stats.total = 5' "$work/commit.new-sha" > "$work/commit.next"
 mv "$work/commit.next" "$work/commit.new-sha"
 key_run
-check "a file with added lines and no patch exits 2" "$(is "$status" 2)"
-check "says UNKNOWN for that file" "$(contains "$out" 'UNKNOWN: GitHub returned no patch for file 1 of commit new-sha')"
+check "a file with added lines and no patch, which git cannot read either, exits 2" "$(is "$status" 2)"
+check "says UNKNOWN for that file" "$(contains "$out" 'UNKNOWN: GitHub returned no patch for file 1 of commit new-sha, and git could not read it either')"
 write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
@@ -749,6 +750,95 @@ commit_file new-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text' 9
 key_run
 check "a commit whose listed files fall short of its total exits 2" "$(is "$status" 2)"
 check "says UNKNOWN for that commit" "$(contains "$out" 'UNKNOWN: commit new-sha changes 9 lines')"
+
+echo "case: a commit GitHub returns without a whole patch is read from git"
+# GitHub leaves the patch out for a large file, and past a response's patch budget; git reads the
+# same commit from the pull request's head (refs/pull/7/head of the stand-in remote) whole.
+# pr_head <path> <content>: a commit on the fixture history's main that writes <content> to
+# <path>, pushed to the stand-in remote as the pull request's head; sets pr_sha to its id.
+pr_head() {
+  local src="$work/history-src" bare="$work/remote/example/repo"
+  history_remote
+  git_fixture "$src" checkout -q -B pr main
+  mkdir -p "$src/$(dirname "$1")"
+  printf '%s\n' "$2" > "$src/$1"
+  git_fixture "$src" add "$1"
+  git_fixture "$src" commit -q -m "fix: write the file"
+  pr_sha=$(git_fixture "$src" rev-parse HEAD)
+  git_fixture "$src" push -q --force "$bare" HEAD:refs/pull/7/head
+  git_fixture "$src" checkout -q main
+}
+# unpatched_head <content>: a pull request opened after the cutoff whose one commit adds
+# docs/big.md with <content>, a commit GitHub answers with no patch for that file.
+unpatched_head() {
+  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+  key_rule_on
+  opened_at 2026-11-21T00:00:00Z
+  pr_head docs/big.md "$1"
+  commits "$pr_sha" 2026-11-21T01:00:00Z "fix: keep the order"
+  commit_file "$pr_sha" added docs/big.md -
+  jq -c '.files[0].additions = 2 | .files[0].changes = 2 | .stats.total = 2' "$work/commit.$pr_sha" \
+    > "$work/commit.next"
+  mv "$work/commit.next" "$work/commit.$pr_sha"
+}
+unpatched_head "$(printf 'line one\nline two, as %s said' "$planted_key")"
+key_run
+check "a key in the file GitHub gave no patch for fails" "$(is "$status" 1)"
+check "says git read the commit instead" \
+  "$(contains "$out" "GitHub returned no patch for file 1 of commit ${pr_sha:0:12}, so git reads that commit instead")"
+check "names the line git read, at its line in the file" \
+  "$(contains "$out" "commit:${pr_sha:0:12}:docs/big.md:2: $key_refused")"
+check "prints no key" "$(is "$(contains "$out" "$planted_key")" false)"
+unpatched_head "$(printf 'line one\nline two')"
+key_run
+check "the same file, clean, passes" "$(is "$status" 0)"
+check "and nothing is UNKNOWN" "$(is "$(contains "$out" 'UNKNOWN')" false)"
+
+echo "case: a key or a link the same diff also removes is carried over, not new"
+# carry_commit <status> <path> <patch>: a pull request opened after the cutoff whose one commit is
+# that one file, as GitHub answers it.
+carry_commit() {
+  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+  key_rule_on
+  opened_at 2026-11-21T00:00:00Z
+  commits new-sha 2026-11-21T01:00:00Z "fix: keep the order"
+  commit_file new-sha "$1" "$2" "$3"
+}
+carry_commit modified docs/notes.md \
+  "$(printf '@@ -2,1 +2,1 @@\n-Tracked as %s, see %sexample/1.\n+Now tracked as %s, see %sexample/1.' \
+    "$planted_key" "$link" "$planted_key" "$link")"
+key_run
+check "a line re-worded around the key and the link it held passes" "$(is "$status" 0)"
+carry_commit modified docs/notes.md \
+  "$(printf '@@ -2,1 +2,2 @@\n-Tracked as %s.\n+Now tracked as %s.\n+And again as %s.' \
+    "$planted_key" "$planted_key" "$planted_key")"
+key_run
+check "a second copy of the key, which no removed line carries, fails" "$(is "$status" 1)"
+check "names the second copy's line" "$(contains "$out" "commit:new-sha:docs/notes.md:3: $key_refused")"
+check "and not the carried one's" "$(is "$(contains "$out" "commit:new-sha:docs/notes.md:2:")" false)"
+carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-See %sexample/1.\n+See %sexample/2.' "$link" "$link")"
+key_run
+check "a link to another place is new: fails" "$(is "$status" 1)"
+check "names its line" "$(contains "$out" 'commit:new-sha:docs/notes.md:2: holds a Dispatch link')"
+carry_commit added docs/new.md "$(printf '@@ -0,0 +1,1 @@\n+Tracked as %s.' "$planted_key")"
+jq -c --arg old "$(printf '@@ -1,1 +0,0 @@\n-Tracked as %s.' "$planted_key")" \
+  '.files = [{filename: "docs/old.md", status: "removed", additions: 0, changes: 1, patch: $old}] + .files
+   | .stats.total = 2' "$work/commit.new-sha" > "$work/commit.next"
+mv "$work/commit.next" "$work/commit.new-sha"
+key_run
+check "a key a commit moves from a removed file into an added one passes" "$(is "$status" 0)"
+carry_commit renamed "docs/$planted_key-notes.md" $'@@ -1,0 +2,1 @@\n+clean text'
+jq -c --arg old "docs/old/$planted_key-notes.md" '.files[0].previous_filename = $old' "$work/commit.new-sha" \
+  > "$work/commit.next"
+mv "$work/commit.next" "$work/commit.new-sha"
+key_run
+check "a renamed file whose new path keeps its old path's key passes" "$(is "$status" 0)"
+carry_commit renamed "docs/$planted_key-notes.md" $'@@ -1,0 +2,1 @@\n+clean text'
+jq -c '.files[0].previous_filename = "docs/notes.md"' "$work/commit.new-sha" > "$work/commit.next"
+mv "$work/commit.next" "$work/commit.new-sha"
+key_run
+check "a renamed file whose new path adds a key fails" "$(is "$status" 1)"
+check "names the path, masked" "$(contains "$out" "^::error::commit:new-sha:docs/<name>: $key_refused .* in its path\$")"
 
 echo "case: a merge commit's own diff is not read, and the pull request's net diff is, once"
 # A forward merge's diff against its first parent is everything the base branch changed since the
@@ -804,14 +894,27 @@ jq -c '.[1].additions = 5 | .[1].changes = 5' "$work/pr-files" > "$work/pr-files
 mv "$work/pr-files.next" "$work/pr-files"
 jq '.additions = 6' "$work/pull" > "$work/pull.next" && mv "$work/pull.next" "$work/pull"
 key_run
-check "a net diff file that adds lines with no patch exits 2" "$(is "$status" 2)"
+check "a net diff file that adds lines with no patch, at a head git cannot fetch, exits 2" "$(is "$status" 2)"
 check "says UNKNOWN for that file of the net diff" "$(contains "$out" "UNKNOWN: GitHub returned no patch for file 2 of #7's net diff")"
 merge_branch
 pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
 jq '.changed_files = 3001' "$work/pull" > "$work/pull.next" && mv "$work/pull.next" "$work/pull"
 key_run
-check "a net diff listed short of the pull request's totals exits 2" "$(is "$status" 2)"
+check "a net diff listed short of the pull request's totals, at a head git cannot fetch, exits 2" "$(is "$status" 2)"
 check "says UNKNOWN for the net diff" "$(contains "$out" 'UNKNOWN: #7 holds 1 merge commit(s), so its net diff is read')"
+# The same short list at a head git can fetch: the net diff is read from git, from where the head
+# leaves main to the head.
+merge_branch
+pr_head docs/notes.md "$(printf 'clean text\nresolved as %s said' "$planted_key")"
+jq --arg head "$pr_sha" '.pull_request.head.sha = $head' "$work/event.json" > "$work/event.next"
+mv "$work/event.next" "$work/event.json"
+pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+jq '.changed_files = 3001' "$work/pull" > "$work/pull.next" && mv "$work/pull.next" "$work/pull"
+key_run
+check "a net diff listed short, read from git at the head, fails on the key it adds" "$(is "$status" 1)"
+check "says git read the net diff instead" "$(contains "$out" 'so git reads the net diff instead')"
+check "names the line git read" "$(contains "$out" "files:docs/notes.md:2: $key_refused")"
+check "and nothing is UNKNOWN" "$(is "$(contains "$out" 'UNKNOWN')" false)"
 
 echo "case: a commit dated before the cutoff is read after all when the pull request holds a forward merge"
 # The one exception to "a commit dated before the cutoff is not read": the net diff is the whole
