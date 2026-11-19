@@ -25,6 +25,14 @@ func movedControllerReservation(o *Options) {
 	o.Resources = resources
 }
 
+// microVMChanged is a microvm project under testMicroVM's block, with edit applied to that block.
+func microVMChanged(edit func(*MicroVM)) func(*Options) {
+	return func(o *Options) {
+		sandboxBlock(SandboxMicroVM)(o)
+		edit(o.Sandbox.MicroVM)
+	}
+}
+
 // A pod no round covers (roundCovers) is replaced by its next launch for every kind of drift, as
 // every launch did before the round existed. Every facet of the pod itself but the account reaches
 // that launch as a moved address (movedInPod,
@@ -32,12 +40,20 @@ func movedControllerReservation(o *Options) {
 // not are the account, which the launch reads itself (accountDrift,
 // TestALaunchKeepsAnAccountDriftedPodARoundCoversAndReplacesOneNoRoundCovers), and the shape its
 // template was built from — the image, the kind's own reservation, an operator volume or mount,
-// and the disk size, each key of podShapeRecord — which
+// the disk size and the sandbox, each key of podShapeRecord — which
 // the launch reads through the same one computation the round's reasons are named from
 // (shapeDrift). Nothing else would: PodDrift answers nothing for such a pod, so no round is ever
 // opened over it, and a launch that kept it would leave the project controller running for ever in
-// a pod the deployment has moved away from, on the image, reservation, volumes, mounts and disk it
-// was created with.
+// a pod the deployment has moved away from, on the image, reservation, volumes, mounts, disk and
+// sandbox it was created with.
+//
+// The controller's pod runs in the project's sandbox (SandboxConfig.Controller), so the sandbox key
+// of its shape moves with the project's type and with the microvm block it runs in, and with
+// nothing else: a project moved to microvm has the controller's next launch replace its gVisor pod
+// with a microVM one, and a project moved back has it replace its microVM pod with a gVisor one; a
+// microvm block or a canary list added to a gVisor project moves nothing, and nor does a change of
+// the block's storage class, which the controller's disk is not on (diskSpec), where a change of
+// the block's metadata endpoint replaces a microVM controller's pod.
 //
 // A launch that installs a stale-plugin pair into such a pod (spec.Plugins, LEGION-164) reads the
 // image of its shape alone (podImageDrift). A pod built on another image is replaced: the install
@@ -45,27 +61,72 @@ func movedControllerReservation(o *Options) {
 // launch's agent is started plain in a fresh pod on the configured image, whose own plugins are
 // already current, and nothing is installed. A pod whose reservation alone moved is kept, as it
 // always was, and the pair is installed into it: the install, not a fresh pod, is what brings that
-// agent onto the current plugin. And a daemon restarted on the configuration its pod was built
-// from replaces nothing — the failure that would matter most here, since it would rebuild the
-// controller's pod at every launch of it.
+// agent onto the current plugin. So is a gVisor pod after the project moved to microvm on the same
+// image, and on another image that launch replaces it with a microVM pod. And a daemon restarted
+// on the configuration its pod was built from replaces nothing — the failure that would matter
+// most here, since it would rebuild the controller's pod at every launch of it.
 func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
 	for name, tc := range map[string]struct {
-		now      func(*Options)
+		// was is the configuration the controller's pod is built on, testOptions' where nil, and
+		// now the one the daemon is restarted on.
+		was, now func(*Options)
 		plugins  *runtime.PluginInstall
 		replaced bool
+		// key is the shape the pod the launch leaves is built from: the configuration now reads,
+		// in the sandbox the project's type now gives the controller.
+		key podShapeKey
 	}{
-		"the same configuration":                           {func(*Options) {}, nil, false},
-		"another image":                                    {func(o *Options) { o.Image = nextImage }, nil, true},
-		"another reservation":                              {movedControllerReservation, nil, true},
-		"an operator volume added":                         {withOperatorVolume, nil, true},
-		"an operator mount added":                          {withOperatorMount, nil, true},
-		"another disk size":                                {func(o *Options) { o.IssueVolume = resource.MustParse("40Gi") }, nil, true},
-		"an installing launch into a pod on another image": {func(o *Options) { o.Image = nextImage }, plugins, true},
-		"an installing launch into a pod whose reservation alone moved": {movedControllerReservation, plugins, false},
+		"the same configuration":   {now: func(*Options) {}, key: controllerInGVisor},
+		"another image":            {now: func(o *Options) { o.Image = nextImage }, replaced: true, key: controllerInGVisor},
+		"another reservation":      {now: movedControllerReservation, replaced: true, key: controllerInGVisor},
+		"an operator volume added": {now: withOperatorVolume, replaced: true, key: controllerInGVisor},
+		"an operator mount added":  {now: withOperatorMount, replaced: true, key: controllerInGVisor},
+		"another disk size": {
+			now: func(o *Options) { o.IssueVolume = resource.MustParse("40Gi") }, replaced: true, key: controllerInGVisor,
+		},
+		"an installing launch into a pod on another image": {
+			now: func(o *Options) { o.Image = nextImage }, plugins: plugins, replaced: true, key: controllerInGVisor,
+		},
+		"an installing launch into a pod whose reservation alone moved": {
+			now: movedControllerReservation, plugins: plugins, key: controllerInGVisor,
+		},
+		"the project moved from gvisor to microvm": {now: sandboxBlock(SandboxMicroVM), replaced: true, key: controllerInMicroVM},
+		"the project moved from microvm back to gvisor": {
+			was: sandboxBlock(SandboxMicroVM), now: sandboxBlock(SandboxGVisor), replaced: true, key: controllerInGVisor,
+		},
+		"a microvm block added to a gvisor project": {now: sandboxBlock(SandboxGVisor), key: controllerInGVisor},
+		"a canary list added to a gvisor project": {
+			was: sandboxBlock(SandboxGVisor), now: sandboxBlock(SandboxGVisor, testTree), key: controllerInGVisor,
+		},
+		"microvm.storage_class changed on a microvm project": {
+			was: sandboxBlock(SandboxMicroVM), now: microVMChanged(func(m *MicroVM) { m.StorageClass = "example-microvm-ssd" }),
+			key: controllerInMicroVM,
+		},
+		"microvm.metadata changed on a microvm project": {
+			was: sandboxBlock(SandboxMicroVM),
+			now: microVMChanged(func(m *MicroVM) {
+				m.Metadata = &MetadataEndpoint{WorkloadPool: "other-project.svc.id.goog", IdentityProvider: testIdentityProvider}
+			}),
+			replaced: true, key: controllerInMicroVM,
+		},
+		"an installing launch after the move to microvm on the same image": {
+			now: sandboxBlock(SandboxMicroVM), plugins: plugins, key: controllerInMicroVM,
+		},
+		"an installing launch after the move to microvm on another image": {
+			now: func(o *Options) {
+				sandboxBlock(SandboxMicroVM)(o)
+				o.Image = nextImage
+			},
+			plugins: plugins, replaced: true, key: controllerInMicroVM,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil)
+			var options []rigOption
+			if tc.was != nil {
+				options = append(options, withOptions(tc.was))
+			}
+			g := newRig(t, nil, options...)
 			spec := controllerSpec(t)
 			loc := g.spawn(spec)
 			r2 := secondRuntime(t, g, tc.now)()
@@ -81,6 +142,10 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 				return g.sandbox(loc.Sandbox.Name).Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation]
 			}
 			built := shape()
+			want := r2.podShapes[tc.key]
+			if want == "" {
+				t.Fatalf("the restarted runtime builds no shape for the controller's pod in %s, so no launch could tell it moved", tc.key.sandbox)
+			}
 			spec.Generation, spec.BootToken, spec.ResumeSessionFile, spec.Plugins = 2, "boot-controller-g2", controllerSession, tc.plugins
 			next, err := r2.Resume(g.ctx, &loc, spec)
 			if err != nil {
@@ -90,7 +155,7 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 				t.Fatalf("Resume replaced the controller's pod: %t, want %t (pod %s, then %s)",
 					replaced, tc.replaced, loc.Sandbox.PodUID, next.Sandbox.PodUID)
 			}
-			switch want := r2.podShapes[controllerInGVisor]; {
+			switch {
 			case tc.replaced && shape() != want:
 				t.Errorf("the controller's new pod is built from %s, want the configuration as it now reads, %s", shape(), want)
 			case !tc.replaced && shape() != built:
@@ -113,6 +178,13 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 				}
 				if other, drifted := imageDrift(pod, r2.image); drifted {
 					t.Errorf("the controller's new pod has a container on image %s, want every container on the configured %s", other, r2.image)
+				}
+				runtimeClass := gvisor
+				if tc.key.sandbox == SandboxMicroVM {
+					runtimeClass = microVMRuntimeClass
+				}
+				if got := pod.Spec.RuntimeClassName; got == nil || *got != runtimeClass {
+					t.Errorf("the controller's new pod runs under the RuntimeClass %v, want %s", got, runtimeClass)
 				}
 			}
 			if tc.plugins != nil {
@@ -341,60 +413,6 @@ func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
 			tc.check(t, startEnv(start), start.Argv, g.pod(loc.Sandbox.Name))
 		})
 	}
-}
-
-// The project controller's pod runs in gVisor whatever the sandbox block says, so the shape it is
-// built from and compared with is the one a deployment naming no block gives it, byte for byte,
-// under every block. No round covers that pod, so its shape is what tells its next launch to
-// replace it (relaunch, shapeDrift): a sandbox change that moved it would rebuild the controller's
-// pod for nothing at its next launch, so a launch after the project moves to microvm keeps it.
-func TestTheControllerPodsShapeDoesNotMoveWithTheSandbox(t *testing.T) {
-	plain, err := configure(testOptions())
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := plain.podShapes[controllerInGVisor]
-	for name, block := range map[string]func(*Options){
-		"gvisor beside a microvm block":   sandboxBlock(SandboxGVisor),
-		"gvisor with a canary":            sandboxBlock(SandboxGVisor, testTree),
-		"a microVM project":               sandboxBlock(SandboxMicroVM),
-		"a microVM project with a canary": sandboxBlock(SandboxMicroVM, testTree),
-	} {
-		t.Run(name, func(t *testing.T) {
-			opts := testOptions()
-			block(&opts)
-			r, err := configure(opts)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := r.podShapes[controllerInGVisor]; got != want {
-				t.Errorf("the controller's pod is built from\n%s\nwant the shape a deployment naming no sandbox block gives it\n%s", got, want)
-			}
-			if got := r.podTemplate(launchOf(t, r, controllerSpec(t))).Metadata.Annotations[podShapeAnnotation]; got != want {
-				t.Errorf("the controller's pod template records\n%s\nwant\n%s", got, want)
-			}
-		})
-	}
-	t.Run("its launch after the project moves to microvm keeps it", func(t *testing.T) {
-		g := newRig(t, nil)
-		spec := controllerSpec(t)
-		loc := g.spawn(spec)
-		r2 := secondRuntime(t, g, sandboxBlock(SandboxMicroVM))()
-		g.connectRunning(controllerToken, loc.Sandbox.Generation)
-		g.eventually("the controller's launcher to report its child to the restarted daemon", func() bool {
-			state, connected := r2.launchers.state(controllerToken, loc.Sandbox.PodUID)
-			return connected && state.Child != nil
-		})
-		spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-controller-g2", controllerSession
-		next, err := r2.Resume(g.ctx, &loc, spec)
-		if err != nil {
-			t.Fatalf("Resume the controller: %v", err)
-		}
-		if next.Sandbox.PodUID != loc.Sandbox.PodUID {
-			t.Errorf("Resume replaced the controller's pod %s with %s, want it kept: its sandbox is gVisor under any block",
-				loc.Sandbox.PodUID, next.Sandbox.PodUID)
-		}
-	})
 }
 
 // A covered issue pod built in gVisor is kept by a launch after its issue goes on the canary list
