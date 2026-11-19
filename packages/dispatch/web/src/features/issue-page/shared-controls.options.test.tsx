@@ -5700,7 +5700,7 @@ test("inside NoTooltips a priority's Remove draws its cross as an inline svg and
         expect(paths[0]?.getAttribute("stroke")).toBe("currentColor");
       } else {
         expect(remove.textContent).toBe("✕");
-        expect(crosses).toEqual([]);
+        expect(crosses).toHaveLength(0);
       }
     } finally {
       undraw(view);
