@@ -372,8 +372,6 @@ it there until that answer comes clean.
     decision as a `dispatch ask` there, whose reference you publish to that topic. Either names
     this issue, the pull request, the merge commit, what you drove and what failed, and the
     result's `observed` and the summary name it (`dispatch://<REPORT KEY>/ask/<id>`).
-    In cybermonklabs/legion the `observed` leaves that reference out, because its words end the
-    check's line in the public PR body (`skill://legion-worker/references/pr-body.md`).
 - **Numbers the daemon holds are read with the `legion` tool.** Where the verdict rests on what a
   deployment's idle release has done, `read_release_records` answers a window of the daemon's own
   records of its releases, resumes and holds: its one argument `since` is the RFC 3339 instant

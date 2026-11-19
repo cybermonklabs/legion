@@ -57,9 +57,7 @@ prints `[legion] the daemon has no GitHub App to act as; the controller's gh act
 
 End every pull-request comment or review you post with
 `<!-- legion: {"session":"<session-id>","phase":"controller"} -->`, because the daemon reads that
-footer to tell your review from the reviewer's verdict. In cybermonklabs/legion, which is public,
-such a comment or review names no Dispatch key and no link into Dispatch, as its `AGENTS.md` says
-(*This repository is public*): name the work in words.
+footer to tell your review from the reviewer's verdict.
 
 ## Reading a pull request
 

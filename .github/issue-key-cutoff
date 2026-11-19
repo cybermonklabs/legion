@@ -1,9 +1,0 @@
-This file marks when the issue-key rule begins, and nothing reads its text.
-
-.github/scripts/check-pr-text.sh refuses an issue key of the deployment's own projects, and a
-Dispatch link, in a pull request's new text. The commit that added this file to main is the one
-that told every worker to keep keys and links out of this repository's text
-(skills/legion-worker/references/pr-body.md). The rule's cutoff is the publish time of the earliest
-legion-v* release whose commit contains that commit: check-pr-text.sh reads it from GitHub at each
-run, so no date is typed anywhere. Do not delete or move this file: the first commit that touches
-this path on main is what the cutoff is derived from.

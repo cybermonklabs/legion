@@ -11,7 +11,7 @@ Every path yours: commit and push as your role prompt says. A path you did not w
 only in the second list, or already inside a commit of yours: split nothing, tell the architect.
 A path you did not write in the first list:
 
-    cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" split -m '<what you did>' <your paths…>
+    cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" split -m '<issue>: <what you did>' <your paths…>
     jj -R "$LEGION_WORKSPACE" metaedit -r @- --update-author
     jj -R "$LEGION_WORKSPACE" bookmark set legion/<issue> -r @-
     jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<issue>

@@ -13,7 +13,7 @@ later phase keeps it current rather than replacing it:
 ## For the reviewer
 
 **Outcome:** <one sentence a user of this repository would recognise: what someone can now do, or what stops going wrong>
-**Why:** <the problem, one or two sentences, ending with the Dispatch key in parentheses — the key only, never a URL — except in cybermonklabs/legion, where it names no Dispatch key and no link into Dispatch>
+**Why:** <the problem, one or two sentences, ending with the Dispatch key in parentheses — the key only, never a URL>
 **Change:**
 - <two to five bullets, each one behaviour a user or operator meets, never a file name>
 **Look at first:** <one to three `path:line` places where a wrong decision would hurt> (the reviewer writes this line)
@@ -43,7 +43,7 @@ order. Each is the line `dispatch result` printed when the result was recorded, 
 
 **Fast-follow:** "none", or one named cleanup item in a file this pull request does not touch, and where it will land.
 
-**Chain:** stacked on <base bookmark; in cybermonklabs/legion, the base's pull request number instead, since a bookmark there names its issue's key> frozen at <sha> / not stacked.
+**Chain:** stacked on <base bookmark> frozen at <sha> / not stacked.
 ```
 
 ## Never waiting on CI
@@ -86,9 +86,7 @@ about whether the head merges.
 ledger the reviewer and merger check against GitHub. The implementer writes `Outcome`, `Why`,
 `Change`, `Proven by`, and `Size` when the pull request opens, and keeps them true after every
 push; `Outcome` is a sentence a user of the repository would recognise, never "fix bug" or a file
-name, and `Why` ends with the Dispatch key, never a URL, except in cybermonklabs/legion, where no
-line of the title or the body names a Dispatch key or links into Dispatch (*PR body, review, and
-the merge gate* in `skill://legion-worker`). The reviewer writes `Look at first` and
+name, and `Why` ends with the Dispatch key, never a URL. The reviewer writes `Look at first` and
 `Not proven / risk` at each round, into the live body (`gh api
 repos/{owner}/{repo}/pulls/{number} --jq .body`, edit, then `--method PATCH ... -F body=@body.md`);
 `Not proven / risk` copies every claim recorded as unproven before the merge — the tester's
@@ -113,9 +111,6 @@ of these flags takes text and refuses a bare `-`. Text from a file or from stdin
 `--run-file`, `--observed-file` or `--negative-control-file`. Only one of them per call may read
 stdin (`-`). The command prints the pull request body's line for it, and that line goes into the
 body unchanged.
-That line ends with the words of `--observed`, so in cybermonklabs/legion `--observed` names no
-Dispatch key and no link into Dispatch: name a Dispatch image with `--screenshot`, and put any
-other Dispatch link in `--run`, which the line leaves out.
 The surface is **production-like** — the repository's real-process test harness and fixtures, a
 sandbox repository, a real browser, a development stack, staging, or a local stack with real migrations,
 one that has the resource the change touches — and `--run` or `--observed` carries a **link** to

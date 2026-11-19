@@ -58,12 +58,10 @@ Every path it cites is in cybermonklabs/legion.
   itself: its commit-message check (a commitlint configuration or the workflow that lints
   commits) where it has one, else its recent commits on the base. Where it uses Conventional
   Commits, that is a listed type and the merge in words, for example
-  `chore(<scope>): merge <base> forward`. Where neither shows a convention, it is the
-  merge in words alone, for example `Merge <base> forward`. Never a fixed prefix of the
+  `chore(<scope>): merge <base> into <branch>`. Where neither shows a convention, it is the
+  merge in words alone, for example `Merge <base> into <branch>`. Never a fixed prefix of the
   skill's own: a check that lints every commit of the pull request refuses a type its list does
-  not hold, and `merge` is in no Conventional Commits list. In cybermonklabs/legion the message
-  names no Dispatch key, whatever its recent commits carry (*PR body, review, and the merge gate*
-  in `skill://legion-worker`).
+  not hold, and `merge` is in no Conventional Commits list.
 
   Merge from the bookmark, never from `@`: a `jj split` leaves `@` an empty, undescribed
   commit above the described one the bookmark already names, and `jj git push` refuses to push
