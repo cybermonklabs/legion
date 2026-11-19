@@ -616,7 +616,7 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	case "push":
 		fact, err = decodePush(repository, raw)
 	case "checks":
-		fact, err = decodeChecks(subject, repository, raw)
+		return decodeChecks(subject, repository, raw)
 	}
 	// Comments, and every other kind, route to the current role but do not change the durable
 	// workflow record.
@@ -760,36 +760,49 @@ func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (F
 	return Push{Repo: repository.String(), Branch: branch, Before: before, After: after, Pusher: pusher, Sender: sender}, nil
 }
 
-func decodeChecks(subject string, repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
+// decodeChecks decodes a checks settlement of the pull request its subject names. A settlement
+// that lacks any field the daemon orders or judges it by - its head, check runs, generation,
+// snapshot, failed or cancelled - is no fact. Its commit statuses are read last and cost the rest
+// nothing (rawStatuses): a list that cannot be read is named in the unread list the consumer logs,
+// and the fact is marked so (PullRequestChecks.StatusesUnread), rather than the settlement's
+// check runs being lost with it.
+func decodeChecks(subject string, repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, []string, error) {
 	number, ok := rawNumber(raw, "number")
 	if !ok || subject != githubRepositoryPrefix(repository)+".pr."+strconv.Itoa(number)+".checks" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	headSHA, ok := rawString(raw, "sha")
 	if !ok || headSHA == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	runs, ok := rawCheckRuns(raw["check_runs"])
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
 	generation, ok := rawInt64(raw, "generation")
 	if !ok || generation < 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	snapshot, ok := rawString(raw, "snapshot")
 	if !ok || snapshot == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	failed, ok := rawStatusGroup(raw, "failed")
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
 	cancelled, ok := rawStatusGroup(raw, "cancelled")
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return PullRequestChecks{Repo: repository.String(), Number: number, HeadSHA: headSHA, CheckRuns: runs, Generation: generation, Snapshot: snapshot, Failing: failed, Cancelled: cancelled}, nil
+	checks := PullRequestChecks{Repo: repository.String(), Number: number, HeadSHA: headSHA, CheckRuns: runs, Generation: generation, Snapshot: snapshot, Failing: failed, Cancelled: cancelled}
+	statuses, defect := rawStatuses(raw["statuses"])
+	if defect != "" {
+		checks.StatusesUnread = true
+		return checks, []string{"statuses " + defect + ": the pull request keeps the statuses it holds for " + headSHA}, nil
+	}
+	checks.Statuses = statuses
+	return checks, nil, nil
 }
 
 func githubIdentity(raw map[string]json.RawMessage) (int, string, bool) {

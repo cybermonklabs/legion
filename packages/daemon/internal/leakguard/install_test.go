@@ -4,17 +4,23 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // theTag is the pin these tests install, spelled as the worker image spells one.
@@ -421,6 +427,64 @@ func TestTheHelpRunSeesOnlyPathHomeAndTmpdir(t *testing.T) {
 		if seen[name] != value {
 			t.Errorf("the --help run saw %s=%q, want %q", name, seen[name], value)
 		}
+	}
+}
+
+// A --help run that ends with no exit of its own has answered no shape, but the install's refusal
+// names why it ended rather than a check that answered nothing. One that something else killed
+// (another drain's signal, the kernel's out-of-memory kill) is refused naming the kill, with what
+// it printed before it beneath (procgroup.Said), so the person reading the claim's cause looks for
+// what killed it and sees what the check said first. One the install's own context ended is
+// refused naming the context, since that end is what killed the run (verifyServed reads it before
+// the run's error). The stand-in prints a line, writes its pid and waits; each row ends it its own
+// way.
+func TestAHelpRunThatEndsWithNoExitIsRefusedNamingWhy(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		end  func(t *testing.T, pid int, cancel context.CancelFunc)
+		want string
+	}{
+		{
+			name: "killed by another process",
+			end: func(t *testing.T, pid int, _ context.CancelFunc) {
+				if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+					t.Fatalf("kill the --help run %d: %v", pid, err)
+				}
+			},
+			want: "the served check could not be run: signal: terminated\nLEAK CHECK: reading the rules",
+		},
+		{
+			name: "the install's context ended",
+			end:  func(_ *testing.T, _ int, cancel context.CancelFunc) { cancel() },
+			want: "the served check could not be run: context canceled",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			parent := t.TempDir()
+			pidFile := filepath.Join(parent, "help-pid")
+			body := served(t, wholeCheck(t, "#!/bin/sh\necho 'LEAK CHECK: reading the rules' >&2\necho $$ >'"+pidFile+"'\nexec sleep 30\n"))
+			dir := filepath.Join(parent, "leak-check")
+			ctx, cancel := context.WithCancel(bound(t))
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- InstallServed(ctx, ServedInstall{Dir: dir, Tag: theTag, Body: body, Start: procgroup.NoReaper, Log: func(string, ...any) {}})
+			}()
+			var pid int
+			testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the --help run to write its pid", func() bool {
+				written, err := os.ReadFile(pidFile)
+				n, convErr := strconv.Atoi(strings.TrimSpace(string(written)))
+				pid = n
+				return err == nil && convErr == nil && pid > 0
+			})
+			row.end(t, pid, cancel)
+			if err := <-done; err == nil || err.Error() != row.want {
+				t.Fatalf("install with its --help run ended = %v, want %q", err, row.want)
+			}
+			if _, statErr := os.Lstat(dir); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Errorf("the refused install left %s (%v), want nothing there", dir, statErr)
+			}
+		})
 	}
 }
 

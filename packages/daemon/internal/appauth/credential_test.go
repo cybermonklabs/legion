@@ -765,23 +765,23 @@ func TestEveryInstalledOwnerKeepsItsOwnLeaseWhileAPairResolves(t *testing.T) {
 }
 
 // chainedRenames are two configured pairs whose owners chain while their repositories do not:
-// sjawhar/legion moved to cybermonklabs, and cybermonklabs/agent-infra moved on to
-// theorem-labs. NewRenames holds them — its chain check compares whole repositories, and no
+// sjawhar/legion moved to cybermonklabs, and cybermonklabs/deployment moved on to
+// example-org. NewRenames holds them — its chain check compares whole repositories, and no
 // owner's repositories move to two owners — so the owner whose installation serves a role's own
 // repository is itself an owner a configured pair moved a repository away from.
-var chainedRenames = ghrepo.MustRenames(legionRename, ghrepo.MustRename("cybermonklabs/agent-infra", "theorem-labs/agent-infra"))
+var chainedRenames = ghrepo.MustRenames(legionRename, ghrepo.MustRename("cybermonklabs/deployment", "example-org/deployment"))
 
 // An owner the App is installed on is minted for itself, whatever a second pair moved away from
 // it: the lease a role recorded on sjawhar/legion writes cybermonklabs' repositories with is
-// cybermonklabs' own, and the cybermonklabs directory is never redirected on to theorem-labs.
+// cybermonklabs' own, and the cybermonklabs directory is never redirected on to example-org.
 // Redirected, that directory would hand out a token of a third owner's installation, which
-// GitHub would refuse, and theorem-labs' directory holds that owner's lease already.
+// GitHub would refuse, and example-org's directory holds that owner's lease already.
 func TestASecondPairDoesNotRedirectTheOwnerThatServesTheRolesRepository(t *testing.T) {
-	names := []string{"Cybermonklabs/legion", "cybermonklabs/tools", "theorem-labs/agent-infra", "theorem-labs/nats-server"}
+	names := []string{"Cybermonklabs/legion", "cybermonklabs/tools", "example-org/deployment", "example-org/nats-server"}
 	served := servesOneOf(names...)
 	recorded := ghrepo.MustParse("sjawhar/legion")
 	installed := NewInstalled()
-	credential := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners("cybermonklabs", "theorem-labs")), served,
+	credential := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners("cybermonklabs", "example-org")), served,
 		chainedRenames, installed, nil, quietBundleLog())
 	bundle, err := credential(context.Background(), claim.RoleImplementer, recorded)
 	if err != nil {
@@ -791,7 +791,7 @@ func TestASecondPairDoesNotRedirectTheOwnerThatServesTheRolesRepository(t *testi
 	want := map[string]string{
 		"cybermonklabs": "implement-token-for-cybermonklabs",
 		"sjawhar":       "implement-token-for-cybermonklabs",
-		"theorem-labs":  "implement-token-for-theorem-labs",
+		"example-org":   "implement-token-for-example-org",
 	}
 	if !maps.Equal(tokens, want) {
 		t.Errorf("tokens = %v, want %v", tokens, want)

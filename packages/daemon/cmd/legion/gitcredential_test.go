@@ -20,7 +20,7 @@ import (
 
 // gitCredentialBundle writes a gh bundle of a role whose issue is acme's: one directory per
 // owner the role's App is installed on, each holding that owner's own write token — acme's,
-// sjawhar's and theorem-labs', the last an owner the App is installed on and no record of the
+// sjawhar's and example-org's, the last an owner the App is installed on and no record of the
 // project names, since a lease reaches every repository its installation holds and the
 // installation is the whole of a role's reach (appauth.GitHubCredential, INFRA-2543). It
 // returns the bundle's root and acme's directory, which GH_CONFIG_DIR names.
@@ -29,9 +29,9 @@ func gitCredentialBundle(t *testing.T) (root, defaultDir string) {
 	root = filepath.Join(t.TempDir(), "gh")
 	expires := time.Now().Add(time.Hour)
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{
-		"acme":         ghconfig.Render("ghs_acme_write", "implement", expires),
-		"sjawhar":      ghconfig.Render("ghs_sjawhar_write", "implement", expires),
-		"theorem-labs": ghconfig.Render("ghs_theorem_labs_write", "implement", expires),
+		"acme":        ghconfig.Render("ghs_acme_write", "implement", expires),
+		"sjawhar":     ghconfig.Render("ghs_sjawhar_write", "implement", expires),
+		"example-org": ghconfig.Render("ghs_example_org_write", "implement", expires),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -118,8 +118,8 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 			name:   "a repository of an owner no record of the project names",
 			env:    both,
 			args:   []string{"get"},
-			stdin:  "protocol=https\nhost=github.com\npath=theorem-labs/agent-infra.git\n\n",
-			stdout: strings.Replace(answer, "%s", "ghs_theorem_labs_write", 1),
+			stdin:  "protocol=https\nhost=github.com\npath=example-org/deployment.git\n\n",
+			stdout: strings.Replace(answer, "%s", "ghs_example_org_write", 1),
 		},
 		{
 			name:   "a managed user's repository",

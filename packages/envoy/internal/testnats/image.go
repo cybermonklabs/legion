@@ -32,6 +32,15 @@ const imageConfigPath = "/etc/nats/nats-server.conf"
 // flag as nats-server's own.
 func StartImageConfig(t testing.TB, image, config string, serverArgs []string, anonymous bool) (*tcnats.NATSContainer, string) {
 	t.Helper()
+	ctr, uri := startImage(t, image, config, serverArgs)
+	awaitAuth(t, uri, anonymous)
+	return ctr, uri
+}
+
+// startImage runs the container StartImageConfig runs and returns it with its client URL, before
+// any wait for the server to answer a client: each caller waits the way its configuration admits.
+func startImage(t testing.TB, image, config string, serverArgs []string) (*tcnats.NATSContainer, string) {
+	t.Helper()
 	ctx := context.Background()
 	ctr, err := tcnats.Run(ctx, image,
 		testcontainers.WithCmd(append([]string{"-c", imageConfigPath}, serverArgs...)...),
@@ -55,6 +64,5 @@ func StartImageConfig(t testing.TB, image, config string, serverArgs []string, a
 	if err != nil {
 		t.Fatalf("NATS connection string: %v", err)
 	}
-	awaitAuth(t, uri, anonymous)
 	return ctr, uri
 }

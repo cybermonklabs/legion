@@ -4,9 +4,11 @@ import { DELIVERY_DUPLICATE_WINDOW_MS, RECEIPT_TIMEOUT_CAUSE } from "@legion/con
 import {
   broadcastDelivery,
   type DeliveryOutcome,
+  deliveryModesOf,
   deliveryOutcomeState,
   duplicateText,
   isSafeRetry,
+  noDeliveryLine,
   plainDelivery,
   queuedParts,
   rowAnsweredWithError,
@@ -183,4 +185,44 @@ test("a broadcast is a BTW unless every selected session takes Aside and one ref
   expect(broadcastDelivery([claude, []])).toBe("aside");
   expect(broadcastDelivery([[]])).toBe("btw");
   expect(broadcastDelivery([claude, ["steer"]])).toBe("btw");
+});
+
+// A list can hold capabilities that are no delivery mode this Dispatch knows, so an empty list is
+// not the only one that takes no message: every surface asks which of its capabilities are modes.
+test("a session's delivery modes are the listed capabilities that are modes, in list order, once", () => {
+  expect(deliveryModesOf([])).toEqual([]);
+  expect(deliveryModesOf(["future-capability"])).toEqual([]);
+  expect(deliveryModesOf(["steer", "x"])).toEqual(["steer"]);
+  expect(deliveryModesOf(["btw", "future-capability", "aside"])).toEqual(["btw", "aside"]);
+  expect(deliveryModesOf(["aside", "steer", "aside"])).toEqual(["aside", "steer"]);
+});
+
+test("the no-delivery-mode line says why an empty list and a list of unknown capabilities take none", () => {
+  expect(noDeliveryLine([])).toBe(
+    "This session advertises no delivery mode, so a message sent here records a failed attempt. A session advertises none while its plugin cannot reach its conversation."
+  );
+  expect(noDeliveryLine(["future-capability"])).toBe(
+    "This session advertises no delivery mode, so a message sent here records a failed attempt. None of the capabilities it lists is a delivery mode this Dispatch knows."
+  );
+});
+
+// The line is said of a session that takes no message, so a list holding a mode, beside unknown
+// capabilities or not, gives none rather than a sentence that is false of it.
+test("a list that holds a delivery mode gives no no-delivery-mode line", () => {
+  expect(noDeliveryLine(["aside"])).toBeUndefined();
+  expect(noDeliveryLine(["future-capability", "steer"])).toBeUndefined();
+});
+
+// A session listing only capabilities that are no mode takes none, as one listing nothing does, so
+// it decides neither a plain message's mode nor a broadcast's for the rest.
+test("a list with no delivery mode does not decide a plain message's or a broadcast's mode", () => {
+  const omp = ["aside", "btw", "steer"];
+  const claude = ["aside"];
+  const unknown = ["future-capability"];
+  expect(plainDelivery([claude, unknown])).toBe(plainDelivery([claude]));
+  expect(plainDelivery([omp, unknown])).toBe(plainDelivery([omp]));
+  expect(plainDelivery([unknown])).toBe(plainDelivery([]));
+  expect(broadcastDelivery([claude, unknown])).toBe(broadcastDelivery([claude]));
+  expect(broadcastDelivery([omp, unknown])).toBe(broadcastDelivery([omp]));
+  expect(broadcastDelivery([unknown])).toBe(broadcastDelivery([]));
 });

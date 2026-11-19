@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -469,7 +470,7 @@ func TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater(t *tes
 // the issue pod requests less than it may use, which the runtime renders as a Burstable pod, and the
 // controller's keeps request == limit at sizes the file set — and its ephemeral storage the limit
 // the file or the default set with the request under it; and the image probe carries its own fixed
-// reservation (probeReservation), 250m and 1Gi over a 5Gi disk bound and a 1Gi disk request,
+// reservation (probeReservation), 500m and 1Gi over a 5Gi disk bound and a 1Gi disk request,
 // translated the same way and no pod's share — a probe that reserved the controller's 1 CPU and
 // 4Gi could not boot the daemon on a pool with room for less.
 func TestEveryReservationReachesTheSandboxRuntimeAsRequestAndLimit(t *testing.T) {
@@ -522,12 +523,12 @@ func TestEveryReservationReachesTheSandboxRuntimeAsRequestAndLimit(t *testing.T)
 	if !reflect.DeepEqual(probe.Resources, wantProbe) {
 		t.Errorf("the image probe carries %+v, want its own reservation %+v", probe.Resources, wantProbe)
 	}
-	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "250m", corev1.ResourceMemory: "1Gi", corev1.ResourceEphemeralStorage: "1Gi"} {
+	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "500m", corev1.ResourceMemory: "1Gi", corev1.ResourceEphemeralStorage: "1Gi"} {
 		if request := probe.Resources.Requests[kind]; request.Cmp(resource.MustParse(want)) != 0 {
 			t.Errorf("the image probe requests %s %s, want %s", kind, request.String(), want)
 		}
 	}
-	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "250m", corev1.ResourceMemory: "1Gi", corev1.ResourceEphemeralStorage: "5Gi"} {
+	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "500m", corev1.ResourceMemory: "1Gi", corev1.ResourceEphemeralStorage: "5Gi"} {
 		if limit := probe.Resources.Limits[kind]; limit.Cmp(resource.MustParse(want)) != 0 {
 			t.Errorf("the image probe is limited to %s %s, want %s", kind, limit.String(), want)
 		}
@@ -634,11 +635,40 @@ func TestTheRepositoryCacheReachesTheSandboxRuntime(t *testing.T) {
 	}
 }
 
+// runtime.kubernetes.volume_trim reaches the runtime's Options as the settings each issue pod's
+// launcher is handed on the answer to its hello — the two marks, the minimum age and the
+// interval, each in its own member — and `enabled: false` hands the runtime none at all, which
+// the launcher reads as no settings (sandbox.Options.VolumeTrim). Every number differs from the
+// others, so two members crossed read back wrong. The negative controls are Enabled inverted,
+// which hands the enabled block's runtime nothing and the disabled one's the settings, and the
+// two marks swapped.
+func TestTheVolumeTrimReachesTheSandboxRuntime(t *testing.T) {
+	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+	cfg.Runtime.Kubernetes.VolumeTrim = config.VolumeTrimConfig{Enabled: true, HighPercent: 90, LowPercent: 60, MinAgeMinutes: 45, IntervalSeconds: 30}
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions: %v", err)
+	}
+	want := shimwire.LauncherVolumeTrim{HighPercent: 90, LowPercent: 60, MinAgeMinutes: 45, IntervalSeconds: 30}
+	if opts.VolumeTrim == nil || *opts.VolumeTrim != want {
+		t.Errorf("Options.VolumeTrim = %+v, want %+v", opts.VolumeTrim, want)
+	}
+
+	cfg.Runtime.Kubernetes.VolumeTrim.Enabled = false
+	opts, err = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions with the trimmer off: %v", err)
+	}
+	if opts.VolumeTrim != nil {
+		t.Errorf("Options.VolumeTrim = %+v with volume_trim.enabled false, want none: no settings is what the launcher reads as the trimmer off", *opts.VolumeTrim)
+	}
+}
+
 // The path that failed live (stage 4b's daemon-controller-liveness, 2026-10-10): a legion.yaml
 // under `controller: daemon` whose controller reservation no node can hold (the checkpoint's
 // `cpu: "100000"`, set so the relaunched controller pod is Unschedulable) is read by the loader as
 // written — the controller's requirements carry the 100000 CPU — while the image probe the daemon
-// builds from the same configuration carries its own 250m / 1Gi and nothing of the controller's,
+// builds from the same configuration carries its own 500m / 1Gi and nothing of the controller's,
 // so the daemon's boot probe still schedules. This is the manifest-level proof: the probe pod's
 // container takes ImageProbe.Resources as it is (TestManifestGoldens, probe.json), and a boot-level
 // run needs a cluster.
@@ -707,7 +737,7 @@ current-context: legion-daemon
 	if err != nil {
 		t.Fatalf("imageProbe: %v", err)
 	}
-	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "250m", corev1.ResourceMemory: "1Gi"} {
+	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "500m", corev1.ResourceMemory: "1Gi"} {
 		request, limit := probe.Resources.Requests[kind], probe.Resources.Limits[kind]
 		if request.Cmp(resource.MustParse(want)) != 0 || limit.Cmp(resource.MustParse(want)) != 0 {
 			t.Errorf("the image probe carries %s request %s / limit %s beside a 100000-CPU controller, want its own %s as both",
@@ -1090,6 +1120,56 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 	}
 	if strings.Contains(logged.String(), "enter code") {
 		t.Fatalf("log = %s, want no confirmation code", logged.String())
+	}
+}
+
+// The machines' Enroller hands the broker the claim a process runs for beside the rest of its
+// identity, so the broker files the pod's requests under the claim and the claim's next pod reads
+// them.
+func TestTheBrokerEnrollerSendsTheClaim(t *testing.T) {
+	var mu sync.Mutex
+	var enrolled []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/launcher-credentials/token":
+			_ = json.NewEncoder(w).Encode(map[string]string{"credential_id": "cred-1", "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/enrollments":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			enrolled = append(enrolled, body)
+			mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"enrollment_id":"enr-1","lease_expires_at":"2026-09-26T12:15:00Z"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("the-daemon's-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
+		URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", TokenExpirySeconds: 3600,
+	}
+	enroller, _, client := newSecretsLogin(cfg, quietLogger())
+	if !testwait.Holds(5*time.Second, time.Millisecond, func() bool { return client.LoginStatus().State == "issued" }) {
+		t.Fatalf("login state %q, want issued", client.LoginStatus().State)
+	}
+	const claim = "legion-acme-acme-12-planner"
+	id, err := enroller.Enroll(context.Background(), supervise.PodEnrollment{
+		PodUID: "pod-uid-1", Slot: "planner-g1", Thumbprint: "tp", PodToken: "a.b.c", Session: "ses_planner", Claim: claim,
+	})
+	if err != nil || id != "enr-1" {
+		t.Fatalf("Enroll = %q, %v; want enr-1", id, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(enrolled) != 1 || enrolled[0]["claim"] != claim || enrolled[0]["session_id"] != "ses_planner" || enrolled[0]["slot"] != "planner-g1" {
+		t.Fatalf("the broker was sent %v, want one enrollment stating claim %s beside its session and slot", enrolled, claim)
 	}
 }
 

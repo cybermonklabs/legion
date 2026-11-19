@@ -116,6 +116,7 @@ test("reasserts a restored role after a successful registration heartbeat loses 
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
 
@@ -167,6 +168,7 @@ test("runs the regain hook once a heartbeat's soft claim takes the held role bac
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   session.onRoleRegained(async (role, reason) => {
@@ -219,6 +221,7 @@ test("the role read's 404 still means no live holder: the kept lane changed only
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   session.onRoleRegained(async (role, reason) => {
@@ -274,6 +277,7 @@ test("a soft claim a different live session refuses removes the role record, whi
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   const regains: string[] = []
@@ -334,6 +338,7 @@ test("a refusal naming this session under another process keeps the record, asks
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   const regains: string[] = []
@@ -416,6 +421,7 @@ test("a lookup marked handed back makes the heartbeat claim the role again and k
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   const regains: string[] = []
@@ -480,6 +486,7 @@ test("the age sweep does not reach the record of a process still pressing its re
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
 

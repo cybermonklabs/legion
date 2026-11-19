@@ -291,8 +291,9 @@ func (d *tickDispatch) Approval(context.Context, string) (dispatch.Approval, err
 func (d *tickDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
-func (d *tickDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error)         { return true, nil }
+func (d *tickDispatch) PutGatedSteps(context.Context, string, []string) error             { return nil }
+func (d *tickDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
 func (d *tickDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
