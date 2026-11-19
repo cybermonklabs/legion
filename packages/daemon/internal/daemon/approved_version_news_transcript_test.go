@@ -2,14 +2,14 @@
 // built with -tags e2e) makes of a session's transcript and of the comments on an issue, the word
 // each of its runs ends with, the steps it makes and the picks of them, and the tests that hold
 // them against fixture transcripts written as Oh My Pi writes a session file: which steps and arms
-// a pick makes, which Envoy card counts as a holder told of a new version, which call of the
-// architect's counts as its own envoy_publish to that holder's role topic, which comment counts as
-// a parent's approving review of a child's new version, which tool result is the plugin refusing
-// a daemon answer, and which word a run's line prints, which the script counts. A run of real
-// sessions costs forty-five minutes of model calls, so these reads are proved here, where each
-// wrong message is one line. The file is untagged so `go test` runs these tests on every run: a
-// change that breaks a read fails this package's tests, not the live proof the next time its
-// sessions run.
+// a pick makes and the plan of them the script reads, which Envoy card counts as a holder told of
+// a new version, which call of the architect's counts as its own envoy_publish to that holder's
+// role topic, which comment counts as a parent's approving review of a child's new version, which
+// tool result is the plugin refusing a daemon answer, and which word a run's line prints, which
+// the script counts. A run of real sessions costs forty-five minutes of model calls, so these
+// reads are proved here, where each wrong message is one line. The file is untagged so `go test`
+// runs these tests on every run: a change that breaks a read fails this package's tests, not the
+// live proof the next time its sessions run.
 package daemon
 
 import (
@@ -70,7 +70,9 @@ type sessionsStep struct {
 
 // sessionsSteps is every step of part two, in the order a run makes them. a4 and answers run in the
 // head arm alone, since the base arm of each passed every run of the measurement the driver's
-// file comment names, and the script's head_only names the same two steps.
+// file comment names. The table is the one copy of part two's steps, their arms and the count of
+// runs: the script reads them from the plan the driver prints (sessionsPick.plan), and keeps only
+// the measurement that retired each base arm (head_only), which the driver does not know.
 var sessionsSteps = []sessionsStep{
 	{sessionsA4, "a4", config.DesignGateRootIssues, []string{sessionsHead}},
 	{sessionsOff, "off", config.DesignGateOff, []string{sessionsHead, sessionsBase}},
@@ -91,6 +93,21 @@ func (pick sessionsPick) arms(step sessionsStep) []string {
 		return []string{pick.arm}
 	}
 	return step.arms
+}
+
+// plan is the plan of the runs the pick makes, as part two's driver prints it before its first
+// run, and in place of every run under -part-two-plan (TestRealSessionsTellAndAnswerANewVersionLive):
+// a line `plan step <word> <name> <arm>…` for each step the pick makes, in order, with each arm the
+// pick makes that step in, and then `plan runs <n>`, how many runs each arm makes of each step.
+// scripts/e2e/approved-version-news.sh reads part two's steps, arms and count of runs from these
+// lines, for its counts and the driver's deadline.
+func (pick sessionsPick) plan() string {
+	var plan strings.Builder
+	for _, step := range pick.steps {
+		fmt.Fprintf(&plan, "plan step %s %s %s\n", step.word, step.name, strings.Join(pick.arms(step), " "))
+	}
+	fmt.Fprintf(&plan, "plan runs %d\n", pick.runs)
+	return plan.String()
 }
 
 // pickSessions is the pick that APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and
@@ -160,6 +177,29 @@ func TestApprovedVersionNewsAFullRunMakesTheRetiredStepsInTheHeadArmAloneAndAPic
 			if !slices.Equal(made, tc.want) || pick.runs != tc.count {
 				t.Fatalf("pickSessions(%q, %q, %q) makes %v, %d runs each; want %v, %d runs each",
 					tc.step, tc.arm, tc.runs, made, pick.runs, tc.want, tc.count)
+			}
+		})
+	}
+}
+
+// The plan names each step the pick makes by its word and its name, with each arm the pick makes it
+// in, and then the count of runs, in the lines the script reads: a full run's plan, and the plan of
+// the measurement of a4's base arm.
+func TestApprovedVersionNewsThePlanNamesEachStepItsArmsAndTheCountOfRuns(t *testing.T) {
+	for _, tc := range []struct{ name, step, arm, runs, want string }{
+		{"a full run", "", "", "", "plan step a4 " + sessionsA4 + " head\n" +
+			"plan step off " + sessionsOff + " head base\n" +
+			"plan step answers " + sessionsAnswers + " head\n" +
+			"plan runs 3\n"},
+		{"the measurement of a4's base arm", "a4", "base", "10", "plan step a4 " + sessionsA4 + " base\nplan runs 10\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pick, err := pickSessions(tc.step, tc.arm, tc.runs)
+			if err != nil {
+				t.Fatalf("pickSessions(%q, %q, %q) = %v", tc.step, tc.arm, tc.runs, err)
+			}
+			if got := pick.plan(); got != tc.want {
+				t.Fatalf("the plan of pickSessions(%q, %q, %q) is\n%s\nwant\n%s", tc.step, tc.arm, tc.runs, got, tc.want)
 			}
 		})
 	}

@@ -9,12 +9,15 @@
 # which is often 0. A trap that reads the status alone then prints PASS for a run that never
 # reached its last check. So a run passes only when it also reached its end: the script calls
 # run_end as the statement after its last check, nothing else sets the mark, and nothing but the
-# shell's end runs after it (lib/run-verdict.test.ts holds every call site to that). A run that a
-# signal ends never reaches that statement, so the mark alone keeps it from passing, and no signal
-# trap is needed for it. A signal trap would make a killed run slow to stop: bash runs a trapped
-# signal's handler only once the foreground command returns, and a proof runs its driver in the
-# foreground for up to an hour. The scripts that trap INT and TERM keep those traps for their own
-# reasons, and pass the signal's status to run_verdict.
+# shell's end runs after it. lib/run-verdict.test.ts holds every call site to that: past each `fi`
+# of an `if` around it and each `else` branch, the next line of code is none, the `)` that ends a
+# subshell, or an `exit 0`, or else the closing brace of a function each call of which is held to
+# the same rule in its own shell. A run that a signal ends never reaches that statement, so the
+# mark alone keeps it from passing, and no signal trap is needed for it. A signal trap would make
+# a killed run slow to stop: bash runs a trapped signal's handler only once the foreground command
+# returns, and a proof runs its driver in the foreground for up to an hour. The scripts that trap
+# INT and TERM keep those traps for their own reasons, and pass the signal's status to
+# run_verdict.
 #
 # The mark is the shell's own variable. A subshell starts with the value the shell had when it
 # forked, so a run made in a subshell (lib/live-daemon-proof.sh's, inside approved-version-news.sh

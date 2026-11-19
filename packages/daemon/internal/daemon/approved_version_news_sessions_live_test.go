@@ -112,7 +112,7 @@
 //     base's role prompts need not carry it.
 //
 // A run with no arm picked makes both in the head arm alone (sessionsStep.arms), and the script's
-// last line names each one's measurement in its place, from the constant that holds it (head_only
+// last line names each one's measurement in its place, from the list that holds it (head_only
 // in scripts/e2e/approved-version-news.sh). off is the one step whose control can bite at its base,
 // where its base arm passed 0 of 3 runs. The command that repeats a measurement is
 // APPROVED_VERSION_NEWS_STEP=<a4 or answers> APPROVED_VERSION_NEWS_ARM=base
@@ -123,6 +123,12 @@
 // APPROVED_VERSION_NEWS_ARM the one arm (head or base) every step it keeps runs in, a retired base
 // arm among them, and APPROVED_VERSION_NEWS_RUNS the count of runs each arm makes of each step, so
 // one command measures one arm of one step as often as it asks.
+//
+// Before its first run the driver prints the plan of the runs the pick makes (sessionsPick.plan):
+// each step, the arms it runs in and the count of runs. A pick it refuses prints `plan refused:
+// <why>` and fails the test. With -part-two-plan (sessionsPlanOnly) the driver prints the plan and
+// makes no run, so the script reads the steps, their arms and the count of runs from the driver's
+// own table before the real run, for its counts and the deadline it gives this driver.
 //
 // Each run prints `== <step> <arm> <n>`, its evidence (the tool calls and the messages, from the
 // sessions' own transcripts) and `run <step> <arm> <n>: <outcome> …` with its time and the model
@@ -145,6 +151,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -196,6 +203,10 @@ const (
 	sessionsBaseCommitEnv  = "APPROVED_VERSION_NEWS_BASE_COMMIT"
 	sessionsModelEnv       = "APPROVED_VERSION_NEWS_MODEL"
 )
+
+// sessionsPlanOnly is -part-two-plan: the driver prints the plan of the runs the pick makes, and
+// makes none of them. The script runs the driver so once before the real run, and reads the plan.
+var sessionsPlanOnly = flag.Bool("part-two-plan", false, "print the plan of part two's runs the pick makes, and make none of them")
 
 // sessionsDefaultModel is the model every session runs when the script names none, at
 // sessionsThinking: the fleet's own, as the operator's pane overlay names it for every role. The
@@ -264,21 +275,27 @@ type sessionsLive struct {
 	evidence string
 }
 
-// TestRealSessionsTellAndAnswerANewVersionLive runs the steps, arms and count of runs the pick
-// names (pickSessions), by default each step three times in the head arm and then, for off, three
-// times in the base arm, and stops at the first head run that does not pass: one
+// TestRealSessionsTellAndAnswerANewVersionLive prints the plan of the steps, arms and count of runs
+// the pick names (pickSessions, sessionsPick.plan), by default each step three times in the head
+// arm and then, for off, three times in the base arm, and then runs them, unless -part-two-plan
+// asks for the plan alone. It stops at the first head run that does not pass: one
 // that failed its assertion, or one that stopped before it. It stops at a run of either arm that
 // the harness failed too (run). A run that -test.run leaves out is none of these.
 func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
 	fixtureenv.Live(t)
 	pick, err := pickSessions(os.Getenv(sessionsStepEnv), os.Getenv(sessionsArmEnv), os.Getenv(sessionsRunsEnv))
 	if err != nil {
+		fmt.Printf("plan refused: %v\n", err)
 		t.Fatal(err)
 	}
 	for _, step := range pick.steps {
 		if sessionsBodies[step.name] == nil {
 			t.Fatalf("the step table names %s, which sessionsBodies holds no body of", step.name)
 		}
+	}
+	fmt.Print(pick.plan())
+	if *sessionsPlanOnly {
+		return
 	}
 	s := newSessionsLive(t)
 	runs := 0

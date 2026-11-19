@@ -9,7 +9,9 @@ import { scriptFunctions, sourcedLibraries } from "./script-functions";
 // shell's EXIT trap with status 0 when an untrapped TERM, INT or HUP ends it, so the status alone
 // reads a killed run as a pass. The first two describes drive the real lib with a fixture proof
 // that sources it; the last holds every script under scripts/e2e to the rule: no EXIT trap prints
-// PASS but through run_verdict, and each run_end stands where nothing but the shell's end follows.
+// PASS but through run_verdict, and each run_end stands where nothing but the shell's end follows:
+// the script's end, a subshell's `)` or an `exit 0`, or the closing brace of a function every call
+// of which stands there in turn.
 
 const lib = join(import.meta.dir, "run-verdict.sh");
 const e2e = join(import.meta.dir, "..");
@@ -163,6 +165,126 @@ function exitTraps(path: string) {
 /** Whether the script at PATH calls run_end on a line of its own. */
 const marks = (path: string) => /^\s*run_end\s*$/m.test(text.get(path) ?? "");
 
+/** The line that opens a function a script defines over more than one line: `name() {`. */
+const opens = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{\s*$/;
+
+/**
+ * What runs after the command on line INDEX of the script at PATH, in the shell it runs in, read
+ * from TEXTS, each script's text by its path: a line for each command that runs after it, and
+ * none when only the shell's end follows. The lines of code after the command, past the lines it
+ * continues onto with a trailing backslash, are read in order. The script's end, the `)` that ends
+ * the subshell the command runs in, and an `exit 0` end the shell. A `fi` that closes an `if`
+ * around the command ends nothing, and an `else` or `elif` branch does not run after the command,
+ * up to that `if`'s own `fi`. A `}` alone on its line closes the function the command is the last
+ * of (afterFunction), so what runs after the command is what runs after each call of that
+ * function. Any other line is a command that runs after it. WHAT names the command in each line,
+ * and SEEN is the functions already followed.
+ */
+function runsAfter(
+  texts: Map<string, string>,
+  path: string,
+  index: number,
+  what: string,
+  seen: Set<string>
+): string[] {
+  const lines = (texts.get(path) ?? "").split("\n");
+  let at = index;
+  while (at < lines.length - 1 && lines[at].trimEnd().endsWith("\\")) at++;
+  let skipped = 0;
+  for (let next = at + 1; next < lines.length; next++) {
+    if (!code(lines[next])) continue;
+    const word = lines[next].trim();
+    if (skipped > 0) {
+      if (/^if\b/.test(word) && !/\bfi$/.test(word)) skipped++;
+      else if (word === "fi") skipped--;
+      continue;
+    }
+    if (word.startsWith(")") || word === "exit 0") return [];
+    if (word === "fi") continue;
+    if (/^(else|elif)\b/.test(word)) {
+      skipped = 1;
+      continue;
+    }
+    if (lines[next] === "}") return afterFunction(texts, path, lines, next, what, seen);
+    return [`${what} runs more after it: ${shown(path)}:${next + 1} ${word}`];
+  }
+  return [];
+}
+
+/**
+ * What runs after the function whose closing brace is line CLOSE of LINES, the script at PATH,
+ * returns: what runs after each of its calls, in that script and in each script that sources it,
+ * read from TEXTS (runsAfter). The function is the one the nearest `name() {` above the brace
+ * opens. It must have one call at least, and each call must stand on a line of its own, as its
+ * line's first word; a call inside another command is a command that can run more after it.
+ */
+function afterFunction(
+  texts: Map<string, string>,
+  path: string,
+  lines: string[],
+  close: number,
+  what: string,
+  seen: Set<string>
+): string[] {
+  let open = close - 1;
+  while (open >= 0 && !opens.test(lines[open])) open--;
+  const name = opens.exec(lines[open] ?? "")?.[1];
+  if (name === undefined)
+    return [`${what} is followed by ${shown(path)}:${close + 1}, a brace that closes no function`];
+  if (seen.has(name)) return [];
+  const named = new RegExp(`(^|[^A-Za-z0-9_])${name}([^A-Za-z0-9_]|$)`);
+  const wrong: string[] = [];
+  let calls = 0;
+  for (const caller of scripts.filter((other) => sourcedLibraries(other).includes(path))) {
+    (texts.get(caller) ?? "").split("\n").forEach((line, index) => {
+      if (!code(line) || opens.test(line) || !named.test(line)) return;
+      calls++;
+      const where = `${shown(caller)}:${index + 1}`;
+      if (!new RegExp(`^\\s*${name}(\\s|$)`).test(line)) {
+        wrong.push(
+          `${what}, last in ${name}(), which ${where} calls inside another command: ${line.trim()}`
+        );
+        return;
+      }
+      wrong.push(
+        ...runsAfter(
+          texts,
+          caller,
+          index,
+          `${what}, last in ${name}() called at ${where},`,
+          new Set([...seen, name])
+        )
+      );
+    });
+  }
+  if (calls === 0) wrong.push(`${what} is last in ${name}(), which no script calls`);
+  return wrong;
+}
+
+/** Each call of run_end in TEXTS, each script's text by its path, that is not alone on its line or
+ * that has more run after it in its shell (runsAfter), and each line that sets the mark by hand. */
+function runEndsWithMoreAfter(texts: Map<string, string>): string[] {
+  const wrong: string[] = [];
+  for (const path of scripts.filter((path) => path !== lib)) {
+    (texts.get(path) ?? "").split("\n").forEach((line, index) => {
+      if (!code(line)) return;
+      if (/\brun_ended=/.test(line))
+        wrong.push(`${shown(path)}:${index + 1} sets the mark by hand`);
+      if (!/\brun_end\b/.test(line)) return;
+      if (!/^\s*run_end\s*$/.test(line)) {
+        wrong.push(
+          `${shown(path)}:${index + 1} calls run_end inside another command: ${line.trim()}`
+        );
+        return;
+      }
+      wrong.push(
+        ...runsAfter(texts, path, index, `${shown(path)}:${index + 1} run_end`, new Set())
+      );
+    });
+  }
+  return wrong;
+}
+
 describe("every script under scripts/e2e", () => {
   test("prints PASS from an EXIT trap only through run_verdict, from a file that sources the lib", () => {
     const wrong: string[] = [];
@@ -207,28 +329,26 @@ describe("every script under scripts/e2e", () => {
   });
 
   test("calls run_end alone on its line, with nothing but the shell's end after it", () => {
-    const wrong: string[] = [];
-    for (const path of scripts.filter((path) => path !== lib)) {
-      const lines = (text.get(path) ?? "").split("\n");
-      lines.forEach((line, index) => {
-        if (!code(line)) return;
-        if (/\brun_ended=/.test(line))
-          wrong.push(`${shown(path)}:${index + 1} sets the mark by hand`);
-        if (!/\brun_end\b/.test(line)) return;
-        if (!/^\s*run_end\s*$/.test(line)) {
-          wrong.push(
-            `${shown(path)}:${index + 1} calls run_end inside another command: ${line.trim()}`
-          );
-          return;
-        }
-        // The next line of code: none (the script's end), the closing brace of the function that
-        // runs the proof, or the `exit 0` of an end the script takes early.
-        const next = lines.slice(index + 1).find(code);
-        if (next !== undefined && next !== "}" && next.trim() !== "exit 0") {
-          wrong.push(`${shown(path)}:${index + 1} runs more after run_end: ${next.trim()}`);
-        }
-      });
+    expect(runEndsWithMoreAfter(text)).toEqual([]);
+  });
+
+  // controller-sweep-kind.sh's left() runs after the sweep's driver and after the negative
+  // control's: a run_end last in it is followed by its closing brace, and then by more of the
+  // script each time, so a TERM during the negative control's driver would print PASS.
+  test("refuses a run_end last in a function the script calls before more of it runs", () => {
+    const sweep = join(e2e, "controller-sweep-kind.sh");
+    const original = text.get(sweep) ?? "";
+    const moved = original
+      .replace(/\nrun_end\n$/, "\n")
+      .replace(/(\nleft\(\) \{\n[\s\S]*?\n)\}\n/, "$1  run_end\n}\n");
+    expect(moved.match(/^\s*run_end$/gm)).toEqual(["  run_end"]);
+    expect(moved).toContain("\n  run_end\n}\n");
+    const wrong = runEndsWithMoreAfter(new Map([...text, [sweep, moved]]));
+    expect(wrong).toHaveLength(2);
+    for (const line of wrong) {
+      expect(line).toMatch(
+        /^controller-sweep-kind\.sh:\d+ run_end, last in left\(\) called at controller-sweep-kind\.sh:\d+, runs more after it: controller-sweep-kind\.sh:\d+ pass$/
+      );
     }
-    expect(wrong).toEqual([]);
   });
 });
