@@ -16,15 +16,21 @@ import (
 // have no row placing it there, and the open arm, which refuses only a session a row places in a
 // project the viewer does not see, would show it. So while the marker is absent and a project is
 // private, an open viewer reads no session but its own, and no conversation that names another;
-// once the marker is written it reads every session no row places in a project it does not see.
-// With no private project nothing changes (R9).
+// once the marker is written it reads every session no row places in a project it does not see,
+// one with no row by its listener record (SessionClause). With no private project nothing changes
+// (R9).
 func TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
 	// ses_pub acted in PUB and its pair is recorded; ses_unrecorded acted in PRIV before the fill
-	// reached its event, so no row places it anywhere yet.
-	if _, err := database.Pool.Exec(ctx, `insert into session_projects (session_id, project_key) values ('ses_pub', 'PUB')`); err != nil {
-		t.Fatalf("seed ses_pub's pair: %v", err)
+	// reached its event, so no row places it anywhere yet, and the listener lists it with a
+	// credential that names no project.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into session_projects (session_id, project_key) values ('ses_pub', 'PUB');
+		insert into route_roster (answered, sessions, sent_at, expires_at)
+		values (true, '[{"session_id":"ses_unrecorded"}]', now(), now() + interval '1 hour');
+	`); err != nil {
+		t.Fatalf("seed ses_pub's pair and ses_unrecorded's listener record: %v", err)
 	}
 	aliceSession := model.Actor{Kind: "session", ID: "ses_alice", Owner: new(alice), Credential: &model.Credential{Scopes: model.Scopes, Session: "ses_alice"}}
 	resolve := func(name string, actor model.Actor) model.Viewer {

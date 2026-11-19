@@ -42,6 +42,9 @@ func seedThreads(t *testing.T) threadSeed {
 		threads.message[project] = createdID(t, seed.request(t, callerCarol, http.MethodPost, "/api/v1/issues/"+key+"/messages",
 			map[string]any{"body": "The message of " + project + "."}))
 	}
+	// alice writes to s1 while it has acted in no project, which an open viewer reaches only through
+	// Dispatch's record of the listener's list (access.SessionClause): a list of the sessions stores it.
+	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
 	threads.aliceDirect = createdID(t, postAgentMessage(t, seed.handler, "s1",
 		map[string]any{"body": "alice asks s1 something.", "delivery": "aside"}, seedAlice))
 	createdID(t, seed.asSession(t, "s1", seedPrivate, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
@@ -307,9 +310,10 @@ func TestNoStateEventOfAHiddenProjectReachesAnOpenViewer(t *testing.T) {
 		return counted
 	}
 	// Each caller's socket is read through a pin of its own, written after carol's three writes, on
-	// a session that acts in no project: s1 acts in PRIV, which alice does not see.
-	markAgentState(t, threads.handler, seedAlice, "s-marker")
-	markAgentState(t, threads.handler, seedCarol, "s-marker")
+	// a session that acts in no project and the listener lists: s1 acts in PRIV, which alice does
+	// not see.
+	threads.markAgentState(t, seedAlice, "s-marker")
+	threads.markAgentState(t, seedCarol, "s-marker")
 	socketEvents := func(caller privateCaller, login string) []privateLogRow {
 		var logged []privateLogRow
 		for _, event := range liveEventsThrough(t, sockets[caller], "feed", agentStateOf(login)) {

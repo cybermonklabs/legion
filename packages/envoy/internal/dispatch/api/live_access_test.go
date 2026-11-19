@@ -92,10 +92,20 @@ func agentStateOf(login string) func(liveEvent) bool {
 // markAgentState writes login's pin on session, as that person at the browser, which appends one
 // user_agent_state.updated of theirs (agentStateOf): a marker that ends a read. The session must be
 // one login sees (access.SessionClause): one that acts in no project, for an open viewer, or one
-// that acts in a project login sees.
-func markAgentState(t *testing.T, handler http.Handler, login, session string) {
+// that acts in a project login sees. The listener is first made to list it with no project, as
+// Dispatch stores the listener's answer (the route_roster row), since while a project is private a
+// session that acts in no project reaches an open viewer only through that record.
+func (s privateSeed) markAgentState(t *testing.T, login, session string) {
 	t.Helper()
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/me/agents/"+session+"/state", map[string]any{"pinned": true}, login); response.Code != http.StatusOK {
+	if _, err := s.database.Pool.Exec(t.Context(), `
+		insert into route_roster (answered, sessions, sent_at, expires_at)
+		values (true, jsonb_build_array(jsonb_build_object('session_id', $1::text)), now(), now())
+		on conflict (id) do update
+		set answered = true, sessions = case when route_roster.sessions @> excluded.sessions then route_roster.sessions
+			else route_roster.sessions || excluded.sessions end`, session); err != nil {
+		t.Fatalf("list %s as the listener's stored answer: %v", session, err)
+	}
+	if response := dispatchRequest(t, s.handler, http.MethodPut, "/api/v1/me/agents/"+session+"/state", map[string]any{"pinned": true}, login); response.Code != http.StatusOK {
 		t.Fatalf("%s pins %s: status=%d body=%s", login, session, response.Code, response.Body.String())
 	}
 }
@@ -128,7 +138,7 @@ func TestTheLiveSocketSendsNoEventOfAHiddenProject(t *testing.T) {
 
 	issue := "/api/v1/issues/" + seed.issue[seedPrivate] + "/comments"
 	hidden := createdID(t, seed.request(t, callerCarol, http.MethodPost, issue, map[string]any{"body": "PRIV's first comment, for its readers alone."}))
-	markAgentState(t, seed.handler, seedAlice, "s1")
+	seed.markAgentState(t, seedAlice, "s1")
 	last := createdID(t, seed.request(t, callerCarol, http.MethodPost, issue, map[string]any{"body": "PRIV's second comment."}))
 
 	requireSent := func(t *testing.T, caller privateCaller, sub string, client *socketClient) {
@@ -230,7 +240,7 @@ func TestARemovedPersonsSocketRefreshesWithoutTheProject(t *testing.T) {
 					removal.person, applied, start)
 			}
 			createdID(t, seed.request(t, callerCarol, http.MethodPost, issue, map[string]any{"body": "After the removal."}))
-			markAgentState(t, seed.handler, removal.person, "s1")
+			seed.markAgentState(t, removal.person, "s1")
 			requireNoEventOf(t, removal.person, "feed", seedPrivate, liveEventsThrough(t, client, "feed", agentStateOf(removal.person)))
 		})
 	}

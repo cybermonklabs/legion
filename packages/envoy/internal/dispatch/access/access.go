@@ -168,10 +168,12 @@ func PersonClause(loginExpr, viewerParam string) string {
 // A session with no pair, which has acted in no project, is judged by its listener record's
 // projects (listenerProjects, the projects of the credential it registered with): it passes an
 // open viewer when the record names no project the viewer does not see, an empty list included,
-// and a viewer that is not open when the record names a project the viewer sees (K6). A deployment
-// that holds no private project skips the reads of the private pairs and of the listener records:
-// every project is public, the open viewer sees each one, no pair is of a private project, and a
-// viewer that is not open reads a session by its pairs alone, as before (R9).
+// and a viewer that is not open when the record names a project the viewer sees (K6). While a
+// project is private, a session with neither a pair nor a listener record passes no viewer but its
+// own: nothing Dispatch holds says which projects it works for. A deployment that holds no
+// private project skips the reads of the private pairs and of the listener records: every project
+// is public, the open viewer sees each one, no pair is of a private project, and a viewer that is
+// not open reads a session by its pairs alone, as before (R9).
 //
 // session_projects places every session in the projects it acted in only once
 // `envoy-dispatch backfill-session-projects` has written session_projects_filled's row: migration
@@ -188,7 +190,7 @@ func SessionClause(sessionExpr, viewerParam string) string {
 			where unseen.session_id = (%[1]s) and not ((%[4]s::jsonb->'sees') ? unseen.project_key)
 			offset 0)
 			and (exists (select 1 from session_projects acted where acted.session_id = (%[1]s) offset 0)
-				or coalesce((%[6]s -> (%[1]s)) <@ (%[4]s::jsonb->'sees'), true)))))
+				or coalesce((%[6]s -> (%[1]s)) <@ (%[4]s::jsonb->'sees'), false)))))
 		or (not %[3]s and exists (
 			select 1 from session_projects acted
 			where acted.session_id = (%[1]s) and (%[4]s::jsonb->'sees') ? acted.project_key

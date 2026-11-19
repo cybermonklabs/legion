@@ -816,6 +816,11 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	// every caller that sees PRIV alone.
 	createdID(t, seed.request(t, callerSharedToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
 		map[string]any{"body": "s-pub works on PUB.", "actor": map[string]any{"kind": "session", "id": "s-pub"}}))
+	// Dispatch holds the listener's record of s1 and s-pub, neither naming a project, as it does
+	// once any list of the sessions has read them (the route_roster row): while a project is
+	// private, an open viewer reaches a session that has acted in no project only through that
+	// record (access.SessionClause). No call of the walk reads the list again.
+	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
 	// dana is a full member no list of PRIV names: hidden from every caller that sees PRIV alone.
 	seedPeople(t, seed.database, hiddenPerson)
 	// An architecture source of PRIV from acme/walked, the repository the source rows' {owner}/{repo}
