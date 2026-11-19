@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A write whose commit''s reply is lost, when the daemon stops, a request is cut or a connection breaks as it commits, keeps the work its commit runs: log lines, admission''s held roots, the wakes of outbox rows. The daemon asks the store whether the transaction committed and runs that work only if it did. While the store cannot answer, the write fails as one whose outcome is unknown, a warning names the transaction, and the work runs once the store says the transaction committed.'
+time: 2026-11-19T19:02:23.452819390Z
+custom:
+    Issue: pr4533
