@@ -2109,6 +2109,45 @@ test("a registry list that is not current judges nothing of a session it held", 
   expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOTHING_YET_TEXT);
 });
 
+// R2 (INFRA-4325, the tester's red test of the review round at ead082ee). A failed read of the
+// registry list is no later current list, so the registry's last word on the session stands
+// through it: the Unresponsive note the header keeps from that word is not drawn beside Live, and
+// the transcript keeps the line that says what the list said; a session the list no longer held
+// still reads as not in the list. Measured in a browser at ead082ee: after the list marked the
+// session unresponsive, a refilling read drew "Live" beside "Unresponsive · seen just now", and the
+// line went; after the session left the list, an unreachable read drew "Live" and no line.
+test("a failed read of the registry list leaves its last word standing: no Live beside Unresponsive, and the line stays", async () => {
+  const view = renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    responding: true,
+  });
+  await screen.findByTestId("agent-footer-machine");
+  await nextRegistryRead(view, [{ ...agent, state: "unresponsive" }]);
+  await screen.findByTestId("agent-unresponsive");
+  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(MISSED_HEARTBEATS_TEXT);
+
+  await nextRegistryRead(
+    view,
+    new ApiError(503, { code: "ENVOY_REFILLING", error: AGENT_LIST_REFILLING })
+  );
+  await screen.findByTestId("agent-list-refilling");
+  expect(screen.getByTestId("agent-unresponsive")).toBeTruthy();
+  expect(connectionStatus()).toEqual([]);
+  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(MISSED_HEARTBEATS_TEXT);
+
+  await nextRegistryRead(view, []);
+  await waitFor(() => expect(connectionStatus()).toEqual(["Not in the session list"]));
+  await nextRegistryRead(
+    view,
+    new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "Envoy listener unreachable" })
+  );
+  await screen.findByTestId("agent-list-unreachable");
+  expect(connectionStatus()).toEqual(["Not in the session list"]);
+  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(LEFT_LIST_TEXT);
+});
+
 // A pick is the person's own Send of what they would type at the session's terminal: always a
 // Send, since a BTW is a side question the session does not run, and the id exactly as the
 // session listed it, even one `/model` could read a role or a level into. It asks for a session
