@@ -48,6 +48,7 @@
  * | A thread's replies ordered the other way     | no (8) | no (8)  | no (8)  |
  * | The page reloaded, then back (off)           | cell   | cell    | cell    |
  * | The page reloaded, then back (the compose)   | cell   | cell    | cell    |
+ * | The page reloaded, then back (issue closed)  | -      | -       | cell    |
  *
  * (off) marks a host move that takes the composer off the screen: Back hides the thread view,
  * opening another thread collapses this one and unmounts its reply, and leaving the document
@@ -78,7 +79,10 @@
  * the same tab: a new query client and write store over the tab's `sessionStorage`, with the
  * reader signed in as before. They are the lifetimes the census finds (`lifetime.ts`) of a
  * thread's reply and of the margin's compose, which no page the reload loads has open: the margin
- * draws what it held on its document as it arrives there, as after a lapse.
+ * draws what it held on its document as it arrives there, as after a lapse. A closed issue's
+ * document takes no mark, so a compose there names its words by quote and which reading of it
+ * the reader selected (`quoteAnchor`), and the send the reader stopped there is kept with that
+ * anchor: the closed issue's reload row is that stopped send, back in its compose at its words.
  *
  * On a phone the margin is a panel over the document (`MarginSheet`'s compact sheet), which the
  * reader opens and closes and the margin opens for each compose it shows, and a thread opens
@@ -251,6 +255,13 @@ const ANOTHER_ANCHOR = {
   quote: "quick brown",
 };
 
+/** `MARK_ANCHOR`'s words once CORE-1 is closed: its document takes no mark then, so the compose
+ *  names them by their quote and which reading of it the reader selected (`quoteAnchor`). */
+const QUOTE_ANCHOR = { artifact: specArtifact.id, occurrence: 0, quote: MARK_ANCHOR.quote };
+
+/** CORE-1, closed. */
+const closedIssue: IssueDetails = { ...issue, closed_at: "2026-09-21T00:00:00Z" };
+
 /** A send of `BODY` from the margin: thread A's reply, or the compose on `MARK_ANCHOR`. */
 function request(kind: "reply" | "compose"): SentRequest {
   return kind === "reply"
@@ -350,16 +361,19 @@ async function marginDrawn(): Promise<void> {
  * late, as the reader's Stop trying does, so the margin arrives showing it. `documents` says which
  * document stays registered: CORE-1's spec on every route, or the route's own. With `signedIn`
  * the page is signed in as the reader, as a reload row's is, so the tab keeps what it sends.
+ * `first` is CORE-1 as each page load reads it.
  */
 async function openMargin(
   phone: boolean,
   stopped?: { readonly key: MutationKey; readonly request: SentRequest },
   documents: "spec" | "route" = "spec",
-  signedIn = false
+  signedIn = false,
+  first: IssueDetails = issue
 ): Promise<Page> {
   const user = userEvent.setup();
   const newClient = () => {
     const client = marginClient([threadA, threadB]);
+    client.setQueryData(["issue", issue.key], first);
     client.setQueryData(["issue", secondIssue.key], secondIssue);
     client.setQueryData(["asks", secondIssue.key], []);
     client.setQueryData(["comments", secondIssue.key], []);
@@ -369,7 +383,7 @@ async function openMargin(
   // Each issue's reads answer what the cache was seeded with, should anything read them again.
   const reads = [
     spyOn(api, "getIssue").mockImplementation(async (key) =>
-      key === secondIssue.key ? secondIssue : issue
+      key === secondIssue.key ? secondIssue : first
     ),
     spyOn(api, "listComments").mockImplementation(async (key) =>
       key === secondIssue.key ? [] : [threadA, threadB]
@@ -999,3 +1013,27 @@ for (const held of HELD) {
     }
   });
 }
+
+// The same reload over a compose on a closed issue's document, whose words are a quote and its
+// reading (`QUOTE_ANCHOR`). The send the reader stopped there is kept with that anchor, and the
+// margin draws it in its compose at its words, with its note, as it arrives on the document.
+test(`${HOST} · the page reloaded, then back (the margin's compose, its issue closed) · stopped`, async () => {
+  const page = await openMargin(
+    false,
+    {
+      key: marginComposeSendKey(specArtifact.id),
+      request: sentRequest(BODY, null, { anchor: QUOTE_ANCHOR }),
+    },
+    "spec",
+    true,
+    closedIssue
+  );
+  try {
+    await holdInCompose(page, "stopped");
+    await page.reload();
+    await screen.findByTestId(`margin-comment-${threadA.id}`);
+    expect(await foundBack()).toEqual(foundAs("stopped"));
+  } finally {
+    page.restore();
+  }
+});

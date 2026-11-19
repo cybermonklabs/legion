@@ -24,6 +24,12 @@
  * whose reads the query client already holds mounts in the shell's first commit and opens on the
  * kept draft (the docked composer, on CORE-1's issue page).
  *
+ * A draft the tab kept that this release cannot read is no draft: one an older release kept in
+ * another shape, or text that does not parse. The page draws on, and the composer that would have
+ * opened on it opens empty. Each of the composers' two stores (`unsent-drafts.ts`) is held to it
+ * on a composer that reads it as it mounts: the drafts kept by address on the docked composer,
+ * and a thread's reply on Comment A's card, which says nothing is kept while it is closed.
+ *
  * A lapse takes the shell away and draws the sign-in page, which lists the writes the lapsed
  * person pressed and Dispatch has not confirmed (`KeptWrites.tsx`). A draft typed and never sent
  * is no write: the page does not list it, the draft store keeps it through the lapse
@@ -66,12 +72,19 @@
  * above or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
+import { type MutationKey, QueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
 
-import { commentA, commentB, endAsAReload, planner } from "./__tests__/draft-matrix-fixture";
+import {
+  commentA,
+  commentB,
+  endAsAReload,
+  listTurn,
+  planner,
+  replyField,
+} from "./__tests__/draft-matrix-fixture";
 import { realClock, settle, tick } from "./__tests__/fake-clock";
 import { answerRequests } from "./__tests__/network";
 import { answerAgentStates } from "./__tests__/send-answers";
@@ -79,6 +92,8 @@ import { userOnFakeClock } from "./__tests__/user";
 import { ApiError, api } from "./api/client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
 import { otherTab, renderApp } from "./app-sign-out-fixture";
+import { composerNameOf } from "./features/conversation/useKeptDrafts";
+import { threadReplySendKey } from "./features/conversation/usePhoneThread";
 import { issue } from "./features/margin/margin-fixture";
 import { buildIssuePath } from "./features/refs/routes";
 
@@ -344,6 +359,113 @@ test("after a reload, a composer whose reads the query client holds as the shell
     restoreReads();
   }
 });
+
+/** The docked composer's send name on CORE-1's issue page (`ConversationTab`'s `sendKey`). */
+const DOCKED_KEY: MutationKey = ["conversation-composer", issue.key];
+
+/**
+ * Drafts the tab can hold in the envelope this release reads (`draft-store.ts`) whose text this
+ * release cannot read as a draft: one an older release kept in another shape, and text that does
+ * not parse. A store's text is its own JSON: a composer's draft under its send name (`unsent`),
+ * and the list of drafts it keeps by address (`away`). The older shapes are a draft kept by
+ * address with no `draft`, and a reply's draft whose body is a number.
+ */
+const UNREADABLE = [
+  {
+    away: '[{"owner":{"issueKey":"CORE-1","kind":"issue"},"replyTo":null,"text":"Older words"}]',
+    kept: "in an older release's shape",
+    unsent: '{"body":42,"mentions":[],"replacement":""}',
+  },
+  { away: '[{"draft":{"body":"Cut', kept: "as text that does not parse", unsent: '{"body":"Cut' },
+] as const;
+
+/** Puts `text` in the tab before the page loads, as alice's draft under `name` in the store
+ *  `store`, in the envelope this release reads (`draft-store.ts`). */
+function keptBeforeTheLoad(store: "away" | "unsent", name: string, text: string): void {
+  sessionStorage.setItem(
+    `dispatch.draft:${store}:${name}`,
+    JSON.stringify({ login: "alice", text, version: 1 })
+  );
+}
+
+/** Waits until the page draws the field `field` finds, or a region of it fails to render
+ *  (`ErrorBoundary`), lets every task the page started run, and answers what it shows then: the
+ *  field's text, or the words of each region that failed. */
+async function drawnField(
+  field: () => HTMLTextAreaElement
+): Promise<{ failed: string[] } | { text: string }> {
+  const shown = () => {
+    const failed = screen
+      .queryAllByText(/^Something went wrong in /)
+      .map((heading) => heading.closest("section")?.textContent ?? "");
+    return failed.length > 0 ? { failed } : { text: field().value };
+  };
+  await waitFor(shown);
+  await act(settle);
+  return shown();
+}
+
+/** What the page says it keeps of a draft the reader wrote and that is out of sight. */
+const keptLines = () =>
+  screen
+    .queryAllByRole("status")
+    .map((line) => line.textContent ?? "")
+    .filter((line) => /\bkept\b/.test(line));
+
+// The drafts kept by address (`away`): the docked composer reads the one kept for the reply it
+// shows, none, as it mounts, and the page draws it empty with nothing said to be kept.
+for (const { away, kept } of UNREADABLE) {
+  test(`after a reload, a draft the tab kept by address ${kept} is none: the docked composer opens empty`, async () => {
+    const restoreReads = answerIssueReads();
+    keptBeforeTheLoad("away", composerNameOf(DOCKED_KEY), away);
+    const app = renderApp({
+      at: buildIssuePath({ key: issue.key, kind: "conversation" }),
+      whoAmI: async () => named("alice"),
+    });
+    try {
+      const drawn = await drawnField(() =>
+        within(screen.getByRole("form", { name: "Comment composer" })).getByRole("textbox", {
+          name: "Comment",
+        })
+      );
+      expect({ drawn, said: keptLines() }).toEqual({ drawn: { text: "" }, said: [] });
+    } finally {
+      app.teardown();
+      restoreReads();
+    }
+  });
+}
+
+// A thread's reply (`unsent`): Comment A's card, closed, says whether it keeps one, and its
+// reply reads it as Expand thread mounts it, so the card says nothing is kept and its reply opens
+// empty.
+for (const { kept, unsent } of UNREADABLE) {
+  test(`after a reload, a thread's reply the tab kept ${kept} is none: the card's reply opens empty`, async () => {
+    const user = userEvent.setup();
+    const restoreReads = answerIssueReads();
+    keptBeforeTheLoad(
+      "unsent",
+      composerNameOf(threadReplySendKey(DOCKED_KEY, commentA.id)),
+      unsent
+    );
+    const app = renderApp({
+      at: buildIssuePath({ key: issue.key, kind: "conversation" }),
+      whoAmI: async () => named("alice"),
+    });
+    try {
+      const expand = await waitFor(() =>
+        within(listTurn(commentA.id)).getByRole("button", { name: "Expand thread" })
+      );
+      const closed = keptLines();
+      await user.click(expand);
+      const drawn = await drawnField(() => replyField(listTurn(commentA.id)));
+      expect({ closed, drawn }).toEqual({ closed: [], drawn: { text: "" } });
+    } finally {
+      app.teardown();
+      restoreReads();
+    }
+  });
+}
 
 // A lapse draws the sign-in page in the shell's place, so the docked composer goes with it. The
 // page lists the lapsed person's writes, and a typed draft is none, so it lists nothing; the
