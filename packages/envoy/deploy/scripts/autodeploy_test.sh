@@ -375,6 +375,55 @@ if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv" ||
   fail 'deployer backed up or ran compose with no identity for Dispatch in .env'
 fi
 
+# The four settings the deployer checks before its backup are read as Docker Compose reads them
+# (dotenv.sh, measured against `docker compose config` with Compose v5.0.1 and v5.7.0). Each spelling
+# Compose reads as empty, `NAME=""` and `NAME=''`, is refused before anything of the deploy runs,
+# naming the setting; each spelling Compose reads as the value, `export NAME=v` and `NAME=v # a
+# note`, goes on to the backup. Each identity setting is tested as the identity's only one: the
+# other is taken out of the .env first (`drop`).
+with_line() {
+  grep -v "^$1=" "$compose/.env" >"$compose/.env.new"
+  printf '%s\n' "$2" >>"$compose/.env.new"
+  mv "$compose/.env.new" "$compose/.env"
+}
+identity_refusal='neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE'
+# The database URL fresh_env writes, read back rather than spelled again.
+fresh_env
+database_url=$(sed -n 's/^DATABASE_URL=//p' "$compose/.env")
+[[ -n "$database_url" ]] || fail 'fresh_env wrote no DATABASE_URL'
+for setting in \
+  "ENVOY_ACCOUNT_GOOGLE_AUDIENCE|envoy-listener|$identity_refusal|-" \
+  "ENVOY_ACCOUNT_TOKEN_FILE|/srv/dispatch/token|$identity_refusal|ENVOY_ACCOUNT_GOOGLE_AUDIENCE" \
+  "DISPATCH_SERVER_URL|http://browser.test:8766|DISPATCH_SERVER_URL is missing|-" \
+  "DATABASE_URL|$database_url|DATABASE_URL is missing|-"; do
+  IFS='|' read -r name value refusal drop <<<"$setting"
+  for spelling in "$name=\"\"" "$name=''" "export $name=$value" "$name=$value # a note"; do
+    fresh_env
+    [[ "$drop" == - ]] || sed -i "/^$drop=/d" "$compose/.env"
+    with_line "$name" "$spelling"
+    case "$spelling" in
+      *=\"\" | *=\'\')
+        if output=$(deploy_once); then
+          fail "deployer deployed with $spelling, which Compose reads as empty"
+        fi
+        no_secret "the refusal of $name read as empty"
+        if [[ "$output" != *"$refusal"*"not deploying new-image"* ]]; then
+          fail "deployer did not refuse $spelling, which Compose reads as empty, naming $name"
+        fi
+        if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv"; then
+          fail "deployer backed up or ran compose with $spelling, which Compose reads as empty"
+        fi
+        ;;
+      *)
+        output=$(deploy_once) || true
+        if [[ "$output" == *"$refusal"* ]] || ! grep -q '^pg_dump ' "$argv"; then
+          fail "deployer did not go on to its backup with $spelling, which Compose reads as $value"
+        fi
+        ;;
+    esac
+  done
+done
+
 # A deploy that fails its origin check with the schema where it was stops the candidate, confirms
 # it stopped, reads the schema, and rolls back. Every database client gets the URL without its
 # password and the password as PGPASSWORD.

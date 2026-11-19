@@ -117,6 +117,10 @@ export function createControllerSession(deps: {
   // The wait notices of the claim running now (`claimWith`): a session change's re-claim holds its
   // notices until it settles, and drops these once its claim landed, so no wait is shown after it.
   const waitNotices = new Set<string>();
+  // The errors a bounded role claim gave up with on the listener's 503 (`claimWith`): the one
+  // failure of a typed claim the daemon-launched controller stays up for (`claimOnce`). Any other
+  // 503, such as one to the controller-topic subscription after the role landed, is not in it.
+  const roleClaimGaveUp = new WeakSet<object>();
 
   const serialised = (task: () => Promise<void>): Promise<void> => {
     claimsQueued += 1;
@@ -234,8 +238,11 @@ export function createControllerSession(deps: {
   };
 
   // A claim of the daemon-launched controller that fails exits Oh My Pi, so the daemon launches it
-  // again, except a command a person typed there whose claim the listener kept answering 503: that
-  // command fails where the person reads it, after its counted tries (`claimWith`).
+  // again, except a command a person typed there whose role claim gave up on the listener's 503
+  // after its counted tries (`claimWith`, `roleClaimGaveUp`): that command fails where the person
+  // reads it, and the process, which still holds what it held, stays. Any other failure of a typed
+  // claim, a 503 to its controller-topic subscription after the role landed included, exits as
+  // the daemon's own claim does, so a controller never stays up without its topics.
   const claimOnce = async (
     context: CommandContext | SessionContext,
     progress: ClaimProgress,
@@ -246,7 +253,8 @@ export function createControllerSession(deps: {
     try {
       await claimWith(context, true, progress, startedBy);
     } catch (error) {
-      if (startedBy === "typed" && listenerAskedToClaimAgain(error)) throw error;
+      if (startedBy === "typed" && error instanceof Error && roleClaimGaveUp.has(error))
+        throw error;
       logger.error(
         `[legion] the daemon-launched controller's claim failed; exiting so the daemon launches it again: ${messageFor(error)}`
       );
@@ -412,7 +420,17 @@ export function createControllerSession(deps: {
         claimWidget.clear();
         claimWidget = undefined;
       }
+      // The listener's 503 thrown here is the bounded role claim giving up after its counted tries,
+      // the one failure a typed claim of the daemon-launched controller is answered on screen for
+      // (`claimOnce`).
+      if (error instanceof Error && listenerAskedToClaimAgain(error)) roleClaimGaveUp.add(error);
       throw error;
+    }
+    // The role is held: the waiting line comes down now, so a step after it that fails (the
+    // controller topic, the ready) leaves no line saying the claim is still being made.
+    if (waitShown && claimWidget?.session === sessionID) {
+      claimWidget.clear();
+      claimWidget = undefined;
     }
     await subscribeLegionNotice(
       sessionID,

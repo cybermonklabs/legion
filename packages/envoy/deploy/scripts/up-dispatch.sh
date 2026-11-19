@@ -11,9 +11,16 @@ cd "$(dirname "$0")/.."
 export ENVOY_IMAGE_TAG="${ENVOY_IMAGE_TAG:-local}"
 # Dispatch starts only with its identity at the Envoy listener, and its container otherwise
 # restart-loops under `restart: unless-stopped` while `up -d` exits 0, so a start with neither
-# setting, in this environment or in compose/.env (which compose reads), is refused here.
+# setting is refused here. Each is read as Compose reads it: the shell's value when the shell sets
+# the name, an empty one included, and compose/.env's otherwise (dotenv_value).
+# shellcheck source=SCRIPTDIR/dotenv.sh
+. scripts/dotenv.sh
 identity_set() {
-  [[ -n "${!1:-}" ]] || { [[ -f compose/.env ]] && grep -qE "^$1=.+" compose/.env; }
+  if [[ -n "${!1+set}" ]]; then
+    [[ -n "${!1}" ]]
+  else
+    [[ -n "$(dotenv_value "$1" compose/.env)" ]]
+  fi
 }
 if ! identity_set ENVOY_ACCOUNT_GOOGLE_AUDIENCE && ! identity_set ENVOY_ACCOUNT_TOKEN_FILE; then
   echo "up-dispatch.sh: neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE is set, and Dispatch refuses to start without its identity at the Envoy listener; set one in compose/.env (see deploy/README.md, \"Dispatch's identity at the Envoy listener\")" >&2

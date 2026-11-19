@@ -34,6 +34,10 @@ case "$#" in
     ;;
 esac
 
+# The .env reader the checks of deploy() share with up-dispatch.sh.
+# shellcheck source=SCRIPTDIR/dotenv.sh
+. "$(dirname "${BASH_SOURCE[0]}")/dotenv.sh"
+
 mkdir -p "$BACKUPS"
 
 log() {
@@ -384,7 +388,10 @@ deploy() {
   local expected
 
   previous=$(deployed_tag)
-  origin=$(env_value DISPATCH_SERVER_URL)
+  # The four settings below are read as Compose reads them (dotenv_value), so a value Compose reads
+  # as empty (`NAME=""`, `NAME=''`) is refused here, and one it reads as set (`export NAME=v`,
+  # `NAME=v # note`) is not.
+  origin=$(dotenv_value DISPATCH_SERVER_URL "$COMPOSE_ENV")
   if [[ -z "$origin" ]]; then
     log "DISPATCH_SERVER_URL is missing from $COMPOSE_ENV; not deploying $sha"
     return 1
@@ -393,11 +400,11 @@ deploy() {
   # and a container that refuses restart-loops under `restart: unless-stopped`, as the previous
   # image's rollback under the same file would: a .env with neither setting is refused here, before
   # the backup, and the image that serves keeps serving.
-  if [[ -z "$(env_value ENVOY_ACCOUNT_GOOGLE_AUDIENCE)$(env_value ENVOY_ACCOUNT_TOKEN_FILE)" ]]; then
+  if [[ -z "$(dotenv_value ENVOY_ACCOUNT_GOOGLE_AUDIENCE "$COMPOSE_ENV")$(dotenv_value ENVOY_ACCOUNT_TOKEN_FILE "$COMPOSE_ENV")" ]]; then
     log "neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE is set in $COMPOSE_ENV, and Dispatch refuses to start without its identity at the Envoy listener (see packages/envoy/deploy/README.md, \"Dispatch's identity at the Envoy listener\"); not deploying $sha"
     return 1
   fi
-  databaseUrl=$(env_value DATABASE_URL)
+  databaseUrl=$(dotenv_value DATABASE_URL "$COMPOSE_ENV")
   if [[ -z "$databaseUrl" ]]; then
     log "DATABASE_URL is missing from $COMPOSE_ENV; not deploying $sha"
     return 1

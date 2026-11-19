@@ -214,6 +214,9 @@ jobs:
           sudo locale-gen en_US.UTF-8
           bash deploy/scripts/autodeploy_test.sh
         working-directory: packages/envoy
+      - name: Identity check test for deploy/scripts/up-dispatch.sh (fakes docker; no real Compose)
+        run: bash deploy/scripts/up-dispatch_test.sh
+        working-directory: packages/envoy
       - name: Build envoy services
         run: go build ./cmd/dispatch ./cmd/listener
         working-directory: packages/envoy
