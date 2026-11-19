@@ -31,7 +31,8 @@ import {
   text,
   where,
 } from "./program";
-import { CONDITIONAL_OPERATORS, containsReturn, type Item, type Trees, walkUp } from "./trees";
+import type { Trees } from "./trees";
+import { CONDITIONAL_OPERATORS, containsReturn, type Item } from "./walk";
 
 /** A form of the layout, with the mounts above which it sits. */
 export interface FormItem {
@@ -784,8 +785,9 @@ export function readForms(trees: Trees): FormItem[] {
     forms.set(`${key} ${form.mount}`, { ...form, mounts: new Set(mounts) });
   };
 
-  /** Reads the items a forms walk up gathered for the layout. Answers whether a branch, key or
-   *  `hidden` on the layout gates what the walk started from. */
+  /** Reads for the layout the items of a walk up (`Walked.items`) from a mount or a component's
+   *  place. Answers whether a branch, key or `hidden` on the layout gates what the walk started
+   *  from. */
   const readItems = (items: readonly Item[], mounts: readonly string[], mount: string) => {
     let gated = false;
     for (const item of items) {
@@ -883,29 +885,24 @@ export function readForms(trees: Trees): FormItem[] {
     if (unit.fn.body !== undefined) visit(unit.fn.body);
   };
 
-  // The mounts: the layout's props on each, and what wraps it in its host.
-  for (const { element, host, name } of trees.mounts) {
+  // The mounts: the layout's props on each, and what wraps it in its host, read off its walk.
+  for (const { element, host, name, walked } of trees.mounts) {
     addMounts(host.id, [name]);
-    const items: Item[] = [];
-    const receivers = new Set<string>();
-    walkUp({ program, receivers }, element, host, items, false, new Set());
-    for (const receiver of receivers) addMounts(receiver, [name]);
-    const gated = readItems(items, [name], name);
+    for (const receiver of walked.receivers) addMounts(receiver, [name]);
+    const gated = readItems(walked.items, [name], name);
     readProps(element, host, [name], name, gated);
   }
   // Each place a component above a mount is drawn: the layout's props and key on it, and what
-  // wraps it in the component that draws it.
+  // wraps it in the component that draws it, read off its walk.
   for (const edge of trees.edges) {
-    if (edge.parent === undefined) continue;
+    const { parent, walked } = edge;
+    if (parent === undefined || walked === undefined) continue;
     const hosts = [...edge.hosts];
-    addMounts(edge.parent.id, hosts);
+    addMounts(parent.id, hosts);
     addMounts(edge.child.id, hosts);
-    const items: Item[] = [];
-    const receivers = new Set<string>();
-    walkUp({ program, receivers }, edge.element, edge.parent, items, false, new Set());
-    for (const receiver of receivers) addMounts(receiver, hosts);
-    const gated = readItems(items, hosts, edge.child.name);
-    readProps(edge.element, edge.parent, hosts, edge.child.name, gated);
+    for (const receiver of walked.receivers) addMounts(receiver, hosts);
+    const gated = readItems(walked.items, hosts, edge.child.name);
+    readProps(edge.element, parent, hosts, edge.child.name, gated);
   }
 
   // Every other branch on the layout in those components, and in the hooks they call, read with

@@ -2,8 +2,8 @@
  * The composer census (INFRA-1503), its first part: the program it reads. Every module under the
  * root it is given, tests left out, parsed into syntax trees (no type checker), its imports
  * resolved by path, and its components and their uses indexed, so that the census sees exactly
- * the files under that root. `trees.ts`, `forms.ts` and `lifetime.ts` read the census's items
- * out of it, and `census.ts` names them.
+ * the files under that root. `trees.ts`, with its walk up (`walk.ts`), `forms.ts` and
+ * `lifetime.ts` read the census's items out of it, and `census.ts` names them.
  *
  * The census lives here. It began as a scratch script outside the repository (version 2 at
  * dispatch://INFRA-1503/artifact/composer-census-ts), which this module replaces as its source,
@@ -294,6 +294,13 @@ export function resolveLocal(
   return target === undefined
     ? undefined
     : resolveExport(program, target, imported.name, depth + 1);
+}
+
+/** The declaration an id (`<module>#<name>`) names. */
+export function declOf(program: Program, id: string | undefined): ts.Node | undefined {
+  if (id === undefined) return undefined;
+  const at = id.lastIndexOf("#");
+  return program.mods.get(id.slice(0, at))?.decls.get(id.slice(at + 1));
 }
 
 export function tagOf(element: ts.Node): ts.JsxTagNameExpression | undefined {

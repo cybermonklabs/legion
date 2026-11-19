@@ -4,7 +4,8 @@
  * the ask card's answer field and `AskReplyComposer`), and every item that changes where its
  * draft lives or ends its mount. `trees.ts` reads the address props, the conditionals, the keys,
  * the routes and the early returns from each mount up to `app.tsx`'s routes, or, for an ask's
- * field, up to its card; `forms.ts` reads the forms, where the layout draws a field otherwise;
+ * field, up to its card, walking up from each mount and each place above one once (`walk.ts`);
+ * `forms.ts` reads the forms out of the same walks, where the layout draws a field otherwise;
  * `lifetime.ts` adds one lifetime per mount, the tree ended and drawn again by a reload.
  * `composer-census.test.ts` holds every item to an entry of a draft matrix file's coverage list
  * (`coverage.ts`).
@@ -24,7 +25,8 @@
 import { readForms } from "./forms";
 import { readLifetimes } from "./lifetime";
 import { readProgram } from "./program";
-import { readTrees, type TreeKind } from "./trees";
+import { readTrees } from "./trees";
+import type { TreeKind } from "./walk";
 
 export type ItemKind = TreeKind | "form" | "lifetime";
 
