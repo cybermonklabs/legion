@@ -1141,10 +1141,9 @@ esac
 // of the warm-up's own SIGTERM rather than exiting, and the kernel's out-of-memory kill ends one the
 // same way, so a signal's death is an ordinary end for a codegraph. A `status` so ended answered
 // nothing, and the warm-up falls back to the directory as for a `status` that exited non-zero: on a
-// workspace whose `.codegraph/` was there, `index`. A build so ended logs the signal and that the
-// next launch's warm-up repairs the index, which it does: a build CodeGraph 1.5.0 was killed in
-// leaves `state: "indexing"` and a lock naming a dead process (measured with SIGTERM and SIGKILL),
-// which nextCodegraphStep repairs with `index`. Read as a status, each was `exit -1`.
+// workspace whose `.codegraph/` was there, `index`. A build so ended logs the signal and what it
+// printed; one the warm-up's own bound ended logs that it timed out, since the same build would
+// time out again. Read as a status, each was `exit -1`.
 func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t *testing.T) {
 	fake := func(t *testing.T, callLog, cases string) {
 		t.Helper()
@@ -1179,7 +1178,39 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 		captured := captureStderr(t)
 
 		warmCodegraphIndex(context.Background(), dir, time.Now())
-		want := "[legion] codegraph init for " + dir + " was ended by signal: killed; the next launch's warm-up repairs the index: parsing 512 files\n"
+		want := "[legion] codegraph init for " + dir + " was ended by signal: killed: parsing 512 files\n"
+		if stderr := captured(); !strings.Contains(stderr, want) {
+			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
+		}
+	})
+	t.Run("a build its own bound ended: the timeout named", func(t *testing.T) {
+		bound := codegraphTimeout
+		codegraphTimeout = time.Second
+		t.Cleanup(func() { codegraphTimeout = bound })
+		callLog := filepath.Join(t.TempDir(), "calls.log")
+		dir := t.TempDir()
+		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; exec sleep 30 ;;\n")
+		captured := captureStderr(t)
+
+		warmCodegraphIndex(context.Background(), dir, time.Now())
+		want := "[legion] codegraph init for " + dir + " timed out after 1s: parsing 512 files\n"
+		if stderr := captured(); !strings.Contains(stderr, want) {
+			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
+		}
+	})
+	// A build killed by some other signal before its bound, whose child then holds its pipes past
+	// the bound, was ended by that signal and not by the bound: the bound's cancel never ran.
+	t.Run("a build a signal ended before its bound, its pipes held past it: the signal named", func(t *testing.T) {
+		bound := codegraphTimeout
+		codegraphTimeout = time.Second
+		t.Cleanup(func() { codegraphTimeout = bound })
+		callLog := filepath.Join(t.TempDir(), "calls.log")
+		dir := t.TempDir()
+		fake(t, callLog, "status) echo '{\"initialized\":false}' ;;\ninit) echo 'parsing 512 files' >&2; sleep 2 & kill -KILL $$ ;;\n")
+		captured := captureStderr(t)
+
+		warmCodegraphIndex(context.Background(), dir, time.Now())
+		want := "[legion] codegraph init for " + dir + " was ended by signal: killed: parsing 512 files\n"
 		if stderr := captured(); !strings.Contains(stderr, want) {
 			t.Fatalf("stderr lacks the line %q:\n%s", want, stderr)
 		}

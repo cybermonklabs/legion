@@ -28,11 +28,11 @@ import (
 // shim waits on it inside the role's stop grace (internal/shim's Config.StopGrace, the pod's
 // terminationGracePeriodSeconds, `worker_stop_timeout_seconds`, 10 s by default), so this grace is
 // well inside what is left of that once the agent's own grace is spent; CodeGraph 1.5.0 leaves
-// within about two seconds of a SIGTERM, its SQLite closed.
-const (
-	codegraphTimeout   = 30 * time.Minute
-	codegraphStopGrace = 2 * time.Second
-)
+// within about two seconds of a SIGTERM, its SQLite closed. codegraphTimeout is a variable so that
+// a test can shorten it.
+var codegraphTimeout = 30 * time.Minute
+
+const codegraphStopGrace = 2 * time.Second
 
 // codegraphEmptyLockGrace is how long an empty `.codegraph/codegraph.lock` still counts as held,
 // either side of now. CodeGraph's FileLock takes the lock with one `fs.writeFileSync(lockPath,
@@ -230,8 +230,12 @@ func warmCodegraphIndex(ctx context.Context, dir string, launched time.Time) {
 		fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up could not run for %s: %s\n", dir, err)
 		return
 	}
+	if result.timedOut {
+		fmt.Fprintf(os.Stderr, "[legion] codegraph %s for %s timed out after %s: %s\n", subcommand, dir, codegraphTimeout, strings.TrimSpace(result.stderr))
+		return
+	}
 	if result.signal != "" {
-		fmt.Fprintf(os.Stderr, "[legion] codegraph %s for %s was ended by %s; the next launch's warm-up repairs the index: %s\n", subcommand, dir, result.signal, strings.TrimSpace(result.stderr))
+		fmt.Fprintf(os.Stderr, "[legion] codegraph %s for %s was ended by %s: %s\n", subcommand, dir, result.signal, strings.TrimSpace(result.stderr))
 		return
 	}
 	if result.exitCode != 0 {
@@ -543,16 +547,18 @@ func codegraphLockHeldByLiveProcess(dir string) bool {
 }
 
 // codegraphResult is one codegraph run that ran: its output, and its exit status, or the signal
-// that ended it. A codegraph a signal ended answered no status, as one that exited non-zero did,
-// and the warm-up reads the two alike: a `status` so ended is one that answered nothing
-// (nextCodegraphStep's fallback), and a build so ended leaves its index "indexing", which the next
-// warm-up repairs with `codegraph index` (measured on CodeGraph 1.5.0, killed with SIGTERM and with
-// SIGKILL mid-build). exitCode is -1 where signal is set.
+// that ended it, and whether that signal was the run's own codegraphTimeout. A codegraph a signal
+// ended answered no status, as one that exited non-zero did, and the warm-up reads the two alike:
+// a `status` so ended is one that answered nothing (nextCodegraphStep's fallback), and a build so
+// ended leaves its index "indexing" (measured on CodeGraph 1.5.0, killed with SIGTERM and with
+// SIGKILL mid-build), which a later warm-up repairs with `codegraph index`, at most once per
+// directory per process (indexed). exitCode is -1 where signal is set.
 type codegraphResult struct {
 	stdout   string
 	stderr   string
 	exitCode int
 	signal   string
+	timedOut bool
 }
 
 // codegraphEnvironment is the minimal environment every codegraph invocation gets: its own PATH
@@ -588,6 +594,7 @@ func runCodegraph(ctx context.Context, codegraphPath, dir string, args ...string
 	cmd.Env = codegraphEnvironment()
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = codegraphStopGrace
+	killed := procgroup.KilledByContext(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -599,6 +606,8 @@ func runCodegraph(ctx context.Context, codegraphPath, dir string, args ...string
 		result.exitCode = end.Exited.ExitCode()
 	case end.Signal != "":
 		result.exitCode, result.signal = -1, end.Signal
+		// The bound's SIGTERM is the run's own timeout only while the caller's ctx still runs.
+		result.timedOut = killed() && ctx.Err() == nil
 	default:
 		return result, err
 	}

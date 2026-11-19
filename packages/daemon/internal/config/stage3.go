@@ -646,11 +646,10 @@ func daemonEnvironment() []string {
 // it, procgroup.Ended) and the stderr its run kept, or that it could not run at all.
 func commandError(field string, err error) error {
 	end := procgroup.Ended(err)
-	if end.Exited == nil && end.Signal == "" {
+	var ended *exec.ExitError
+	if !errors.As(err, &ended) || (end.Exited == nil && end.Signal == "") {
 		return fmt.Errorf("%s could not run: %w", field, err)
 	}
-	var ended *exec.ExitError
-	errors.As(err, &ended)
 	if stderr := strings.TrimSpace(string(ended.Stderr)); stderr != "" {
 		return fmt.Errorf("%s failed (%s): %s", field, end, stderr)
 	}

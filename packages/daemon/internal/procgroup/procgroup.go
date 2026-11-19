@@ -199,9 +199,9 @@ func (e Ending) String() string {
 
 // Ended reads err, the error a command's run answered, as how the command ended. Both of the
 // Ending's fields are empty for any err that says neither: nil, a start that failed,
-// exec.ErrWaitDelay. Code that reads a status or a signal out of a run's error reads it here, never
-// through errors.As, so a signal's death is never read as the status -1; a caller that reads the
-// status from cmd.ProcessState passes the run's error through Err instead.
+// exec.ErrWaitDelay. Code that reads a status or a signal out of a run's error reads it here, so
+// a signal's death is never read as the status -1; a caller that reads the status from
+// cmd.ProcessState passes the run's error through Err instead.
 func Ended(err error) Ending {
 	var ended *exec.ExitError
 	if !errors.As(err, &ended) || ended.ProcessState == nil {
