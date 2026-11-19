@@ -994,7 +994,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		// A repository of an owner the project maps nothing of: the bundle holds that owner's
 		// directory because the role's App is installed on the account, and the token in it
 		// reaches every repository of that installation.
-		{[]string{"pr", "create", "-R", "theorem-labs/agent-infra", "--fill"}, filepath.Join(root, "theorem-labs")},
+		{[]string{"pr", "create", "-R", "example-org/deployment", "--fill"}, filepath.Join(root, "example-org")},
 	} {
 		code, stdout, stderr := legionGh(t, env, tc.args...)
 		want := stub + "|" + tc.dir + "|" + strings.Join(tc.args, " ") + "\n" + wantEnv

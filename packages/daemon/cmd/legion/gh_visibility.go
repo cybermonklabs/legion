@@ -50,9 +50,9 @@ func visibilityReadRepository(env map[string]string) (ghrepo.Repository, bool) {
 // ls-remote. The guard's reads come back through this command, which runs each with the
 // repository's token, or with the caller's GH_TOKEN or GITHUB_TOKEN where one is set
 // (ghVisibilityRead). The real gh's read, which the check made before, answers nothing while the
-// installation's REST limit is spent, and the check then refuses the push. So this is how a
-// theorem-labs push gets through in a spent hour: the check reads the visibility of every
-// theorem-labs repository itself, before the guard's own read runs.
+// installation's REST limit is spent, and the check then refuses the push. So this is how an
+// example-org push gets through in a spent hour: the check reads the visibility of every
+// example-org repository itself, before the guard's own read runs.
 //
 // The read takes no kept answer and keeps none. The check keeps answers of its own, and reads each
 // other remote of a push fresh: a remote it reads public widens the commits it counts as held,

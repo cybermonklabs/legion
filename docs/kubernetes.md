@@ -82,7 +82,7 @@ It carries:
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
   it is published by tag from a private repository, and the image carries the pin alone (`ARG LEAK_CHECK_TAG`, exported as `ENV LEGION_LEAK_CHECK_TAG`), so moving the pin is an image build and no deployment's to do.
-  The pod's launcher names that pin in its hello, and the daemon reads the check at that tag with a read-only token of its own, which its implement App mints as a read lease on theorem-labs (`leakCheckToken`, `internal/daemon/kubernetes.go`).
+  The pod's launcher names that pin in its hello, and the daemon reads the check at that tag with a read-only token of its own, which its implement App mints as a read lease on that repository's owner (`leakCheckToken`, `internal/daemon/kubernetes.go`).
   The daemon reads each tag once and keeps that copy in its memory (`leakguard.Source`).
   It pushes the check's directory to the launcher before it sends a saved workspace bundle or any start (`serveLeakCheck`, `internal/runtime/sandbox/launcher.go`).
   The launcher installs it once per launcher process, before any role starts:
@@ -117,12 +117,12 @@ It carries:
   A listener bound to `0.0.0.0` is also reachable on the pod IP from inside the cluster, unless the deployment's NetworkPolicy denies that ingress;
 
 - `unzip` from Debian trixie's archive, at `/usr/bin/unzip`:
-  `model-gateway/apply_test.sh` of theorem-labs/agent-infra calls it, and no package runner in the image reaches it.
+  `model-gateway/apply_test.sh` of example-org/deployment calls it, and no package runner in the image reaches it.
   A role cannot install it in its pod either:
   the pod's `/usr/local/bin` and `/opt` are read-only, and `apt-get` cannot take dpkg's lock;
 
 - `busybox` from Debian trixie's archive, `/usr/bin/busybox` alone:
-  the `broker/` tests of theorem-labs/agent-infra run their scripts under `busybox sh`, and without it they fail with "busybox is not on PATH".
+  the `broker/` tests of example-org/deployment run their scripts under `busybox sh`, and without it they fail with "busybox is not on PATH".
   The package installs no applet links, so `wget` and `sh` stay GNU wget and dash, and a role runs an applet as `busybox <applet>`.
   Its `wget` and `ssl_client` applets check no TLS certificate, so no applet may become the image's `wget`, and the TLS probe holds no busybox client.
   The TLS probe's `wget` client holds GNU wget to the compromised chains, and an applet that became `wget` would fail the probe without reaching them:
@@ -7129,7 +7129,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **`runtime.kubernetes.agent_secrets.exchange_audience`** gives every enrolled pod an identity the broker's exchange trades for a broker token of a session's own (dispatch://INFRA-840).
   Each pod then also carries a projected token of its ServiceAccount for that audience, an hour long, in a volume of its own (`agent-secrets-exchange`), mounted read-only at `/var/run/legion/agent-secrets-exchange/token` in the container its roles run in, and every role is told `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE` naming that file, beside the enrollment it already holds.
-  The pod's broker clients (`packages/broker-client`, `packages/envoy/internal/brokerclient`) read those two and trade the token at the broker's `BROKER_EXCHANGE_K8S_AUDIENCE`, which must be this same audience: production's is `legion-broker-exchange` (agent-infra `shared/broker.ExchangeAudience`).
+  The pod's broker clients (`packages/broker-client`, `packages/envoy/internal/brokerclient`) read those two and trade the token at the broker's `BROKER_EXCHANGE_K8S_AUDIENCE`, which must be this same audience: production's is `legion-broker-exchange` (deployment `shared/broker.ExchangeAudience`).
   The key lives in the block, so a file that sets it and names no broker is refused for the `url` it lacks;
   it may not be empty, and it may not equal `audience`, since the cluster projects one volume per audience and the broker verifies the enrollment's token and the exchange's at different routes.
   Nor may it equal `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM, since the pool's token is the pod's launcher's alone ([Issue pods in microVMs](#issue-pods-in-microvms) lists this refusal with the loader's others).

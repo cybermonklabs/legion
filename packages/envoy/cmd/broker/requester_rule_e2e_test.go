@@ -63,9 +63,9 @@ const (
 	// each bounds its grants to an hour (policy.TagRules demands that of the google-service-account
 	// one); requesterOpenSecret lists nobody, which is the negative control: it behaves exactly as
 	// it did before the change.
-	requesterGCloudSami = "GCLOUD_SAMI"
+	requesterGCloudSami = "GCLOUD_DEMO"
 	requesterAzureAdmin = "AZURE_ADMIN"
-	requesterDevAditya  = "DEV_ADITYA"
+	requesterDevAditya  = "DEV_PERSON"
 	requesterOpenSecret = "TEAM_WIKI_TOKEN"
 
 	requesterGCloudValue = "gcloud-sami-value"
@@ -92,7 +92,7 @@ const (
 	requesterBoxService = "shared-box"
 	requesterBoxAccount = "example-sharedbox@example-project.iam.gserviceaccount.com"
 
-	// requesterServiceAccount is the Google service account DEV_ADITYA mints a token as, in the
+	// requesterServiceAccount is the Google service account DEV_PERSON mints a token as, in the
 	// one shape secrets.GoogleServiceAccount accepts, and requesterMintedToken what the fake IAM
 	// Service Account Credentials endpoint answers for it.
 	requesterServiceAccount = "dev-aditya@example-project.iam.gserviceaccount.com"
@@ -130,7 +130,7 @@ const (
 	requesterGCPAdminAccount = "workspace-admin@example-project.iam.gserviceaccount.com"
 	// requesterGCPAdminToken is what the fake IAM Service Account Credentials endpoint answers
 	// for that account: a token of its own, so that the pod reading it has read the mint of
-	// GCP_ADMIN and not DEV_ADITYA's.
+	// GCP_ADMIN and not DEV_PERSON's.
 	requesterGCPAdminToken = "ya29.fake-gcp-admin-access-token"
 
 	// The two Google Workspace scopes GCP_ADMIN's token carries, as its scopes tag names them:
@@ -302,14 +302,14 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 		proves  string
 	}{
 		{
-			name: "jason's session is refused DEV_ADITYA, which lists aditya alone",
+			name: "jason's session is refused DEV_PERSON, which lists aditya alone",
 			// The google-service-account type is served to the one person who owns it, so the
 			// list is exactly aditya and jason is off it whatever the tier would have given him.
 			session: jasonSession, secret: requesterDevAditya,
 			proves: "a secret whose requesters name one person is refused to every other session before owner and tier are read",
 		},
 		{
-			name:    "jason's session is refused GCLOUD_SAMI, which lists the daemon and sami",
+			name:    "jason's session is refused GCLOUD_DEMO, which lists the daemon and sami",
 			session: jasonSession, secret: requesterGCloudSami,
 			proves: "a list of a service and one person admits neither jason's person nor his session's service, which is none",
 		},
@@ -340,7 +340,7 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 		})
 	}
 
-	t.Run("aditya's session is granted DEV_ADITYA and reads the token the fake IAM endpoint minted", func(t *testing.T) {
+	t.Run("aditya's session is granted DEV_PERSON and reads the token the fake IAM endpoint minted", func(t *testing.T) {
 		code, stdout, stderr := adityaSession.run(t, cli, base, requesterDevAditya, "--ttl", requesterTTL,
 			"--", "sh", "-c", `printf %s "$`+requesterDevAditya+`"`)
 		if code != 0 || stdout != requesterMintedToken {
