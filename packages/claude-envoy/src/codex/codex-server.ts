@@ -29,6 +29,7 @@ import {
   type ChannelToolRuntime,
   channelReopener,
   channelToolDefinitions,
+  closeUnstartedConnection,
   dialChannelNats,
   executeEnvoyTool,
   MCP_SERVER_INFO,
@@ -539,7 +540,22 @@ export async function runCodexEnvoyServer(): Promise<void> {
       // connection that closes for good is replaced as the Claude Code one is (`channelReopener`):
       // Codex starts no plugin server again for a thread whose server lost its connection.
       const natsName = `codex-envoy-channel-${id.id}`
-      const dialled = await dialChannelNats(inbound, natsName, warn, connect, stopping.signal)
+      // A stop asked for while the token or the dial is awaited ends the start, and is no failure:
+      // the process ends as an asked-for stop does, as the Claude Code server's does.
+      const dialled = await dialChannelNats(
+        inbound,
+        natsName,
+        warn,
+        connect,
+        stopping.signal,
+      ).catch((error: unknown) => {
+        if (isStopping) return undefined
+        throw error
+      })
+      if (dialled === undefined) {
+        await stopped.promise
+        return
+      }
       connection = dialled.connection
       stopNatsKeeper = dialled.stop
       // Which id the connection is admitted as, where its broker token admits one session at a
@@ -563,7 +579,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
           stream?.useConnection(next)
         },
       })
-      session = await startChannelSession({
+      const started = await startChannelSession({
         capabilities: () => CODEX_CAPABILITIES,
         client,
         clientInstanceID,
@@ -600,10 +616,23 @@ export async function runCodexEnvoyServer(): Promise<void> {
             warn,
           }),
         reopen,
+        // Ends a start still flushing through its connection's redials (`flushThroughRedials`):
+        // the process is stopping.
+        startSignal: stopping.signal,
         stateDirectory,
         title,
         ...(dispatch.enabled ? { stampTitle } : {}),
+      }).catch((error: unknown) => {
+        // A stop asked for while the session was still starting ends the start, and is no
+        // failure, as above.
+        if (isStopping) return undefined
+        throw error
       })
+      if (started === undefined) {
+        await stopped.promise
+        return
+      }
+      session = started
       stream = startCodexAgentStream({
         connection,
         sessionId: id.id,
@@ -625,8 +654,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
     follower?.stop()
     stopNatsKeeper()
     if (session === undefined && connection !== undefined) {
-      await connection.drain().catch(() => undefined)
-      await connection.close().catch(() => undefined)
+      await closeUnstartedConnection(connection)
     }
     await server.close().catch(() => undefined)
   }

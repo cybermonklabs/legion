@@ -359,7 +359,9 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
     warn(`the live view stopped reading this session's events — ${messageFor(error)}`)
   })
 
-  subscribe()
+  // The first subject goes through the gate too: the live view starts once the mod's link binds,
+  // which can be after a `/clear` whose move has not landed.
+  subscribeWhenAdmitted(session)
 
   return {
     refresh(): void {

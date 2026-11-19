@@ -47,6 +47,9 @@ export class FakeNatsServer {
   readonly connectPorts: number[] = []
   /** Client connections accepted so far. */
   connections = 0
+  /** While false, a PING is left unanswered, so a flush waits on it: a path that stopped carrying
+   *  the hub's answers. A connection already open stays open. */
+  answerPings = true
   /** The nonce INFO carries, as a server that asks for nkey sign-in or runs an auth service sends
    *  one; INFO carries none from the moment it is set to undefined. */
   nonce: string | undefined
@@ -235,7 +238,7 @@ export class FakeNatsServer {
 
   private command(socket: Socket<Client>, line: string): void {
     if (line === "PING") {
-      socket.write("PONG\r\n")
+      if (this.answerPings) socket.write("PONG\r\n")
       return
     }
     if (line === "PONG") return

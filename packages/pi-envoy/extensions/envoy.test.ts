@@ -20479,6 +20479,60 @@ console.log(JSON.stringify(args));
     }
   });
 
+  // A Legion wake after a pod release is a new pod that resumes the session's transcript: its
+  // start blocks the event loop as a fresh one does, and its pass also reads the interests the
+  // session registered before. The dial the hub closes is dialed again there too.
+  test("a session resumed in a new pod, whose first dial the hub closes, is dialed again and registers with its relay in its session_start pass", async () => {
+    const registrations: { readonly consumer: boolean }[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/v1/interests/subscribe") {
+        const body = JSON.parse(init?.body?.toString() ?? "{}") as {
+          readonly delivery?: { readonly consumer?: boolean };
+        };
+        registrations.push({ consumer: body.delivery?.consumer === true });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    natsState.failConnects = 1;
+    natsState.failError = () =>
+      new NatsError("'Authentication Timeout'", ErrorCode.AuthenticationTimeout);
+    setNatsConnectForTests(natsStandInConnect, { firstDelayMs: 5, maxDelayMs: 5, budgetMs: 5_000 });
+    try {
+      const notifications: string[] = [];
+      const earlier = [
+        { type: "message", message: { role: "user", content: "the task", timestamp: 1 } },
+        { type: "message", message: { role: "assistant", content: "working on it", timestamp: 2 } },
+      ];
+      const context: SessionContext = {
+        cwd: "/tmp/envoy-omp-test",
+        sessionManager: {
+          ...topLevelSession,
+          getSessionId: () => "ses_woken",
+          getBranch: () => earlier,
+          getEntries: () => earlier,
+        },
+        setInterval: () => {},
+        ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+      };
+      const { default: envoyExtension } = await import("./envoy.ts?redial-resumed-start");
+      const fixture = createPi();
+      envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.({}, context);
+
+      expect(natsState.failConnects).toBe(0);
+      expect(natsState.subscriptions.has("notifications.envoy.deliver.ses_woken")).toBe(true);
+      expect(registrations.length).toBeGreaterThan(0);
+      expect(registrations.every((one) => one.consumer)).toBe(true);
+      expect(
+        notifications.filter((message) => message.includes("inbound messages are unavailable"))
+      ).toEqual([]);
+      expect(notifications.filter((message) => message.includes("not registered"))).toEqual([]);
+    } finally {
+      setNatsConnectForTests(natsStandInConnect);
+    }
+  });
+
   // A pod whose first dial the hub closed registers on its next pass seconds later; without a word
   // that it receives again, the session reads the outage notice as its state for its life.
   test("a session told it receives nothing is told once it receives again, in every part of the notice", async () => {

@@ -299,9 +299,26 @@ test("a clear moves the control subject, and the new id replays nothing from bef
 // Under a broker token the connection is admitted as one session at a time, and the server refuses
 // and closes a subscribe to a subject the session it is admitted as may not take. These run the
 // channel server's own `sessionAdmission`, which `admit`s each id when its move lands.
+// The live view starts once the mod's link binds, which can be after a `/clear` whose move has not
+// landed: the session's id is then one the connection is not admitted as yet, and its first
+// control subject waits for the admission as every later one does.
+test("a live view started for an id the connection is not admitted as yet takes its control subject once it is", async () => {
+  const admission = sessionAdmission("ses_before_the_clear")
+  const live = running(admission.admitted)
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([])
+  expect(live.nats.calls.filter((call) => call.startsWith("nats.subscribe"))).toEqual([])
+  admission.admit(SESSION)
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([agentStreamControlSubject(SESSION)])
+  live.runner.stop()
+})
+
 test("a clear takes the new id's control subject only once the connection is admitted as it", async () => {
   const admission = sessionAdmission(SESSION)
   const live = running(admission.admitted)
+  // The first subject goes through the gate too, which answers an id already admitted at once.
+  await settle()
   expect([...live.nats.subscriptions.keys()]).toEqual([agentStreamControlSubject(SESSION)])
 
   live.mod.moveSession(CLEARED)

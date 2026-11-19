@@ -154,3 +154,96 @@ test(
   },
   ROW_TIMEOUT_MS,
 )
+
+// A Codex server's start can wait on its connection: the startup flush is asked again through every
+// redial (`flushThroughRedials`). A stop meanwhile ends that wait at once, as it does the Claude
+// Code server's, and the process exits as an asked-for stop does. Here the hub stops answering
+// PINGs just as the start reads the listener's interests, the step before the flush, so the flush
+// never comes back.
+test(
+  "a stop while a Codex session's start waits on its flush ends the start at once, and the server exits leaving no connection open",
+  async () => {
+    const interests = `/v1/interests/${SESSION}`
+    const run = await startReopenServer({
+      sessionId: SESSION,
+      args: ["--host", "codex"],
+      env: (stateDirectory) => ({ PLUGIN_DATA: stateDirectory }),
+      prepare: codexSession,
+      awaitRegistration: false,
+      onRequest: (method, path, broker) => {
+        if (method === "GET" && path === interests) broker.answerPings = false
+      },
+    })
+    const { broker, server, stderr, state } = run
+    try {
+      await waitFor(
+        async () => run.requests.includes(`GET ${interests}`),
+        "the start to read the listener's interests, the step before its flush",
+        state,
+        PROCESS_WAIT_MS,
+      )
+      expect(run.sessions).toEqual([])
+      server.kill("SIGTERM")
+      // Bounded, so a server the stop does not end fails here by name rather than at the row's
+      // timeout.
+      const exited = await Promise.race([
+        server.exited,
+        Bun.sleep(PROCESS_WAIT_MS).then(() => "still running" as const),
+      ])
+      expect({ exited, stderr: stderr() }).toMatchObject({ exited: 0 })
+      await run.stderrEnded
+      expect(stderr()).not.toContain("Codex Envoy channel server failed")
+      // Nothing registered: the start ended before its first registration.
+      expect(run.sessions).toEqual([])
+      await waitFor(
+        async () => broker.liveConnections === 0,
+        "no connection left open",
+        state,
+        PROCESS_WAIT_MS,
+      )
+    } finally {
+      await run.stop()
+    }
+  },
+  ROW_TIMEOUT_MS,
+)
+
+// The dial before it waits too: a hub the server cannot reach is dialed again for the server's
+// life. A stop meanwhile ends the dial and the process exits as an asked-for stop does, not as a
+// failed start.
+test(
+  "a stop while a Codex session's first dial is dialed again ends the dial, and the server exits as an asked-for stop does",
+  async () => {
+    const run = await startReopenServer({
+      sessionId: SESSION,
+      args: ["--host", "codex"],
+      env: (stateDirectory) => ({ PLUGIN_DATA: stateDirectory }),
+      prepare: codexSession,
+      awaitRegistration: false,
+      gateOpen: false,
+    })
+    const { broker, server, stderr, state } = run
+    try {
+      await waitFor(
+        async () => stderr().includes("; dialing again in"),
+        "a refused dial dialed again",
+        state,
+        PROCESS_WAIT_MS,
+      )
+      server.kill("SIGTERM")
+      const exited = await Promise.race([
+        server.exited,
+        Bun.sleep(PROCESS_WAIT_MS).then(() => "still running" as const),
+      ])
+      // Its stderr to its end once it exited; a process still running is named as it stands.
+      if (exited !== "still running") await run.stderrEnded
+      expect({ exited, stderr: stderr() }).toMatchObject({ exited: 0 })
+      expect(stderr()).not.toContain("Codex Envoy channel server failed")
+      expect(run.sessions).toEqual([])
+      expect(broker.connections).toBe(0)
+    } finally {
+      await run.stop()
+    }
+  },
+  ROW_TIMEOUT_MS,
+)

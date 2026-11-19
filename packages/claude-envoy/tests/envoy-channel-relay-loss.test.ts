@@ -1,9 +1,11 @@
-// Two ways a running session loses its relay subject without its connection being replaced at
-// once, each driven on `FakeNats`, which refuses a subscribe, a publish and a flush on a connection
+// Ways a running session loses its relay subject without its connection being replaced at once,
+// each driven on `FakeNats`, which refuses a subscribe, a publish and a flush on a connection
 // closed for good and ends a refused subscription with its error, as nats.js does:
 // - the relay subscription ends with an error of its own while the connection stays up (a
 //   permissions refusal): nothing took it again, and every registration asked the listener to
 //   relay to a subscription that no longer existed, with no outage told;
+// - the subscription taken again in its place is not yet the server's when the flush behind it
+//   is lost to a redial or times out, and the server can still refuse it after the reconnect;
 // - the connection closes for good between a `/clear`'s deregistration of the old id and its
 //   registration of the new one: the credential move must wait for the connection that replaces
 //   it, and the outage is told, naming the close.
@@ -116,6 +118,101 @@ test("a relay subscription the server ends with an error is told as an outage na
     await session.shutdown()
   }
 }, 30_000)
+
+// The relay subject is taken again only once the server has answered a flush behind the
+// subscribe: a flush lost to a redial (rejected) or one that never comes back (timed out) says
+// nothing of whether the server took the subscription, and a refusal the server sends after the
+// reconnect would come after the registration had asked the listener to relay to it and told the
+// session it receives again. While the server refuses the subject, no registration asks for it,
+// the outage is told once, and nothing tells the session it receives again.
+for (const lost of [
+  { name: "rejected by a redial", flushTimeoutMs: undefined },
+  { name: "timed out", flushTimeoutMs: 50 },
+] as const) {
+  test(`a relay subscription taken again behind a flush ${lost.name} is not confirmed: nothing asks for it until a flush confirms it`, async () => {
+    const SESSION = "ses_relay_unconfirmed"
+    const RELAY = deliverSubject(SESSION)
+    const nats = new FakeNats()
+    const notifier = new FakeNotifier()
+    const relaySubscribes = (): number =>
+      nats.calls.filter((call) => call === `nats.subscribe ${RELAY}`).length
+    const registrations: SubscribeInput[] = []
+    const session = await startChannelSession(
+      sessionOptions(new SessionIdentity(SESSION, "/tmp"), scratchState(), {
+        connection: nats,
+        notifier,
+        heartbeatMs: 25,
+        ...(lost.flushTimeoutMs === undefined
+          ? {}
+          : { handoffFlushTimeoutMs: lost.flushTimeoutMs }),
+        client: recordingClient([], {
+          subscribe: async (input) => {
+            registrations.push(input)
+            return noInterest(input.sessionID)
+          },
+        }),
+      }),
+    )
+    const refusal = serverRefusal(
+      "PERMISSIONS_VIOLATION",
+      `Permissions Violation for Subscription to "${RELAY}"`,
+    )
+    /** Registrations before the outage was told: every one after it asked for the relay. */
+    let sentAt = registrations.length
+    const counts = () => ({
+      restored: notices(notifier, "Envoy inbound restored").length,
+      sentWhileRefused: registrations.length - sentAt,
+      unavailable: notices(notifier, "Envoy inbound unavailable").length,
+    })
+    try {
+      const firstEpoch = registrations.at(-1)?.delivery?.epoch
+      // The server refuses the subject from now on, and the connection redials: no flush comes
+      // back until the test says so.
+      nats.refuse(RELAY, refusal)
+      if (lost.flushTimeoutMs === undefined) nats.failFlushes = Number.POSITIVE_INFINITY
+      else nats.stallFlush = true
+      nats.failSubscription(RELAY, refusal)
+      await waitFor(
+        async () => notices(notifier, "Envoy inbound unavailable").length === 1,
+        "the outage told",
+      )
+      sentAt = registrations.length
+      // Heartbeats take the subject again behind flushes that never come back.
+      const lostAt = relaySubscribes()
+      await waitFor(
+        async () => relaySubscribes() >= lostAt + 3 || counts().sentWhileRefused > 0,
+        "three attempts behind flushes that never came back",
+        () => JSON.stringify(counts()),
+      )
+      // The connection is back: its flushes are answered, and the server's refusal of the
+      // subscription it held reaches it; heartbeats take the subject again, and are refused.
+      nats.failFlushes = 0
+      nats.stallFlush = false
+      nats.deliverRefusals()
+      const backAt = relaySubscribes()
+      await waitFor(
+        async () => relaySubscribes() >= backAt + 3,
+        "three attempts the server refused",
+        () => JSON.stringify(counts()),
+      )
+      expect(counts()).toEqual({ restored: 0, sentWhileRefused: 0, unavailable: 1 })
+
+      // The server takes the subject again: the next heartbeat's flush confirms it, a new epoch
+      // is registered, and the end of the outage is told once.
+      nats.refuse(RELAY, undefined)
+      await waitFor(
+        async () => notices(notifier, "Envoy inbound restored").length === 1,
+        "the end of the outage told",
+        () => JSON.stringify(counts()),
+      )
+      expect(nats.subscriptions.has(RELAY)).toBe(true)
+      expect(registrations.at(-1)?.delivery?.epoch).not.toBe(firstEpoch)
+      expect(notices(notifier, "Envoy inbound unavailable")).toHaveLength(1)
+    } finally {
+      await session.shutdown()
+    }
+  }, 30_000)
+}
 
 test("a connection closed for good between a /clear's deregistration and its registration tells the outage once, and the /clear completes on the new connection", async () => {
   const SESSION = "ses_clear_closed"

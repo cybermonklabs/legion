@@ -8,7 +8,7 @@ import { resolve } from "node:path"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import type { DeliveryRequest } from "@legion/envoy-client/transport"
-import { waitFor } from "./channel-session-harness"
+import { SERVER_START_MS, waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { type NatsGate, natsGate } from "./nats-gate"
 
@@ -17,13 +17,6 @@ const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 /** Each wait's deadline: every step here is a whole server process, which a loaded machine
  *  starts and runs slowly. */
 export const PROCESS_WAIT_MS = 15_000
-/**
- * The wait for a spawned server's first stderr line (its start notice). Most of a start is Bun
- * loading and compiling this package, which a loaded machine slows most: a server here once wrote
- * nothing for 15 s at a load of 700 on 288 cores, and the package's other spawned-server rows give
- * a whole run 20 s, so a start alone gets half again that.
- */
-export const SERVER_START_MS = 30_000
 /** Each row's: above its chain of waits, so a stuck wait names its step. */
 export const ROW_TIMEOUT_MS = 180_000
 
@@ -59,6 +52,15 @@ export interface ReopenServerOptions {
   /** Writes what the server reads before it registers into its state directory (a Codex
    *  session's record), before it starts. */
   readonly prepare?: (stateDirectory: string) => Promise<void>
+  /** Told each listener call as it arrives, before it is answered, with the hub. */
+  readonly onRequest?: (method: string, path: string, broker: FakeNatsServer) => void
+  /** Whether the start resolves only once the session has registered and subscribed its relay
+   *  (the default), or once the server has written its first stderr line: a row that stops the
+   *  server while it starts never sees the registration. */
+  readonly awaitRegistration?: boolean
+  /** Whether the gate in front of the hub starts open (the default), or shut: the server's first
+   *  dial is then refused, and dialed again, until the row opens it. */
+  readonly gateOpen?: boolean
 }
 
 export interface ReopenServer {
@@ -90,7 +92,8 @@ export interface ReopenServer {
   stop(): Promise<void>
 }
 
-/** Starts the server, and resolves once its session has registered and subscribed its relay. */
+/** Starts the server, and resolves once its session has registered and subscribed its relay, or
+ *  once it has written its first stderr line (`awaitRegistration`). */
 export async function startReopenServer(options: ReopenServerOptions): Promise<ReopenServer> {
   const relay = deliverSubject(options.sessionId)
   const broker = new FakeNatsServer(options.nonce === undefined ? {} : { nonce: options.nonce })
@@ -99,7 +102,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
   const gate = natsGate(Number(new URL(broker.url).port), (leg) => {
     owners.set(leg.clientPort, socketOwner(leg.clientPort))
   })
-  gate.open()
+  if (options.gateOpen !== false) gate.open()
   const requests: string[] = []
   const sessions: string[] = []
   const deliveries: DeliveryRequest[] = []
@@ -108,6 +111,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     fetch: async (request) => {
       const url = new URL(request.url)
       requests.push(`${request.method} ${url.pathname}`)
+      options.onRequest?.(request.method, url.pathname, broker)
       if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
         const body = (await request.json()) as {
           session_id: string
@@ -193,12 +197,14 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
       state,
       SERVER_START_MS,
     )
-    await waitFor(
-      async () => deliveries.length > 0 && relaySubscriptions() === 1,
-      "the session's first registration and its relay subscription",
-      state,
-      PROCESS_WAIT_MS,
-    )
+    if (options.awaitRegistration !== false) {
+      await waitFor(
+        async () => deliveries.length > 0 && relaySubscriptions() === 1,
+        "the session's first registration and its relay subscription",
+        state,
+        PROCESS_WAIT_MS,
+      )
+    }
   } catch (error) {
     await stop()
     throw error

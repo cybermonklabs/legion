@@ -176,7 +176,9 @@ export function startCodexAgentStream(options: CodexAgentStreamOptions): CodexAg
       if (!stopped && session === forSession && subscription === undefined) subscribe()
     })
   }
-  subscribe()
+  // The first subject goes through the gate too: the live view starts after the session does,
+  // which can be after a `/new` whose move has not landed.
+  subscribeWhenAdmitted(session)
   publishSettings()
 
   return {

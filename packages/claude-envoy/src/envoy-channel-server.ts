@@ -867,6 +867,18 @@ const START_CLOSED = "the NATS connection closed before its subscriptions reache
 /** How long a start that failed waits for its connection to drain before closing it. */
 const START_DRAIN_BOUND_MS = 2_000
 
+/**
+ * Ends the connection of a session that never started: its start failed, or a stop ended it.
+ * Both servers' teardowns call it (`runEnvoyChannelServer`, `./codex/codex-server`). The drain is
+ * bounded: a connection still redialing, or one whose path stopped carrying the hub's answers, as
+ * one whose start a stop ended can be, may never finish a drain, and the close after it is what
+ * ends the connection for good.
+ */
+export async function closeUnstartedConnection(connection: ChannelConnection): Promise<void> {
+  await Promise.race([connection.drain().catch(() => undefined), Bun.sleep(START_DRAIN_BOUND_MS)])
+  await connection.close().catch(() => undefined)
+}
+
 /** What a server hands `channelReopener`. */
 export interface ChannelReopenerOptions {
   /** What the server's first connection was dialed with. */
@@ -1386,15 +1398,20 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
 
   /**
    * Takes the relay subject again after its subscription ended with an error of its own, while the
-   * connection is up: before each heartbeat's registration. A new epoch begins once the server has
-   * the subscription, so the listener restarts the relay at its ack floor. A subscription the
-   * server refuses again ends before the bounded flush returns, and then the registration still
-   * goes out with no relay: the session stays told it receives nothing, rather than told it
-   * receives again a heartbeat before the refusal comes back.
+   * connection is up: before each heartbeat's registration. The subscription counts as taken only
+   * once the server has answered a flush behind it, since nats-server refuses a subscription as it
+   * reads it, before that answer: a refusal ends the subscription before the flush returns, and
+   * then the registration still goes out with no relay. A flush that is rejected (the connection
+   * redials, and sends the subscription again after it) or that times out says nothing of whether
+   * the server will take it, so the subscription is given up, the error it ended with is kept, and
+   * the next heartbeat tries again: until a flush confirms it, no registration asks the listener to
+   * relay to it and the session is not told it receives again. Once it is confirmed a new epoch
+   * begins, so the listener restarts the relay at its ack floor.
    */
   const resubscribeRelay = async (): Promise<void> => {
     const owner = relay
-    if (owner?.stopped === undefined || owner.sessionID !== identity.id) return
+    const previous = owner?.stopped
+    if (owner === undefined || previous === undefined || owner.sessionID !== identity.id) return
     if (connectionLost !== undefined || connection.isClosed()) return
     try {
       subscribeRelay(owner)
@@ -1403,17 +1420,26 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       return
     }
     const taken = owner.subscription
-    await withTimeout(
+    const confirmed = await withTimeout(
       connection.flush(),
       options.handoffFlushTimeoutMs ?? HANDOFF_FLUSH_TIMEOUT_MS,
       "flushing NATS",
-    ).catch(() => undefined)
+    ).then(
+      () => true,
+      () => false,
+    )
     // nats.js ends a refused subscription as it reads the server's refusal, before the flush's
     // answer; the pump sees the end a turn of the event loop later.
     const turn = Promise.withResolvers<void>()
     setImmediate(turn.resolve)
     await turn.promise
     if (relay !== owner || owner.subscription !== taken) return
+    if (!confirmed) {
+      taken?.unsubscribe()
+      owner.subscription = undefined
+      owner.stopped = previous
+      return
+    }
     owner.delivery.beginEpoch()
   }
 
@@ -3118,13 +3144,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
     await linking
     await modLink?.close().catch(() => undefined)
     if (session === undefined && connection !== undefined) {
-      // Bounded: a connection still redialing, as one whose start a stop ended can be, may never
-      // finish a drain, and the close after it is what ends the connection for good.
-      await Promise.race([
-        connection.drain().catch(() => undefined),
-        Bun.sleep(START_DRAIN_BOUND_MS),
-      ])
-      await connection.close().catch(() => undefined)
+      await closeUnstartedConnection(connection)
     }
     // Release stdin so the process can exit once the session is deregistered,
     // even when the parent has not closed its end yet.

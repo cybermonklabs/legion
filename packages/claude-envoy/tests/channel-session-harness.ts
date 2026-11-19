@@ -37,6 +37,8 @@ interface Queue {
   closed: boolean
   /** Set by `failSubscription`: the iterator throws it at its next pull. */
   failed: Error | undefined
+  /** The refusal the server has for this subscription and has not sent yet (`refuse`). */
+  refusal: Error | undefined
 }
 
 /** nats.js's error for a call on a connection closed for good, as `natsFailureReason` reads it. */
@@ -74,6 +76,7 @@ export class FakeNats implements ChannelConnection {
       waiter: undefined,
       closed: false,
       failed: undefined,
+      refusal: this.refused.get(subject),
     }
     this.subscriptions.set(subject, queue)
     return {
@@ -117,9 +120,36 @@ export class FakeNats implements ChannelConnection {
   failSubscription(subject: string, error: Error): void {
     const queue = this.subscriptions.get(subject)
     if (queue === undefined) throw new Error(`no subscription for ${subject}`)
-    this.subscriptions.delete(subject)
+    this.end(queue, error)
+  }
+
+  private end(queue: Queue, error: Error): void {
+    if (this.subscriptions.get(queue.subject) === queue) this.subscriptions.delete(queue.subject)
+    queue.refusal = undefined
     queue.failed = error
     queue.waiter?.resolve(null)
+  }
+
+  /** Subjects the server refuses a subscription to, with its refusal (`refuse`). */
+  private readonly refused = new Map<string, Error>()
+
+  /**
+   * The server refuses every subscription to `subject` from now on, as it refuses one whose
+   * subject the connection's user may not take: the refusal reaches the client before the answer
+   * to its next flush (nats-server sends `-ERR` as it reads the `SUB`, then the `PONG`), or, where
+   * that flush is lost to a redial, after the reconnect sends the `SUB` again
+   * (`deliverRefusals`). `undefined` ends the refusals; a subscription already refused stays so.
+   */
+  refuse(subject: string, error: Error | undefined): void {
+    if (error === undefined) this.refused.delete(subject)
+    else this.refused.set(subject, error)
+  }
+
+  /** The refusals the server has for live subscriptions reach the client now: after a reconnect. */
+  deliverRefusals(): void {
+    for (const queue of [...this.subscriptions.values()]) {
+      if (queue.refusal !== undefined) this.end(queue, queue.refusal)
+    }
   }
 
   /** When set, a flush never settles, as on a stalled connection. */
@@ -130,7 +160,8 @@ export class FakeNats implements ChannelConnection {
   /** Every flush asked for, the failed ones included. */
   flushes = 0
 
-  /** Rejects on a connection closed for good, as nats.js does. */
+  /** Rejects on a connection closed for good, as nats.js does. A flush that reaches the server
+   *  delivers its refusals first (`refuse`). */
   flush(): Promise<void> {
     this.flushes += 1
     if (this.closedForGood) return Promise.reject(connectionClosedError())
@@ -138,7 +169,9 @@ export class FakeNats implements ChannelConnection {
       this.failFlushes -= 1
       return Promise.reject(new Error("DISCONNECT"))
     }
-    return this.stallFlush ? new Promise<void>(() => undefined) : Promise.resolve()
+    if (this.stallFlush) return new Promise<void>(() => undefined)
+    this.deliverRefusals()
+    return Promise.resolve()
   }
 
   isClosed(): boolean {
@@ -303,6 +336,14 @@ export function settled(): Promise<void> {
   setImmediate(resolve)
   return promise
 }
+
+/**
+ * How long a test waits for a channel-server process it spawned to start: its first stderr line,
+ * or its first dial. Most of a start is Bun loading and compiling this package, which a loaded
+ * machine slows most: a server once wrote nothing for 15 s at a load of 700 on 288 cores, and
+ * another had not dialed after 8 s at a load of 450, so a start gets 30 s.
+ */
+export const SERVER_START_MS = 30_000
 
 /**
  * Polls `condition` every 5 ms until it holds; fails after `deadlineMs` (5 s by default) naming

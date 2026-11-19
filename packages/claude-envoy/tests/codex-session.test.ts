@@ -291,6 +291,24 @@ describe("the Codex live view", () => {
   // Under a broker token the connection is admitted as one session at a time, and the server
   // refuses and closes a subscribe to a subject the session it is admitted as may not take. These
   // run the channel server's own `sessionAdmission`, which `admit`s each id when its move lands.
+  // The live view starts after the session does, which can be after a `/new` whose move has not
+  // landed: its first control subject waits for the admission as every later one does.
+  test("a live view started for an id the connection is not admitted as yet takes its control subject once it is", async () => {
+    const { connection, subscribed } = fakeConnection()
+    const admission = sessionAdmission("s1-before-new")
+    const stream = startCodexAgentStream({
+      admitted: admission.admitted,
+      connection,
+      sessionId: "s2",
+    })
+    await Bun.sleep(10)
+    expect([...subscribed]).toEqual([])
+    admission.admit("s2")
+    await Bun.sleep(10)
+    expect([...subscribed]).toEqual([agentStreamControlSubject("s2")])
+    stream.stop()
+  })
+
   test("a /new takes the new id's control subject only once the connection is admitted as it", async () => {
     const { connection, subscribed } = fakeConnection()
     const admission = sessionAdmission("s3")
@@ -299,6 +317,8 @@ describe("the Codex live view", () => {
       connection,
       sessionId: "s3",
     })
+    // The first subject goes through the gate too, which answers an id already admitted at once.
+    await Bun.sleep(10)
     expect([...subscribed]).toEqual([agentStreamControlSubject("s3")])
     stream.rebind("s4")
     await Bun.sleep(10)
