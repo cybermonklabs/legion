@@ -941,3 +941,83 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtAHeadAnEarlierMergeReplaced(t
 		refusedAtTheFirstReplacedHead(t, pool)
 	})
 }
+
+// A completion that names no head says nothing about which head its work judged, so once a merge
+// forward landed it is refused (dispatch://INFRA-4374 R1). When the head that merge left conflicts
+// in its turn and a second merge forward is asked of it, the hold of that ask tells the tester not
+// to complete at the head the pull request stands at. So the tester's completion naming no head
+// then is refused HANDOFF_HEAD_MERGED_FORWARD with an answer that names that head, says its merge
+// forward is asked and has not landed, and tells the tester to wait for the daemon's message that
+// it landed, never to do its work at that head; and it records and moves nothing. The answer
+// reaches the merge forward that landed through the record's earlier ones
+// (record.MergeForward.Earlier), since the ask the record holds has not landed.
+func TestAConflictKeepsPhaseAndRefusesACompletionNamingNoHeadWhileASecondMergeForwardIsAsked(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+	confirmsConflict(t, pool, requiresCI)
+	landsMergeForward(t, pool)
+	again := conflictingRead(requiresCI)
+	again.HeadSHA = forwardHead
+	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), again)
+	applyRefusingNothing(t, pool, readsAfter(5*time.Minute), again)
+	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != forwardHead || asked.Landed != "" ||
+		!reflect.DeepEqual(asked.Earlier, []record.LandedMergeForward{{Head: conflictHead, Landed: forwardHead}}) {
+		t.Fatalf("the record's merge forward = %+v, want the second ask, of %s and not landed, after the first, of %s, landed as %s",
+			asked, forwardHead, conflictHead, forwardHead)
+	}
+
+	row, rows := entryRow(t, pool, claim.RoleTester), len(queuedRows(t, pool))
+	result := applyFacts(t, pool, readsAfter(6*time.Minute))("naming no head", intake.HandoffComplete{Generation: 1,
+		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass",
+		HandoffRecord: "handoff-1", HandoffVersion: 1})
+	if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
+		t.Fatalf("the tester's completion naming no head was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", code, result.Refusal)
+	}
+	msg := result.Refusal.Message
+	for _, says := range []string{"onto head " + forwardHead + " is asked and has not landed", "Wait for the daemon's message that this merge landed"} {
+		if !strings.Contains(msg, says) {
+			t.Fatalf("the refusal reads %q, want it to say %q", msg, says)
+		}
+	}
+	if says := "do the phase's work at head " + forwardHead; strings.Contains(msg, says) {
+		t.Fatalf("the refusal reads %q, want it not to say %q: the hold of the merge forward asked of %s tells the tester not to complete at it", msg, says, forwardHead)
+	}
+	if after := entryRow(t, pool, claim.RoleTester); !reflect.DeepEqual(after, row) {
+		t.Fatalf("the completion took the tester's row from %+v to %+v, want nothing recorded", row, after)
+	}
+	if after := len(queuedRows(t, pool)); after != rows {
+		t.Fatalf("the completion took the outbox from %d rows to %d, want nothing queued", rows, after)
+	}
+	if got := issuePhase(t, pool); got != phase.Testing {
+		t.Fatalf("after the refused completion the issue is in %s, want testing", got)
+	}
+}
+
+// The merge forward's fence refuses a completion that names no head only once a merge forward of
+// the record's stretch of work landed (dispatch://INFRA-4374 R1): before that, no merge forward
+// replaced any head, so the head such a completion judged is no head a merge replaced. A tester's
+// pass naming no head while the merge forward is asked and nothing landed passes the fence: it is
+// recorded on the tester's row with no commit, and it moves the issue to reviewing, as a pass does.
+func TestAConflictKeepsPhaseAndTakesACompletionNamingNoHeadWhileNoMergeForwardLanded(t *testing.T) {
+	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != conflictHead || asked.Landed != "" || len(asked.Earlier) != 0 {
+		t.Fatalf("the record's merge forward = %+v, want one ask, of %s, with nothing landed", asked, conflictHead)
+	}
+
+	result := applyFacts(t, pool, readsAfter(4*time.Minute))("naming no head", intake.HandoffComplete{Generation: 1,
+		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass",
+		HandoffRecord: "handoff-1", HandoffVersion: 1})
+	if code := refusalCode(result); code == "HANDOFF_HEAD_MERGED_FORWARD" {
+		t.Fatalf("the tester's completion naming no head was refused %+v, want it past the merge forward's fence: no merge forward landed", result.Refusal)
+	}
+	if result.Refusal != nil {
+		t.Fatalf("the tester's completion naming no head was refused %+v, want it recorded", result.Refusal)
+	}
+	if row := entryRow(t, pool, claim.RoleTester); !row.Completed() || row.HandoffCommit != "" || row.Verdict != "pass" || row.HandoffRecord != "handoff-1" {
+		t.Fatalf("the tester's row = %+v, want its pass naming no commit and handoff-1 recorded", row)
+	}
+	if got := issuePhase(t, pool); got != phase.Reviewing {
+		t.Fatalf("after the tester's pass naming no head the issue is in %s, want reviewing", got)
+	}
+}

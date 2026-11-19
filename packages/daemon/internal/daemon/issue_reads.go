@@ -298,7 +298,8 @@ func (w *workflowRuntime) handoffCompleted(issue string) {
 // (readIssuePullRequest). A read that fails is logged and nothing is queued again: the issue's next
 // handoff, and the daemon's next start, read it again. Unlike the start read, a read that finds
 // GitHub still computing the head's merge queues no ladder of its own: the merge-state reads a
-// handed-off issue is owed are the workflow's to ask for (classify.MergeStateReadOwed).
+// handed-off issue is owed are the workflow's to ask for (the workflow's askMergeStateFor, which
+// applies the gate classify.MergeStateReadOwed and the review round's own wait).
 func (w *workflowRuntime) readHandedOff(ctx context.Context) {
 	for {
 		issues, ok := w.handedOff.take(ctx)

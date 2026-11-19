@@ -60,7 +60,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 	}
 	attributes := []any{"row", row.ID, "issue", row.Issue, "role", payload.Role, "step", payload.Step, "head", payload.Head}
 	if left != "" {
-		r.log.Info("outbox merge-forward message finished undelivered: the merge forward no longer stands at that head", append(attributes, "why", left)...)
+		r.log.Info("outbox merge-forward message finished undelivered: the workflow no longer delivers it", append(attributes, "why", left)...)
 		return nil
 	}
 	return r.deliverHeld(ctx, row, heldMessage{issue: *issue, token: token, role: payload.Role,

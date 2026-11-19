@@ -215,13 +215,14 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 // key is judged by: the issue, whether its tree lingers (record.TreeLingers) and the pull request
 // the record holds for it. It returns the issue and that pull request, with why a message of step
 // about the merge forward asked of head is no longer to be delivered (leftMergeForwardAt), "" while
-// it is. An issue the record does not hold is a nil issue, no pull request and no reason. The rule
-// states, for a row already queued, the states the workflow writes these rows in (mergeForward,
-// mergeForwardLanded) and drops the ask they are about in (clearMergeForward), and the daemon's
-// executor reads it in one transaction at each attempt of a row, just before it delivers (the
-// daemon's mergeForwardMessage): so the workflow and the executor judge a row by this one rule,
-// kept beside the code that writes the rows, and no row outlives the state it was written for. It
-// is exported for that executor.
+// it is. An issue the record does not hold is a nil issue, no pull request and no reason. The
+// daemon's executor is its one caller: it reads the rule in one transaction at each attempt of a
+// row, just before it delivers (the daemon's mergeForwardMessage), so the executor judges each
+// queued row by this rule, and no row outlives the state it was written for. The workflow calls
+// neither this nor leftMergeForwardAt: it writes these rows only in states the rule accepts. The
+// rule is kept beside mergeForward and mergeForwardLanded, which write the rows, and
+// clearMergeForward, which drops the ask they are about, since it restates their states for a row
+// already queued. It is exported for that executor.
 func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, step record.MergeForwardStep, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -299,12 +300,17 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // (api's behindEntryClause), and the head it judged may be the one the merge replaced. That
 // refusal names the head the pull request stands at now and the head the newest merge forward
 // that landed left, whose merge the role can read, and tells the role to do the phase's work at
-// the head the pull request stands at and complete again at it.
+// the head the pull request stands at and complete again at it. While the record's ask is of the
+// head the pull request stands at and has not landed - the head an earlier merge left conflicts in
+// its turn and its merge forward is asked - the hold that ask sent tells the role not to complete
+// at that head (record.MergeForwardHold). So that refusal names that head instead, says its merge
+// forward is asked and has not landed, and tells the role to wait for the daemon's landed message
+// (record.MergeForwardLanded) and do the phase's work at the head that message names.
 //
 // A phase that ends with a handoff record is told to write it again, with its `head` set to the
-// head the pull request stands at, since a completion naming the record it already named is the
-// one the route answers as received (api/handoff.go) and the commit the completion reports is the
-// head the record names.
+// head the role is told to complete at, since a completion naming the record it already named is
+// the one the route answers as received (api/handoff.go) and the commit the completion reports is
+// the head the record names.
 //
 // The fence is the merge forward's alone, not every push's: a completion at the current head, at
 // a head no merge forward replaced, naming no commit while no merge forward has landed, or of any
@@ -337,6 +343,10 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Ph
 		}
 		if landed == "" {
 			return intake.Result{}, false
+		}
+		if asked.Landed == "" && asked.Head == pr.HeadSHA {
+			return refused("HANDOFF_HEAD_MERGED_FORWARD", fmt.Sprintf("the %s's completion of phase %s of %s names no head, so it says nothing about which head its work judged, and an earlier merge forward landed at head %s. Pull request #%d stands at head %s now, and the merge of %s forward onto head %s is asked and has not landed. Wait for the daemon's message that this merge landed, do the phase's work at the new head that message names, then %s; this completion changed nothing",
+				role, reported, issue.Key, landed, pr.Number, pr.HeadSHA, asked.Base, pr.HeadSHA, again)), true
 		}
 		return refused("HANDOFF_HEAD_MERGED_FORWARD", fmt.Sprintf("the %s's completion of phase %s of %s names no head, so it says nothing about which head its work judged, and the merge of %s forward landed: pull request #%d stands at head %s now. Read what the merge changed with `git show --remerge-diff %s` if it helps, do the phase's work at head %s, then %s; this completion changed nothing",
 			role, reported, issue.Key, asked.Base, pr.Number, pr.HeadSHA, landed, pr.HeadSHA, again)), true

@@ -21,7 +21,7 @@ import (
 // The log lines of the merge-forward executor (mergeForwardMessage) these tests read.
 const (
 	mergeForwardDelivered = "outbox merge-forward message delivered"
-	mergeForwardLeftLine  = "outbox merge-forward message finished undelivered: the merge forward no longer stands at that head"
+	mergeForwardLeftLine  = "outbox merge-forward message finished undelivered: the workflow no longer delivers it"
 	mergeForwardEnded     = "outbox merge-forward message finished undelivered: the role's claim has failed or retired"
 )
 
