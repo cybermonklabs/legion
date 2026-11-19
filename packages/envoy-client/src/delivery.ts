@@ -546,7 +546,8 @@ export function carriedItem(
 }
 
 /** Whether an event payload is a stand-in: the bus refused the event and the outbox published it
- *  with its long fields dropped (`payload_omitted`). */
+ *  with its long fields dropped, except the few it keeps whole (`payload_omitted`, whose doc in
+ *  `@legion/contracts` names them). */
 function payloadWasOmitted(payload: unknown): boolean {
   return isObject(payload) && payload["payload_omitted"] === true;
 }

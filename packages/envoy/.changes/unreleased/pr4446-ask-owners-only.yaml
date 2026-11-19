@@ -9,3 +9,7 @@ body: |-
   `dispatch_words`. The `comment.created` event of a comment in an ask's thread carries
   `ask_sessions`, the sessions that own the ask, so a client that renders the event can tell the
   same.
+  When the bus refuses an event and the outbox sends a stand-in (`payload_omitted`) in its place,
+  the stand-in keeps `ask_sessions`, `project_key` and `artifact_slug` whole, whatever their size,
+  so an owner's card on a stand-in still says the ask is its own and still carries the command
+  that answers it, on a project document whose slug is long too.
