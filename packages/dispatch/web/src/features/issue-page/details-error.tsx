@@ -85,6 +85,37 @@ export function DetailsErrorLine({
   );
 }
 
+/** The Retry of a read of Details that failed: it sends the read again, and a press while that
+ *  read is still out joins it (`cancelRefetch: false`) rather than ending it and sending another,
+ *  as the app's other refetches do (`DispatchQueryClient` in `api/query-client.ts`, `drive` in
+ *  `api/query-refresh.ts`). The query itself decides that as the press lands. A gate on the
+ *  render's `isFetching` would not hold: a second press can arrive before React draws the
+ *  first one's fetch (`hooks/useSubmitGuard.ts`). Retry reads busy while the read is out (the
+ *  query's `isFetching`) but stays enabled, because Chromium moves the focus of a control that
+ *  turns disabled to the page's body, which would lose a reader who pressed Retry by keyboard. A
+ *  read that fails again is drawn afresh (`errorUpdateCount`), so a screen reader says it again
+ *  even in the same words. */
+export function retryRead(read: {
+  readonly refetch: (options: { cancelRefetch: boolean }) => Promise<unknown>;
+}): () => void {
+  return () => void read.refetch({ cancelRefetch: false });
+}
+
+/** Whether a read of Details is said as failed, with its Retry: while it stands failed, and while
+ *  it is read again after it failed holding no answer. A fetch of a read that holds no answer
+ *  clears its error and puts it back to pending (`fetchState` in `@tanstack/query-core`), which
+ *  would take the line, and its Retry with a reader's focus, away while the read Retry sent is
+ *  out. Such a read has answered nothing since its last failure, so a failure it counts
+ *  (`errorUpdateCount`) is one it still stands in; `failureCount` would not tell, since the
+ *  fetch sets it back to 0 as it starts. */
+export function readFailed(read: {
+  readonly errorUpdateCount: number;
+  readonly isError: boolean;
+  readonly isPending: boolean;
+}): boolean {
+  return read.isError || (read.isPending && read.errorUpdateCount > 0);
+}
+
 /** What a row reads of a write whose failure it says: `useMutation`'s state of its last press. */
 export interface RowWrite<Variables> {
   readonly error: unknown;

@@ -18,6 +18,13 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import {
+  DetailsErrorLine,
+  readFailed,
+  retryRead,
+  useFocusHandOff,
+} from "../issue-page/details-error";
+import { firstUsable } from "../issue-page/usable-control";
 import { focusOnDocument } from "../shell/roving";
 import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
@@ -114,8 +121,9 @@ export function repoControlName(issueKey: string): string {
  * assistive technology because the description already says it. The clear control's `title` is
  * its description there (`aria-describedby`), so its name stays `Clear the repository of <KEY>`
  * and a reader still hears that the issue then inherits a repository. The refusal keeps its
- * words, which the page's list has none for; a failed read or write shows `QueryError` as on
- * every page. Each colour is the page's: the box is the page's field, the repository the issue
+ * words, which the page's list has none for; a failed read or write is said by the page's own
+ * line (`DetailsErrorLine`), with the page's Retry, which keeps a reader's focus as Details' own
+ * lines do. Each colour is the page's: the box is the page's field, the repository the issue
  * inherits (its placeholder) in the quiet grey; the clear control is the muted grey that turns
  * ink under the pointer; a refusal is the failed red; and the line is the ink in a row of Details
  * and the muted grey elsewhere. Nothing there keeps its width: the line wraps, the box, at most
@@ -263,6 +271,13 @@ export function RepoControl({
   const box = useRef<HTMLInputElement>(null);
   /** The place the row's text or the box is drawn in, the box's clear control with it. */
   const place = useRef<HTMLSpanElement>(null);
+  // As a failed line goes with a reader's focus on its Retry - a write's at the press of that
+  // Retry, a read's once the mappings answer - the focus would fall to the page's body. It goes
+  // to the repository's own control instead: the box, drawn while a write is out, else the text
+  // or "None" a row of Details draws in its place.
+  const failedLineLeft = useFocusHandOff(() =>
+    firstUsable(box.current, textControl.current, noneControl.current)
+  );
   // Whether the focus is on the row's text or in the box, its clear control included. Whichever
   // of them takes the other's place takes the focus the other held, which the one leaving the
   // page drops to the document: a press of the text leaves it in the box; Escape, or a write that
@@ -550,7 +565,7 @@ export function RepoControl({
           {NOT_OWNER_NAME}
         </p>
       ) : null}
-      {mappings.isError ? (
+      {page === null && mappings.isError ? (
         <QueryError
           message={apiErrorMessage(
             mappings.error,
@@ -560,11 +575,33 @@ export function RepoControl({
           retrying={mappings.isFetching}
         />
       ) : null}
-      {write.failed ? (
+      {/* Inside `NoTooltips` a failed read or write is said by the page's own line, in the page's
+          colours and with the page's Retry, as Details says each of its own. A read's line keeps
+          its words while Retry reads again, as Details' own read lines do: the read that is out
+          holds no error, so words taken from the error would change as Retry is pressed. */}
+      {page !== null && readFailed(mappings) ? (
+        <DetailsErrorLine
+          failure={mappings.errorUpdateCount}
+          message={`Could not load the repositories mapped to ${project}.`}
+          onRetry={retryRead(mappings)}
+          retryRef={failedLineLeft}
+          retrying={mappings.isFetching}
+        />
+      ) : null}
+      {page === null && write.failed ? (
         <QueryError
           message={write.error ?? `Could not update the repository of ${issueKey}.`}
           onRetry={write.retry}
           retrying={write.pending}
+        />
+      ) : null}
+      {/* A press of its Retry clears the refusal as it sends the pick again, taking the line with
+          it, so the Retry never waits on the write it sent and reads no busy. */}
+      {page !== null && write.failed ? (
+        <DetailsErrorLine
+          message={write.error ?? `Could not update the repository of ${issueKey}.`}
+          onRetry={write.retry}
+          retryRef={failedLineLeft}
         />
       ) : null}
     </div>

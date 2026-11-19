@@ -36,12 +36,18 @@ import type {
   RepoProject,
   UserState,
 } from "../../api/types";
-import { linkText, pageInkText } from "../../theme/classes";
+import {
+  dangerText,
+  linkText,
+  pageFailedText,
+  pageHeaderControl,
+  pageInkText,
+} from "../../theme/classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
-import { repoControlName } from "../issue/RepoControl";
+import { RepoControl, repoControlName } from "../issue/RepoControl";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
@@ -2549,6 +2555,263 @@ test("Add lists Repository on a row that inherits its repository and presses its
     listRepoProjects.mockRestore();
     getReferences.mockRestore();
     priorities.mockRestore();
+    restore();
+  }
+});
+
+/** That `alert`, a failure said in `row` of Details, is Details' own line (`details-error.tsx`):
+ *  in the page's colour for what failed, with nothing in the row in the app's danger colour that
+ *  the shared `QueryError` draws, and with the page's Retry. */
+function expectPageFailure(row: HTMLElement, alert: HTMLElement): void {
+  expect(alert, "the failure is not in the page's colour for what failed").toHaveClass(
+    pageFailedText
+  );
+  expect(
+    Array.from(row.querySelectorAll("*")).filter((element) =>
+      dangerText.split(" ").some((token) => element.classList.contains(token))
+    ),
+    "the row draws the failure in the app's danger colour"
+  ).toEqual([]);
+  expect(
+    within(row).getByRole("button", { name: CONTROL_LABELS.retry }),
+    "Retry is not drawn as the page's control"
+  ).toHaveClass(pageHeaderControl);
+}
+
+// The repository's control reads the project's mappings at once on an issue that resolves to no
+// repository, as this one does. A read that fails is said in the Repository row as every other
+// row of Details says a failed read, and its Retry reads the mappings again.
+test("a failed read of the repository mappings is said in the page's colours, with Retry", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const listRepoProjects = spyOn(api, "listRepoProjects")
+    .mockRejectedValueOnce(new Error("the network dropped the read"))
+    .mockResolvedValue([]);
+  const { unmount } = renderDetails();
+
+  try {
+    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.repository));
+    const alert = await within(row).findByRole("alert");
+    expectPageFailure(row, alert);
+    expect(alert.textContent).toBe("Could not load the repositories mapped to CORE.");
+    const reads = listRepoProjects.mock.calls.length;
+    await user.click(within(row).getByRole("button", { name: CONTROL_LABELS.retry }));
+    await waitFor(() => expect(listRepoProjects.mock.calls.length).toBeGreaterThan(reads));
+    await waitFor(() =>
+      expect(
+        within(row).queryByRole("alert"),
+        "the failure is still said after the mappings were read"
+      ).not.toBeInTheDocument()
+    );
+  } finally {
+    unmount();
+    listRepoProjects.mockRestore();
+    restore();
+  }
+});
+
+// A repository Dispatch refuses is said in the Repository row the same way, in Dispatch's words,
+// and its Retry makes the refused pick again.
+test("a repository Dispatch refuses is said in the page's colours, with Retry", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const reason = 'repo must be "owner/name"';
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(new ApiError(400, { code: "INVALID_ISSUE", error: reason }))
+  );
+  const { unmount } = renderDetails();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", {
+        name: `${CONTROL_LABELS.none}, ${repoControlName("CORE-1")}`,
+      })
+    );
+    await user.click(await screen.findByRole("combobox", { name: repoControlName("CORE-1") }));
+    await user.paste("acme/web");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/web" }, keyedAttempt)
+    );
+    const row = detailsRow(PROPERTY_LABELS.repository);
+    const alert = await within(row).findByRole("alert");
+    expectPageFailure(row, alert);
+    expect(alert.textContent).toBe(reason);
+    await user.click(within(row).getByRole("button", { name: CONTROL_LABELS.retry }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(
+      patchIssue.mock.calls.map(([, input]) => input),
+      "Retry did not send the refused repository again"
+    ).toEqual([{ repo: "acme/web" }, { repo: "acme/web" }]);
+    await waitFor(() =>
+      expect(
+        within(row).queryByRole("alert"),
+        "the refusal is still said after the repository landed"
+      ).not.toBeInTheDocument()
+    );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// Outside `NoTooltips`, on every page but the new issue page, the control says a failed read of
+// the mappings with the shared `QueryError` in the app's danger colour, as it always has.
+test("outside the page a failed read of the repository mappings is said by QueryError", async () => {
+  const user = userEvent.setup();
+  const listRepoProjects = spyOn(api, "listRepoProjects")
+    .mockRejectedValueOnce(new Error("the network dropped the read"))
+    .mockResolvedValue([]);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <RepoControl issueKey="CORE-1" project="CORE" repo={null} resolvedRepo={null} />
+    </QueryClientProvider>
+  );
+
+  try {
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Could not load the repositories mapped to CORE.");
+    expect(alert, "the failure is not in the app's danger colour").toHaveClass(dangerText);
+    expect(alert, "the failure is in the page's colour for what failed").not.toHaveClass(
+      pageFailedText
+    );
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    listRepoProjects.mockRestore();
+  }
+});
+
+// A fetch of mappings that hold no answer clears their error, so a line drawn from the error
+// alone went at the press of its Retry, and the focus of a reader who pressed Retry by keyboard
+// went with it to the page's body. The line stays while the read is out, its Retry busy and
+// holding the focus, a second press joins the read that is out, and once the mappings answer and
+// the line goes, the focus goes to the row's control rather than to the page.
+test("the mappings' Retry keeps the focus while the read is out, and hands it to the row's control once it answers", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const retried = Promise.withResolvers<RepoProject[]>();
+  const listRepoProjects = spyOn(api, "listRepoProjects")
+    .mockRejectedValueOnce(new Error("the network dropped the read"))
+    .mockImplementation(() => retried.promise);
+  const { unmount } = renderDetails();
+  const stopBlurring = emulateChromiumFocusFixup();
+  const retryOfMappings = () =>
+    within(detailsRow(PROPERTY_LABELS.repository)).queryByRole("button", {
+      name: CONTROL_LABELS.retry,
+    });
+
+  try {
+    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.repository));
+    await within(row).findByRole("alert");
+    const retry = retryOfMappings();
+    if (retry === null) throw new Error("the failed read of the mappings offers no Retry");
+
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    expect(listRepoProjects, "Retry did not read the mappings again").toHaveBeenCalledTimes(2);
+    await waitFor(() =>
+      expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      )
+    );
+    expect(retryOfMappings(), "the line and its Retry went while the read is out").toBe(retry);
+    expect(
+      within(row).getByRole("alert").textContent,
+      "the line no longer says the read failed while it is read again"
+    ).toBe("Could not load the repositories mapped to CORE.");
+    expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
+      retry
+    );
+    await user.keyboard("{Enter}");
+    expect(
+      listRepoProjects,
+      "a press of Retry while its read is out sent another"
+    ).toHaveBeenCalledTimes(2);
+
+    await act(async () => retried.resolve([]));
+    await waitFor(() =>
+      expect(retryOfMappings(), "the mappings answered, but the row still offers Retry").toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the mappings answered, and the focus fell to the page rather than to the row's control"
+    ).toBe(
+      within(row).getByRole("button", {
+        name: `${CONTROL_LABELS.none}, ${repoControlName("CORE-1")}`,
+      })
+    );
+  } finally {
+    stopBlurring();
+    unmount();
+    listRepoProjects.mockRestore();
+    restore();
+  }
+});
+
+// A press of a refused repository's Retry clears the refusal as it sends the pick again, so the
+// line and its Retry go at the press, and the focus of a reader who pressed Retry by keyboard
+// went with them to the page's body. It goes to the row's box instead, which the row draws while
+// the write is out, and from there to the row's text once the repository lands.
+test("a refused repository's Retry hands the focus to the row's box as its line goes", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "repository refused" }))
+  );
+  const { unmount } = renderDetails();
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", {
+        name: `${CONTROL_LABELS.none}, ${repoControlName("CORE-1")}`,
+      })
+    );
+    await user.click(await screen.findByRole("combobox", { name: repoControlName("CORE-1") }));
+    await user.paste("acme/web");
+    await user.keyboard("{Enter}");
+    const row = detailsRow(PROPERTY_LABELS.repository);
+    await within(row).findByRole("alert");
+    const retry = within(row).getByRole("button", { name: CONTROL_LABELS.retry });
+
+    const retried = Promise.withResolvers<Issue>();
+    patchIssue.mockImplementationOnce(() => retried.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(
+        within(row).queryByRole("alert"),
+        "the refusal is still said while the pick is sent again"
+      ).not.toBeInTheDocument()
+    );
+    expect(
+      document.activeElement,
+      "the refusal's line went, and the focus fell to the page rather than to the row's box"
+    ).toBe(within(row).getByRole("combobox", { name: repoControlName("CORE-1") }));
+
+    await act(async () => retried.resolve(narrowIssue({ ...issue, repo: "acme/web" })));
+    await waitFor(() =>
+      expect(
+        within(row).queryByRole("combobox", { name: repoControlName("CORE-1") }),
+        "the row still draws its box after the repository landed"
+      ).not.toBeInTheDocument()
+    );
+    expect(
+      row.contains(document.activeElement),
+      "the repository landed, and the focus fell to the page rather than to the row's control"
+    ).toBe(true);
+  } finally {
+    stopBlurring();
+    unmount();
     restore();
   }
 });

@@ -58,3 +58,12 @@ export function usableControl(control: Element | null): boolean {
     control.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true })
   );
 }
+
+/** The first of `candidates` that takes a press (`usableControl`), to hand a focus to. */
+export function firstUsable(
+  ...candidates: (HTMLElement | null | undefined)[]
+): HTMLElement | undefined {
+  return candidates.find(
+    (candidate): candidate is HTMLElement => candidate != null && usableControl(candidate)
+  );
+}
