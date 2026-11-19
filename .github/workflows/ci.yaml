@@ -363,6 +363,7 @@ jobs:
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
       go_fetch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_fetch_test }}
+      go_build_offline_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_build_offline_test }}
       select_e2e_proofs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.select_e2e_proofs_test }}
       go_tagged_tests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_tagged_tests_test }}
       ci_ok_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_test }}
@@ -1545,6 +1546,12 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-fetch.test.sh'
               - '.github/scripts/go-fetch.sh'
+            go_build_offline_test: &go_build_offline_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/go-build-offline.test.sh'
+              - '.github/scripts/go-build-offline.sh'
             select_e2e_proofs_test: &select_e2e_proofs_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1767,6 +1774,7 @@ jobs:
               - *check_release_credentials_test
               - *repo_paths_test
               - *go_fetch_test
+              - *go_build_offline_test
               - *select_e2e_proofs_test
               - *go_tagged_tests_test
               - *ci_ok_test
@@ -1909,9 +1917,11 @@ jobs:
               # The screenshots build packages/dispatch's web app, which aliases contracts' and the
               # proof editor's sources (web/vite.config.ts:63-81), and boot its e2e harness
               # (docs/site/media/harness.ts:21,97), whose e2e/run-server.sh serves the Dispatch
-              # server on the socket scripts/e2e/lib/held-port.py holds (run-server.sh:37).
+              # server on the socket scripts/e2e/lib/held-port.py holds (run-server.sh:37), and
+              # whose e2e/run-server.sh and run-broker.sh build through the shared offline build.
               - 'packages/dispatch/**'
               - 'scripts/e2e/lib/held-port.py'
+              - '.github/scripts/go-build-offline.sh'
               - 'packages/proof-editor/src/**'
               - 'packages/contracts/src/**'
               # generators/dispatch-tools.ts:12 imports envoy-client's dispatch-command.ts;
@@ -2634,6 +2644,8 @@ jobs:
               - *go_workspace
               - *dispatch_server
               - 'scripts/e2e/lib/held-port.py'
+              # e2e/run-server.sh, run-broker.sh and run-signin-issuer.sh build through it.
+              - '.github/scripts/go-build-offline.sh'
               # e2e/harness-postgres.ts sizes each stack's Postgres from
               # `go run ./internal/dispatch/store/cmd/connections`, which dispatch-browser.yaml's
               # binaries job runs for the shard and alone jobs and its visual job runs for itself;
@@ -3073,6 +3085,8 @@ jobs:
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - '.github/scripts/go-tagged-tests.sh'
+              # e2e/run-server.sh builds Dispatch A's server through it.
+              - '.github/scripts/go-build-offline.sh'
               - 'packages/envoy/scripts/build-dispatch-build.sh'
               - 'packages/envoy-client/**'
               - 'packages/broker-client/**'
@@ -3290,7 +3304,9 @@ jobs:
               # pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
-              # e2e-local.sh:148-149 builds ./cmd/listener and ./internal/testnats/cmd/natsd.
+              # e2e-local.sh builds ./cmd/listener and ./internal/testnats/cmd/natsd, through the
+              # shared offline build.
+              - '.github/scripts/go-build-offline.sh'
               - *listener_command
               - 'packages/envoy/internal/testnats/cmd/natsd/*'
               # The job reads no Markdown file: the listener, the renderer and the contracts
@@ -3311,6 +3327,8 @@ jobs:
               - *go_workspace
               # Its fetch step runs this script before the tests.
               - '.github/scripts/go-fetch.sh'
+              # The role takeover smoke's builds, through packages/pi-envoy/scripts/local-stack.sh.
+              - '.github/scripts/go-build-offline.sh'
               - 'packages/envoy/**'
               - 'packages/envoy-client/**'
               - 'packages/pi-envoy/**'
@@ -4998,6 +5016,7 @@ jobs:
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}
       go_fetch_test: ${{ needs.changes.outputs.go_fetch_test }}
+      go_build_offline_test: ${{ needs.changes.outputs.go_build_offline_test }}
       select_e2e_proofs_test: ${{ needs.changes.outputs.select_e2e_proofs_test }}
       go_tagged_tests_test: ${{ needs.changes.outputs.go_tagged_tests_test }}
       ci_ok_test: ${{ needs.changes.outputs.ci_ok_test }}

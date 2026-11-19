@@ -30,19 +30,13 @@ unset DISPATCH_E2E_SIGNIN_CLIENT_SECRET
 
 cd "$(dirname "$0")/../../envoy"
 # Built and exec'd as run-server.sh builds and execs the server, so the pid a caller started is the
-# issuer's: one binary per checkout, under a lock of its own, rewritten only when the source changed.
-# The build reads the module cache alone (GOPROXY=off), as run-server.sh's does and for its reason:
-# each CI job whose tests start this script fetches the issuer's modules in a step before them.
-if ! build_output=$(flock ./.dev-oidc-issuer-e2e.lock env GOPROXY=off go build -o ./dev-oidc-issuer-e2e ./cmd/dev-oidc-issuer 2>&1); then
-  printf '%s\n' "$build_output" >&2
-  if [[ "$build_output" == *GOPROXY=off* ]]; then
-    printf '%s\n  %s\n' \
-      "The module cache lacks a module this build needs, and a test fetches no module while it runs. Fetch them before the tests, from the repository root:" \
-      ".github/scripts/go-fetch.sh deps packages/envoy ./cmd/dev-oidc-issuer" >&2
-  fi
-  exit 1
-fi
-[ -z "$build_output" ] || printf '%s\n' "$build_output" >&2
+# issuer's: one binary per checkout, under a lock of its own (the subshell's fd 9, held for the build
+# alone), rewritten only when the source changed. The build reads the module cache alone
+# (go_build_offline, GOPROXY=off), as run-server.sh's does and for its reason: each CI job whose
+# tests start this script fetches the issuer's modules in a step before them.
+# shellcheck source=.github/scripts/go-build-offline.sh
+source ../../.github/scripts/go-build-offline.sh
+( flock 9 && go_build_offline packages/envoy ./dev-oidc-issuer-e2e ./cmd/dev-oidc-issuer ) 9>./.dev-oidc-issuer-e2e.lock || exit 1
 exec ./dev-oidc-issuer-e2e \
   --code-flow "$client_id="<(printf '%s' "$secret") \
   --sign-in-as "$person" \

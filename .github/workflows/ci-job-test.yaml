@@ -176,6 +176,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.go_fetch_test: go-fetch.test.sh and what it tests."
         type: string
         required: true
+      go_build_offline_test:
+        description: "ci.yaml's needs.changes.outputs.go_build_offline_test: go-build-offline.test.sh and what it tests."
+        type: string
+        required: true
       select_e2e_proofs_test:
         description: "ci.yaml's needs.changes.outputs.select_e2e_proofs_test: select-e2e-proofs.test.sh and what it tests."
         type: string
@@ -445,6 +449,13 @@ jobs:
       - name: Test the fetch the Go jobs run before their tests
         if: inputs.changes-result != 'success' || inputs.go_fetch_test == 'true'
         run: .github/scripts/go-fetch.test.sh
+
+      # The offline Go build the test launchers run after that fetch (e2e-local.sh, local-stack.sh
+      # and packages/dispatch/e2e's run-server.sh, run-broker.sh and run-signin-issuer.sh), under a
+      # stand-in go.
+      - name: Test the offline Go build the test launchers run
+        if: inputs.changes-result != 'success' || inputs.go_build_offline_test == 'true'
+        run: .github/scripts/go-build-offline.test.sh
 
       # The proof selector e2e.yaml's select job runs, over fixture trees and over this
       # repository's own .github/e2e-scripts.json and scripts/e2e/.

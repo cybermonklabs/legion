@@ -1900,7 +1900,11 @@ GUARD_SCRIPT = ("go test -count=1 -run "
 
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
 BUILD_BINARIES = "docs/site/scripts/build-binaries.sh"
-DISPATCH_SERVER_BUILD = "if ! build_output=$(flock ./.dispatch-e2e.lock env GOPROXY=off go build -o ./dispatch-e2e ./cmd/dispatch 2>&1); then"
+DISPATCH_SERVER_BUILD = "( flock 9 && go_build_offline packages/envoy ./dispatch-e2e ./cmd/dispatch ) 9>./.dispatch-e2e.lock || exit 1"
+# The shared offline build the five test launchers source (e2e-local.sh, local-stack.sh, and
+# packages/dispatch/e2e's run-server.sh, run-broker.sh and run-signin-issuer.sh): its one go
+# command is each launcher's build, which the launcher's own line names.
+GO_BUILD_OFFLINE = ".github/scripts/go-build-offline.sh"
 # The three commands of the real broker's harness rows, and the Dispatch server with them: the
 # binaries job of dispatch-browser.yaml builds all four, since the shard and alone jobs run
 # them in a container and so run no go command of their own (that file says why).
@@ -2140,6 +2144,10 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("go_fetch_test", "Test the fetch the Go jobs run before their tests", f"{SCRIPTS}/go-fetch.test.sh", [
         (f"{SCRIPTS}/go-fetch.sh", "the script under test"),
+    ]),
+    harness("go_build_offline_test", "Test the offline Go build the test launchers run",
+            f"{SCRIPTS}/go-build-offline.test.sh", [
+        (GO_BUILD_OFFLINE, "the script under test: go-build-offline.test.sh links it into a fixture repository"),
     ]),
     harness("select_e2e_proofs_test", "Test the e2e proof selector", f"{SCRIPTS}/select-e2e-proofs.test.sh", [
         (f"{SCRIPTS}/select-e2e-proofs.sh", "the script under test"),
@@ -2518,6 +2526,7 @@ GATES = [
         (BUILD_BINARIES, f"docs/site/scripts/generate.ts:116 runs it ({at_docs('Build the docs site')})"),
         (RUN_SERVER, f"packages/dispatch/e2e/harness-listeners.ts's dispatchServer runs it ({at_docs('Take the screenshots')})"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds the server's port through it"),
+        (GO_BUILD_OFFLINE, "packages/dispatch/e2e/run-server.sh:385 and run-broker.sh:171 source it and build through it"),
         # broker-refgen (docs/site/generators/broker-reference.sh:15) parses these at run time,
         # each directory's non-test .go files alone (packages/envoy/cmd/broker-refgen/source.go:34-45),
         # and the packages of REFGEN_API past them, whose non-test files the build of
@@ -2775,6 +2784,8 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds each stack's server port through it"),
+        (GO_BUILD_OFFLINE, "packages/dispatch/e2e/run-server.sh:385, run-broker.sh:171 and run-signin-issuer.sh:38 "
+                           "source it and build through it"),
         (".github/scripts/dispatch-browser-samples.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
          "start it and read its two summaries"),
@@ -3119,6 +3130,7 @@ GATES = [
         # manifest, which bun_job declares.
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds the server's port through it"),
+        (GO_BUILD_OFFLINE, "packages/dispatch/e2e/run-server.sh:385 sources it and builds the server through it"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + two_builds_go_reads()),
 
@@ -3245,15 +3257,16 @@ GATES = [
     ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod")),
 
     gate("envoy_e2e_local", "envoy-e2e-local", runs=[
-        script_run(f"{ENVOY}/scripts/e2e-local.sh", 'build_offline "$listener_binary" ./cmd/listener',
+        script_run(f"{ENVOY}/scripts/e2e-local.sh", 'go_build_offline packages/envoy "$listener_binary" ./cmd/listener',
                    f"run by {at('envoy-e2e-local', 'Local end-to-end acceptance')}", ENVOY, ["./cmd/listener"], mode="build"),
-        script_run(f"{ENVOY}/scripts/e2e-local.sh", 'build_offline "$nats_binary" ./internal/testnats/cmd/natsd',
+        script_run(f"{ENVOY}/scripts/e2e-local.sh", 'go_build_offline packages/envoy "$nats_binary" ./internal/testnats/cmd/natsd',
                    f"run by {at('envoy-e2e-local', 'Local end-to-end acceptance')}", ENVOY, ["./internal/testnats/cmd/natsd"], mode="build"),
     ], reads=reads(
         (f"{ENVOY}/scripts/e2e-local.test.sh", at("envoy-e2e-local", "Refusal test for e2e-local.sh")),
         (f"{ENVOY}/scripts/e2e-local.sh", f"{at('envoy-e2e-local', 'Local end-to-end acceptance')}; e2e-local.test.sh:6,27"),
         (f"{ENVOY}/scripts/fixtures/github/**", "packages/envoy/scripts/e2e-local.sh:1252-1283 posts each fixture"),
         (".github/scripts/go-fetch.sh", f"{at('envoy-e2e-local', 'Fetch the modules of the listener and natsd e2e-local.sh builds')} runs it"),
+        (GO_BUILD_OFFLINE, "packages/envoy/scripts/e2e-local.sh:300 sources it and builds the listener and natsd through it"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (CONTRACTS_SRC, "packages/envoy-client/src/delivery.ts imports @legion/contracts"),
     ) + envoy_client_dep("packages/envoy/scripts/e2e-local.sh:1357-1361 and :1758-1766 run bun in packages/envoy-client "
@@ -3277,6 +3290,8 @@ GATES = [
         ("packages/pi-envoy/**", at(STALL, "Stall test of pi-envoy")),
         (TEST_FIXTURES_SRC, "packages/pi-envoy/extensions/envoy.test.ts imports @legion/test-fixtures/environment, and test/envoy-stack.ts its go-command"),
         (".github/scripts/go-fetch.sh", f"{at(STALL, 'Fetch the modules of the envoy commands the stacks build')} runs it"),
+        (GO_BUILD_OFFLINE, f"packages/pi-envoy/scripts/local-stack.sh:67 sources it, and {at(STALL, 'Role takeover smoke')} "
+                           "builds natsd and the listener through it"),
         ("packages/claude-envoy/**", f"{at(STALL, 'Stall test of claude-envoy')} (tests/envoy-channel-stall.test.ts runs bin/envoy-channel.ts)"),
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),

@@ -162,20 +162,14 @@ cd "$e2e_dir/../../envoy"
 # out/ is ignored, so nothing built here is tracked. The work directory is made whether or not
 # this run builds: the fake secrets file below is written in it, and with the binaries handed
 # over it is the only thing this script still writes there. The build reads the module cache
-# alone (GOPROXY=off), as e2e/run-server.sh's does and for its reason: each CI job whose tests
-# start this script fetches these three commands' modules in a step before them.
+# alone (go_build_offline, GOPROXY=off), as e2e/run-server.sh's does and for its reason: each CI
+# job whose tests start this script fetches these three commands' modules in a step before them.
+# The lock is the subshell's fd 9, held for the build alone.
 mkdir -p "$work"
 if [ -z "$prebuilt_bin" ]; then
-  if ! build_output=$(flock "$work/.build.lock" env GOPROXY=off go build -o "$work/" ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed 2>&1); then
-    printf '%s\n' "$build_output" >&2
-    if [[ "$build_output" == *GOPROXY=off* ]]; then
-      printf '%s\n  %s\n' \
-        "The module cache lacks a module this build needs, and a test fetches no module while it runs. Fetch them before the tests, from the repository root:" \
-        ".github/scripts/go-fetch.sh deps packages/envoy ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed" >&2
-    fi
-    exit 1
-  fi
-  [ -z "$build_output" ] || printf '%s\n' "$build_output" >&2
+  # shellcheck source=.github/scripts/go-build-offline.sh
+  source ../../.github/scripts/go-build-offline.sh
+  ( flock 9 && go_build_offline packages/envoy "$work/" ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed ) 9>"$work/.build.lock" || exit 1
 fi
 
 if [ "$mode" = issuer ]; then

@@ -293,29 +293,15 @@ rm -rf "$nats_store_dir"
 : >"$nocursor_session_log_file"
 mkfifo "$session_ready_fifo" "$subscriber_ready_fifo" "$nocursor_ready_fifo"
 
-# build_offline OUT PACKAGE: `go build -o OUT PACKAGE` in packages/envoy, from the module cache
-# alone (GOPROXY=off). A fetch while the run goes would turn a fault of the module proxy into its
-# failure, on a change that touched nothing it tests; the envoy-e2e-local job fetches the modules
-# in a step before it, and a module the cache lacks fails the build here, with that fetch named
-# after go's own output.
-build_offline() {
-  local output
-  if output=$(cd "$envoy_dir" && GOPROXY=off go build -o "$1" "$2" 2>&1); then
-    [[ -z "$output" ]] || printf '%s\n' "$output" >&2
-    return 0
-  fi
-  printf '%s\n' "$output" >&2
-  if [[ "$output" == *GOPROXY=off* ]]; then
-    printf '%s\n  %s\n' \
-      "The module cache lacks a module this build needs, and a test fetches no module while it runs. Fetch them before the tests, from the repository root:" \
-      ".github/scripts/go-fetch.sh deps packages/envoy $2" >&2
-  fi
-  return 1
-}
+# The two builds read the module cache alone (go_build_offline, GOPROXY=off): the envoy-e2e-local
+# job fetches their modules in a step before this run, and a module the cache lacks fails the build
+# here, with that fetch named after go's own output.
+# shellcheck source=.github/scripts/go-build-offline.sh
+source "${repo_root}/.github/scripts/go-build-offline.sh"
 
 printf 'building listener and NATS server\n'
-build_offline "$listener_binary" ./cmd/listener
-build_offline "$nats_binary" ./internal/testnats/cmd/natsd
+go_build_offline packages/envoy "$listener_binary" ./cmd/listener
+go_build_offline packages/envoy "$nats_binary" ./internal/testnats/cmd/natsd
 
 printf 'starting NATS\n'
 "$nats_binary" -p "${E2E_NATS_PORT:--1}" -store_dir "$nats_store_dir" >"$nats_log_file" 2>&1 &
