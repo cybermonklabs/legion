@@ -18,13 +18,15 @@ Run this pass on the first turn of every UTC day and after every directive from 
 1. Read the weekly-planning issue and select its newest `plan-week-*` artifact by its latest
    `artifact.version` event. Read that artifact before changing any issue.
 2. Read the deployment's priorities with `dispatch priorities --project <KEY>`. A person ranks
-   them for the whole deployment, and the plan's order follows theirs: work that advances a higher
-   priority stands above work that advances a lower one, and work that advances none stands below
-   all of it. An issue's `Advances:` line names the priorities it advances, its own and inherited.
-   When you rank the plan, rank it this way. When a plan line breaks this order and no person's
-   request stands behind that line, move the line, and name the move in the day's report. Name in
-   the day's report, too, this project's count of work in flight under no priority, which the same
-   read prints.
+   them for the whole deployment, and the plan's order follows theirs. Give each issue the rank of
+   the highest priority its `Advances:` line names, its own or inherited; an issue that advances
+   none ranks below all the others. Order the plan's lines by that rank, highest first, and keep
+   the plan's order between lines of the same rank. A plan line that lists several issues takes the
+   rank of its highest issue. Move a line that breaks this order unless a person asked for a
+   different order of that work, and cite that request beside the line: a request to do the work
+   is no request about its order. Name each move in your turn's summary. The day's report names
+   the moves of the reconciliation before it, and this project's count of work in flight under no
+   priority, which the same read prints.
 3. For every plan line whose issue key carries this project's prefix (`daemon.project` in
    `read_state`), make the project's board order match the line order exactly, because board rank
    is the order Legion admits by: an issue whose first phase can start takes the rank of its

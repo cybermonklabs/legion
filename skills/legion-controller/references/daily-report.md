@@ -108,8 +108,9 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   an `event:` key whose event has happened, and a plan row that the weekly plan no longer defers.
 - **Free slots.** Counted as the skill's "Free slots" says, in issues rather than trees; each
   stays free until an issue in the line takes it.
-- **The priorities.** Each plan line you moved because its order broke the deployment's
-  priorities, and this project's count of work in flight under no priority, both from step 2 of
+- **The priorities.** Each plan line that the reconciliation before this report moved because its
+  order broke the deployment's priorities, and this project's count of work in flight under no
+  priority, both from step 2 of
   `skill://legion-controller/references/backlog-stewardship.md#reconcile-the-weekly-plan`.
 - **Open capabilities.** Each row of `read_state`'s `capabilities` whose `status` is `open`: its
   name, its `detail`, and a deployment row's `configLine`. Say who acts on it, as
