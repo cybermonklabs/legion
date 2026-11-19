@@ -431,17 +431,9 @@ test("a person page lists what they authored and what reached them", async ({
     // The page is headed by that login.
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("alice");
 
-    const rows = page.getByRole("list", { name: "Person nodes" }).getByRole("listitem");
-    await expect(rows).toHaveCount(2);
-    // Newest first: the received comment, then the authored one.
-    await expect(rows.nth(0)).toContainText("Received");
-    await expect(rows.nth(0)).toContainText("Bob wrote the third, for the session.");
-    await expect(rows.nth(1)).toContainText("Authored");
-    await expect(rows.nth(1)).toContainText("Alice wrote the first.");
     // What the store ties to nobody of hers is on no row: the comment that reached neither, the
     // one her session wrote, and the author-private one another person wrote - that one
     // delivered to the same session, so the predicate is what keeps it off.
-    await expect(rows.nth(0)).not.toContainText("Authored");
     for (const absent of [
       "Bob wrote the fourth, which reaches neither.",
       "The session wrote the second.",
@@ -449,6 +441,15 @@ test("a person page lists what they authored and what reached them", async ({
     ]) {
       await expect(page.getByText(absent)).toHaveCount(0);
     }
+
+    const rows = page.getByRole("list", { name: "Person nodes" }).getByRole("listitem");
+    await expect(rows).toHaveCount(2);
+    // Newest first: the received comment, then the authored one.
+    await expect(rows.nth(0)).toContainText("Received");
+    await expect(rows.nth(0)).toContainText("Bob wrote the third, for the session.");
+    await expect(rows.nth(1)).toContainText("Authored");
+    await expect(rows.nth(1)).toContainText("Alice wrote the first.");
+    await expect(rows.nth(0)).not.toContainText("Authored");
     await page.screenshot({
       fullPage: true,
       path: testInfo.outputPath("person-page.png"),

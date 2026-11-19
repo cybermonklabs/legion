@@ -2,14 +2,11 @@ package graphcensus
 
 import (
 	"context"
-	"errors"
 	"io"
 	"slices"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -125,15 +122,15 @@ func blockKind(t *testing.T, report BackfillReport) KindBackfill {
 }
 
 // R23: the backfill is one of the three writers that obey the revision fence, so it takes a
-// document's owner row, then its document_block_versions row, before it writes a node for any
+// document's owner lock, then its document_block_versions row, before it writes a node for any
 // block of that document, and it writes only the rows still there once it holds them.
 //
 // The run builds the race rather than waiting for it. A second transaction stands for a version
 // write that deletes a block written before the store existed: it takes the document's owner
-// row and its owed row, as every version write does (docs' lockArtifactOwner, then the fence in
-// refs.IndexBlocks), and deletes the block's row. The backfill starts while that transaction is
+// lock and its owed row, as every version write does (docs' lockArtifactOwner, then the fence in
+// its write phase), and deletes the block's row. The backfill starts while that transaction is
 // open, so its read of the batch sees the block, since the delete has not committed. The test
-// reads the backfill waiting at the owner row, and only then lets the delete commit. A backfill
+// reads the backfill waiting at the owner lock, and only then lets the delete commit. A backfill
 // that wrote from its first read would bring the deleted block back as a live node with an
 // in_document tuple and no projection row.
 func TestTheBackfillWritesNoNodeForABlockAVersionDeletedWhileItWaited(t *testing.T) {
@@ -147,11 +144,13 @@ func TestTheBackfillWritesNoNodeForABlockAVersionDeletedWhileItWaited(t *testing
 		t.Fatalf("begin the version write: %v", err)
 	}
 	defer holder.Rollback(ctx)
+	if err := store.LockOwner(ctx, holder, store.IssueOwner("CORE-1")); err != nil {
+		t.Fatalf("the version write could not take the owner lock: %v", err)
+	}
 	for _, statement := range []struct {
 		what, sql string
 		args      []any
 	}{
-		{"take the owner row", `select closed_at is null from issues where key = $1 for no key update`, []any{"CORE-1"}},
 		{"take the owed row", `select 1 from document_block_versions where artifact_id = $1 for no key update`, []any{document.artifactID}},
 		{"delete the block", `delete from document_blocks where artifact_id = $1 and block_id = 'deleted'`, []any{document.artifactID}},
 	} {
@@ -210,18 +209,18 @@ func TestTheBackfillWritesNoNodeForABlockAVersionDeletedWhileItWaited(t *testing
 		t.Errorf("the backfill reports %#v for blocks, want 1 row, 1 node, 4 tuples, 1 document owed and the cutover complete", blocks)
 	}
 
-	// The lock it waited at is the owner row, the first of the two R23 names, which is the one
+	// The lock it waited at is the owner lock, the first of the two R23 names, which is the one
 	// the version write took first.
-	if !strings.Contains(waited, "from issues") || !strings.Contains(waited, "for no key update") {
-		t.Errorf("the backfill waited behind the version write at %q, want the document's owner row (`from issues ... for no key update`)", waited)
+	if !strings.HasPrefix(strings.ToLower(waited), lockstep.OwnerLockStatement) {
+		t.Errorf("the backfill waited behind the version write at %q, want the document's owner lock (%q)", waited, lockstep.OwnerLockStatement)
 	}
 }
 
-// R23's order: the backfill takes the owner row, then the owed row. A second transaction holds
-// the owed row alone, and while the backfill waits at it the test tries the owner row without
-// waiting: a backfill that took the two in that order already holds the owner row, so the try
-// is refused. One that took the owed row first, or not the owner row at all, leaves the owner
-// row free, and two writers could then each hold the row the other waits for.
+// R23's order: the backfill takes the owner lock, then the owed row. A second transaction holds
+// the owed row alone, and while the backfill waits at it the test tries the owner lock without
+// waiting: a backfill that took the two in that order already holds the owner lock, so the try
+// is refused. One that took the owed row first, or not the owner lock at all, leaves the owner
+// free, and two writers could then each hold the lock the other waits for.
 func TestTheBackfillHoldsTheOwnerRowWhileItWaitsForTheOwedRow(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -246,10 +245,9 @@ func TestTheBackfillHoldsTheOwnerRowWhileItWaitsForTheOwedRow(t *testing.T) {
 	if !strings.Contains(waited, "document_block_versions") {
 		t.Errorf("the backfill waited behind the owed row at %q, want its lock of document_block_versions", waited)
 	}
-	_, err = database.Pool.Exec(ctx, `select 1 from issues where key = 'CORE-1' for no key update nowait`)
-	var refused *pgconn.PgError
-	if !errors.As(err, &refused) || refused.Code != "55P03" {
-		t.Errorf("while the backfill waited at the owed row the owner row was free to take (err %v), want it held by the backfill: R23 takes the owner row, then the owed row", err)
+	taken, err := store.TryLockOwners(ctx, database.Pool, store.IssueOwner("CORE-1"))
+	if err != nil || len(taken) != 0 {
+		t.Errorf("while the backfill waited at the owed row the owner lock was free to take (took %v, err %v), want it held by the backfill: R23 takes the owner lock, then the owed row", taken, err)
 	}
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("release the owed row: %v", err)
@@ -293,11 +291,13 @@ func TestTheBackfillStatesNoMentionAVersionDeletedWhileItWaited(t *testing.T) {
 		t.Fatalf("begin the version write: %v", err)
 	}
 	defer holder.Rollback(ctx)
+	if err := store.LockOwner(ctx, holder, store.IssueOwner("CORE-1")); err != nil {
+		t.Fatalf("the version write could not take the owner lock: %v", err)
+	}
 	for _, statement := range []struct {
 		what, sql string
 		args      []any
 	}{
-		{"take the owner row", `select closed_at is null from issues where key = $1 for no key update`, []any{"CORE-1"}},
 		{"take the owed row", `select 1 from document_block_versions where artifact_id = $1 for no key update`, []any{document.artifactID}},
 		{"delete the reference", `delete from block_refs where artifact_id = $1 and block_id = 'only' and to_id = 'CORE-1'`, []any{document.artifactID}},
 	} {
@@ -349,9 +349,9 @@ func TestTheBackfillStatesNoMentionAVersionDeletedWhileItWaited(t *testing.T) {
 	if done := reportedKind(t, report, "block_ref"); done.Rows != 1 || done.Tuples != 1 || !done.Complete {
 		t.Errorf("the backfill reports %#v for block references, want 1 row, 1 tuple and the cutover complete", done)
 	}
-	// The lock it waited at is the owner row, the first of the two R23 names, which is the one the
+	// The lock it waited at is the owner lock, the first of the two R23 names, which is the one the
 	// version write took first.
-	if !strings.Contains(waited, "from issues") || !strings.Contains(waited, "for no key update") {
-		t.Errorf("the backfill waited behind the version write at %q, want the document's owner row (`from issues ... for no key update`)", waited)
+	if !strings.HasPrefix(strings.ToLower(waited), lockstep.OwnerLockStatement) {
+		t.Errorf("the backfill waited behind the version write at %q, want the document's owner lock (%q)", waited, lockstep.OwnerLockStatement)
 	}
 }

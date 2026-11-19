@@ -45,7 +45,7 @@ func cmdGrantList(args []string, stdout, stderr io.Writer) int {
 	c := newClient(base)
 	grants, raw, err := c.OperatorGrants(ctx, signer)
 	if err != nil {
-		return operatorFail(stderr, form, c.source(ctx), err)
+		return operatorFail(stderr, form, c.source(ctx), signer.failure, err)
 	}
 	if *asJSON {
 		writeVerbatim(stdout, raw)
@@ -158,7 +158,7 @@ func cmdGrantRevoke(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	c := newClient(base)
 	if err := c.RevokeOperatorGrant(ctx, signer, grantID); err != nil {
-		return operatorFail(stderr, form, c.source(ctx), err)
+		return operatorFail(stderr, form, c.source(ctx), signer.failure, err)
 	}
 	fmt.Fprintf(stdout, "revoked %s at %s\n", grantID, brokerSource(base))
 	return 0

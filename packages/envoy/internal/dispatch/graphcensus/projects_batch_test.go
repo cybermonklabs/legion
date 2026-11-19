@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -77,12 +78,12 @@ func TestEachIncompleteLineNamesItsCureAndTheBackfillCuresAnUnscopedNode(t *test
 	}
 }
 
-// A removal of this build takes the document's issue row, states its node gone and deletes the
-// row, and commits. A batch of the backfill that read the row before then takes the same issue row
-// before it writes (lockObjectOwners), so it waits for the removal, reads under that row that the
-// document is gone, and writes no node for it: the removal's gone statement stands, and the census
-// names nothing. Here the removal holds the issue's row, with its node stated gone and its row
-// deleted, while the batch is shown queued behind it; then the removal commits.
+// A removal of this build takes the document's issue owner lock, states its node gone and deletes
+// the row, and commits. A batch of the backfill that read the row before then takes the same owner
+// lock before it writes (lockObjectOwners), so it waits for the removal, reads under that lock that
+// the document is gone, and writes no node for it: the removal's gone statement stands, and the
+// census names nothing. Here the removal holds the issue's owner lock, with its node stated gone
+// and its row deleted, while the batch is shown queued behind it; then the removal commits.
 //
 // Its control is the batch's owner lock taken out: the batch then reads the row the removal has not
 // committed yet, waits only on the node, and moves it live after the removal commits, which the
@@ -105,8 +106,8 @@ func TestTheObjectBatchWaitsForARemovalOnTheIssueRowAndWritesNoNode(t *testing.T
 		t.Fatalf("begin the removal: %v", err)
 	}
 	defer removal.Rollback(ctx)
-	if _, err := removal.Exec(ctx, `select 1 from issues where key = 'IDEN-1' for no key update`); err != nil {
-		t.Fatalf("take the issue's row as the removal does: %v", err)
+	if err := store.LockOwners(ctx, removal, store.IssueOwner("IDEN-1")); err != nil {
+		t.Fatalf("take the issue's owner lock as the removal does: %v", err)
 	}
 	gone := graphstore.ArtifactNode("IDEN-1/notes-md", "IDEN", "", alice, created)
 	gone.State = graphstore.StateGone
@@ -150,9 +151,9 @@ func TestTheObjectBatchWaitsForARemovalOnTheIssueRowAndWritesNoNode(t *testing.T
 // it falls in nor any later run. The census names the skipped document missing, and since no
 // command writes its node, its line says so rather than sending the operator to the backfill.
 //
-// Its controls are the skip taken out of the object batch, which makes the backfill fail on the
-// join's refusal and write nothing more, and the refused party's cure taken out of the census,
-// whose line then names the backfill.
+// Its controls are the refused party's skip taken out of the object pass (writableRows answering
+// such a row writable), which makes the backfill fail on the join's refusal and write nothing
+// more, and the refused party's cure taken out of the census, whose line then names the backfill.
 func TestTheBackfillSkipsARowBetweenARefusedPartyAndWritesTheRest(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()

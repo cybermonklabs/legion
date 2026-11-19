@@ -87,7 +87,7 @@ func (l *listenerRecorder) server(t *testing.T) *httptest.Server {
 
 // answerRead is the registry route: it answers the held registration, 404 for a registry that
 // holds none, and leaves out client_instance_id for an entry that names no process, as the real
-// route's registration view does (sessionRegistration, packages/envoy/cmd/listener/api.go). A
+// route's registration view does (listenerwire.SessionRegistration). A
 // relaunch the test staged takes the entry's place once this answer is written, so the delete
 // that follows meets what the relaunch wrote and not what the read reported.
 func (l *listenerRecorder) answerRead(w http.ResponseWriter, r *http.Request) {

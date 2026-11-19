@@ -36,12 +36,10 @@ var sweepActor = model.Actor{Kind: "system", ID: "dispatch-block-index"}
 func OrphanedDocumentNodes(ctx context.Context, q graphstore.Queryer, limit int) ([]string, error) {
 	rows, err := q.Query(ctx, `
 		select n.id from graph_nodes n
-		where n.kind = $1 and n.state <> $2
-		  and not exists (select 1 from artifacts a where a.ref_key = n.id)
-		  and exists (select 1 from issues i where i.key = split_part(n.id, '/', 1))
+		where n.kind = '`+graphstore.KindArtifact+`' and `+orphanedDocumentNode("n")+`
 		order by n.id
-		limit $3
-	`, graphstore.KindArtifact, graphstore.StateGone, limit)
+		limit $1
+	`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read the orphaned document nodes: %w", err)
 	}
@@ -50,6 +48,14 @@ func OrphanedDocumentNodes(ctx context.Context, q graphstore.Queryer, limit int)
 		return nil, fmt.Errorf("read the orphaned document nodes: %w", err)
 	}
 	return orphaned, nil
+}
+
+// orphanedDocumentNode is, for the document node n, whether it is orphaned at an issue's address:
+// at any state but gone, at an address no artifacts row holds, and naming an issue.
+func orphanedDocumentNode(n string) string {
+	return n + `.state <> '` + graphstore.StateGone + `'
+		  and not exists (select 1 from artifacts a where a.ref_key = ` + n + `.id)
+		  and exists (select 1 from issues i where i.key = split_part(` + n + `.id, '/', 1))`
 }
 
 // ErrNotOrphaned is StateOrphanedGone's answer for a node it may not state gone, which it leaves
@@ -64,13 +70,13 @@ var ErrNotOrphaned = errors.New("the node is not an orphaned document's")
 // its issue naming the address, and at the sentinel where there is none. Only who states it
 // differs, the block-index tick (sweepActor), since the person who removed it is the event's.
 //
-// It takes the store's lock order: the issue's row first (events.LockOwnerRows), as the removal
-// and every create of a document of that issue take it, then the node's row `for update`, and
-// only under that lock reads whether a row stands at the address. A create of this build writes
-// the node and then the row in one transaction, holding the node's row until it commits, so a
-// create that got there first has committed its row when the read runs, and the node is left: the
-// answer is ErrNotOrphaned, as it is for every node it leaves. An address that names no issue is
-// no removable document's, which only an issue's are, and is left too.
+// It takes the store's lock order: the issue's owner lock first (events.LockOwnerRows), as the
+// removal and every create of a document of that issue take it, then the node's row `for
+// update`, and only under that lock reads whether a row stands at the address. A create of this
+// build writes the node and then the row in one transaction under that owner lock, so a create
+// that got there first has committed its row when the read runs, and the node is left: the answer
+// is ErrNotOrphaned, as it is for every node it leaves. An address that names no issue is no
+// removable document's, which only an issue's are, and is left too.
 func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) error {
 	issue, _, found := strings.Cut(ref, "/")
 	if !found {

@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -27,8 +28,8 @@ import (
 var badParties = []string{"session:a b", "session:a\tb", "session:a\u00a0b", " session:a", ""}
 
 // TestPartiesValueRefusesAPartyThatHoldsWhiteSpace is the join itself and the two callers that
-// bind nothing: BaseAttributeFacts and the publisher's arms, which build their statement without a
-// database.
+// bind nothing: QueueWrite, which queues its statements on a batch it has not sent, and the
+// publisher's arms, which build their statement without a database.
 func TestPartiesValueRefusesAPartyThatHoldsWhiteSpace(t *testing.T) {
 	at := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
@@ -37,8 +38,9 @@ func TestPartiesValueRefusesAPartyThatHoldsWhiteSpace(t *testing.T) {
 			t.Errorf("PartiesValue of %q answered %q, %v, want ErrBadParty", party, value, err)
 		}
 		node := MessageNode("m-bad", "", []string{party}, who, at)
-		if _, err := BaseAttributeFacts([]Node{node}); !errors.Is(err, ErrBadParty) {
-			t.Errorf("BaseAttributeFacts of a node between %q answered %v, want ErrBadParty", party, err)
+		var batch store.WriteBatch
+		if err := QueueWrite(&batch, []Node{node}, nil); !errors.Is(err, ErrBadParty) {
+			t.Errorf("QueueWrite of a node between %q answered %v, want ErrBadParty", party, err)
 		}
 		if _, _, err := WriteArms(1, []Node{node}, nil, nil); !errors.Is(err, ErrBadParty) {
 			t.Errorf("WriteArms of a node between %q answered %v, want ErrBadParty", party, err)

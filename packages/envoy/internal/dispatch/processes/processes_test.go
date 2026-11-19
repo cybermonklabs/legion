@@ -801,3 +801,53 @@ func waitForConnectionHeld(t *testing.T, registration *Registration) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// A process registers at this build's owner lock protocol (store.OwnerLockProtocol), which no
+// Instance carries, so neither a registration that names nothing but its build and keys nor the
+// heartbeat that writes its pruned row again is an earlier build's arrival: the row reads 1, no
+// earlier build's mark is stamped (owner_lock_legacy_mark), and the owner lock's fleet read
+// (public.owner_lock_fleet) finds no earlier build in the fleet. A row at the column's default, 0,
+// would fire owner_lock_legacy_registration and put every owner lock of the database beside an
+// earlier build for store.OwnerLockMarkWindow (migration 20261115200014).
+func TestARegistrationOfThisBuildMarksNoEarlierBuild(t *testing.T) {
+	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
+	database := storetest.Open(t)
+	registration, err := Register(context.Background(), database.Pool, Instance{Commit: "c1", SigningKeys: fingerprints(t, "K0")})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	t.Cleanup(func() { _ = registration.Deregister(context.Background()) })
+	noEarlierBuild := func(what string) {
+		t.Helper()
+		var protocol int
+		var marked, legacy bool
+		if err := database.Pool.QueryRow(context.Background(), `
+			select (select owner_lock_protocol from server_processes where instance = $1),
+				exists (select from owner_lock_legacy_mark),
+				public.owner_lock_fleet($2, $3)`,
+			registration.ID, store.OwnerLockLegacyWindow.Seconds(), store.OwnerLockMarkWindow.Seconds(),
+		).Scan(&protocol, &marked, &legacy); err != nil {
+			t.Fatalf("read %s's owner lock protocol and the owner lock's fleet: %v", what, err)
+		}
+		if protocol != store.OwnerLockProtocol || marked || legacy {
+			t.Errorf("%s: owner_lock_protocol %d, an earlier build's mark stamped %v, an earlier build in the owner lock's fleet %v; want %d, no mark and no earlier build",
+				what, protocol, marked, legacy, store.OwnerLockProtocol)
+		}
+	}
+	noEarlierBuild("the registered row")
+
+	underRegistryLock(t, database, func(tx pgx.Tx) { prunedRow(t, tx, registration.ID) })
+	waitForLive(t, database, registration.ID, "a process whose row was pruned")
+	requireNotLost(t, registration, "a process whose row was pruned")
+	noEarlierBuild("the row written again after a prune")
+}
+
+// The owner lock counts a row of an earlier build in the fleet for store.OwnerLockLegacyWindow
+// after its last heartbeat, which its documents state as until the row is pruned: the two are one
+// duration, declared in two packages only because the store cannot import this one.
+func TestTheOwnerLockLegacyWindowIsThePruneAge(t *testing.T) {
+	if store.OwnerLockLegacyWindow != PruneAge {
+		t.Errorf("store.OwnerLockLegacyWindow is %s and PruneAge %s; want them equal, so a row of an earlier build counts in the owner lock's fleet until it is pruned",
+			store.OwnerLockLegacyWindow, PruneAge)
+	}
+}

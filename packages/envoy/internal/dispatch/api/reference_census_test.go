@@ -105,7 +105,7 @@ var referenceDispositions = map[string]referenceDisposition{
 	"comments.artifact_id":                      {ownColumn, "the comment's document"},
 	"comments.ask_id":                           {sameOwnerColumn, "an ask of the same owner (comment_create.go)"},
 	"comments.issue_key":                        {ownColumn, "the comment's issue"},
-	"comments.reply_to":                         {sameOwnerColumn, "a comment of the same owner (loadOwnedCommentForUpdate)"},
+	"comments.reply_to":                         {sameOwnerColumn, "a comment of the same owner (loadOwnedComment)"},
 	"component_depends.project_key":             {ownColumn, "the component's project"},
 	"component_facts.project_key":               {ownColumn, "the component's project"},
 	"components.project_key":                    {ownColumn, "the component's project"},

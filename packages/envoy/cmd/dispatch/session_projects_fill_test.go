@@ -29,7 +29,7 @@ func appendEach(t *testing.T, database *store.Store, list ...model.Event) {
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
-		if _, err := broker.AppendAll(ctx, tx, []model.Event{event}); err != nil {
+		if _, err := broker.Append(ctx, tx, event); err != nil {
 			t.Fatalf("append %s by %+v: %v", event.Type, event.Actor, err)
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -82,11 +82,11 @@ func runFill(t *testing.T, database *store.Store, args ...string) (int, string) 
 
 // envoy-dispatch backfill-session-projects records, for every event written before the live
 // insert existed, the (session, project) pair the live insert would have recorded for it
-// (events.Broker.AppendAll): a proven session's events on an issue, on a project document and on
-// a project, and none for a person's event or a personal token's, whose actor names no session.
-// The events here are appended through the broker, its pairs read, and then deleted, so the fill
-// must put back exactly what the live insert wrote. A second run writes no pair, and the run
-// leaves the one session_projects_filled row. A fill in batches of two crosses every batch
+// (events.Broker.QueueAppend): a proven session's events on an issue, on a project document and
+// on a project, and none for a person's event or a personal token's, whose actor names no
+// session. The events here are appended through the broker, its pairs read, and then deleted, so
+// the fill must put back exactly what the live insert wrote. A second run writes no pair, and the
+// run leaves the one session_projects_filled row. A fill in batches of two crosses every batch
 // boundary and leaves the same pairs.
 func TestTheSessionProjectsFillCoversEveryEvent(t *testing.T) {
 	ctx := context.Background()

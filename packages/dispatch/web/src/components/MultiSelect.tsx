@@ -6,7 +6,18 @@ import {
   card,
   cardHoverBorder,
   dangerText,
+  focusBorder,
   inputClasses,
+  pageFailedText,
+  pageHairBorder,
+  pageInkText,
+  pageLineBorder,
+  pageMarkBg,
+  pageMutedText,
+  pagePaneBg,
+  pagePaperBg,
+  pageQuietText,
+  pageRowHoverBg,
   selectedCardBg,
   selectedCardBorder,
   surfaceMutedBg,
@@ -16,10 +27,39 @@ import {
 } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
 import { TruncatedText } from "./TruncatedText";
+import { useTooltips } from "./tooltips";
 
 function fold(value: string | undefined): string {
   return (value ?? "").trim().toLocaleLowerCase();
 }
+
+/**
+ * Each colour the picker draws inside `NoTooltips`, the new issue page's, by the role `main`'s
+ * colour has: the trigger is the page's header control (its rule and muted words on the
+ * paper); the popover is the page's menu (the prototype's `#menu`: the hairline rule on the
+ * paper), whose rows are its items, in the ink with the mark grey under the pointer and on the
+ * active row; an empty list is quiet words, a refusal the failed red, and Clear the page's pane
+ * with muted words. A detail is muted words too, not quiet ones: it is drawn on its row's mark
+ * grey under the pointer and on the active row, where the quiet grey reads 4.11:1 in the light
+ * scheme, under the 4.5:1 its words need. The search box keeps `main`'s focus rule, the one
+ * focus indicator of the application.
+ *
+ * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
+ * pairs each text class with the nearest enclosing ground of the same file across both branches
+ * of a ternary: a page colour written beside `main`'s would pair `main`'s words with the page's
+ * paper and the page's words with `main`'s card. Each pair here is one `theme/classes.ts`
+ * registers for the page, which `shared-controls.tooltips.test.tsx` holds.
+ */
+const ON_PAGE = {
+  checkbox: pageHairBorder,
+  clear: `${pagePaneBg} ${pageMutedText}`,
+  detail: pageMutedText,
+  empty: pageQuietText,
+  failure: `${pageLineBorder} ${pageFailedText}`,
+  panel: `${pageHairBorder} ${pagePaperBg}`,
+  search: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+  trigger: `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${pageLineBorder} ${pagePaperBg} ${pageMutedText}`,
+} as const;
 
 export interface MultiSelectProps {
   /** Trigger content; defaults to the label with the selection count (`Labels · 2`). */
@@ -87,9 +127,15 @@ export function MultiSelect({
   searchLabel,
   selected,
   triggerAriaLabel,
-  triggerClassName = `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
+  triggerClassName,
 }: MultiSelectProps): ReactNode {
   const id = useId();
+  const tooltips = useTooltips();
+  const trigger =
+    triggerClassName ??
+    (tooltips
+      ? `min-h-11 rounded-lg border px-3 py-2 text-sm font-semibold ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`
+      : ON_PAGE.trigger);
   const listboxId = `${id}-options`;
   const optionId = (value: string) => `${id}-option-${encodeURIComponent(value)}`;
   const [query, setQuery] = useState("");
@@ -172,9 +218,13 @@ export function MultiSelect({
   };
 
   const rowClassName = (active: boolean) =>
-    `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder} ${
-      active ? `${selectedCardBg} ${selectedCardBorder}` : ""
-    }`;
+    tooltips
+      ? `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder} ${
+          active ? `${selectedCardBg} ${selectedCardBorder}` : ""
+        }`
+      : `flex min-h-11 w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 ${pageLineBorder} ${pageInkText} ${pageRowHoverBg} ${
+          active ? pageMarkBg : ""
+        }`;
 
   return (
     <>
@@ -183,7 +233,7 @@ export function MultiSelect({
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-label={triggerAriaLabel}
-        className={triggerClassName}
+        className={trigger}
         disabled={disabled}
         onClick={() => onOpenChange(!open)}
         ref={triggerRef}
@@ -194,17 +244,17 @@ export function MultiSelect({
       {open ? (
         <AnchoredPanel
           anchorRef={triggerRef}
-          className={`z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${card} ${borderDefault}`}
+          className={`z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${tooltips ? `${card} ${borderDefault}` : ON_PAGE.panel}`}
           onDismiss={() => onOpenChange(false)}
         >
-          <div className={`sticky top-0 border-b p-2 ${card}`}>
+          <div className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}>
             <input
               aria-activedescendant={activeRow === undefined ? undefined : optionId(activeRow)}
               aria-autocomplete="list"
               aria-controls={listboxId}
               aria-expanded="true"
               aria-label={searchLabel}
-              className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
+              className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${tooltips ? inputClasses(true) : ON_PAGE.search}`}
               disabled={disabled}
               onChange={(event) => {
                 setQuery(event.target.value);
@@ -245,15 +295,23 @@ export function MultiSelect({
                 >
                   <span
                     aria-hidden="true"
-                    className={`grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${borderStrong}`}
+                    className={`grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${tooltips ? borderStrong : ON_PAGE.checkbox}`}
                   >
                     {isSelected ? "✓" : ""}
                   </span>
-                  <TruncatedText className="min-w-0 flex-1" title={label}>
-                    {label}
-                  </TruncatedText>
+                  {tooltips ? (
+                    <TruncatedText className="min-w-0 flex-1" title={label}>
+                      {label}
+                    </TruncatedText>
+                  ) : (
+                    // Inside `NoTooltips` (the new issue page) no `title` can give back what an
+                    // ellipsis cut, so the label wraps instead and is read whole.
+                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{label}</span>
+                  )}
                   {detail === undefined ? null : (
-                    <span className={`shrink-0 text-xs tabular-nums ${textMutedOnSurface}`}>
+                    <span
+                      className={`shrink-0 text-xs tabular-nums ${tooltips ? textMutedOnSurface : ON_PAGE.detail}`}
+                    >
                       {detail}
                     </span>
                   )}
@@ -278,23 +336,32 @@ export function MultiSelect({
               </button>
             )}
             {rows.length === 0 ? (
-              <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>{emptyMessage}</p>
+              <p className={`px-3 py-2 text-sm ${tooltips ? textMutedOnSurface : ON_PAGE.empty}`}>
+                {emptyMessage}
+              </p>
             ) : null}
           </div>
           {/* The rows scroll under this footer, so an error drawn after them would sit below the
               row just pressed, or under the footer itself: it is drawn here, in view, and
               announced. */}
           {error === null && selected.length === 0 ? null : (
-            <div className={`sticky bottom-0 border-t ${card}`}>
+            <div className={`sticky bottom-0 border-t ${tooltips ? card : ON_PAGE.panel}`}>
               {error === null ? null : (
-                <p className={`px-3 py-2 text-sm ${dangerText}`} role="alert">
+                <p
+                  className={`px-3 py-2 text-sm ${tooltips ? dangerText : ON_PAGE.failure}`}
+                  role="alert"
+                >
                   {error}
                 </p>
               )}
               {selected.length === 0 ? null : (
-                <div className={error === null ? "p-2" : `border-t p-2 ${borderDefault}`}>
+                <div
+                  className={
+                    error === null ? "p-2" : `border-t p-2 ${tooltips ? borderDefault : ON_PAGE.panel}`
+                  }
+                >
                   <button
-                    className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${surfaceMutedBg} ${textSecondaryOnSurface}`}
+                    className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
                     disabled={disabled}
                     onClick={() => onChange([])}
                     onMouseDown={(event) => event.preventDefault()}

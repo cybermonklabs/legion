@@ -133,8 +133,8 @@ type ClusteredNatsHubArgs struct {
 	ReloaderImage string `pulumi:"reloaderImage"` // pinned: <name>@sha256:<digest>
 	ExporterImage string `pulumi:"exporterImage"` // pinned: <name>@sha256:<digest>
 	// The copies JetStream keeps of every stream and bucket the session listener creates,
-	// ENVOY_NATS_REPLICAS, 1 to 3: refused without tailnet, whose listener alone takes it. Unset,
-	// the variable is unset.
+	// ENVOY_NATS_REPLICAS, 1 to 3: refused without a session listener (listener or
+	// tailnet.listener), which alone takes it. Unset, the variable is unset.
 	NatsReplicas *int `pulumi:"natsReplicas,optional"`
 	// The byte limit of the session listener's notification stream, ENVOY_STREAM_MAX_BYTES, at
 	// least 1. Unset, the variable is unset. Set, it sizes maxFileStoreGb, diskSizeGb and
@@ -174,6 +174,12 @@ type ClusteredNatsHubArgs struct {
 	AuthCallout *nats.AuthCalloutArgs `pulumi:"authCallout,optional"`
 	// The deployment may make a Dispatch project private, as gcp:NatsHub's privateProjects.
 	PrivateProjects bool `pulumi:"privateProjects,optional"`
+	// The session listener the hub runs as a workload of its own, declared outside the tailnet
+	// entry: with tailnet the entry's hosts forward the Tailscale Service's port 9020 to it, as
+	// they do to tailnet.listener, and its render is tailnet.listener's; without tailnet it is
+	// reached inside the cluster alone, by the pods of listener.clientNamespaces. The hub runs one
+	// listener, so this and tailnet.listener are refused together.
+	Listener *ClusteredHubListenerArgs `pulumi:"listener,optional"`
 	// The hub's tailnet entry: a Tailscale Service serving NATS and the session listener.
 	Tailnet *ClusteredHubTailnetArgs `pulumi:"tailnet,optional"`
 	// The tailnet auth key the tailnet hosts join with: required with tailnet, refused without.
@@ -182,14 +188,16 @@ type ClusteredNatsHubArgs struct {
 
 // ClusteredHubTailnetArgs are the hub's tailnet entry: the Tailscale Service svc:<serviceName>,
 // served by replicas hosts, each joined with the tags, forwarding the Service's NATS port to the
-// hub and its port 9020 to the session listener the hub runs as a workload of its own.
+// hub and its port 9020 to the session listener the hub runs as a workload of its own. That
+// listener is declared here, as listener, or beside the entry, as the hub's own listener input,
+// and is required in one of the two places.
 type ClusteredHubTailnetArgs struct {
 	ServiceName    string                    `pulumi:"serviceName"`    // the Service's name without svc:
 	TailnetDnsName string                    `pulumi:"tailnetDnsName"` // <tailnet>.ts.net
 	Tags           []string                  `pulumi:"tags"`           // "tag:<name>", at least one
 	Replicas       *int                      `pulumi:"replicas,optional"`
 	TailscaleImage string                    `pulumi:"tailscaleImage"` // pinned: <name>@sha256:<digest>
-	Listener       *ClusteredHubListenerArgs `pulumi:"listener"`
+	Listener       *ClusteredHubListenerArgs `pulumi:"listener,optional"`
 }
 
 // Annotate names the type gcp:ClusteredHubTailnet in the schema, for the reason NATSUserArgs's
@@ -199,20 +207,50 @@ func (t *ClusteredHubTailnetArgs) Annotate(a infer.Annotator) {
 }
 
 // ClusteredHubListenerArgs are the session listener the hub runs as a workload of its own, which
-// the tailnet hosts forward the Tailscale Service's port 9020 to: its image, its machine id, the
-// public key of its NATS user's seed, and the existing Kubernetes Secret in the hub's namespace,
-// and the key in it, holding that seed, which the component mounts by reference and never reads.
-// The hub renders the listener's user itself, named after the machine id and granted
-// core.ListenerPermissions for it, as gcp:NatsHub renders its own listener's.
+// the tailnet hosts forward the Tailscale Service's port 9020 to and the pods of
+// clientNamespaces reach at its cluster Service: its image, its machine id, the public key of its
+// NATS user's seed, and the existing Kubernetes Secret in the hub's namespace, and the key in it,
+// holding that seed, which the component mounts by reference and never reads. The hub renders
+// the listener's user itself, named after the machine id and granted core.ListenerPermissions
+// for it, as gcp:NatsHub renders its own listener's. Declared as the hub's own listener input, or
+// with clientNamespaces, the listener requires a credential of every caller (oidcIssuer,
+// oidcAudience, oidcAccounts); a tailnet.listener without clientNamespaces serves the tailnet
+// hosts with none, as it always has.
 type ClusteredHubListenerArgs struct {
-	Image          string  `pulumi:"image"`              // pinned: <name>@sha256:<digest>
-	MachineID      *string `pulumi:"machineId,optional"` // default tailnet.serviceName
-	NKey           string  `pulumi:"nkey"`               // the seed's public key; never the seed
+	Image string `pulumi:"image"` // pinned: <name>@sha256:<digest>
+	// The listener's machine id: tailnet.serviceName by default with tailnet, and required
+	// without it.
+	MachineID      *string `pulumi:"machineId,optional"`
+	NKey           string  `pulumi:"nkey"` // the seed's public key; never the seed
 	SeedSecretName string  `pulumi:"seedSecretName"`
 	SeedSecretKey  string  `pulumi:"seedSecretKey"`
+	// The namespaces whose pods reach the listener's port at its cluster Service,
+	// <name>-listener.<namespace>.svc.cluster.local, which the listener then serves beside the
+	// tailnet hosts: none when unset, and at least one without tailnet, where no tailnet host
+	// forwards to it.
+	ClientNamespaces []string `pulumi:"clientNamespaces,optional"`
 	// Any further address a client dials the listener by, beyond <serviceName>.<tailnetDnsName>,
-	// which it always serves.
+	// which it always serves with tailnet. Only where the listener serves with no credential: one
+	// that requires a credential serves /v1 to any Host and reads no ENVOY_ALLOWED_HOSTS, so it
+	// refuses this.
 	AllowedHosts []string `pulumi:"allowedHosts,optional"`
+	// The credential the listener requires of a caller, which it checks itself
+	// (ENVOY_OIDC_ISSUER, ENVOY_OIDC_AUDIENCE, ENVOY_OIDC_ACCOUNTS): a projected Kubernetes
+	// ServiceAccount token oidcIssuer signed for oidcAudience, whose subject is one oidcAccounts
+	// lists, each system:serviceaccount:<namespace>:<name>. All three are required where the
+	// listener is the hub's own listener input or has clientNamespaces, since its NetworkPolicy
+	// alone would let every pod it admits send as any session, and refused on a tailnet.listener
+	// without clientNamespaces, which serves the tailnet hosts with no credential. oidcIssuer is an
+	// https URL with no user, query or fragment, an empty one included, such as the hub's own
+	// cluster's,
+	// https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>.
+	// A listener that requires the credential must run legion-envoy-v30.32.0 or later, the first
+	// release whose listener reads ENVOY_OIDC_ACCOUNTS: an older one admits every subject the
+	// issuer signs for the audience, and image, a digest, says nothing the component could refuse
+	// it by.
+	OidcIssuer   string   `pulumi:"oidcIssuer,optional"`
+	OidcAudience string   `pulumi:"oidcAudience,optional"`
+	OidcAccounts []string `pulumi:"oidcAccounts,optional"`
 	// The limit on the messages each agent session sends through the listener: how many a minute,
 	// from 1 to 60000, and how many at once, at least 1 and only with a rate. Unset, there is no
 	// limit, and a rate with no burst takes the rate as its burst.
@@ -231,7 +269,7 @@ func (l *ClusteredHubListenerArgs) Annotate(a infer.Annotator) {
 }
 
 // ClusteredNatsHub is NATS with JetStream as a three-server cluster on a Kubernetes cluster, with
-// an optional tailnet entry.
+// an optional session listener and an optional tailnet entry.
 type ClusteredNatsHub struct {
 	pulumi.ResourceState
 	ServiceUrl      pulumi.StringOutput    `pulumi:"serviceUrl"`      // nats://<serviceName>.<namespace>.svc.cluster.local:4222
@@ -246,8 +284,8 @@ type ClusteredNatsHub struct {
 }
 
 // clusteredHubSettings are the hub's plain inputs, validated, with the defaults applied, and what
-// they alone render, so all of it is known at preview: the users' auth.conf and, with tailnet, the
-// session listener's environment.
+// they alone render, so all of it is known at preview: the users' auth.conf and, with a session
+// listener, the listener's environment.
 type clusteredHubSettings struct {
 	name, namespace, serviceName string
 	serviceURL                   string
@@ -268,6 +306,7 @@ type clusteredHubSettings struct {
 	// auth-callout annotation, which rolls them when it changes (clusteredHubAuthCalloutAnnotation).
 	calloutDigest string
 	tailnet       *clusteredHubTailnet
+	listener      *clusteredHubListener
 }
 
 // clusteredHubSize is each hub pod's volume, JetStream's file store within it, nats-server's
@@ -283,18 +322,7 @@ type clusteredHubTailnet struct {
 	tags                        []string
 	replicas                    int
 	tailscaleImage              string
-	listener                    clusteredHubListener
 	natsURL, envoyURL           string
-}
-
-// clusteredHubListener is the resolved session listener the hub runs beside its tailnet hosts,
-// which forward the Tailscale Service's port 9020 to it: env is its environment but the seed
-// (core.ListenerConfig.Env).
-type clusteredHubListener struct {
-	image, machineID              string
-	seedSecretName, seedSecretKey string
-	cpu, memory                   string
-	env                           []string
 }
 
 // clusteredHubSeededInput names the first plain string input of args that holds an nkey seed
@@ -334,18 +362,26 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 			}
 		}
 	}
+	listener := func(path string, l *ClusteredHubListenerArgs) {
+		if l == nil {
+			return
+		}
+		fields = append(fields, field{path + ".image", l.Image},
+			field{path + ".seedSecretName", l.SeedSecretName}, field{path + ".seedSecretKey", l.SeedSecretKey})
+		opt(path+".machineId", l.MachineID)
+		opt(path+".cpu", l.Cpu)
+		opt(path+".memory", l.Memory)
+		list(path+".clientNamespaces", l.ClientNamespaces)
+		list(path+".allowedHosts", l.AllowedHosts)
+		fields = append(fields, field{path + ".oidcIssuer", l.OidcIssuer}, field{path + ".oidcAudience", l.OidcAudience})
+		list(path+".oidcAccounts", l.OidcAccounts)
+	}
+	listener("listener", args.Listener)
 	if t := args.Tailnet; t != nil {
 		fields = append(fields, field{"tailnet.serviceName", t.ServiceName}, field{"tailnet.tailnetDnsName", t.TailnetDnsName},
 			field{"tailnet.tailscaleImage", t.TailscaleImage})
 		list("tailnet.tags", t.Tags)
-		if l := t.Listener; l != nil {
-			fields = append(fields, field{"tailnet.listener.image", l.Image},
-				field{"tailnet.listener.seedSecretName", l.SeedSecretName}, field{"tailnet.listener.seedSecretKey", l.SeedSecretKey})
-			opt("tailnet.listener.machineId", l.MachineID)
-			opt("tailnet.listener.cpu", l.Cpu)
-			opt("tailnet.listener.memory", l.Memory)
-			list("tailnet.listener.allowedHosts", l.AllowedHosts)
-		}
+		listener("tailnet.listener", t.Listener)
 	}
 	for _, f := range calloutSeedFields(args.AuthCallout) {
 		fields = append(fields, f)
@@ -438,19 +474,26 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	if args.PrivateProjects && len(s.monitorNamespaces) > 0 {
 		return clusteredHubSettings{}, monitorBesidePrivateProjects(s.monitorNamespaces)
 	}
-	if args.AuthCallout != nil && args.Tailnet != nil && args.Tailnet.Listener != nil {
-		return clusteredHubSettings{}, listenerBesideCallout("tailnet.listener")
+	listenerArgs, listenerPath, err := clusteredHubListenerArgs(args)
+	if err != nil {
+		return clusteredHubSettings{}, err
+	}
+	if args.AuthCallout != nil && listenerArgs != nil {
+		return clusteredHubSettings{}, listenerBesideCallout(listenerPath)
+	}
+	if s.tailnet, err = newClusteredHubTailnet(args); err != nil {
+		return clusteredHubSettings{}, err
 	}
 	var listener *listenerUser
-	if s.tailnet, listener, err = newClusteredHubTailnet(args, s); err != nil {
+	if s.listener, listener, err = newClusteredHubListenerSettings(args, listenerArgs, listenerPath, s); err != nil {
 		return clusteredHubSettings{}, err
 	}
 	auth, err := authorization(args.Users, listener, args.SessionUser, args.AuthCallout, args.PrivateProjects)
 	if err != nil {
-		return clusteredHubSettings{}, authorizationRefusal(err)
+		return clusteredHubSettings{}, authorizationRefusal(err, listenerPath)
 	}
 	if s.authConf, err = auth.Render([]string{confHeader}); err != nil {
-		return clusteredHubSettings{}, authorizationRefusal(err)
+		return clusteredHubSettings{}, authorizationRefusal(err, listenerPath)
 	}
 	if args.SessionUser != nil {
 		s.sessionNKey = args.SessionUser.NKey
@@ -658,43 +701,33 @@ func checkNamespaces(input string, namespaces []string) error {
 	return nil
 }
 
-// newClusteredHubTailnet resolves the tailnet entry and the listener user the hub renders for it:
-// both nil without tailnet, where tailnetAuthKey, which only the tailnet hosts use, and
-// natsReplicas, which only the session listener takes, are refused. The listener runs as its
-// machine id in a pod of its own and serves on every address of that pod on the listener's
-// default port, reached through its cluster Service, which a NetworkPolicy admits the tailnet
-// entry's pods alone to and where each host forwards the Tailscale Service's port 9020; it
-// reaches NATS through the hub's client Service. It answers on the Service's tailnet name and on
-// every further address allowedHosts names; the operator's entries are checked as their own
-// list, so a refusal names tailnet.listener.allowedHosts and the index the operator wrote. Its
-// sender limit is core's rule (core.CheckSenderLimit), naming
-// tailnet.listener.senderMessagesPerMinute or tailnet.listener.senderMessageBurst.
-func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) (*clusteredHubTailnet, *listenerUser, error) {
+// newClusteredHubTailnet resolves the tailnet entry: nil without tailnet, where tailnetAuthKey,
+// which only the tailnet hosts use, is refused. Its session listener, which its hosts forward the
+// Tailscale Service's port 9020 to, is resolved apart, wherever it is declared
+// (newClusteredHubListenerSettings).
+func newClusteredHubTailnet(args *ClusteredNatsHubArgs) (*clusteredHubTailnet, error) {
 	t := args.Tailnet
 	if t == nil {
 		if args.TailnetAuthKey != nil {
-			return nil, nil, core.InputErrorf("tailnetAuthKey", "tailnetAuthKey is given without tailnet, the only part of the hub that joins the tailnet")
+			return nil, core.InputErrorf("tailnetAuthKey", "tailnetAuthKey is given without tailnet, the only part of the hub that joins the tailnet")
 		}
-		if args.NatsReplicas != nil {
-			return nil, nil, core.InputErrorf("natsReplicas", "natsReplicas is given without tailnet, whose session listener alone takes it (ENVOY_NATS_REPLICAS)")
-		}
-		return nil, nil, nil
+		return nil, nil
 	}
 	if args.TailnetAuthKey == nil {
-		return nil, nil, core.InputErrorf("tailnetAuthKey", "tailnetAuthKey is required with tailnet: the tailnet hosts join the tailnet with it")
+		return nil, core.InputErrorf("tailnetAuthKey", "tailnetAuthKey is required with tailnet: the tailnet hosts join the tailnet with it")
 	}
 	if !hostnameRule.MatchString(t.ServiceName) {
-		return nil, nil, core.InputErrorf("tailnet.serviceName", "tailnet.serviceName %q must match %s", t.ServiceName, hostnameRule)
+		return nil, core.InputErrorf("tailnet.serviceName", "tailnet.serviceName %q must match %s", t.ServiceName, hostnameRule)
 	}
 	if !tailnetDNSNameRule.MatchString(t.TailnetDnsName) {
-		return nil, nil, core.InputErrorf("tailnet.tailnetDnsName", "tailnet.tailnetDnsName %q must match %s", t.TailnetDnsName, tailnetDNSNameRule)
+		return nil, core.InputErrorf("tailnet.tailnetDnsName", "tailnet.tailnetDnsName %q must match %s", t.TailnetDnsName, tailnetDNSNameRule)
 	}
 	if len(t.Tags) == 0 {
-		return nil, nil, core.InputErrorf("tailnet.tags", "tailnet.tags: at least one tag is required; the tailnet hosts advertise their tags as their tailnet identity")
+		return nil, core.InputErrorf("tailnet.tags", "tailnet.tags: at least one tag is required; the tailnet hosts advertise their tags as their tailnet identity")
 	}
 	for i, tag := range t.Tags {
 		if !tagRule.MatchString(tag) {
-			return nil, nil, core.InputErrorf("tailnet.tags", "tailnet.tags[%d] %q must match %s", i, tag, tagRule)
+			return nil, core.InputErrorf("tailnet.tags", "tailnet.tags[%d] %q must match %s", i, tag, tagRule)
 		}
 	}
 	tailnet := &clusteredHubTailnet{
@@ -706,89 +739,25 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	}
 	if t.Replicas != nil {
 		if *t.Replicas < minClusteredHubTailnetReplicas {
-			return nil, nil, core.InputErrorf("tailnet.replicas", "tailnet.replicas %d must be at least %d, so a drained host leaves another serving the tailnet", *t.Replicas, minClusteredHubTailnetReplicas)
+			return nil, core.InputErrorf("tailnet.replicas", "tailnet.replicas %d must be at least %d, so a drained host leaves another serving the tailnet", *t.Replicas, minClusteredHubTailnetReplicas)
 		}
 		tailnet.replicas = *t.Replicas
 	}
 	if !imageRule.MatchString(t.TailscaleImage) {
-		return nil, nil, core.InputErrorf("tailnet.tailscaleImage", "tailnet.tailscaleImage %q must be pinned by digest, as <name>@sha256:<64 lowercase hex digits>", t.TailscaleImage)
-	}
-	l := t.Listener
-	if l == nil {
-		return nil, nil, core.InputErrorf("tailnet.listener", "tailnet.listener is required with tailnet: the tailnet hosts forward the Tailscale Service's port %d to the session listener the hub runs as a workload of its own", core.DefaultListenerPort)
-	}
-	if !imageRule.MatchString(l.Image) {
-		return nil, nil, core.InputErrorf("tailnet.listener.image", "tailnet.listener.image %q must be pinned by digest, as <name>@sha256:<64 lowercase hex digits>", l.Image)
-	}
-	machineID := t.ServiceName
-	if l.MachineID != nil {
-		machineID = *l.MachineID
-	}
-	if err := core.CheckMachineID("tailnet.listener.machineId", machineID); err != nil {
-		return nil, nil, err
-	}
-	if l.NKey == "" {
-		return nil, nil, core.InputErrorf("tailnet.listener.nkey", "tailnet.listener.nkey is required")
-	}
-	if !dnsSubdomain(l.SeedSecretName) {
-		return nil, nil, core.InputErrorf("tailnet.listener.seedSecretName", "tailnet.listener.seedSecretName %q must be a DNS subdomain, the name of a Secret in namespace %s", l.SeedSecretName, s.namespace)
-	}
-	if !secretKeyRule.MatchString(l.SeedSecretKey) {
-		return nil, nil, core.InputErrorf("tailnet.listener.seedSecretKey", "tailnet.listener.seedSecretKey %q must match %s", l.SeedSecretKey, secretKeyRule)
-	}
-	if err := core.CheckAllowedHosts("tailnet.listener.allowedHosts", l.AllowedHosts); err != nil {
-		return nil, nil, err
-	}
-	rate, burst, err := core.CheckSenderLimit("tailnet.listener.", l.SenderMessagesPerMinute, l.SenderMessageBurst)
-	if err != nil {
-		return nil, nil, err
-	}
-	listener := clusteredHubListener{
-		image:          l.Image,
-		machineID:      machineID,
-		seedSecretName: l.SeedSecretName,
-		seedSecretKey:  l.SeedSecretKey,
-	}
-	// The listener is the only container of its own pod, so its size is that pod's whole request,
-	// refused where Autopilot would raise or reject the pod, as the hub pod's size is.
-	if listener.cpu, listener.memory, err = autopilotPodSize(autopilotPod{
-		name:     "the listener pod",
-		cpuInput: "tailnet.listener.cpu", memoryInput: "tailnet.listener.memory",
-		cpu: l.Cpu, memory: l.Memory,
-		defaultCPU: defaultClusteredHubListenerCPU, defaultMemory: defaultClusteredHubListenerMemory,
-		memoryExamples: "1Gi or 512Mi",
-	}); err != nil {
-		return nil, nil, err
+		return nil, core.InputErrorf("tailnet.tailscaleImage", "tailnet.tailscaleImage %q must be pinned by digest, as <name>@sha256:<64 lowercase hex digits>", t.TailscaleImage)
 	}
 	host := core.TailnetHostName(t.ServiceName, t.TailnetDnsName)
-	// The listener serves on every address of its own pod: the tailnet hosts reach it through its
-	// cluster Service, which a NetworkPolicy admits their pods alone to, and no longer over a
-	// loopback they share with it.
-	env, err := core.ListenerConfig{
-		MachineID:               machineID,
-		Port:                    core.DefaultListenerPort,
-		ListenHost:              "0.0.0.0",
-		AllowedHosts:            append([]string{host}, l.AllowedHosts...),
-		NATSReplicas:            s.natsReplicas,
-		StreamMaxBytes:          s.streamMaxBytes,
-		SenderMessagesPerMinute: rate,
-		SenderMessageBurst:      burst,
-	}.Env([]string{s.serviceURL})
-	if err != nil {
-		return nil, nil, err
-	}
-	listener.env = env
-	tailnet.listener = listener
 	tailnet.natsURL = fmt.Sprintf("nats://%s:%d", host, natsPort)
 	tailnet.envoyURL = fmt.Sprintf("http://%s:%d", host, core.DefaultListenerPort)
-	return tailnet, &listenerUser{machineID: machineID, nkey: l.NKey}, nil
+	return tailnet, nil
 }
 
 // authorizationRefusal is a refusal of the users' rendering as a core.InputError: core's refusal of
 // the callout names the hub's input authCallout (calloutRefusal); any other that already is passes
 // unchanged; any other names the input its message starts with, as authorization and core name a
-// user (users[<i>], the listener, the session user or its noAuthUser).
-func authorizationRefusal(err error) error {
+// user (users[<i>], the listener, the session user or its noAuthUser). The listener is named by
+// listenerPath, where it is declared: listener or tailnet.listener.
+func authorizationRefusal(err error, listenerPath string) error {
 	err = calloutRefusal(err)
 	var input *core.InputError
 	if errors.As(err, &input) {
@@ -797,8 +766,8 @@ func authorizationRefusal(err error) error {
 	switch message := err.Error(); {
 	case strings.HasPrefix(message, "sessionUser"), strings.HasPrefix(message, "noAuthUser"):
 		return &core.InputError{Input: "sessionUser", Err: err}
-	case strings.HasPrefix(message, "listener"):
-		return &core.InputError{Input: "tailnet.listener", Err: err}
+	case strings.HasPrefix(message, "listener") && listenerPath != "":
+		return &core.InputError{Input: listenerPath, Err: err}
 	}
 	return &core.InputError{Input: "users", Err: err}
 }

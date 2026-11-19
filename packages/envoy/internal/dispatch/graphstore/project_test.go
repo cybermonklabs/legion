@@ -3,50 +3,132 @@ package graphstore
 import (
 	"context"
 	"errors"
-	"maps"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestBaseAttributeFactsHoldEachAttributesOwnValue holds the facts a writer with no cause yet
-// hands to Caused (WriteArmsUncaused) to what the node arm states for a node it makes: its
-// visibility and state, its project or its parties where it carries one, each under its own
-// value, and nothing of an attribute it does not carry.
-func TestBaseAttributeFactsHoldEachAttributesOwnValue(t *testing.T) {
+// TestAnUncausedWriteStatesEachAttributesOwnValue holds what a writer with no cause yet has
+// appended once its cause comes (Caused) to what the store states for a node it makes: its
+// visibility and state, its project or its parties where it carries one, each under its own value
+// and the cause, and nothing of an attribute it does not carry. Both uncaused writers leave the
+// mark that names those attributes (nodeMark): the node write of WriteUncaused and the arms of
+// WriteArmsUncaused.
+//
+// A node the write makes whose state its caller states itself (WriteUncaused's stated tuples) is
+// one an upload makes where it read an orphaned node standing and an erase took that node before
+// the upload's write: the caller's gone and live come first, and the node write states every
+// other base attribute of the node it made, as it states them for any node it makes. Only
+// WriteUncaused takes such tuples; the arms state no caller's base attribute.
+func TestAnUncausedWriteStatesEachAttributesOwnValue(t *testing.T) {
+	database := storetest.Open(t)
 	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
-	for name, test := range map[string]struct {
-		node Node
-		want map[string]string
-	}{
-		"a node in a project": {IssueNode("CORE-9", "CORE", who, at), map[string]string{
-			AttributeVisibility: VisibilityProject, AttributeState: StateLive, AttributeProject: "CORE",
-		}},
-		"a node between parties": {MessageNode("m-9", "", []string{PartySession("s-9"), PartyPerson("Bob")}, who, at), map[string]string{
-			AttributeVisibility: VisibilityProject, AttributeState: StateLive, AttributeParties: "person:bob session:s-9",
-		}},
-		"a node of neither": {PersonNode("carol", who, at, NoEvent), map[string]string{
-			AttributeVisibility: VisibilityProject, AttributeState: StateLive,
-		}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			held := map[string]string{}
-			facts, err := BaseAttributeFacts([]Node{test.node})
+	const cause = int64(9500002)
+	writers := map[string]func(context.Context, pgx.Tx, Node, []Tuple) (Uncaused, error){
+		"WriteUncaused": func(ctx context.Context, tx pgx.Tx, node Node, stated []Tuple) (Uncaused, error) {
+			return WriteUncaused(ctx, tx, []Node{node}, stated)
+		},
+		"WriteArmsUncaused": func(ctx context.Context, tx pgx.Tx, node Node, _ []Tuple) (Uncaused, error) {
+			arms, params, held, err := WriteArmsUncaused(1, []Node{node}, nil, nil)
 			if err != nil {
-				t.Fatalf("BaseAttributeFacts: %v", err)
+				return Uncaused{}, err
 			}
-			for _, fact := range facts {
-				held[fact.Kind] = fact.ToID
+			_, err = tx.Exec(ctx, "with "+arms+"\nselect count(*) from graph_nodes_written", params...)
+			return held, err
+		},
+	}
+	// stateOf is a state of node as its caller states it, in a tuple of its own.
+	stateOf := func(node Node, state string) Tuple {
+		return Tuple{
+			FromKind: node.Kind, FromID: node.ID, Kind: AttributeState, ToKind: KindValue, ToID: state,
+			At: node.MadeAt, Who: node.MadeBy, Asserted: true,
+		}
+	}
+	for name, test := range map[string]struct {
+		node func(suffix string) Node
+		// stated is what the caller states of the node itself, nil for none; a row that states
+		// something runs through WriteUncaused alone.
+		stated func(Node) []Tuple
+		// want is every value tuple of the node, "kind=value", in the order the log holds them.
+		want []string
+	}{
+		"a node in a project": {node: func(suffix string) Node { return IssueNode("CORE-9"+suffix, "CORE", who, at) }, want: []string{
+			AttributeVisibility + "=" + VisibilityProject, AttributeState + "=" + StateLive, AttributeProject + "=CORE",
+		}},
+		"a node between parties": {node: func(suffix string) Node {
+			return MessageNode("m-9"+suffix, "", []string{PartySession("s-9"), PartyPerson("Bob")}, who, at)
+		}, want: []string{
+			AttributeVisibility + "=" + VisibilityProject, AttributeState + "=" + StateLive, AttributeParties + "=person:bob session:s-9",
+		}},
+		"a node of neither": {node: func(suffix string) Node { return PersonNode("carol"+suffix, who, at, NoEvent) }, want: []string{
+			AttributeVisibility + "=" + VisibilityProject, AttributeState + "=" + StateLive,
+		}},
+		"a node the write makes whose state its caller states": {
+			node: func(suffix string) Node { return ArtifactNode("agent/s-9/orphan"+suffix+"-md", "", "s-9", who, at) },
+			stated: func(node Node) []Tuple {
+				return []Tuple{stateOf(node, StateGone), stateOf(node, StateLive)}
+			},
+			want: []string{
+				AttributeState + "=" + StateGone, AttributeState + "=" + StateLive,
+				AttributeVisibility + "=" + VisibilityProject, AttributeParties + "=session:s-9",
+			},
+		},
+	} {
+		for writer, write := range writers {
+			if test.stated != nil && writer != "WriteUncaused" {
+				continue
 			}
-			if !maps.Equal(held, test.want) {
-				t.Errorf("BaseAttributeFacts holds %v, want %v", held, test.want)
-			}
-		})
+			t.Run(name+" through "+writer, func(t *testing.T) {
+				node := test.node("-" + writer)
+				var stated []Tuple
+				if test.stated != nil {
+					stated = test.stated(node)
+				}
+				runInOneTransaction(t, database, writer, func(ctx context.Context, tx pgx.Tx) error {
+					held, err := write(ctx, tx, node, stated)
+					if err != nil {
+						return err
+					}
+					return Caused(ctx, tx, held, cause)
+				})
+				var held []string
+				rows, err := database.Pool.Query(context.Background(), `
+					select kind, to_id, source_event from graph_tuples
+					where from_kind = $1 and from_id = $2 and to_kind = $3
+					order by seq
+				`, node.Kind, node.ID, KindValue)
+				if err != nil {
+					t.Fatalf("read the base attributes of %s/%s: %v", node.Kind, node.ID, err)
+				}
+				var kind, value string
+				var event int64
+				if _, err := pgx.ForEachRow(rows, []any{&kind, &value, &event}, func() error {
+					if event != cause {
+						t.Errorf("%s/%s states %s under event %d, want the cause %d", node.Kind, node.ID, kind, event, cause)
+					}
+					held = append(held, kind+"="+value)
+					return nil
+				}); err != nil {
+					t.Fatalf("read the base attributes of %s/%s: %v", node.Kind, node.ID, err)
+				}
+				if !slices.Equal(held, test.want) {
+					t.Errorf("%s states %v of %s/%s, want %v", writer, held, node.Kind, node.ID, test.want)
+				}
+				var source int64
+				if err := database.Pool.QueryRow(context.Background(), `
+					select source_event from graph_nodes where kind = $1 and id = $2
+				`, node.Kind, node.ID).Scan(&source); err != nil || source != cause {
+					t.Errorf("the row of %s/%s is at event %d (%v), want the cause %d", node.Kind, node.ID, source, err, cause)
+				}
+			})
+		}
 	}
 }
 
@@ -110,27 +192,18 @@ func TestANodeStatesItsProjectOnce(t *testing.T) {
 		requireNeverStated(t, ctx, database, node.Kind, node.ID, AttributeProject)
 	})
 
-	t.Run("WriteUncaused holds the project and parties with the other base attributes", func(t *testing.T) {
+	t.Run("WriteUncaused and Caused state the parties with the other base attributes", func(t *testing.T) {
 		node := ArtifactNode("agent/s-2/photo-png", "", "s-2", who, at)
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin: %v", err)
-		}
-		defer tx.Rollback(ctx)
-		write, err := WriteUncaused(ctx, tx, []Node{node}, nil)
-		if err != nil {
-			t.Fatalf("write the node: %v", err)
-		}
-		stated := map[string]string{}
-		for _, tuple := range write.Tuples {
-			stated[tuple.Kind] = tuple.ToID
-		}
-		wantStated := map[string]string{
-			AttributeVisibility: VisibilityProject, AttributeState: StateLive, AttributeParties: "session:s-2",
-		}
-		if !maps.Equal(stated, wantStated) {
-			t.Errorf("WriteUncaused holds %v, want %v", stated, wantStated)
-		}
+		runInOneTransaction(t, database, "the uncaused write", func(ctx context.Context, tx pgx.Tx) error {
+			write, err := WriteUncaused(ctx, tx, []Node{node}, nil)
+			if err != nil {
+				return err
+			}
+			return Caused(ctx, tx, write, 9500003)
+		})
+		requireProjectRow(t, ctx, database, node.Kind, node.ID, "", []string{"session:s-2"})
+		requireStatedOnce(t, ctx, database, node.Kind, node.ID, AttributeParties, "session:s-2")
+		requireNeverStated(t, ctx, database, node.Kind, node.ID, AttributeProject)
 	})
 
 	t.Run("the publisher's arms state the project of a node they make", func(t *testing.T) {

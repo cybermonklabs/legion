@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -64,9 +65,10 @@ func TestAStaleCommentBatchDoesNotRestoreAnErasedComment(t *testing.T) {
 	if first != 1 {
 		t.Fatalf("the first run's batch counts %d row(s) written, want 1: the comment stood unmarked", first)
 	}
-	// The erase takes the issue owner, deletes the stamped row, then erases its node and tuples.
+	// The erase takes the issue's owner lock, deletes the stamped row, then erases its node and
+	// tuples.
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `select 1 from issues where key = 'IDEN-1' for no key update`); err != nil {
+		if err := store.LockOwners(ctx, tx, store.IssueOwner("IDEN-1")); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `select 1 from graph_nodes where kind = 'comment' and id = $1 for update`, id); err != nil {
@@ -95,14 +97,11 @@ func TestAStaleCommentBatchDoesNotRestoreAnErasedComment(t *testing.T) {
 	}
 }
 
-// heldCommentRows answers the rows of a batch that still stand unmarked in a slice of its own, and
-// leaves the caller's batch as it read it: a caller that reads its batch after the recheck reads
-// the rows it passed. Two comments are read, the first is removed, and the recheck answers the
-// second alone while the batch still lists both, first to last.
-//
-// Its control is the recheck filtering into the caller's own array (batch[:0]): the batch then
-// lists the second comment first.
-func TestTheCommentRecheckLeavesTheCallersBatch(t *testing.T) {
+// writeCommentBatch reads its batch again under the owner lock (CommentsNamingNoNode) into a write
+// of its own, and leaves the caller's batch as it read it: a caller that reads its batch after the
+// write reads the rows it passed. Two comments are read, the first is removed, and the write gives
+// the second alone its node while the batch still lists both, first to last.
+func TestTheCommentBatchLeavesTheCallersBatch(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
@@ -123,20 +122,15 @@ func TestTheCommentRecheckLeavesTheCallersBatch(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `delete from comments where id = $1`, removed); err != nil {
 		t.Fatal(err)
 	}
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		held, err := heldCommentRows(ctx, tx, batch)
-		if err != nil {
-			return err
-		}
-		if len(held) != 1 || held[0].id != standing {
-			t.Errorf("the recheck answers %+v, want %s alone", held, standing)
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("recheck the batch: %v", err)
+	written, _, _, err := writeCommentBatch(ctx, database, batch)
+	if err != nil || written != 1 {
+		t.Fatalf("the batch counts %d row(s) written (%v), want the standing comment alone", written, err)
+	}
+	if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, standing); err != nil || !held {
+		t.Errorf("the standing comment holds no node (held %t, %v)", held, err)
 	}
 	if batch[0].id != removed || batch[1].id != standing {
-		t.Errorf("after the recheck the caller's batch lists %s then %s, want %s then %s, as it read them",
+		t.Errorf("after the write the caller's batch lists %s then %s, want %s then %s, as it read them",
 			batch[0].id, batch[1].id, removed, standing)
 	}
 }

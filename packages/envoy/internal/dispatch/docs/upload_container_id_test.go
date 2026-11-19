@@ -182,7 +182,7 @@ func uploadDocumentVersion(t *testing.T, database *store.Store, service *Service
 		if err != nil {
 			return err
 		}
-		return graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
+		return causeInWritePhase(ctx, tx, write, graphstore.NoEvent)
 	}); err != nil {
 		t.Fatalf("upload a version of %s: %v", artifactID, err)
 	}

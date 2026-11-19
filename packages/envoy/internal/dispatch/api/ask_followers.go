@@ -210,14 +210,12 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, own.event(eventType, actor, model.AskFollowerEventPayload{
+	// The follow's node waits for the event that records it: the two are one batch, the node's
+	// facts appended right after the event, under its id (appendCausingEvent).
+	event, err := s.appendCausingEvent(r.Context(), tx, own.event(eventType, actor, model.AskFollowerEventPayload{
 		AskID: askID, SessionID: sessionID, By: actor,
-	}))
+	}), followed.Uncaused)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := graphstore.Caused(r.Context(), tx, followed.Uncaused, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

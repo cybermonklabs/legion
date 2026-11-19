@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -30,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -39,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // signInEnvironment is a cookie-identity boot environment with all four sign-in settings.
@@ -68,6 +72,127 @@ func headerIdentityEnvironment(overrides map[string]string) map[string]string {
 		values[name] = value
 	}
 	return values
+}
+
+// testIAPAudience is the audience IAP signs for the test's load balancer backend service.
+const testIAPAudience = "/projects/123456789012/global/backendServices/9876543210"
+
+// iapIdentityEnvironment is an IAP-identity boot environment admitting the people of example.com:
+// the identity, its audience and the domain, and no other sign-in setting.
+func iapIdentityEnvironment(overrides map[string]string) map[string]string {
+	values := map[string]string{
+		"DATABASE_URL":           "postgres://dispatch",
+		"DISPATCH_AGENT_TOKEN":   "agent-token",
+		"DISPATCH_IDENTITY":      "iap",
+		"DISPATCH_IAP_AUDIENCE":  testIAPAudience,
+		"DISPATCH_SIGNIN_DOMAIN": "example.com",
+	}
+	for name, value := range overrides {
+		values[name] = value
+	}
+	return values
+}
+
+// iapKeySet is a key set served on this machine in IAP's place, so no test calls Google, with the
+// ES256 key it publishes; iapBoot is boot pointed at it, as no setting can point a server.
+func iapKeySet(t *testing.T) (*oidctest.Issuer, *oidctest.Key) {
+	t.Helper()
+	keys := oidctest.New(t)
+	signing := oidctest.NewES256Key(t, "iap-key")
+	keys.Publish(signing)
+	return keys, signing
+}
+
+func iapBoot(t *testing.T, keys *oidctest.Issuer, overrides map[string]string) bootConfig {
+	t.Helper()
+	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(overrides)))
+	if err != nil {
+		t.Fatalf("resolve an IAP boot: %v", err)
+	}
+	boot.IAPKeySetURL = keys.URL() + "/keys"
+	return boot
+}
+
+// iapAssertion is the assertion IAP signs with key for a Google account of hd, A.Person@<hd>,
+// to audience.
+func iapAssertion(t *testing.T, keys *oidctest.Issuer, key *oidctest.Key, audience, hd string) string {
+	t.Helper()
+	now := time.Now()
+	return keys.Mint(t, key, map[string]any{
+		"iss": oidc.IAPIssuer, "aud": audience, "sub": "accounts.google.com:118000000000000000001",
+		"email": "A.Person@" + hd, "hd": hd, "iat": now.Add(-time.Minute).Unix(), "exp": now.Add(9 * time.Minute).Unix(),
+	})
+}
+
+// iapWhoami answers GET /auth/whoami from handler carrying assertion, when it is not empty, and
+// headers.
+func iapWhoami(handler http.Handler, assertion string, headers map[string]string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodGet, "/auth/whoami", nil)
+	if assertion != "" {
+		request.Header.Set("X-Goog-IAP-JWT-Assertion", assertion)
+	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func TestResolveBootConfigReadsIAPIdentity(t *testing.T) {
+	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IDENTITY": " iap "})))
+	if err != nil {
+		t.Fatalf("resolve boot config: %v", err)
+	}
+	if boot.IAPAudience != testIAPAudience || boot.IAPKeySetURL != oidc.IAPKeySetURL || boot.SignInDomain != "example.com" ||
+		boot.IdentityHeader != "" || boot.SignInIssuer != "" {
+		t.Fatalf("boot = %#v, want IAP identity for %s over IAP's own key set, admitting example.com", boot, testIAPAudience)
+	}
+}
+
+// IAP signs people in, so an IAP server takes the domain it admits and no other sign-in setting,
+// an audience of the shape IAP signs for, and no dev sign-in; the audience is refused under any
+// other identity, which would leave it unread.
+func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
+	for name, value := range map[string]string{
+		"DISPATCH_SIGNIN_ISSUER":        "https://accounts.google.com",
+		"DISPATCH_SIGNIN_CLIENT_ID":     "dispatch-client",
+		"DISPATCH_SIGNIN_CLIENT_SECRET": "client-secret",
+		"DISPATCH_SIGNIN_GROUP":         "dispatch-members",
+	} {
+		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{name: value}))); err == nil ||
+			!strings.Contains(err.Error(), name+" must be unset under DISPATCH_IDENTITY=iap") {
+			t.Errorf("IAP identity with %s: err = %v, want a refusal naming it", name, err)
+		}
+	}
+	for _, tc := range []struct {
+		overrides map[string]string
+		naming    string
+	}{
+		{map[string]string{"DISPATCH_SIGNIN_DOMAIN": ""}, "DISPATCH_IDENTITY=iap needs DISPATCH_SIGNIN_DOMAIN"},
+		{map[string]string{"DISPATCH_SIGNIN_DOMAIN": "Example.com"}, "DISPATCH_SIGNIN_DOMAIN must be a lowercase domain name"},
+		{map[string]string{"DISPATCH_IAP_AUDIENCE": ""}, "DISPATCH_IAP_AUDIENCE required"},
+		{map[string]string{"DISPATCH_IAP_AUDIENCE": "123456789012-client.apps.googleusercontent.com"}, "DISPATCH_IAP_AUDIENCE=\"123456789012-client.apps.googleusercontent.com\" must be the audience IAP signs"},
+		{map[string]string{"DISPATCH_IAP_AUDIENCE": "/projects/example-project/global/backendServices/1"}, "begins /projects/<project number>/"},
+	} {
+		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(tc.overrides))); err == nil || !strings.Contains(err.Error(), tc.naming) {
+			t.Errorf("IAP identity with %v: err = %v, want a refusal naming %q", tc.overrides, err, tc.naming)
+		}
+	}
+	for name, environment := range map[string]map[string]string{
+		"cookie identity": signInEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": testIAPAudience}),
+		"header identity": headerIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": testIAPAudience}),
+	} {
+		if _, err := resolveBootConfig(envGetter(environment)); err == nil || !strings.Contains(err.Error(), "DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap") {
+			t.Errorf("%s with DISPATCH_IAP_AUDIENCE: err = %v, want a refusal naming it", name, err)
+		}
+	}
+	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{
+		"DISPATCH_IDENTITY": "iap", "DISPATCH_IAP_AUDIENCE": testIAPAudience, "DISPATCH_SIGNIN_DOMAIN": "example.com",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "DISPATCH_IDENTITY must be cookie") {
+		t.Errorf("dev sign-in with IAP identity: err = %v, want a refusal naming DISPATCH_IDENTITY", err)
+	}
 }
 
 // noSignInEnvironment is a cookie-identity boot environment with no sign-in setting: the sandbox
@@ -492,7 +617,7 @@ func TestResolveBootConfigRequiresBothOIDCVariables(t *testing.T) {
 }
 
 func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil)
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -510,7 +635,7 @@ func TestDispatchHandlerReportsDisabledNATS(t *testing.T) {
 // failed with the bus would take every server process out of service at once.
 func TestDispatchHandlerReportsDisconnectedNATS(t *testing.T) {
 	database := storetest.Open(t)
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, &bus.Client{}, nil, nil, "", nil, issuers{}, nil)
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, &bus.Client{}, nil, nil, "", nil, issuers{}, nil, nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -538,7 +663,7 @@ func TestDispatchHandlerLivezAnswersWithoutDependencies(t *testing.T) {
 		t.Errorf("the router served %s %s", r.Method, r.URL.Path)
 	})
 	response := httptest.NewRecorder()
-	dispatchHandler(router, metrics.New(), nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	dispatchHandler(router, metrics.New(), nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("GET /livez status = %d, want %d", response.Code, http.StatusNoContent)
 	}
@@ -560,7 +685,7 @@ func TestDispatchHandlerServesMetrics(t *testing.T) {
 	failures.Inc([2]string{"reason", "denied"})
 
 	response := httptest.NewRecorder()
-	dispatchHandler(router, registry, nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	dispatchHandler(router, registry, nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET /metrics status = %d, want %d", response.Code, http.StatusOK)
 	}
@@ -581,7 +706,7 @@ func TestDispatchHandlerReportsTheFileStore(t *testing.T) {
 	probe := func(store files.Store) (int, map[string]any) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, store, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, store, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var health map[string]any
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health response: %v", err)
@@ -611,7 +736,7 @@ func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
 	probe := func(configured issuers) (int, map[string]any) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, configured, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, configured, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var health map[string]any
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health response: %v", err)
@@ -650,7 +775,7 @@ func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
 func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 	database := storetest.Open(t)
 	const commit = "0123456789abcdef0123456789abcdef01234567"
-	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, commit, nil, issuers{}, nil)
+	handler := dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, commit, nil, issuers{}, nil, nil)
 	probe := func() map[string]any {
 		t.Helper()
 		response := httptest.NewRecorder()
@@ -688,13 +813,13 @@ func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 // nothing - and idempotency_keys true, the binary's own fact.
 func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 	response := httptest.NewRecorder()
-	dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	dispatchHandler(http.NewServeMux(), metrics.New(), nil, nil, nil, nil, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health map[string]any
 	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 		t.Fatalf("decode health response: %v", err)
 	}
 	want := map[string]any{
-		"ok": false, "db": false, "nats": nil, "files": nil, "signin": nil, "service_tokens": nil,
+		"ok": false, "db": false, "nats": nil, "files": nil, "signin": nil, "service_tokens": nil, "github": nil,
 		"commit": nil, "fleet_commit": nil, "schema_version": nil, "outbox_publisher": false,
 		"idempotency_keys": true,
 	}
@@ -720,7 +845,7 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 	probe := func(state *privateProjectsState) (int, string) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state).
+		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state, nil).
 			ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		return response.Code, response.Body.String()
 	}
@@ -769,6 +894,147 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 	}
 }
 
+// /healthz names each GitHub read from the value main hands it alone (gitHubReads): off for a read
+// this process does not run, whatever the record holds of it; unknown before the copy of the
+// record has loaded; no_attempt for a read the record holds no attempt of; and succeeded or failed
+// from the attempt it holds, with that attempt's time in UTC, and the cause of a failed one. `at`
+// and `cause` are present and null wherever the state carries neither, and the four keys come in
+// githubreads.Reads' order. A failed read leaves the status 200 and `ok` true, and a database that
+// does not answer leaves the entries as the copy has them beside its 503.
+func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
+	database := storetest.Open(t)
+	succeededAt := time.Date(2026, 11, 18, 3, 4, 5, 678901000, time.FixedZone("UTC+2", 2*60*60))
+	failedAt := succeededAt.Add(90 * time.Second)
+	cause := "GET https://api.github.com/repos/acme/deploy/installation: status 503: unavailable"
+	recorded := loadedGitHubReadCopy(t, []githubreads.Recorded{
+		{Read: githubreads.ArchitectureImport, At: succeededAt, Succeeded: true},
+		{Read: githubreads.DeliveryReconcile, At: failedAt, Cause: cause},
+		{Read: githubreads.CIReconcile, At: failedAt, Cause: "a read this process does not run"},
+	})
+	reads := &gitHubReads{recordCopy: recorded, runs: map[githubreads.Read]bool{
+		githubreads.WebhookRedelivery:  true,
+		githubreads.ArchitectureImport: true,
+		githubreads.DeliveryReconcile:  true,
+		githubreads.CIReconcile:        false,
+	}}
+	// entry is an entry as written: at in RFC 3339 UTC, and at and cause null where nil.
+	entry := func(state string, at *time.Time, failure *string) map[string]any {
+		answer := map[string]any{"state": state, "at": nil, "cause": nil}
+		if at != nil {
+			answer["at"] = at.UTC().Format(time.RFC3339Nano)
+		}
+		if failure != nil {
+			answer["cause"] = *failure
+		}
+		return answer
+	}
+	fromTheCopy := map[string]map[string]any{
+		"webhook_redelivery":  entry("no_attempt", nil, nil),
+		"architecture_import": entry("succeeded", &succeededAt, nil),
+		"delivery_reconcile":  entry("failed", &failedAt, &cause),
+		"ci_reconcile":        entry("off", nil, nil),
+	}
+
+	status, health := probeGitHubReads(t, database, reads)
+	if status != http.StatusOK || !health.OK || !health.DB {
+		t.Fatalf("healthz with a failed GitHub read = %d, ok %t, db %t; want 200 with ok and db true", status, health.OK, health.DB)
+	}
+	requireGitHubReads(t, "with the copy loaded", health.GitHub, fromTheCopy)
+
+	status, health = probeGitHubReads(t, nil, reads)
+	if status != http.StatusServiceUnavailable || health.OK || health.DB {
+		t.Fatalf("healthz with no database = %d, ok %t, db %t; want 503 with ok and db false", status, health.OK, health.DB)
+	}
+	requireGitHubReads(t, "with no database", health.GitHub, fromTheCopy)
+
+	unloaded := &gitHubReads{recordCopy: &githubreads.Copy{}, runs: reads.runs}
+	_, health = probeGitHubReads(t, database, unloaded)
+	requireGitHubReads(t, "before the copy has loaded", health.GitHub, map[string]map[string]any{
+		"webhook_redelivery":  entry("unknown", nil, nil),
+		"architecture_import": entry("unknown", nil, nil),
+		"delivery_reconcile":  entry("unknown", nil, nil),
+		"ci_reconcile":        entry("off", nil, nil),
+	})
+}
+
+// loadedGitHubReadCopy is a copy of the record of GitHub reads whose first load read rows, as
+// githubreads.Copy.Run leaves it at start. It runs until the test ends.
+func loadedGitHubReadCopy(t *testing.T, rows []githubreads.Recorded) *githubreads.Copy {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	recorded := &githubreads.Copy{}
+	go recorded.Run(ctx, func(context.Context) ([]githubreads.Recorded, error) { return rows, nil }, nil, nil)
+	testwait.Eventually(t, "the copy's first load", func() bool {
+		_, loaded := recorded.Rows()
+		return loaded
+	})
+	return recorded
+}
+
+// gitHubReadsHealth is the part of /healthz the GitHub read tests read: `github` as written.
+type gitHubReadsHealth struct {
+	OK     bool            `json:"ok"`
+	DB     bool            `json:"db"`
+	GitHub json.RawMessage `json:"github"`
+}
+
+// probeGitHubReads answers one /healthz from database and reads, returning its status and body.
+func probeGitHubReads(t *testing.T, database *store.Store, reads *gitHubReads) (int, gitHubReadsHealth) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil, reads).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	var health gitHubReadsHealth
+	if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil {
+		t.Fatalf("decode health response %s: %v", response.Body.String(), err)
+	}
+	return response.Code, health
+}
+
+// requireGitHubReads requires github to hold the four reads in githubreads.Reads' order, each
+// entry exactly the want of its key: its state, and its at and cause, present when null.
+func requireGitHubReads(t *testing.T, when string, github json.RawMessage, want map[string]map[string]any) {
+	t.Helper()
+	var order []string
+	for _, read := range githubreads.Reads() {
+		order = append(order, string(read))
+	}
+	if keys := jsonObjectKeys(t, github); !slices.Equal(keys, order) {
+		t.Fatalf("healthz %s: github keys %q, want %q", when, keys, order)
+	}
+	var entries map[string]map[string]any
+	if err := json.Unmarshal(github, &entries); err != nil {
+		t.Fatalf("healthz %s: decode github %s: %v", when, github, err)
+	}
+	for read, wantEntry := range want {
+		if !reflect.DeepEqual(entries[read], wantEntry) {
+			t.Errorf("healthz %s: github %s = %#v, want %#v", when, read, entries[read], wantEntry)
+		}
+	}
+}
+
+// jsonObjectKeys is the keys of the JSON object raw, in the order it writes them.
+func jsonObjectKeys(t *testing.T, raw json.RawMessage) []string {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		t.Fatalf("%s is not a JSON object (%v, %v)", raw, token, err)
+	}
+	var keys []string
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			t.Fatalf("read a key of %s: %v", raw, err)
+		}
+		keys = append(keys, token.(string))
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			t.Fatalf("read the value of %v in %s: %v", token, raw, err)
+		}
+	}
+	return keys
+}
+
 // /healthz says whether this process publishes the events outbox: true while its outbox holds the
 // publisher hold, false while it stands by for the other process's, and false again once it has
 // stopped and released the hold. It never decides ok.
@@ -799,7 +1065,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		go func() { publisher.Run(ctx); close(done) }()
 		stop := func() { cancel(); <-done }
 		t.Cleanup(stop)
-		return &process{outbox: publisher, handler: dispatchHandler(http.NewServeMux(), metrics.New(), database, client, publisher, nil, "", nil, issuers{}, nil), stop: stop}
+		return &process{outbox: publisher, handler: dispatchHandler(http.NewServeMux(), metrics.New(), database, client, publisher, nil, "", nil, issuers{}, nil, nil), stop: stop}
 	}
 	probe := func(p *process) bool {
 		t.Helper()
@@ -863,7 +1129,7 @@ func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 		"no database":       {nil, http.StatusServiceUnavailable},
 	} {
 		response := httptest.NewRecorder()
-		dispatchHandler(http.NewServeMux(), metrics.New(), probe.database, nil, nil, nil, "", nil, issuers{}, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		dispatchHandler(http.NewServeMux(), metrics.New(), probe.database, nil, nil, nil, "", nil, issuers{}, nil, nil).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		if response.Code != probe.status {
 			t.Errorf("healthz with %s: status %d, want %d", name, response.Code, probe.status)
 		}
@@ -924,7 +1190,7 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 		defer connection.Release()
 	}
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
+	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil, nil))
 	defer server.Close()
 	client := &http.Client{Timeout: 3 * time.Second}
 	started := time.Now()
@@ -975,7 +1241,7 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 		database.Pool.Close()
 	})
 
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
+	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil, nil))
 	defer server.Close()
 	// The shared pool's own round trip is the control: the link works right up to the outage.
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
@@ -1035,7 +1301,7 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 		database.Pool.Close()
 	})
 	bucket := unansweringBucket{filestest.NewMemory()}
-	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, issuers{}, nil))
+	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, bucket, "", nil, issuers{}, nil, nil))
 	defer server.Close()
 
 	client := &http.Client{Timeout: 3 * time.Second}

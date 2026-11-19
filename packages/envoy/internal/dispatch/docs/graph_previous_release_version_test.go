@@ -34,12 +34,12 @@ const (
 // with no node, states nothing in the store and never sets the mark, so nothing would bring this
 // build's pass to the document, and the census would refuse its rows until someone ran the
 // backfill again, which nothing tells anyone to do. A document that release creates after the
-// drain is the same: no backfill reached it, and its rows name no node. So while a process of
-// another build serves, each tick of this build marks owed every document that an
-// artifact.version or artifact.created event after this build's cursor names
-// (markVersionsAnotherBuildWrote), and the same tick's drain names every row's node. Once the
+// drain is the same: no backfill reached it, and its rows name no node. So every tick of this
+// build, whether or not another build serves, marks owed every document that an artifact.version
+// or artifact.created event after this build's cursor names and that its store has not stated at
+// its version (readEventsAfterCursor), and the same tick's drain names every row's node. Once the
 // fleet serves this build alone, one more tick marks what the last one left, and the tick after
-// it reads no event at all.
+// it reads no event at all, since none has been written since.
 //
 // The test seeds two documents as a build before the store wrote them, backfills, and drives this
 // build's reconciliation until no document holds the mark. It then records the fleet as two
@@ -53,7 +53,8 @@ const (
 // tick must mark the three documents from those events and drain them. The stand-in then
 // writes a version of the second document, and that release's process leaves the registry: the
 // next tick finds this build serving alone and must still mark the second document, once, and the
-// tick after it must read no event, although one stands after the cursor.
+// tick after it must read no event. An event written after that, which names no document, is read
+// by the next tick, which marks nothing: each tick reads exactly the events since the last one.
 //
 // Each tick under test runs once the event log's safe horizon has reached every event already
 // written (awaitedBlockIndexTick), so it reads every event the test wrote before it. A tick of a
@@ -99,16 +100,14 @@ func TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore(t *testing
 	}
 	requireCensusReadsZero(t, database, "after this build drained the backfill's mark, before any version of the previous release")
 
-	// This build serving alone: the tick reads no event, and the cursor stands at the horizon.
+	// This build serving alone: the tick reads no event, since its drain's ticks have read every
+	// one already.
 	tick := awaitedBlockIndexTick(t, service)
 	if tick.AnotherBuild || tick.Events != 0 || tick.Marked != 0 {
 		t.Errorf("the tick with this build serving alone read %d event(s), marked %d document(s) and found another build %t, want none of them",
 			tick.Events, tick.Marked, tick.AnotherBuild)
 	}
 	cursor := blockIndexEventCursor(t, database, "")
-	if cursor.anotherBuildSeen {
-		t.Errorf("the cursor records another build seen after a tick that found none")
-	}
 
 	// A roll: a process of this build and one of the release before serve side by side.
 	registerProcess(t, database, "")
@@ -137,14 +136,14 @@ func TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore(t *testing
 	// This build's next tick marks the three documents from their events, and its drain states
 	// them.
 	newest := max(rolledEvent, createdEvent, issueEvent)
-	pending := countEventsAfter(t, database, cursor.at)
+	pending := countEventsAfter(t, database, cursor)
 	tick = awaitedBlockIndexTick(t, service)
 	if !tick.AnotherBuild || pending == 0 || tick.Events != pending || tick.Marked != 3 || tick.Documents != 3 {
 		t.Errorf("the tick with another build serving read %d event(s), marked %d document(s), indexed %d and found another build %t; want the %d event(s) after the cursor read, the three documents marked and indexed, and another build found",
 			tick.Events, tick.Marked, tick.Documents, tick.AnotherBuild, pending)
 	}
-	if cursor = blockIndexEventCursor(t, database, ""); cursor.at < newest || cursor.readThrough < newest || !cursor.anotherBuildSeen {
-		t.Errorf("the cursor stands at %+v after the tick, want it, and the event it reads through, at or past the newest of the previous release's events, %d, and another build seen",
+	if cursor = blockIndexEventCursor(t, database, ""); cursor < newest {
+		t.Errorf("the cursor stands at %d after the tick, want it at or past the newest of the previous release's events, %d",
 			cursor, newest)
 	}
 	requireVersionInTheStore(t, database, rolled, added)
@@ -158,33 +157,37 @@ func TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore(t *testing
 	lateEvent := latestVersionEvent(t, database, late)
 	previousLeaves()
 
-	// The first tick that finds this build serving alone reads once more, marks what the tick
-	// before it left, and records that it has read through every event the departed process
-	// wrote.
-	pending = countEventsAfter(t, database, cursor.at)
+	// The first tick that finds this build serving alone reads the events after the cursor, as
+	// every tick does, and marks what the tick before it left.
+	pending = countEventsAfter(t, database, cursor)
 	tick = awaitedBlockIndexTick(t, service)
 	if tick.AnotherBuild || pending == 0 || tick.Events != pending || tick.Marked != 1 || tick.Documents != 1 {
 		t.Errorf("the first tick with this build serving alone read %d event(s), marked %d document(s), indexed %d and found another build %t; want the %d event(s) after the cursor read, the one document marked and indexed, and no other build",
 			tick.Events, tick.Marked, tick.Documents, tick.AnotherBuild, pending)
 	}
-	if cursor = blockIndexEventCursor(t, database, ""); cursor.readThrough < lateEvent || cursor.at < cursor.readThrough || cursor.anotherBuildSeen {
-		t.Errorf("the cursor stands at %+v after the tick, want the event it reads through at or past the version's event %d, the cursor at or past that, and no other build seen",
-			cursor, lateEvent)
+	if cursor = blockIndexEventCursor(t, database, ""); cursor < lateEvent {
+		t.Errorf("the cursor stands at %d after the tick, want it at or past the version's event %d", cursor, lateEvent)
 	}
 	requireVersionInTheStore(t, database, late, lateAdded)
 	requireCensusReadsZero(t, database, "after this build's first tick serving alone, with no second backfill")
 
-	// The tick after it reads no event, though one stands after the cursor, and moves the cursor
-	// past it.
-	unread := appendIssueEvent(t, database)
+	// The tick after it reads no event: none has been written since.
 	tick = awaitedBlockIndexTick(t, service)
 	if tick.AnotherBuild || tick.Events != 0 || tick.Marked != 0 {
 		t.Errorf("the second tick with this build serving alone read %d event(s), marked %d document(s) and found another build %t, want none of them",
 			tick.Events, tick.Marked, tick.AnotherBuild)
 	}
-	if cursor = blockIndexEventCursor(t, database, ""); cursor.at < unread || cursor.anotherBuildSeen {
-		t.Errorf("the cursor stands at %+v after the second tick alone, want it moved past event %d unread and no other build seen",
-			cursor, unread)
+
+	// An event written after it, naming no document, is read by the next tick, which marks
+	// nothing and moves the cursor past it.
+	appended := appendIssueEvent(t, database)
+	tick = awaitedBlockIndexTick(t, service)
+	if tick.AnotherBuild || tick.Events != 1 || tick.Marked != 0 {
+		t.Errorf("the tick after an event naming no document read %d event(s), marked %d document(s) and found another build %t, want that one event read and nothing marked",
+			tick.Events, tick.Marked, tick.AnotherBuild)
+	}
+	if cursor = blockIndexEventCursor(t, database, ""); cursor < appended {
+		t.Errorf("the cursor stands at %d after the tick, want it moved past event %d", cursor, appended)
 	}
 }
 
@@ -195,12 +198,12 @@ func TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore(t *testing
 //
 // Neither end of such a deploy has two builds serving at once, so no tick of this build ever
 // finds another build serving: its last tick before the rollback found it alone, and so does the
-// first tick after it starts again. Were finding another build the only reason to read the event
-// log, that first tick would move the cursor to the horizon over the version the previous release
-// wrote, whose rows name no node, and nothing would reach them. So the first tick of each process
-// that reads a proven horizon also reads once, from the newest cursor any build left through the
-// newest event (markVersionsAnotherBuildWrote), and the process here is a new Service of the same
-// commit, as the same build returns.
+// first tick after it starts again. Were finding another build a reason to read the event log,
+// that first tick would read nothing and move the cursor to the horizon over the version the
+// previous release wrote, whose rows name no node, and nothing would reach them. Every tick reads
+// the events after its build's cursor instead (readEventsAfterCursor), so the first tick of the
+// new process reads from where its build's cursor stood through the newest event, and the process
+// here is a new Service of the same commit, as the same build returns.
 func TestAVersionThePreviousReleaseWritesWhileThisBuildIsStoppedReachesTheStore(t *testing.T) {
 	requireAVersionWrittenWhileNoBuildOfThisCodeServesReachesTheStore(t, "")
 }
@@ -210,22 +213,23 @@ func TestAVersionThePreviousReleaseWritesWhileThisBuildIsStoppedReachesTheStore(
 // that stopped, and the census reaches zero with no second backfill.
 //
 // The later build holds no row of block_index_event_cursors yet. Were its row to start at the
-// horizon, as the first build of this code's does, it would start above the version the previous
-// release wrote while it served alone. Its first tick with a proven horizon starts the row at the
-// newest cursor any build left instead, where the build before it stopped reading, and reads from
-// there through the newest event (markVersionsAnotherBuildWrote).
+// horizon, as the first build of this code's does where no build has left a row and no backfill
+// has recorded one, it would start above the version the previous release wrote while it served
+// alone. Its first tick with a proven horizon starts the row at the earlier of the newest cursor
+// another build left, where the build before it stopped reading, and the horizon the backfill
+// began at (readEventsAfterCursor), and reads from there through the newest event.
 func TestAVersionThePreviousReleaseWritesBeforeTheNextBuildStartsReachesTheStore(t *testing.T) {
 	requireAVersionWrittenWhileNoBuildOfThisCodeServesReachesTheStore(t, nextBuildCommit)
 }
 
 // requireAVersionWrittenWhileNoBuildOfThisCodeServesReachesTheStore is the deploy both tests above
 // drive: an unstamped build of this code seeds, backfills and drains one document and ticks once
-// with the fleet serving it alone, so its row records no other build seen, and its process stops.
-// The release before serves alone and the stand-in writes a version of the document with no tick
-// of this code in between (moveLinkAsThePreviousRelease, through the stopped service's room, which
-// is only how the edit reaches the store), and that release's process stops too. A new process of
-// the build of started then serves alone, and its first tick must mark the document and drain it,
-// and the tick after that must read no event, although one stands after the cursor.
+// with the fleet serving it alone, and its process stops. The release before serves alone and the
+// stand-in writes a version of the document with no tick of this code in between
+// (moveLinkAsThePreviousRelease, through the stopped service's room, which is only how the edit
+// reaches the store), and that release's process stops too. A new process of the build of started
+// then serves alone, and its first tick must mark the document and drain it, and the tick after
+// that must read the one event written since, which names no document, and mark nothing.
 func requireAVersionWrittenWhileNoBuildOfThisCodeServesReachesTheStore(t *testing.T, started string) {
 	database, stopped := blockIndexService(t)
 	ctx := context.Background()
@@ -268,9 +272,6 @@ func requireAVersionWrittenWhileNoBuildOfThisCodeServesReachesTheStore(t *testin
 			tick.Events, tick.Marked, tick.AnotherBuild)
 	}
 	left := blockIndexEventCursor(t, database, "")
-	if left.anotherBuildSeen {
-		t.Fatalf("the cursor records another build seen after a tick that found none, so this test proves nothing")
-	}
 	thisStops()
 
 	// The rollback: the release before this one serves alone and edits the document, and the roll
@@ -291,32 +292,134 @@ func requireAVersionWrittenWhileNoBuildOfThisCodeServesReachesTheStore(t *testin
 	process := blockIndexProcess(t, database, started)
 	registerProcess(t, database, started)
 
-	// The new process's first tick finds its build serving alone, reads once from where the
-	// stopped build left off, marks the document and drains it.
-	pending := countEventsAfter(t, database, left.at)
+	// The new process's first tick finds its build serving alone, reads from where its cursor
+	// starts - the stopped build's own row for the same build, and for a later build the earlier
+	// of that row and the backfill's horizon - through the newest event, marks the document and
+	// drains it.
+	start := left
+	if started != "" {
+		start = min(left, recordedBackfillHorizon(t, database))
+	}
+	pending := countEventsAfter(t, database, start)
 	tick = awaitedBlockIndexTick(t, process)
 	if tick.AnotherBuild || pending == 0 || tick.Events != pending || tick.Marked != 1 || tick.Documents != 1 {
-		t.Errorf("the new process's first tick read %d event(s), marked %d document(s), indexed %d and found another build %t; want the %d event(s) after the stopped build's cursor read, the one document marked and indexed, and no other build",
-			tick.Events, tick.Marked, tick.Documents, tick.AnotherBuild, pending)
+		t.Errorf("the new process's first tick read %d event(s), marked %d document(s), indexed %d and found another build %t; want the %d event(s) after event %d read (the stopped build's cursor %d), the one document marked and indexed, and no other build",
+			tick.Events, tick.Marked, tick.Documents, tick.AnotherBuild, pending, start, left)
 	}
-	if cursor := blockIndexEventCursor(t, database, started); cursor.readThrough < event || cursor.at < cursor.readThrough || cursor.anotherBuildSeen {
-		t.Errorf("the cursor of build %q stands at %+v after its first tick, want the event it reads through at or past the version's event %d, the cursor at or past that, and no other build seen",
+	if cursor := blockIndexEventCursor(t, database, started); cursor < event {
+		t.Errorf("the cursor of build %q stands at %d after its first tick, want it at or past the version's event %d",
 			started, cursor, event)
 	}
 	requireVersionInTheStore(t, database, document, added)
 	requireCensusReadsZero(t, database, "after the first tick of the process started after the rollback, with no second backfill")
 
-	// The tick after it reads no event, though one stands after the cursor.
-	unread := appendIssueEvent(t, database)
+	// The tick after it reads the one event written since, which names no document, marks
+	// nothing, and moves the cursor past it.
+	appended := appendIssueEvent(t, database)
 	tick = awaitedBlockIndexTick(t, process)
-	if tick.AnotherBuild || tick.Events != 0 || tick.Marked != 0 {
-		t.Errorf("the new process's second tick read %d event(s), marked %d document(s) and found another build %t, want none of them",
+	if tick.AnotherBuild || tick.Events != 1 || tick.Marked != 0 {
+		t.Errorf("the new process's second tick read %d event(s), marked %d document(s) and found another build %t, want the one event written since read and nothing marked",
 			tick.Events, tick.Marked, tick.AnotherBuild)
 	}
-	if cursor := blockIndexEventCursor(t, database, started); cursor.at < unread || cursor.anotherBuildSeen {
-		t.Errorf("the cursor of build %q stands at %+v after the second tick, want it moved past event %d unread and no other build seen",
-			started, cursor, unread)
+	if cursor := blockIndexEventCursor(t, database, started); cursor < appended {
+		t.Errorf("the cursor of build %q stands at %d after the second tick, want it moved past event %d",
+			started, cursor, appended)
 	}
+}
+
+// A version the release before this one writes while it holds the shared block-index lease, which
+// only drops a block of a document this build's drain has stated, reaches the store, and the
+// census reaches zero with no second backfill.
+//
+// That release's index pass deletes the dropped block's row and its link's row, writes no row at
+// all and states nothing in the store: the block's node stays live and its link asserted with
+// nothing projecting either, and no row of the document names no node. So this build's tick marks
+// the document from the version's event by the two versions its row records - version, which that
+// release moved, against store_version, which only this build's index pass writes
+// (readEventsAfterCursor) - and by no row naming no node, of which there is none here. Its drain
+// then reads what the store still asserts of the document beside the rows (refs.IndexBlocks) and
+// states the dropped block gone and its link retracted.
+//
+// The release before takes every period of the lease while it serves, as in
+// TestAVersionThePreviousReleaseWritesWhileItHoldsTheLeaseReachesTheStore, so no tick of this build
+// runs between that release's version and its leaving.
+func TestAVersionThePreviousReleaseWritesThatOnlyDropsABlockReachesTheStore(t *testing.T) {
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+
+	appendIssueEvent(t, database)
+	const slug = "dropping"
+	closer := "Closer of " + slug
+	document := createOwedDocument(t, database, service, "CORE-1", "", slug, nestedSpec(slug)+"\n"+closer+", after dispatch://CORE-2.\n", "")
+	settle(t, database, document)
+	// Rows of every other kind the census reads, so the census can pass only on agreement.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into comments (issue_key, author, body) values
+			('CORE-1', '{"kind":"user","id":"Alice"}', 'A remark written before the store existed.'),
+			('CORE-1', '{"kind":"session","id":"previous-release-dropping-session"}', 'A session''s remark written before the store existed.');
+		update issues set route = 'role:previous-release-dropping-role' where key = 'CORE-1';
+	`); err != nil {
+		t.Fatalf("seed the comments and the route: %v", err)
+	}
+	drainBlockIndex(t, service, "seed")
+	takeTheStoreOff(t, database)
+	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the store: %v", err)
+	}
+	drainBlockIndex(t, service, "the backfill's mark")
+	requireCensusReadsZero(t, database, "after this build drained the backfill's mark")
+
+	var refKey string
+	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, document).Scan(&refKey); err != nil {
+		t.Fatalf("read the document's ref_key: %v", err)
+	}
+	dropped := blockLinkRow{blockID: holderOf(t, service, document, closer)}
+	if err := database.Pool.QueryRow(ctx, `
+		select kind, to_kind, to_id from block_refs where artifact_id = $1 and block_id = $2
+	`, document, dropped.blockID).Scan(&dropped.kind, &dropped.toKind, &dropped.toID); err != nil {
+		t.Fatalf("read the closing paragraph's link: %v", err)
+	}
+	droppedAddress := refKey + "#" + dropped.blockID
+
+	// A process of the release before joins and takes every period of the lease: it writes a
+	// version that drops the closing paragraph and adds nothing, and leaves, and no tick of this
+	// build runs meanwhile. Its version write settles the re-index queue's row of the version as
+	// it indexes the text (moveLinkAsThePreviousRelease), so the version's event is the only way
+	// left for this build to reach the document.
+	registerProcess(t, database, "")
+	previousLeaves := registerProcess(t, database, previousReleaseCommit)
+	indexAsThePreviousRelease(t, database, service, document, removeBlockWithID(dropped.blockID), []blockLinkRow{dropped}, nil)
+	if _, err := database.Pool.Exec(ctx, `delete from refs_grammar_owed where kind = 'artifact' and id = $1::uuid`, document); err != nil {
+		t.Fatalf("settle the re-index queue's row of %s as the previous release's version write does: %v", slug, err)
+	}
+	if rows := blockRowsOf(t, database, document, dropped.blockID); rows != 0 {
+		t.Fatalf("the closing paragraph keeps %d row(s) after the previous release's version, want its row dropped: this test proves nothing", rows)
+	}
+	if blocks, links := rowsNamingNoNode(t, database, document); blocks+links != 0 {
+		t.Fatalf("the previous release's version left %d block row(s) and %d link row(s) naming no node, want none: the version only drops a block, which is what this test is about", blocks, links)
+	}
+	if marked := markedDocuments(t, database); marked != 0 {
+		t.Fatalf("%d document(s) hold this build's mark after the previous release's version, want none: this test proves nothing", marked)
+	}
+	if before := takeStoreCensus(t, database); !before.Refused() {
+		t.Fatalf("the census passes over the block the previous release dropped, so this test proves nothing")
+	}
+	previousLeaves()
+
+	// This build's next tick, serving alone again, and its drain.
+	tick := awaitedBlockIndexTick(t, service)
+	t.Logf("the first tick after the previous release left read %d event(s), marked %d document(s), indexed %d, another build %t",
+		tick.Events, tick.Marked, tick.Documents, tick.AnotherBuild)
+	if tick.Marked != 1 {
+		t.Errorf("the first tick after the previous release left marked %d document(s), want the one whose version only drops a block", tick.Marked)
+	}
+	drainBlockIndex(t, service, "after the previous release left")
+
+	requireDroppedBlockGone(t, database, droppedAddress, dropped)
+	if marked := markedDocuments(t, database); marked != 0 {
+		t.Errorf("%d document(s) still hold this build's mark after its drain, want none", marked)
+	}
+	requireCensusReadsZero(t, database, "after the previous release, which only dropped a block while it held the block-index lease, left, with no second backfill")
 }
 
 // registerProcess records a live server process serving commit, as a process registers once it
@@ -371,7 +474,7 @@ func moveLinkAsThePreviousRelease(t *testing.T, database *store.Store, service *
 		mention = cutEnding(tree, innerWords)
 		replaceText(tree, middleWords+".", middleWords+mention+".")
 		return tree
-	}, dropped, added)
+	}, []blockLinkRow{dropped}, []blockLinkRow{added})
 	if _, err := database.Pool.Exec(context.Background(), `
 		delete from refs_grammar_owed where kind = 'artifact' and id = $1::uuid
 	`, document); err != nil {
@@ -576,26 +679,31 @@ func awaitedBlockIndexTick(t *testing.T, service *Service) BlockIndexTick {
 	return reconcileBlockIndex(t, service, "")
 }
 
-// eventCursor is this build's row of block_index_event_cursors: at, the highest event id its
-// ticks have read or passed; anotherBuildSeen, whether the last tick found another build; and
-// readThrough, the event id the ticks read on until the cursor reaches.
-type eventCursor struct {
-	at               int64
-	anotherBuildSeen bool
-	readThrough      int64
-}
-
-// blockIndexEventCursor reads the row of block_index_event_cursors of the build of commit (the
-// empty string: an unstamped build's), which has to be there.
-func blockIndexEventCursor(t *testing.T, database *store.Store, commit string) eventCursor {
+// blockIndexEventCursor reads the event_id of the row of block_index_event_cursors of the build of
+// commit (the empty string: an unstamped build's), the highest event id its ticks have read or
+// passed, which has to be there.
+func blockIndexEventCursor(t *testing.T, database *store.Store, commit string) int64 {
 	t.Helper()
-	var cursor eventCursor
+	var cursor int64
 	if err := database.Pool.QueryRow(context.Background(), `
-		select event_id, another_build_seen, read_through from block_index_event_cursors where build_commit = $1
-	`, commit).Scan(&cursor.at, &cursor.anotherBuildSeen, &cursor.readThrough); err != nil {
+		select event_id from block_index_event_cursors where build_commit = $1
+	`, commit).Scan(&cursor); err != nil {
 		t.Fatalf("read the block-index event cursor of build %q: %v", commit, err)
 	}
 	return cursor
+}
+
+// recordedBackfillHorizon reads the horizon the newest backfill recorded it began at
+// (graph_backfill_horizon), which has to be there.
+func recordedBackfillHorizon(t *testing.T, database *store.Store) int64 {
+	t.Helper()
+	var horizon int64
+	if err := database.Pool.QueryRow(context.Background(), `
+		select event_id from graph_backfill_horizon where id = 1
+	`).Scan(&horizon); err != nil {
+		t.Fatalf("read the horizon the backfill began at: %v", err)
+	}
+	return horizon
 }
 
 // appendIssueEvent appends one event of issue CORE-1 that names no document, as the stand-in for

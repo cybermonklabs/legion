@@ -54,7 +54,7 @@ func failingSendListener(t *testing.T, sessions ...string) string {
 // from that answer on: the reply flips the row to sent (replyComment, replyMessage), and an
 // attempt that reads sent is one the listener took, which the store owes that session a node
 // for (R14, graphcensus's recordedSessions). Both replies record it the one way
-// (recordAnsweredDelivery): the node under the event that records the answer, and, where this
+// (queueAnsweredDelivery): the node under the event that records the answer, and, where this
 // flip is what makes the attempt a delivery, the delivered_to tuple of what it carried - a
 // comment, the one thing this child gives a node, and nothing for a message, which
 // the child that moves the inbox, the messages and the read state owns.

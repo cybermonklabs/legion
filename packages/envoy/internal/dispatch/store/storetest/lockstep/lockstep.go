@@ -11,6 +11,9 @@
 // (graphstore's TestEveryStoreWriteCallSiteIsListed, docs' requireEveryPassReadsItsSource) read
 // every Go file but the tests, so a fixture that writes one - a seed, a hold written through the
 // store's writer - stays in the _test.go files of the package that uses it.
+//
+// It also holds the register of the store's writers, each beside the test that drives its lock
+// steps (StoreWriteCallSites), which graphstore's and graphcensus's tests both read.
 package lockstep
 
 import (
@@ -32,7 +35,7 @@ import (
 // does not hold.
 const Wait = 30 * time.Second
 
-// The steps a hold stands for, named as a failure names them: the owner row; the two steps a
+// The steps a hold stands for, named as a failure names them: the owner's lock; the two steps a
 // writer under the revision fence (R23) adds after it, the document's document_block_versions row
 // and the projection rows it reads again under those two locks, `for update`, before it writes
 // anything (graphcensus's heldBlockRows, heldBlockRefRows); the node rows; the tuple append; the
@@ -40,7 +43,7 @@ const Wait = 30 * time.Second
 // order a writer takes them in to the invariants on api/inbox_read.go's markInboxReadThreads, not
 // to one sequence of these steps.
 const (
-	StepOwner      = "the owner row"
+	StepOwner      = "the owner's lock"
 	StepFence      = "the revision fence's document_block_versions row"
 	StepHeld       = "the projection rows, read again under the fence"
 	StepNode       = "the node rows"
@@ -115,6 +118,21 @@ func HoldRow(t testing.TB, database *store.Store, hold *Hold, statement string, 
 	return hold
 }
 
+// OwnerLockStatement is how the statement that takes an owner's lock starts, lower-cased with its
+// whitespace collapsed as RequireStoppedAt reads it: store.LockOwners' advisory lock.
+var OwnerLockStatement = strings.ToLower(store.OwnerLockStatement)
+
+// HoldOwner holds owner's lock, the transaction advisory lock every writer of that owner takes
+// first (store.LockOwner), as one of those writers takes it.
+func HoldOwner(t testing.TB, database *store.Store, hold *Hold, owner store.Owner) *Hold {
+	t.Helper()
+	Begin(t, database, hold)
+	if err := store.LockOwner(context.Background(), hold.Tx, owner); err != nil {
+		t.Fatalf("hold %s: %v", hold.Name, err)
+	}
+	return hold
+}
+
 // RequireStoppedAt reads where the writer is while it waits behind hold: the statement it waits
 // at, which has to be the statement that takes hold's step, and the tables its transaction holds a
 // lock on, none of which may be a table of a later step. Postgres keeps every table lock a
@@ -151,19 +169,19 @@ func RequireStoppedAt(t testing.TB, ctx context.Context, database *store.Store, 
 // its comment's tuples before its author's node, or after a projection row. It holds the writer
 // to:
 //
-//   - no row of a step the writer does not take queued behind: the owner row comes first or not at
-//     all, and a writer that queued behind one took it after a step it had already taken;
+//   - no row of a step the writer does not take queued behind: the owner's lock comes first or not
+//     at all, and a writer that queued behind one took it after a step it had already taken;
 //   - every row of a step the writer takes queued behind once, or the step was not shown to be
 //     taken while it was held;
-//   - the owner row first: no row of another step taken before an owner row;
-//   - the revision fence's row (R23) after the owner row, which the rule before says, and before
-//     the rows it guards (fencedSteps);
+//   - the owner's lock first: no row of another step taken before an owner's lock;
+//   - the revision fence's row (R23) after the owner's lock, which the rule before says, and
+//     before the rows it guards (fencedSteps);
 //   - a node's row before the projection row whose foreign key names it (Hold.Names);
 //   - the project of the event last;
 //   - several rows of one step in ascending order: node rows in ascending (kind, id), and owner
-//     rows in ascending owner key and fence rows in document id order, the order every writer of
+//     locks in ascending owner key and fence rows in document id order, the order every writer of
 //     several documents takes them in (graphcensus's lockBlockDocuments, grapherase's
-//     lockInStoreOrder, events.LockOwnerRows).
+//     lockInStoreOrder, events.LockOwnerRows, store.LockOwners).
 //
 // The third invariant, the event before the tuples it causes, holds of a writer with nothing to
 // read: neither the backfill nor the erase appends an event, and every cause the backfill's tuples
@@ -206,7 +224,7 @@ func RequireTheStoreLockOrder(t testing.TB, run string, holds, queued []*Hold) {
 			}
 			switch {
 			case hold.Step == StepOwner:
-				before(hold, other, "the owner row comes first")
+				before(hold, other, "the owner's lock comes first")
 			case hold.Step == StepFence && slices.Contains(fencedSteps, other.Step):
 				before(hold, other, "the revision fence's row comes before the rows it guards")
 			case other.Step == StepEvent:
@@ -218,7 +236,7 @@ func RequireTheStoreLockOrder(t testing.TB, run string, holds, queued []*Hold) {
 		}
 	}
 	for _, ascending := range []struct{ step, rule string }{
-		{StepOwner, "several owner rows are taken in ascending owner key"},
+		{StepOwner, "several owners' locks are taken in ascending owner key"},
 		{StepFence, "several documents' fence rows are taken in document id order"},
 		{StepNode, "several node rows are taken in ascending (kind, id)"},
 	} {
@@ -282,11 +300,12 @@ func WaitingStatement(t testing.TB, database *store.Store, pid uint32) string {
 // Follow follows a writer already running on backend pid, whose result arrives on done, through
 // holds: it lets go of each hold the writer queues behind, one at a time, reads where the writer
 // waits each time (RequireStoppedAt), and once the writer answers holds the order it queued in to
-// the store's lock order (RequireTheStoreLockOrder) and fails on the writer's own error. A
-// statement waits on one lock at a time, so a writer queued behind two holds at once is a failure
-// of the test's own reading, and a writer that queues behind none and does not answer is waiting
-// on something the test does not hold. It answers the holds in the order the writer queued behind
-// them.
+// the store's lock order (RequireTheStoreLockOrder), fails on the writer's own error, and fails on
+// a node or tuple row the writer committed with a negative cause (storetest.RequireNoMarkedCause).
+// A statement waits on one lock at a time, so a writer queued behind two holds at once is a
+// failure of the test's own reading, and a writer that queues behind none and does not answer is
+// waiting on something the test does not hold. It answers the holds in the order the writer
+// queued behind them.
 func Follow(t testing.TB, database *store.Store, run string, pid uint32, done <-chan error, holds []*Hold) []*Hold {
 	t.Helper()
 	ctx := context.Background()
@@ -304,6 +323,7 @@ func Follow(t testing.TB, database *store.Store, run string, pid uint32, done <-
 			if err != nil {
 				t.Fatalf("%s failed after it queued behind %s: %v", run, HoldNames(queued), err)
 			}
+			storetest.RequireNoMarkedCause(t, database, run)
 			return queued
 		default:
 		}

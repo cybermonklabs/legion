@@ -67,7 +67,10 @@ copies and a limit a start with other settings lowered
 ([Keeping the stream](/legion/dispatch/envoy/#keeping-the-stream)).
 
 People sign in through a Cognito sign-in pool or with Google directly by default, and Dispatch
-names each person by their lowercase email. `DISPATCH_IDENTITY=header:<Header-Name>` names people by a request header instead; it is for
+names each person by their lowercase email. `DISPATCH_IDENTITY=iap` names people from the
+assertion Google Cloud's Identity-Aware Proxy signs instead
+([Behind Identity-Aware Proxy](#behind-identity-aware-proxy)).
+`DISPATCH_IDENTITY=header:<Header-Name>` names people by a request header; it is for
 tests and local harnesses only, needs `DISPATCH_IDENTITY_HEADER_TRUSTED=1`, and refuses every
 `DISPATCH_SIGNIN_*` setting. Serve Dispatch over HTTPS. `DISPATCH_INSECURE_COOKIE=1` is only for
 trying it over plain HTTP on your own machine.
@@ -159,6 +162,49 @@ return to domain mode unprotected: the same Google account signing in again find
 `sub` still on the row, so nothing ends sessions a pool-era cookie still held. Everyone then signs
 in again under the new issuer; a refresh token left from the old one would be refused at the
 first hourly confirmation, and is still redeemable at the old issuer until it is revoked there.
+
+## Behind Identity-Aware Proxy
+
+A Dispatch served behind a Google Cloud load balancer with Identity-Aware Proxy (IAP) turned on
+lets IAP sign people in: `DISPATCH_IDENTITY=iap`. On each request it lets through, IAP adds an
+assertion it signs, the `X-Goog-IAP-JWT-Assertion` header, and Dispatch names the person from that
+assertion alone. It never reads IAP's unsigned `X-Goog-Authenticated-User-Email` or
+`X-Goog-Authenticated-User-Id`, which a request that reached Dispatch around IAP can carry.
+
+Dispatch checks each assertion as Google documents
+([Securing your app with signed headers](https://cloud.google.com/iap/docs/signed-headers-howto)):
+an ES256 signature by one of IAP's keys, which it reads from
+`https://www.gstatic.com/iap/verify/public_key-jwk` on the first request and caches; the issuer
+`https://cloud.google.com/iap`; the audience `DISPATCH_IAP_AUDIENCE`; and the expiry and issue
+times, each with 30 seconds of clock skew. Set `DISPATCH_IAP_AUDIENCE` to the audience IAP shows as
+the **Signed Header JWT Audience** of the load balancer's backend service,
+`/projects/<project number>/global/backendServices/<backend service id>`.
+
+Who may use Dispatch is the same rule as Google sign-in's: set `DISPATCH_SIGNIN_DOMAIN` to the
+organization's primary Workspace domain, and a person is admitted when the assertion's `hd` is that
+domain and it names a Google account, named by the assertion's `email`, lowercased. The other
+`DISPATCH_SIGNIN_*` settings are refused: Dispatch runs no sign-in of its own, so `/auth/start`
+answers `503 SIGNIN_UNCONFIGURED`. Grant IAP access to the people who should reach Dispatch as
+well; Dispatch's own check stands behind IAP's, so a request that bypasses IAP, or carries an
+assertion for another backend service, is refused.
+
+IAP signs a fresh assertion for every request, so Dispatch keeps no session for it: a person IAP or
+the domain stops admitting is refused from their next request, and Dispatch's logout signs nobody
+out of IAP. A request with no valid assertion, or whose person the domain does not admit, is
+answered `401 NO_IDENTITY`; one that finds IAP's key set unreadable is answered
+`503 SIGNIN_UNAVAILABLE`, and the next one after the keys can be read goes through. A write from a
+page of another origin is refused, as it is for a session cookie, since a browser sends IAP's own
+cookie with it.
+
+A page's live connections, its live socket and each open document's socket, are the one place an
+assertion ages: they re-check the assertion they opened with every 15 seconds, and IAP gives an
+assertion about ten minutes. When it expires, Dispatch closes the socket with a code on which the
+page reopens it at once (`4001` for the live socket, `4412` for a document's), and the reopened
+socket carries IAP's next assertion, which is checked again. So each of an IAP user's sockets
+reopens about every ten minutes: the live socket shows nothing of it, and a document reconnects
+as it does after any close the server makes, its sync restoring whatever was in flight. Only an
+assertion IAP signed counts as expired: one IAP's keys no longer verify, or whose person the domain
+no longer admits, is refused, and the socket closes as it does when its person signs out.
 
 ## Changing the session key
 
@@ -389,7 +435,7 @@ while the list names a project or the database holds a private one, and
 while Postgres answers:
 
 ```json
-{"ok":true,"db":true,"nats":null,"files":null,"signin":null,"service_tokens":null,"commit":null,"fleet_commit":null,"schema_version":121,"outbox_publisher":false}
+{"ok":true,"db":true,"nats":null,"files":null,"signin":null,"service_tokens":null,"github":null,"commit":null,"fleet_commit":null,"schema_version":121,"outbox_publisher":false}
 ```
 
 It is a readiness check, not a liveness check: it fails while the database cannot be reached, so a
@@ -408,6 +454,9 @@ balancer's or Kubernetes' readiness probe at it.
   downloads and nothing else.
 - `signin` and `service_tokens` are whether the sign-in issuer and the service-account token issuer
   have been reached, or `null` when that issuer is not set. Neither decides `ok` or the status.
+- `github` names each GitHub read the server makes in the background, with how its newest attempt
+  went, or is `null` when no GitHub App is configured. It never decides `ok` or the status.
+  [GitHub reads](#github-reads), below, says what it holds.
 - `commit` is the source commit this server's image was built from, or `null` in a build that was
   not stamped.
 - `fleet_commit` is the commit every running server was last found serving, the latest announced
@@ -425,6 +474,119 @@ balancer's or Kubernetes' readiness probe at it.
 
 A check that needs NATS, the bucket or sign-in asserts `nats: true`, `files: true` or `signin: true`
 itself.
+
+### GitHub reads
+
+Four background loops read GitHub. Each runs under a lease, so one server makes each read in each
+period. `github` holds one entry for each loop, in this order:
+
+- `webhook_redelivery`: the sweep that asks GitHub to redeliver the webhook deliveries that
+  failed, every 2 minutes.
+- `architecture_import`: the import of every enabled architecture source, every 5 minutes.
+- `delivery_reconcile`: the read of the pull requests and workflow runs that the
+  [Delivery](/legion/dispatch/delivery/) page shows, and of the pull request heads that results
+  are compared with, every 5 minutes.
+- `ci_reconcile`: the read of each open pull request's checks, and of its head's commit statuses
+  where the App's token for the repository holds Commit statuses, every 5 minutes.
+
+Each entry is `{"state": …, "at": …, "cause": …}`:
+
+- `state` is one of five words:
+  - `succeeded`: the newest attempt sent requests to GitHub and met no failure.
+  - `failed`: the newest attempt met a failure. The lists below say which failures count.
+  - `no_attempt`: no attempt is recorded yet.
+  - `unknown`: this server has not read the record of attempts yet.
+  - `off`: this server does not run the read. All four are `off` without the App's private key,
+    and `webhook_redelivery` and `ci_reconcile` are `off` without NATS too.
+- `at` is when the newest attempt was recorded, as its pass ended, by the database's clock, in
+  RFC 3339 UTC. It is `null` unless the state is `succeeded` or `failed`.
+- `cause` is the text of the first failure of that attempt, at most 1,024 bytes. A longer text is
+  cut, and ends with `… (cut from <n> bytes)`. It is `null` unless the state is `failed`.
+
+`github` never decides `ok` or the status: a server serves everything but these reads while
+GitHub fails. Each server keeps a copy of the record of attempts in memory, reads it again each
+time any server records an attempt, and answers from that copy, so `github` sends the database
+nothing and waits on nothing.
+
+A cause can name a repository, because a GitHub error carries the address it asked. `/healthz`
+needs no credential, so whoever reaches the server's HTTP port can read the cause. Serve Dispatch
+on a private network.
+
+The delivery intakes also read GitHub, for each webhook event, and have no entry of their own.
+They report through `delivery_reconcile`: the reconcile reads the same pull requests and runs with
+the same App every 5 minutes, so a GitHub failure of those reads shows there within one pass.
+
+An attempt is one pass of a loop, on the server that holds the loop's lease. It is recorded when
+the pass ends, in place of the attempt before it. A pass records nothing when it sent GitHub
+nothing and met no failure: for example, the sweep before NATS connects, a CI reconcile with no
+repository to read, an architecture import with no enabled source, or a delivery reconcile with no
+delivery settings and no pull request to read again. A pass that the server's shutdown cut short
+records nothing either. The same reads made by a route or a command record nothing.
+
+An attempt is `failed` when it meets a failure of one of two kinds. The first kind is an answer
+that the GitHub client counts on every request a pass sends:
+
+- GitHub gave no answer: a network error, the client's own 20-second timeout, or a body the client
+  could not read or that was past its size limit.
+- GitHub answered with a 5xx status or with 401.
+- A rate limit: a 429, a 403 that carries a limit, a GraphQL answer that reports a limit (also
+  with status 200), or a limit already recorded that held the request before it was sent.
+
+The second kind is a part of its read that a loop gives up:
+
+- The webhook redelivery sweep: the list of the App webhook's deliveries fails, GitHub refuses a
+  redelivery request, or a rate limit stops the sweep.
+- The CI reconcile: a repository it reads that it cannot read (it gets no token for it, GitHub does
+  not answer for it or gives it a name that is not `owner/name`, or its open pull requests cannot
+  be listed), a repository a project maps that the App is not installed on, a pull request head it
+  cannot read (an answer too large included), a failed read of a head's commit statuses, or a
+  rate limit that ends the pass, also one already in force when the pass starts. A read that the
+  pass's own time limit cut short is not one of these.
+- The architecture import: the sync of a source fails at a step that reads GitHub, which is its
+  installation token, its branch head, its directory listing or its files. That includes the App
+  not installed on the source's repository, a missing Contents permission, and a branch that
+  GitHub does not have.
+- The delivery reconcile: the App's permission check of the deploy repository fails; a step that
+  reads GitHub fails (merged pull requests, partial pull requests, pull request heads, the deploy
+  and PR-checks workflow runs, or the attribution inputs of stored pull requests); or the pass
+  gives up one row of such a step: a pull request head it cannot read again, a head it attributes
+  without its commit messages, a partial pull request it cannot complete, or a stored pull request
+  whose attribution inputs it cannot read.
+
+At those points a failure counts whatever caused it, a database error inside the step included,
+because that error also ends that part of the read. The cause is the loop's own error, which
+names what failed and where.
+
+These answers are not failures. The loop takes each one as data and goes on, so the attempt stays
+`succeeded`:
+
+- a delivery that GitHub no longer has (the sweep marks it expired);
+- a pull request or a workflow run that GitHub says is gone, or whose repository the App is no
+  longer installed on (the delivery reconcile marks it as one it cannot fetch);
+- a pull request head that GitHub no longer has, or of a repository the App cannot read (the
+  reconcile marks it as read);
+- a directory of an architecture source that GitHub answers `404 Not Found` for at the commit
+  (the import reads it as an empty model);
+- a repository that only an issue names, which the App is not installed on (the CI reconcile
+  passes over it);
+- a `304 Not Modified`;
+- a page that the delivery reconcile asks for again after a 502, a 504 or a timeout, and then
+  reads;
+- a CI reconcile query that fails when the reconcile then reads the same repository over REST;
+- a sync of an architecture source that fails and finds that another sync or a settings save
+  changed the source first, once the import syncs the source again and that sync reaches GitHub:
+  it sends a request, or meets a failure such as a rate limit already recorded. When the import
+  stops before a later sync reaches GitHub, because the time for the sync ran out or the database
+  failed, the failure of the last sync that reached GitHub counts.
+
+The GitHub client counts no other 403, and no 404, 409 or 422, because the same answer is data at
+one point and a failure at another. It does not count a request that was cut off because its
+caller's time ran out or the server shut down. A failure of the database or NATS outside the
+points above is not a failure here: `db` and `nats` report those. What the files of an
+architecture source say is not a GitHub read either: the source's own error records a note larger
+than 1 MiB, a note that Dispatch cannot parse, or a model it refuses. The delivery reconcile's
+re-listings of older runs never fail its pass, but a failure of the first kind that they meet still
+counts.
 
 ## Metrics
 

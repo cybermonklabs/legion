@@ -11,6 +11,7 @@ package brokerclient
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestARefusedIdentityStopsTheRenewalLoopWithAPlainError: the broker is told to refuse, and the
@@ -206,6 +208,136 @@ func TestADPoPRefusalKeepsTheRenewalLoopTrading(t *testing.T) {
 			}
 		})
 	}
+}
+
+const (
+	retriedRefusalLine  = "the secrets broker refused a trade, which a later trade may cure"
+	retriedNoAnswerLine = "a trade got no usable answer from the secrets broker"
+)
+
+func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   map[string]any
+		down   bool
+		code   string
+	}{
+		{name: "a person Dispatch holds", status: 400, code: "membership_held",
+			body: map[string]any{"error": "membership_held", "error_description": heldDescription}},
+		{name: "an empty bucket", status: 429, code: "invalid_request",
+			body: map[string]any{"error": "invalid_request", "error_description": "too many token requests; try again later"}},
+		{name: "a proof outside the skew window", status: 400, code: "invalid_dpop_proof",
+			body: map[string]any{"error": "invalid_dpop_proof", "error_description": "the proof's iat is outside the broker's skew window"}},
+		{name: "a proof with no nonce", status: 400, code: "use_dpop_nonce",
+			body: map[string]any{"error": "use_dpop_nonce", "error_description": "the broker wants a nonce in the proof"}},
+		{name: "a broker answering 503", status: 503, body: map[string]any{"error": "unavailable"}},
+		{name: "a broker answering nothing", down: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := newStubBroker(t, func(n int, _ url.Values) (int, map[string]any) {
+				if n == 0 {
+					return 200, mintedToken(1)
+				}
+				return tc.status, tc.body
+			})
+			logged := &logtest.Recorder{}
+			client, err := New(Config{BrokerURL: brokeraddr.New(broker.URL()), Key: testKey(t), Subject: projectedStub(), RenewBefore: time.Minute, Log: slog.New(logged)})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			ctx := context.Background()
+			if _, err := client.Token(ctx); err != nil {
+				t.Fatalf("the first trade: %v", err)
+			}
+			if tc.down {
+				broker.server.Close()
+			}
+
+			client.held.Expiry = time.Now().Add(30 * time.Second)
+			if held, err := client.Token(ctx); err != nil || held.AccessToken != mintedToken(1)["access_token"] {
+				t.Fatalf("Token = %+v, %v; want the token in hand, which is still live", held, err)
+			}
+			if n := len(broker.Requests()); !tc.down && n != 2 {
+				t.Fatalf("the broker saw %d trades; want two, the first and Token's renewal", n)
+			}
+			loop, cancel := context.WithCancel(ctx)
+			client.after = func(time.Duration) <-chan time.Time {
+				cancel()
+				return nil
+			}
+			if err := client.Run(loop, func(context.Context, *Token) error {
+				t.Error("the loop handed its caller a token from a trade that failed")
+				return nil
+			}); err != nil {
+				t.Fatalf("Run = %v; want it waiting to ask again", err)
+			}
+
+			client.mu.Lock()
+			_, tradeErr := client.trade(ctx)
+			client.mu.Unlock()
+			if tradeErr == nil {
+				t.Fatal("a trade after the loop succeeded; want it failing as every trade after the first does")
+			}
+
+			want := retriedRefusalLine
+			if tc.code == "" {
+				want = retriedNoAnswerLine
+			}
+			for _, suffix := range []string{"; the token in hand is still live", "; asking again"} {
+				var lines []map[string]string
+				for _, record := range logged.Records() {
+					if strings.Contains(record.Message, "did not answer") {
+						t.Errorf("the client logged %q: the broker answered, or the line names what it did", record.Message)
+					}
+					if record.Message == want+suffix {
+						lines = append(lines, attrsOf(t, record))
+					}
+				}
+				if len(lines) != 1 {
+					t.Fatalf("the client logged %d lines %q; want one (log: %v)", len(lines), want+suffix, messagesOf(logged.Records()))
+				}
+				line := lines[0]
+				if line["code"] != tc.code {
+					t.Errorf("the line %q names the code %q; want %q", want+suffix, line["code"], tc.code)
+				}
+				if line["error"] != tradeErr.Error() {
+					t.Errorf("the line %q carries the error %q; want the trade's error whole, %q", want+suffix, line["error"], tradeErr.Error())
+				}
+				if tc.code != "" {
+					if line["status"] != strconv.Itoa(tc.status) {
+						t.Errorf("the line %q names the status %q; want %d", want+suffix, line["status"], tc.status)
+					}
+					if description := tc.body["error_description"].(string); !strings.Contains(line["error"], description) {
+						t.Errorf("the line %q carries the error %q; want the broker's words %q", want+suffix, line["error"], description)
+					}
+				} else if _, named := line["status"]; named {
+					t.Errorf("the line %q names a status %q; a trade with no usable answer has none", want+suffix, line["status"])
+				}
+			}
+		})
+	}
+}
+
+func attrsOf(t *testing.T, record slog.Record) map[string]string {
+	t.Helper()
+	attrs := map[string]string{}
+	record.Attrs(func(attr slog.Attr) bool {
+		if _, twice := attrs[attr.Key]; twice {
+			t.Errorf("the line %q carries the key %q twice", record.Message, attr.Key)
+		}
+		attrs[attr.Key] = attr.Value.String()
+		return true
+	})
+	return attrs
+}
+
+func messagesOf(records []slog.Record) []string {
+	messages := make([]string, 0, len(records))
+	for _, record := range records {
+		messages = append(messages, record.Message)
+	}
+	return messages
 }
 
 func refusalClient(t *testing.T, broker *stubBroker) *Client {

@@ -1,6 +1,14 @@
 import { type ReactNode, useId } from "react";
 
-import { primaryButton, secondaryButtonCompact } from "../theme/classes";
+import {
+  pageInkFill,
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
+  primaryButton,
+  secondaryButtonCompact,
+} from "../theme/classes";
+import { useTooltips } from "./tooltips";
 
 /** Each look whole, refused or not: the `refused:` variant (`styles.css`) paints `disabled` and
  *  `aria-disabled` alike, so a look states its cannot-press state once. */
@@ -8,6 +16,15 @@ const LOOKS = {
   primary: primaryButton,
   "secondary-compact": secondaryButtonCompact,
 } as const;
+
+/** Each look inside `NoTooltips`, in the new issue page's colours, on the same shape as
+ *  `LOOKS`: the primary is filled with the page's ink, and refused is the page's own refused
+ *  send, muted words on the hairline grey; the compact secondary is the page's header control,
+ *  its rule and muted words on the paper, with quiet words while refused. */
+const PAGE_LOOKS: Record<keyof typeof LOOKS, string> = {
+  primary: `rounded-lg px-3 py-2 text-sm font-semibold ${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
+  "secondary-compact": `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`,
+};
 
 /**
  * A button that says why it cannot be pressed, in one of `LOOKS`. A refusal is `aria-disabled`
@@ -51,6 +68,7 @@ export function RefusableButton({
   readonly refusalShownBy?: string;
   readonly type?: "button" | "submit";
 }): ReactNode {
+  const tooltips = useTooltips();
   const ownReasonId = useId();
   const reasonId = refusal === null ? undefined : (refusalShownBy ?? ownReasonId);
   const description = [reasonId, describedBy].filter((id) => id !== undefined).join(" ");
@@ -59,7 +77,7 @@ export function RefusableButton({
       <button
         aria-describedby={description === "" ? undefined : description}
         aria-disabled={refusal === null && busy === undefined ? undefined : true}
-        className={`${LOOKS[look]} ${className}`}
+        className={`${(tooltips ? LOOKS : PAGE_LOOKS)[look]} ${className}`}
         onClick={(event) => {
           if (busy !== undefined) {
             event.preventDefault();
@@ -72,7 +90,7 @@ export function RefusableButton({
           }
           onPress?.();
         }}
-        title={refusal ?? undefined}
+        title={tooltips ? (refusal ?? undefined) : undefined}
         type={type}
       >
         {busy ?? children}

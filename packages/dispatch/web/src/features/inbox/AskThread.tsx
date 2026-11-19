@@ -5,6 +5,7 @@ import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../hooks/useSending";
 import {
@@ -12,6 +13,9 @@ import {
   borderStrong,
   enabledCardHoverBorder,
   inputClasses,
+  pageInkText,
+  pageLineBorder,
+  pageQuietText,
   surfaceMutedBg,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurfaceMuted,
@@ -100,15 +104,63 @@ export function useUnsentReply(ask: Pick<Ask, "id" | "state">): string {
   return takesReply(ask) || draft.trim() === "" ? "" : draft;
 }
 
+/** What the unsent reply's box says, on today's pages and inside `NoTooltips` alike. */
+const UNSENT_REPLY_WHY =
+  "This question opened again before you sent your reply, so it was not sent. Your text is here to copy.";
+
+/**
+ * Each colour the unsent box draws inside `NoTooltips`, the new issue page's: its rule the
+ * page's, what happened to the reader's text in the quiet grey, and that text in the ink. They
+ * stand in a table, as `AskCard`'s do, because `theme/text-on-background.test.ts` reads a class
+ * only where it names an export of `theme/classes.ts`, and the issue page's shared controls test
+ * (`shared-controls.tooltips.test.tsx`) pairs each entry here with the page's grounds.
+ */
+const ON_PAGE = {
+  ink: pageInkText,
+  quiet: pageQuietText,
+  rule: pageLineBorder,
+} as const;
+
+/** Text the reader wrote that no form will send any more, read-only and copyable where its box
+ *  stood: the thread's unsent reply (`UnsentReply`) and the card's unsent answer (`AskCard`).
+ *  `main`'s `UnsentText` outside `NoTooltips`, the same box in the page's colours inside. */
+export function UnsentBox({
+  className,
+  testId,
+  text,
+  why,
+}: {
+  /** The caller's own spacing around the box. */
+  className?: string;
+  testId: string;
+  text: string;
+  why: string;
+}): ReactNode {
+  const tooltips = useTooltips();
+  if (tooltips) {
+    return <UnsentText className={className} testId={testId} text={text} why={why} />;
+  }
+  // Inside `NoTooltips` the box is drawn in the page's colours, which `UnsentText` does not take,
+  // and the reader's own words are a value, which breaks anywhere.
+  return (
+    <div
+      className={`rounded-xl border p-3 ${ON_PAGE.rule} ${className ?? ""}`}
+      data-testid={testId}
+    >
+      <p className={`text-xs ${ON_PAGE.quiet}`}>{why}</p>
+      <p
+        className={`mt-1 max-w-full text-sm whitespace-pre-wrap [overflow-wrap:anywhere] ${ON_PAGE.ink}`}
+      >
+        {text}
+      </p>
+    </div>
+  );
+}
+
 /** `useUnsentReply`'s text, read-only and copyable, in the reply composer's place. */
 export function UnsentReply({ className, text }: { className?: string; text: string }): ReactNode {
   return (
-    <UnsentText
-      className={className}
-      testId="ask-unsent-reply"
-      text={text}
-      why="This question opened again before you sent your reply, so it was not sent. Your text is here to copy."
-    />
+    <UnsentBox className={className} testId="ask-unsent-reply" text={text} why={UNSENT_REPLY_WHY} />
   );
 }
 

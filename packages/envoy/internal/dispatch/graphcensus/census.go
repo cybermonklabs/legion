@@ -343,7 +343,9 @@ func statedLinks(links ...string) string {
 // (graphstore.CurrentTupleRead). Each is written kind>to_kind:to_id, as statedLinks writes a
 // row's, and they are joined in order, so a node that states none reads the empty string. A link
 // whose newest tuple is a retraction is absent here exactly as a tuple never written is. The read
-// walks graph_tuples_current, whose columns are the ones the distinct on and the order by name.
+// walks graph_tuples_current where kinds lists the kinds it reads, which proves that index's
+// predicate, and graph_tuples_as_of_out where kinds lists the kinds it leaves out, as a block's
+// links do: graph_tuples_current leaves delivered_to out, and such a list does not.
 //
 // A block's part_of is one of these links, so a block that states no parent at all and a block
 // the document holds directly read differently: the first has no part_of link and the second

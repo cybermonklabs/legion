@@ -39,10 +39,10 @@ type objectKind struct {
 	// rows answers each address of ids $1 with its stable row identity. A document's UUID
 	// distinguishes replacements even when their created_at values are equal.
 	rows string
-	// owners answers, for a kind some writer deletes rows of, the owner row each row of the ids $1
-	// stands under, as (issue, document id, id): the row that writer takes before anything else
-	// (api's removeArtifact takes its document's issue row). It is empty for a kind no writer
-	// deletes a row of.
+	// owners answers, for a kind some writer deletes rows of, the owner each row of the ids $1
+	// stands under, as (issue, document id, id): the owner whose lock that writer takes before
+	// anything else (api's removeArtifact takes its document's issue's). It is empty for a kind no
+	// writer deletes a row of.
 	owners string
 }
 
@@ -234,9 +234,11 @@ type ObjectPass struct {
 }
 
 // WriteOwedObjectNodes is the backfill's object pass (backfillObjectNodes) without its count of
-// the rows that remain, for docs' block-index tick, which runs it while a build before this one
-// may write rows beside this one: while a process of another build serves, on the first tick
-// after it, and on each process's first tick (docs' markVersionsAnotherBuildWrote). That build
+// the rows that remain, for docs' block-index tick, which runs it where a build before this one
+// may have written rows with no node (docs' readEventsAfterCursor): on every tick while a process
+// of another build serves and the first tick after one did, on a tick whose events leave the store
+// a row with no node or a node with no row (EventsOweObjectPass), on each process's first tick,
+// and once a process has finished no pass for docs' objectPassInterval. That build
 // creates an issue, a document, an ask and a message with no node, and a conversation's file with
 // no event either, so the pass reads rows, not events: it writes, through writeObjectBatch alone,
 // the node of every row its marker does not mark, as the backfill does.
@@ -246,9 +248,10 @@ type ObjectPass struct {
 // stopped with rows left, and the next run reads on, from the start of each kind's key, past the
 // rows the last one marked. A kind that fails holds back none of the others: the run goes on to
 // them and answers every failure joined, and the next run reads the failed kind's rows again. A
-// row the store refuses because it holds the row's node in another project is left and answered in
-// Moved, and every other row of its batch is written (writeObjectKind): no second run cures it, so
-// it holds back no run, and the census names that row until a person reads it.
+// row the store refuses because it holds the row's node in another project is left, before any
+// transaction opens, and answered in Moved, and every other row of its batch is written
+// (writeObjectKind): no second run cures it, so it holds back no run, and the census names that
+// row until a person reads it.
 func WriteOwedObjectNodes(ctx context.Context, database *store.Store, batches int) (ObjectPass, error) {
 	var pass ObjectPass
 	var failed, moved []error
@@ -271,11 +274,23 @@ func WriteOwedObjectNodes(ctx context.Context, database *store.Store, batches in
 
 // writeObjectKind walks kind's rows its marker does not mark, one batch at a time from the
 // start of its key, and writes each batch's nodes (writeObjectBatch), answering what it wrote.
-// Each batch spends one of budget's batches, nil being no bound; once budget is spent the walk
-// reads whether a row is left for the next run (more) and writes nothing more. A batch the store
-// refuses because it holds one of its nodes in another project (graphstore.ErrProjectMoved) is
-// written again one row at a time, so that row alone is left, answered in moved, and every other
-// row of the batch is written.
+// Each batch that writes a node spends one of budget's batches, nil being no bound; once budget is
+// spent the walk reads whether a row a pass can write is left for the next run (more) and writes
+// nothing more.
+//
+// A row no pass can write - between a party the store refuses, or whose node the store holds in
+// another project, live or gone - stays unmarked, so every run reads it again from the start of
+// the key. So the walk writes only the rows of each batch a pass can write (writableRows), and
+// leaves the rest before any transaction opens: a refused party counted in Skipped, a node in
+// another project answered in moved. A batch that writes nothing spends no budget, and the read
+// past the budget skips such rows (writableRowLeft). Otherwise those rows would take the budget
+// every run, hold back the rows after them, keep more, and with it the tick's debt, for ever, and
+// each would cost a transaction, its owner's lock and a transaction id on every run. What such
+// rows still cost each run is the read of their batches and of the projects the store holds their
+// nodes in: two index reads, with no lock and no transaction, for each backfillBatch of them. A
+// batch the store still refuses because a node of it was made in another project after that read
+// (graphstore.ErrProjectMoved) is written again one row at a time, so that row alone is left,
+// answered in moved, and every other row of the batch is written.
 func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind, budget *int) (report KindBackfill, more bool, moved []error, err error) {
 	report = KindBackfill{Kind: kind.kind}
 	after := kind.start
@@ -287,8 +302,8 @@ func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind
 	}
 	for {
 		if budget != nil && *budget == 0 {
-			left, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, 1)
-			return report, len(left) > 0, moved, err
+			left, err := writableRowLeft(ctx, database, kind, after)
+			return report, left, moved, err
 		}
 		nodes, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
 		if err != nil {
@@ -297,33 +312,117 @@ func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind
 		if len(nodes) == 0 {
 			return report, false, moved, nil
 		}
-		if budget != nil {
-			*budget--
-		}
 		after = nodes[len(nodes)-1].ID
-		written, err := writeObjectBatch(ctx, database, kind, nodes)
-		switch {
-		case errors.Is(err, graphstore.ErrProjectMoved):
-			for _, node := range nodes {
-				one, err := writeObjectBatch(ctx, database, kind, []objectRow{node})
-				switch {
-				case errors.Is(err, graphstore.ErrProjectMoved):
-					moved = append(moved, err)
-				case err != nil:
-					return report, false, moved, err
-				default:
-					add(one)
-				}
-			}
-		case err != nil:
+		before := report.Rows
+		writable, skipped, unmoved, err := writableRows(ctx, database, kind, nodes)
+		if err != nil {
 			return report, false, moved, err
-		default:
-			add(written)
+		}
+		report.Skipped += skipped
+		moved = append(moved, unmoved...)
+		if len(writable) > 0 {
+			written, err := writeObjectBatch(ctx, database, kind, writable)
+			switch {
+			case errors.Is(err, graphstore.ErrProjectMoved):
+				for _, node := range writable {
+					one, err := writeObjectBatch(ctx, database, kind, []objectRow{node})
+					switch {
+					case errors.Is(err, graphstore.ErrProjectMoved):
+						moved = append(moved, err)
+					case err != nil:
+						return report, false, moved, err
+					default:
+						add(one)
+					}
+				}
+			case err != nil:
+				return report, false, moved, err
+			default:
+				add(written)
+			}
+		}
+		if budget != nil && report.Rows > before {
+			*budget--
 		}
 		if len(nodes) < backfillBatch {
 			return report, false, moved, nil
 		}
 	}
+}
+
+// writableRowLeft answers whether a row of kind after the id after is one a pass can write: a row
+// its marker does not mark whose parties the store takes and whose node, if the store holds one,
+// names no other project (writableRows). It reads the kind's rows one batch at a time until it
+// finds one or none is left.
+func writableRowLeft(ctx context.Context, database *store.Store, kind objectKind, after string) (bool, error) {
+	for {
+		nodes, err := readObjectNodes(ctx, database, kind.kind, kind.read, after, backfillBatch)
+		if err != nil || len(nodes) == 0 {
+			return false, err
+		}
+		writable, _, _, err := writableRows(ctx, database, kind, nodes)
+		if err != nil {
+			return false, err
+		}
+		if len(writable) > 0 {
+			return true, nil
+		}
+		if len(nodes) < backfillBatch {
+			return false, nil
+		}
+		after = nodes[len(nodes)-1].ID
+	}
+}
+
+// writableRows answers, of a batch of kind's rows, the ones a pass can write (writable), and
+// leaves the others: each that names a party the store refuses (partiesRefused), counted in
+// skipped, since one such row of an earlier build would otherwise fail every batch it falls in
+// and every run of the backfill with it, and the census names it; and each that names a project
+// other than the one the store holds its node in, live or gone, answered in moved as the store's
+// refusal of that write (graphstore.ErrProjectMoved). It reads the projects the store holds the
+// batch's nodes in, with no lock and outside any transaction, so a row it leaves costs that read
+// alone; the rows it answers are written and read again under their locks (writeObjectBatch).
+func writableRows(ctx context.Context, database *store.Store, kind objectKind, nodes []objectRow) (writable []objectRow, skipped int64, moved []error, err error) {
+	ids := make([]string, len(nodes))
+	for index, node := range nodes {
+		ids[index] = node.ID
+	}
+	held, err := heldProjects(ctx, database.Pool, kind.kind, ids)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	for _, node := range nodes {
+		switch project, found := held[node.ID]; {
+		case partiesRefused(node.Parties):
+			skipped++
+		case found && node.Project != "" && project != node.Project:
+			moved = append(moved, fmt.Errorf("write graph node %s/%s in project %s, which the store holds in %s: %w",
+				kind.kind, node.ID, node.Project, project, graphstore.ErrProjectMoved))
+		default:
+			writable = append(writable, node)
+		}
+	}
+	return writable, skipped, moved, nil
+}
+
+// heldProjects answers, by id, the project the store holds each node of kind at ids in, for the
+// nodes that hold one.
+func heldProjects(ctx context.Context, q graphstore.Queryer, kind string, ids []string) (map[string]string, error) {
+	rows, err := q.Query(ctx, `
+		select id, project_key from graph_nodes where kind = $1 and id = any($2) and project_key is not null
+	`, kind, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the projects of the %s nodes the store holds: %w", kind, err)
+	}
+	held := map[string]string{}
+	var id, project string
+	if _, err := pgx.ForEachRow(rows, []any{&id, &project}, func() error {
+		held[id] = project
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the projects of the %s nodes the store holds: %w", kind, err)
+	}
+	return held, nil
 }
 
 // statedOf is how many base attributes the node write states for nodes it makes: visibility and
@@ -429,37 +528,39 @@ func derefText(value *string) string {
 // this run to paper over. Each node and what it states carry its row's own create event where the
 // read found one (readObjectNodes), and the sentinel otherwise: the batch writes its nodes in
 // ascending id, in runs of consecutive nodes of one cause, each run through graphstore.WriteUncaused
-// and then graphstore.Caused under that cause, and the report counts the tuples those runs stated.
+// and then graphstore.Caused under that cause, and the report counts the tuples the store appended
+// for those runs (graphstore.Counting).
 //
 // The batch was read before this transaction opened, and a removal may commit in between: a node
 // written live then would stand behind no row. So for a kind a writer deletes rows of
-// (objectKind.owners) the transaction first takes the owner row each of its rows stands under
-// (lockObjectOwners): api's removeArtifact takes the document's issue row before it states the
-// node gone and deletes the row, and a removal of a build before this one takes it too and states
-// nothing. Under those rows it reads the stable identity of each row that still stands
+// (objectKind.owners) the transaction first takes the owner lock each of its rows stands under
+// (lockObjectOwners): api's removeArtifact takes the document's issue owner lock before it states
+// the node gone and deletes the row, and a removal of a build before this one takes it too and
+// states nothing. Under those locks it reads the stable identity of each row that still stands
 // (objectKind.rows), and writes only the node of the same row the batch read. A replacement
 // document has another UUID even when its created_at is identical; it is left for the next run,
-// which the report's remaining count names. A removal waiting for this batch removes a row whose node is
-// live, and this build's removal then states that node gone. The owner rows come first and the
-// nodes after them, the order every writer of these nodes takes (a document's create, its removal,
-// the erase). A kind no writer deletes a row of takes no lock and is read again the same way.
+// which the report's remaining count names. A removal waiting for this batch removes a row whose
+// node is live, and this build's removal then states that node gone. The owner locks come first
+// and the nodes after them, the order every writer of these nodes takes (a document's create, its
+// removal, the erase). A kind no writer deletes a row of takes no lock and is read again the same
+// way.
 //
 // Under those locks it reads the nodes the store holds of the batch (heldNodes). One that is not
 // gone, its row's own (ownLiveStatement, for a document a removal can take; any such one for the
 // rest, whose address no later row takes) and naming a project or parties was written meanwhile, by
-// another run of the backfill that took the owner rows first, and is left as it is; one that is
+// another run of the backfill that took the owner locks first, and is left as it is; one that is
 // not gone and its row's own but names neither is written again, which states its project or
-// parties alone. A document whose node is not gone but not its
-// row's own is one a build before this one removed and made again at the address: its node is
-// first stated gone, by the backfill, and then live, under the row's own event, as this build's
-// create states it (api's storeArtifact). A node the store holds is dated one microsecond past
+// parties alone. A document whose node is not gone but not its row's own is one a build before
+// this one removed and made again at the address: its node is stated gone, by the backfill, and
+// then live, under the row's own event, as this build's create states it (api's queueNewArtifact),
+// both as the run's own state tuples (stateTuple). A node the store holds is dated one microsecond past
 // the newest statement it holds about it where the row's created_at is no later - a row a build
 // before this one dated at its transaction's start can predate a removal it waited behind - so a
 // read of the node as of a time reads the statements in the order the store appended them.
 //
-// A node between a party graphstore.PartiesValue refuses is skipped, counted in Skipped, and
-// left for the census to name: one such row of an earlier build would otherwise fail every batch
-// it falls in, and every run of the backfill with it.
+// It is handed only the rows writableRows answers, so no row between a party
+// graphstore.PartiesValue refuses reaches it: a row's parties are its own content, which the
+// read under the locks does not change.
 func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKind, nodes []objectRow) (KindBackfill, error) {
 	ids := make([]string, len(nodes))
 	for index, node := range nodes {
@@ -489,10 +590,6 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			if identity, stands := standing[node.ID]; !stands || identity != row.identity {
 				continue
 			}
-			if partiesRefused(node.Parties) {
-				written.Skipped++
-				continue
-			}
 			stored, found := held[node.ID]
 			if found && stored.present && stored.own && stored.scoped {
 				continue
@@ -515,27 +612,26 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				end++
 			}
 			run := write[start:end]
-			var gone []graphstore.Node
+			// A node a writer left standing for an earlier row is stated gone and then live by
+			// the run's own tuples, both under its cause: one node write of the node in this
+			// transaction leaves one mark on its row (graphstore's nodeMark), so a second write of
+			// it would lose the first's statement, and the node write then states no state of its
+			// own beside them.
+			var stated []graphstore.Tuple
 			for _, node := range run {
 				if statement, ok := taken[node.ID]; ok {
-					gone = append(gone, statement)
+					stated = append(stated, stateTuple(statement), stateTuple(node))
 				}
 			}
-			var stated graphstore.Uncaused
-			if len(gone) > 0 {
-				if stated, err = graphstore.WriteUncaused(ctx, tx, gone, nil); err != nil {
-					return err
-				}
-			}
-			made, err := graphstore.WriteUncaused(ctx, tx, run, nil)
+			made, err := graphstore.WriteUncaused(ctx, tx, run, stated)
 			if err != nil {
 				return err
 			}
-			made.Tuples = append(stated.Tuples, made.Tuples...)
-			written.Tuples += int64(len(made.Tuples))
-			if err := graphstore.Caused(ctx, tx, made, run[0].SourceEvent); err != nil {
+			var appended int64
+			if err := graphstore.Caused(ctx, tx, graphstore.Counting(made, &appended), run[0].SourceEvent); err != nil {
 				return err
 			}
+			written.Tuples += appended
 			start = end
 		}
 		return nil
@@ -543,6 +639,16 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		return KindBackfill{}, fmt.Errorf("write a batch of %s nodes: %w", kind.kind, err)
 	}
 	return written, nil
+}
+
+// stateTuple is node's state as a tuple of its own, dated and written as the node is, for a write
+// that states a node's state itself rather than through its node write (graphstore.PlanUncaused's
+// stated tuples), which then states no state of that node beside it.
+func stateTuple(node graphstore.Node) graphstore.Tuple {
+	return graphstore.Tuple{
+		FromKind: node.Kind, FromID: node.ID, Kind: graphstore.AttributeState,
+		ToKind: graphstore.KindValue, ToID: node.State, At: node.MadeAt, Who: node.MadeBy, Asserted: true,
+	}
 }
 
 // storedNode is what the store holds of one node of a batch: whether it is present, at any state
@@ -594,8 +700,8 @@ func partiesRefused(parties []string) bool {
 	return err != nil
 }
 
-// lockObjectOwners takes the owner row each row of ids stands under (objectKind.owners), each once
-// and in owner key order (events.LockOwnerRows).
+// lockObjectOwners takes the owner lock each row of ids stands under (objectKind.owners), each
+// once and in owner key order (events.LockOwnerRows, store.LockOwners).
 func lockObjectOwners(ctx context.Context, tx pgx.Tx, kind objectKind, ids []string) error {
 	rows, err := tx.Query(ctx, kind.owners, ids)
 	if err != nil {
@@ -640,7 +746,7 @@ var scopeKinds = []struct{ kind, read string }{
 // nodes it has to fill, and the fill writes them in the transaction that states the fact. A block
 // node whose document is gone has no row to read a project from, and is left as it is: no row of
 // the census holds it, and no read answers it. A scope between a party graphstore.PartiesValue
-// refuses is skipped and counted in Skipped, as the object batch skips one (writeObjectBatch).
+// refuses is skipped and counted in Skipped, as the object pass skips one (writableRows).
 func backfillScopes(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	var done []KindBackfill
 	for _, kind := range scopeKinds {

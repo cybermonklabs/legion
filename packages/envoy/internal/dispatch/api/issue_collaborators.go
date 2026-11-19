@@ -12,9 +12,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // collaboratorReason is one way a person or an agent worked an issue. The values are bits so a
@@ -254,8 +254,8 @@ func (s *server) tallyCollaboratorEvents(
 // an open viewer, every session but one that acted in a project it does not see
 // (access.SessionClause). It answers registry without the entries it took out.
 func (s *server) dropUnseenCollaborators(
-	ctx context.Context, viewer any, people, sessions map[string]*collaboratorTally, registry []envoy.LegionAgent,
-) ([]envoy.LegionAgent, error) {
+	ctx context.Context, viewer any, people, sessions map[string]*collaboratorTally, registry []listenerwire.LegionAgentAnswer,
+) ([]listenerwire.LegionAgentAnswer, error) {
 	logins := slices.Collect(maps.Keys(people))
 	ids := slices.Collect(maps.Keys(sessions))
 	for _, entry := range registry {
@@ -291,12 +291,12 @@ func (s *server) dropUnseenCollaborators(
 	}
 	maps.DeleteFunc(people, func(login string, _ *collaboratorTally) bool { return !seenPeople[login] })
 	maps.DeleteFunc(sessions, func(id string, _ *collaboratorTally) bool { return !seenSessions[id] })
-	return slices.DeleteFunc(registry, func(entry envoy.LegionAgent) bool { return !seenSessions[entry.SessionID] }), nil
+	return slices.DeleteFunc(registry, func(entry listenerwire.LegionAgentAnswer) bool { return !seenSessions[entry.SessionID] }), nil
 }
 
 // issueLegionAgents is the listener's Legion agent registry entries for the issue, or
 // "unavailable" when there is no listener or it did not answer within the client's window.
-func (s *server) issueLegionAgents(ctx context.Context, key string) ([]envoy.LegionAgent, string) {
+func (s *server) issueLegionAgents(ctx context.Context, key string) ([]listenerwire.LegionAgentAnswer, string) {
 	if s.deps.Envoy == nil {
 		return nil, legionRegistryUnavailable
 	}
@@ -314,7 +314,7 @@ func (s *server) issueLegionAgents(ctx context.Context, key string) ([]envoy.Leg
 // (delivery.ResolveSessionTitles), which a later write carrying none does not take away; null for
 // a session that never stamped one.
 func (s *server) collaboratorAgents(
-	ctx context.Context, who model.Actor, sessions map[string]*collaboratorTally, registry []envoy.LegionAgent,
+	ctx context.Context, who model.Actor, sessions map[string]*collaboratorTally, registry []listenerwire.LegionAgentAnswer,
 ) ([]collaboratorAgent, error) {
 	agents := make([]collaboratorAgent, 0, len(sessions)+len(registry))
 	listed := make(map[string]struct{}, len(sessions)+len(registry))

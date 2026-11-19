@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
@@ -108,16 +109,16 @@ func TestTheBackfillGivesEverySessionTheCensusNamesItsNode(t *testing.T) {
 
 // requireTheSessionBatchLockOrder holds writeSessionBatch to its steps. The batch writes the node
 // of each session the census names that the store holds none of, as one statement on a pooled
-// connection: a session has no projection row, and the batch takes no owner row and appends no
+// connection: a session has no projection row, and the batch takes no owner lock and appends no
 // event. The two sessions' nodes are held as rows other transactions inserted and have not
 // committed, and the batch must queue behind them in ascending id, whatever order it read them in.
-// The issue's row is held throughout, and the batch never queues behind it.
+// The issue's owner lock is held throughout, and the batch never queues behind it.
 func requireTheSessionBatchLockOrder(t *testing.T) {
 	writes := newAddressingWrites(t)
 	database := writes.database
 	seedPreStoreFollowers(t, writes)
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "issue CENS-1's row", Step: lockstep.StepOwner},
-		`select 1 from issues where key = $1 for update`, "CENS-1")
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{Name: "issue CENS-1's owner lock", Step: lockstep.StepOwner},
+		store.IssueOwner("CENS-1"))
 	holds := []*lockstep.Hold{owner}
 	for _, session := range []string{preStoreFollower, preStoreAsker, preStoreLeft} {
 		holds = append(holds, holdWrite(t, database, &lockstep.Hold{

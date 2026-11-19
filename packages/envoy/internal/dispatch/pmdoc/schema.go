@@ -15,6 +15,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
+// A change to blocks.json ships with a store migration that writes the node of each type or
+// attribute it adds or alters, moves every block type's supertag node to the file's new version,
+// and appends each value it states as a value tuple at the source_event sentinel 0, as
+// 20261113230000_graph_supertags_check_ci_check does: the server installs the store's types and
+// not this file's, so without one TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt fails and a
+// build made for the new version installs the old one. A new type migration also joins
+// typeMigrations in cmd/dispatch/supertag_nodes_test.go, which runs each a second time.
+//
 //go:embed schema/blocks.json
 var blockSchemaJSON []byte
 

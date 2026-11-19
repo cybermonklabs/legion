@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // TestTheSeedsDocumentWriteTakesTheStoreLockOrder holds the seed's write of one document
@@ -81,13 +82,15 @@ func TestTheSeedsDocumentWriteTakesTheStoreLockOrder(t *testing.T) {
 		name, table, statement string
 		hold                   func(t *testing.T, holder pgx.Tx, index int)
 	}{
-		{"the document's node", "graph_nodes", "with incoming as (", holdTable("graph_nodes")},
-		{"the document's tuples", "graph_tuples", "insert into graph_tuples (", holdTable("graph_tuples")},
+		{"the document's node", "graph_nodes", "insert into graph_nodes (", holdTable("graph_nodes")},
+		// The append that follows a node write starts with the nodes it reads back, and its
+		// insert into graph_tuples comes after them (graphstore's queueAppend).
+		{"the document's tuples", "graph_tuples", "with written as (", holdTable("graph_tuples")},
 		{"the document's row", "artifacts", "insert into artifacts (", holdTable("artifacts")},
 		{"the revision fence", "document_block_versions", `copy "artifact_versions"`, holdTable("document_block_versions")},
-		{"the block nodes", "graph_nodes", "with incoming as (", f.holdBlockNode},
+		{"the block nodes", "graph_nodes", "insert into graph_nodes (", f.holdBlockNode},
 		{"the block rows", "document_blocks", "insert into document_blocks (", holdTable("document_blocks")},
-		{"the tuple append", "graph_tuples", "insert into graph_tuples (", f.holdIndexTuple},
+		{"the tuple append", "graph_tuples", "with written as (", f.holdIndexTuple},
 	}
 	tables := make([]string, len(steps))
 	for position, step := range steps {
@@ -123,6 +126,7 @@ func TestTheSeedsDocumentWriteTakesTheStoreLockOrder(t *testing.T) {
 			release()
 			requireSeedLockCommitted(t, done)
 			f.requireDocumentWritten(t, index)
+			storetest.RequireNoMarkedCause(t, f.database, "the seed's document write held at "+step.name)
 		})
 	}
 }
@@ -148,17 +152,17 @@ func (f *seedLockFixture) holdBlockNode(t *testing.T, holder pgx.Tx, index int) 
 // to graph_tuples before the index does, so the one row of the index's append a holder can name
 // before the write runs is its primary key: the seq the index's first tuple draws. Nothing else
 // draws from the sequence while the write runs, and the write draws one seq for each base attribute
-// its document's node write states (graphstore.BaseAttributeFacts of that new node) before the
-// index appends, so the index's first tuple draws the next seq past those, and its insert waits on
-// this row to learn whether it commits.
+// its document's node write states of that new node - its visibility, its state and its project -
+// before the index appends, so the index's first tuple draws the next seq past those, and its
+// insert waits on this row to learn whether it commits.
 func (f *seedLockFixture) holdIndexTuple(t *testing.T, holder pgx.Tx, index int) {
 	t.Helper()
 	ctx := context.Background()
 	document := f.run.plan.documents[index]
 	node := graphstore.ArtifactNode(f.documentRefKey(index), f.run.plan.projects[document.Project].Key, "", seedAuthor, baseTime)
-	before, err := graphstore.BaseAttributeFacts([]graphstore.Node{node})
-	if err != nil {
-		t.Fatalf("state the base attributes of document %s's node: %v", document.ID, err)
+	before := 2
+	if node.Project != "" || len(node.Parties) > 0 {
+		before++
 	}
 	var next int64
 	if err := holder.QueryRow(ctx, `
@@ -169,7 +173,7 @@ func (f *seedLockFixture) holdIndexTuple(t *testing.T, holder pgx.Tx, index int)
 	if _, err := holder.Exec(ctx, `
 		insert into graph_tuples (seq, from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
 		values ($1, 'held', 'held', 'held', 'held', 'held', $2, $3::jsonb, 0, true)
-	`, next+int64(len(before)), baseTime, seedActor); err != nil {
+	`, next+int64(before), baseTime, seedActor); err != nil {
 		t.Fatalf("hold the seq of the block index's first tuple: %v", err)
 	}
 }

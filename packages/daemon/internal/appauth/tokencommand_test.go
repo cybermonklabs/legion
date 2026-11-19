@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
@@ -49,6 +50,7 @@ printf '%%s|%%s\n' "$LEGION_GITHUB_OWNER" "$LEGION_GITHUB_READ_ONLY" >>%q
 mode=write
 [ -z "$LEGION_GITHUB_READ_ONLY" ] || mode=read
 [ -z "$FAKE_BROKER_FAIL" ] || { echo "broker: refused" >&2; exit 3; }
+[ -z "$FAKE_BROKER_KILLED" ] || { echo "broker: dying" >&2; kill -KILL 0; }
 if [ -n "$FAKE_BROKER_NONE" ]; then
   [ -n "$LEGION_GITHUB_OWNER" ] || { printf '{"installations":{}}'; exit 0; }
   echo "agent-secrets: github app has no installation on $LEGION_GITHUB_OWNER" >&2; exit 1
@@ -254,6 +256,25 @@ func TestTokenModeAnOwnerWithoutAnInstallationIsNotInstalled(t *testing.T) {
 	_, err := tokens.Token(context.Background(), Implement, "sjawhar")
 	if err == nil || errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), "github_apps.implement.token_command failed (exit 3): broker: refused") {
 		t.Fatalf("Token with a failing command = %v, want the command's failure with its stderr", err)
+	}
+}
+
+// A command a signal ended (the kernel's out-of-memory kill, say) fails naming the signal, with its
+// stderr, where an exit names its status: it has none, and read as one it was `failed (exit -1)`.
+// It is no more transient than any other failure but exit 75. The fake kills its whole process
+// group, which procgroup.Configure made its own, so the signal reaches the shell the daemon runs.
+func TestTokenModeACommandASignalEndedFailsNamingTheSignal(t *testing.T) {
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	broker := newFakeBroker(t, []string{"sjawhar"}, now.Add(time.Hour))
+	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
+	tokens := tokenModeManager(github.serve(t), broker, &now, &bytes.Buffer{})
+	t.Setenv("FAKE_BROKER_KILLED", "1")
+
+	_, err := tokens.Token(context.Background(), Implement, "sjawhar")
+
+	var transient *TransientError
+	if err == nil || errors.As(err, &transient) || !strings.Contains(err.Error(), "github_apps.implement.token_command failed (signal: killed): broker: dying") {
+		t.Fatalf("Token with a command a signal ended = %v, want a failure that is not transient naming the signal and the command's stderr", err)
 	}
 }
 
@@ -607,18 +628,25 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
 	seen := filepath.Join(dir, "env")
-	t.Setenv("NATS_NKEY_SEED", "seed-value")
-	t.Setenv(TokenCommandOwner, "inherited")
-	t.Setenv(TokenCommandReadOnly, "inherited")
+	// Unique values, so that only a variable they reached can hold one (envlisting).
+	seed, inherited := envlisting.Unique("seed-"), envlisting.Unique("inherited-")
+	t.Setenv("NATS_NKEY_SEED", seed)
+	t.Setenv(TokenCommandOwner, inherited)
+	t.Setenv(TokenCommandReadOnly, inherited)
 	command := fmt.Sprintf(`env >%q; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`, seen, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
 	if _, err := tokens.runTokenCommand(context.Background(), tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"}); err != nil {
 		t.Fatal(err)
 	}
 	env, _ := os.ReadFile(seen)
-	if strings.Contains(string(env), "seed-value") || !strings.Contains(string(env), "\nLEGION_GITHUB_OWNER=acme\n") ||
-		!strings.Contains(string(env), "\nLEGION_GITHUB_READ_ONLY=\n") || strings.Contains(string(env), "inherited") {
-		t.Fatalf("the command's environment:\n%s", env)
+	// Each variable is read whole (envlisting): the daemon's own two can be the listing's first
+	// line, and a variable the test does not set, such as PWD, can contain any word.
+	vars := envlisting.Vars(string(env))
+	if name, leaked := envlisting.Carrying(vars, seed, inherited); leaked {
+		t.Fatalf("the command's environment: %s carries a value the daemon must not pass:\n%s", name, env)
+	}
+	if readOnly, set := vars[TokenCommandReadOnly]; vars[TokenCommandOwner] != "acme" || !set || readOnly != "" {
+		t.Fatalf("the command's environment: want %s=acme and %s set and empty:\n%s", TokenCommandOwner, TokenCommandReadOnly, env)
 	}
 
 	slow := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: "sleep 30"}}, Options{})

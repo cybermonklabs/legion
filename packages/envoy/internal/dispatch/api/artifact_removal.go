@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -17,18 +18,19 @@ import (
 // removeArtifact removes a document of an issue that is still untouched: one made by typing a
 // title and never written in. It answers 204 and no body.
 //
-// It needs the person scope (routeScopes) and takes two locks: the owner's row, as the title
-// correction does (renameArtifact), so a correction and a removal of one owner cannot each miss
-// the other, and then the document's room (docs.LockDocumentRoom), which is the lock a durable
-// write of the document takes. In that order, which is the one docs/persistence.go states: the
-// owner row first, then the room, as a settlement takes them, and a room's own writers take no
-// owner row, so this joins no lock cycle.
+// It needs the person scope (routeScopes) and takes two locks: the owner's lock (store.LockOwner,
+// which beginArtifactWrite takes), as the title correction does (renameArtifact), so a correction
+// and a removal of one owner cannot each miss the other, and then the document's room
+// (docs.LockDocumentRoom), which is the lock a durable write of the document takes. In that
+// order, which is the one docs/persistence.go states: the owner's lock first, then the room, as a
+// settlement takes them, and a room's own writers take no owner lock, so this joins no lock cycle.
 //
 // Four refusals read the artifact row alone: the kind, the role, the issue's spec and a
 // project's document (artifactRowIsUntouched). The removal answers them from the row
 // beginArtifactWrite re-read, before the room's lock. A DELETE of the spec, of a role document
 // or of a picture then waits for no room lock that a room's batch, a compaction or a snapshot
-// holds, and it frees the issue's row at once for every comment, ask and upload of that issue.
+// holds, and it frees the issue's owner lock at once for every comment, ask and upload of that
+// issue.
 //
 // What the document holds needs the room's lock and is read under it (artifactIsUntouched),
 // inside this transaction and from the row this transaction re-read: a version written, an edit
@@ -45,7 +47,8 @@ import (
 // artifact id.
 //
 // The document's node is stated gone before its row goes, in the store's order (node, row, event,
-// facts), and the state tuple waits for the artifact.removed event (graphstore.Caused). The node
+// facts), and the state tuple is appended in the batch that appends the artifact.removed event
+// (appendCausingEvent). The node
 // is addressed by the document's ref_key, which a later document of the same issue and slug takes
 // again: that document's create finds the node gone and states it live under its own event,
 // rather than finding a live node that states nothing and keeps this document's cause. A node
@@ -54,8 +57,9 @@ import (
 // node its create would have written - live, made by its creator at its created_at, at the
 // sentinel, as the backfill writes it (graphcensus's backfillObjectNodes) - and only then is it
 // stated gone, by the person who removed it, at the time this transaction reads from the
-// database's clock under the owner row it holds (graphstore.StatementTime): later than every
-// statement about the address, so a document made there next is dated later still. Where the
+// database's clock under the owner lock it holds, before its first write (graphstore.StatementTime),
+// and past that first node's: later than every statement about the address, so a document made
+// there next is dated later still. Where the
 // store holds a node already, live or gone, no first node is written: a live one is stated gone,
 // and a gone one (an earlier document's, whose address a build before this one took again) is
 // left as it is, rather than moved live at a created_at that may predate its gone statement.
@@ -67,7 +71,7 @@ import (
 // (docs.Service.Evict): a settlement that commits against a row that has gone would fail, and a
 // client that reconnects between the two reads the document as gone rather than loading a room
 // for a row that is no longer there. A settlement of the document already under way at the
-// commit - queued behind this transaction for the owner's row, or started before the eviction
+// commit - queued behind this transaction for the owner's lock, or started before the eviction
 // ended what the room had armed - reads the row gone and ends without a word
 // (docs.Service.settleRoomWithin).
 func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +95,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, refusal)
 		return
 	}
-	// The document's room, taken after the owner's row and before anything of the document is
+	// The document's room, taken after the owner's lock and before anything of the document is
 	// read: an append that commits between the read of its stored updates and their delete
 	// would be deleted with the document, and one still in flight at the artifact's own delete
 	// would meet the foreign key of doc_updates rather than this handler's refusal.
@@ -104,6 +108,28 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	if refusal := artifactIsUntouched(r.Context(), tx, artifact); refusal != nil {
 		s.writeHandlerError(w, refusal)
 		return
+	}
+	// What the document's node write reads - whether the store holds the node, and the time its
+	// gone statement takes - is read here, under the locks and before the first write, so no read
+	// of it runs while the transaction holds an id (#2468's write phase). The time is past every
+	// statement the store holds about the address, and past the first node a missing one is
+	// given below, which is dated at the document's creation.
+	fits := graphstore.AddressFits(artifact.RefKey)
+	var held bool
+	var removedAt time.Time
+	if fits {
+		var err error
+		if _, held, err = graphstore.ReadNode(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if removedAt, err = graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !held && !removedAt.After(artifact.CreatedAt) {
+			removedAt = artifact.CreatedAt.Add(time.Microsecond)
+		}
 	}
 	for _, clear := range artifactRemovalClears(artifact) {
 		if _, err := tx.Exec(r.Context(), clear.statement, clear.args...); err != nil {
@@ -119,12 +145,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// The document's node, stated gone before its row goes; its state tuple waits for the event.
 	var goneNode graphstore.Uncaused
-	if graphstore.AddressFits(artifact.RefKey) {
-		_, held, err := graphstore.ReadNode(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+	if fits {
 		if !held {
 			made := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), artifact.CreatedBy, artifact.CreatedAt)
 			if err := graphstore.Write(r.Context(), tx, []graphstore.Node{made}, nil); err != nil {
@@ -132,13 +153,9 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		removedAt, err := graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
 		gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, removedAt)
 		gone.State = graphstore.StateGone
+		var err error
 		if goneNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{gone}, nil); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the node of the removed document %s gone: %w", artifact.ID, err))
 			return
@@ -155,14 +172,11 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, ownerForArtifact(artifact).event(
+	// The event and the gone statement it causes, in one batch (appendCausingEvent).
+	event, err := s.appendCausingEvent(r.Context(), tx, ownerForArtifact(artifact).event(
 		"artifact.removed", actor, map[string]any{"artifact": artifact},
-	))
+	), goneNode)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := graphstore.Caused(r.Context(), tx, goneNode, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -210,9 +224,9 @@ func artifactRowIsUntouched(artifact model.Artifact) error {
 //
 // Each test is read inside tx, the removal's own transaction, and under the document's room
 // lock, which removeArtifact takes before it calls this. The versions and the unsettled edits
-// are what need that lock: a room's own writer takes no owner row, so the issue's row this
+// are what need that lock: a room's own writer takes no owner lock, so the issue's owner lock this
 // transaction holds does not order it. The writers of a comment, an ask, a review, an approval
-// request and a check result do take the issue's row, so one that arrives meanwhile waits
+// request and a check result do take the issue's owner lock, so one that arrives meanwhile waits
 // behind this transaction, reads the document again and is refused.
 func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact) error {
 	// The versions, read in one row: how many there are, whether the version the document was
@@ -364,8 +378,8 @@ type artifactClear struct {
 // comments.artifact_id, events.artifact_id and artifact_reviews.artifact_id - and no statement
 // here clears them, because no row of them can be there. The untouched test refuses the removal
 // while any of them names the document (artifactIsUntouched), and every writer of those tables
-// takes the issue's row first (lockCommentOwner, the requireOpenOwnerStatus of asks.go and of
-// reviews.go), so one that arrives meanwhile waits behind this transaction, reads the document
+// takes the issue's owner lock first (lockCommentOwner, the requireOpenOwnerStatus of asks.go and
+// of reviews.go), so one that arrives meanwhile waits behind this transaction, reads the document
 // again and is refused. An issue document's events are the issue's and carry no artifact id at
 // all (events_one_owner, ownerForArtifact), and a project's document, whose events are its own,
 // is refused outright. A delete written for them would take a person's comment, ask or review

@@ -51,28 +51,35 @@ type Claim struct {
 // The arms keep the store's lock order: the node rows are written first, in ascending (kind, id),
 // and every tuple after them, because each tuple arm of a write that has nodes reads the node
 // arm before its first row (nodesWrittenFirst).
+//
+// A node's or a tuple's SourceEvent may be LatestEvent, for a record whose event its write phase
+// appends right before this statement: every cause column is read through causeOf.
 func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string, []any, error) {
-	return writeArms(first, nodes, tuples, claims, true)
+	sql, params, _, err := writeArms(first, nodes, tuples, claims, true)
+	return sql, params, err
 }
 
 // WriteArmsUncaused is WriteArms for a writer whose cause is appended after these arms run: the
-// nodes it makes state no base attribute here, and the writer appends them under that event
-// instead (BaseAttributeFacts, Caused). No tuple may be updated to learn its cause, and the
-// node row moves onto the event (causeNodes), so a node made at the sentinel whose base
-// attributes were stated here would be a row naming one event and base tuples naming another.
-func WriteArmsUncaused(first int, nodes []Node, tuples []Tuple, claims []Claim) (string, []any, error) {
+// nodes it makes state no base attribute here and are made at the sentinel, marked as made
+// (nodeMark), and the write it answers holds them for that event, which QueueCaused moves them
+// onto and appends their base attributes under, read off that mark. No tuple may be updated to
+// learn its cause, and the node row moves onto the event, so a node made at the sentinel whose
+// base attributes were stated here would be a row naming one event and base tuples naming
+// another. A node the arm found there is another write's and is neither marked nor caused.
+func WriteArmsUncaused(first int, nodes []Node, tuples []Tuple, claims []Claim) (string, []any, Uncaused, error) {
 	return writeArms(first, nodes, tuples, claims, false)
 }
 
 // writeArms is both: states says whether the node arm states the base attributes of each node
-// it makes.
-func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states bool) (string, []any, error) {
+// it makes, or marks it for the cause that comes later.
+func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states bool) (string, []any, Uncaused, error) {
 	relations, values := splitTuples(tuples)
 	if len(nodes) == 0 && len(relations) == 0 && len(values) == 0 && len(claims) == 0 {
-		return "", nil, nil
+		return "", nil, Uncaused{}, nil
 	}
 	var arms []string
 	var params []any
+	var held Uncaused
 	// Each arm's parameters follow the ones before it, so an arm is numbered from the end of
 	// what the arms before it bound.
 	add := func(arm func(first int) string, args []any) {
@@ -85,7 +92,18 @@ func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states b
 	if len(nodes) > 0 {
 		args, err := nodeParams(nodes)
 		if err != nil {
-			return "", nil, err
+			return "", nil, Uncaused{}, err
+		}
+		mark := int64(0)
+		if !states {
+			mark = nextNodeMark()
+			args = append(args, mark)
+			uncaused := make([]Node, len(nodes))
+			for index, node := range nodes {
+				node.SourceEvent = NoEvent
+				uncaused[index] = node
+			}
+			held = Uncaused{Nodes: uncaused, mark: mark}
 		}
 		add(func(at int) string { return nodeArm(at, states) }, args)
 		after = nodesWrittenFirst
@@ -93,7 +111,7 @@ func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states b
 	if len(relations) > 0 {
 		args, err := tupleParams(relations)
 		if err != nil {
-			return "", nil, err
+			return "", nil, Uncaused{}, err
 		}
 		add(func(at int) string {
 			return `graph_relations_appended as (
@@ -104,7 +122,7 @@ func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states b
 	if len(values) > 0 {
 		args, err := tupleParams(values)
 		if err != nil {
-			return "", nil, err
+			return "", nil, Uncaused{}, err
 		}
 		add(func(at int) string {
 			return `graph_values_appended as (
@@ -115,11 +133,11 @@ func writeArms(first int, nodes []Node, tuples []Tuple, claims []Claim, states b
 	if len(claims) > 0 {
 		args, err := claimParams(claims)
 		if err != nil {
-			return "", nil, err
+			return "", nil, Uncaused{}, err
 		}
 		add(func(at int) string { return claimArms(at, after) }, args)
 	}
-	return strings.Join(arms, ",\n"), params, nil
+	return strings.Join(arms, ",\n"), params, held, nil
 }
 
 // nodesWrittenFirst is the condition every tuple arm of a write that has nodes reads its rows
@@ -135,22 +153,30 @@ const nodesWrittenFirst = `(select count(*) from graph_nodes_written) >= 0`
 
 // nodeArm writes the nodes and, where states says so, the base attributes of each node it made.
 // The node rows arrive in ascending (kind, id), as every write of this store takes them
-// (writeNodes), and the upsert moves nothing on a node that is already there: a record of what
+// (queueNodes), and the upsert moves nothing on a node that is already there: a record of what
 // a delivery reached learns nothing about a node another write made, and its own made_at,
 // made_by and source_event would otherwise overwrite that write's. The base attributes are read
 // off the rows the insert returned, so they are stated once, by the write that made the node,
 // rather than per event: its visibility and state always, and its project and parties where it
 // carries them.
 //
-// That is the rule Write follows too, and the arm needs no second half of it: this upsert moves
-// no stored state, so there is never a state of a node already there for it to state.
+// That is the rule QueueWrite follows too, and the arm needs no second half of it: this upsert
+// moves no stored state, so there is never a state of a node already there for it to state.
 //
-// states is false for a writer whose cause is appended after these arms (WriteArmsUncaused),
-// which holds those same attributes for that event instead (BaseAttributeFacts).
+// states is false for a writer whose cause is appended after these arms (WriteArmsUncaused): the
+// nodes it makes carry the mark bound after the node arrays instead of a cause (nodeMark), as
+// made, so the append that cause comes with states those same attributes for that event.
 func nodeArm(first int, states bool) string {
+	source := causeOf("source_event")
+	if !states {
+		source = markSQL("$"+strconv.Itoa(first+len(nodeArrayTypes)), markMade)
+	}
 	written := `graph_nodes_written as (
 	insert into graph_nodes (` + nodeColumns + `)
-	` + nodeRows(first) + `
+	select kind, id, supertag, visibility, state, attributes, made_at, made_by, ` + source + `,
+	       project_key, string_to_array(parties, ' ')
+	from unnest(` + nodeArrays(first) + `) as node(` + nodeColumns + `)
+	order by kind, id
 	on conflict (kind, id) do nothing
 	returning kind, id, visibility, state, project_key, parties, made_at, made_by, source_event
 )`
@@ -173,9 +199,11 @@ graph_node_attributes as (
 }
 
 // claimArms append what each claim changed. The far ends a node holds now are read the way
-// CurrentOut reads them (CurrentTupleRead), so the read goes through graph_tuples_current, and
-// the insert states a retraction of every far end the claim is no longer at before the assertion
-// of the one it is at, in the order the caller gave its claims.
+// CurrentOut reads them (CurrentTupleRead), through graph_tuples_as_of_out: the kind each read
+// binds is the claim row's, which proves nothing of graph_tuples_current's predicate, so the read
+// takes the node's tuples of that kind and sorts them. The insert states a retraction of every
+// far end the claim is no longer at before the assertion of the one it is at, in the order the
+// caller gave its claims.
 // A claim with no far end (ToID empty) retracts what the node holds and asserts nothing in its
 // place, which is a role read unclaimed. where is the condition its insert reads its rows under,
 // as tupleInsert takes it.
@@ -195,7 +223,9 @@ func claimArms(first int, where string) string {
 		where = "\n\t  and " + where
 	}
 	return `graph_claims as (
-	select * from unnest(` + claimArrays(first) + `)
+	select claim.from_kind, claim.from_id, claim.kind, claim.to_kind, claim.to_id, claim.at, claim.who,
+	       ` + causeOf("claim.source_event") + ` as source_event, claim.position
+	from unnest(` + claimArrays(first) + `)
 		with ordinality as claim(from_kind, from_id, kind, to_kind, to_id, at, who, source_event, position)
 ),
 graph_claims_held as (
@@ -262,44 +292,28 @@ const (
 	do nothing`
 )
 
-// nodeArrayTypes are the types of the eleven arrays a node write binds, in nodeColumns' order, and
-// nodeArrays their parameter list: one spelling of the types, read by the arm the publisher's
-// record splices in and by writeNodes alike. The project and the parties are bound as text, null
+// nodeArrayTypes are the types of the eleven arrays a node write binds, in nodeColumns' order,
+// and nodeArrays their parameter list: one spelling of the types, read by the arm the publisher's
+// record splices in and by queueNodes alike. The project and the parties are bound as text, null
 // for a node that carries none, and the parties as the one value their attribute carries
-// (PartiesValue), which nodeBound splits into the column's array.
+// (PartiesValue), which a node write splits into the column's array (string_to_array).
 var nodeArrayTypes = []string{"text", "text", "text", "text", "text", "jsonb", "timestamptz", "jsonb", "bigint", "text", "text"}
 
 func nodeArrays(first int) string {
 	return arrayList(first, nodeArrayTypes...)
 }
 
-// nodeBound is nodeColumns as a node write reads them off the arrays it binds (nodeArrays): each
-// column as it was bound, but parties, which is bound as its attribute's value and stored as the
-// array that value names.
-const nodeBound = `kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event, project_key, ` +
-	`string_to_array(parties, ' ') as parties`
-
-// nodeRows reads the nodes of a write in ascending (kind, id): a write touching several nodes
-// takes its row locks in that order, so two such writes cannot each hold the row the other waits
-// for (the lock order on api/inbox_read.go's markInboxReadThreads).
-func nodeRows(first int) string {
-	return `select ` + nodeBound + `
-	from unnest(` + nodeArrays(first) + `) as node(` + nodeColumns + `)
-	order by kind, id`
-}
-
 // tupleInsert appends tuples in the order the caller stated them (with ordinality, order by
 // position), so the sequence the log is read back in is the order a caller stated its facts.
 // where is a condition the rows are read under, or empty for none: a tuple arm of WriteArms
-// passes nodesWrittenFirst, and Write, whose statements run one after another, passes none.
+// passes nodesWrittenFirst.
 func tupleInsert(first int, where string) string {
-	arrays := arrayList(first, "text", "text", "text", "text", "text", "timestamptz", "jsonb", "bigint", "bigint", "boolean")
 	if where != "" {
 		where = "\n\twhere " + where
 	}
 	return `insert into graph_tuples (` + tupleWriteColumns + `)
-	select ` + tupleWriteColumns + `
-	from unnest(` + arrays + `)
+	select ` + tupleSelect + `
+	from unnest(` + tupleArrays(first) + `)
 		with ordinality as tuple(` + tupleWriteColumns + `, position)` + where + `
 	order by position`
 }

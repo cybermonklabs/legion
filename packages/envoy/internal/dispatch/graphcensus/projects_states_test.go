@@ -117,7 +117,7 @@ func TestARowMadeAgainAtAnAddressTakesNoVisibilityOfTheRowBefore(t *testing.T) {
 
 // The backfill reads a batch of rows and then writes their nodes. A removal that commits between
 // the two leaves the row gone, and a node written live then would stand behind no row. The batch
-// takes the owner rows a removal takes, reads again under them which of its rows stand, and writes
+// takes the owner locks a removal takes, reads again under them which of its rows stand, and writes
 // the node of those alone, so it leaves no live node behind a row that is gone.
 //
 // Its control is that second read taken out: the node then stands live behind no row, and the

@@ -6,15 +6,13 @@
 -- One arm answers every kind the store writes that is an edge today: for each
 -- (from_kind, from_id, kind, to_kind, to_id) the newest tuple, which is an edge only while that
 -- newest one asserts. `to_kind <> 'value'` keeps an attribute's value out, since a value is no
--- node and is the far end of no edge, and it is also the predicate three of the store's indexes
--- are partial on. The `distinct on` names those five columns in the order
--- `graph_tuples_inbound` keys them - the far end, the kind, then the near end - and the `order
--- by` repeats that order and ends at `seq desc`, which is that index's own last column, so the
--- arm walks the index and sorts nothing. The set of columns is what the newest tuple of a
--- relation is picked by, and naming them in another order would pick the same row off a sort of
--- every tuple into the node: on a node with 5,000 inbound tuples that sort is the arm's largest
--- cost. A read keyed on the far end - the edges into one node - is the read that walks this
--- index, and a read keyed on the near end pushes its own filter in and sorts what that leaves.
+-- node and is the far end of no edge, and it is also the predicate the store's two read indexes
+-- that carry the far end are partial on. The `distinct on` names those five columns far end
+-- first - the far end, the kind, then the near end - and the `order by` repeats that order and
+-- ends at `seq desc`. The set of columns is what the newest tuple of a relation is picked by. A
+-- read keyed on the far end - the edges into one node - walks `graph_tuples_as_of_in`, which
+-- leads with the far end and the kind, and sorts that node's inbound tuples; a read keyed on the
+-- near end walks `graph_tuples_as_of_out` and sorts what that leaves.
 --
 -- It renders a stated list and nothing else: a block's `in_document`, rendered as the `part_of`
 -- to its document the view has always answered; a block's `mentions` and its pointer kinds, the

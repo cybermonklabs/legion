@@ -101,11 +101,23 @@ func TestCausedTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("its tuples wait only on their own repeat key, after the event and the node rows", func(t *testing.T) {
 		document, at := newCausedDocument(t, database, "CAUSEDB", "caused-tuples")
 		pass := beginCausedPass(t, database, document, at)
-		if len(pass.write.Tuples) == 0 {
-			t.Fatal("the pass of version 2 stated no tuple, so Caused has nothing to append")
+		// Version 2 drops c, so the pass moves c's node to gone, and Caused states that move as
+		// c's state tuple under the event, in its one append statement: the base attributes a
+		// pass moves are derived there from the node rows it marked, not carried in the write.
+		var gone *graphstore.Node
+		for index, node := range pass.write.Nodes {
+			if node.State == graphstore.StateGone {
+				gone = &pass.write.Nodes[index]
+			}
 		}
-		tuple := pass.write.Tuples[0].Tuple
-		tuple.SourceEvent = pass.event
+		if gone == nil {
+			t.Fatalf("the pass of version 2 moved no node to gone (it wrote %v), so Caused states no tuple to hold", pass.write.Nodes)
+		}
+		tuple := graphstore.Tuple{
+			FromKind: gone.Kind, FromID: gone.ID, Kind: graphstore.AttributeState,
+			ToKind: graphstore.KindValue, ToID: graphstore.StateGone,
+			At: gone.MadeAt, Who: gone.MadeBy, SourceEvent: pass.event, Asserted: true,
+		}
 
 		holder, release := beginCausedHolder(t, database)
 		insertCausedTuple(t, holder, tuple)
@@ -117,7 +129,9 @@ func TestCausedTakesTheStoreLockOrder(t *testing.T) {
 		locked := causedTables(t, database, pass.pid)
 		t.Logf("held at its %s tuple, Caused waits on: %s", tuple.Kind, running)
 		t.Logf("held at its %s tuple, the pass holds locks on: %v", tuple.Kind, locked)
-		if !strings.Contains(running, "insert into graph_tuples") {
+		// The append's common table expressions come before its insert into graph_tuples, and
+		// pg_stat_activity keeps only the head of so long a statement.
+		if !strings.HasPrefix(strings.TrimSpace(running), "with written as (") {
 			t.Errorf("Caused held at its %s tuple waits on %q, which is not its tuple append", tuple.Kind, running)
 		}
 		for _, earlier := range []struct{ table, step string }{
@@ -139,6 +153,7 @@ func TestCausedTakesTheStoreLockOrder(t *testing.T) {
 			t.Fatalf("Caused did not finish within %s after the holder let go", causedLockWait)
 		}
 	})
+	storetest.RequireNoMarkedCause(t, database, "the passes Caused committed")
 }
 
 // newCausedDocument creates one document and indexes its first version at the sentinel, as the

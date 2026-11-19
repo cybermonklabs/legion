@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -30,8 +31,8 @@ const askQuestionBlock = "b1"
 // ask is indexed into and the `ask.opened` event each one is read through.
 //
 // The parts - the question, each option and the answer the ask holds - are recorded with the
-// server's own indexer (refs.IndexAskParts), in the ask's own transaction, as every route that
-// writes an ask records them (api/references.go's indexAskParts). The insert owes that index
+// server's own indexer (refs.PlanAskParts), in the ask's own transaction, as every route that
+// writes an ask records them (api/references.go's queueAskParts). The insert owes that index
 // (migration 20261101143212's asks_item_blocks_owed trigger), so an ask the seed left unindexed
 // is work a started server would do for itself, rewriting rows a measurement is being read from.
 // A mention the question carries is then a row of `refs`, the ask's own, and a row of
@@ -54,10 +55,28 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		opened := make([][]any, 0, to-from)
 		// Each ask's node goes in before any row of the batch, in its project, as the server's
 		// ask create writes it; the seed records no event of it here, so it takes the sentinel.
+		// The owner lock of every ask of the batch comes first, in owner key order, as the
+		// store's lock order has it: the window write below takes each ask's owner lock
+		// (refs.WriteItemWindows), which a batch holding the asks' nodes would otherwise take
+		// after them.
 		nodes := make([]graphstore.Node, 0, to-from)
+		owners := make([]store.Owner, 0, to-from)
 		for index := from; index < to; index++ {
 			ask := r.plan.asks[index]
 			nodes = append(nodes, graphstore.AskNode(ask.ID, r.itemProject(ask.Issue, ask.Document), nil, seedAuthor, ask.CreatedAt))
+			var issueKey, artifactID *string
+			if ask.Issue >= 0 {
+				issueKey = &r.plan.issues[ask.Issue].Key
+			}
+			if ask.Document >= 0 {
+				artifactID = &r.plan.documents[ask.Document].ID
+			}
+			if owner := store.OwnerOf(issueKey, artifactID); owner != nil {
+				owners = append(owners, *owner)
+			}
+		}
+		if err := store.LockOwners(ctx, tx, owners...); err != nil {
+			return fmt.Errorf("the asks' owners: %w", err)
 		}
 		if err := writeItemNodes(ctx, tx, nodes); err != nil {
 			return fmt.Errorf("the asks' nodes: %w", err)
@@ -161,12 +180,29 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			// created_at)), so a re-index of it would date its parts as this one did.
 			stored := opening
 			stored.State, stored.Answer = ask.State, answer
+			// The seed's transaction joins no write phase of anyone's, so it reads the index the
+			// ask holds - none, its row having just been inserted - plans the parts against it
+			// and runs the plan's statements at once, as a batch of their own, the way a writer
+			// that queues no write phase indexes an item it wrote (refs.IndexItem). The parts
+			// are read through a reader of the ask's own (refs.NewReader), as every other write
+			// of an ask reads them.
+			partIndex, err := refs.ReadItemIndex(ctx, tx, refs.ItemAsk, ask.ID)
+			if err != nil {
+				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
+			}
 			reader := refs.NewReader(ctx, tx, "ask", stored.ID, serverURL)
-			if _, err := refs.IndexAskParts(ctx, tx, reader, stored, ask.CreatedAt); err != nil {
+			parts, err := refs.PlanAskParts(partIndex, reader, stored, ask.CreatedAt)
+			if err != nil {
+				return err
+			}
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				parts.Queue(b)
+				return nil
+			}); err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 			}
 			// The index records the parts and leaves their windows to the block-index tick's
-			// window arm (refs.recordItemIndexed), so the seed writes them here as that arm
+			// window arm (refs.queueRecordIndexed), so the seed writes them here as that arm
 			// would: a seeded database a server has to window is one it would rewrite.
 			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemAsk, stored.ID); err != nil {
 				return fmt.Errorf("write the windows of ask %s: %w", ask.ID, err)
@@ -216,13 +252,19 @@ func (r *seedRun) itemProject(issue, document int) string {
 // writeFollowerNodes writes the session nodes of the followers one ask batch copies. A session
 // that follows an ask is a node of the store from the write that adds it (asks.Follow), and the
 // batch's copy of the follower rows reaches no asks.Follow: so the batch writes each follower's
-// node beside that copy, at the sentinel, as every write of the seed's is, and a follower an
-// earlier batch wrote moves nothing. Without it a seeded ask's followed_by edges would answer no
-// node in any read, and the census would report every follower. The nodes go in one
-// graphstore.Write, which takes their rows in ascending (kind, id) and appends their base
-// attributes after them; the follower rows carry no foreign key into the store, so where the copy
-// falls beside this moves no lock of the store's order.
+// node beside that copy, at the sentinel, as every write of the seed's is. A follower an earlier
+// batch wrote is written again, so each node restates its session (graphstore.Node's Restates):
+// the seed owns no session's state or visibility, so a node written again keeps the ones the
+// store holds, and a node the store does not hold yet is made as graphstore.SessionNode states
+// it. Without it a seeded ask's followed_by edges would answer no node in any read, and the
+// census would report every follower. The nodes go in one graphstore.Write, which takes their
+// rows in ascending (kind, id) and appends their base attributes after them; the follower rows
+// carry no foreign key into the store, so where the copy falls beside this moves no lock of the
+// store's order.
 func writeFollowerNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
+	for index := range nodes {
+		nodes[index].Restates = true
+	}
 	if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
 		return fmt.Errorf("the ask followers' nodes: %w", err)
 	}
@@ -400,8 +442,10 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 // the aliases the server proved of its author go among the comment's own tuples, and the
 // author's node goes among the batch's nodes once, as AuthorFacts makes it for the batch's first
 // comment. The batch's one graphstore.Write then takes every node row before it appends a tuple,
-// which is the store's lock order. Write moves nothing on a node that is already there, so only
-// the first batch makes the author's node, at the time of the first comment the seed writes, as
+// which is the store's lock order. Every batch writes the author's node again, so it restates the
+// author (graphstore.Node's Restates), as the backfill's comment write does: no comment owns its
+// author's state or visibility, so a later batch keeps the ones the store holds, and only the
+// first batch makes the author's node, at the time of the first comment the seed writes, as
 // Authored makes it at the first comment that names it. writeComments refused an author that
 // names nobody before its first batch, so every comment here names one.
 func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphstore.Tuple) {
@@ -429,6 +473,9 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 		}
 		tuples = append(tuples, facts...)
 	}
+	for index := range authors {
+		authors[index].Restates = true
+	}
 	nodes = append(nodes, authors...)
 	return nodes, tuples
 }
@@ -441,11 +488,17 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 	return r.inBatches(ctx, "messages", len(r.plan.messages), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		mentions := newMentionRows("message")
 		// Each message's node goes in before any row of the batch, in its issue's project, as the
-		// server's message create writes it; every seeded message is on an issue.
+		// server's message create writes it; every seeded message is on an issue. The issues'
+		// owner locks come first, as for the asks (writeAsks): the window write takes them.
 		nodes := make([]graphstore.Node, 0, to-from)
+		owners := make([]store.Owner, 0, to-from)
 		for index := from; index < to; index++ {
 			message := r.plan.messages[index]
 			nodes = append(nodes, graphstore.MessageNode(message.ID, r.itemProject(message.Issue, -1), nil, seedAuthor, message.CreatedAt))
+			owners = append(owners, store.IssueOwner(r.plan.issues[message.Issue].Key))
+		}
+		if err := store.LockOwners(ctx, tx, owners...); err != nil {
+			return fmt.Errorf("the messages' owners: %w", err)
 		}
 		if err := writeItemNodes(ctx, tx, nodes); err != nil {
 			return fmt.Errorf("the messages' nodes: %w", err)

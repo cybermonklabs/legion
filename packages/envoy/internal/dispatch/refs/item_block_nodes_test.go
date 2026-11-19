@@ -13,12 +13,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 const itemBlockServer = "https://dispatch.example"
 
 // insertIndexedItem inserts a comment or an issue message of issueKey with body and indexes it
-// as a write of this build does (ReplaceCountedItem), returning its id.
+// as a write of this build does (indexItemAsAWriteDoes), returning its id.
 func insertIndexedItem(t *testing.T, tx pgx.Tx, kind ItemKind, issueKey, body string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -31,9 +32,7 @@ func insertIndexedItem(t *testing.T, tx pgx.Tx, kind ItemKind, issueKey, body st
 	if err := tx.QueryRow(ctx, `insert into `+table+` (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2) returning id::text, created_at`, issueKey, body).Scan(&id, &createdAt); err != nil {
 		t.Fatalf("insert %s: %v", kind, err)
 	}
-	if _, err := ReplaceCountedItem(ctx, tx, kind, id, body, itemBlockServer, createdAt); err != nil {
-		t.Fatalf("index %s %s: %v", kind, id, err)
-	}
+	indexItemAsAWriteDoes(t, tx, kind, id, body, itemBlockServer, createdAt)
 	return id
 }
 
@@ -93,7 +92,8 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	messageBlock := itemBlockNodeID(ItemMessage, message, "b2")
 	citer := insertIndexedItem(t, tx, ItemComment, "CORE-1", "See dispatch://CORE-1/comment/"+comment+"#b-b2.")
 	ask := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE-2 first?", model.AskOption{Label: "Yes"})
-	if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "ask", ask.ID, itemBlockServer), ask.Question); err != nil {
+	askMentions := NewReader(ctx, tx, "ask", ask.ID, itemBlockServer).Mentions(ask.Question)
+	if _, err := replaceRefs(ctx, tx, "ask", ask.ID, text.Refs(askMentions), nil); err != nil {
 		t.Fatalf("index the ask's own references: %v", err)
 	}
 	indexAskPartsAt(t, tx, ask, 1)
@@ -306,9 +306,7 @@ func TestBlockTextsReadsEachBlockAsTheOneItemReadsDo(t *testing.T) {
 	if err := tx.QueryRow(ctx, `update comments set body = $2, edited_at = now() where id = $1::uuid returning edited_at`, comment, edited).Scan(&editedAt); err != nil {
 		t.Fatalf("edit the comment: %v", err)
 	}
-	if _, err := ReplaceCountedItemEdit(ctx, tx, ItemComment, comment, written, edited, itemBlockServer, editedAt, nil); err != nil {
-		t.Fatalf("index the comment's edit: %v", err)
-	}
+	indexItemAsAWriteDoes(t, tx, ItemComment, comment, edited, itemBlockServer, editedAt)
 
 	ask := insertAsk(t, tx, "CORE-1", "Which day do we ship?",
 		model.AskOption{Label: "Monday"}, model.AskOption{Label: "Tuesday", Description: "before the freeze"})

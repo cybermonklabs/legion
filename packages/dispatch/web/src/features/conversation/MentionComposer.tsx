@@ -92,7 +92,7 @@ import type {
   ComposerOwner,
   ReplyTarget,
 } from "./composer-model";
-import { MODE_LABELS, plainDelivery } from "./delivery";
+import { deliveryModesOf, MODE_LABELS, noDeliveryReasons, plainDelivery } from "./delivery";
 import type { HeldSend } from "./held-sends";
 import { ReplyQuote } from "./ReplyQuote";
 import {
@@ -1213,16 +1213,20 @@ export function MentionComposer({
       ? []
       : targetOptions.filter((option) => !option.capabilities.includes(outboundMode));
   const unsupported = unsupportedOptions.length > 0;
-  // Sessions that advertise no mode at all take no message in any mode: a session whose plugin
-  // cannot reach its conversation says so by advertising none.
+  // Sessions whose lists hold no delivery mode take no message in any mode: a session whose plugin
+  // cannot reach its conversation says so by advertising none, and one listing only capabilities
+  // that are no mode (`deliveryModesOf`) takes none either.
   const deaf =
-    unsupported && unsupportedOptions.every((option) => option.capabilities.length === 0);
+    unsupported &&
+    unsupportedOptions.every((option) => deliveryModesOf(option.capabilities).length === 0);
   // The plain mode, named whenever it is not Send, so the reader knows what their words become.
   const plainNotice =
     sendsPlain && plainMode !== "steer" && outboundMode === plainMode && outbound.body === body
       ? // A session that advertises no mode gets its own warning, not this line.
         targetOptions.filter(
-          (option) => option.capabilities.length > 0 && !option.capabilities.includes("steer")
+          (option) =>
+            deliveryModesOf(option.capabilities).length > 0 &&
+            !option.capabilities.includes("steer")
         )
       : [];
   // The prefixed modes a person could send in instead: only one every target refusing this mode
@@ -1471,8 +1475,7 @@ export function MentionComposer({
         <p className={`text-sm ${dangerText}`}>
           {unsupportedOptions.map((option) => option.title).join(" and ")}{" "}
           {unsupportedOptions.length > 1 ? "advertise" : "advertises"} no delivery mode, so sending
-          it records a failed attempt. A session advertises none while its plugin cannot reach its
-          conversation.
+          it records a failed attempt. {noDeliveryReasons(unsupportedOptions)}
         </p>
       ) : unsupported ? (
         <p className={`text-sm ${dangerText}`}>

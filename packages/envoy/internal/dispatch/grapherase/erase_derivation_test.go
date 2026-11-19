@@ -156,6 +156,11 @@ func TestTheRunWithoutConfirmTakesNoLockAndTheConfirmErasesOnlyItsListing(t *tes
 			t.Fatalf("hold %q: %d rows, %v", hold.statement, tag.RowsAffected(), err)
 		}
 	}
+	// The comment's owner is serialised on its advisory lock, which every writer of the issue and
+	// the confirmed erase take first (store.LockOwner); the holder takes it too.
+	if err := store.LockOwner(ctx, holder, store.IssueOwner("CORE-1")); err != nil {
+		t.Fatalf("hold issue CORE-1's owner lock: %v", err)
+	}
 	type answer struct {
 		erasure *Erasure
 		err     error
@@ -173,7 +178,7 @@ func TestTheRunWithoutConfirmTakesNoLockAndTheConfirmErasesOnlyItsListing(t *tes
 		}
 		listing = got.erasure
 	case <-time.After(20 * time.Second):
-		t.Fatalf("the run without --confirm waited 20 s behind the comment's owner row, node row and comments row, which another transaction held: it takes a lock")
+		t.Fatalf("the run without --confirm waited 20 s behind the comment's owner lock and row, node row and comments row, which another transaction held: it takes a lock")
 	}
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("let go of the held rows: %v", err)

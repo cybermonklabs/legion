@@ -106,6 +106,7 @@ func TestAFollowTakesTheStoreLockOrder(t *testing.T) {
 			}
 		}
 		requireFollowerNode(t, database, who.ID, graphstore.NoEvent)
+		storetest.RequireNoMarkedCause(t, database, "the follow of a known session and its Caused")
 	})
 }
 

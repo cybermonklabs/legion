@@ -28,12 +28,14 @@ const tupleColumns = `seq, from_kind, from_id, kind, to_kind, to_id, at, who, so
 // It reads graph_tuples as t. relation is the columns of t that tell one relation from another
 // among the rows narrow keeps - the relation's key, (from_kind, from_id, kind, to_kind, to_id),
 // less the columns narrow binds to one value - written in the order of the index the read walks:
-// graph_tuples_current's for a read out of a node and graph_tuples_inbound's for one into it,
-// whose last column is the seq the order by ends at, so the planner takes the newest row of each
-// relation off the index and sorts nothing. columns is what each row answers, t.asserted among
-// it for the cut. narrow is the predicate that bounds the read, written inside the `where` so it
-// cuts the rows the `distinct on` sorts rather than its answer. The caller writes all three from
-// its own text and never from a value a request carried.
+// graph_tuples_current's for a read out of a node, whose last column is the seq the order by
+// ends at, so the planner takes the newest row of each relation off the index and sorts
+// nothing, where narrow proves the index's predicate; a read that cannot, and a read into a
+// node, which graph_tuples_as_of_in serves, sort the node's tuples the index condition reaches.
+// columns is what each row answers, t.asserted among it for the cut. narrow is the predicate that
+// bounds the read, written inside the `where` so it cuts the rows the `distinct on` sorts rather
+// than its answer. The caller writes all three from its own text and never from a value a request
+// carried.
 func CurrentTupleRead(relation, columns, narrow string) string {
 	return `select distinct on (` + relation + `) ` + columns + `
 			from graph_tuples t
@@ -43,8 +45,9 @@ func CurrentTupleRead(relation, columns, narrow string) string {
 
 // CurrentOut answers, for each (kind, to_kind, to_id) out of one node, the newest tuple, and
 // answers it only while that newest one asserts (CurrentTupleRead). An empty kinds means every
-// kind. The statement reads through graph_tuples_current, whose column order is the one the
-// distinct on walks, so the planner takes it as an index scan and sorts nothing.
+// kind. graph_tuples_current leaves delivered_to out, and neither every kind nor a list a caller
+// hands in proves that kind absent, so the statement reads through graph_tuples_as_of_out, the
+// index that keys every tuple out of a node by kind, and sorts the node's tuples it reaches.
 func CurrentOut(ctx context.Context, q Queryer, fromKind, fromID string, kinds []string) ([]Tuple, error) {
 	rows, err := q.Query(ctx, `
 		select `+tupleColumns+` from (
@@ -62,8 +65,9 @@ func CurrentOut(ctx context.Context, q Queryer, fromKind, fromID string, kinds [
 }
 
 // CurrentIn answers, for each (kind, from_kind, from_id) into one node, the newest tuple, while
-// that newest one asserts (CurrentTupleRead). It reads through graph_tuples_inbound, which is
-// graph_tuples_current with the ends swapped. A value is no node, so nothing points into one.
+// that newest one asserts (CurrentTupleRead). It reads through graph_tuples_as_of_in, which holds
+// a node's inbound tuples by kind, and sorts the node's tuples it reaches; no index keys the far
+// end with the near end after it. A value is no node, so nothing points into one.
 func CurrentIn(ctx context.Context, q Queryer, toKind, toID string, kinds []string) ([]Tuple, error) {
 	rows, err := q.Query(ctx, `
 		select `+tupleColumns+` from (

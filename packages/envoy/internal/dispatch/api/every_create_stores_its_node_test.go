@@ -356,6 +356,7 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/delivery/session-groups":                                 noObject,
 	"POST /api/v1/credential-requests/{id}/approve":                        noObject,
 	"POST /api/v1/credential-requests/{id}/deny":                           noObject,
+	"POST /api/v1/credential-requests/{id}/dismiss":                        noObject,
 	"POST /api/v1/credential-requests/machine-lookup":                      noObject,
 	"POST /api/v1/credential-grants/{id}/revoke":                           noObject,
 	"POST /api/v1/machine-logins/{id}/revoke":                              noObject,

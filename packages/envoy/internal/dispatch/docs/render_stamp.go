@@ -121,7 +121,7 @@ var readableDocument = access.ItemOwnerClause("null::text", "$1", "$2")
 //
 //   - No transaction of this process holds a fork of the document. A read joined to a
 //     transaction reads as it always has: the fork is the document for that transaction, and a
-//     joined read holding no fork still takes the document's owner row and waits for an open
+//     joined read holding no fork still takes the document's owner lock and waits for an open
 //     writer (joinRead), neither of which this read does.
 //   - The document's stamp now is the head and the row the version was written at
 //     (DocumentStamp): every writer of doc_updates either moves the head or rewrites the row

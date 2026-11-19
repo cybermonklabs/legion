@@ -348,6 +348,20 @@ func (s *server) scanReplyChain(ctx context.Context, q queryer, who model.Actor,
 	return replies, rows.Err()
 }
 
+// withReply is replies, a chain loadReplyChain read, with reply, a reply to the chain's root this
+// transaction has queued the insert of and the table does not hold yet, in the place the chain's
+// query would have returned it: ordered by created_at, then id (a uuid orders as its canonical
+// text does).
+func withReply(replies []model.Comment, reply model.Comment) []model.Comment {
+	index, _ := slices.BinarySearchFunc(replies, reply, func(stored, added model.Comment) int {
+		if order := stored.CreatedAt.Compare(added.CreatedAt); order != 0 {
+			return order
+		}
+		return strings.Compare(stored.ID, added.ID)
+	})
+	return slices.Insert(replies, index, reply)
+}
+
 // loadComment reads comment id as who may read it (access.ItemOwnerClause): a comment of a project who
 // does not see is pgx.ErrNoRows, as an id no row holds is, and so is an id Postgres will not read
 // as a uuid (malformedIDIsNoRow), which the prefix layer leaves as written when no comment's id
@@ -371,18 +385,13 @@ func malformedIDIsNoRow(err error) error {
 	return err
 }
 
-func (s *server) loadCommentForUpdate(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
-	return scanComment(tx.QueryRow(ctx, `
-		select `+commentColumns+`
-		from comments where id = $1 for update
-	`, id))
-}
-
-// loadOwnedCommentForUpdate locks a comment and refuses one that is not on this owner, with
-// the 400 every reply_to walk answers. The owner is bound in the read itself, so a comment on
-// another owner - one of a project the writer does not see among them - is neither read nor
-// locked: it is refused exactly as an id no comment holds is.
-func (s *server) loadOwnedCommentForUpdate(
+// loadOwnedComment reads a comment and refuses one that is not on this owner, with the 400 every
+// reply_to walk answers. It locks no row: the caller holds the owner's lock (requireOpenOwner),
+// which every writer of a comment takes before it reads one, so the comment cannot change under
+// the caller until it commits. The owner is bound in the read itself, so a comment on another
+// owner - one of a project the writer does not see among them - is not read: it is refused
+// exactly as an id no comment holds is.
+func (s *server) loadOwnedComment(
 	ctx context.Context, tx pgx.Tx, owner owner, id string,
 ) (model.Comment, error) {
 	column, value := "issue_key", owner.IssueKey
@@ -391,7 +400,7 @@ func (s *server) loadOwnedCommentForUpdate(
 	}
 	comment, err := scanComment(tx.QueryRow(ctx, `
 		select `+commentColumns+`
-		from comments where id = $1 and `+column+` = $2 for update
+		from comments where id = $1 and `+column+` = $2
 	`, id, value))
 	if err = malformedIDIsNoRow(err); errors.Is(err, pgx.ErrNoRows) {
 		return model.Comment{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "reply_to must identify a comment on this owner")

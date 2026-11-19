@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -16,7 +18,11 @@ import (
 // project's key, a project the deployment did not provision included: a person from outside, or
 // any agent, reads the deployment's health and learns nothing of a project it cannot see. The
 // operator's own reading of which project is unprovisioned is the ERROR line the boot and each
-// maintenance pass log.
+// maintenance pass log. Nor does it name a private project's repository: a failed GitHub read's
+// cause is GitHub's error text, which names the repository it read (the delivery reconcile reads
+// each project's pull requests), so while any project is private every failed read's cause is the
+// fixed withheldGitHubCause, and its own text stays in github_read_attempts. Control: answer the
+// recorded cause whatever the private projects, and the second check fails naming secret-repo.
 func TestHealthzNamesNoPrivateProjectToACallerWithNoCredential(t *testing.T) {
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(),
@@ -27,10 +33,23 @@ func TestHealthzNamesNoPrivateProjectToACallerWithNoCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the first read of the private projects: %v", err)
 	}
+	failedAt := time.Date(2026, 11, 19, 16, 0, 0, 0, time.UTC)
+	reads := &gitHubReads{
+		recordCopy: loadedGitHubReadCopy(t, []githubreads.Recorded{{Read: githubreads.DeliveryReconcile, At: failedAt,
+			Cause: "GET https://api.github.com/repos/acme/secret-repo/pulls: status 502: bad gateway"}}),
+		runs: map[githubreads.Read]bool{githubreads.DeliveryReconcile: true},
+	}
 	response := httptest.NewRecorder()
-	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state).
+	dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state, reads).
 		ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	if body := response.Body.String(); strings.Contains(body, "SECRET") {
+	body := response.Body.String()
+	if strings.Contains(body, "SECRET") {
 		t.Fatalf("/healthz with no credential = %d %s: it names the private project SECRET", response.Code, body)
+	}
+	if strings.Contains(body, "secret-repo") {
+		t.Fatalf("/healthz with no credential = %d %s: it names secret-repo, a repository a failed GitHub read read, while a project is private", response.Code, body)
+	}
+	if !strings.Contains(body, `"state":"failed"`) || !strings.Contains(body, withheldGitHubCause) {
+		t.Fatalf("/healthz with no credential = %d %s: want the delivery reconcile failed, its cause %q", response.Code, body, withheldGitHubCause)
 	}
 }

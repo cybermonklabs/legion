@@ -1,11 +1,11 @@
 package docs
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -17,7 +17,7 @@ import (
 // room for the answer, so withholdAnswers takes the repair back, and since the block without its
 // answer is the block settlement found, it drops the block.repaired too, which moves the
 // ask.opened one place up the events. A follow that remembered the ask.opened's position pointed
-// past the end of the events settlement appended. causeFollows finds the ask.opened by the ask its
+// past the end of the events settlement appended. followsByEvent finds the ask.opened by the ask its
 // payload names instead, and an opened ask whose ask.opened is not among the appended events is
 // an error that names the ask, not a panic.
 func TestAnAskOpenedBesideAWithheldAnswerIsCausedByItsOwnEvent(t *testing.T) {
@@ -55,7 +55,8 @@ func TestAnAskOpenedBesideAWithheldAnswerIsCausedByItsOwnEvent(t *testing.T) {
 		t.Fatal("the repair writing the answer back changed nothing")
 	}
 	opened := model.Ask{ID: "ask-row-1", State: "open"}
-	reconciled.follows = append(reconciled.follows, openedFollow{ask: opened.ID})
+	var node, followed graphstore.Uncaused
+	reconciled.follows = append(reconciled.follows, openedFollow{ask: opened.ID, node: &node, followed: &followed})
 	reconciled.events = append(reconciled.events, model.Event{Type: "ask.opened", Payload: model.AskEventPayload{Ask: opened}})
 	reconciled.withholdAnswers("document", tree, before)
 	if len(reconciled.events) != 1 || reconciled.events[0].Type != "ask.opened" {
@@ -64,15 +65,15 @@ func TestAnAskOpenedBesideAWithheldAnswerIsCausedByItsOwnEvent(t *testing.T) {
 	}
 
 	appended := []model.Event{{ID: 41, Type: "artifact.version"}}
-	for index, event := range reconciled.events {
-		event.ID = int64(42 + index)
-		appended = append(appended, event)
+	appended = append(appended, reconciled.events...)
+	caused, err := reconciled.followsByEvent(appended)
+	if err != nil {
+		t.Fatalf("match the follows to their events: %v", err)
 	}
-	// The follows here made no node, so Caused moves nothing and needs no transaction.
-	if err := reconciled.causeFollows(context.Background(), nil, appended); err != nil {
-		t.Fatalf("cause the follows: %v", err)
+	if stated := caused[1]; len(caused) != 1 || len(stated) != 2 || stated[0] != &node || stated[1] != &followed {
+		t.Fatalf("the follows matched to %v, want the node and the follow of ask %s at the ask.opened's place, 1", caused, opened.ID)
 	}
-	if err := reconciled.causeFollows(context.Background(), nil, appended[:1]); err == nil || !strings.Contains(err.Error(), opened.ID) {
-		t.Fatalf("causing a follow whose ask.opened was not appended answered %v, want an error naming ask %s", err, opened.ID)
+	if _, err := reconciled.followsByEvent(appended[:1]); err == nil || !strings.Contains(err.Error(), opened.ID) {
+		t.Fatalf("matching a follow whose ask.opened was not appended answered %v, want an error naming ask %s", err, opened.ID)
 	}
 }

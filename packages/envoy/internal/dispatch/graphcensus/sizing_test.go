@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -24,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -212,8 +216,9 @@ func renderedTexts(t *testing.T, markdown string) map[string]string {
 // listener took. The events stand for what the server appends beside such writes, and the outbox
 // published them long ago: the message's message.created, which first addresses the role, and an
 // ask's events, whose ask no row holds, since the ask terms read the events alone. The comment's
-// own two, its comment.created and the receipt of its mention's attempt, are still to be published,
-// so that a test that runs the outbox over this history publishes them (publishTheLog).
+// own comment.created is still to be published, so that a test that runs the outbox over this
+// history publishes it (publishTheLog); the receipt of its mention's attempt is not in the log yet,
+// since the settle that appends it comes after the comment (appendTheMentionReceipt).
 //
 // Beside it is a second document of CORE-1, the archive: the same three versions, each written
 // before the window opened and none indexed yet, so that a test can run the block index itself
@@ -342,8 +347,8 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 	}
 	// The comment's comment.created, as the API appends one for a person's comment on a document:
 	// owned by the document and notifying, so the outbox delivers it to the route of the issue the
-	// document belongs to. The receipt is the one the mention's settle appends (api's
-	// completeCommentDelivery), which notifies nobody.
+	// document belongs to. The receipt of the mention's attempt comes later, as the settle that
+	// appends it does (appendTheMentionReceipt).
 	alice := model.Actor{Kind: "user", ID: "Alice"}
 	created, err := json.Marshal(model.CommentEventPayload{
 		Comment:      model.Comment{ID: comment, ArtifactID: &document, Author: alice, Body: "A remark on the spec."},
@@ -352,19 +357,11 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 	if err != nil {
 		t.Fatalf("encode the comment's event: %v", err)
 	}
-	receipt, err := json.Marshal(model.CommentDeliveryEventPayload{
-		CommentID: comment, Target: "role:sizer", Attempt: 1, Delivery: "btw",
-		SessionID: new("ses_sized"), State: model.DeliveryStateSent,
-	})
-	if err != nil {
-		t.Fatalf("encode the mention's receipt: %v", err)
-	}
 	if _, err := database.Pool.Exec(ctx, `
 		insert into events (artifact_id, seq, type, actor, payload, notify) values
-			($1::uuid, 1, 'comment.created', '{"kind":"user","id":"Alice"}', $2::jsonb, true),
-			($1::uuid, 2, 'comment.delivery', '{"kind":"user","id":"Alice"}', $3::jsonb, false)
-	`, document, created, receipt); err != nil {
-		t.Fatalf("write the comment's events: %v", err)
+			($1::uuid, 1, 'comment.created', '{"kind":"user","id":"Alice"}', $2::jsonb, true)
+	`, document, created); err != nil {
+		t.Fatalf("write the comment's event: %v", err)
 	}
 	var archive string
 	if err := database.Pool.QueryRow(ctx, `
@@ -522,181 +519,303 @@ func sizedTerms(t *testing.T, printed string) map[string]sizedTerm {
 	return terms
 }
 
-// writtenKind is one kind of tuple a writer of the store appended: the writer, named by its site
-// as the register of the store's writers names it (graphstore's storeWriteCallSites), the kind of
-// the node the tuple is out of, and the tuple's own kind.
+// writtenKind is one kind of tuple a drive of the store's writers appended: the drive, as its
+// StoreDrive names it, the kind of the node the tuple is out of, and the tuple's own kind.
 type writtenKind struct{ writer, from, kind string }
 
 func compareWritten(a, b writtenKind) int {
 	return cmp.Or(strings.Compare(a.writer, b.writer), strings.Compare(a.from, b.from), strings.Compare(a.kind, b.kind))
 }
 
-// The writers writeTheStore drives, by the sites graphstore's storeWriteCallSites names them by.
+// The drives of the store's writers over the history seedSizedHistory wrote, each named by the
+// site of the register of the store's writers it drives (lockstep.StoreWriteCallSites), and by
+// what it drives that site over where the test drives one site twice.
 const (
-	blockIndexSite    = "refs/blocks.go#IndexBlocks"
-	blockBatchSite    = "graphcensus/backfill.go#writeBlockBatch"
-	blockRefBatchSite = "graphcensus/backfill.go#writeBlockRefBatch"
-	commentBatchSite  = "graphcensus/backfill.go#writeCommentBatch"
-	roleBatchSite     = "graphcensus/backfill.go#writeRoleBatch"
-	sessionBatchSite  = "graphcensus/backfill.go#writeSessionBatch"
-	objectBatchSite   = "graphcensus/projects_backfill.go#writeObjectBatch"
-	scopeBatchSite    = "graphcensus/projects_backfill.go#writeScopeBatch"
-	batchRecordSite   = "outbox/publisher.go#recordBatch"
-	fallbackSite      = "outbox/mentions.go#recordFallbackCopies"
+	archiveIndexDrive  = "refs/blocks.go#Queue, over the archive's three versions"
+	blockBatchDrive    = "graphcensus/backfill.go#writeBlockBatch"
+	blockRefBatchDrive = "graphcensus/backfill.go#writeBlockRefBatch"
+	commentBatchDrive  = "graphcensus/backfill.go#Queue, from the backfill's comment pass"
+	roleBatchDrive     = "graphcensus/backfill.go#writeRoleBatch"
+	sessionBatchDrive  = "graphcensus/backfill.go#writeSessionBatch"
+	busDeliveryDrive   = "outbox/publisher.go#recordBatch, the bus's delivery of comment.created"
+	receiptDrive       = "outbox/publisher.go#recordBatch, the receipt of the comment's mention"
+	fallbackDrive      = "outbox/mentions.go#recordFallbackCopies"
+	objectBatchDrive   = "graphcensus/projects_backfill.go#writeObjectBatch"
+	scopeBatchDrive    = "graphcensus/projects_backfill.go#writeScopeBatch"
+	orphanSweepDrive   = "graphcensus/orphans.go#StateOrphanedGone"
 )
 
-// countedBy is the terms of the sizing that count each kind of tuple writeTheStore's writers
-// append over the seeded history. It is the one thing about the writers this test states rather
-// than reads: which term counts a tuple is what that term's driver says of the writer, and no
-// writer says it. Every kind a writer appends must be here and every term here must be printed,
-// so a writer that starts to append a kind no term counts fails the test by its name; and every
-// kind here must be one a writer appended, so the list never names a kind the run no longer
-// exercises.
-var countedBy = map[writtenKind][]string{
-	// A version's blocks, as the index states them over the archive's three versions: the blocks
-	// it inserts afresh, each with its node's base attributes, its in_document and its part_of;
-	// the paragraph the second version drops, stated gone; the paragraph it moves out of the
-	// callout, its old parent retracted and its new one asserted; the dropped paragraph the third
-	// version brings back, stated live, with its in_document and at most a parent the restore
-	// moved; and the added paragraph's reference to CORE-1.
-	{blockIndexSite, refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
-	{blockIndexSite, refs.BlockNodeKind, graphstore.AttributeState}:      {"block", "block_restored", "block_gone"},
-	{blockIndexSite, refs.BlockNodeKind, graphstore.AttributeProject}:    {"block"},
-	{blockIndexSite, refs.BlockNodeKind, refs.TupleInDocument}:           {"block", "block_restored"},
-	{blockIndexSite, refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block", "block_restored", movedParents},
-	{blockIndexSite, refs.BlockNodeKind, "mentions"}:                     {"block_ref"},
-	// The backfill's passes over the rows the build before the store wrote: the blocks of the
-	// window's document, which it states a block's node and membership of and leaves the parent
-	// of to the index; that document's reference; the comment, as api's commentStored and
-	// graphstore.Authored state one (graphstore.CommentFacts, graphstore.AuthorFacts), so its
-	// kinds are the comment path's; the role sizer and its page; and the sessions the census holds
-	// to a node.
-	{blockBatchSite, refs.BlockNodeKind, graphstore.AttributeVisibility}:       {"block"},
-	{blockBatchSite, refs.BlockNodeKind, graphstore.AttributeState}:            {"block"},
-	{blockBatchSite, refs.BlockNodeKind, graphstore.AttributeProject}:          {"block"},
-	{blockBatchSite, refs.BlockNodeKind, refs.TupleInDocument}:                 {"block"},
-	{blockRefBatchSite, refs.BlockNodeKind, "mentions"}:                        {"block_ref"},
-	{commentBatchSite, graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
-	{commentBatchSite, graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
-	{commentBatchSite, graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
-	{commentBatchSite, graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
-	{commentBatchSite, graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
-	{commentBatchSite, graphstore.KindComment, graphstore.TupleOwnedBy}:        {graphstore.TupleOwnedBy},
-	{commentBatchSite, graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
-	{commentBatchSite, graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
-	{commentBatchSite, graphstore.KindPerson, graphstore.TupleRecordedAs}:      {"author_alias"},
-	{roleBatchSite, graphstore.KindRole, graphstore.AttributeVisibility}:       {graphstore.KindRole},
-	{roleBatchSite, graphstore.KindRole, graphstore.AttributeState}:            {graphstore.KindRole},
-	{roleBatchSite, graphstore.KindPage, graphstore.AttributeVisibility}:       {graphstore.KindPage},
-	{roleBatchSite, graphstore.KindPage, graphstore.AttributeState}:            {graphstore.KindPage},
-	{roleBatchSite, graphstore.KindPage, graphstore.TuplePartOf}:               {graphstore.KindPage},
-	{sessionBatchSite, graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
-	{sessionBatchSite, graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
-	// The backfill's pass over the issues, documents, asks and messages the build before the store
-	// wrote: each one's node and its visibility, state and project, as its create states them.
-	// The seeded history's are all in project CORE, so none states parties, and every comment and
-	// block already names its project, so the scope pass states nothing.
-	{objectBatchSite, graphstore.KindIssue, graphstore.AttributeVisibility}:    {graphstore.KindIssue},
-	{objectBatchSite, graphstore.KindIssue, graphstore.AttributeState}:         {graphstore.KindIssue},
-	{objectBatchSite, graphstore.KindIssue, graphstore.AttributeProject}:       {graphstore.KindIssue},
-	{objectBatchSite, graphstore.KindArtifact, graphstore.AttributeVisibility}: {graphstore.KindArtifact},
-	{objectBatchSite, graphstore.KindArtifact, graphstore.AttributeState}:      {graphstore.KindArtifact},
-	{objectBatchSite, graphstore.KindArtifact, graphstore.AttributeProject}:    {graphstore.KindArtifact},
-	{objectBatchSite, graphstore.KindAsk, graphstore.AttributeVisibility}:      {graphstore.KindAsk},
-	{objectBatchSite, graphstore.KindAsk, graphstore.AttributeState}:           {graphstore.KindAsk},
-	{objectBatchSite, graphstore.KindAsk, graphstore.AttributeProject}:         {graphstore.KindAsk},
-	{objectBatchSite, graphstore.KindMessage, graphstore.AttributeVisibility}:  {graphstore.KindMessage},
-	{objectBatchSite, graphstore.KindMessage, graphstore.AttributeState}:       {graphstore.KindMessage},
-	{objectBatchSite, graphstore.KindMessage, graphstore.AttributeProject}:     {graphstore.KindMessage},
-	// The outbox's record of a batch: the comment's comment.created, which the bus delivers to
-	// the role sizer, whose holder it resolves and records; and the receipt of the comment's
-	// mention, a delivery to ses_sized, which claimed no role and so takes a page of its own. A
-	// page is a role's or a session's, and the record writes both.
-	{batchRecordSite, graphstore.KindComment, graphstore.TupleDeliveredTo}: {"bus_delivery", "delivery"},
-	{batchRecordSite, graphstore.KindRole, graphstore.TupleHeldBy}:         {graphstore.KindSession},
-	{batchRecordSite, graphstore.KindSession, graphstore.TuplePartOf}:      {graphstore.KindSession},
-	{batchRecordSite, graphstore.KindPage, graphstore.AttributeVisibility}: {graphstore.KindPage, graphstore.KindSession},
-	{batchRecordSite, graphstore.KindPage, graphstore.AttributeState}:      {graphstore.KindPage, graphstore.KindSession},
-	{batchRecordSite, graphstore.KindPage, graphstore.TuplePartOf}:         {graphstore.KindPage, graphstore.KindSession},
-	// The outbox's fallback pass: the copy it publishes to ses_copy's own topic, and that
-	// session's node, which the copy's row is the first to name.
-	{fallbackSite, graphstore.KindComment, graphstore.TupleDeliveredTo}:    {"fallback_delivery"},
-	{fallbackSite, graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
-	{fallbackSite, graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
-}
+// sweptDocument is the address of the document the orphan sweep's drive states gone: one of
+// CORE-1 whose node stands behind no row, as a build before this one leaves the node of a
+// document it removes.
+const sweptDocument = "CORE-1/swept-md"
 
-// writeTheStore drives the store's writers over the history seedSizedHistory wrote, one after
-// another, and answers how many tuples of each kind each of them appended, read off graph_tuples
-// by the sequences each one's tuples took. Each is the writer itself and not a copy of what it
-// writes: the block index (refs.IndexBlocks), the backfill's passes, and the outbox, run whole,
-// publishing the log and then a held copy. The other sites graphstore's storeWriteCallSites names
-// append no kind these do not: the API's comment path states what the backfill's comment pass
-// states of a comment (graphstore.CommentFacts, graphstore.AuthorFacts), the creates of an issue,
-// a document, an ask and a message state what the backfill's object pass states of each, a
-// document's removal states the state that pass states, and so does the roll tick's sweep of a
-// document a build before this one removed (StateOrphanedGone), the settle of a delivery attempt,
-// the follow of an ask and the seed's followers each state a session's node, the sites that cause
-// a version's index append what the block index stated, and the erase appends nothing.
-func writeTheStore(t *testing.T, database *store.Store) map[writtenKind]int64 {
-	t.Helper()
+// seededDrives are the drives of the store's writers over the history seedSizedHistory wrote, one
+// after another: the block index over the archive (refs.IndexBlocks, then graphstore.Caused, as a
+// writer with no write phase runs it), the backfill's five passes, and the outbox, run whole,
+// publishing the comment's comment.created, then the receipt of its mention, then a held copy.
+// The outbox publishes the comment and the receipt in two drives, so the delivered_to each states
+// is read apart: the bus's delivery of the comment to the role sizer, which the term bus_delivery
+// counts, and the delivery the mention's attempt made to ses_sized, which the term delivery counts.
+//
+// The terms each drive's tuples are counted by are the one thing about the writers this test
+// states rather than reads: which term counts a tuple is what that term's driver says of the
+// writer, and no writer says it.
+func seededDrives(database *store.Store) []StoreDrive {
 	ctx := context.Background()
-	backfill := func(pass func(context.Context, *store.Store) (KindBackfill, error)) func(*testing.T, *store.Store) {
-		return func(t *testing.T, database *store.Store) {
+	backfill := func(pass func(context.Context, *store.Store) (KindBackfill, error)) func(*testing.T) {
+		return func(t *testing.T) {
 			t.Helper()
 			if done, err := pass(ctx, database); err != nil {
 				t.Fatalf("backfill the %s kind: %v", done.Kind, err)
 			}
 		}
 	}
-	passes := func(pass func(context.Context, *store.Store) ([]KindBackfill, error)) func(*testing.T, *store.Store) {
-		return func(t *testing.T, database *store.Store) {
+	passes := func(pass func(context.Context, *store.Store) ([]KindBackfill, error)) func(*testing.T) {
+		return func(t *testing.T) {
 			t.Helper()
 			if _, err := pass(ctx, database); err != nil {
 				t.Fatalf("run a backfill pass: %v", err)
 			}
 		}
 	}
-	writers := []struct {
-		site  string
-		drive func(*testing.T, *store.Store)
-	}{
-		{blockIndexSite, indexTheArchive},
-		{blockBatchSite, backfill(backfillBlocks)},
-		{blockRefBatchSite, backfill(backfillBlockRefs)},
-		{commentBatchSite, backfill(backfillComments)},
-		{roleBatchSite, backfill(backfillRoles)},
-		{sessionBatchSite, backfill(backfillSessions)},
-		{objectBatchSite, passes(backfillObjectNodes)},
-		{scopeBatchSite, passes(backfillScopes)},
-		{batchRecordSite, publishTheLog},
-		{fallbackSite, publishAFallbackCopy},
+	return []StoreDrive{{
+		// A version's blocks, as the index states them over the archive's three versions: the
+		// blocks it inserts afresh, each with its node's base attributes, its in_document and its
+		// part_of; the paragraph the second version drops, stated gone; the paragraph it moves out
+		// of the callout, its old parent retracted and its new one asserted; the dropped paragraph
+		// the third version brings back, stated live, with its in_document and at most a parent the
+		// restore moved; and the added paragraph's reference to CORE-1.
+		Name: archiveIndexDrive, Sites: []string{"refs/blocks.go#Queue", "graphstore/write.go#Caused"},
+		Database: database, Drive: func(t *testing.T) { indexTheArchive(t, database) },
+		Counts: map[StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block", "block_restored", "block_gone"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:    {"block"},
+			{refs.BlockNodeKind, refs.TupleInDocument}:           {"block", "block_restored"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block", "block_restored", movedParents},
+			{refs.BlockNodeKind, "mentions"}:                     {"block_ref"},
+		},
+	}, {
+		// The backfill's passes over the rows the build before the store wrote: the blocks of the
+		// window's document, which it states a block's node and membership of and leaves the
+		// parent of to the index; that document's reference; the comment, as api's commentStored
+		// and graphstore.Authored state one (graphstore.CommentFacts, graphstore.AuthorFacts), so
+		// its kinds are the comment path's; the role sizer and its page; and the sessions the
+		// census holds to a node.
+		Name: blockBatchDrive, Sites: []string{"graphcensus/backfill.go#writeBlockBatch", "graphstore/write.go#Write"},
+		Database: database, Drive: backfill(backfillBlocks),
+		Counts: map[StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:    {"block"},
+			{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
+		},
+	}, {
+		Name: blockRefBatchDrive, Sites: []string{"graphcensus/backfill.go#writeBlockRefBatch", "graphstore/write.go#Write"},
+		Database: database, Drive: backfill(backfillBlockRefs),
+		Counts: map[StoredKind][]string{{refs.BlockNodeKind, "mentions"}: {"block_ref"}},
+	}, {
+		Name: commentBatchDrive, Sites: []string{"graphcensus/backfill.go#Queue"},
+		Database: database, Drive: backfill(backfillComments),
+		Counts: map[StoredKind][]string{
+			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
+			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
+			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
+			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
+			{graphstore.KindComment, graphstore.TupleOwnedBy}:        {graphstore.TupleOwnedBy},
+			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.TupleRecordedAs}:      {"author_alias"},
+		},
+	}, {
+		Name: roleBatchDrive, Sites: []string{"graphcensus/backfill.go#writeRoleBatch"},
+		Database: database, Drive: backfill(backfillRoles),
+		Counts: map[StoredKind][]string{
+			{graphstore.KindRole, graphstore.AttributeVisibility}: {graphstore.KindRole},
+			{graphstore.KindRole, graphstore.AttributeState}:      {graphstore.KindRole},
+			{graphstore.KindPage, graphstore.AttributeVisibility}: {graphstore.KindPage},
+			{graphstore.KindPage, graphstore.AttributeState}:      {graphstore.KindPage},
+			{graphstore.KindPage, graphstore.TuplePartOf}:         {graphstore.KindPage},
+		},
+	}, {
+		Name: sessionBatchDrive, Sites: []string{"graphcensus/backfill.go#writeSessionBatch"},
+		Database: database, Drive: backfill(backfillSessions),
+		Counts: map[StoredKind][]string{
+			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
+			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
+		},
+	}, {
+		// The backfill's pass over the issues, documents, asks and messages the build before the
+		// store wrote: each one's node and its visibility, state and project, as its create states
+		// them. The seeded history's are all in project CORE, so none states parties.
+		Name: objectBatchDrive, Sites: []string{"graphcensus/projects_backfill.go#writeObjectBatch"},
+		Database: database, Drive: passes(backfillObjectNodes),
+		Counts: map[StoredKind][]string{
+			{graphstore.KindIssue, graphstore.AttributeVisibility}:    {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.AttributeState}:         {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.AttributeProject}:       {graphstore.KindIssue},
+			{graphstore.KindArtifact, graphstore.AttributeVisibility}: {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeState}:      {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeProject}:    {graphstore.KindArtifact},
+			{graphstore.KindAsk, graphstore.AttributeVisibility}:      {graphstore.KindAsk},
+			{graphstore.KindAsk, graphstore.AttributeState}:           {graphstore.KindAsk},
+			{graphstore.KindAsk, graphstore.AttributeProject}:         {graphstore.KindAsk},
+			{graphstore.KindMessage, graphstore.AttributeVisibility}:  {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeState}:       {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeProject}:     {graphstore.KindMessage},
+		},
+	}, {
+		// The backfill's fill of the project of a node an earlier build stored with none: the
+		// comment's, which the comment pass above wrote with its project, is put back as a build
+		// before the project stored it - no project on its row and no project tuple in its log, as
+		// the column is the projection of its tuples - and the fill states its project. The
+		// comment row stays, so the sized window holds the writes it held.
+		Name: scopeBatchDrive, Sites: []string{"graphcensus/projects_backfill.go#writeScopeBatch", "graphstore/scope.go#FillScopes"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+				if _, err := tx.Exec(ctx, `delete from graph_tuples where from_kind = $1 and kind = $2`,
+					graphstore.KindComment, graphstore.AttributeProject); err != nil {
+					return err
+				}
+				tag, err := tx.Exec(ctx, `update graph_nodes set project_key = null where kind = $1`, graphstore.KindComment)
+				if err == nil && tag.RowsAffected() == 0 {
+					err = errors.New("no comment node to put back")
+				}
+				return err
+			}); err != nil {
+				t.Fatalf("put the comment node back to no project, as an earlier build stored it: %v", err)
+			}
+		},
+		Drive:  passes(backfillScopes),
+		Counts: map[StoredKind][]string{{graphstore.KindComment, graphstore.AttributeProject}: {"comment"}},
+	}, {
+		// The block-index tick's sweep of a document a build before this one removed, stating
+		// nothing: the node it leaves standing behind no row, stated gone as this build's removal
+		// states it, which the term artifact_removed counts.
+		Name: orphanSweepDrive, Sites: []string{"graphcensus/orphans.go#StateOrphanedGone"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+				return graphstore.Write(ctx, tx, []graphstore.Node{graphstore.ArtifactNode(sweptDocument, "CORE", "",
+					model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC().Add(-time.Hour))}, nil)
+			}); err != nil {
+				t.Fatalf("write the node of %s as this build's create did, before a build before this one removed its row: %v", sweptDocument, err)
+			}
+		},
+		Drive: func(t *testing.T) {
+			if err := StateOrphanedGone(ctx, database, sweptDocument); err != nil {
+				t.Fatalf("state the orphaned node of %s gone: %v", sweptDocument, err)
+			}
+		},
+		Counts: map[StoredKind][]string{{graphstore.KindArtifact, graphstore.AttributeState}: {"artifact_removed"}},
+	}, {
+		// The outbox's record of the batch that delivers the comment's comment.created to the role
+		// sizer: the delivered_to of that delivery, which bus_delivery counts, and the holder of the
+		// role, whose held_by and whose part_of the role the session term counts.
+		Name: busDeliveryDrive, Sites: []string{"outbox/publisher.go#recordBatch"},
+		Database: database, Drive: func(t *testing.T) { publishTheLog(t, database) },
+		Counts: map[StoredKind][]string{
+			{graphstore.KindComment, graphstore.TupleDeliveredTo}: {"bus_delivery"},
+			{graphstore.KindRole, graphstore.TupleHeldBy}:         {graphstore.KindSession},
+			{graphstore.KindSession, graphstore.TuplePartOf}:      {graphstore.KindSession},
+		},
+	}, {
+		// The outbox's record of the receipt of the comment's mention, a delivery to ses_sized,
+		// which the term delivery counts: ses_sized claimed no role, so it takes a page of its own,
+		// which the session term counts with its node.
+		Name: receiptDrive, Sites: []string{"outbox/publisher.go#recordBatch"},
+		Database: database, Ready: func(t *testing.T) { appendTheMentionReceipt(t, database) },
+		Drive: func(t *testing.T) { publishTheLog(t, database) },
+		Counts: map[StoredKind][]string{
+			{graphstore.KindComment, graphstore.TupleDeliveredTo}: {"delivery"},
+			{graphstore.KindPage, graphstore.AttributeVisibility}: {graphstore.KindSession},
+			{graphstore.KindPage, graphstore.AttributeState}:      {graphstore.KindSession},
+			{graphstore.KindPage, graphstore.TuplePartOf}:         {graphstore.KindSession},
+		},
+	}, {
+		// The outbox's fallback pass: the copy it publishes to ses_copy's own topic, and that
+		// session's node, which the copy's row is the first to name.
+		Name: fallbackDrive, Sites: []string{"outbox/mentions.go#recordFallbackCopies"},
+		Database: database, Drive: func(t *testing.T) { publishAFallbackCopy(t, database) },
+		Counts: map[StoredKind][]string{
+			{graphstore.KindComment, graphstore.TupleDeliveredTo}:    {"fallback_delivery"},
+			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
+			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
+		},
+	}}
+}
+
+// writeTheStore runs every drive of the store's writers: the ones over the history
+// seedSizedHistory wrote on database (seededDrives), graphstore's own writers run on their own
+// (graphstoreDrives), the seed (seedRunDrives), and the drives of the sites whose packages import
+// this one, which this package's external test registers (ImportedDrives). It holds them to
+// driving every site the register of the store's writers lists (requireEveryListedSiteDriven).
+// Each drive is the writer itself and not a copy of what it writes. It answers how many tuples of
+// each kind each drive appended, read off graph_tuples by the sequences the drive's tuples took,
+// and the terms each drive says count each kind it appends; and it logs, for every listed site,
+// what each drive that runs it appended.
+func writeTheStore(t *testing.T, database *store.Store) (map[writtenKind]int64, map[writtenKind][]string) {
+	t.Helper()
+	ctx := context.Background()
+	drives := slices.Concat(seededDrives(database), graphstoreDrives(t), seedRunDrives(t))
+	if ImportedDrives == nil {
+		t.Errorf("no drive of the sites whose packages import graphcensus is registered: ImportedDrives, which this package's external test sets, is nil")
+	} else {
+		drives = append(drives, ImportedDrives(t)...)
 	}
-	appended := map[writtenKind]int64{}
-	for _, writer := range writers {
-		var before int64
-		if err := database.Pool.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&before); err != nil {
-			t.Fatalf("read the highest tuple before %s: %v", writer.site, err)
+	requireEveryListedSiteDriven(t, drives)
+	appended, counted := map[writtenKind]int64{}, map[writtenKind][]string{}
+	wrote := map[string]string{}
+	for _, drive := range drives {
+		if _, named := wrote[drive.Name]; named {
+			t.Fatalf("two drives are named %s, so what each appended cannot be read apart", drive.Name)
 		}
-		writer.drive(t, database)
-		rows, err := database.Pool.Query(ctx, `
-			select from_kind, kind, count(*) from graph_tuples where seq > $1 group by from_kind, kind
+		for stored, terms := range drive.Counts {
+			counted[writtenKind{writer: drive.Name, from: stored.From, kind: stored.Kind}] = terms
+		}
+		if drive.Ready != nil {
+			drive.Ready(t)
+		}
+		var before int64
+		if err := drive.Database.Pool.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&before); err != nil {
+			t.Fatalf("read the highest tuple before %s: %v", drive.Name, err)
+		}
+		drive.Drive(t)
+		rows, err := drive.Database.Pool.Query(ctx, `
+			select from_kind, kind, count(*) from graph_tuples where seq > $1 group by from_kind, kind order by from_kind, kind
 		`, before)
 		if err != nil {
-			t.Fatalf("read the tuples %s appended: %v", writer.site, err)
+			t.Fatalf("read the tuples %s appended: %v", drive.Name, err)
 		}
+		var kinds []string
 		for rows.Next() {
-			written := writtenKind{writer: writer.site}
+			written := writtenKind{writer: drive.Name}
 			var count int64
 			if err := rows.Scan(&written.from, &written.kind, &count); err != nil {
-				t.Fatalf("read a kind of tuple %s appended: %v", writer.site, err)
+				t.Fatalf("read a kind of tuple %s appended: %v", drive.Name, err)
 			}
 			appended[written] = count
+			kinds = append(kinds, fmt.Sprintf("%d %s out of a %s node", count, written.kind, written.from))
 		}
 		if err := rows.Err(); err != nil {
-			t.Fatalf("read the tuples %s appended: %v", writer.site, err)
+			t.Fatalf("read the tuples %s appended: %v", drive.Name, err)
+		}
+		wrote[drive.Name] = "nothing"
+		if len(kinds) > 0 {
+			wrote[drive.Name] = strings.Join(kinds, ", ")
 		}
 	}
-	return appended
+	for _, site := range slices.Sorted(maps.Keys(lockstep.StoreWriteCallSites())) {
+		for _, drive := range drives {
+			if slices.Contains(drive.Sites, site) {
+				t.Logf("store writer %s, run by the drive %s, which appended %s", site, drive.Name, wrote[drive.Name])
+			}
+		}
+	}
+	return appended, counted
 }
 
 // indexTheArchive runs the block index over each version of the archive in turn, at the time
@@ -755,11 +874,37 @@ func indexTheArchive(t *testing.T, database *store.Store) {
 	}
 }
 
-// publishTheLog runs the outbox until it has published every event the history left unpublished:
-// the comment's comment.created and the receipt of its mention's attempt.
+// publishTheLog runs the outbox until it has published every event the log holds unpublished: the
+// comment's comment.created the history left, and then, once appendTheMentionReceipt has appended
+// it, the receipt of its mention's attempt.
 func publishTheLog(t *testing.T, database *store.Store) {
 	t.Helper()
 	runTheOutbox(t, database, "publish every event", `select not exists (select 1 from events where published_at is null)`)
+}
+
+// appendTheMentionReceipt appends the receipt of the comment's mention's attempt to ses_sized, as
+// the mention's settle appends one (api's completeCommentDelivery) once the listener took the
+// send: owned by the comment's document and notifying nobody.
+func appendTheMentionReceipt(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	var comment, document string
+	if err := database.Pool.QueryRow(ctx, `select id::text, artifact_id::text from comments`).Scan(&comment, &document); err != nil {
+		t.Fatalf("read the comment whose mention the receipt settles: %v", err)
+	}
+	receipt, err := json.Marshal(model.CommentDeliveryEventPayload{
+		CommentID: comment, Target: "role:sizer", Attempt: 1, Delivery: "btw",
+		SessionID: new("ses_sized"), State: model.DeliveryStateSent,
+	})
+	if err != nil {
+		t.Fatalf("encode the mention's receipt: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into events (artifact_id, seq, type, actor, payload, notify)
+		values ($1::uuid, 2, 'comment.delivery', '{"kind":"user","id":"Alice"}', $2::jsonb, false)
+	`, document, receipt); err != nil {
+		t.Fatalf("append the mention's receipt: %v", err)
+	}
 }
 
 // publishAFallbackCopy holds the comment's copy for the session ses_copy as a fallback row, as a
@@ -818,11 +963,13 @@ func runTheOutbox(t *testing.T, database *store.Store, what, settled string) {
 
 // The sizing counts every tuple the writers append, term by term: rows a day is the sum over the
 // terms of writes a day times tuples a write (R4), so a kind it leaves out reads the one-year
-// verdict low. The test takes its list of kinds from the writers themselves: it runs the store's
-// writers over the seeded history (writeTheStore) and requires each kind of tuple each of them
-// appended to be counted by a term the sizing prints (countedBy), naming the writer and the kind
-// where none does. That is what holds the delivered_to of a comment event the bus delivers and
-// that of a published fallback copy to a term each.
+// verdict low. The test takes its list of kinds from the writers themselves: it drives every site
+// the register of the store's writers lists (writeTheStore), the real site each time, and
+// requires each kind of tuple each drive appended to be counted by a term the sizing prints (each
+// drive's Counts), naming the drive and the kind where none does. The outbox's record of a batch
+// is driven twice, once over the bus's delivery of a comment and once over the receipt of its
+// mention, so the delivered_to of a comment event the bus delivers, that of a mention's attempt
+// and that of a published fallback copy are each held to a term of their own.
 //
 // The history holds at least one write of every term, so that the sum over the terms sees each:
 // a version that drops a block, which the index states gone, moves a paragraph out of a callout,
@@ -837,7 +984,7 @@ func runTheOutbox(t *testing.T, database *store.Store, what, settled string) {
 func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	database := storetest.Open(t)
 	seedSizedHistory(t, database)
-	appended := writeTheStore(t, database)
+	appended, countedBy := writeTheStore(t, database)
 	printed := sizingCensus(t, database)
 	terms := sizedTerms(t, printed)
 	for _, written := range slices.SortedFunc(maps.Keys(appended), compareWritten) {
@@ -856,8 +1003,8 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	}
 	for _, written := range slices.SortedFunc(maps.Keys(countedBy), compareWritten) {
 		if appended[written] == 0 {
-			t.Errorf("this test says %s appends %s tuples out of a %s node, and over the seeded history it appended none",
-				written.writer, written.kind, written.from)
+			t.Errorf("this test says %s appends %s tuples out of a %s node, which term %s counts, and it appended none",
+				written.writer, written.kind, written.from, strings.Join(countedBy[written], " and "))
 		}
 	}
 	want := map[string]sizedTerm{

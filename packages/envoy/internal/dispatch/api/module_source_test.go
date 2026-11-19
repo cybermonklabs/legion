@@ -4,16 +4,17 @@
 //
 // No tag, because its callers are on both sides of one. The seven static guards, and
 // one_expression_guard_test.go beside them, carry `//go:build !race` for what that saves the
-// race job (lock_level_test.go's header says what), while one test main added to this package
-// uses a declaration of this file untagged and runs in the race job: ask_asked_of_test.go:480
-// normalises a migration's SQL with sqlWhitespace. A tagged toolkit drops that one from the
-// race build and the package's test binary stops compiling.
+// race job (lock_level_test.go's header says what), while two tests of this package use its
+// declarations untagged and run in the race job: ask_asked_of_test.go:480 normalises a
+// migration's SQL with sqlWhitespace, and item_writer_census_test.go's
+// TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus, which the text-check job does not run, walks
+// the module (moduleSources, sqlStatementsByFunction). A tagged toolkit drops both from the race
+// build and the package's test binary stops compiling.
 //
 // No test, because a test declared here would run wherever this file compiles - the race job
 // included - and the fifteen tests of those eight files are the text-check job's to run, once
-// each. What an untagged file of declarations costs the race build is this one compile:
-// nothing here walks or parses anything until a test calls it, and under `-race` that one
-// read of sqlWhitespace is the only call any of it gets.
+// each. What an untagged file of declarations costs the race build is its compile and the one
+// walk the census asks of it: nothing here walks or parses anything until a test calls it.
 
 package api
 
@@ -51,10 +52,9 @@ const moduleRoot = "../../.."
 
 // sharedModuleSources is the module's parsed source, walked once per test binary: four of this
 // package's seven guards and one_expression_guard_test.go read the same files, and the text-check
-// job's step runs all five in one go test. In the race build it has no caller at all, since
-// every one of those five carries the tag; there it is a declaration the test binary compiles
-// and nothing runs. A failed walk's error is kept and reported by each test that asks for the
-// sources, as the copy-lock guard's graph is.
+// job's step runs all five in one go test. In the race build its one caller is the item-writer
+// census, which carries no tag. A failed walk's error is kept and reported by each test that asks
+// for the sources, as the copy-lock guard's graph is.
 var sharedModuleSources = sync.OnceValues(func() ([]moduleSource, error) { return scanModuleSources(moduleRoot) })
 
 // moduleSources reads and parses every non-test Go file of the envoy module, not just the
@@ -171,20 +171,89 @@ func stringConstants(sources []moduleSource) (map[string]string, error) {
 // concatenation of literals and known constants - lowercased with its whitespace collapsed, so
 // a clause split across lines or constants reads as one statement.
 func sqlStatements(file *ast.File, constants map[string]string) []string {
-	var statements []string
-	ast.Inspect(file, func(node ast.Node) bool {
-		expression, ok := node.(ast.Expr)
+	located := sqlStatementsByFunction(file, constants)
+	statements := make([]string, len(located))
+	for index, statement := range located {
+		statements[index] = statement.statement
+	}
+	return statements
+}
+
+// locatedStatement is one statement sqlStatements finds, with where it is declared. function is
+// the name of the function declared at the top level of the file that holds it, its function
+// literals included, and empty for one outside any function, such as a constant's value. value is
+// the name of the package-level constant or variable whose declaration holds one outside any
+// function - the names of a declaration of several, comma-joined, where its values are not one per
+// name (`a, b = f()`) - and empty for one in a function or in no value (an import path, a struct
+// tag).
+type locatedStatement struct {
+	function  string
+	value     string
+	statement string
+}
+
+// sqlStatementsByFunction is sqlStatements with the function, or the package-level value, each
+// statement is in.
+func sqlStatementsByFunction(file *ast.File, constants map[string]string) []locatedStatement {
+	var statements []locatedStatement
+	// locate adds the statements under node, which is in function or, outside any function, in
+	// the package-level value named value.
+	locate := func(node ast.Node, function, value string) {
+		ast.Inspect(node, func(node ast.Node) bool {
+			expression, ok := node.(ast.Expr)
+			if !ok {
+				return true
+			}
+			text, ok := literalText(expression, file.Name.Name, constants)
+			if !ok {
+				return true
+			}
+			statements = append(statements, locatedStatement{
+				function:  function,
+				value:     value,
+				statement: sqlWhitespace.ReplaceAllString(strings.ToLower(text), " "),
+			})
+			// The whole concatenation is one statement; its parts are not statements of their own.
+			return false
+		})
+	}
+	for _, declared := range file.Decls {
+		general, ok := declared.(*ast.GenDecl)
 		if !ok {
-			return true
+			function := ""
+			if fn, ok := declared.(*ast.FuncDecl); ok {
+				function = fn.Name.Name
+			}
+			locate(declared, function, "")
+			continue
 		}
-		text, ok := literalText(expression, file.Name.Name, constants)
-		if !ok {
-			return true
+		for _, spec := range general.Specs {
+			values, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				locate(spec, "", "")
+				continue
+			}
+			// Each part of the spec is walked in the order ast.Walk takes it, so the statements
+			// come out as a walk of the whole spec finds them: the names, the type, the values.
+			// A name and, one per name, its value are in that name; the rest is in all of them.
+			names := make([]string, len(values.Names))
+			for index, name := range values.Names {
+				names[index] = name.Name
+				locate(name, "", name.Name)
+			}
+			every := strings.Join(names, ", ")
+			if values.Type != nil {
+				locate(values.Type, "", every)
+			}
+			for index, value := range values.Values {
+				if len(values.Values) == len(values.Names) {
+					locate(value, "", names[index])
+				} else {
+					locate(value, "", every)
+				}
+			}
 		}
-		statements = append(statements, sqlWhitespace.ReplaceAllString(strings.ToLower(text), " "))
-		// The whole concatenation is one statement; its parts are not statements of their own.
-		return false
-	})
+	}
 	return statements
 }
 

@@ -906,6 +906,8 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 		probeCredentialGrant:   nobody(uuid.NewString()),
 		probeMachineLogin:      nobody(uuid.NewString()),
 		probeSignin:            nobody(uuid.NewString()),
+		// A run no record holds: the step write reads its issue first, which the key decides.
+		probeStep: same(uuid.NewString()),
 		// acme/p.x is on acme/p_x's GitHub subject lane, and no mapping holds it.
 		probeMappedRepository: {hidden: "p_x", missing: "p.x"},
 	}}

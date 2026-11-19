@@ -171,13 +171,16 @@ func TestASharedSlackChannelIsRefused(t *testing.T) {
 }
 
 // TestTheSharedChannelRefusalReadsTheCallersCredential: the refusal names the other private
-// project only to a caller who sees it by the read rule, resolved for the request's own
-// credential, never for the person actingPerson answers. An agent credential with no list sees
-// only public projects, so alice's personal token and her broker token, each listing no project,
-// read the refusal that names none, though alice herself sees PRIV and reads its name at her
-// browser. Controls: name PRIV to a credential with no list whenever its person sees it, or
-// resolve actingPerson's actor in place of the request's caller, and the token rows fail naming
-// the token.
+// project only to a caller who sees it by the read rule, read for the request's own credential
+// (the viewer ownerWrite resolved), never for the person actingPerson answers. alice owns both
+// projects, so at her browser she sees PRIV and reads its name. Her personal token listing PRIV2
+// alone sees PRIV2, so its write reaches the check, and not PRIV, so it reads the refusal that
+// names no project. A broker-issued token reaches this person's route only when it holds no one
+// project (broker_token.go: the person scope), and such a token sees no private project, so its
+// write of PRIV2 answers 404 PROJECT_NOT_FOUND before the check, as every write of a project it
+// cannot see does; read as its person it would reach the check and read PRIV's name. Controls:
+// name PRIV whenever the credential's person sees it, or read the person's viewer in place of the
+// request's, and the token rows fail naming the token.
 func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	// alice owns both, so she sees PRIV.
@@ -189,30 +192,37 @@ func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 	const path = "/api/v1/projects/PRIV2/access"
 	body := map[string]any{"slack_channels": []string{"C0SHARED001"}}
 	caller := newBrokerCaller(t)
-	const brokerToken = "alice-broker-token-listing-no-project"
+	const brokerToken = "alice-broker-token-holding-no-project"
 	says := liveNamedToken(caller.jkt)
-	says.ProjectScope, says.Projects = brokertoken.ProjectScopePerson, nil
+	says.Person, says.ProjectScope, says.Projects = "alice", brokertoken.ProjectScopePerson, nil
 	rig.broker.Says(brokerToken, says)
+	personal := mintListed(t, rig.handler, "alice", "alice's token listing PRIV2", []string{"PRIV2"})
+	const unseen = "C0SHARED001 is listed by a private project you cannot see"
 	for _, row := range []struct {
-		who  string
-		send func() *httptest.ResponseRecorder
-		want string
+		who    string
+		send   func() *httptest.ResponseRecorder
+		status int
+		code   string
+		want   string
 	}{
 		{"alice at her browser", func() *httptest.ResponseRecorder {
 			return dispatchRequest(t, rig.handler, http.MethodPatch, path, body, "alice")
-		}, "C0SHARED001 is listed by PRIV, a private project; a Slack channel belongs to one private project"},
-		{"alice's dsp_ token listing no project", func() *httptest.ResponseRecorder {
-			return agentRequest(t, rig.handler, http.MethodPatch, path, body, personalTokenOwnedBy(t, rig.database, "alice", model.ScopePerson))
-		}, "C0SHARED001 is listed by a private project you cannot see"},
-		{"alice's broker token listing no project", func() *httptest.ResponseRecorder {
+		}, http.StatusConflict, "SLACK_CHANNEL_SHARED", "C0SHARED001 is listed by PRIV, a private project; a Slack channel belongs to one private project"},
+		{"alice's dsp_ token listing PRIV2", func() *httptest.ResponseRecorder {
+			return agentRequest(t, rig.handler, http.MethodPatch, path, body, personal.Token)
+		}, http.StatusConflict, "SLACK_CHANNEL_SHARED", unseen},
+		{"alice's broker token holding no project", func() *httptest.ResponseRecorder {
 			return rig.serve(caller.presenting(t, http.MethodPatch, path, brokerToken, body))
-		}, "C0SHARED001 is listed by a private project you cannot see"},
+		}, http.StatusNotFound, "PROJECT_NOT_FOUND", ""},
 	} {
 		before := allEvents(t, rig.database)
 		response := row.send()
 		refusal := decodeBody[errorBody](t, response)
-		if response.Code != http.StatusConflict || refusal.Code != "SLACK_CHANNEL_SHARED" || refusal.Error != row.want {
-			t.Errorf("%s writes C0SHARED001 on PRIV2 = %d %s, want 409 SLACK_CHANNEL_SHARED reading %q", row.who, response.Code, response.Body.String(), row.want)
+		if response.Code != row.status || refusal.Code != row.code || (row.want != "" && refusal.Error != row.want) {
+			t.Errorf("%s writes C0SHARED001 on PRIV2 = %d %s, want %d %s reading %q", row.who, response.Code, response.Body.String(), row.status, row.code, row.want)
+		}
+		if row.status != http.StatusConflict && strings.Contains(response.Body.String(), "PRIV,") {
+			t.Errorf("%s writes C0SHARED001 on PRIV2 = %d %s: it names PRIV, which it does not see", row.who, response.Code, response.Body.String())
 		}
 		wantChannelsUnwritten(t, rig.database, "PRIV2", before)
 	}

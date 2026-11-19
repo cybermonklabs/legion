@@ -29,6 +29,7 @@ const (
 	probeCredentialGrant   probeObject = "credential-grant"   // a credential grant's id at the secrets broker
 	probeMachineLogin      probeObject = "machine-login"      // a machine login's id at the secrets broker
 	probeSignin            probeObject = "signin"             // a sign-in's id at the secrets broker
+	probeStep              probeObject = "step"               // a step record's id: the uuid the Legion daemon derives for a run
 	// probeMappedRepository is the name of a repository a project's mapping holds, the {repo} of
 	// a mapping write. Its missing side is a name on the same GitHub subject lane that no mapping
 	// holds, as acme/p.x is beside acme/p_x: a mapping write answers a project's mapping the
@@ -69,7 +70,10 @@ var writeProbes = map[string]writeProbe{
 		`{` + probeActor + `,"body":"{\"next\":\"walked\"}"}`},
 	"PUT /api/v1/issues/{key}/design-gates": {byIssue, `{` + probeActor + `,"gates":[]}`},
 	"PUT /api/v1/issues/{key}/role-holders": {byIssue, `{` + probeActor + `,"holders":[]}`},
-	"POST /api/v1/results/{id}/retract":     {readProbe{"id": probeResult}, `{` + probeActor + `,"reason":"A walked retraction."}`},
+	// The issue is read before the writer is judged, so a key the caller cannot see is a key no
+	// issue holds whatever session the body names.
+	"PUT /api/v1/issues/{key}/steps/{id}": {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
+	"POST /api/v1/results/{id}/retract":   {readProbe{"id": probeResult}, `{` + probeActor + `,"reason":"A walked retraction."}`},
 
 	// A project, and what it holds.
 	"POST /api/v1/projects/{key}/artifacts":                                {byProject, `{` + probeActor + `,"name":"walked.md","content":"# Walked\n"}`},
@@ -154,6 +158,7 @@ var writeProbes = map[string]writeProbe{
 	"DELETE /api/v1/delivery/session-groups/{id}":   {readProbe{"id": probeSessionGroup}, `{` + probeActor + `}`},
 	"POST /api/v1/credential-requests/{id}/approve": {readProbe{"id": probeCredentialRequest}, `{}`},
 	"POST /api/v1/credential-requests/{id}/deny":    {readProbe{"id": probeCredentialRequest}, `{}`},
+	"POST /api/v1/credential-requests/{id}/dismiss": {readProbe{"id": probeCredentialRequest}, ""},
 	"POST /api/v1/credential-grants/{id}/revoke":    {readProbe{"id": probeCredentialGrant}, ""},
 	"POST /api/v1/machine-logins/{id}/revoke":       {readProbe{"id": probeMachineLogin}, ""},
 	"POST /api/v1/signins/{id}/revoke":              {readProbe{"id": probeSignin}, ""},

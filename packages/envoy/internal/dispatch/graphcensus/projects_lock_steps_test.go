@@ -18,13 +18,13 @@ import (
 )
 
 // zedDocumentID is the project document the object batch's test seeds beside the two issue
-// documents (coreDocumentID, acmeDocumentID). No issue owns it, so its owner row is its own
-// artifacts row, whose owner key "artifact:<id>" sorts before every issue's, while its address,
+// documents (coreDocumentID, acmeDocumentID). No issue owns it, so its owner is the document
+// itself, whose owner key "artifact:<id>" sorts before every issue's, while its address,
 // ZED/notes, sorts after both issue documents' addresses.
 const zedDocumentID = "00000000-0000-4000-8000-0000000000d3"
 
 // requireTheObjectBatchLockOrder holds writeObjectBatch to its steps over documents, the kind a
-// writer deletes rows of (objectKind.owners). The batch first takes the owner row of each of its
+// writer deletes rows of (objectKind.owners). The batch first takes the owner lock of each of its
 // documents (lockObjectOwners), each once and in ascending owner key (events.LockOwnerRows), and
 // reads under them which rows still stand and the nodes the store holds of them. It then writes
 // its nodes in runs of consecutive nodes of one cause, each run through graphstore.WriteUncaused,
@@ -37,9 +37,9 @@ const zedDocumentID = "00000000-0000-4000-8000-0000000000d3"
 // owns. The batch reads them in address order, ACME-1/spec, CORE-1/spec, ZED/notes, so it writes
 // ACME-1/spec's node under its event and then the other two at the sentinel, one run of two
 // nodes. Their owner keys sort the other way round: artifact:<ZED/notes's id> before issue:ACME-1
-// and issue:CORE-1, so a batch that took each document's owner row in the order it read them
-// would take issue ACME-1's row first. ACME-1/spec's state tuple carries its event, which gives it
-// a repeat key a hold can stand on. The issues' nodes are written before the run, so the object
+// and issue:CORE-1, so a batch that took each document's owner lock in the order it read them
+// would take issue ACME-1's first. ACME-1/spec's state tuple carries its event, which gives it a
+// repeat key a hold can stand on. The issues' nodes are written before the run, so the object
 // pass has nothing of the issue kind to write and the run the test follows writes the documents
 // alone.
 func requireTheObjectBatchLockOrder(t *testing.T) {
@@ -71,30 +71,28 @@ func requireTheObjectBatchLockOrder(t *testing.T) {
 		map[string]any{"artifact": map[string]any{"id": acme.artifactID}})
 
 	ownerUnlocked := []string{"graph_nodes", "graph_tuples"}
-	issueOwner := func(issue string) *lockstep.Hold {
-		return lockstep.HoldRow(t, database, &lockstep.Hold{
-			Name: "issue " + issue + "'s row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: issue,
-			Statement: "select closed_at is null from issues where key = $1 for no key update",
-			Unlocked:  ownerUnlocked,
-		}, `select 1 from issues where key = $1 for update`, issue)
+	ownerHold := func(name string, owner store.Owner) *lockstep.Hold {
+		return lockstep.HoldOwner(t, database, &lockstep.Hold{
+			Name: name, Step: lockstep.StepOwner, Taken: true,
+			Statement: lockstep.OwnerLockStatement, Unlocked: ownerUnlocked,
+		}, owner)
 	}
-	zedOwner := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: zed.refKey + "'s artifacts row", Step: lockstep.StepOwner, Taken: true, Kind: "artifact", ID: zed.artifactID,
-		Statement: "select true from artifacts where id = $1 and issue_key is null for no key update",
-		Unlocked:  ownerUnlocked,
-	}, `select 1 from artifacts where id = $1::uuid for update`, zed.artifactID)
+	issueOwner := func(issue string) *lockstep.Hold {
+		return ownerHold("issue "+issue+"'s owner lock", store.IssueOwner(issue))
+	}
+	zedOwner := ownerHold(zed.refKey+"'s owner lock", store.ArtifactOwner(zed.artifactID))
 	// A node the batch makes is held as the same key inserted by a transaction still open, which is
 	// what its insert waits on; the hold's own base attributes are at the sentinel, which no repeat
 	// key covers, so the hold holds the node's row and nothing else.
 	nodeHold := func(document preStoreDocument, project string) *lockstep.Hold {
 		return holdWrite(t, database, &lockstep.Hold{
 			Name: document.refKey + "'s node row", Step: lockstep.StepNode, Taken: true,
-			Kind: graphstore.KindArtifact, ID: document.refKey, Statement: "with incoming as (",
+			Kind: graphstore.KindArtifact, ID: document.refKey, Statement: "insert into graph_nodes (",
 		}, []graphstore.Node{graphstore.ArtifactNode(document.refKey, project, "", backfillActor, now)}, nil)
 	}
 	state := holdWrite(t, database, &lockstep.Hold{
 		Name: acme.refKey + "'s state tuple", Step: lockstep.StepTuple, Taken: true,
-		Statement: "insert into graph_tuples (",
+		Statement: "with written as (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: graphstore.KindArtifact, FromID: acme.refKey, Kind: graphstore.AttributeState,
 		ToKind: graphstore.KindValue, ToID: graphstore.StateLive,
@@ -137,7 +135,7 @@ func requireTheObjectBatchLockOrder(t *testing.T) {
 }
 
 // requireTheBlockScopeBatchLockOrder holds writeScopeBatch over block nodes to its steps. A block's
-// node is written under the revision fence, so the fill takes each document's owner row and then
+// node is written under the revision fence, so the fill takes each document's owner lock and then
 // its document_block_versions row first (blockDocuments, then lockBlockDocuments), the order the
 // block batch takes them in (TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow). Only then does
 // graphstore.FillScopes take the node rows, in ascending (kind, id) and in a statement of their
@@ -148,14 +146,14 @@ func requireTheObjectBatchLockOrder(t *testing.T) {
 // the artifact.version event of the version that wrote them, naming no project and no parties,
 // with the document_blocks rows that name them. The issue's and the document's nodes are written
 // by a backfill run before the blocks exist, as the object pass writes them, so the run the test
-// follows takes no owner row for them; its one batch that does work is this fill. The first
+// follows takes no owner lock for them; its one batch that does work is this fill. The first
 // block's project tuple carries the version's event, which gives it a repeat key a hold can stand
 // on.
 //
 // The comment nodes the same call site fills are held in a run of their own
 // (requireTheCommentScopeBatchLockOrder): the comment fill runs before the block fill, and in one
-// run its node row would be taken before the block fill's owner row, which the owner-first rule
-// reads as one writer taking a node row before an owner row.
+// run its node row would be taken before the block fill's owner lock, which the owner-first rule
+// reads as one writer taking a node row before an owner lock.
 func requireTheBlockScopeBatchLockOrder(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -201,11 +199,11 @@ func requireTheBlockScopeBatchLockOrder(t *testing.T) {
 		t.Fatalf("seed the block nodes naming no project and the rows that name them: %v", err)
 	}
 
-	owner := lockstep.HoldRow(t, database, &lockstep.Hold{
-		Name: "issue CORE-1's row", Step: lockstep.StepOwner, Taken: true, Kind: "issue", ID: "CORE-1",
-		Statement: "select closed_at is null from issues where key = $1 for no key update",
+	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
+		Name: "issue CORE-1's owner lock", Step: lockstep.StepOwner, Taken: true,
+		Statement: lockstep.OwnerLockStatement,
 		Unlocked:  []string{"document_block_versions", "graph_nodes", "graph_tuples"},
-	}, `select 1 from issues where key = $1 for update`, "CORE-1")
+	}, store.IssueOwner("CORE-1"))
 	fence := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: "the document's document_block_versions row", Step: lockstep.StepFence, Taken: true,
 		Kind: "document", ID: document.artifactID,
@@ -245,7 +243,7 @@ func requireTheBlockScopeBatchLockOrder(t *testing.T) {
 }
 
 // requireTheCommentScopeBatchLockOrder holds writeScopeBatch over comment nodes to its steps. A
-// comment's node is written under no fence, so the fill takes no owner row and no
+// comment's node is written under no fence, so the fill takes no owner lock and no
 // document_block_versions row: graphstore.FillScopes takes the node rows, gives each its
 // project_key, and appends each one's project tuple, under the node's own cause. It names no node
 // on a comments row and appends no event.

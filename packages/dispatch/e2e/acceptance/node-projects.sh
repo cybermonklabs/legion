@@ -314,27 +314,46 @@ envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||
 pass "$section" "backfill-graph-store runs"
 census_complete "$section" "after the backfill"
 
-# The server's block-index tick owes its build the object pass on the first tick that joins the
-# build's cursor, and runs it then: it writes the node of every row that names none and cures
-# every node no row stands behind (docs' writeObjectNodesAnotherBuildWrote). The sections below
-# take a row's node away or remove a row as an earlier build would, and read the census before
-# any backfill, so they wait until that pass has run and cleared its debt; with no other build
-# serving, no later tick runs it again. A cursor row whose event_id has reached the newest event
-# this run wrote was moved by a tick of this server after those writes - a cursor an earlier
-# server left on a reused database stands behind them - and that server's joining tick, whose
-# pass sets the debt in the same transaction, came at or before it; with the debt clear there,
-# the pass has finished.
+# The server's block-index tick runs the object pass on every tick while a process of another
+# build serves and the first tick after one did, on the first tick that joins the build's cursor,
+# on a tick whose events name a row with no node (graphcensus.EventsOweObjectPass), and once 10
+# minutes have passed since its last pass finished (docs' objectPassInterval). This driver does
+# not start the server it reads; it needs that server - the harness's own under with-harness.sh,
+# or the one DISPATCH_URL names - to be the only build serving the database, since with another
+# build serving every tick owes the pass, and the sections below hold no quiet interval. The pass
+# writes the node of every row that names none and cures every node no row stands behind (docs'
+# writeObjectNodesAnotherBuildWrote). The sections below take a row's node away or remove a row as
+# an earlier build would, and read the census before any backfill, so a pass among them would cure
+# what they read first. So, as an earlier build would, a direct message is sent here with its event
+# and no node, and the sections wait until the pass that event owes has written its node and
+# cleared the debt: with this build serving alone, the next pass is then 10 minutes away, and no
+# event below names a row with no node. A cursor row whose event_id has reached that event was
+# moved by a tick of this server after it - a cursor an earlier server left on a reused database
+# stands behind it - and with the debt clear there and the message's node written, that tick's
+# pass has finished.
 section=pass
-query "$section" "read the newest event this run wrote" "select coalesce(max(id), 0) from events"
-written="$answer"
+query "$section" "an earlier build sends a direct message with its event and no node" "
+  with message as (
+    insert into messages (issue_key, author, body, target)
+    values (null, '{\"kind\":\"user\",\"id\":\"$person\"}', 'Before the control $stamp.', 'session:$agent')
+    returning id
+  ), event as (
+    insert into events (seq, type, actor, payload, notify)
+    select 0, 'message.created', '{\"kind\":\"user\",\"id\":\"$person\"}', jsonb_build_object('id', message.id::text), false
+    from message
+    returning id
+  )
+  select message.id::text || ' ' || event.id from message, event"
+read -r before written <<<"$answer"
 for attempt in $(seq 1 180); do
-  query "$section" "read whether the server's object pass has run" \
-    "select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)"
+  query "$section" "read whether the server's object pass has run after event $written" "
+    select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
+       and exists (select 1 from graph_nodes where kind = 'message' and id = '$before')"
   [[ "$answer" == t ]] && break
-  [[ "$attempt" == 180 ]] && fail "$section" "the server's object pass runs" "no cursor past event $written without a debt within 180 s"
+  [[ "$attempt" == 180 ]] && fail "$section" "the server's object pass runs" "no cursor past event $written without a debt, and no node of message $before, within 180 s"
   sleep 1
 done
-pass "$section" "the server's object pass has run after event $written and owes nothing"
+pass "$section" "the server's object pass wrote the node of message $before after event $written and owes nothing"
 
 section=control
 query "$section" "take the ask's node away" "

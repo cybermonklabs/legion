@@ -197,3 +197,49 @@ func TestTheSweeperDeletesThePlaceholdersOfGrantsThatHaveEnded(t *testing.T) {
 		t.Fatalf("the revoked grant still holds %v", rows)
 	}
 }
+
+// TestAirlockConnectionAnswersTheEnrollmentsSessionAndRuntime: the proxy names the caller of each
+// tunnel it opens and each dial it fails by the session and the runtime behind the grant
+// (airlockproxy's dialFields), and this read is where both come from. They are the enrollment's
+// own columns, read in the join the connection read already makes, so an enrollment with no
+// session answers the empty string rather than refusing the connection.
+func TestAirlockConnectionAnswersTheEnrollmentsSessionAndRuntime(t *testing.T) {
+	m, enr, _, release := twoNameGrant(t, "reach the service")
+	placeholder := release.Airlock.Names["LOGIN_KEY"].Slots[SlotValue]
+	// The fixture enrolls with no session, so the row names one: a read that answered the empty
+	// string for the session, or read another table's session column, would otherwise pass.
+	session := "session-" + t.Name()
+	nameSession(t, m, enr, session)
+	var runtimeID string
+	if err := m.Store.Pool.QueryRow(t.Context(),
+		`select runtime_id from enrollments where id=$1`, enr).Scan(&runtimeID); err != nil {
+		t.Fatalf("read the enrollment's runtime: %v", err)
+	}
+	if runtimeID == "" {
+		t.Fatal("the fixture's enrollment names no runtime, so this row could not tell a read of that column from an empty one")
+	}
+	conn, err := m.AirlockConnection(t.Context(), placeholder)
+	if err != nil {
+		t.Fatalf("AirlockConnection: %v", err)
+	}
+	if conn.RuntimeID != runtimeID {
+		t.Errorf("connection runtime = %q, want the enrollment's %q", conn.RuntimeID, runtimeID)
+	}
+	if conn.SessionID != session {
+		t.Errorf("connection session = %q, want the enrollment's %q", conn.SessionID, session)
+	}
+
+	// An enrollment with no session at all: the column is null, which the read answers as the
+	// empty string rather than failing the scan, so a session that names none still opens a
+	// connection and the proxy's lines about it name no session.
+	if _, err := m.Store.Pool.Exec(t.Context(), `update enrollments set session_id=null where id=$1`, enr); err != nil {
+		t.Fatalf("clear the enrollment's session: %v", err)
+	}
+	conn, err = m.AirlockConnection(t.Context(), placeholder)
+	if err != nil {
+		t.Fatalf("AirlockConnection with no session on the enrollment: %v", err)
+	}
+	if conn.SessionID != "" || conn.RuntimeID != runtimeID {
+		t.Fatalf("connection session = %q and runtime = %q; want no session and the enrollment's runtime", conn.SessionID, conn.RuntimeID)
+	}
+}

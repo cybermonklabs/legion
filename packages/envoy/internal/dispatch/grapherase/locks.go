@@ -22,23 +22,23 @@ const eraseOwnerAttempts = 3
 
 // lockInStoreOrder opens a confirmed erase's transaction and takes its locks in the store's lock
 // order (api/inbox_read.go's markInboxReadThreads), whose first invariant is that a store write
-// takes the owner row first. Every owner row the erase writes under comes first (ownerRows says
-// which they are), then the node's row `for update`, then the node's own projection rows
-// (lockProjectionRows), and nothing the erase does after them takes an owner row it does not
-// already hold: docs.ReadErasedLiveText takes a document's owner row again and finds this
-// transaction holding it. A node no row projects - a person, a session, a role, a page - stands
-// under no owner row, and the erase then starts at its node's row, which the order allows: a
+// takes the owner's lock first. The lock of every owner the erase writes under comes first
+// (ownerRows says which they are), then the node's row `for update`, then the node's own
+// projection rows (lockProjectionRows), and nothing the erase does after them takes an owner lock
+// it does not already hold: docs.ReadErasedLiveText takes a document's owner lock again and finds
+// this transaction holding it. A node no row projects - a person, a session, a role, a page -
+// stands under no owner, and the erase then starts at its node's row, which the order allows: a
 // writer may leave a step out.
 //
-// Those owner rows are the node's own and its own document's, never another node's: a row that
+// Those owners are the node's own and its own document's, never another node's: a row that
 // holds the erased bytes and derives from another node is listed and left as it is, so the run
 // writes nothing under that node's owner and takes no lock on it.
 //
-// The owner rows are taken each once, in the order of their owner keys (events.LockOwnerRows),
-// as events.lockOwners takes the owners of several events: "artifact:<id>" for a document no issue
-// owns, before "issue:<key>". That is the one order over every owner row, and the backfill's
-// batches take their documents' owner rows in it too (graphcensus's lockBlockDocuments and
-// lockObjectOwners).
+// The owner locks are the advisory locks every writer of an issue or a document takes
+// (store.LockOwners), each taken once, in the order of the owner keys (events.LockOwnerRows), as
+// events.lockOwners takes the owners of several events: "artifact:<id>" for a document no issue
+// owns, before "issue:<key>". That is the one order over every owner, and the backfill's batches
+// take their documents' owners in it too (graphcensus's lockBlockDocuments and lockObjectOwners).
 //
 // Which owners those are is read before they are locked, so it is read again under them with the
 // rest of the listing (read), and the run goes on with that second read. A write that, between

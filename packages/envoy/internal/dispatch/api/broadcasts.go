@@ -480,10 +480,15 @@ func (s *server) writeBroadcast(
 	for position, recipient := range recipients {
 		target := "session:" + recipient.sessionID
 		// Each copy's node goes in before its row, between the sender and the recipient, the
-		// parties of the thread the copy opens; what that write states waits for its event.
+		// parties of the thread the copy opens, dated with the broadcast's own time, which is the
+		// transaction's now() the copy's created_at defaults to; what that write states waits
+		// for its event.
 		messageID := uuid.NewString()
-		messageNode, err := writeMessageNode(ctx, tx, messageID, nil, nil, actor, &target)
+		messageNode, err := planMessageNode(ctx, tx, messageID, nil, nil, actor, &target, sent.CreatedAt)
 		if err != nil {
+			return broadcastRead{}, nil, err
+		}
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, messageNode) }); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		message, err := scanMessage(tx.QueryRow(ctx, `
@@ -494,8 +499,11 @@ func (s *server) writeBroadcast(
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
-		// Each copy is a direct message: its blocks are indexed, and it writes no mention.
-		if _, err := s.indexMessage(ctx, tx, message); err != nil {
+		// Each copy is a direct message: its blocks are indexed, and it writes no mention, so
+		// its blocks hold none either and the write moves nothing. The copy is inserted above,
+		// so its body is read here rather than planned before the insert, as every other
+		// message write plans it (api.planItemWrite).
+		if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, message.Body, message.CreatedAt, nil, nil); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		// A broadcast message is a thread root that answers nothing, so its event says what
@@ -510,11 +518,10 @@ func (s *server) writeBroadcast(
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
-		event, err := s.appendEvent(ctx, tx, messageEvent(message, "message.created", actor, payload))
+		// The event and what the copy's node write stated under it, in one batch
+		// (appendCausingEvent).
+		event, err := s.appendCausingEvent(ctx, tx, messageEvent(message, "message.created", actor, payload), messageNode)
 		if err != nil {
-			return broadcastRead{}, nil, err
-		}
-		if err := graphstore.Caused(ctx, tx, messageNode, event.ID); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		events = append(events, event)

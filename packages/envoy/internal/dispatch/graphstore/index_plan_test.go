@@ -24,7 +24,7 @@ import (
 
 // The nodes the reads under test are taken on. probe is one node among tens of thousands, whose
 // own tuples are a handful out of a log of more than a million: that is the shape a current read
-// has in production, and the shape the five read indexes exist for. crowded is the node with a
+// has in production, and the shape the four read indexes exist for. crowded is the node with a
 // long inbox, where TuplesIntoNode naming its kinds reads one index scan per kind and stops at
 // the limit, and naming none has no kind to scan by and reads that whole inbox - as a scan of
 // the log where the planner sees the node's values, as one index range sorted where it does not.
@@ -88,7 +88,7 @@ const inboxLimit = 50
 // planner can see its values scans in production, and either mode alone hides that.
 var planCacheModes = []string{"force_custom_plan", "force_generic_plan"}
 
-// TestEveryCurrentStoreReadRunsThroughTheTupleIndexes holds the five read indexes of the first
+// TestEveryCurrentStoreReadRunsThroughTheTupleIndexes holds the four read indexes of the first
 // migration to carrying every read the package states, against a log of more than a million
 // tuples. It explains each read as the package itself sends it (recordedQueryer), so a statement
 // that is edited is explained as edited rather than against a copy of it kept here; it checks
@@ -98,7 +98,7 @@ var planCacheModes = []string{"force_custom_plan", "force_generic_plan"}
 // existing deployment would build it on a full table - fails too, and so does a dropped one.
 //
 // Each read is explained under both plan-cache modes (planCacheModes), and each plan of each
-// mode is held to one rule: it reads graph_tuples through one of the five read indexes, that
+// mode is held to one rule: it reads graph_tuples through one of the four read indexes, that
 // scan carries an index condition, and no plan scans that table sequentially. The index
 // condition is the whole of it. An index that exists, and is even named for the column a read
 // binds, can still fail to serve that read - through the expression it is keyed on, or through
@@ -108,8 +108,8 @@ var planCacheModes = []string{"force_custom_plan", "force_generic_plan"}
 // index list.
 //
 // The current value of one attribute is held to more than that: to graph_tuples_values alone,
-// the one read index partial on to_kind = 'value', which the planner takes only where the
-// statement binds that predicate.
+// the one read index partial on to_kind = 'value'. The current reads out of and into one node
+// are held to graph_tuples_as_of_out and graph_tuples_as_of_in alone (storeReads says why).
 //
 // The one read held to the opposite is the inbox read naming no kind (requireWholeInbox), the
 // control: with no kind to scan by it reads the crowded node's whole inbox under either mode,
@@ -193,8 +193,8 @@ func requireReadRunsThroughTheIndexes(
 				subject, scan.Index, graphTupleReadIndexes, text)
 		}
 		if read.wantOnlyIndex != "" && scan.Index != read.wantOnlyIndex {
-			t.Errorf("%s reads graph_tuples through %s, want %s alone: the planner takes that index only where the statement binds %s, which is the index's own predicate:\n%s",
-				subject, scan.Index, read.wantOnlyIndex, valueReadPredicate, text)
+			t.Errorf("%s reads graph_tuples through %s, want %s alone, the one read index storeReads holds this read to:\n%s",
+				subject, scan.Index, read.wantOnlyIndex, text)
 		}
 		requireIndexCondition(t, subject, scan, text)
 	}
@@ -290,6 +290,9 @@ func storeReads(t *testing.T, ctx context.Context, pool *store.Pool, reference l
 	}
 	requireSameTuples(t, "CurrentOut", out, reference.currentOut)
 	record("CurrentOut", false, 1, false)
+	// graph_tuples_current leaves delivered_to out, and a read of every kind, or of the kinds it
+	// is handed, cannot prove that kind absent: it takes the index that keys every kind out of a node.
+	reads[len(reads)-1].wantOnlyIndex = "graph_tuples_as_of_out"
 
 	in, err := CurrentIn(ctx, recorder, probeKind, probeID, nil)
 	if err != nil {
@@ -297,6 +300,8 @@ func storeReads(t *testing.T, ctx context.Context, pool *store.Pool, reference l
 	}
 	requireSameTuples(t, "CurrentIn", in, reference.currentIn)
 	record("CurrentIn", false, 1, false)
+	// No index keys the far end with the near end after it; the read into a node walks this one.
+	reads[len(reads)-1].wantOnlyIndex = "graph_tuples_as_of_in"
 
 	value, found, err := CurrentValue(ctx, recorder, probeKind, probeID, probeAttribute)
 	if err != nil {
@@ -1165,13 +1170,12 @@ func requireSameOrder(t *testing.T, name string, answered []Tuple, want []int64)
 
 // --- the index set of the first migration ------------------------------------------------
 
-// graphTupleReadIndexes are the five read indexes, which every plan above must reach the log
+// graphTupleReadIndexes are the four read indexes, which every plan above must reach the log
 // through. They are named here as well as in requiredGraphIndexes because the plan checks ask
 // which index a scan read, and the migration check asks which migration declares it.
 var graphTupleReadIndexes = []string{
 	"graph_tuples_current",
 	"graph_tuples_values",
-	"graph_tuples_inbound",
 	"graph_tuples_as_of_out",
 	"graph_tuples_as_of_in",
 }
@@ -1209,22 +1213,18 @@ type requiredGraphIndex struct {
 	unique                       bool
 }
 
-// requiredGraphIndexes is the whole index set of the node and tuple store: the five read indexes
+// requiredGraphIndexes is the whole index set of the node and tuple store: the four read indexes
 // of graph_tuples, its two partial repeat keys, and the primary key and the one index of
 // graph_nodes. The primary key is declared inside the create table rather than as a create
 // index, so it is checked apart (requireIndexSetOfTheFirstMigration, requireIndexSetInTheCatalog).
 var requiredGraphIndexes = []requiredGraphIndex{
 	{
 		name: "graph_tuples_current", table: "graph_tuples",
-		keys: "from_kind, from_id, kind, to_kind, to_id, seq desc", predicate: "to_kind <> 'value'",
+		keys: "from_kind, from_id, kind, to_kind, to_id, seq desc", predicate: "to_kind <> 'value' and kind <> 'delivered_to'",
 	},
 	{
 		name: "graph_tuples_values", table: "graph_tuples",
 		keys: "from_kind, from_id, kind, seq desc", predicate: "to_kind = 'value'",
-	},
-	{
-		name: "graph_tuples_inbound", table: "graph_tuples",
-		keys: "to_kind, to_id, kind, from_kind, from_id, seq desc", predicate: "to_kind <> 'value'",
 	},
 	{
 		name: "graph_tuples_as_of_out", table: "graph_tuples",
@@ -1368,14 +1368,28 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 			}
 		}
 	}
+
+	// The set is the whole of graph_tuples' indexes. Each index on that table is one more write
+	// every tuple pays for, and the set leaves out the ones no read needs: an index keyed on the
+	// far end with the near end after it cost a delivered_to tuple 8.1 WAL records where the four
+	// read indexes cost 6.1, and served no read graph_tuples_as_of_in does not.
+	for _, indexes := range declared {
+		for _, index := range indexes {
+			inTheSet := slices.ContainsFunc(requiredGraphIndexes, func(want requiredGraphIndex) bool { return want.name == index.name })
+			if index.table == "graph_tuples" && !inTheSet {
+				t.Errorf("%s declares %s on graph_tuples (%s)%s, an index outside the store's index set: graph_tuples carries its four read indexes %v and its two repeat keys, and no other",
+					index.migration, index.name, index.keys, wherePart(index.predicate), graphTupleReadIndexes)
+			}
+		}
+	}
 	t.Logf("the index set of %s: %d indexes read from the migration files in order, over %d files",
 		graphStoreMigration, len(requiredGraphIndexes)+1, len(files))
 }
 
 // requireIndexSetInTheCatalog holds the migrated database to the index set of
 // requiredGraphIndexes, read off its catalog. requireIndexSetOfTheFirstMigration reads the
-// migration files for `create index` alone, so a later migration that drops one of the nine
-// passes it, and the reads that index served then run on whatever is left. Each of the eight
+// migration files for `create index` alone, so a later migration that drops one of the eight
+// passes it, and the reads that index served then run on whatever is left. Each of the seven
 // must stand on its table under its name, unique where the set says so, with the set's key list
 // and predicate; graph_nodes' primary key must key (kind, id). An index the set does not name,
 // such as graph_tuples' own primary key, is not this check's business.

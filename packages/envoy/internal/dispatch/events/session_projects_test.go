@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -18,6 +20,20 @@ func provenSession(id string) model.Actor {
 	return model.Actor{Kind: "session", ID: id, Owner: new("carol@example.com"), Act: &model.ActorAct{Session: id}}
 }
 
+// appendAll appends events in tx as one write phase, as a write with several events does.
+func appendAll(ctx context.Context, tx pgx.Tx, broker *Broker, events []model.Event) ([]model.Event, error) {
+	appended := make([]model.Event, len(events))
+	err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
+		for index, event := range events {
+			if err := broker.QueueAppend(batch, event, func(written model.Event) { appended[index] = written }); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return appended, err
+}
+
 // appendCommitted appends events in one transaction of their own and commits it.
 func appendCommitted(t *testing.T, database *store.Store, broker *Broker, events ...model.Event) {
 	t.Helper()
@@ -27,7 +43,7 @@ func appendCommitted(t *testing.T, database *store.Store, broker *Broker, events
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := broker.AppendAll(ctx, tx, events); err != nil {
+	if _, err := appendAll(ctx, tx, broker, events); err != nil {
 		t.Fatalf("append %d events: %v", len(events), err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -137,7 +153,7 @@ func TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit(t *testing.T) {
 		t.Fatalf("begin the first write: %v", err)
 	}
 	defer first.Rollback(ctx)
-	if _, err := broker.AppendAll(ctx, first, issueEvent("PP-1")); err != nil {
+	if _, err := appendAll(ctx, first, broker, issueEvent("PP-1")); err != nil {
 		t.Fatalf("the first write on PP-1: %v", err)
 	}
 
@@ -149,7 +165,7 @@ func TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit(t *testing.T) {
 				return err
 			}
 			defer tx.Rollback(context.Background())
-			if _, err := broker.AppendAll(context.Background(), tx, issueEvent("PP-2")); err != nil {
+			if _, err := appendAll(context.Background(), tx, broker, issueEvent("PP-2")); err != nil {
 				return err
 			}
 			return tx.Commit(context.Background())
@@ -164,7 +180,7 @@ func TestTwoFirstRecordsOfAPairWithCrossedIssueLocksBothCommit(t *testing.T) {
 		t.Fatal("the second write on PP-2 waited 10s on the first's uncommitted record of the same pair")
 	}
 
-	if _, err := broker.AppendAll(ctx, first, issueEvent("PP-2")); err != nil {
+	if _, err := appendAll(ctx, first, broker, issueEvent("PP-2")); err != nil {
 		t.Fatalf("the first write, taking PP-2 after the second committed: %v", err)
 	}
 	if err := first.Commit(ctx); err != nil {

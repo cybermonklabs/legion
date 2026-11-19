@@ -18,7 +18,7 @@
 --     person from outside the sign-in domain whom some project names directly.
 --   - agent_tokens.projects, the projects a personal token may use; empty for a token that
 --     names none, which is every token minted before this release.
---   - session_projects, which projects a session has acted in (events.Broker.AppendAll writes a
+--   - session_projects, which projects a session has acted in (events.Broker.QueueAppend writes a
 --     row for a session's first event on a project), and session_projects_filled, the one row
 --     `envoy-dispatch backfill-session-projects` writes when it has covered every older event.
 --     It has no unique key, on purpose: a unique key makes a write that records a pair wait for

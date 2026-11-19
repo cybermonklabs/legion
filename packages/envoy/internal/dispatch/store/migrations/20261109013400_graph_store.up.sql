@@ -13,10 +13,18 @@
 -- `to_kind = 'value'` marks an attribute: `to_id` then holds the value itself rather than an
 -- address, and a value has no length bound (a block's text is one). A btree key is bounded at
 -- about 2,704 bytes on an 8 KiB page and an insert over that bound fails the statement, so no
--- index below keys a column that may hold a value. The three indexes that carry `to_id` are
+-- index below keys a column that may hold a value. The two read indexes that carry `to_id` are
 -- partial on `to_kind <> 'value'`, and the index that serves an attribute read keys the node and
 -- the attribute name alone. A read of a current value binds `to_kind = 'value'`, so the planner
 -- takes `graph_tuples_values` for it.
+--
+-- Four read indexes, and none keyed on the far end with the near end after it. A current read
+-- into one node, and the backlink counts, read `graph_tuples_as_of_in`, which holds a node's
+-- inbound tuples by kind; an index keyed on the far end and then the near end cost a
+-- `delivered_to` tuple 8.1 WAL records where these four cost 6.1. `graph_tuples_current` leaves
+-- `delivered_to` out too, the one kind written once for every delivery: a read of it out of a
+-- node takes `graph_tuples_as_of_out`, and every other current read out of one node walks
+-- `graph_tuples_current` where its own predicate proves that kind absent.
 --
 -- Neither table is partitioned. `create index concurrently` is reachable on a table past
 -- `pgmigrate.CensusTableLimit` through a `-- pgmigrate:non-transactional` migration, which the
@@ -76,11 +84,9 @@ create unique index graph_tuples_value_once on graph_tuples (from_kind, from_id,
 
 -- The read indexes.
 create index graph_tuples_current on graph_tuples (from_kind, from_id, kind, to_kind, to_id, seq desc)
-  where to_kind <> 'value';
+  where to_kind <> 'value' and kind <> 'delivered_to';
 create index graph_tuples_values on graph_tuples (from_kind, from_id, kind, seq desc)
   where to_kind = 'value';
-create index graph_tuples_inbound on graph_tuples (to_kind, to_id, kind, from_kind, from_id, seq desc)
-  where to_kind <> 'value';
 create index graph_tuples_as_of_out on graph_tuples (from_kind, from_id, kind, at desc, seq desc);
 create index graph_tuples_as_of_in on graph_tuples (to_kind, to_id, kind, at desc, seq desc)
   where to_kind <> 'value';

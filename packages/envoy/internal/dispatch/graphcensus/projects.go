@@ -226,7 +226,7 @@ var orphanKindList = func() string {
 // gone, and the backfill would state that node gone and live again over the mark.
 //
 // Time keeps the order the store appends in, which is what a read as of a time reads: this
-// build's create and removal read their one time under the address's owner row, from the
+// build's create and removal read their one time under the address's owner lock, from the
 // database's clock and past every statement the store holds about the address
 // (graphstore.StatementTime), and the backfill dates a statement past every one before it too.
 //
@@ -253,10 +253,14 @@ func ownLiveStatement(node, rowID, ownerKey string) string {
 // for a row whose address is past the store's bound, which no writer projects and the census
 // counts as a class of its own (ProjectKindReport.PastBound). A node at any state but gone is one
 // the row projects: a state a later release adds, such as a requirement's proposed, reads here as
-// live does, as the store census reads it (presentNodes).
+// live does, as the store census reads it (presentNodes). A node that names another project than
+// its row's is differs at any state, gone included, and read before gone: a node's project never
+// moves (graphstore.ErrProjectMoved), so the backfill, which a gone line names as its cure, cannot
+// write it, and only a person can tell which of the two is wrong.
 var rowClass = `case
 		when scoped.past_bound then null
 		when n.id is null then '` + classMissing + `'
+		when n.project_key is not null and n.project_key is distinct from scoped.project then '` + classDiffers + `'
 		when scoped.kind in (` + orphanKindList + `) and n.state = '` + graphstore.StateGone + `' then '` + classGone + `'
 		when scoped.removable and not ` + ownLiveStatement("n", "scoped.row_id", "scoped.owner_key") + ` then '` + classGone + `'
 		when n.project_key is null and n.parties is null then '` + classUnscoped + `'

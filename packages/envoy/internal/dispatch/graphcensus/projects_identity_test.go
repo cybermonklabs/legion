@@ -25,7 +25,10 @@ import (
 // the one case where a node's time could not tell the rows apart; both variants are run, the first
 // row's statement under its own event and at the sentinel (a document made before Dispatch recorded
 // artifact.created). In each, the census names the row gone, and the backfill states the node gone
-// and then live under the second row's own event, after which the census names nothing.
+// and then live under the second row's own event, and moves the node's row onto that event: its
+// own row moved no base attribute, but its writer stated the node's state itself, so the node
+// write marks it for the append to move (graphstore's queueNodes). After that the census names
+// nothing.
 //
 // Each variant also reads the rule by time alone over the same rows, and holds it to reading the
 // second row as the node's own: the case is the collision a time cannot see, so the event is what
@@ -96,6 +99,13 @@ func TestADocumentAtAnOrphanedNodesAddressIsNamedGoneWhateverItsTime(t *testing.
 				live.ToID != graphstore.StateLive || live.SourceEvent != secondEvent || live.Who.ID != "carol" || !live.At.After(at) {
 				t.Errorf("the backfill stated %+v then %+v, want gone then live under the second row's event %d, the live one by carol and after %s",
 					gone, live, secondEvent, at)
+			}
+			var source int64
+			if err := database.Pool.QueryRow(ctx, `
+				select source_event from graph_nodes where kind = $1 and id = $2
+			`, graphstore.KindArtifact, ref).Scan(&source); err != nil || source != secondEvent {
+				t.Errorf("the node of %s is at event %d (%v) after the backfill, want the second row's event %d, not the removed row's %d",
+					ref, source, err, secondEvent, firstEvent)
 			}
 		})
 	}

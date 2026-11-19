@@ -142,6 +142,7 @@ func TestRecordBatchTakesAPrefixOfTheStoreLockOrder(t *testing.T) {
 	// the order's steps, in the order, with no owner row among them, and passed.
 	t.Logf("the batch was recorded while %s were still held: recordBatch took %q, a subset of the store's lock order with no owner row, in the order", owner.name, names)
 	owner.release()
+	storetest.RequireNoMarkedCause(t, database, "recordBatch")
 }
 
 // recordHold is one transaction the lock-order test holds rows in, named as a failure names it.

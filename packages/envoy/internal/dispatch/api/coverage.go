@@ -225,7 +225,7 @@ func servingBlockCounts(ctx context.Context, q queryer, viewer any, specArtifact
 //
 // It is read before the request opens its transaction. Reading it folds the issue's live spec,
 // which for a document no room holds is a cold read bounded by a minute (docs/read_cache.go),
-// and no owner row lock is held across a read that long: four writers parked on one issue's row
+// and no owner lock is held across a read that long: four writers parked on one issue's row
 // lock already cost a read of an unrelated issue the whole seventeen seconds the lock was held
 // (store/pool.go). Nothing the lock protects is settled here - the coverage is a report the
 // answer carries, and a gap refuses nothing.

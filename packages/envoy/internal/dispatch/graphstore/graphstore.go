@@ -86,9 +86,10 @@ type Node struct {
 	// its state only over a node stored gone, which comes back live, and writes gone whenever it
 	// says gone. A node the store does not hold is made as the writer states it. Every writer
 	// that writes a node again for facts of its own restates it: the block index
-	// (refs.IndexBlocks), CommentFacts, and the backfill (internal/dispatch/graphcensus). A write
-	// that means to move a node's state or visibility leaves it false. WriteArms reads none of
-	// it: its upsert moves nothing on a node already there.
+	// (refs.IndexBlocks), CommentFacts, the backfill (internal/dispatch/graphcensus), and the
+	// seed (cmd/dispatch-seed), which writes its author's node and its followers' session nodes
+	// again in later batches. A write that means to move a node's state or visibility leaves it
+	// false. WriteArms reads none of it: its upsert moves nothing on a node already there.
 	Restates bool
 }
 

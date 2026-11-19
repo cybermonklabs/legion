@@ -18,7 +18,7 @@ import (
 // so its writers meet nodes that build marked.
 const laterState = "proposed"
 
-// TestARestatingWriteKeepsAStateItDoesNotOwn holds a write that restates a node (Node.Restates)
+// TestARestatingWriteKeepsTheValuesItDoesNotOwn holds a write that restates a node (Node.Restates)
 // to the rule moveNodes writes it by (R8 of this change). The node is a comment's as
 // its one statement writes it (CommentFacts), which restates it. Marked at a later release's
 // state and reserved for its author by a plain write, it keeps both when that restating write
@@ -27,7 +27,7 @@ const laterState = "proposed"
 // live stays live; and a plain write still moves both. After every write the row and the log of
 // its base attributes agree, and the log holds one tuple for each value a write moved and none
 // for a value a restating write kept.
-func TestARestatingWriteKeepsAStateItDoesNotOwn(t *testing.T) {
+func TestARestatingWriteKeepsTheValuesItDoesNotOwn(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	at := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)

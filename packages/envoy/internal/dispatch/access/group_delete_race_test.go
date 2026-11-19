@@ -94,3 +94,81 @@ func TestAGroupDeletedWhileAListNamesItLeavesNoRow(t *testing.T) {
 func TestAGroupDeletedWhileItIsTakenOffAListDeadlocksNothing(t *testing.T) {
 	raceAgainstDelete(t, "OTHER", RemovePrincipal)
 }
+
+// TestAGroupsDeleteReadsEachProjectAfterItsLock: a delete of a group reads each project it takes
+// the group off only once it holds that project's owner lock, so the record of the change it
+// writes there (recordProjectChanges: the project's owner and visibility, which a caller's lost
+// and gained sight is read from) carries every write the project's lock ordered before it. The
+// project.access_changed event itself names only the project and the change, so the record is
+// where a read before the lock would show: an owner written on OTHER by a write that holds OTHER's
+// lock while the delete of crew waits is the owner the delete records; read before the lock, it
+// would record OTHER's owner as it was, and a caller's sight would be judged against it.
+func TestAGroupsDeleteReadsEachProjectAfterItsLock(t *testing.T) {
+	ctx := context.Background()
+	database := seedAccess(t)
+	broker := events.NewBroker()
+	by := model.Actor{Kind: "user", ID: olga}
+
+	open, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the list write: %v", err)
+	}
+	defer open.Rollback(ctx)
+	if _, err := LockForAccessWrite(ctx, open, "OTHER", ""); err != nil {
+		t.Fatalf("lock OTHER for its list write: %v", err)
+	}
+
+	type result struct {
+		events []model.Event
+		err    error
+	}
+	deleted := make(chan result, 1)
+	go func() {
+		tx, err := database.Pool.Begin(context.Background())
+		if err != nil {
+			deleted <- result{err: err}
+			return
+		}
+		defer tx.Rollback(context.Background())
+		appended, err := DeleteGroup(context.Background(), tx, broker, "crew", by)
+		if err == nil {
+			err = tx.Commit(context.Background())
+		}
+		deleted <- result{events: appended, err: err}
+	}()
+	select {
+	case got := <-deleted:
+		t.Fatalf("the delete of crew finished (%v) while a write of OTHER's list held OTHER's lock; want it to wait", got.err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if _, _, err := SetOwner(ctx, open, broker, "OTHER", carol, by); err != nil {
+		t.Fatalf("make %s OTHER's owner while the delete of crew waits: %v", carol, err)
+	}
+	if err := open.Commit(ctx); err != nil {
+		t.Fatalf("commit the list write: %v", err)
+	}
+	var got result
+	select {
+	case got = <-deleted:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the delete of crew never finished after the list write committed")
+	}
+	if got.err != nil {
+		t.Fatalf("delete crew after the list write committed: %v", got.err)
+	}
+	for _, event := range got.events {
+		payload, ok := event.Payload.(model.ProjectAccessEventPayload)
+		if !ok || payload.Project != "OTHER" {
+			continue
+		}
+		var owner string
+		if err := database.Pool.QueryRow(ctx, `select owner from project_access_changes where event_id = $1`, event.ID).Scan(&owner); err != nil {
+			t.Fatalf("read the record of the delete's change on OTHER (event %d): %v", event.ID, err)
+		}
+		if owner != carol {
+			t.Fatalf("the delete recorded OTHER's owner as %q, want %s, whom a write OTHER's lock ordered first made its owner", owner, carol)
+		}
+		return
+	}
+	t.Fatalf("the delete of crew appended no project.access_changed on OTHER: %v", got.events)
+}

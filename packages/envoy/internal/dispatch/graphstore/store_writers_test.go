@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
 // moduleRoot is the packages/envoy module, read from this package's own directory.
@@ -29,17 +31,11 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same eight docs' register of the tree's passes scans for
-// (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
-// caller's transaction, WriteArms and WriteArmsUncaused spliced into a caller's statement,
-// Authored, Reached and SessionRecorded, which run those arms for the writers that record an
-// author, a reached session and a session an ask names, EraseNode, the erase's delete of a node
-// and its tuples, and FillScopes, the backfill's fill of the project of a node stored with none.
-// Each is a function of the package, never a method, so a call of one is named by the package
-// and found here wherever it is made. A write that holds a statement of its own instead is found
-// by rawStoreWrite, and none outside this package may hold one.
-var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
-	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes"}
+// package goes through (WriteFunctions), the same ones docs' register of the tree's passes scans
+// for (storeWriterCall), and the session writers beside them, held in the package itself so api's
+// scan of the projections' writers reads the same list. A write that holds a statement of its own
+// instead is found by rawStoreWrite, and none outside this package may hold one.
+var storeWriteFunctions = WriteFunctions()
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -47,116 +43,11 @@ var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "Write
 var rawStoreWrite = regexp.MustCompile(`(?is)\b(?:insert\s+into|update|delete\s+from)\s+(?:public\s*\.\s*)?graph_(?:nodes|tuples)\b`)
 
 // storeWriteCallSites is every function outside the tests that calls one of storeWriteFunctions,
-// named as docs' register names a pass: the file, from internal/dispatch where it lives under it,
-// and the function, without its receiver. Beside each site is the test that drives its lock steps
-// against the order written on api/inbox_read.go's markInboxReadThreads, as "<package dir>#<Test>":
-// the package's directory, named as a site's file is (siteKey), and the test's name. Such a test
-// runs the site's real code, holds each step it takes in another transaction, and reads where the
-// write waits and which table locks it holds by then. TestEveryStoreWriteTakesOneLockOrder proves
-// the order on this package's own writers. A site that is not listed has had nobody prove its
-// steps, and a site whose driver is missing or names no test of that package is one c-lock-order's
-// run drives no test of, so each fails here until it is put right.
-var storeWriteCallSites = map[string]string{
-	// The follow of an ask, which records the following session's node in the caller's
-	// transaction, and each site that moves that node onto the event it appends after the
-	// follow, and appends the node's base attributes under it, through Caused: the follower
-	// route, an ask's create, an approval request renewed, and a settlement's asks (asks'
-	// TestAFollowTakesTheStoreLockOrder proves both steps on Follow alone, and each caller's test
-	// proves them inside its caller). The comment path and a delivery's reply give the follow
-	// their own event instead, which it states in its own statement.
-	"asks/followers.go#Follow":               "asks#TestAFollowTakesTheStoreLockOrder",
-	"api/ask_followers.go#changeAskFollower": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/asks.go#createAskFor":               "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/reviews.go#renewApprovalAsk":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"docs/ask_blocks.go#causeFollows":        "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
-	// The block index's cause: each site that appends what a version's index pass stated under
-	// the event that recorded the version, through Caused (refs' TestCausedTakesTheStoreLockOrder
-	// proves the step on its own): an upload, a version write's event, an issue's spec, the
-	// block-index tick, a settlement's version and the seed's documents.
-	"api/artifacts.go#commitArtifactVersionEvent":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/artifacts.go#storeArtifact":                "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/issue_create.go#createIssue":               "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
-	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
-	"docs/settlement.go#commitVersion":              "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
-	// The comment path: the comment's node before the comments row that names it, then its
-	// tuples and its cause under the event appended after both, and who wrote it.
-	"api/comment_create.go#caused":           "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/comment_create.go#createCommentFor": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/comment_create.go#writeNode":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	// A delivery's reply and the settle of a delivery attempt, which records the session the
-	// attempt reached, and the one record both replies share of what their answer makes of the
-	// attempt they answer: an attempt the answer flips to sent is one the listener took, and
-	// its session is owed a node (recordAnsweredDelivery, which the reply's driver runs last).
-	"api/comment_delivery.go#completeCommentDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/comment_delivery.go#recordAnsweredDelivery":  "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/comment_delivery.go#replyComment":            "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/message_delivery.go#completeMessageDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	// The node of every issue, document, ask and message a request creates, in the project or
-	// between the parties it belongs to: written before its row, and caused by the event the
-	// create appends after it. createIssue, storeArtifact and createAskFor are listed above for
-	// their block index and follow, and their drivers hold the node step too; these are the
-	// others. Their order - the owner row their path already takes, the node before the row, the
-	// event before the tuples - is the order of the write they share (WriteUncaused, then Caused),
-	// and api's TestEveryObjectNodeWriterTakesTheStoreLockOrder drives each of them through it.
-	"api/broadcasts.go#writeBroadcast":           "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
-	"api/message_delivery.go#insertSessionReply": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
-	"api/messages.go#createStoredMessage":        "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
-	"api/messages.go#writeMessageNode":           "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
-	"api/reviews.go#openApprovalAsk":             "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
-	"docs/ask_blocks.go#createAskBlock":          "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
-	// The removal of an untouched document states its node gone, before its row goes, caused by
-	// the artifact.removed event it appends after the row (Write of the node the document's
-	// create would have written, for a document an earlier build made with none, then
-	// WriteUncaused, then Caused).
-	"api/artifact_removal.go#removeArtifact": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
-	// The seed's comments, with their author's person node and each comment's authored_by
-	// tuple, which its one batch write states as a seeded database's own writer, the session
-	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
-	// each written in the batch that copies their rows, in its project, before any row of it.
-	"cmd/dispatch-seed/write_core.go#writeIssues":         "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
-	"cmd/dispatch-seed/write_items.go#writeComments":      "cmd/dispatch-seed#TestTheSeedsCommentWriteTakesTheStoreLockOrder",
-	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "cmd/dispatch-seed#TestTheSeedsFollowerWriteTakesTheStoreLockOrder",
-	"cmd/dispatch-seed/write_items.go#writeItemNodes":     "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
-	// The backfill command's five batches: the blocks, the block references and the comments
-	// written before the store existed, the role and page nodes of the roles the census holds to
-	// one (addressedRoles), and the session nodes of the sessions it holds to one
-	// (recordedSessions).
-	"graphcensus/backfill.go#writeBlockBatch":    "graphcensus#TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow",
-	"graphcensus/backfill.go#writeBlockRefBatch": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	"graphcensus/backfill.go#writeCommentBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	"graphcensus/backfill.go#writeRoleBatch":     "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	"graphcensus/backfill.go#writeSessionBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	// The backfill's passes over the project of every node: the nodes of the issues, documents,
-	// asks and messages that their marker does not mark, in WriteUncaused and Caused over each run
-	// of the batch's nodes of one cause (a row's own create event, or the sentinel), after the
-	// owner rows a document's removal takes (lockObjectOwners) and under them, and the project of
-	// the comment and block nodes written before a node named one (graphstore.FillScopes), the
-	// block batch under the revision fence (lockBlockDocuments).
-	"graphcensus/projects_backfill.go#writeObjectBatch": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	"graphcensus/projects_backfill.go#writeScopeBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
-	// The block-index tick's sweep of the documents a build before this one removed, which states
-	// each orphaned node gone as this build's removal does: the issue's row, then the node's row,
-	// then the state tuple, under the removal's own event.
-	"graphcensus/orphans.go#StateOrphanedGone": "graphcensus#TestTheOrphanSweepTakesTheStoreLockOrder",
-	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
-	// sides of the node, then the node's row. It takes the owner rows it writes under before that
-	// row, and its projection rows after it.
-	"grapherase/erase.go#apply": "grapherase#TestTheEraseTakesTheStoreLockOrder",
-	// This package's own writers that run another of them: Authored and SessionRecorded are
-	// arms of one statement, and Reached is SessionRecorded for an attempt that was sent.
-	"graphstore/people.go#Authored":        "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
-	"graphstore/people.go#Reached":         "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
-	"graphstore/people.go#SessionRecorded": "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
-	// The publisher's record of a batch, which splices the store's arms into its statement, and
-	// its record of a fallback pass, which splices in what each published copy delivered.
-	"outbox/mentions.go#recordFallbackCopies": "outbox#TestAFallbackCopyThePassPublishedIsADelivery",
-	"outbox/publisher.go#recordBatch":         "outbox#TestRecordBatchTakesAPrefixOfTheStoreLockOrder",
-	// The block index: its nodes inside the revision fence, whose tuples and cause wait for the
-	// event that recorded the version (the sites of Caused above), driven inside the tick and the
-	// settlement that run it.
-	"refs/blocks.go#IndexBlocks": "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
-}
+// each beside the test that drives its lock steps, as the register of the store's writers holds
+// them (lockstep.StoreWriteCallSites). The register is held there rather than here so that
+// graphcensus's TestTheSizingCountsEveryTupleTheWritersAppend, which drives every site it lists,
+// reads the one list this test holds to the module's source.
+var storeWriteCallSites = lockstep.StoreWriteCallSites()
 
 // TestEveryStoreWriteCallSiteIsListed reads the module's source, every Go file but the tests,
 // and finds each function that names one of storeWriteFunctions, called or passed on as a value,

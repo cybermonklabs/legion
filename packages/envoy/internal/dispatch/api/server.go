@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -460,6 +461,12 @@ type server struct {
 	// appended, to read whether any of them reaches a subscriber before the commit, and how it
 	// ends one in a rollback.
 	beforeCommentCommit func(ctx context.Context, events []model.Event) error
+	// betweenPersonPageReads runs on a person page's request once the route has decided it
+	// answers 200 and before it lists the rows (listPersonNodes), inside the transaction both
+	// reads share; nil, which every server the deployment builds leaves it, runs nothing. Only a
+	// test sets it: it is how a case commits a write between the decision and the list, to read
+	// that the list answers the snapshot the decision read.
+	betweenPersonPageReads func()
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
@@ -999,15 +1006,26 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 //
 // stillResolves is the mount's own admission asked again, never a wider one: the live socket's is
 // callerStillResolves, which resolves whichever credential admitted it, and the document socket's
-// is signInStillResolves, the sign-in cookie alone, since that is all the document service admits
-// it by. A check that resolved anything the request carries would let a credential that admitted
-// nothing keep the socket open once the one that did had ended. Only the live socket compares
-// grants: the document socket admits a person by the cookie alone, whose grant no list of projects
-// or scopes narrows, so it reads nothing at open beyond its own admission
+// is signInStillResolves, the browser credential alone (a sign-in cookie, or an Identity-Aware
+// Proxy assertion), since that is all the document service admits it by. A check that resolved
+// anything the request carries would let a credential that admitted nothing keep the socket open
+// once the one that did had ended. Only the live socket compares grants: the document socket
+// admits a person by the browser credential alone, whose grant no list of projects or scopes
+// narrows, so it reads nothing at open beyond its own admission
 // (TestASocketOpenReadsTheIssueAndTheCallerOnce). The check runs beside the handler, which holds
 // pooled connections of its own while it admits the socket, so it marks a context of its own for
 // the pool (store.ErrNestedAcquire), and it resolves on a context detached from the access-log
 // line, which names the caller the socket was admitted as (accesslog.Detached).
+//
+// A refusal that is only the credential's own life ending (identity.ErrCredentialExpired: an IAP
+// assertion, which lives about ten minutes while IAP signs a fresh one for every request it
+// passes, that IAP's key set still verifies and whose person is still admitted) cancels the
+// context with errCredentialExpired instead, which each socket closes with a code on which the
+// page reopens it at once: the live socket with contracts.LiveSocketMaxAgeClose (liveSocket.write),
+// and the document socket with the close frame ygo sends for that cause. The reopened socket's
+// upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past
+// its assertion and none is cut as if its person had gone. An expired assertion that is wrong in
+// any other way (a key IAP withdrew, a person no longer admitted) is a refusal like any other.
 //
 // With compareGrants, the caller the connection opens as is resolved once, on the request, and
 // kept in its context (withCallerResolved), so the handler admits the caller the heartbeat compares
@@ -1017,8 +1035,8 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // (callerStillResolves), so nothing is resolved for it here.
 func (s *server) whileCallerResolves(stillResolves func(*http.Request) (model.Actor, bool, error), compareGrants bool, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, closeConnection := context.WithCancel(r.Context())
-		defer closeConnection()
+		ctx, closeConnection := context.WithCancelCause(r.Context())
+		defer closeConnection(nil)
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
 		served := r.WithContext(ctx)
 		// What the credential holds as the connection opens, before the handler admits it, so a
@@ -1043,7 +1061,11 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) (model.Ac
 					// (callerStillResolves).
 					caller, broker, err := stillResolves(check)
 					if err != nil || (compareGrants && !broker && !sameCredentialGrant(admitted.Credential, caller.Credential)) {
-						closeConnection()
+						if errors.Is(err, identity.ErrCredentialExpired) {
+							closeConnection(errCredentialExpired)
+						} else {
+							closeConnection(nil)
+						}
 						return
 					}
 				}
@@ -1062,16 +1084,36 @@ func sameCredentialGrant(admitted, now *model.Credential) bool {
 	return sameSet(admitted.Projects, now.Projects) && sameSet(admitted.Scopes, now.Scopes)
 }
 
-// signInStillResolves answers whether the sign-in cookie a document socket was admitted with
-// still resolves, which is what whileCallerResolves asks on that socket's every heartbeat, and the
-// person it resolved (model.BrowserActor), broker false. The document service admits a socket by
-// that cookie and nothing else (docs.Service.requestActor, Identity.Login), and this asks the
-// API's Identity the same question; cmd/dispatch hands the API and the document service one
-// Identity, so the two read one cookie the same way. It reads no Authorization header. A bearer or
-// a broker-issued token sent beside the cookie admitted nothing, so it keeps nothing open either:
-// resolved here, it would hold the socket open for the token's whole life after the cookie ended,
-// a read-only token's included, which the read list lets read no document at all
-// (readScopeRoutes).
+// errCredentialExpired is the cause whileCallerResolves cancels a socket's context with once the
+// credential its upgrade carried has expired (identity.ErrCredentialExpired). ygo reads CloseCode
+// off the cause and sends the document socket's peer that close frame, and the live socket reads
+// the cause itself (liveSocket.write).
+var errCredentialExpired error = credentialExpired{}
+
+// credentialExpired is that cause's type: an error whose CloseCode ygo sends.
+type credentialExpired struct{}
+
+func (credentialExpired) Error() string {
+	return "the credential this socket was opened with has expired; the page opens it again with a fresh one"
+}
+
+// CloseCode is the close frame ygo sends the document socket's peer: the document socket's code
+// for a socket whose admission no longer stands, on which the provider reconnects and the
+// reconnect is admitted again (contracts.DocumentAdmissionRevokedCloseCode).
+func (credentialExpired) CloseCode() (int, string) {
+	return contracts.DocumentAdmissionRevokedCloseCode, contracts.DocumentAdmissionRevokedCloseReason
+}
+
+// signInStillResolves answers whether the browser credential a document socket was admitted with
+// still resolves - the sign-in cookie, or under IAP identity the upgrade's IAP assertion - which
+// is what whileCallerResolves asks on that socket's every heartbeat, and the person it resolved
+// (model.BrowserActor), broker false. The document service admits a socket by that credential and
+// nothing else (docs.Service.requestActor, Identity.Login), and this asks the API's Identity the
+// same question; cmd/dispatch hands the API and the document service one Identity, so the two read
+// one credential the same way. It reads no Authorization header. A bearer or a broker-issued token
+// sent beside the cookie admitted nothing, so it keeps nothing open either: resolved here, it would
+// hold the socket open for the token's whole life after the cookie ended, a read-only token's
+// included, which the read list lets read no document at all (readScopeRoutes).
 func (s *server) signInStillResolves(r *http.Request) (caller model.Actor, broker bool, err error) {
 	if s.deps.Identity == nil {
 		return model.Actor{}, false, errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
@@ -1089,7 +1131,8 @@ type apiError struct {
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it
-	// (brokerTokenActor's 429); writeHandlerError writes the header.
+	// (brokerTokenActor's 429, and the results write's 409 CHECK_CONTENDED);
+	// writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header
@@ -1841,6 +1884,22 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 	return s.deps.Events.Append(ctx, tx, event)
 }
 
+// appendCausingEvent is appendEvent for an event that causes a write of the node and tuple store
+// made before it existed (graphstore.Uncaused): the event's append and the append of what that
+// write stated under it, in one batch, the second naming the event's id as the id sequence left it
+// (graphstore.LatestEvent). A route that writes as it goes pays one statement for the two, as
+// it paid for the event alone.
+func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused) (model.Event, error) {
+	var appended model.Event
+	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := s.deps.Events.QueueAppend(b, event, func(written model.Event) { appended = written }); err != nil {
+			return err
+		}
+		return graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+	})
+	return appended, err
+}
+
 // publish hands each event to the broker and then stores the display trees of the stored texts
 // their payloads carry (storeEventDisplayTrees). ctx is the caller's own: a route's request
 // context, which by here has committed and holds no connection of the pool, or a background
@@ -1873,27 +1932,36 @@ func (s *server) readyPool() (*store.Pool, error) {
 	return s.deps.Store.Pool, nil
 }
 
-// lockIssue locks an issue row and returns its lifecycle status, closed or not. It is the
-// lock requireOpenOwnerStatus takes, without the closed refusal, for the writes a closed issue
-// still takes on a message already read: its deliveries and the agent's reply to one. It decides
-// nothing about who may write: its callers read the message as its writer reads it first, or
-// deliver as the server.
+// lockIssue takes the issue's owner lock and returns its lifecycle status, closed or not. It is
+// the lock requireOpenOwnerStatus takes, without the closed refusal, for the writes a closed
+// issue still takes on a message already read: its deliveries and the agent's reply to one. The
+// read is the statement after the lock, sent with it, so it sees a close the lock's previous
+// holder committed while this one waited (store.LockOwnerAndRead). It decides nothing about who
+// may write: its callers read the message as its writer reads it first, or deliver as the
+// server, so it reads the issue with no project clause (issueStatusRead).
 func (s *server) lockIssue(ctx context.Context, tx pgx.Tx, key string) (string, error) {
 	var status string
-	err := tx.QueryRow(ctx, `select status from issues where key = $1`+ownerRowLock, key).Scan(&status)
+	var open bool
+	err := store.LockOwnerAndRead(ctx, tx, store.IssueOwner(key), issueStatusRead, []any{key}, &status, &open)
 	return status, err
 }
 
-// issueStatus reads an issue's lifecycle status, and whether it is open, through q under
-// lock, as who reads it: an issue of a project who does not see is pgx.ErrNoRows, as a key no
-// issue holds is. It refuses nothing: each write that a closed issue refuses decides that from
-// open.
-func issueStatus(ctx context.Context, q queryer, who model.Actor, key, lock string) (string, bool, error) {
+// issueStatusRead reads an issue's lifecycle status and whether it is open.
+const issueStatusRead = `select status, closed_at is null from issues where key = $1`
+
+// visibleIssueStatusRead is issueStatusRead as the viewer $2 binds reads it
+// (access.ProjectClause): an issue of a project that viewer does not see is no row.
+var visibleIssueStatusRead = issueStatusRead + ` and ` + access.ProjectClause("project_key", "$2")
+
+// issueStatus is that read made through read, as who reads it: under the issue's owner lock for
+// the check that decides (ownerStatus), and through the pool for the check a comment makes before
+// its transaction opens, which reads exactly what the locked check will. An issue of a project
+// who does not see is pgx.ErrNoRows, as a key no issue holds is. It refuses nothing: each write
+// that a closed issue refuses decides that from open.
+func issueStatus(ctx context.Context, who model.Actor, key string, read ownerRead) (string, bool, error) {
 	var status string
 	var open bool
-	if err := q.QueryRow(ctx, `
-		select status, closed_at is null from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+lock,
-		key, refs.VisibilityArg(who)).Scan(&status, &open); err != nil {
+	if err := read(ctx, store.IssueOwner(key), visibleIssueStatusRead, []any{key, refs.VisibilityArg(who)}, &status, &open); err != nil {
 		return "", false, err
 	}
 	return status, open, nil
@@ -1943,24 +2011,45 @@ func artifactCreatedEventPayload(artifact model.Artifact, changes model.Referenc
 	return payload
 }
 
-func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version) (*string, error) {
+// namedVersionDiff is the diff a named version's event carries: from the version before it to it.
+// Either may be the version this transaction has just queued (ledger), which the table holds only
+// once Commit has run its insert, so each is taken from the ledger when it is that version, and
+// read from the table otherwise (transactionVersionMarkdown).
+func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, version model.Version) (*string, error) {
 	if !version.Named || version.Number < 2 {
 		return nil, nil
 	}
-	var previous, current string
-	if err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, version.Number-1).Scan(&previous); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
+	previous, found, err := transactionVersionMarkdown(ctx, tx, ledger, artifactID, version.Number-1)
+	if err != nil {
 		return nil, fmt.Errorf("load previous artifact version: %w", err)
 	}
-	if err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, version.Number).Scan(&current); err != nil {
+	if !found {
+		return nil, nil
+	}
+	current, found, err := transactionVersionMarkdown(ctx, tx, ledger, artifactID, version.Number)
+	if err == nil && !found {
+		err = pgx.ErrNoRows
+	}
+	if err != nil {
 		return nil, fmt.Errorf("load current artifact version: %w", err)
 	}
 	diff := text.UnifiedDiff(previous, current)
 	return &diff, nil
+}
+
+// transactionVersionMarkdown is the markdown of version number of artifactID as tx sees it once its
+// queue has run: the ledger's, when it is the version this transaction queued
+// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it.
+func transactionVersionMarkdown(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, number int) (string, bool, error) {
+	if markdown, pending := ledger.PendingVersionMarkdown(artifactID, number); pending {
+		return markdown, true, nil
+	}
+	var markdown string
+	err := tx.QueryRow(ctx, `
+		select markdown from artifact_versions where artifact_id = $1 and number = $2
+	`, artifactID, number).Scan(&markdown)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	return markdown, err == nil, err
 }

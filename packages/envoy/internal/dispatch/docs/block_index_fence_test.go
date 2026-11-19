@@ -170,7 +170,7 @@ func writeVersionThroughTheRealPath(t *testing.T, service *Service, artifactID, 
 		t.Fatalf("encode the version event's payload: %v", err)
 	}
 	event := appendDocumentEvent(t, ctx, tx, "artifact.version", payload)
-	if err := graphstore.Caused(ctx, tx, result.Blocks, event); err != nil {
+	if err := causeInWritePhase(joined, tx, result.Blocks, event); err != nil {
 		t.Fatalf("append what the version's block index stated: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
@@ -264,14 +264,28 @@ func currentPartOf(t *testing.T, database *store.Store, address string) graphsto
 // pass at a revision above the stored one does state its parents, so it is the fence and not
 // the pass's own work that refused.
 //
-// The fence is one conditional write under one pair of locks. Each of the three writers R23
-// holds to it - the version write through reference_excerpts.go, the reconciliation tick and the
-// backfill command - is driven through the same race: the document_block_versions row is held
-// in a second transaction, the writer is read waiting at that row rather than at a later step,
-// and a newer revision is stored while it waits; the writer then commits no tuple below it. The
-// source tree is read last: for any statement that writes a revision into
-// document_block_versions outside the fence, and for a revision test in the erase or in
-// refs.IndexOwedItemBlocks, which R23 reads as writers outside the fence.
+// The fence is one conditional write under the document owner's lock. Each of the three writers
+// R23 holds to it - the version write through reference_excerpts.go, the reconciliation tick and
+// the backfill command - decides whether it wins the fence in its read phase, under the owner's
+// advisory lock (store.LockOwner, through lockArtifactOwner or events.LockOwnerRows), and its
+// write phase writes only what that decision let it. Nothing can store a newer revision between
+// that decision and the write: every writer of the revision takes the owner's lock before it
+// reads the revision it writes against - a version's own index, the trigger a version insert
+// fires, the tick and the backfill, as indexOwedDocument's comment states - and a process of the
+// release before, which takes no advisory lock, takes the owner's row instead and holds it for
+// its whole transaction, which this build takes too, right after its advisory lock, while that
+// release is in the fleet (the owner lock's rollout mode, store.LockOwners).
+//
+// Each writer is driven through the same race, its holder standing for the newer pass: a writer
+// of this build, which takes the owner's lock and then the document_block_versions row, and, for
+// the version write and the tick again, a process of the release before, which takes the owner's
+// row and then that row, with this build in the rollout mode. The writer is read waiting at the
+// owner's lock, or at the owner's row, rather than at a later step, and a newer revision is
+// stored while it waits; the writer then decides against that revision and commits no tuple below
+// it. The backfill takes the fence row after its owner lock and reads its rows again under it,
+// so its holder takes that row alone. The source tree is read last: for any statement that writes
+// a revision into document_block_versions outside the fence, and for a revision test in the erase
+// or in refs.IndexOwedItemBlocks, which R23 reads as writers outside the fence.
 func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	ctx := context.Background()
 	database, service := blockIndexService(t)
@@ -385,9 +399,14 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 		t.Errorf("the control pass changed nothing, so the stale pass proves nothing: parents %v", flattened)
 	}
 
-	requireTheVersionWriteIsFenced(t, database, service)
-	requireTheTickIsFenced(t, database, service)
+	requireTheVersionWriteIsFenced(t, database, service, thisBuildRace)
+	requireTheTickIsFenced(t, database, service, thisBuildRace)
 	requireTheBackfillIsFenced(t, database)
+	// From here on the release before is in the fleet, and every owner lock of this build takes
+	// the owner's row beside it.
+	registerEarlierBuildProcess(t, database)
+	requireTheVersionWriteIsFenced(t, database, service, earlierBuildRace)
+	requireTheTickIsFenced(t, database, service, earlierBuildRace)
 	requireOnlyTheFenceWritesTheOwedRow(t)
 	requireNoRevisionTestOutsideTheFence(t)
 }
@@ -421,10 +440,73 @@ func statementOf(t *testing.T, database *store.Store, pid uint32) string {
 	return strings.Join(strings.Fields(statement), " ")
 }
 
+// fenceRace is who stands for the newer pass in a fenced writer's race, and so what that writer
+// queues behind: a writer of this build, which takes the document owner's advisory lock first, or
+// a process of the release before, which takes the owner's row and holds it for its whole
+// transaction, beside which this build's writer takes that row right after its advisory lock.
+type fenceRace struct {
+	// name says who the holder stands for, slug is the race's own document's, and earlier is
+	// the release before.
+	name, slug string
+	earlier    bool
+}
+
+var (
+	thisBuildRace    = fenceRace{name: "a newer pass of this build", slug: "fenced"}
+	earlierBuildRace = fenceRace{name: "a newer pass of the release before", slug: "fenced-earlier", earlier: true}
+)
+
+// holdTheOwner takes, in holder, what the newer pass takes before the document_block_versions
+// row: the owner's advisory lock, or for the release before the owner's row `for no key update`,
+// as that release takes it. Every document of these races is issue CORE-1's.
+func (race fenceRace) holdTheOwner(t *testing.T, ctx context.Context, holder pgx.Tx) {
+	t.Helper()
+	if race.earlier {
+		if _, err := holder.Exec(ctx, `select 1 from issues where key = 'CORE-1' for no key update`); err != nil {
+			t.Fatalf("hold issue CORE-1's row as %s: %v", race.name, err)
+		}
+		return
+	}
+	if err := store.LockOwner(ctx, holder, store.IssueOwner("CORE-1")); err != nil {
+		t.Fatalf("hold issue CORE-1's owner lock as %s: %v", race.name, err)
+	}
+}
+
+// requireWaitingAtTheOwner fails unless writer, queued behind the holder, waits at the owner's
+// lock - beside the release before, at the owner's row this build takes right after it - and at
+// no projection or store write further in: the writer decides whether it wins the fence only
+// once it holds the owner, so it reaches no projection row and no tuple before.
+func requireWaitingAtTheOwner(t *testing.T, writer string, race fenceRace, running string) {
+	t.Helper()
+	t.Logf("%s waits at: %s", writer, running)
+	want, at := "as owner_lock", "the owner's advisory lock"
+	if race.earlier {
+		want, at = `from issues where key = any($1::text[]) order by key collate "C" for no key update`, "the owner's row"
+	}
+	if !strings.Contains(running, want) {
+		t.Errorf("%s waits at %q, want it waiting at %s", writer, running, at)
+	}
+	if strings.Contains(running, "document_blocks ") || strings.Contains(running, "block_refs") || strings.Contains(running, "graph_") {
+		t.Errorf("%s waits at %q, a projection or store write: the owner comes before any of them", writer, running)
+	}
+}
+
+// registerEarlierBuildProcess writes a server_processes row as a process of the release before
+// the owner lock protocol leaves it: no owner_lock_protocol, so the column's default 0, which
+// keeps that release in the owner lock's fleet (api's twin of this helper says the same).
+func registerEarlierBuildProcess(t *testing.T, database *store.Store) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into server_processes (instance, commit, signing_keys)
+		values (gen_random_uuid(), 'earlier0build', '{fingerprint}')`); err != nil {
+		t.Fatalf("register a process of the release before: %v", err)
+	}
+}
+
 // requireWaitingAtTheOwedRow fails unless writer, queued behind the holder of a document's
 // document_block_versions row, waits at a statement of that row and at no projection write
-// further in: the fence is the first write of every fenced writer, so a writer reaches no
-// projection row and no tuple before it knows whether it won.
+// further in: the fence is the first write of the backfill, so it reaches no projection row and
+// no tuple before it knows whether it won.
 func requireWaitingAtTheOwedRow(t *testing.T, writer, running string) {
 	t.Helper()
 	t.Logf("%s waits behind the held document_block_versions row at: %s", writer, running)
@@ -450,24 +532,24 @@ func requireNothingBelowTheRevision(t *testing.T, database *store.Store, writer,
 
 // requireTheVersionWriteIsFenced drives the version write through reference_excerpts.go
 // (IndexDocumentReferences, which a request that writes a document's version runs in its own
-// transaction) through the race. The version it indexes and a newer one are both written first,
-// so the write's first touch of the document_block_versions row is the fence itself. That row is
-// held in a second transaction, the write is read waiting at it, and the holder - standing for
-// the pass that indexed the newer version - stores that version as the row's revision while the
-// write waits. Released, the write commits, and commits no tuple and no block row: its version
-// is below the stored revision.
-func requireTheVersionWriteIsFenced(t *testing.T, database *store.Store, service *Service) {
+// transaction, after the owner's lock the route takes first, lockArtifactOwner) through the race.
+// The version it indexes and a newer one are both written first. The holder, standing for the
+// pass that indexed the newer version (race), takes the owner and the document_block_versions
+// row, the write is read waiting at the owner, and the holder stores that version as the row's
+// revision while the write waits. Released, the write commits, and commits no tuple and no block
+// row: it decided under the owner, against the stored revision, which is above its version.
+func requireTheVersionWriteIsFenced(t *testing.T, database *store.Store, service *Service, race fenceRace) {
 	t.Helper()
 	ctx := context.Background()
-	const writer = "the version write (IndexDocumentReferences)"
+	writer := "the version write (IndexDocumentReferences) behind " + race.name
 	const own, newer = 1, 2
 	const markdown = "- alpha\n- beta\n"
 	var document string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ('CORE-1', 'CORE', 'fenced-version', 'fenced-version.md', 'doc', false, '{"kind":"user","id":"alice"}')
+		values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}')
 		returning id::text
-	`).Scan(&document); err != nil {
+	`, race.slug+"-version").Scan(&document); err != nil {
 		t.Fatalf("create the version write's document: %v", err)
 	}
 	for _, number := range []int{own, newer} {
@@ -484,6 +566,7 @@ func requireTheVersionWriteIsFenced(t *testing.T, database *store.Store, service
 		t.Fatalf("begin the holder of the version write's owed row: %v", err)
 	}
 	defer holder.Rollback(ctx)
+	race.holdTheOwner(t, ctx, holder)
 	if _, err := holder.Exec(ctx,
 		`select 1 from document_block_versions where artifact_id = $1 for no key update`, document); err != nil {
 		t.Fatalf("hold the version write's owed row: %v", err)
@@ -511,6 +594,9 @@ func requireTheVersionWriteIsFenced(t *testing.T, database *store.Store, service
 			defer tx.Rollback(ctx)
 			joined, ledger := service.Join(ctx, tx)
 			defer ledger.Discard()
+			if _, _, err := lockArtifactOwner(joined, tx, document); err != nil {
+				return fmt.Errorf("take the document's owner: %w", err)
+			}
 			stored, err := service.SeedText(joined, document, markdown, model.Actor{Kind: "user", ID: "alice"})
 			if err != nil {
 				return fmt.Errorf("seed the document: %w", err)
@@ -527,16 +613,16 @@ func requireTheVersionWriteIsFenced(t *testing.T, database *store.Store, service
 			if err != nil {
 				return err
 			}
-			if err := graphstore.Caused(ctx, tx, write, event); err != nil {
+			if err := causeInWritePhase(joined, tx, write, event); err != nil {
 				return fmt.Errorf("append what the index stated: %w", err)
 			}
 			return ledger.Commit(ctx)
 		}()
 	}()
 	if answer, early := storetest.WaitForQueuedBehind(t, holder, pid, answered, fenceWait); early {
-		t.Fatalf("%s answered %v without ever waiting on the owed row", writer, answer)
+		t.Fatalf("%s answered %v without ever waiting on the owner", writer, answer)
 	}
-	requireWaitingAtTheOwedRow(t, writer, statementOf(t, database, pid))
+	requireWaitingAtTheOwner(t, writer, race, statementOf(t, database, pid))
 
 	// The pass that indexed the newer version wins the row while the version write waits.
 	if _, err := holder.Exec(ctx,
@@ -547,7 +633,7 @@ func requireTheVersionWriteIsFenced(t *testing.T, database *store.Store, service
 		t.Fatalf("commit the newer pass's revision: %v", err)
 	}
 	if err := <-answered; err != nil {
-		t.Fatalf("%s that waited on the owed row: %v", writer, err)
+		t.Fatalf("%s that waited on the owner: %v", writer, err)
 	}
 	requireNothingBelowTheRevision(t, database, writer, document, before, own, newer)
 	if stands := blockIndexAt(t, database, document); stands == nil || *stands != newer {
@@ -556,22 +642,24 @@ func requireTheVersionWriteIsFenced(t *testing.T, database *store.Store, service
 	}
 }
 
-// requireTheTickIsFenced drives the block-index reconciliation through the same race: its owed
-// row is held while it runs, the tick is read waiting at that row, the row is raised to a
-// revision above the version the tick listed from under it, and released. The tick must commit
-// no tuple below that stored revision.
-func requireTheTickIsFenced(t *testing.T, database *store.Store, service *Service) {
+// requireTheTickIsFenced drives the block-index reconciliation through the same race: the holder,
+// standing for a newer pass (race), takes the owner and the document's owed row while the tick
+// runs, the tick is read waiting at the owner, the row is raised to a revision above the version
+// the tick listed from under it, and released. The tick must commit no tuple below that stored
+// revision.
+func requireTheTickIsFenced(t *testing.T, database *store.Store, service *Service, race fenceRace) {
 	t.Helper()
 	ctx := context.Background()
-	const writer = "the reconciliation tick (ReconcileBlockIndex)"
+	writer := "the reconciliation tick (ReconcileBlockIndex) behind " + race.name
 	const own = 1
-	fenced := createOwedDocument(t, database, service, "CORE-1", "", "fenced", "- alpha\n- beta\n", "")
+	fenced := createOwedDocument(t, database, service, "CORE-1", "", race.slug, "- alpha\n- beta\n", "")
 	settle(t, database, fenced)
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the holder of the tick's owed row: %v", err)
+		t.Fatalf("begin the holder of the tick's owner and owed row: %v", err)
 	}
 	defer holder.Rollback(ctx)
+	race.holdTheOwner(t, ctx, holder)
 	var holderPID uint32
 	if err := holder.QueryRow(ctx, `
 		select pg_backend_pid() from document_block_versions where artifact_id = $1 for no key update
@@ -589,16 +677,16 @@ func requireTheTickIsFenced(t *testing.T, database *store.Store, service *Servic
 		ticked <- tick
 	}()
 	if waiters := storetest.WaitForLockWaiters(t, holder, 1, fenceWait); waiters < 1 {
-		t.Fatalf("the tick never queued behind the owed row")
+		t.Fatalf("the tick never queued behind %s", race.name)
 	}
 	// The tick runs on the pool, so its backend is the one the holder blocks.
 	var tickPID uint32
 	if err := database.Pool.QueryRow(ctx, `
 		select pid from pg_stat_activity where $1 = any(pg_blocking_pids(pid)) order by query_start limit 1
 	`, holderPID).Scan(&tickPID); err != nil {
-		t.Fatalf("find the backend the holder of the tick's owed row blocks: %v", err)
+		t.Fatalf("find the backend the holder of the tick's owner blocks: %v", err)
 	}
-	requireWaitingAtTheOwedRow(t, writer, statementOf(t, database, tickPID))
+	requireWaitingAtTheOwner(t, writer, race, statementOf(t, database, tickPID))
 	// A newer pass won the race while the tick waited: the row stands at a revision above the
 	// version the tick listed.
 	const newer = 99
@@ -727,11 +815,13 @@ func requireTheBackfillIsFenced(t *testing.T, database *store.Store) {
 }
 
 // fenceWriter names where a statement that writes document_block_versions may live: the one
-// fenced writer. A statement that only owes a document an index writes no revision at all, so
-// it is told apart by what it sets rather than by where it is.
+// fenced writer, the block index's record of the version it indexes on its write phase
+// (BlockIndexing.queueStand), which the plan queues only where it won the fence. A statement that
+// only owes a document an index writes no revision at all, so it is told apart by what it sets
+// rather than by where it is.
 const (
 	fenceWriterFile     = "refs/blocks.go"
-	fenceWriterFunction = "func standsAtVersion("
+	fenceWriterFunction = "func (b BlockIndexing) queueStand("
 )
 
 // owedRowWrite matches one statement of a Go source file that writes document_block_versions,

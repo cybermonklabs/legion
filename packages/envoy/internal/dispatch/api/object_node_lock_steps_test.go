@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // TestEveryObjectNodeWriterTakesTheStoreLockOrder holds the create sites that write an ask's
@@ -27,7 +28,7 @@ import (
 // runs, are paths of TestEveryApiStoreWriterTakesTheStoreLockOrder, which holds that node step
 // with the block index's.
 //
-// What each create is held to is the order this slice adds: its owner rows first, then the
+// What each create is held to is the order this slice adds: its owner lock first, then the
 // object's node, written before the row that holds the object, the event, appended after that
 // row, and the facts the node write stated, appended after the event that causes them. The id of
 // each object is drawn inside its own transaction, so no other transaction can hold its node or
@@ -44,10 +45,10 @@ func TestEveryObjectNodeWriterTakesTheStoreLockOrder(t *testing.T) {
 	rig := newStoreWriterRig(t)
 	for _, writer := range []storeWriter{
 		rig.objectCreate("createAskFor on an issue", "the ask", "asks", "insert into asks (",
-			[]storeStep{rig.issueOwnerStep(issueOwnerStatement)},
+			[]storeStep{ownerLockStep(store.IssueOwner(rig.issue))},
 			"/api/v1/issues/"+rig.issue+"/asks", map[string]any{"question": "Does the lock order hold?"}),
 		rig.objectCreate("createStoredMessage on an issue", "the message", "messages", "insert into messages (",
-			[]storeStep{rig.issueOwnerStep(issueOwnerStatement)},
+			[]storeStep{ownerLockStep(store.IssueOwner(rig.issue))},
 			"/api/v1/issues/"+rig.issue+"/messages", map[string]any{"body": "A message the lock steps hold."}),
 		rig.approvalRequest(),
 		rig.askBlockSettle(t),
@@ -62,7 +63,7 @@ func TestEveryObjectNodeWriterTakesTheStoreLockOrder(t *testing.T) {
 	}
 }
 
-// objectNodeSteps are the steps every create here takes after its owner row: the object's node,
+// objectNodeSteps are the steps every create here takes after its owner lock: the object's node,
 // the row that holds it, the event, and the facts the node write stated, appended under it.
 func objectNodeSteps(object, table, insert string) []storeStep {
 	node := object + "'s node"
@@ -97,14 +98,14 @@ func (r *storeWriterRig) objectCreate(name, object, table, insert string, owner 
 }
 
 // approvalRequest is a session's request for approval of a document of the issue
-// (openApprovalAsk), through its route: it takes the issue's row, as every owner check does, then
-// writes the request's node, its row, the ask.opened and the facts the node write stated. Each run
-// asks about a document of its own, just uploaded, since a request on a document with one open
-// renews that one rather than opening another.
+// (openApprovalAsk), through its route: it takes the issue's owner lock, as every owner check
+// does, then writes the request's node, its row, the ask.opened and the facts the node write
+// stated. Each run asks about a document of its own, just uploaded, since a request on a document
+// with one open renews that one rather than opening another.
 func (r *storeWriterRig) approvalRequest() storeWriter {
 	return storeWriter{
 		name: "openApprovalAsk",
-		steps: append([]storeStep{r.issueOwnerStep(issueOwnerStatement)},
+		steps: append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
 			objectNodeSteps("the approval request", "asks", "insert into asks (")...),
 		ready: func(t *testing.T, _ context.Context) storeWriterRun {
 			document := uploadDocument(t, r.handler, "/api/v1/issues/"+r.issue, r.fresh("approval")+".md",
@@ -117,19 +118,15 @@ func (r *storeWriterRig) approvalRequest() storeWriter {
 	}
 }
 
-// settlementOwnerStatement is lockArtifactOwner's lock of an issue document's owner, the first
-// row a settlement locks (docs' settleRoomWithin).
-const settlementOwnerStatement = "select closed_at is null from issues where key = $1 for no key update"
-
 // askBlockSettle is the settlement of a document of the issue that holds an ask block no
-// settlement has opened: it takes the issue's row (lockArtifactOwner), writes the ask's node and
-// then its row (createAskBlock), appends the ask.opened with the settlement's other events, and
-// then the facts the node write stated, under that event (causeFollows). Each run uploads a
-// document holding a block of its own and settles it in settler, a document service of its own on
-// the rig's one connection, so the settlement's transaction runs on the backend the test watches;
-// the rig's own service settles an hour on, never inside the test. A settlement runs on the
-// service's own goroutine, so a run's write ends once the block's ask is there, which the
-// settlement's commit puts there.
+// settlement has opened: it takes the issue's owner lock (lockArtifactOwner), writes the ask's
+// node and then its row (createAskBlock), appends the ask.opened with the settlement's other
+// events, and then the facts the node write stated, under that event (appendEvents). Each run
+// uploads a document holding a block of its own and settles it in settler, a document service of
+// its own on the rig's one connection, so the settlement's transaction runs on the backend the
+// test watches; the rig's own service settles an hour on, never inside the test. A settlement
+// runs on the service's own goroutine, so a run's write ends once the block's ask is there, which
+// the settlement's commit puts there.
 func (r *storeWriterRig) askBlockSettle(t *testing.T) storeWriter {
 	settler := docs.New(docs.Deps{Store: r.callStore, Events: r.direct.deps.Events, ServerURL: testServerURL, Settle: time.Hour})
 	t.Cleanup(func() {
@@ -139,7 +136,7 @@ func (r *storeWriterRig) askBlockSettle(t *testing.T) storeWriter {
 	})
 	return storeWriter{
 		name: "createAskBlock",
-		steps: append([]storeStep{r.issueOwnerStep(settlementOwnerStatement)},
+		steps: append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
 			objectNodeSteps("the ask", "asks", "insert into asks (")...),
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			block := r.fresh("lock-block")
@@ -202,12 +199,12 @@ func (r *storeWriterRig) broadcastCopy() storeWriter {
 const attemptRowStatement = "select " + messageDeliveryColumns + " from message_deliveries where message_id = $1 and attempt = $2 for update"
 
 // sessionReply is a session's reply to a message on the issue (insertSessionReply), through the
-// reply route: it takes the issue's row (lockIssue) and then the attempt it answers `for update`,
-// then writes the reply's node, the reply's row, the message.answered and the facts the node write
-// stated. The attempt's row belongs to a projected table and names no node the reply writes, so
-// the written order lets it come before the reply's node, as a mention reply's answered comment
-// does (mentionReply). Each run answers a message of its own, sent to s1 and delivered, since an
-// attempt already answered takes no second reply.
+// reply route: it takes the issue's owner lock (lockIssue) and then the attempt it answers `for
+// update`, then writes the reply's node, the reply's row, the message.answered and the facts the
+// node write stated. The attempt's row belongs to a projected table and names no node the reply
+// writes, so the written order lets it come before the reply's node, as a mention reply's
+// answered comment does (mentionReply). Each run answers a message of its own, sent to s1 and
+// delivered, since an attempt already answered takes no second reply.
 func (r *storeWriterRig) sessionReply() storeWriter {
 	// parent is the message the run under way answers, which its ready sends and its attempt's
 	// hold locks.
@@ -215,7 +212,7 @@ func (r *storeWriterRig) sessionReply() storeWriter {
 	return storeWriter{
 		name: "insertSessionReply",
 		steps: append([]storeStep{
-			r.issueOwnerStep(lockIssueStatement),
+			ownerLockStep(store.IssueOwner(r.issue)),
 			{
 				name: "the answered attempt's row", order: projectionStep,
 				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
@@ -240,17 +237,18 @@ func (r *storeWriterRig) sessionReply() storeWriter {
 }
 
 // documentRemoval is the removal of an untouched document of the issue (removeArtifact), through
-// its route: it takes the issue's row (beginArtifactWrite) and the document's room, clears what the
-// document's own delete would leave behind, states the document's node gone (graphstore
+// its route: it takes the issue's owner lock (beginArtifactWrite) and the document's room, clears
+// what the document's own delete would leave behind, states the document's node gone (graphstore
 // WriteUncaused, an update of the node its create wrote), deletes the document's row, which names
-// that node, appends artifact.removed and appends the gone statement under it (graphstore.Caused).
+// that node, and appends artifact.removed and the gone statement under it in one batch
+// (appendCausingEvent).
 // Each run removes a document of its own, made just before it by typing a title (emptyDocument).
 // The gone statement is the removal's first write of graph_nodes and the delete its first write of
 // artifacts, so each is held as its table, and so are the event and the tuples it causes.
 func (r *storeWriterRig) documentRemoval() storeWriter {
 	return storeWriter{
 		name: "removeArtifact",
-		steps: append([]storeStep{r.issueOwnerStep(issueOwnerStatement)},
+		steps: append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
 			objectNodeSteps("the document", "artifacts", "delete from artifacts where id = $1")...),
 		ready: func(t *testing.T, _ context.Context) storeWriterRun {
 			document := emptyDocument(t, r.handler, r.issue, r.fresh("Lock steps removal")+".md")

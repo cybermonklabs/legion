@@ -27,9 +27,11 @@ type Leases interface {
 // artifacts and the migration runner are each a single key (the enumeration in docs/copied_asks.go,
 // at lockProjectCopies) - so a lease can never collide with one of those, whatever its name hashes
 // to. Within the two-key space the other namespaces are the copy locks'
-// (docs.copiedAsksLockNamespace, "COPY"), the test hooks' (the api package's
-// testHookLockNamespace, "HOOK", taken only under DISPATCH_TEST_HOOKS), a conditional edit's
-// admission's (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
+// (docs.copiedAsksLockNamespace, "COPY"), the owner locks' (store.OwnerLockNamespace, "OWNR"),
+// the owner lock gate's (store.OwnerLockGateNamespace, "OWNG"), the test hooks' (the api
+// package's testHookLockNamespace, "HOOK", taken only under
+// DISPATCH_TEST_HOOKS), a conditional edit's admission's
+// (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
 // lockProjectIssueDependencies), the deployment's own issue dependencies' (api's
 // lockDeploymentIssueDependencies), one repository mapping's write (api's lockRepoProjectWrite),
 // the rename graph's own (api's refuseRepoRenameChain), the Slack channels' (access's

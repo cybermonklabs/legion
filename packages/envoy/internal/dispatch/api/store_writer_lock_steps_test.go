@@ -30,32 +30,32 @@ const storeStepWait = 20 * time.Second
 // and tuple store's writers, beside the test that drives each site's lock steps. Thirteen of them
 // live here, and this test drives them all:
 //
-//   - the comment path (createCommentFor, with the node its writeNode writes and the tuples its
-//     caused appends, then graphstore.Authored), run on an issue and on a project document;
+//   - the comment path (createCommentFor, with the node its writeNode queues and the tuples its
+//     caused queues, then graphstore.QueueAuthored), run on an issue and on a project document;
 //   - a session's reply to a mention (replyComment, through the same three, and then
-//     recordAnsweredDelivery, which records the session the answered attempt reached: that session
+//     queueAnsweredDelivery, which records the session the answered attempt reached: that session
 //     is the reply's author, whose node row the reply already holds, and its delivered_to tuple is
 //     appended under the reply's own event, so it takes no lock the reply's earlier steps do not);
 //   - the settle of a comment mention's delivery (completeCommentDelivery) and of a targeted
-//     message's (completeMessageDelivery), each of which records the session it reached through
-//     graphstore.Reached inside its own transaction;
-//   - the follower route (changeAskFollower) and an ask's create (createAskFor), each of which
-//     follows the ask for a session (asks.Follow) before the event it appends and moves the node
-//     that follow made onto that event (graphstore.Caused);
+//     message's (completeMessageDelivery), each of which records the session it reached under
+//     its receipt, in the batch that appends the receipt (graphstore.QueueReached);
+//   - the follower route (changeAskFollower, through appendCausingEvent) and an ask's create
+//     (createAskFor), each of which follows the ask for a session before the event it appends and
+//     moves the node that follow made onto that event (graphstore.QueueCaused);
 //   - an approval request renewed (renewApprovalAsk), once on a retry, which appends no event and
 //     leaves the follow's node and its base attributes at the sentinel, and once handing the
 //     request back, which follows after its event and states the node under it in the follow's
 //     own statement;
-//   - three writes of a document version, each of which runs the block index (refs.IndexBlocks)
-//     under the revision fence and appends what it stated under the event that recorded the
-//     version: an upload creating an issue's document (storeArtifact), an edit of a project
-//     document (editArtifact, through commitArtifactVersionEvent), and an issue's create with its
-//     spec (createIssue). The upload and the create also write the node of what they create - the
-//     document's, and the issue's and its spec's - before the row that names it, and so before the
-//     version whose insert writes the fence row, which names that row.
+//   - three writes of a document version, each of which runs the block index (refs'
+//     BlockIndexing.Queue) under the revision fence and appends what it stated under the event
+//     that recorded the version: an upload creating an issue's document (storeArtifact), an edit
+//     of a project document (editArtifact, through commitArtifactVersionEvent), and an issue's
+//     create with its spec (createIssue). The upload and the create also write the node of what
+//     they create - the document's, and the issue's and its spec's - before the row that names
+//     it, and so before the version whose insert writes the fence row, which names that row.
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
-// graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner row comes first; a node's
+// graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner's lock comes first; a node's
 // graph_nodes row is written before any projection row whose foreign key names it; the event is
 // appended before the tuples whose cause it is; a write of several nodes takes them in ascending
 // (kind, id); and a writer under the revision fence takes the document's document_block_versions
@@ -65,27 +65,26 @@ const storeStepWait = 20 * time.Second
 // the steps it takes. Then each step is held, with one run of the path per step: another
 // transaction holds what the step takes, and once the path's own backend has queued behind it the
 // test reads the statement that backend waits at (pg_stat_activity), which has to be the statement
-// that takes the step, and the table locks its transaction holds (pg_locks), which have to include
-// every earlier step's and none of a later step's (requireEachStepIsWaitedAtInTurn). Postgres keeps
-// every table lock until its transaction ends, so a step the write has already run shows as its
-// lock, and a step it has not run does not.
+// that takes the step, the table locks its transaction holds (pg_locks), which have to include
+// every earlier step's, and the rows it has locked, none of which may be a later step's
+// (requireEachStepIsWaitedAtInTurn). Every run is then held to leaving no node or tuple row with a
+// negative cause (storetest.RequireNoMarkedCause).
 //
-// Every event these paths append is an issue's or a project document's, so its owner row is the
-// row the owner step already holds (events.Broker's lockEventOwner), and its project_key is null.
-// None of them takes the event's project row, and every run is held to taking no lock on projects
-// (eventProjectLocks), with two exceptions. The issue's create writes an issue that does not exist
-// before it, so the row it takes first is its project's, which numbers the issue, and that is its
-// owner step. A new document's row names its project, whose foreign key takes the project row
-// `for key share`, and that conflicts with no lock an event's project is taken with, so an upload
-// creating one is held to writing no project row (projectKeyShare).
+// Every event these paths append is an issue's or a project document's, so its owner's row is the
+// one its owner lock stands for (events.Broker's lockEventOwner), and its project_key is null.
+// None of them locks the event's project row, and every run is held to locking no projects row,
+// with two exceptions. The issue's create writes an issue that does not exist before it, so its
+// owner is its project, whose row it numbers the issue with (projectOwner). A new document's row
+// names its project, whose foreign key takes the project row `for key share`, and that conflicts
+// with no lock an event's project is taken with (projectKeyShare).
 func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	rig := newStoreWriterRig(t)
 	for _, writer := range []storeWriter{
 		rig.commentCreate("createCommentFor on an issue", "/api/v1/issues/"+rig.issue+"/comments",
-			rig.issueOwnerStep(issueOwnerStatement)),
+			ownerLockStep(store.IssueOwner(rig.issue))),
 		rig.commentCreate("createCommentFor on a project document", "/api/v1/artifacts/"+rig.document+"/comments",
-			rig.documentOwnerStep()),
+			ownerLockStep(store.ArtifactOwner(rig.document))),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
 		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalHandBack(),
 		rig.documentUpload(), rig.documentEdit(), rig.issueCreate(),
@@ -120,17 +119,26 @@ const (
 	rowExclusiveMode = "RowExclusiveLock"
 )
 
+// parseTimeMode says a table lock of mode tells nothing of the order a write ran its statements
+// in: the row share mode and the row exclusive mode. Each write phase is one pipelined batch
+// (store.WriteBatch), and pgx prepares every statement its connection has not cached in one round
+// trip before the first of them runs (conn.go, sendBatchExtendedWithDescription); Postgres takes a
+// statement's table locks when it parses it and keeps them to the end of the transaction. So a
+// write stopped at one step may already hold those two modes on the tables of its later statements
+// without having run them. No writer's lock conflicts with either mode - only a `lock table` or a
+// schema change does - so neither can make a writer wait, and the order that can is the rows'
+// (rowsLocked). A stronger mode is taken only by a statement that asks for it, and held before
+// its step it still fails.
+func parseTimeMode(mode string) bool {
+	return mode == rowShareMode || mode == rowExclusiveMode
+}
+
 // tableLock is one table lock a transaction holds, as pg_locks names it.
 type tableLock struct {
 	table, mode string
 }
 
 func (l tableLock) String() string { return l.mode + " on " + l.table }
-
-// eventProjectLocks are the locks the written order's last step, the project of the event, would
-// show: its row locked or written. None of the paths here takes them but the issue's create, whose
-// owner step is its project's row.
-var eventProjectLocks = []tableLock{{"projects", rowShareMode}, {"projects", rowExclusiveMode}}
 
 // storeStep is one lock step of a write path.
 type storeStep struct {
@@ -164,10 +172,11 @@ type storeWriter struct {
 	ready func(t *testing.T, ctx context.Context) storeWriterRun
 	// projectKeyShare says the path writes a row whose foreign key names a project - a new
 	// document's artifacts row names the project it is in - and so holds that project's row
-	// `for key share`, which shows in pg_locks as the row share mode on projects and conflicts with
-	// no lock an event's project is taken with. Only a write of projects counts against such a path
-	// (eventProjectLocks).
+	// `for key share`, which conflicts with no lock an event's project is taken with.
 	projectKeyShare bool
+	// projectOwner says the path's owner is its project, whose row it writes: the issue's create,
+	// which numbers the issue on it.
+	projectOwner bool
 }
 
 // storeWriterRun is one run of a write path.
@@ -186,62 +195,42 @@ type storeWriterRun struct {
 // Each statement head a step is read at. pg_stat_activity holds the statement as the writer sent
 // it, and normalizedStatement lowers it and folds its whitespace before it is compared.
 const (
-	// issueOwnerStatement is ownerStatus's lock of an issue (issueStatus, ownerRowLock), which the
-	// comment path takes through lockCommentOwner and a reply through lockOwnerOfComment. Its head
-	// stops where the writer's project clause starts, which the statement binds as it reads.
-	issueOwnerStatement = "select status, closed_at is null from issues where key = $1 and"
-	// documentOwnerStatement is ownerStatus's lock of a project document, which the comment path
-	// takes through lockCommentOwner on a comment the document owns. Its head stops where the
-	// writer's document clause starts.
-	documentOwnerStatement = "select true from artifacts where id = $1 and issue_key is null and"
-	// lockIssueStatement is lockIssue's lock of an issue, which a session's reply to a message and
-	// a message's deliveries take on a message their writer has already read under its rule, so
-	// it binds no clause of its own.
-	lockIssueStatement = "select status from issues where key = $1 for no key update"
-	// eventOwnerStatement is events.Broker's lock of an issue event's owner, which a delivery's
-	// settle takes through LockOwners before anything else (settleDeliveryAttempt).
-	eventOwnerStatement = "select last_seq, project_key, pg_current_xact_id() from issues where key = $1 for no key update"
-	// nodeWriteStatement is graphstore's node write (writeNodes), which writeNode runs through
-	// graphstore.WriteUncaused.
-	nodeWriteStatement = "with incoming as ("
+	// nodeWriteStatement is graphstore's node write (queueNodes), which writeNode queues through
+	// graphstore.QueueNodes and the block index through BlockIndexing.Queue.
+	nodeWriteStatement = "insert into graph_nodes ("
 	// armsStatement is graphstore.WriteArms spliced into a statement of its own, as Authored and
 	// Reached run it: the node arm and the tuple arms after it, in one statement.
 	armsStatement = "with graph_nodes_written as ("
 	// commentInsertStatement writes a comments row, a comment's or a reply's.
 	commentInsertStatement = "insert into comments ("
-	// eventAppendStatement is events.Broker's append (AppendAll), after its owner lock.
-	eventAppendStatement = "with inserted as ( insert into events ("
-	// tupleAppendStatement is graphstore's tuple append, which caused runs through graphstore.Write.
-	tupleAppendStatement = "insert into graph_tuples ("
-	// followStatement is asks.Follow's one statement: the follower row, with the store's node arm
+	// eventAppendStatement is events.Broker's append (QueueAppend), after its owner row's lock.
+	eventAppendStatement = "with appended as ( insert into events ("
+	// tupleAppendStatement is graphstore's tuple append for a write that wrote nodes, which states
+	// their base attributes and moves them onto the cause in the same statement (queueAppend).
+	tupleAppendStatement = "with written as ("
+	// followStatement is asks' follow statement: the follower row, with the store's node arm
 	// spliced in after it (graphstore.WriteArms, WriteArmsUncaused).
 	followStatement = "with followed as ("
 	// versionStatement is a document version's insert (docs.RenderStampHead), whose trigger
 	// (document_block_versions_owe, migration 0122) writes the document's document_block_versions
-	// row: the revision fence's row, which the block index's standsAtVersion takes again later in
-	// the same transaction.
+	// row: the revision fence's row, which the block index's queueStand takes again later in the
+	// same transaction.
 	versionStatement = "with head as (select "
-	// blockRowStatement is refs.IndexBlocks' write of the document_blocks rows of the blocks a
+	// blockRowStatement is the block index's write of the document_blocks rows of the blocks a
 	// version changed, each naming its block's node.
 	blockRowStatement = "insert into document_blocks ("
-	// projectNumberStatement is createIssue's numbering of the issue it creates, an update of its
-	// project's row.
-	projectNumberStatement = "update projects set next_number = next_number + 1 where key = $1"
 )
-
-// answeredRowStatement is loadCommentForUpdate's lock of the comment a reply answers.
-var answeredRowStatement = "select " + commentColumns + " from comments where id = $1 for update"
 
 // --- the paths ----------------------------------------------------------------------------
 
-// commentCreate is the comment path, through route. It takes its owner row, the issue's or the
-// project document's (lockCommentOwner), writes the comment's node (writeNode) before the comments
-// row that names it, appends comment.created, then appends the tuples that event caused (caused)
-// and, in one statement, the author's node and the authored_by tuple under that event
-// (graphstore.Authored). The comment's id is drawn inside its own transaction, so no other
-// transaction can hold its node, its row or its tuples before they exist: those steps are held as
-// the tables they are written to. Each run's author is a person no write has recorded, so the
-// author's node is new and is held as its row.
+// commentCreate is the comment path, through route. It takes its owner's lock, the issue's or the
+// project document's (lockCommentOwner), and in its write phase writes the comment's node
+// (writeNode) before the comments row that names it, appends comment.created, then appends the
+// tuples that event caused (caused) and, in one statement, the author's node and the authored_by
+// tuple under that event (graphstore.QueueAuthored). The comment's id is drawn inside its own
+// transaction, so no other transaction can hold its node, its row or its tuples before they exist:
+// those steps are held as the tables they are written to. Each run's author is a person no write
+// has recorded, so the author's node is new and is held as its row.
 func (r *storeWriterRig) commentCreate(name, route string, owner storeStep) storeWriter {
 	return storeWriter{
 		name: name,
@@ -275,25 +264,15 @@ func (r *storeWriterRig) commentCreate(name, route string, owner storeStep) stor
 	}
 }
 
-// mentionReply is a session's reply to a mention, through its route. It takes the owner row and
-// then the comment it answers `for update` (lockedCommentForDelivery), and from there takes the
-// comment path's steps for the reply: its node, its row, the event, the tuples and its author.
-// The answered comment's row belongs to a projected table, and the written order lets it come
-// before the reply's node: what it orders is a node against the rows that name that node, and
-// this row names the answered comment's node, which the reply never writes.
+// mentionReply is a session's reply to a mention, through its route. It takes its owner's lock
+// (lockedCommentForDelivery), and from there takes the comment path's steps for the reply: its
+// node, its row, the event, the tuples and its author. The comment it answers is read under that
+// lock and locked by nothing but the foreign key of the reply's row.
 func (r *storeWriterRig) mentionReply() storeWriter {
 	return storeWriter{
 		name: "replyComment",
 		steps: []storeStep{
-			r.issueOwnerStep(issueOwnerStatement),
-			{
-				name: "the answered comment's row", order: projectionStep,
-				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
-					holdRow(t, ctx, holder, `select 1 from comments where id = $1::uuid for update`, run.answered)
-				},
-				at:    answeredRowStatement,
-				takes: []tableLock{{"comments", rowShareMode}},
-			},
+			ownerLockStep(store.IssueOwner(r.issue)),
 			{
 				name: "the reply's node", order: nodeStep,
 				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
@@ -340,11 +319,12 @@ func (r *storeWriterRig) mentionReply() storeWriter {
 }
 
 // commentDeliverySettle is the settle of a comment mention's delivery, called as the mention
-// sender calls it once its send has landed. It takes the receipt's owner row (LockOwners), records
-// the send on the attempt row, writes the reached session's node and that node's two base
-// attributes in one statement (graphstore.Reached), and appends the receipt. Each run's attempt is
-// pending under the claim the run settles it with, as a sender leaves it at its send, and pinned to
-// a session no write has recorded, so the session's node is new and is held as its row.
+// sender calls it once its send has landed. It takes the receipt's owner lock (LockOwners),
+// records the send on the attempt row, and in one batch appends the receipt and then the reached
+// session's node with its two base attributes under it, in one statement (graphstore.QueueReached
+// over graphstore.LatestEvent). Each run's attempt is pending under the claim the run settles it
+// with, as a sender leaves it at its send, and pinned to a session no write has recorded, so the
+// session's node is new and is held as its row.
 func (r *storeWriterRig) commentDeliverySettle() storeWriter {
 	return storeWriter{
 		name:  "completeCommentDelivery",
@@ -389,7 +369,7 @@ func (r *storeWriterRig) commentDeliverySettle() storeWriter {
 // messageDeliverySettle is the settle of a targeted message's delivery, called as the message's
 // sender calls it once its send has landed. Its steps are the comment mention's: the settle
 // transaction is one function for both (settleDeliveryAttempt), and the message is an issue's, so
-// the receipt's owner row is that issue's.
+// the receipt's owner is that issue.
 func (r *storeWriterRig) messageDeliverySettle() storeWriter {
 	return storeWriter{
 		name:  "completeMessageDelivery",
@@ -432,15 +412,15 @@ func (r *storeWriterRig) messageDeliverySettle() storeWriter {
 }
 
 // askFollow is the follower route following the rig's ask for a session no write has recorded
-// (changeAskFollower). It takes the event's owner row (LockOwners), follows the ask - the follower
-// row and the session's node in one statement, the node made at the sentinel (asks.Follow) -
-// appends ask.follower_added, and then moves the node onto that event and appends its two base
-// attributes under it (graphstore.Caused).
+// (changeAskFollower). It takes the event's owner lock (LockOwners), follows the ask - the
+// follower row and the session's node in one statement, the node marked for its cause - and in
+// one batch appends ask.follower_added and then moves the node onto that event and appends its
+// two base attributes under it (appendCausingEvent, graphstore.QueueCaused).
 func (r *storeWriterRig) askFollow() storeWriter {
 	return storeWriter{
 		name: "changeAskFollower",
 		steps: []storeStep{
-			r.issueOwnerStep(eventOwnerStatement),
+			ownerLockStep(store.IssueOwner(r.issue)),
 			followNodeStep("the follower's node"),
 			eventAppendStep(),
 			tupleAppendStep(),
@@ -460,14 +440,14 @@ func (r *storeWriterRig) askFollow() storeWriter {
 }
 
 // askCreate is an ask's create by a session no write has recorded (createAskFor). It takes its
-// owner row, writes the ask, follows it for its asker, whose node that follow makes at the
-// sentinel (asks.FollowAuthor), appends ask.opened, and then moves the asker's node onto that
-// event and appends its two base attributes under it (graphstore.Caused).
+// owner's lock, writes the ask, follows it for its asker, whose node that follow makes marked for
+// its cause (asks.QueueFollowAuthor), appends ask.opened, and then moves the asker's node onto that
+// event and appends its two base attributes under it (graphstore.QueueCaused).
 func (r *storeWriterRig) askCreate() storeWriter {
 	return storeWriter{
 		name: "createAskFor",
 		steps: []storeStep{
-			r.issueOwnerStep(issueOwnerStatement),
+			ownerLockStep(store.IssueOwner(r.issue)),
 			followNodeStep("the asker's node"),
 			eventAppendStep(),
 			tupleAppendStep(),
@@ -489,16 +469,16 @@ func (r *storeWriterRig) askCreate() storeWriter {
 
 // approvalRetry is the spec's approval request renewed while it waits on the person
 // (renewApprovalAsk), a retry that appends no event: a session no write has recorded asks for the
-// same approval again. The renewal takes its owner row (requireOpenOwner), follows the request
-// for that session with the node made at the sentinel, since nothing caused the follow, and
-// appends the node's two base attributes at the sentinel too (graphstore.Caused). The path takes
+// same approval again. The renewal takes its owner's lock (requireOpenOwner), follows the request
+// for that session with the node marked for its cause, since nothing caused the follow, and
+// appends the node's two base attributes at the sentinel (graphstore.QueueCaused). The path takes
 // no event step, which the written order lets it skip, and its tuples carry no event, so no event
 // orders them.
 func (r *storeWriterRig) approvalRetry() storeWriter {
 	return storeWriter{
 		name: "renewApprovalAsk on a retry",
 		steps: []storeStep{
-			r.issueOwnerStep(issueOwnerStatement),
+			ownerLockStep(store.IssueOwner(r.issue)),
 			followNodeStep("the requester's node"),
 			{
 				name: "the tuple append", order: tupleStep,
@@ -526,7 +506,7 @@ func (r *storeWriterRig) approvalRetry() storeWriter {
 // (renewApprovalAsk), which hands it back to the person. Each run first writes a new version of
 // the spec through the rig's own server (storeArtifact), which moves the open request to its agent
 // (docs.MoveApprovalAsk). A session no write has recorded then asks for the approval again: the
-// renewal takes its owner row, appends ask.handed_back (handBackApprovalAsk), and follows the
+// renewal takes its owner's lock, appends ask.handed_back (handBackApprovalAsk), and follows the
 // request for that session caused by that event, which states the node and its two base
 // attributes under the event in the follow's own statement (asks.Follow over graphstore.WriteArms).
 // Its node step is therefore also a step whose tuples carry the event, and it comes after it.
@@ -534,7 +514,7 @@ func (r *storeWriterRig) approvalHandBack() storeWriter {
 	return storeWriter{
 		name: "renewApprovalAsk handing the request back",
 		steps: []storeStep{
-			r.issueOwnerStep(issueOwnerStatement),
+			ownerLockStep(store.IssueOwner(r.issue)),
 			eventAppendStep(),
 			{
 				name: "the requester's node", order: nodeStep, caused: true,
@@ -561,17 +541,17 @@ func (r *storeWriterRig) approvalHandBack() storeWriter {
 }
 
 // documentUpload is an upload creating a document of the issue (storeArtifact). It takes the
-// issue's row, writes the document's node and then the document's row, which names it, writes the
+// issue's owner lock, writes the document's node and then the document's row, which names it, the
 // document's text, then its version, whose insert writes the document's revision fence row
-// (document_block_versions_owe), and indexes that version: the fence row again
-// (refs.standsAtVersion), the blocks' nodes in ascending (kind, id), then their document_blocks
-// rows, which name those nodes (refs.IndexBlocks). It then appends artifact.created and appends
-// what the node write and the index stated under it (graphstore.Caused). The document's node
-// comes before the fence: the fence row's foreign key names the document's row, whose node comes
-// before it, and the fence orders the document's block statement alone. The document is new, so
-// no transaction can hold its node, its row, its fence row or its block rows before the upload
-// writes them, and each of those steps is held as the table it writes. The block nodes are the
-// second write of graph_nodes, so they are held by the node of the block the run's document names
+// (document_block_versions_owe), and indexes that version: the fence row again (refs'
+// queueStand), the blocks' nodes in ascending (kind, id), then their document_blocks rows, which
+// name those nodes (refs' BlockIndexing.Queue). It then appends artifact.created and appends what
+// the node write and the index stated under it (graphstore.QueueCaused). The document's node comes
+// before the fence: the fence row's foreign key names the document's row, whose node comes before
+// it, and the fence orders the document's block statement alone. The document is new, so no
+// transaction can hold its node, its row, its fence row or its block rows before the upload writes
+// them, and each of those steps is held as the table it writes. The block nodes are the second
+// write of graph_nodes, so they are held by the node of the block the run's document names
 // (heldBlockNodesStep). Its artifacts row names the issue's project, so the upload holds that
 // project's row `for key share` (projectKeyShare). Its controls are the document's node written
 // after its row, and after the fence and the block index: held at the document's node, the upload
@@ -580,7 +560,7 @@ func (r *storeWriterRig) approvalHandBack() storeWriter {
 func (r *storeWriterRig) documentUpload() storeWriter {
 	return storeWriter{
 		name: "storeArtifact creating a document", projectKeyShare: true,
-		steps: append(append([]storeStep{r.issueOwnerStep(issueOwnerStatement)},
+		steps: append(append([]storeStep{ownerLockStep(store.IssueOwner(r.issue))},
 			objectNodeSteps("the document", "artifacts", "insert into artifacts (")[:2]...),
 			newFenceStep(),
 			heldBlockNodesStep(),
@@ -604,7 +584,7 @@ func (r *storeWriterRig) documentUpload() storeWriter {
 
 // documentEdit is an edit of the project document that adds a paragraph to it (editArtifact),
 // whose version's event commitArtifactVersionEvent appends, and then appends what the version's
-// block index stated under that event (graphstore.Caused). It takes the document's own row,
+// block index stated under that event (graphstore.QueueCaused). It takes the document's owner lock,
 // applies the edit to the live document, writes the version, whose insert takes the document's
 // fence row, and indexes the version as an upload does. The fence row is there from the
 // document's first version, so it is held as a row; the new paragraph's node and row are held as
@@ -613,7 +593,7 @@ func (r *storeWriterRig) documentEdit() storeWriter {
 	return storeWriter{
 		name: "commitArtifactVersionEvent after an edit",
 		steps: []storeStep{
-			r.documentOwnerStep(),
+			ownerLockStep(store.ArtifactOwner(r.document)),
 			{
 				name: "the revision fence", order: fenceStep,
 				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
@@ -639,28 +619,22 @@ func (r *storeWriterRig) documentEdit() storeWriter {
 }
 
 // issueCreate is an issue's create with a spec (createIssue). The issue does not exist before it,
-// so the row it takes first is its project's, which numbers the issue. It then writes the issue's
-// node and its spec's in one write, then the issue's row and the spec's row, which name them, and
-// the spec's version 1, whose insert writes the spec's fence row. It indexes that version as an
-// upload does, appends issue.created, and appends what the index and the node write stated under
-// it. The nodes come before the fence for the reason an upload's does. The spec's block nodes are
-// held by the node of the block the spec names, whose address is the spec's: the issue's key is
-// its project's next number, read before the run. Each run's create is forced past the near-copy
-// gate, which would otherwise take each run's issue for a copy of the one before it. Its control
-// is the two nodes written after the issue's row, which fails as the upload's controls do.
+// so the owner it takes first is its project, whose row numbers the issue. It then writes the
+// issue's node and its spec's in one write, then the issue's row and the spec's row, which name
+// them, and the spec's version 1, whose insert writes the spec's fence row. It indexes that
+// version as an upload does, appends issue.created, and appends what the index and the node write
+// stated under it. The nodes come before the fence for the reason an upload's does. The spec's
+// block nodes are held by the node of the block the spec names, whose address is the spec's: the
+// issue's key is its project's next number, read before the run. Each run's create is forced past
+// the near-copy gate, which would otherwise take each run's issue for a copy of the one before it.
+// Its control is the two nodes written after the issue's row, which fails as the upload's controls
+// do.
 func (r *storeWriterRig) issueCreate() storeWriter {
 	const nodes = "the issue's and its spec's nodes"
 	return storeWriter{
-		name: "createIssue",
+		name: "createIssue", projectOwner: true,
 		steps: []storeStep{
-			{
-				name: "the project row", order: ownerStep,
-				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
-					holdRow(t, ctx, holder, `select 1 from projects where key = $1 for no key update`, r.project)
-				},
-				at:    projectNumberStatement,
-				takes: []tableLock{{"projects", rowExclusiveMode}},
-			},
+			ownerLockStep(store.ProjectOwner(r.project)),
 			{
 				name: nodes, order: nodeStep,
 				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
@@ -701,52 +675,43 @@ func (r *storeWriterRig) issueCreate() storeWriter {
 	}
 }
 
-// settleSteps are the steps of a delivery's settle: the owner row, the reached session's node,
-// the receipt, and the node's two base attributes appended under it. The node is made at the
-// sentinel, before the receipt it is recorded beside exists, so its attributes wait for that
-// receipt and are appended after it (graphstore.Reached, graphstore.Caused), which is what
-// keeps the node row and its base tuples naming one event.
+// settleSteps are the steps of a delivery's settle: the owner's lock, then the receipt, and the
+// reached session's node with its two base attributes under it, in one statement right after the
+// receipt in the same batch (graphstore.QueueReached over graphstore.LatestEvent), which is what
+// keeps the node row and its base tuples naming one event. The node step is therefore also a step
+// whose tuples carry the event, and it comes after it.
 func (r *storeWriterRig) settleSteps() []storeStep {
 	return []storeStep{
-		r.issueOwnerStep(eventOwnerStatement),
-		{
-			name: "the session's node", order: nodeStep,
-			hold: holdNewNode, at: armsStatement,
-			takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
-		},
+		ownerLockStep(store.IssueOwner(r.issue)),
 		eventAppendStep(),
-		tupleAppendStep(),
-	}
-}
-
-// issueOwnerStep is the issue's owner row, taken by statement.
-func (r *storeWriterRig) issueOwnerStep(statement string) storeStep {
-	return ownerRowStep(statement, "issues", `select 1 from issues where key = $1 for no key update`, r.issue)
-}
-
-// documentOwnerStep is the project document's own row, its owner, taken by ownerStatus.
-func (r *storeWriterRig) documentOwnerStep() storeStep {
-	return ownerRowStep(documentOwnerStatement, "artifacts", `select 1 from artifacts where id = $1::uuid for no key update`, r.document)
-}
-
-// ownerRowStep is the owner row of table, taken by statement and held by lock on key. lock takes
-// the row `for no key update`, the level every writer takes an owner row at (ownerRowLock,
-// events.Broker's lockEventOwner), which conflicts with itself, rather than the `for update` this
-// module keeps off its owner tables (TestNoForUpdateOnOwnerTables).
-func ownerRowStep(statement, table, lock, key string) storeStep {
-	return storeStep{
-		name: "the owner row", order: ownerStep,
-		hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
-			holdRow(t, ctx, holder, lock, key)
+		{
+			name: "the session's node", order: nodeStep, caused: true,
+			hold: holdNewNode, at: armsStatement,
+			takes: []tableLock{{"graph_nodes", rowExclusiveMode}, {"graph_tuples", rowExclusiveMode}},
 		},
-		at:    statement,
-		takes: []tableLock{{table, rowShareMode}},
 	}
 }
 
-// eventAppendStep is the event's append. Its owner row is the one the owner step holds, so what
-// the append waits at is its own insert, whose row nobody can hold before it exists: the events
-// table is held instead.
+// ownerLockStep is owner's lock, the transaction advisory lock every writer of the owner takes
+// before it reads what it writes (store.LockOwner, through ownerStatus, lockCommentOwner,
+// requireOpenOwner or events.Broker's LockOwners), held here as those writers take it. It locks no
+// table and no row.
+func ownerLockStep(owner store.Owner) storeStep {
+	return storeStep{
+		name: "the owner lock", order: ownerStep,
+		hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+			t.Helper()
+			if err := store.LockOwner(ctx, holder, owner); err != nil {
+				t.Fatalf("hold %s's owner lock: %v", owner.LockKey(), err)
+			}
+		},
+		at: store.OwnerLockStatement,
+	}
+}
+
+// eventAppendStep is the event's append: the lock of its owner's row, which the write phase takes
+// for the event, then its own insert, whose row nobody can hold before it exists: the events table
+// is held instead.
 func eventAppendStep() storeStep {
 	return storeStep{
 		name: "the event", order: eventStep,
@@ -757,7 +722,7 @@ func eventAppendStep() storeStep {
 
 // tupleAppendStep is caused's append of the tuples the event caused: the node's base attributes
 // and any relation it holds, about a node whose id the path drew, so the table is held. Before it,
-// caused moves the node onto the event (graphstore.Caused), an update of the node row the path has
+// caused moves the node onto the event (graphstore.QueueCaused), an update of the node row the path has
 // held since its node step, which takes no lock the path does not already hold.
 func tupleAppendStep() storeStep {
 	return storeStep{
@@ -850,7 +815,7 @@ func blockRowsStep() storeStep {
 }
 
 // blockTuplesStep is the append of what the block index stated, under the event that recorded
-// the version (graphstore.Caused): the block nodes moved onto that event, an update of rows the
+// the version (graphstore.QueueCaused): the block nodes moved onto that event, an update of rows the
 // path holds since its node step, then the tuples.
 func blockTuplesStep() storeStep {
 	step := tupleAppendStep()
@@ -898,7 +863,7 @@ func holdNewNode(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWrit
 // --- the written order --------------------------------------------------------------------
 
 // requireTheWrittenOrderAdmits checks a path's steps, in the order the path takes them, against
-// the invariants on markInboxReadThreads: the owner row first, a node before the projection row
+// the invariants on markInboxReadThreads: the owner's lock first, a node before the projection row
 // naming it, the event before every step appending tuples that carry it, and the revision fence's
 // row before every step of the block statement it guards. A path skips the steps it does not take,
 // and is checked on the order of those it does. The fourth invariant, several nodes of one write
@@ -919,7 +884,7 @@ func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 	}
 	for index, step := range writer.steps {
 		if step.order == ownerStep && index != 0 {
-			t.Errorf("%s takes the owner row as its step %d: the owner row comes first", writer.name, index+1)
+			t.Errorf("%s takes the owner lock as its step %d: the owner lock comes first", writer.name, index+1)
 		}
 		if step.order == projectionStep && step.names != "" {
 			node, listed := position[step.names]
@@ -940,17 +905,15 @@ func requireTheWrittenOrderAdmits(t *testing.T, writer storeWriter) {
 }
 
 // requireEachStepIsWaitedAtInTurn runs the path once per step with that step held, and holds the
-// stopped write to the statement that takes the step and to the locks of exactly the steps before
-// it. A lock several steps show is read for the first of them, the one that takes it: the second
-// node write of a path shows graph_nodes again and says nothing about where the write is, which
-// the statement the write waits at says.
+// stopped write to the statement that takes the step, to the locks of the steps before it, and
+// to no lock of a later step. A lock several steps show is read for the first of them, the one
+// that takes it: the second node write of a path shows graph_nodes again and says nothing about
+// where the write is, which the statement the write waits at says. A later step is read by its
+// rows (rowsLocked) and by its table locks of every mode but the two a batch's preparation takes
+// (parseTimeMode).
 func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *storeWriterRig, writer storeWriter) {
 	t.Helper()
 	first := firstTakers(writer.steps)
-	// A path whose owner row is a project's - the issue's create, which numbers the issue under
-	// it - takes that row as its first step, so a lock on projects is that step's and not the
-	// project of its event.
-	projectOwned := slices.ContainsFunc(writer.steps[0].takes, func(lock tableLock) bool { return lock.table == "projects" })
 	for index, step := range writer.steps {
 		run := writer.ready(t, ctx)
 		holder, release := rig.beginHolder(t, ctx)
@@ -973,21 +936,30 @@ func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *sto
 				if first[lock] != position || position == index {
 					continue
 				}
-				switch has := slices.Contains(held, lock); {
-				case position < index && !has:
+				switch {
+				case position < index && !slices.Contains(held, lock):
 					t.Errorf("%s held at %s holds no %s, which %s takes, an earlier step: it reached %s before it took %s (it holds %v)",
 						writer.name, step.name, lock, other.name, step.name, other.name, held)
-				case position > index && has:
-					t.Errorf("%s held at %s already holds %s, which %s takes, a later step: it took %s before %s (it holds %v)",
-						writer.name, step.name, lock, other.name, other.name, step.name, held)
+				case position > index:
+					if !parseTimeMode(lock.mode) && slices.Contains(held, lock) {
+						t.Errorf("%s held at %s already holds %s, which %s takes, a later step: it took %s before %s (it holds %v)",
+							writer.name, step.name, lock, other.name, other.name, step.name, held)
+					}
+					if locked := rig.rowsLocked(t, ctx, backend, lock.table); len(locked) > 0 {
+						t.Errorf("%s held at %s has locked rows %v of %s, which %s takes, a later step: it took %s before %s",
+							writer.name, step.name, locked, lock.table, other.name, other.name, step.name)
+					}
 				}
 			}
 		}
-		for _, lock := range eventProjectLocks {
-			keyShare := writer.projectKeyShare && lock.mode == rowShareMode
-			if !projectOwned && !keyShare && slices.Contains(held, lock) {
-				t.Errorf("%s held at %s holds %s: it took the project of its event, which an issue's or a document's event does not name (it holds %v)",
-					writer.name, step.name, lock, held)
+		// An event's append moves its owner's last_seq in one statement whose arms update issues,
+		// artifacts and projects, so every append holds the row exclusive lock of projects with
+		// no row of it. What a write must not take is a projects row, but for the project that
+		// owns an issue's create and a project a new document's foreign key reads.
+		if !writer.projectOwner && !writer.projectKeyShare {
+			if locked := rig.rowsLocked(t, ctx, backend, "projects"); len(locked) > 0 {
+				t.Errorf("%s held at %s has locked projects rows %v: it took the project of its event, which an issue's or a document's event does not name",
+					writer.name, step.name, locked)
 			}
 		}
 		release()
@@ -999,7 +971,27 @@ func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *sto
 		case <-time.After(storeStepWait):
 			t.Fatalf("%s did not commit within %s of being let go at %s", writer.name, storeStepWait, step.name)
 		}
+		storetest.RequireNoMarkedCause(t, rig.database, writer.name+" let go at "+step.name)
 	}
+}
+
+// rowsLocked names, by ctid, the rows of table that backend's transaction has locked or written
+// over: those whose xmax is its transaction id. A row is locked only by a statement that ran, so a
+// row here is a step the write has taken, whatever table locks its batch's preparation took. A
+// transaction that has locked no row and written nothing has no id, and answers none.
+func (r *storeWriterRig) rowsLocked(t *testing.T, ctx context.Context, backend uint32, table string) []string {
+	t.Helper()
+	rows, err := r.database.Pool.Query(ctx, `select locked.ctid::text from `+pgx.Identifier{table}.Sanitize()+` locked
+		where locked.xmax::text = (select backend_xid::text from pg_stat_activity where pid = $1)
+		order by 1`, backend)
+	if err != nil {
+		t.Fatalf("read the rows of %s backend %d has locked: %v", table, backend, err)
+	}
+	locked, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the rows of %s backend %d has locked: %v", table, backend, err)
+	}
+	return locked
 }
 
 // firstTakers answers, for each lock the steps show, the position of the first step that shows

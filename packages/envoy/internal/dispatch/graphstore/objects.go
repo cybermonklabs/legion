@@ -110,11 +110,11 @@ func ArtifactRefKey(issueKey, projectKey, session, slug string) string {
 // the row it creates (its created_at) and every statement it makes about the document's node at
 // address id. It is the database's clock as the call runs (clock_timestamp(), never the
 // transaction's start), and one microsecond past the newest statement the store holds about the
-// node where the clock reads no later. A writer reads it once, after it holds the row that orders
-// every writer of the address - the document's owner row (api's storeArtifact and removeArtifact)
-// - so two writers of one address read it one after the other, the second once the first has
-// committed, and the second's time is strictly later than every statement the first made, by the
-// clock and, should the clock step back, by the greatest(). So every statement about an address is
+// node where the clock reads no later. A writer reads it once, after it holds the lock that orders
+// every writer of the address - the document's owner lock (api's queueNewArtifact and
+// removeArtifact) - so two writers of one address read it one after the other, the second once the
+// first has committed, and the second's time is strictly later than every statement the first made,
+// by the clock and, should the clock step back, by the greatest(). So every statement about an address is
 // dated in the order the store appends it, and a read of a node as of a time reads what the store
 // held then. Which row a statement names is not read from its time but from its cause, the row's
 // own create event (graphcensus's ownLiveStatement).

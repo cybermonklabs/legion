@@ -846,12 +846,12 @@ test("a search carrying a member everyBuildReadsSearch drops goes to /api/v1/sea
 
   await api.search("astrolabe", { status: "in_progress" });
   await api.search("astrolabe", { number_project: "INFRA", keywords_only: true });
-  await api.search("astrolabe", { author: "sami@theorem.dev", updated_since: "2026-11-01" });
+  await api.search("astrolabe", { author: "sami@example.com", updated_since: "2026-11-01" });
 
   expect(stub.requests.map(({ path }) => path)).toEqual([
     "/api/v1/search/results?q=astrolabe&status=in_progress",
     "/api/v1/search/results?q=astrolabe&number_project=INFRA&keywords_only=true",
-    "/api/v1/search/results?q=astrolabe&author=sami%40theorem.dev&updated_since=2026-11-01",
+    "/api/v1/search/results?q=astrolabe&author=sami%40example.com&updated_since=2026-11-01",
   ]);
 });
 test("API client reaches project artifact and owner-scoped document endpoints", async () => {

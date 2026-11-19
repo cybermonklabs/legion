@@ -20,10 +20,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -534,7 +536,7 @@ func readRepositoryFile(t *testing.T, root, path string) string {
 //     that honoured one would answer something else, so the answer must be the answer it gives
 //     without them, status and rows alike, as the base build answered it.
 func threeBadRequests(t *testing.T) {
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	// The production table: a test hook is mounted only where Deps.TestHooksEnabled is set, and
 	// a route the server does not serve answers 404 to every caller rather than refusing one.
 	rows := routesBeforeThisChild(t, false)
@@ -553,7 +555,7 @@ func threeBadRequests(t *testing.T) {
 		}
 	}
 
-	owned := seedTwoProjects(t, handler)
+	owned := seedTwoProjects(t, handler, database)
 	probed := 0
 	for _, route := range rows {
 		target, addressable := crossProjectPath(route, owned)
@@ -656,7 +658,6 @@ func threeBadRequests(t *testing.T) {
 var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/github/app-installation/{owner}/{repo}":                 "a GitHub App private key",
 	"GET /api/v1/projects/{key}/architecture":                            "an architecture source configured for the project",
-	"GET /api/v1/projects/{key}/legion/board":                            "a Legion daemon configured for the project",
 	"GET /api/v1/delivery/timeline":                                      "delivery settings",
 	"GET /api/v1/delivery/measures":                                      "delivery settings",
 	"GET /api/v1/delivery/pipeline":                                      "delivery settings",
@@ -690,13 +691,13 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/search":               url.Values{"q": {"project"}}.Encode(),
 		"GET /api/v1/search/results":       url.Values{"q": {"project"}}.Encode(),
 		"GET /api/v1/references":           url.Values{"to": {"dispatch://" + owned.issue}}.Encode(),
-		"GET /api/v1/reference-targets":    url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
 		"GET /api/v1/references/questions": url.Values{"kind": {"comment"}, "id": {owned.comment}}.Encode(),
 		"GET /api/v1/block-links":          url.Values{"from": {spec}, "to": {spec}}.Encode(),
 		"GET /api/v1/issues/resolve":       url.Values{"ref": {owned.issue}}.Encode(),
 		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
+		"GET /api/v1/reference-targets":    url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
 	}
 }
 
@@ -821,7 +822,9 @@ type crossProject struct {
 	issue, comment, ask   string
 	artifact, slug, block string
 	// message is an issue message, and document a project document, with its slug and one of
-	// its blocks: the objects a route of the project's own documents and messages reads.
+	// its blocks: the objects a route of the project's own documents and messages reads. The
+	// message is also the id the cross-project probe sends a route that names a message
+	// (crossProjectPath), so that route is sent another project's id of its own kind.
 	message, document, documentSlug, documentBlock string
 	// priority is the id of a priority. A priority belongs to no project, so no project's key
 	// addresses it, and only the probe that reads each object at its own address reads it.
@@ -831,9 +834,10 @@ type crossProject struct {
 }
 
 // seedTwoProjects writes one project with an issue, a document, a comment, an ask, a message, a
-// project document and a block of each document, and a second project the probe addresses them
-// under; and one priority, which belongs to neither project and is read at its own id.
-func seedTwoProjects(t *testing.T, handler http.Handler) crossProject {
+// project document and a block of each document, and the Legion daemon it names with a read of
+// it; a second project the probe addresses them under; and one priority, which belongs to neither
+// project and is read at its own id.
+func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
 	other := requireCreatedIssue(t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
@@ -884,6 +888,14 @@ func seedTwoProjects(t *testing.T, handler http.Handler) crossProject {
 		t.Fatalf("the project's creates left no near-copy check record, so its read by id has no row to answer")
 	}
 	owned.nearCopyCheck = checks.Checks[0].ID
+	// The Legion board answers 404 LEGION_NOT_CONFIGURED for a project that names no Legion
+	// daemon, and its cards are what the sampler recorded of the daemon a project names. So the
+	// project names one, and a good read of it recorded the project's issue in a phase, written as
+	// the sampler writes them, and the board answers that issue's card.
+	nameLegionDaemon(t, handler, "TEST", "http://legion.invalid:13370")
+	sampled := time.Now().UTC()
+	seedLegionObservation(t, database, "TEST", issue.Key, legion.FieldPhase, `"implementing"`, sampled)
+	seedLegionRead(t, database, "TEST", sampled, "")
 	return owned
 }
 
@@ -899,8 +911,10 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 	return blocks[0].ID
 }
 
-// crossProjectPath is the route's path with another project's key and this project's object, or
-// false for a route that addresses no object of a project under a key at all.
+// crossProjectPath is the route's path with another project's key and this project's object of
+// the route's own kind - a message to a route whose path names a message, an ask to an ask's, a
+// comment otherwise - or false for a route that addresses no object of a project under a key at
+// all.
 func crossProjectPath(route apiRoute, owned crossProject) (string, bool) {
 	pattern := route.Pattern
 	if !strings.Contains(pattern, "{key}") {
@@ -913,7 +927,10 @@ func crossProjectPath(route apiRoute, owned crossProject) (string, bool) {
 		pattern = strings.ReplaceAll(pattern, "{slug}", owned.slug)
 	case strings.Contains(pattern, "{id}"):
 		identifier = owned.comment
-		if strings.Contains(pattern, "/asks/") {
+		switch {
+		case strings.Contains(pattern, "/messages/{id}"):
+			identifier = owned.message
+		case strings.Contains(pattern, "/asks/"):
 			identifier = owned.ask
 		}
 		pattern = strings.ReplaceAll(pattern, "{id}", identifier)

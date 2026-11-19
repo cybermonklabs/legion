@@ -96,6 +96,9 @@ func (s privateSeed) readerRequest(t *testing.T, caller privateCaller) *http.Req
 var serverReads = map[string]string{
 	"comment_projection.go:commentEventPayload": "an event's payload is appended once and read by every subscriber of its topics " +
 		"and every reader of its owner's event log, which the event log and the live socket gate by project",
+	"comment_projection.go:commentAnchorRefreshEvent": "the payload of comment.anchor_refreshed, read for the event as " +
+		"commentEventPayload's is: appended once, and read by every subscriber and every reader of its owner's event log, " +
+		"which the event log and the live socket gate by project",
 	"message_delivery.go:finishPendingMessageDelivery": "a delivery's frame is sent to the session it targets and read again by " +
 		"every reader of the conversation, which the conversation's own read gates by its parties",
 	"comment_actions.go:reopenComment": "loadReplyChain: the thread a document projects (ProjectMark) is written into the document " +

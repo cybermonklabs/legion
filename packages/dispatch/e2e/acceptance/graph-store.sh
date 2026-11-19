@@ -13,6 +13,14 @@
 # the message is its node, the role it reaches and that role's page, and that no other tuple
 # stands on the message itself (G10).
 #
+# The run writes at least one tuple of every kind it holds, and G14 holds every tuple standing on
+# this run's nodes, of every kind, to the writer, the causing event and a time its record allows:
+# authored_by and the base attributes (visibility, state, and a comment's project) of every node
+# it reads, delivered_to - the answer to an attempt the listener had not taken among them (G12) -
+# a page's and a session's part_of, a role's held_by with its retraction (G9), and alias_of
+# (G13). A kind that holds no tuple of this run fails there too, so a writer that stopped writing
+# one cannot pass as right.
+#
 # Which clause is read which way, and why:
 #
 #   - What a person authored, and which person a spelling resolves to, are read through the
@@ -23,28 +31,41 @@
 #     never recorded is absent from the answer, and no read writes one.
 #   - A page's `part_of` is served by no route at all - the tuple arm of `graph_edges` carries
 #     that kind for no page, and no handler reads it - so it is read through DATABASE_URL, the
-#     database this driver already holds for the census it runs. The same goes for a tuple's
-#     time, its writer and the event that caused it, which no read answers and which this
-#     driver holds against the records. `held_by` and the history of a claim are read in Go
-#     instead (G9): no resolution here reaches a holder at all.
+#     database this driver already holds for the census it runs. The same goes for a role's
+#     `held_by` and the history of its claim, and for a tuple's time, its writer and the event
+#     that caused it, which no read answers and which this driver holds against the records.
+#
+# Two writes a shell driver once could not reach, and how this one reaches them:
+#
+#   - A role's `held_by` and a session's `part_of` that role. Dispatch's outbox resolves a role
+#     route's holder from the bus itself, the real listener's role claims and session
+#     registrations (roles.Buckets, which cmd/dispatch builds over the outbox's NATS
+#     connection), and never from the listener's `GET /v1/roles/{role}`. Nothing in the harness
+#     wrote those buckets, so every role route read unclaimed, was kept for the role's next
+#     holder, and stated no claim. The fake Envoy now writes them for the live holder its own
+#     lookup names (`PUT /__fixture/role-claims/{role}`, e2e/fake-envoy.ts), on the bus the
+#     harness started it with (DISPATCH_E2E_NATS_URLS), so the role route is forwarded to that
+#     session and the record states the claim.
+#   - An `alias_of`, the identity table's row of a session the server itself proved a person's.
+#     The server writes one only for a token the secrets broker scoped to a person, presented
+#     under the DPoP scheme with an ES256 proof on every request. The harness's broker is
+#     e2e/fake-broker.ts, whose introspection calls a token minted by e2e/fake-broker-token.ts
+#     live, and e2e/acceptance/broker-session.ts mints one bound to a key of its own and signs
+#     each request's proof, so this driver writes as that session (G13) without holding the
+#     fake broker's address. The other half of the same rule stands beside it: a session a
+#     credential merely claims in a request body earns no alias (G6).
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), DATABASE_URL (the database that
 # server serves), FAKE_ENVOY_PORT (the harness's fake Envoy listener, e2e/fake-envoy.ts, whose
-# session fixture this driver adds role-less sessions, one of them stopped, and a role's holder
-# to - as block-graph.sh takes FAKE_GITHUB_PORT for the fixture it needs), and optionally
+# session fixture this driver adds role-less sessions, one of them stopped and one whose sends it
+# refuses, and two holders of a role to, and which claims that role on the bus - as
+# block-graph.sh takes FAKE_GITHUB_PORT for the fixture it needs), and optionally
 # DEV_SIGNIN_LOGIN (default alice), the person the dev sign-in route signs in. Each unmet input
-# is exit 2.
+# is exit 2. The server must read the harness's fake broker (run-server.sh's default) for G13.
 #
-# One row of the identity table is not here, and this is where it went. A session the server
-# itself proved a person's is recorded by one credential alone - a token the secrets broker
-# scoped to a person, which proves the session and the person together and presents an ES256
-# DPoP proof on every request. No shell driver can present one, so that row is carried by
-# TestTheStoreHoldsNodesAndAppendedTuples in packages/envoy, which builds that credential and
-# reads the alias_of tuple it leaves. What this driver does carry is the other half of the same
-# rule: a session a credential merely claims in a request body earns no alias (G6).
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
-# `FAIL: <section> <what>: <observed>` and the script exits 1.
+# `FAIL: <section> <what>: <observed>` and the script exits 1. The driver never prints a token.
 #
 # Every check is `cmd || fail …`, never part of an `&&` list: under `set -e` a failing command
 # anywhere but last in such a list does not stop the script.
@@ -63,14 +84,16 @@ Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/db FAKE_ENVOY_PORT=9023 \
        Envoy listener it delivers through. The server must have been started with a bus
        (DISPATCH_E2E_NATS_URLS, which e2e/run-server.sh hands the server as its NATS_URLS):
        without one the publisher writes no delivered_to tuple and the delivery checks here
-       wait out their poll.)
+       wait out their poll. The fake Envoy must hold that same bus, which the harness gives it
+       from the same variable, to claim a role there, and the server must read the harness's
+       fake broker, e2e/fake-broker.ts, to take the token of a session it proves a person's.)
 USAGE
 }
 
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_env DISPATCH_URL PROJECT DATABASE_URL FAKE_ENVOY_PORT
-require_commands curl jq psql sleep
+require_commands bun curl jq psql sleep
 read_bearer
 
 # shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own subshell's; this one is the caller's
@@ -96,18 +119,26 @@ readonly session
 # The sessions this run adds to the listener's fixture: one that claims no role, which the issue's
 # route names; another that claims no role, which a mention reaches; a third that claims no role
 # and that the listener holds stopped, which a mention reaches through the message the listener
-# stores for it; and one holding a role of this run's own, so the role this driver routes a
-# comment to is nobody else's.
-loose_session="019a1c09-0000-7000-8000-$(printf '%012d' "$$")"
-holder_session="019a1c09-1111-7000-8000-$(printf '%012d' "$$")"
-mentioned_session="019a1c09-6666-7000-8000-$(printf '%012d' "$$")"
-stopped_session="019a1c09-7777-7000-8000-$(printf '%012d' "$$")"
-readonly loose_session holder_session mentioned_session stopped_session
+# stores for it; a fourth that claims no role and whose every send the listener refuses, so the
+# attempt of its mention fails before it answers it (G12); and two holding a role of this run's
+# own, so the role this driver routes a comment to is nobody else's, and a second forward of it
+# resolves another holder (G9). The session the broker proves a person's (G13) is no session of
+# the listener's: nothing is delivered to it.
+readonly loose_session="019a1c09-0000-7000-8000-$(printf '%012d' "$$")"
+readonly holder_session="019a1c09-1111-7000-8000-$(printf '%012d' "$$")"
+readonly second_holder_session="019a1c09-1112-7000-8000-$(printf '%012d' "$$")"
+readonly mentioned_session="019a1c09-6666-7000-8000-$(printf '%012d' "$$")"
+readonly stopped_session="019a1c09-7777-7000-8000-$(printf '%012d' "$$")"
+readonly answering_session="019a1c09-aaaa-7000-8000-$(printf '%012d' "$$")"
+readonly proved_session="019a1c09-9999-7000-8000-$(printf '%012d' "$$")"
 readonly role="acceptance-$stamp"
 # The role the message of G10 is delivered to, the route of an issue of that section's own: no
 # other issue or write of this run names it, so its role and page nodes are that route's and the
 # message reaches nobody else.
 readonly message_role="acceptance-message-$stamp"
+# The helper that mints the proved session's token and signs each of its requests (G13).
+broker_session="$(dirname "${BASH_SOURCE[0]}")/broker-session.ts"
+readonly broker_session
 
 umask 077
 work="$(mktemp -d)"
@@ -117,12 +148,18 @@ printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 key=""
 message_key=""
 fixture_saved=0
+role_claimed=0
 cleanup() {
   local code=$?
   if [[ "$fixture_saved" == 1 ]]; then
     curl -sS -o /dev/null -X PUT -H 'Content-Type: application/json' \
       --data-binary "@$work/sessions.json" "$envoy/__fixture/sessions" ||
       printf 'graph-store.sh: could not put the fake Envoy session fixture back\n' >&2
+  fi
+  # The claim is the bus's and outlives the fixture's reseed, so it is released by name.
+  if [[ "$role_claimed" == 1 ]]; then
+    curl -sSf -o /dev/null -X DELETE "$envoy/__fixture/role-claims/$(q "$role")" ||
+      printf 'graph-store.sh: could not release the claim of %s on the bus\n' "$role" >&2
   fi
   for issue in "$key" "$message_key"; do
     [[ -n "$issue" ]] || continue
@@ -140,8 +177,11 @@ trap 'exit 143' TERM
 
 # request AS METHOD PATH [JSON]: sends METHOD PATH as AS: `agent`, with the bearer in $work/auth;
 # `person`, with the cookie the dev sign-in left in $work/jar.<login> and the dashboard's origin,
-# which the server requires of every write a cookie authenticates; or a personal token's own
-# bearer, named `token:<token>`. The answer's body goes to $work/body and its status to $status.
+# which the server requires of every write a cookie authenticates; a personal token's own
+# bearer, named `token:<token>`; or `broker`, the session the fake broker proves a person's
+# (G13), whose token and key are in $work and whose every request broker-session.ts signs a proof
+# of its own for, since a DPoP proof is spent by the request it is presented with. The answer's
+# body goes to $work/body and its status to $status.
 request() {
   local -a auth data=()
   case "$1" in
@@ -150,6 +190,11 @@ request() {
       # From a file, as $work/auth is: a header on the command line is read by every process.
       printf 'Authorization: Bearer %s\n' "${1#token:}" >"$work/auth.token"
       auth=(-H "@$work/auth.token")
+      ;;
+    broker)
+      status="$(bun "$broker_session" send "$work/broker.key" "$work/broker.token" "$2" "$base$3" \
+        "$work/body" ${4+"$4"} 2>"$work/curl")" || status="broker-session.ts failed: $(<"$work/curl")"
+      return
       ;;
     *) auth=(-H "@$work/auth") ;;
   esac
@@ -176,8 +221,9 @@ want_value() {
 # `want_who`, the actor of the write that appended it; `caused`, whether its event is that write's,
 # which `cause` describes; and `timely`, whether its time is one its record allows, which
 # `when_want` describes. A failure names each tuple that breaks any of the three, with what it
-# carries and what it should. A pass says how many tuples it held, so a kind this run wrote none
-# of reads as none held and not as held and right.
+# carries and what it should. Every kind this driver holds is one its run writes, so ROWS
+# selecting no tuple at all fails too: a writer that stopped stating the kind would otherwise pass
+# every rule here by stating nothing to break one. A pass says how many tuples it held.
 tuples_carry() {
   query "$1" "$2" "select count(*) || '|' || coalesce(string_agg(tuple || ': ' || concat_ws('; ',
              case when who is distinct from want_who then format('actor %s, want %s', who, want_who) end,
@@ -188,6 +234,7 @@ tuples_carry() {
                          or not coalesce(timely, false)), '')
      from ($3) tuples"
   [[ -z "${answer#*|}" ]] || fail "$1" "$2" "${answer#*|}"
+  [[ "${answer%%|*}" != 0 ]] || fail "$1" "$2" "this run wrote no tuple of the kind it holds"
   pass "$1" "$2 (${answer%%|*} tuple(s))"
 }
 
@@ -219,9 +266,9 @@ sign_in() {
   pass setup "signed $1 in"
 }
 
-# comment SECTION WHAT AS BODY [MENTION]: writes a comment on the issue as AS (agent, person:LOGIN
-# or token:TOKEN), optionally mentioning MENTION, and sets $comment to its id and $comment_at to
-# the time the record holds.
+# comment SECTION WHAT AS BODY [MENTION]: writes a comment on the issue as AS (agent, person:LOGIN,
+# token:TOKEN or broker), optionally mentioning MENTION, and sets $comment to its id and
+# $comment_at to the time the record holds.
 comment() {
   local section="$1" what="$2" as="$3" text="$4" mention="${5-}" payload
   if [[ "$as" == agent ]]; then
@@ -249,6 +296,20 @@ token_comment() {
   pass "$1" "$2 ($comment)"
 }
 
+# claim_role SECTION HOLDER PREVIOUS: has the fake Envoy claim $role on the bus for the live
+# holder its own lookup names, as the real listener writes a claim when a session takes a role,
+# and holds its answer to HOLDER, replacing the claim of PREVIOUS ("" for none).
+claim_role() {
+  local code
+  code="$(curl -sS -o "$work/claim.json" -w '%{http_code}' -X PUT \
+    "$envoy/__fixture/role-claims/$(q "$role")" 2>"$work/curl")" ||
+    fail "$1" "claim $role for $2 on the bus" "curl: $(<"$work/curl")"
+  if [[ "$code" == 200 ]]; then role_claimed=1; fi
+  jq -e --arg h "$2" --arg p "$3" '.holder == $h and .previous == $p' "$work/claim.json" >/dev/null ||
+    fail "$1" "claim $role for $2 on the bus" "HTTP $code: $(head -c 300 "$work/claim.json")"
+  pass "$1" "the fake Envoy claims $role for $2 on the bus${3:+, in place of $3}"
+}
+
 # The identity table. A person wrote these rows, and no code the server runs produces them: each
 # names a representation a record can hold and the person it must resolve to, stated here before
 # this driver issues any read. $1 of each row is the spelling, $2 the person it must answer.
@@ -259,7 +320,11 @@ token_comment() {
 #     same person;
 #   - the two that must stay apart: two logins differing by one character, and two personal
 #     tokens of one deployment held by two people (G7), each token the one its own person mints,
-#     and each resolving to that person.
+#     and each resolving to that person;
+#   - a session the server itself proved a person's (G13): the session the broker's token names,
+#     which resolves to the person that token acts for, both as the server answers who that
+#     credential is and as the store's alias_of tuple names them. It is read once the session has
+#     written, since only that write ties it to anybody.
 identities=(
   "$person|$person"
   "$(printf '%s' "$person" | tr '[:lower:]' '[:upper:]')|$person"
@@ -267,6 +332,7 @@ identities=(
   "$twin|$twin"
 )
 readonly identities
+readonly proved_identity="$proved_session|$person"
 
 # S: the inputs, the people, the listener's sessions and the issue.
 loopback_database_url "$database_url" ||
@@ -283,7 +349,8 @@ jq -e 'type == "array" and length > 0' "$work/sessions.json" >/dev/null ||
   fail setup "read the listener's sessions" "$(head -c 300 "$work/sessions.json")"
 fixture_saved=1
 jq -c --arg loose "$loose_session" --arg mentioned "$mentioned_session" \
-  --arg stopped "$stopped_session" --arg holder "$holder_session" --arg role "$role" \
+  --arg stopped "$stopped_session" --arg answering "$answering_session" \
+  --arg holder "$holder_session" --arg second "$second_holder_session" --arg role "$role" \
   '[.[] | {session_id, title, dir, machine_id, host, roles, capabilities}]
    + [{session_id: $loose, title: "Acceptance loose", machine_id: "acceptance", roles: [],
        capabilities: ["aside", "btw", "steer"]},
@@ -291,8 +358,12 @@ jq -c --arg loose "$loose_session" --arg mentioned "$mentioned_session" \
        capabilities: ["aside", "btw", "steer"]},
       {session_id: $stopped, title: "Acceptance stopped", machine_id: "acceptance", roles: [],
        capabilities: ["aside", "btw", "steer"]},
+      {session_id: $answering, title: "Acceptance answering", machine_id: "acceptance", roles: [],
+       capabilities: ["aside", "btw", "steer"]},
       {session_id: $holder, title: "Acceptance holder", machine_id: "acceptance", roles: [$role],
-       capabilities: ["aside", "btw", "steer"]}]' \
+       capabilities: ["aside", "btw", "steer"]},
+      {session_id: $second, title: "Acceptance second holder", machine_id: "acceptance",
+       roles: [$role], capabilities: ["aside", "btw", "steer"]}]' \
   "$work/sessions.json" >"$work/fixture.json" ||
   fail setup "build the session fixture" "$(head -c 300 "$work/sessions.json")"
 curl -sS -o /dev/null -X PUT -H 'Content-Type: application/json' \
@@ -307,7 +378,15 @@ curl -sS -o "$work/stopped.json" -X PATCH -H 'Content-Type: application/json' \
   fail setup "stop $stopped_session in the session fixture" "curl: $(<"$work/curl")"
 jq -e '.stopped == true and .live == false' "$work/stopped.json" >/dev/null ||
   fail setup "stop $stopped_session in the session fixture" "$(head -c 300 "$work/stopped.json")"
-pass setup "the listener holds $loose_session and $mentioned_session (no role), $stopped_session (no role, stopped) and $holder_session (role $role)"
+# The listener answers every send to the answering session 503, its starting gate: Dispatch
+# resolves that session, tries the send through its take-over window and records the attempt
+# failed against it, which is the attempt G12's answer finds untaken.
+curl -sS -o "$work/answering.json" -X PATCH -H 'Content-Type: application/json' \
+  --data-binary '{"send_status": 503}' "$envoy/__fixture/sessions/$answering_session" 2>"$work/curl" ||
+  fail setup "refuse every send to $answering_session" "curl: $(<"$work/curl")"
+jq -e '.send_status == 503 and .live == true' "$work/answering.json" >/dev/null ||
+  fail setup "refuse every send to $answering_session" "$(head -c 300 "$work/answering.json")"
+pass setup "the listener holds $loose_session and $mentioned_session (no role), $stopped_session (no role, stopped), $answering_session (no role, every send refused), and $holder_session and $second_holder_session (role $role)"
 
 send POST "/api/v1/issues" "$(jq -cn --arg p "$project" --arg s "$session" \
   '{project: $p, title: "Person and agent graph check", spec: "What the store holds of people and agents.", actor: {kind: "session", id: $s}}')"
@@ -474,12 +553,13 @@ want_value G5 "the mention's delivery is a delivered_to tuple into that session"
 # same send ended failed, wrote no node, and a fallback copy carried the comment instead.
 #
 # The person who owns the session would read the comment on their own page, but this fixture
-# proves no owner: the alias_of tuple a delivery reaches a person through is written only for a
-# token the secrets broker scoped to a person, which no shell driver can present (the identity
-# table's missing row, above). TestAMentionQueuedForAStoppedSessionReachesItsPerson in
-# packages/envoy carries that half. What this driver reads is the other half of the same rule: a
-# session no credential proved is nobody's, so the comment its person wrote is on that person's
-# page as authored and not as received.
+# proves no owner of the stopped session: the alias_of tuple a delivery reaches a person through
+# is written only by a write of the session itself, under a token the secrets broker scoped to a
+# person, and a stopped session writes nothing. G13 has the session the broker proves a person's
+# write, and holds its alias_of; TestAMentionQueuedForAStoppedSessionReachesItsPerson in
+# packages/envoy carries the person's half of a queued delivery. What this driver reads here is
+# the other half of the same rule: a session no credential proved is nobody's, so the comment its
+# person wrote is on that person's page as authored and not as received.
 comment G5 "a comment mentioning a session the listener holds stopped" "person:$person" \
   "A mention for a session that is not running." "session:$stopped_session"
 readonly queued_comment="$comment"
@@ -613,10 +693,19 @@ want_value G8 "no delivered_to tuple stands on an attempt the listener did not t
                        and d.state in ('sent', 'queued'))"
 
 # G9: a delivery to a role ends at the role node and not on a person; the role carries its page
-# and its held_by claim, and the session it resolved to is part_of that role.
+# and its held_by claim, and the session it resolved to is part_of that role. The outbox resolves
+# a role route's holder from the bus (roles.Buckets), so the fake Envoy claims the role there
+# first, for the live holder its own lookup names.
+claim_role G9 "$holder_session" ""
 request "person:$person" PATCH "/api/v1/issues/$key" \
   "$(jq -cn --arg r "role:$role" '{route: $r}')"
 want_status 200 G9 "route the issue to the role"
+query G9 "read the event that routed $key to the role" \
+  "select coalesce(max(id), 0) from events where issue_key = '$key' and type = 'issue.updated'
+     and payload->>'route' = 'role:$role'"
+readonly role_route_event="$answer"
+[[ "$role_route_event" != 0 ]] ||
+  fail G9 "read the event that routed $key to the role" "no issue.updated event routes it to role:$role"
 comment G9 "a comment on the issue the role holds" "person:$person" \
   "A note for whoever holds $role."
 readonly role_comment="$comment"
@@ -626,14 +715,25 @@ settles G9 "the delivery ends at the role node" "role|$role" \
 want_value G9 "the delivery reached no person and no session" 1 \
   "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$role_comment'
      and kind = 'delivered_to'"
-# The `held_by` tuple from a role to the session a forward resolved, the retraction that ends
-# that claim with the earlier one still in the history, and a session's `part_of` to the role it
-# claimed are proven in c-store-tuples (TestTheStoreHoldsNodesAndAppendedTuples in
-# packages/envoy), which drives the write path in process with a resolved holder this pod's fake
-# Envoy cannot give a shell driver: the claim lives in Envoy's role bucket (roles.ClaimStore),
-# which `bun run dispatch:local` has none of, so every resolution here reads heldStateUnresolved
-# and the publisher states no claim. The role and its page are written all the same, and this
-# driver reads them.
+# The write that routed the issue is the first event to name the role, and a person's write is
+# delivered to the route it sets, so the batch that recorded it resolved the holder through the
+# claim: the role's held_by and its holder's part_of are that event's, and the comment after it
+# restates the same claim and writes nothing of it again (graphstore.Claim). The comment's own
+# delivery, settled above, comes after that record, so each read below is of a record that
+# exists. The holder was reached over the bus, which no table this child projects records, so it
+# is no node and carries no page of its own (outbox.deliveredGraph, R19).
+want_value G9 "the role is held by the session the claim names, from the write that routed the issue" \
+  "true|session|$holder_session|$role_route_event" \
+  "select string_agg(asserted || '|' || to_kind || '|' || to_id || '|' || source_event, ' ' order by seq)
+   from graph_tuples where from_kind = 'role' and from_id = '$role' and kind = 'held_by'"
+want_value G9 "the holder is part_of the role it claimed, from that same write" \
+  "true|$role_route_event" \
+  "select string_agg(asserted || '|' || source_event, ' ' order by seq) from graph_tuples
+   where from_kind = 'session' and from_id = '$holder_session' and kind = 'part_of'
+     and to_kind = 'role' and to_id = '$role'"
+want_value G9 "a session holding a role is no node and carries no page of its own" 0 \
+  "select count(*) from graph_nodes
+   where (kind = 'session' and id = '$holder_session') or (kind = 'page' and id = 'session/$holder_session')"
 want_value G9 "the role's page hangs under the role" 1 \
   "select count(*) from graph_tuples where from_kind = 'page' and from_id = 'role/$role'
      and kind = 'part_of' and to_kind = 'role' and to_id = '$role' and asserted"
@@ -646,6 +746,47 @@ want_status 200 G9 "read $person's page after the role delivery"
 # received row, because the delivery ended at the role and reached no person.
 expect G9 "a delivery to a role is on no person's page as received" '["authored_by"]' \
   --arg id "$role_comment" '.rows[] | select(.id == $id) | .relations'
+
+# The retraction. The first holder stops answering the fake Envoy's lookup, which then names the
+# second, and the claim on the bus moves with it, as a listener moves a role whose holder another
+# session took it from. The next forward resolves the second holder: the record of that batch
+# ends the first holder's claim and asserts the second's, both under the role-routed comment the
+# batch resolved it for, and the first claim stays in the history, since the store appends only.
+curl -sS -o "$work/first-holder.json" -X PATCH -H 'Content-Type: application/json' \
+  --data-binary '{"live": false}' "$envoy/__fixture/sessions/$holder_session" 2>"$work/curl" ||
+  fail G9 "take $holder_session off the listener's live sessions" "curl: $(<"$work/curl")"
+jq -e '.live == false' "$work/first-holder.json" >/dev/null ||
+  fail G9 "take $holder_session off the listener's live sessions" "$(head -c 300 "$work/first-holder.json")"
+claim_role G9 "$second_holder_session" "$holder_session"
+comment G9 "a comment the role's second holder is forwarded" "person:$person" \
+  "Another note for whoever holds $role."
+readonly second_role_comment="$comment"
+settles G9 "the second delivery ends at the role node" "role|$role" \
+  "select coalesce(max(to_kind || '|' || to_id), 'none') from graph_tuples
+   where from_kind = 'comment' and from_id = '$second_role_comment' and kind = 'delivered_to'"
+query G9 "read the second comment's event" \
+  "select coalesce(max(id), 0) from events where type = 'comment.created' and payload->>'id' = '$second_role_comment'"
+readonly second_role_event="$answer"
+want_value G9 "the first claim, its retraction and the second claim stand in the history, in that order" \
+  "true|session|$holder_session|$role_route_event false|session|$holder_session|$second_role_event true|session|$second_holder_session|$second_role_event" \
+  "select string_agg(asserted || '|' || to_kind || '|' || to_id || '|' || source_event, ' ' order by seq)
+   from graph_tuples where from_kind = 'role' and from_id = '$role' and kind = 'held_by'"
+want_value G9 "the role's current holder is the second" "$second_holder_session" \
+  "select coalesce(string_agg(to_id, ' '), '') from (
+     select distinct on (to_kind, to_id) to_id, asserted from graph_tuples
+     where from_kind = 'role' and from_id = '$role' and kind = 'held_by'
+     order by to_kind, to_id, seq desc) latest
+   where asserted"
+want_value G9 "the second holder is part_of the role, from the forward that resolved it" \
+  "true|$second_role_event" \
+  "select string_agg(asserted || '|' || source_event, ' ' order by seq) from graph_tuples
+   where from_kind = 'session' and from_id = '$second_holder_session' and kind = 'part_of'
+     and to_kind = 'role' and to_id = '$role'"
+# A session is part_of the role it claimed while it ran, so the first holder's stands.
+want_value G9 "the first holder's part_of stands after its claim ended" "true|$role_route_event" \
+  "select string_agg(asserted || '|' || source_event, ' ' order by seq) from graph_tuples
+   where from_kind = 'session' and from_id = '$holder_session' and kind = 'part_of'
+     and to_kind = 'role' and to_id = '$role'"
 
 # G10: a message is a node of its project and earns no delivery or authorship tuple in this child.
 # Its create writes its node before its row, in the issue's project, and the message.created event
@@ -771,43 +912,134 @@ query G11 "remove the row written as the release before the store writes one" \
 want_value G11 "the row the release before the store wrote is gone" 0 \
   "select count(*) from ask_followers where ask_id = '$ask' and session_id = '$unseen_session'"
 
-# G12: every tuple this run wrote carries a time, an actor and a causing write the records hold:
-# the actor and the event of the write that appended it, and a time no earlier than the record it
-# states. Each kind is held to the write that appends it, which this driver states here rather than
-# reads from the store, so a writer that records a tuple under another actor, another event or an
-# earlier time than its write fails here even where every read of the store agrees with it.
+# G12: the answer to an attempt the listener had not taken. The mention names the session whose
+# every send the listener refuses, so its attempt settles failed against that session: the
+# listener took nothing, and the record of its receipt states no delivery (outbox's
+# mentionReached). The session then answers that very attempt through the reply route. The reply
+# is a comment of its own, stored by its comment.answered event, and the answer flips the attempt
+# to sent (api's replyComment). That flip is what makes the attempt a delivery, so the answer's
+# own write states it, under the answering session and its comment.answered event (api's
+# queueAnsweredDelivery): the one writer of a delivered_to beside the outbox.
+comment G12 "a comment mentioning a session whose every send the listener refuses" agent \
+  "A mention the listener will not carry." "session:$answering_session"
+readonly unanswered_comment="$comment"
+settles G12 "the mention's attempt settles failed against that session" "failed|$answering_session" \
+  "select coalesce(max(state || '|' || coalesce(session_id, '')), 'none') from comment_deliveries
+   where comment_id = '$unanswered_comment'"
+query G12 "read the failed attempt's number" \
+  "select max(attempt) from comment_deliveries where comment_id = '$unanswered_comment'"
+readonly answered_attempt="$answer"
+want_value G12 "the failed attempt earns no tuple" 0 \
+  "select count(*) from graph_tuples where from_kind = 'comment' and from_id = '$unanswered_comment'
+     and kind = 'delivered_to'"
+send POST "/api/v1/comments/$unanswered_comment/reply" \
+  "$(jq -cn --arg s "$answering_session" --argjson a "$answered_attempt" \
+    '{body: "The answer to a mention the listener never carried.", attempt: $a, actor: {kind: "session", id: $s}}')"
+want_status 201 G12 "the session answers the attempt the listener had not taken"
+reply="$(jq -er '.id' "$work/body")" || fail G12 "the session answers the attempt" "no reply id: $(body)"
+readonly reply
+pass G12 "$answering_session answers attempt $answered_attempt with the reply $reply"
+want_value G12 "the answer reads the attempt sent, answered by the reply" "sent|$reply" \
+  "select state || '|' || coalesce(reply_id::text, '') from comment_deliveries
+   where comment_id = '$unanswered_comment' and attempt = $answered_attempt"
+query G12 "read the reply's event" \
+  "select coalesce(max(id), 0) from events where type = 'comment.answered' and payload->>'id' = '$reply'"
+readonly reply_event="$answer"
+[[ "$reply_event" != 0 ]] || fail G12 "read the reply's event" "no comment.answered event names $reply"
+want_value G12 "the reply is authored by the answering session, under the comment.answered event that stored it" \
+  "session|$answering_session|$reply_event" \
+  "select string_agg(to_kind || '|' || to_id || '|' || source_event, ' ') from graph_tuples
+   where from_kind = 'comment' and from_id = '$reply' and kind = 'authored_by'"
+want_value G12 "the answer states the comment delivered to the answering session, by that session under its comment.answered event" \
+  "session|$answering_session|$reply_event" \
+  "select string_agg((who->>'kind') || '|' || (who->>'id') || '|' || source_event, ' ') from graph_tuples
+   where from_kind = 'comment' and from_id = '$unanswered_comment' and kind = 'delivered_to'
+     and to_kind = 'session' and to_id = '$answering_session' and asserted"
+
+# G13: a session the secrets broker proved a person's is an alias of that person. The token is the
+# harness's fake broker's (e2e/fake-broker-token.ts): it names the proved session and the person
+# it acts for under the project scope `person`, and it is bound to a key broker-session.ts makes
+# here, which signs a fresh DPoP proof for every request presenting it. The session's comment is
+# that session's own, and the same write ties the session to its person by an alias_of tuple
+# (graphstore's aliases), the identity table's proved row, which is read back both as the server
+# answers who the credential is and as the store's alias names that person.
+bun "$broker_session" mint "$work/broker.key" "$proved_session" "$person" "$project" \
+  >"$work/broker.token" 2>"$work/curl" ||
+  fail G13 "mint a token of the fake broker for $proved_session" "$(<"$work/curl")"
+pass G13 "minted a token of the fake broker naming $proved_session, acting for $person"
+proved_spelling="${proved_identity%%|*}"
+proved_person="${proved_identity##*|}"
+request broker GET "/api/v1/whoami"
+want_status 200 G13 "read who the server takes the proved session's credential for"
+expect G13 "the credential is the session '$proved_spelling', acting for $proved_person" \
+  "{\"owner\":\"$proved_person\",\"session\":\"$proved_spelling\"}" '{owner, session}'
+comment G13 "the proved session writes a comment" broker "A note the session the broker proved wrote."
+readonly proved_comment="$comment"
+want_value G13 "the comment is authored by the proved session, not by its person" "session|$proved_spelling" \
+  "select string_agg(to_kind || '|' || to_id, ' ') from graph_tuples
+   where from_kind = 'comment' and from_id = '$proved_comment' and kind = 'authored_by'"
+want_value G13 "'$proved_spelling' is an alias of $proved_person" "person|$proved_person" \
+  "select string_agg(to_kind || '|' || to_id, ' ') from graph_tuples
+   where from_kind = 'session' and from_id = '$proved_spelling' and kind = 'alias_of' and asserted"
+want_value G13 "one person node answers the person the alias names" 1 \
+  "select count(*) from graph_nodes where kind = 'person' and id = '$proved_person'"
+request "person:$person" GET "/api/v1/people/$(q "$person")/nodes"
+want_status 200 G13 "read $person's page after the proved session's write"
+expect G13 "what the proved session wrote stays that session's and is on no person's page" "0" \
+  --arg id "$proved_comment" '[.rows[] | select(.id == $id)] | length'
+
+# G14: every tuple standing on this run's nodes, of every kind, carries the actor and the event of
+# the write that appended it and a time its record allows. Each kind is held to the write that
+# appends it, which this driver states here rather than reads from the store, so a writer that
+# records a tuple under another actor, another event or an earlier time than its write fails here
+# even where every read of the store agrees with it; and each kind it holds holds at least one
+# tuple of this run (tuples_carry).
 #
-#   - authored_by is the comment's own write (graphstore.Authored): the comment's author, its
-#     comment.created event by that author, and the comment's own time, each equal to the record's.
+#   - authored_by is the comment's own write (graphstore.Authored): the comment's author, the
+#     event that stored the comment by that author - comment.created, or comment.answered for a
+#     reply (G12) - and the comment's own time, each equal to the record's.
 #   - alias_of is appended by that same write beside it (graphstore's aliases): the actor of the
-#     event that stored the comment, that event, and a time no earlier than the comment.
+#     event that stored the comment, that event, and a time no earlier than the comment (G13).
 #   - delivered_to, a page's part_of, a session's part_of the role it claimed and a role's held_by
 #     are the outbox's record of what a batch delivered (outbox.deliveredGraph), which the store
 #     records as written by the outbox itself (outbox's graphWriter): that a thing reached a
 #     session is the server's fact and not an act of whoever wrote the thing. So the actor each
-#     carries is that writer, $outbox_writer below, and never its causing event's. The event is
-#     the one the record states: for a delivery, any comment.* event whose payload names the
-#     comment and which was published to the session or the role the tuple names, as the outbox
-#     records a delivery of every such event (outbox's deliveredItem), or the comment.delivery
-#     receipt of an attempt the listener took against that session; for a session's page, the
-#     receipt that recorded the session; for a role's page, an event published to the role or one
-#     whose route, target or mention names it; and for a claim, an event published to the role.
+#     carries is that writer, $outbox_writer below, and never its causing event's, at no time
+#     earlier than that event. The event is the one the record states: for a delivery, any
+#     comment.* event whose payload names the comment and which was published to the session or
+#     the role the tuple names, as the outbox records a delivery of every such event (outbox's
+#     deliveredItem), or the comment.delivery receipt of an attempt the listener took against
+#     that session; for a session's page, the receipt that recorded the session; for a role's
+#     page, the event that first named the role, as the first record to name a role writes its
+#     page once; and for a claim - a role's held_by, asserted or retracted, and a session's
+#     part_of that role - the first event of its record published to the role, the one that
+#     record resolved the holder for.
 #   - delivered_to has one other writer: the answer to an attempt the listener had not taken (api's
-#     recordAnsweredDelivery), which states the delivery its answer makes. That tuple carries the
-#     answering session, the actor of the answer's comment.answered event, and that event, which
-#     stored the reply the attempt of that session to that comment records. An attempt whose
+#     queueAnsweredDelivery), which states the delivery its answer makes (G12). That tuple carries
+#     the answering session, the actor of the answer's comment.answered event, and that event,
+#     which stored the reply the attempt of that session to that comment records. An attempt whose
 #     receipt says the listener took it before the answer earns its tuple from the outbox, so an
 #     answer to it states none. A delivered_to under any other actor, or under one of these two
 #     actors with the other's event, fails.
+#   - visibility and state, the base attributes, are stated by the write that made the node or
+#     moved them, under that write's writer, event and time (graphstore's queueNodes), as is a
+#     comment's project, the third base attribute this run's nodes carry: a comment's by its own
+#     write at its own time; a person's and a session's that wrote by the comment that
+#     first named them, at that comment's time; a session's an attempt reached by the settle of
+#     that attempt, at the attempt's time (graphstore.Reached), or by an answer it gave, at the
+#     answer's (api's queueAnsweredDelivery); a follower's by the follow, no earlier than it
+#     (asks.Follow); and a role's, a page's, and a session's a copy of a comment reached, by the
+#     outbox, under the same events its claims are stated under, at no earlier time.
 #
-# This run answers no attempt, so no delivered_to tuple here is an answer's own: that pair is held
-# wherever a run writes one. It presents no broker token and resolves no holder (G9), so no
-# alias_of or held_by tuple and no session's part_of a role stands on its nodes: those checks hold
-# none, and their lines say so.
+# No tuple of another kind may stand on this run's comments, sessions, roles and pages. A person
+# node is the one node of this run that other writes share - a login's node is that login's
+# whatever wrote it - so of a person this driver holds its base attributes, and the tuples into
+# it from the far end.
 readonly outbox_writer='{"kind": "system", "id": "dispatch-outbox"}'
-# The nodes of this run that the tuples standing on no comment start from: its sessions, its two
-# roles and their pages, as SQL lists.
-run_sessions=("$session" "$loose_session" "$holder_session" "$mentioned_session" "$stopped_session"
+# The nodes of this run, as SQL lists: its sessions, its two roles and their pages, its two
+# people, and the issues whose comments are its own.
+run_sessions=("$session" "$loose_session" "$holder_session" "$second_holder_session"
+  "$mentioned_session" "$stopped_session" "$answering_session" "$proved_session"
   "$claimed_session" "$twin_session" "$dead_session" "$followed_session" "$unseen_session")
 sessions_sql="$(printf "'%s'," "${run_sessions[@]}")"
 readonly sessions_sql="${sessions_sql%,}"
@@ -815,17 +1047,60 @@ roles_sql="$(printf "'%s'," "$role" "$message_role")"
 readonly roles_sql="${roles_sql%,}"
 pages_sql="$(printf "'session/%s'," "${run_sessions[@]}")$(printf "'role/%s'," "$role" "$message_role")"
 readonly pages_sql="${pages_sql%,}"
-tuples_carry G12 "every authored_by tuple of this run carries its comment's author, event and time" \
+readonly persons_sql="'$person', '$twin'"
+readonly issues_sql="'$key', '$message_key'"
+# Whether the tuple t stands on a node of this run, an SQL predicate.
+readonly run_nodes="((t.from_kind = 'comment'
+      and t.from_id in (select id::text from comments where issue_key in ($issues_sql)))
+   or (t.from_kind = 'person' and t.from_id in ($persons_sql))
+   or (t.from_kind = 'session' and t.from_id in ($sessions_sql))
+   or (t.from_kind = 'role' and t.from_id in ($roles_sql))
+   or (t.from_kind = 'page' and t.from_id in ($pages_sql)))"
+
+# first_naming ROLE: the id of the first event that named the role ROLE, an SQL expression: one
+# published to the role's topic, or one whose payload addresses it, as the outbox reads an event's
+# roles (outbox's addressedRoles). The record of that event is the first to write the role, its
+# page and the page's part_of, and each is written once.
+first_naming() {
+  printf '%s' "(select min(n.id) from events n
+     where 'notifications.role.' || $1 = any(n.published_destinations)
+        or (n.type in ('issue.created', 'issue.updated', 'issue.closed')
+            and n.payload->>'route' = 'role:' || $1)
+        or (n.type in ('message.created', 'message.answered') and n.payload->>'target' = 'role:' || $1)
+        or (n.type = 'comment.created'
+            and n.payload->'mentions' @> jsonb_build_array(jsonb_build_object('target', 'role:' || $1))))"
+}
+# first_routed EVENT ROLE: whether the event EVENT is the first event of its record published to
+# the role ROLE, an SQL predicate: the one the record resolved the role's holder for, whose claim
+# it states (outbox.deliveredGraph). Every event a record marks published carries that record's
+# one published_at (outbox.recordBatch).
+first_routed() {
+  printf '%s' "('notifications.role.' || $2 = any($1.published_destinations)
+     and not exists (select 1 from events n
+                     where n.id < $1.id and n.published_at = $1.published_at
+                       and 'notifications.role.' || $2 = any(n.published_destinations)))"
+}
+# taken_receipt EVENT SESSION: whether the event EVENT is the comment.delivery receipt of an
+# attempt the listener took against the session SESSION, an SQL predicate (outbox's
+# mentionReached).
+taken_receipt() {
+  printf '%s' "($1.type = 'comment.delivery' and btrim($1.payload->>'session_id') = $2
+     and $1.payload->>'state' in ('sent', 'queued'))"
+}
+
+tuples_carry G14 "every authored_by tuple of this run carries its comment's author, the event that stored it and its time" \
   "select format('comment:%s authored_by %s:%s', t.from_id, t.to_kind, t.to_id) as tuple,
           t.who, t.source_event, t.at, c.author as want_who,
-          e.id is not null as caused, 'the comment.created event of the comment, by its author' as cause,
+          e.id is not null as caused, 'the ' || stored.kind || ' event of the comment, by its author' as cause,
           t.at = c.created_at as timely, c.created_at::text || ', the time of the comment' as when_want
    from graph_tuples t
    join comments c on c.id::text = t.from_id
-   left join events e on e.id = t.source_event and e.type = 'comment.created'
+   cross join lateral (select case when exists (select 1 from comment_deliveries d where d.reply_id = c.id)
+                                   then 'comment.answered' else 'comment.created' end as kind) stored
+   left join events e on e.id = t.source_event and e.type = stored.kind
      and e.payload->>'id' = t.from_id and e.actor = c.author
-   where t.from_kind = 'comment' and t.kind = 'authored_by' and c.issue_key = '$key'"
-tuples_carry G12 "every delivered_to tuple of this run carries the outbox's writer or the answering session, and the event that delivered it" \
+   where t.kind = 'authored_by' and $run_nodes"
+tuples_carry G14 "every delivered_to tuple of this run carries the outbox's writer or the answering session, and the event that delivered it" \
   "select format('comment:%s delivered_to %s:%s', t.from_id, t.to_kind, t.to_id) as tuple,
           t.who, t.source_event, t.at,
           case when pair.answer then e.actor else '$outbox_writer'::jsonb end as want_who,
@@ -842,8 +1117,7 @@ tuples_carry G12 "every delivered_to tuple of this run carries the outbox's writ
      (e.type like 'comment.%' and e.payload->>'id' = t.from_id
       and case t.to_kind when 'session' then 'notifications.agent.' when 'role' then 'notifications.role.' end
           || t.to_id = any(e.published_destinations))
-     or (e.type = 'comment.delivery' and t.to_kind = 'session' and e.payload->>'comment_id' = t.from_id
-         and btrim(e.payload->>'session_id') = t.to_id and e.payload->>'state' in ('sent', 'queued'))
+     or (t.to_kind = 'session' and e.payload->>'comment_id' = t.from_id and $(taken_receipt e t.to_id))
        as outbox,
      e.type = 'comment.answered' and t.to_kind = 'session' and e.actor->>'kind' = 'session'
        and exists (select 1 from comment_deliveries d
@@ -856,44 +1130,38 @@ tuples_carry G12 "every delivered_to tuple of this run carries the outbox's writ
                                        and r.payload->>'attempt' = d.attempt::text
                                        and r.payload->>'state' in ('sent', 'queued')))
        as answer) pair
-   where t.from_kind = 'comment' and t.kind = 'delivered_to' and c.issue_key = '$key'"
-tuples_carry G12 "every part_of tuple of this run's sessions and pages carries the outbox's writer and the event that recorded it" \
-  "select format('%s:%s part_of %s:%s', t.from_kind, t.from_id, t.to_kind, t.to_id) as tuple,
+   where t.kind = 'delivered_to' and $run_nodes"
+tuples_carry G14 "every part_of tuple of this run's sessions and pages carries the outbox's writer and the event that recorded it" \
+  "select format('%s:%s part_of %s:%s%s', t.from_kind, t.from_id, t.to_kind, t.to_id,
+                 case when t.asserted then '' else ' (retracted)' end) as tuple,
           t.who, t.source_event, t.at, '$outbox_writer'::jsonb as want_who,
-          e.id is not null as caused,
-          case when t.to_kind = 'session' then 'the receipt of an attempt the listener took against the session'
-               when t.from_kind = 'page' then 'an event published to the role or naming it'
-               else 'an event published to the role' end as cause,
-          t.at >= e.created_at as timely,
-          'no earlier than ' || coalesce(e.created_at::text, 'its event') as when_want
-   from graph_tuples t
-   left join events e on e.id = t.source_event and (
-     (t.from_kind = 'page' and t.to_kind = 'session' and t.from_id = 'session/' || t.to_id
-      and e.type = 'comment.delivery' and btrim(e.payload->>'session_id') = t.to_id
-      and e.payload->>'state' in ('sent', 'queued'))
-     or (t.to_kind = 'role' and (t.from_kind = 'session' or t.from_id = 'role/' || t.to_id)
-         and 'notifications.role.' || t.to_id = any(e.published_destinations))
-     or (t.from_kind = 'page' and t.to_kind = 'role' and t.from_id = 'role/' || t.to_id and (
-           (e.type in ('issue.created', 'issue.updated', 'issue.closed')
-            and e.payload->>'route' = 'role:' || t.to_id)
-           or (e.type in ('message.created', 'message.answered')
-               and e.payload->>'target' = 'role:' || t.to_id)
-           or (e.type = 'comment.created'
-               and e.payload->'mentions' @> jsonb_build_array(jsonb_build_object('target', 'role:' || t.to_id))))))
-   where t.kind = 'part_of'
-     and ((t.from_kind = 'page' and t.from_id in ($pages_sql))
-          or (t.from_kind = 'session' and t.from_id in ($sessions_sql)))"
-tuples_carry G12 "every held_by tuple of this run's roles carries the outbox's writer and the event that resolved it" \
-  "select format('role:%s held_by %s:%s', t.from_id, t.to_kind, t.to_id) as tuple,
-          t.who, t.source_event, t.at, '$outbox_writer'::jsonb as want_who,
-          e.id is not null as caused, 'an event published to the role' as cause,
+          coalesce(case
+            when t.from_kind = 'page' and t.to_kind = 'session' and t.from_id = 'session/' || t.to_id
+              then $(taken_receipt e t.to_id)
+            when t.from_kind = 'page' and t.to_kind = 'role' and t.from_id = 'role/' || t.to_id
+              then e.id = $(first_naming t.to_id)
+            when t.from_kind = 'session' and t.to_kind = 'role' then $(first_routed e t.to_id)
+          end, false) as caused,
+          case when t.from_kind = 'session' then 'the first event of its record published to the role'
+               when t.to_kind = 'role' then 'the event that first named the role'
+               else 'the receipt of an attempt the listener took against the session' end as cause,
           t.at >= e.created_at as timely,
           'no earlier than ' || coalesce(e.created_at::text, 'its event') as when_want
    from graph_tuples t
    left join events e on e.id = t.source_event
-     and 'notifications.role.' || t.from_id = any(e.published_destinations)
-   where t.kind = 'held_by' and t.from_kind = 'role' and t.from_id in ($roles_sql)"
-tuples_carry G12 "every alias_of tuple of this run's sessions carries the actor and the event of the write that proved it" \
+   where t.kind = 'part_of' and $run_nodes"
+tuples_carry G14 "every held_by tuple of this run's roles, asserted or retracted, carries the outbox's writer and the event that resolved it" \
+  "select format('role:%s held_by %s:%s%s', t.from_id, t.to_kind, t.to_id,
+                 case when t.asserted then '' else ' (retracted)' end) as tuple,
+          t.who, t.source_event, t.at, '$outbox_writer'::jsonb as want_who,
+          coalesce($(first_routed e t.from_id), false) as caused,
+          'the first event of its record published to the role' as cause,
+          t.at >= e.created_at as timely,
+          'no earlier than ' || coalesce(e.created_at::text, 'its event') as when_want
+   from graph_tuples t
+   left join events e on e.id = t.source_event
+   where t.kind = 'held_by' and $run_nodes"
+tuples_carry G14 "every alias_of tuple of this run's sessions carries the actor and the event of the write that proved it" \
   "select format('session:%s alias_of %s:%s', t.from_id, t.to_kind, t.to_id) as tuple,
           t.who, t.source_event, t.at, e.actor as want_who,
           c.id is not null as caused,
@@ -904,11 +1172,73 @@ tuples_carry G12 "every alias_of tuple of this run's sessions carries the actor 
    left join events e on e.id = t.source_event and e.type in ('comment.created', 'comment.answered')
    left join comments c on c.id::text = e.payload->>'id' and c.author = e.actor
      and t.from_id in (c.author->>'id', c.author->'act'->>'session')
-   where t.kind = 'alias_of' and t.from_kind = 'session' and t.from_id in ($sessions_sql)"
-want_value G12 "no tuple of this run was written by nobody" 0 \
-  "select count(*) from graph_tuples t
-   join comments c on c.id::text = t.from_id
-   where t.from_kind = 'comment' and c.issue_key = '$key'
-     and coalesce(t.who->>'kind', '') = ''"
+   where t.kind = 'alias_of' and $run_nodes"
+for attribute in visibility state project; do
+  tuples_carry G14 "every $attribute tuple of this run's nodes carries the writer, the event and the time of the write that made or moved it" \
+    "select format('%s:%s %s %s', t.from_kind, t.from_id, t.kind, t.to_id) as tuple,
+            t.who, t.source_event, t.at,
+            case when w.write in ('outbox', 'copy') then '$outbox_writer'::jsonb else e.actor end as want_who,
+            w.write is not null as caused,
+            case t.from_kind
+              when 'comment' then 'the event that stored the comment, by its author'
+              when 'person' then 'the event of a comment its author wrote as that person'
+              when 'session' then 'the event of a comment the session wrote or answered, a receipt of an'
+                || ' attempt the listener took against it, a follow of it, or a copy of a comment published to it'
+              when 'role' then 'the event that first named the role'
+              else 'the event that first named its role, or the receipt of an attempt the listener took'
+                || ' against its session' end as cause,
+            case w.write
+              when 'comment' then t.at = own.created_at
+              when 'author' then t.at = stored.created_at
+              when 'answer' then t.at = e.created_at
+              when 'settle' then t.at = attempt.created_at
+              else t.at >= e.created_at end as timely,
+            case w.write
+              when 'comment' then own.created_at::text || ', the time of the comment'
+              when 'author' then stored.created_at::text || ', the time of the comment'
+              when 'answer' then e.created_at::text || ', the time of the answer'
+              when 'settle' then attempt.created_at::text || ', the time of the attempt'
+              else 'no earlier than ' || coalesce(e.created_at::text, 'its event') end as when_want
+     from graph_tuples t
+     left join events e on e.id = t.source_event
+     left join comments own on t.from_kind = 'comment' and own.id::text = t.from_id
+     left join comments stored on e.type in ('comment.created', 'comment.answered')
+       and stored.id::text = e.payload->>'id'
+     left join comment_deliveries attempt on e.type = 'comment.delivery'
+       and attempt.comment_id::text = e.payload->>'comment_id' and attempt.target = e.payload->>'target'
+       and attempt.attempt::text = e.payload->>'attempt'
+     cross join lateral (select case
+       when t.from_kind = 'comment' then
+         case when e.payload->>'id' = t.from_id and stored.author = e.actor then 'comment' end
+       when t.from_kind = 'person' then
+         case when stored.author = e.actor and t.from_id in (
+                case when e.actor->>'kind' = 'user' then lower(btrim(e.actor->>'id')) end,
+                lower(btrim(e.actor->>'owner'))) then 'author' end
+       when t.from_kind = 'session' then
+         case
+           when stored.author = e.actor and e.actor->>'kind' = 'session' and e.actor->>'id' = t.from_id
+             then 'author'
+           when e.type = 'comment.answered' and exists (select 1 from comment_deliveries d
+                                                        where d.reply_id = stored.id
+                                                          and btrim(d.session_id) = t.from_id)
+             then 'answer'
+           when $(taken_receipt e t.from_id) then 'settle'
+           when e.type = 'ask.follower_added' and e.payload->>'session_id' = t.from_id then 'follow'
+           when e.type like 'comment.%' and 'notifications.agent.' || t.from_id = any(e.published_destinations)
+             then 'copy'
+         end
+       when t.from_kind = 'role' then case when e.id = $(first_naming t.from_id) then 'outbox' end
+       when t.from_kind = 'page' and t.from_id like 'role/%' then
+         case when e.id = $(first_naming "substr(t.from_id, 6)") then 'outbox' end
+       when t.from_kind = 'page' then
+         case when $(taken_receipt e "substr(t.from_id, 9)") then 'outbox' end
+     end as write) w
+     where t.kind = '$attribute' and t.to_kind = 'value' and $run_nodes"
+done
+want_value G14 "no tuple of a kind this driver holds no rule for stands on this run's comments, sessions, roles and pages" 0 \
+  "select count(*) || coalesce(': ' || string_agg(distinct t.from_kind || ' ' || t.kind, ', '), '')
+   from graph_tuples t
+   where $run_nodes and t.from_kind <> 'person'
+     and t.kind not in ('authored_by', 'delivered_to', 'part_of', 'held_by', 'alias_of', 'visibility', 'state', 'project')"
 
 printf 'graph-store.sh: every check passed\n'

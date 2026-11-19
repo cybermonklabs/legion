@@ -120,12 +120,15 @@ var readableEventsWhere = eventReadableSQL("events", "$2")
 //     are one; a node kind reserved for its author would have to be named in this key.
 //   - The part ids of the options and the answer, and the ask's part revision, from ask_blocks.
 //     Every write of an ask indexes its parts in the transaction that appends the ask's event
-//     (refs.IndexAskPartsCounted, in asks.go, ask_transitions.go, issue_ask_lifecycle.go and
-//     reviews.go), so an ask's own writes move these and last_seq together. The one write that
-//     does not is the indexing of an ask the index owes - one written before its parts were
-//     indexed at all - which the block index pass makes on no event (refs.IndexOwedItemBlocks,
-//     docs/block_index.go): until that pass runs, a payload carries no part ids and no
-//     revision, and the page that was kept after it goes on carrying none.
+//     (queueAskParts, over docs.Ledger.QueueAskParts, which reviews.go reaches as the ask routes
+//     do, through asks.go, ask_transitions.go, issue_ask_lifecycle.go and write_queue.go, and the
+//     docs package's planAskPartsCounted for the asks it writes itself: a settlement's block asks,
+//     an approval request's rewording and its carry's answer), so an ask's own writes move these
+//     and last_seq together. The one write that does not is the indexing of an ask the index
+//     owes - one written before its parts were indexed at all - which the block index pass makes
+//     on no event (refs.IndexOwedItemBlocks, docs/block_index.go): until that pass runs, a
+//     payload carries no part ids and no revision, and the page that was kept after it goes on
+//     carrying none.
 //   - anchor_artifact and approval_artifact: the project, slug, name and is_primary of the
 //     document an ask anchors or asks approval of (attachAskDocumentArtifacts). A document's
 //     rename, re-slug or primary flag moves the sequence of the issue that document belongs to,

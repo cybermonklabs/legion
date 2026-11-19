@@ -98,16 +98,26 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 	`, payload).Scan(&event); err != nil {
 		t.Fatalf("record the document's event: %v", err)
 	}
-	if err := graphstore.Caused(ctx, tx, documentNode, event); err != nil {
+	if err := causeInWritePhase(joined, tx, documentNode, event); err != nil {
 		t.Fatalf("append what the document's node write stated: %v", err)
 	}
-	if err := graphstore.Caused(ctx, tx, write, event); err != nil {
+	if err := causeInWritePhase(joined, tx, write, event); err != nil {
 		t.Fatalf("append what the write's block index stated: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the document write: %v", err)
 	}
 	return artifactID
+}
+
+// causeInWritePhase queues the append of what written stated under event, the event that caused
+// it, on the write phase of the ledger ctx joins tx to, after every write queued so far, as the
+// routes queue it after their event (graphstore.QueueCaused). The node write it moves onto that
+// event is queued there as well and runs only once the ledger commits, so an append run at once
+// would run before the rows it settles exist. A transaction no ledger joins runs it at once
+// (write).
+func causeInWritePhase(ctx context.Context, tx pgx.Tx, written graphstore.Uncaused, event int64) error {
+	return write(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueCaused(b, written, event) })
 }
 
 // countRows is one count over the document's rows of a table keyed by artifact_id.
@@ -258,42 +268,65 @@ func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
 	requireTheRebuildWritesRefsAndNoProjectedRow(t, database, document)
 }
 
-// requireTheTickLocksTheOwnerThenTheOwedRow holds each of the two rows the tick takes and reads
-// where the tick stops: the owner row first, before it has written anything, and the owed row
-// next, which it only reaches once the owner row is free. Both are taken before any write, so a
-// tick that could not take them leaves the document as it found it.
+// requireTheTickLocksTheOwnerThenTheOwedRow holds each of the two locks the tick takes and reads
+// where the tick stops: the document owner's advisory lock first, in its read phase, before it
+// has read or written anything of the document's index (lockArtifactOwner), and the owed row
+// next, which its write phase takes with the revision it writes (BlockIndexing's queueStand) and
+// which it only reaches once the owner is free. The fence is decided under the owner, so a tick
+// that could not take the owner leaves the document as it found it.
 //
-// Where the tick stops says which row it waits for, not which it already holds, so each step
-// also tries the other row without waiting while the tick waits. Waiting at the owner row, the
-// tick must hold nothing yet, so the owed row is free to take; waiting at the owed row, it must
-// hold the owner row already, so the try is refused. A tick that took the two in the other order
-// passes neither try.
+// Where the tick stops says which lock it waits for, not which it already holds, so each step
+// also tries the other lock without waiting while the tick waits. Waiting at the owner, the tick
+// must hold nothing yet, so the owed row is free to take; waiting at the owed row, it must hold
+// the owner already, so the try is refused. A tick that took the two in the other order passes
+// neither try.
 func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Store, service *Service) {
 	t.Helper()
 	ctx := context.Background()
+	// Every document these steps create is issue CORE-1's.
+	owner := store.IssueOwner("CORE-1")
+	holdTheOwner := func(holder pgx.Tx, _ string) error { return store.LockOwner(ctx, holder, owner) }
+	holdTheOwedRow := func(holder pgx.Tx, document string) error {
+		_, err := holder.Exec(ctx, `select 1 from document_block_versions where artifact_id = $1 for no key update`, document)
+		return err
+	}
+	tryTheOwedRow := func(probe pgx.Tx, document string) (bool, error) {
+		_, err := probe.Exec(ctx, `select 1 from document_block_versions where artifact_id = $1 for no key update nowait`, document)
+		var refused *pgconn.PgError
+		if errors.As(err, &refused) && refused.Code == "55P03" {
+			return false, nil
+		}
+		return err == nil, err
+	}
+	tryTheOwner := func(probe pgx.Tx, _ string) (bool, error) {
+		taken, err := store.TryLockOwners(ctx, probe, owner)
+		return len(taken) == 1, err
+	}
 	for _, step := range []struct {
-		name, slug, hold, wantStatement string
-		// other is the row the step does not hold, tried `nowait` while the tick waits, and
-		// otherHeld whether the tick must hold it by then.
-		otherName, other string
-		otherHeld        bool
+		name, slug, wantStatement string
+		hold                      func(holder pgx.Tx, document string) error
+		// other is the lock the step does not hold, tried without waiting while the tick
+		// waits, and otherHeld whether the tick must hold it by then.
+		otherName string
+		other     func(probe pgx.Tx, document string) (bool, error)
+		otherHeld bool
 	}{
 		{
-			name:          "the document's owner row",
+			name:          "the document owner's lock",
 			slug:          "owner-locked",
-			hold:          `select 1 from issues i join artifacts a on a.issue_key = i.key where a.id = $1::uuid for no key update of i`,
-			wantStatement: "from issues",
+			hold:          holdTheOwner,
+			wantStatement: "as owner_lock",
 			otherName:     "the document's owed row",
-			other:         `select 1 from document_block_versions where artifact_id = $1 for no key update nowait`,
+			other:         tryTheOwedRow,
 			otherHeld:     false,
 		},
 		{
 			name:          "the document's owed row",
 			slug:          "owed-locked",
-			hold:          `select 1 from document_block_versions where artifact_id = $1 for no key update`,
+			hold:          holdTheOwedRow,
 			wantStatement: "document_block_versions",
-			otherName:     "the document's owner row",
-			other:         `select 1 from issues i join artifacts a on a.issue_key = i.key where a.id = $1::uuid for no key update of i nowait`,
+			otherName:     "the document owner's lock",
+			other:         tryTheOwner,
 			otherHeld:     true,
 		},
 	} {
@@ -305,7 +338,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 		if err != nil {
 			t.Fatalf("begin the holder of %s: %v", step.name, err)
 		}
-		if _, err := holder.Exec(ctx, step.hold, document); err != nil {
+		if err := step.hold(holder, document); err != nil {
 			holder.Rollback(ctx)
 			t.Fatalf("hold %s: %v", step.name, err)
 		}
@@ -326,7 +359,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 		if rows := countRows(t, database, "document_blocks", document); rows != 0 {
 			t.Errorf("the tick wrote %d block rows before it had taken %s, want none", rows, step.name)
 		}
-		requireTheOtherRow(t, database, document, step.name, step.otherName, step.other, step.otherHeld)
+		requireTheOtherLock(t, database, document, step.name, step.otherName, step.other, step.otherHeld)
 		if err := holder.Rollback(ctx); err != nil {
 			t.Fatalf("release %s: %v", step.name, err)
 		}
@@ -338,31 +371,31 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 	}
 }
 
-// requireTheOtherRow tries, on a transaction of its own and without waiting, the row the step
+// requireTheOtherLock tries, on a transaction of its own and without waiting, the lock the step
 // does not hold while the tick waits at the one it does. held says whether the tick must hold
-// that row by then: the try is refused (55P03) exactly when it does. The try is rolled back at
-// once, so a row it took is never one the tick then waits for.
-func requireTheOtherRow(t *testing.T, database *store.Store, document, waitingAt, otherName, other string, held bool) {
+// that lock by then: the try is refused exactly when it does. The try is rolled back at once, so
+// a lock it took is never one the tick then waits for.
+func requireTheOtherLock(t *testing.T, database *store.Store, document, waitingAt, otherName string,
+	other func(probe pgx.Tx, document string) (bool, error), held bool) {
 	t.Helper()
 	ctx := context.Background()
 	probe, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the try of %s: %v", otherName, err)
 	}
-	_, tried := probe.Exec(ctx, other, document)
+	taken, tried := other(probe, document)
 	if err := probe.Rollback(ctx); err != nil {
 		t.Fatalf("end the try of %s: %v", otherName, err)
 	}
-	var refused *pgconn.PgError
-	switch taken := !errors.As(tried, &refused) || refused.Code != "55P03"; {
-	case tried != nil && taken:
+	switch {
+	case tried != nil:
 		t.Fatalf("try %s while the tick waits at %s: %v", otherName, waitingAt, tried)
 	case held && taken:
-		t.Errorf("while the tick waited at %s, %s was free to take: the tick takes the owner row, then the owed row, so it holds %s by then",
+		t.Errorf("while the tick waited at %s, %s was free to take: the tick takes the owner's lock, then the owed row, so it holds %s by then",
 			waitingAt, otherName, otherName)
 	case !held && !taken:
-		t.Errorf("while the tick waited at %s, %s was already held (%v): the tick takes the owner row, then the owed row, so it holds nothing while it waits for the first",
-			waitingAt, otherName, tried)
+		t.Errorf("while the tick waited at %s, %s was already held: the tick takes the owner's lock, then the owed row, so it holds nothing while it waits for the first",
+			waitingAt, otherName)
 	}
 }
 
@@ -492,31 +525,34 @@ var indexPasses = map[string]string{
 	"api/comment_create.go#writeNode":      "the comment the create request stores, as its row is written",
 	"api/comment_create.go#caused":         "the facts writeNode stated and the event that stored the comment",
 	"api/comment_delivery.go#replyComment": "the reply a delivery recorded",
-	// A delivery attempt's settle states the session it reached (graphstore.Reached).
+	// A delivery attempt's settle states the session it reached (graphstore.QueueReached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
 	// An answer that flips a stored attempt to sent records the session it reached and, where
 	// that flip is what makes the attempt a delivery, the delivered_to tuple, under the answer's
 	// own event. It reads the attempt row the answer flipped and no row of either side.
-	"api/comment_delivery.go#recordAnsweredDelivery": "the attempt the answer flipped and the answer's own event",
+	"api/comment_delivery.go#queueAnsweredDelivery": "the attempt the answer flipped and the answer's own event",
 	// A follow of an ask writes the follower row and the following session's node in one
-	// statement (graphstore.WriteArms), and each caller that appended an event after the follow
-	// moves the node that follow made onto it (graphstore.Caused). Neither reads a row of either
-	// side: the follow writes the session its caller names, and the cause the node the follow
-	// answered.
-	"asks/followers.go#Follow":               "the ask and the session its caller names",
-	"api/ask_followers.go#changeAskFollower": "the follow request and the event it appended after the follow",
-	"api/asks.go#createAskFor":               "the ask the create request opens and the event it appended after the follow",
+	// statement (graphstore.WriteArms), and each caller that appends an event after the follow
+	// moves the node that follow made onto it (graphstore.QueueCaused). Neither reads a row of
+	// either side: the follow writes the session its caller names, and the cause the node the
+	// follow answered.
+	"asks/followers.go#queueFollow":    "the ask and the session its caller names",
+	"api/server.go#appendCausingEvent": "the event its caller appends and the facts its caller's write stated before it",
+	"api/asks.go#createAskFor":         "the ask the create request opens and the event it appended after the follow",
 	// A renewed approval request follows its ask for the requester and moves the node that
 	// follow made onto the last event the renewal appended, or leaves it at the sentinel when
 	// the renewal appended none.
 	"api/reviews.go#renewApprovalAsk": "the open approval request, the requester and the event the renewal appended",
-	"docs/ask_blocks.go#causeFollows": "the follows a settlement made and the ask.opened events it appended after them",
+	// A settlement states right after each event it appends what waited for it: its version's
+	// block index after the artifact.version, and each ask it opened, its node and its follow,
+	// after that ask's ask.opened (graphstore.QueueCaused).
+	"docs/settlement.go#appendEvents": "the facts the settlement's index pass, its asks' nodes and its follows stated and the events it appended after them",
 	// The node of every ask and message a request or a settlement creates, before its row, in the
 	// project or between the parties it belongs to, and caused by the event the create appends.
 	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
 	"docs/ask_blocks.go#createAskBlock":          "the ask block the settlement opens and the document that holds it",
-	"api/messages.go#writeMessageNode":           "the message the request stores, its issue, and the root of the thread it answers",
+	"api/artifacts.go#queueNewArtifact":          "the document the upload creates, the node the store holds at its address, and the event the upload appends",
 	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
 	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
 	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
@@ -524,14 +560,13 @@ var indexPasses = map[string]string{
 	// the artifact.removed event it appends.
 	"api/artifact_removal.go#removeArtifact": "the document the request removes and the event it appended",
 	// The block index's cause: what a version's index pass stated, appended under the event
-	// that recorded the version once it is appended (graphstore.Caused), which reads no
+	// that recorded the version once it is appended (graphstore.QueueCaused), which reads no
 	// projection and mends nothing.
 	"api/artifacts.go#storeArtifact":                "the facts the upload's index pass stated, the uploaded document and the event the upload appended",
 	"api/artifacts.go#commitArtifactVersionEvent":   "the facts the version's index pass stated and the event that recorded the version",
 	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated, the issue the request creates and the issue's own event",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated and the seed's own plan",
 	"docs/block_index.go#indexOwedDocument":         "the facts the tick's index pass stated and the event that recorded the version",
-	"docs/settlement.go#commitVersion":              "the facts the settled version's index pass stated and the event that recorded it",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
@@ -555,7 +590,13 @@ var indexPasses = map[string]string{
 	// version). That pass writes neither a projected table nor the store, so it is no entry here.
 	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content and the document it is in",
 	"graphcensus/backfill.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
-	"graphcensus/backfill.go#writeCommentBatch":  "each pre-store comments row's own content",
+	// The comment write both of the comment batch's writers share - the backfill's comment batch
+	// and the block-index tick's write of the comments the events after its cursor name whose rows
+	// name no node (graphcensus.CommentsNamingNoNode) - each comment's node and facts, read from the
+	// row's own content with the event that stored it as its cause, named on that comment's own row
+	// (graphcensus.CommentWrite.Queue). It reads no side of a projection to mend the other and
+	// leaves alone a row that names its node.
+	"graphcensus/backfill.go#Queue": "each comments row whose node the write states, read from the row's own content, and the event that stored it",
 	// The backfill of the roles. A role, its page and the page's part_of it have no projection
 	// row, so there is no projection to read one side of: the batch's input is the roles the
 	// store census holds to a node, which a row addresses now or an event of the log ever
@@ -568,7 +609,7 @@ var indexPasses = map[string]string{
 	// the store lacks of them, and a node another write made it leaves alone.
 	"graphcensus/backfill.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
 	// The backfill of the project of every node: the rows of the issues, documents, asks and
-	// messages that their marker does not mark, each read again under its owner row before its node is
+	// messages that their marker does not mark, each read again under its owner lock before its node is
 	// written, and the comment and block nodes that name no project, each with the row its
 	// project is read from.
 	"graphcensus/projects_backfill.go#writeObjectBatch": "the issue, document, ask and message rows their marker does not mark",
@@ -599,17 +640,18 @@ var indexPasses = map[string]string{
 	// tuples left of the node to refuse a run whose set moved, and deletes the node its one
 	// caller names.
 	"graphstore/erase.go#EraseNode": "the node its caller names",
-	// A node write's two statements (writeNodes): the insert of the nodes the store lacks, which
-	// locks the ones it holds, and the move of the ones it holds. The move reads each row it
-	// moves, in the snapshot taken once the insert holds them all, to say which base attributes
-	// the write moved: it reads the store's own row to state what it writes into that row, never
-	// a projection to mend the store or the store to mend a projection.
-	"graphstore/write.go#insertNodes": "the nodes its caller states",
-	"graphstore/write.go#moveNodes":   "the nodes its caller states and the rows of them it moves",
-	// causeNodes is the second half of one write rather than a second look at it: the nodes its
-	// caller has just written take the id of the event that recorded them, which is known only
-	// once that event is appended (graphstore.Caused). It reads no projection and mends nothing.
-	"graphstore/write.go#causeNodes": "the nodes its caller stated and the event that recorded the write",
+	// A node write (queueNodes): the insert of the nodes the store lacks, which locks the ones it
+	// holds, and the move of the ones it holds. The move reads each row it moves, in the snapshot
+	// taken once the insert holds them all, to say which base attributes the write moved: it reads
+	// the store's own row to state what it writes into that row, never a projection to mend the
+	// store or the store to mend a projection.
+	"graphstore/write.go#queueNodes": "the nodes its caller states and the rows of them it moves",
+	// queueAppend is the second half of one write rather than a second look at it: it appends the
+	// tuples its caller states, and states the base attributes of the node rows its node write
+	// marked and moves them onto the write's cause, which it reads off those rows' marks
+	// (nodeMark). It reads the store's own rows its write just wrote, no projection, and mends
+	// nothing.
+	"graphstore/write.go#queueAppend": "the tuples its caller states and the node rows its own node write marked",
 	// FillScopes states the project of a node an earlier build stored with none: it locks and
 	// updates the rows of the nodes its caller names, reading of each only whether it carries a
 	// project already and its own made_at, made_by and cause, which the fact it states takes. The
@@ -622,16 +664,17 @@ var indexPasses = map[string]string{
 	// The record of a fallback pass splices in the same arms for each copy the pass published:
 	// the copy's delivered_to and the session its topic names.
 	"outbox/mentions.go#recordFallbackCopies": "the fallback copies the pass published and the topic each reached",
-	// A version's index pass reads its render. Where another release indexed the document after
-	// the store last stated its blocks (refs' standsAtVersion), the rows it compares the render
-	// with no longer hold the blocks and links that release dropped, so it also reads what the
-	// store still asserts of the document (heldDocumentBlocks); what it states of those - gone,
-	// retracted - is decided by the render that does not hold them, as reconcileBlockParents
-	// reads the parents the store asserts to state the render's.
-	"refs/blocks.go#IndexBlocks":                "the version's render, and where another release indexed the document since the store stated it, what the store still asserts against that render",
-	"refs/block_nodes.go#reconcileBlockParents": "the version's render",
-	"refs/blocks.go#replaceBlockRefs":           "the version's render",
-	"refs/refs.go#Stamp":                        "the event that recorded the write",
+	// A version's index pass reads its render (PlanBlocks), and BlockIndexing.Queue writes what
+	// the plan decided. Where another release indexed the document after the store last stated its
+	// blocks, the rows it compares the render with no longer hold the blocks and links that release
+	// dropped, so the plan also reads what the store still asserts of the document
+	// (heldDocumentBlocks); what it states of those - gone, retracted - is decided by the render
+	// that does not hold them, as the parents' plan reads the parents the store asserts to state the
+	// render's.
+	"refs/blocks.go#Queue":                  "the version's render, and where another release indexed the document since the store stated it, what the store still asserts against that render",
+	"refs/block_nodes.go#queueBlockParents": "the version's render",
+	"refs/blocks.go#queueBlockRefs":         "the version's render",
+	"refs/refs.go#queueStamp":               "the event that recorded the write",
 }
 
 // projectedWrite matches one statement of a Go source file that writes a projected table or the
@@ -643,12 +686,11 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // own, and a scan of SQL alone would never see it. asks.Follow picks graphstore.WriteArms or
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
-// the same use as one. The names are every exported function of graphstore that writes the store
-// or builds the statement that does, the list that test holds as storeWriteFunctions:
-// SessionRecorded writes a session's node through arms of its own, and a pass that wrote the
-// store through it alone would otherwise be read as no writer at all, and FillScopes is the
-// backfill's fill of the project of a node stored with none.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|SessionRecorded|WriteArms|WriteArmsUncaused|EraseNode|FillScopes)\b`)
+// the same use as one. The names are graphstore.WriteFunctions, the one list of every function a
+// write of the store from outside that package goes through, which that test and api's scan of
+// the projected tables' writers read too, so a writer the store gains is scanned here with no
+// second list to keep.
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(` + strings.Join(graphstore.WriteFunctions(), "|") + `)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

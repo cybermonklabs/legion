@@ -338,19 +338,20 @@ func costShapeName(shape string) string {
 // null, and on this child's arm also while it holds the backfill's own mark (store_owed_at),
 // which only this child's schema has and only its reconciliation clears.
 //
-// On this child's arm the wait also holds until the tick's marking has read every event it owes
-// a read of: until its build's row of block_index_event_cursors exists and its event_id has
-// reached its read_through. A process's first tick reads the event log once through its newest
-// event, so a tick after the documents drain can still mark the corpus's own documents owed and
-// index them again, which would write a node inside a measured window, or after the run has
-// taken the store off the corpus.
+// On this child's arm the wait also holds until the tick has read every event the log holds:
+// until its build's row of block_index_event_cursors exists and its event_id has reached the
+// newest event. Every tick reads the events after its build's cursor, and a process's first one
+// starts that cursor no later than the horizon the backfill recorded, so a tick after the
+// documents drain can still mark the corpus's own documents owed and index them again, which would
+// write a node inside a measured window, or after the run has taken the store off the corpus.
 func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	t.Helper()
 	owedRead := `select count(*) from document_block_versions where version is null`
 	if arm.head {
 		owedRead = `select (select count(*) from document_block_versions where version is null or store_owed_at is not null)
-			+ (select case when exists (select 1 from block_index_event_cursors where event_id >= read_through)
-			               and not exists (select 1 from block_index_event_cursors where event_id < read_through or another_build_seen)
+			+ (select case when exists (select 1 from block_index_event_cursors)
+			               and not exists (select 1 from block_index_event_cursors
+			                               where event_id < (select coalesce(max(id), 0) from events))
 			          then 0 else 1 end)`
 	}
 	deadline := time.Now().Add(within)

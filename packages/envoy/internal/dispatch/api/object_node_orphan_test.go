@@ -72,7 +72,7 @@ func TestTheSweepStatesAnOrphanGoneAsTheRemovalStatesIt(t *testing.T) {
 }
 
 // removeAsTheReleaseBefore removes the untouched document as the release before this one does,
-// in one transaction: the document's owner row first, then the rows removeArtifact clears, the
+// in one transaction: the document's owner lock first, then the rows removeArtifact clears, the
 // artifact row and an artifact.removed event naming it, as that release appends one, and no node
 // written or stated gone. It answers the event's id.
 func removeAsTheReleaseBefore(t *testing.T, database *store.Store, artifact model.Artifact) int64 {

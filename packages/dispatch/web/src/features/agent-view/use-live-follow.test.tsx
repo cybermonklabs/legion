@@ -3,6 +3,7 @@ import { act, render } from "@testing-library/react";
 import { type ReactNode, useCallback, useState } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import type { LivePlace } from "./live-views";
 import { type LiveFollowControl, useLiveFollow } from "./use-live-follow";
 
@@ -106,40 +107,6 @@ function installHitTest(): () => void {
     return turns[Math.floor((y - VIEWPORT_TOP + viewport.scrollTop) / TURN_HEIGHT)] ?? null;
   });
   return () => spy.mockRestore();
-}
-
-function installResizeObserver(): { fire: () => void; restore: () => void } {
-  const original = globalThis.ResizeObserver;
-  const live = new Set<ObserverStub>();
-
-  class ObserverStub {
-    readonly callback: ResizeObserverCallback;
-
-    constructor(callback: ResizeObserverCallback) {
-      this.callback = callback;
-      live.add(this);
-    }
-
-    disconnect(): void {
-      live.delete(this);
-    }
-
-    observe(): void {}
-
-    unobserve(): void {}
-  }
-
-  globalThis.ResizeObserver = ObserverStub as unknown as typeof ResizeObserver;
-  return {
-    fire: () => {
-      for (const observer of [...live]) {
-        observer.callback([], observer as unknown as ResizeObserver);
-      }
-    },
-    restore: () => {
-      globalThis.ResizeObserver = original;
-    },
-  };
 }
 
 function Harness({
@@ -258,11 +225,7 @@ function startHarness(
     },
     position: () => element().scrollTop,
     reported: () => places,
-    resize: () => {
-      act(() => {
-        sizes.fire();
-      });
-    },
+    resize: () => sizes.resize(),
     scroll: (change) => {
       act(() => {
         Object.assign(geometry, change);

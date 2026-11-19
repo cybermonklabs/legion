@@ -20,6 +20,7 @@ import (
 	"weak"
 
 	gws "github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 	ygws "github.com/reearth/ygo/provider/websocket"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -994,11 +995,11 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					t.Fatalf("trial %d: replace: %v", trial, err)
 				}
 				closed := make(chan error, 1)
-				// The close runs on a connection of the pool and waits there on the issue row
+				// The close runs on a connection of the pool and waits there on the owner lock
 				// this trial's write holds, so it gets a context the trial can end. Cancelled
 				// when the trial leaves, its Exec stops waiting and the release below gives that
 				// connection up, which is what lets Pool.Close finish even when the commit that
-				// would have freed the row never arrives.
+				// would have freed the lock never arrives.
 				closing, cancelClosing := context.WithCancel(ctx)
 				defer cancelClosing()
 				// The connection is taken here, on the trial's own goroutine, before the
@@ -1006,8 +1007,8 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 				// on the connection it hijacked, so the pool has no warm connection left to hand
 				// out, and a close that acquired inside the goroutine would spend the sleep
 				// dialling a new one -- a whole connection's handshake -- rather than waiting on
-				// the issue row. The case is written for the interleaving where the close is
-				// already waiting on the row the write holds by the time the commit starts, so a
+				// the owner lock. The case is written for the interleaving where the close is
+				// already waiting on the lock the write holds by the time the commit starts, so a
 				// close that only reaches its Exec after the sleep exercises nothing.
 				closer, err := database.Pool.Acquire(ctx)
 				if err != nil {
@@ -1021,8 +1022,9 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					// conn.go:32-33).
 					defer closer.Release()
 					issueKey := fmt.Sprintf("DOC-%d", number)
-					// The close waits on the issue row the write holds until the write commits.
-					if _, err := closer.Exec(closing, `update issues set closed_at = now() where key = $1`, issueKey); err != nil {
+					// The close takes the issue's owner lock, as a PATCH does, so it waits on the
+					// write that holds it until the write commits.
+					if err := closeIssueUnderItsOwnerLock(closing, closer, issueKey); err != nil {
 						closed <- err
 						return
 					}
@@ -1088,6 +1090,24 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// closeIssueUnderItsOwnerLock closes issueKey on conn, in a transaction that takes the issue's
+// owner lock first, as the issue PATCH does: the close waits there on the write that holds that
+// lock, and ctx's end stops the wait.
+func closeIssueUnderItsOwnerLock(ctx context.Context, conn *pgxpool.Conn, issueKey string) error {
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.Background())
+	if err := store.LockOwner(ctx, tx, store.IssueOwner(issueKey)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `update issues set closed_at = now() where key = $1`, issueKey); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // parkedCommitEnv names the trial of TestAWriteSurvivesItsIssueClosingAsItPublishes whose commit
@@ -1163,7 +1183,7 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 		t.Fatalf("the case passed in %v with trial 0's commit parked, so the park reached no trial:\n%s", took, output)
 	}
 	// This row is the only run of the committing flag's early return in the release and of a
-	// close cancelled while it waits on the issue row, so a race in either is reported here or
+	// close cancelled while it waits on the owner lock, so a race in either is reported here or
 	// nowhere: the child fails for its parked commit either way, and the checks below, which ask
 	// only why it failed, would pass straight over the race.
 	if strings.Contains(string(output), "WARNING: DATA RACE") {

@@ -4,7 +4,7 @@ import type {
   SessionAnswersResponse,
   WhoamiResponse,
 } from "@legion/contracts";
-import { inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
+import { awaitsDecision, inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { textHead } from "../ask-answer";
 import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
@@ -218,20 +218,30 @@ function inboxThreadLine(row: MyReplyRow, now: number): string {
   ].join(" · ");
 }
 
-/** One pending credential request: what it asks for, when, the sessions it names and the page
- *  where it is decided. A row that names no session leaves that field out rather than printing
- *  two dashes, and a machine login, which is decided with `dispatch` rather than on a broker
- *  page, carries no url to print. */
+/** One credential request: what it asks for, when, whether its deadline passed before anybody
+ *  decided it, the sessions it names and the page where it is decided. An expired row, which no
+ *  longer `awaitsDecision` (the rule the Inbox page reads too), is marked `expired` and its
+ *  deadline as the broker wrote it, the same mark the Inbox page gives it, or `expired` alone
+ *  from a broker that names no deadline; a pending row carries no mark, and so does a row with no
+ *  `state`, which comes from a broker older than the mark. An expired row names no page either:
+ *  the broker refuses every decision of it, so, as the Inbox page links that row nowhere, the
+ *  line prints no `approve_url` the broker still sends. A row that names no session leaves that
+ *  field out rather than printing two dashes, and a machine login, which is decided with
+ *  `dispatch` rather than on a broker page, carries no url to print. */
 function credentialRequestLine(request: CredentialPendingRow): string {
   const session = request.session ?? null;
+  const pending = awaitsDecision(request);
   return [
     `- ${request.kind}`,
     (request.identifiers ?? []).join(", "),
     request.requested_at,
+    ...(pending
+      ? []
+      : [request.expires_at === undefined ? "expired" : `expired ${request.expires_at}`]),
     ...(session === null
       ? []
       : [`session request=${session.request ?? "-"}, enrollment=${session.enrollment ?? "-"}`]),
-    ...(request.approve_url === undefined ? [] : [request.approve_url]),
+    ...(!pending || request.approve_url === undefined ? [] : [request.approve_url]),
   ].join(" · ");
 }
 
@@ -277,15 +287,20 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  *
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
  * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
- * plus every credential request, which is the viewer's by construction because the list is read
- * as `?approver=me`. Here that is the band's own rows and nothing narrower, since `?assignee=me`
- * keeps only the asks that wait on the caller, as the page's default view does; counting
- * the rows it prints is therefore the page's rule, and it is the one count that cannot disagree
- * with the lines under it.
+ * plus every credential request still waiting on a decision, which is the viewer's by
+ * construction because the list is read as `?approver=me`. Here that is the band's own rows and
+ * nothing narrower, since `?assignee=me` keeps only the asks that wait on the caller, as the
+ * page's default view does; counting the rows it prints is therefore the page's rule, and it is
+ * the one count that cannot disagree with the lines under it. An expired credential request
+ * waits on nobody (`awaitsDecision`), so it is not counted here, as the page does not count it,
+ * though `Credential requests` lists and counts it until somebody dismisses it.
  *
  * `Unread threads` is the page's thread list (`GET /api/v1/me/replies?kind=reply,agent`): the
  * threads the person is reading that somebody else has written in since, and the messages they
  * sent an agent session that it answered, newest reply first.
+ *
+ * `Credential requests` is the broker's list as Dispatch relays it, in its order: the pending
+ * requests first, then the expired ones nobody has dismissed.
  */
 function formatInboxSummary(
   rows: readonly InboxRow[],
@@ -299,7 +314,7 @@ function formatInboxSummary(
     if (section !== undefined) sections[section].push(row);
   }
   return [
-    `Needs you ${sections.human.length + requests.length}`,
+    `Needs you ${sections.human.length + requests.filter(awaitsDecision).length}`,
     ...sections.human.map(inboxAskLine),
     "",
     `Waiting on agents ${sections.agent.length}`,

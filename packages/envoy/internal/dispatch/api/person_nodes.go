@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -48,7 +50,7 @@ type personNodes struct {
 // to, each with the relations that tie it there. $1 is the canonical login.
 //
 // Each arm reads the tuples whose far end is the person's node or a session of theirs, which is
-// the inbound read graph_tuples_inbound serves, and each keeps the newest tuple per far end
+// the inbound read graph_tuples_as_of_in serves, and each keeps the newest tuple per far end
 // while that newest one asserts - the current-tuple rule graphstore.CurrentIn and
 // graphstore.CurrentOut read a node by, spliced here as graphstore.CurrentTupleRead.
 //
@@ -174,6 +176,12 @@ var personNodesQuery = personNodesTied + `, items as (
 // see, none at all where they hold nothing: a person who has written nothing and been reached by
 // nothing opens their own page from the signed-in login, and telling them they are who they signed
 // in as tells them nothing new.
+//
+// The decision and the list run in one read-only transaction at repeatable read, as
+// schemanodes.Read's reads do, so the list reads the snapshot the decision read: a write that
+// commits between the two - one that moves the person's only visible node gone, or reserves it
+// for its author - is read by neither, and the reader is answered the page as it stood when the
+// route decided, never 200 with no rows for a person the route decided holds a node they may see.
 func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -193,8 +201,15 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	login := model.CanonicalLogin(r.PathValue("login"))
 	seen := refs.VisibilityArg(caller)
+	tx, err := s.deps.Store.Pool.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The transaction reads only, so its end is a rollback whatever happened.
+	defer tx.Rollback(r.Context())
 	var shown bool
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), personPageShownQuery, login, seen, personPageKinds).Scan(&shown); err != nil {
+	if err := tx.QueryRow(r.Context(), personPageShownQuery, login, seen, personPageKinds).Scan(&shown); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -208,7 +223,12 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, personNodes{Person: login, Rows: []personNode{}, Limit: limit, Offset: offset})
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), personNodesQuery, login, seen, limit, offset)
+	// The test seam: a case commits a write here, between the decision and the list (server
+	// betweenPersonPageReads). Nothing but a test sets it.
+	if s.betweenPersonPageReads != nil {
+		s.betweenPersonPageReads()
+	}
+	rows, err := tx.Query(r.Context(), personNodesQuery, login, seen, limit, offset)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

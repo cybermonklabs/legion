@@ -271,7 +271,7 @@ func (s *server) unsubscribeIssueSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	key := r.PathValue("key")
-	if _, _, err := issueStatus(r.Context(), s.deps.Store.Pool, who, key, ""); err != nil {
+	if _, _, err := issueStatus(r.Context(), who, key, pooledOwnerRead(s.deps.Store.Pool)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

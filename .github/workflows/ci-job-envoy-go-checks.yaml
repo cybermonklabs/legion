@@ -127,6 +127,14 @@ jobs:
       - name: Test the architecture-note and spec-file rules and their commands
         run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
         working-directory: packages/envoy
+      # listenerwire's tests and wirecheck's need no database, and listenerwire's clients test
+      # type-checks the daemon's listener clients, so they run here, their one run, and a change to
+      # only those daemon packages starts this job rather than envoy-go's: envoy-go's unit step
+      # leaves both packages out, its `grep -Ev` and this step's package list built from
+      # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py.
+      - name: Test the listener's wire package, its clients and wirecheck
+        run: go test -count=1 ./listenerwire/ ./internal/wirecheck/
+        working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
         working-directory: packages/contracts
@@ -163,6 +171,9 @@ jobs:
         working-directory: packages/envoy
       - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3; no real Postgres or network)
         run: bash scripts/dev-stack.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
+        run: bash scripts/callout-check.test.sh
         working-directory: packages/envoy
       - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
         run: bash scripts/dev-postgres.test.sh

@@ -110,7 +110,7 @@ func writeIndexedDocument(t *testing.T, database *store.Store, service *Service,
 		// is what a version no event recorded leaves. Without this the rows and their nodes are
 		// written but the tuples are not, and the graph_edges tuple arm, which answers every row
 		// that names its node, would answer nothing for this document.
-		return graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
+		return causeInWritePhase(ctx, tx, write, graphstore.NoEvent)
 	}); err != nil {
 		t.Fatalf("write document %s: %v", slug, err)
 	}

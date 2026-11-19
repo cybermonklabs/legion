@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The node kinds of the people and the agents Dispatch records. Each is a supertag of the
@@ -189,6 +190,12 @@ func provedSession(actor model.Actor) (string, bool) {
 // role, and whether a run holds a role is resolved where the roles are read (outbox.recordBatch),
 // never here.
 func Authored(ctx context.Context, tx pgx.Tx, kind, id string, actor model.Actor, at time.Time, event int64) error {
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueAuthored(b, kind, id, actor, at, event) })
+}
+
+// QueueAuthored is Authored queued on a write phase's batch, for a write whose event that phase
+// appends before it: event is then LatestEvent.
+func QueueAuthored(b *store.WriteBatch, kind, id string, actor model.Actor, at time.Time, event int64) error {
 	nodes, tuples, named := AuthorFacts(kind, id, actor, at, event)
 	if !named {
 		return nil
@@ -197,9 +204,7 @@ func Authored(ctx context.Context, tx pgx.Tx, kind, id string, actor model.Actor
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
-		return fmt.Errorf("write who wrote %s %s: %w", kind, id, err)
-	}
+	b.Queue(fmt.Sprintf("write who wrote %s %s", kind, id), "with "+arms+"\nselect 1", params...)
 	return nil
 }
 
@@ -225,10 +230,24 @@ func Authored(ctx context.Context, tx pgx.Tx, kind, id string, actor model.Actor
 // resend of one attempt, and a second attempt reaching the same session, finds the node there
 // and answers none, so the settle moves nothing another write made.
 func Reached(ctx context.Context, tx pgx.Tx, state, session string, who model.Actor, at time.Time) (Uncaused, error) {
+	var write Uncaused
+	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		var err error
+		write, err = QueueReached(b, state, session, who, at, NoEvent)
+		return err
+	})
+	return write, err
+}
+
+// QueueReached is Reached queued on a write phase's batch, with the cause in hand or not. A
+// settle that appends its receipt earlier in the same batch passes LatestEvent: the node is then
+// stated under the receipt in its one statement, and the write answered holds nothing. A caller
+// that passes NoEvent queues the receipt after this and moves the node onto it (QueueCaused).
+func QueueReached(b *store.WriteBatch, state, session string, who model.Actor, at time.Time, event int64) (Uncaused, error) {
 	if !model.DeliveryTaken(state) {
 		return Uncaused{}, nil
 	}
-	made, err := SessionRecorded(ctx, tx, strings.TrimSpace(session), who, at, NoEvent)
+	made, err := QueueSessionRecorded(b, strings.TrimSpace(session), who, at, event)
 	if err != nil {
 		return Uncaused{}, fmt.Errorf("record the session %s a delivery reached: %w", session, err)
 	}
@@ -236,56 +255,61 @@ func Reached(ctx context.Context, tx pgx.Tx, state, session string, who model.Ac
 }
 
 // SessionRecorded writes the node of a session a write records, inside that write's transaction,
-// and answers the write: the node where this write made it, and nothing at all where the store
-// held it already. An attempt that reached a session records it here (Reached). A follow of an
-// ask records it with the same node arm spliced into its follower insert (asks.Follow), so that
-// a follow costs one statement.
+// and answers the write held for its cause: the node, which the cause moves only where this write
+// made it. An attempt that reached a session records it here (Reached). A follow of an ask
+// records it with the same node arm spliced into its follower insert (asks.Follow), so that a
+// follow costs one statement.
 //
 // It goes through the same arms every other write of this store splices in (WriteArms): the node
 // row is upserted `do nothing`, which locks no row that is already there. One node, so the
 // ascending (kind, id) order a multi-node write takes is kept by having nothing to order.
 //
 // Where event is NoEvent the cause comes later: the writer appends its event after this and
-// moves the node onto it (Caused over the answered write). The base attributes are then no part
-// of the statement here (WriteArmsUncaused) and are answered as facts held for that event
-// (BaseAttributeFacts), because no tuple may be updated to learn its cause afterwards and a
-// node row moved onto the event would otherwise name an event its own base tuples do not.
-// Where event names the write's own cause they are stated in the arm, under it, and the write
-// answered holds the node alone: a node this write did not make is another write's, keeps that
-// write's cause, and is described by that write's own base tuples.
+// moves the node onto it (QueueCaused over the answered write). The base attributes are then no
+// part of the statement here (WriteArmsUncaused): the node is made marked as made (nodeMark), and
+// the append that comes with its cause states them, because no tuple may be updated to learn its
+// cause afterwards and a node row moved onto the event would otherwise name an event its own base
+// tuples do not. Where event names the write's own cause they are stated in the arm, under it,
+// and the write answered holds nothing: a node this write did not make is another write's, keeps
+// that write's cause, and is described by that write's own base tuples.
 //
 // A session id carries no length bound, and a session past the store's address bound is no node
 // the store can key: nothing is written for it, as the comment path writes none for a session
 // author past the bound (AuthorFacts). The census leaves such a session out of both sides
 // (graphcensus's recordedSessions).
 func SessionRecorded(ctx context.Context, tx pgx.Tx, session string, who model.Actor, at time.Time, event int64) (Uncaused, error) {
+	var write Uncaused
+	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		var err error
+		write, err = QueueSessionRecorded(b, session, who, at, event)
+		return err
+	})
+	return write, err
+}
+
+// QueueSessionRecorded is SessionRecorded queued on a write phase's batch.
+func QueueSessionRecorded(b *store.WriteBatch, session string, who model.Actor, at time.Time, event int64) (Uncaused, error) {
 	if session == "" || !AddressFits(session) {
 		return Uncaused{}, nil
 	}
-	node := SessionNode(session, who, at, event)
+	nodes := []Node{SessionNode(session, who, at, event)}
 	// The arms state the node's base attributes where this write's cause is in hand, and state
 	// none where it comes later, which the write answered holds for it instead.
-	writeArms := WriteArms
+	var (
+		arms   string
+		params []any
+		write  Uncaused
+		err    error
+	)
 	if event == NoEvent {
-		writeArms = WriteArmsUncaused
+		arms, params, write, err = WriteArmsUncaused(1, nodes, nil, nil)
+	} else {
+		arms, params, err = WriteArms(1, nodes, nil, nil)
 	}
-	arms, params, err := writeArms(1, []Node{node}, nil, nil)
 	if err != nil {
 		return Uncaused{}, err
 	}
-	var made int
-	if err := tx.QueryRow(ctx, "with "+arms+"\nselect count(*) from graph_nodes_written", params...).Scan(&made); err != nil {
-		return Uncaused{}, fmt.Errorf("record the session %s: %w", session, err)
-	}
-	if made == 0 {
-		return Uncaused{}, nil
-	}
-	write := Uncaused{Nodes: []Node{node}}
-	if event == NoEvent {
-		if write.Tuples, err = BaseAttributeFacts(write.Nodes); err != nil {
-			return Uncaused{}, err
-		}
-	}
+	b.Queue(fmt.Sprintf("record the session %s", session), "with "+arms+"\nselect count(*) from graph_nodes_written", params...)
 	return write, nil
 }
 

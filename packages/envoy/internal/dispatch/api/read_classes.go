@@ -58,7 +58,7 @@ var probeObjects = []probeObject{
 	probePriority, probeDeliveryRun, probeBroadcast, probeGoingRun, probeRepositoryOwner,
 	probeRepositoryName, probeLivePause, probeNearCopyCheck,
 	probeResult, probeThread, probeAttempt, probeEmail, probeGroup, probeAgentToken, probeSessionGroup,
-	probeCredentialRequest, probeCredentialGrant, probeMachineLogin, probeSignin, probeMappedRepository,
+	probeCredentialRequest, probeCredentialGrant, probeMachineLogin, probeSignin, probeMappedRepository, probeStep,
 }
 
 // reads is one entry of readClasses.
@@ -146,6 +146,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/issues/{key}/collaborators":           reads("everyone who worked one issue: its people and its agent sessions", byIssue, readclass.Project, readclass.People, readclass.Agents),
 	"GET /api/v1/issues/{key}/subscribers":             reads("the sessions subscribed to one issue's topics", byIssue, readclass.Project, readclass.Agents),
 	"GET /api/v1/issues/{key}/role-holders":            reads("the sessions that hold one issue's Legion roles", byIssue, readclass.Project, readclass.Agents),
+	"GET /api/v1/issues/{key}/steps":                   reads("the runs of each step of one issue's workflow, rows of its project", byIssue, readclass.Project),
 	"GET /api/v1/issues/{key}/artifacts":               reads("one issue's documents and files", byIssue, readclass.Project),
 	"GET /api/v1/issues/{key}/results":                 reads("the checks of one issue's Verification document and their results", byIssue, readclass.Project),
 	"GET /api/v1/issues/{key}/coverage":                reads("what each requirement of one issue's spec lacks", byIssue, readclass.Project),

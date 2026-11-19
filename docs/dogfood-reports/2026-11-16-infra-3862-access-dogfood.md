@@ -76,11 +76,11 @@ Screenshots are in the run's scratch directory (`ce-dogfood-acnXjb`), not in the
 | # | Flow | Journey / Scenario | Status | Issue | Fix | Commit |
 |---|------|--------------------|--------|-------|-----|--------|
 | 1 | Access | Owner opens CORE's Access tab: owner "alice (you)", Public, two people, one group (`01`) | Pass | - | - | - |
-| 2 | Access | Owner adds `dave@theorem.dev` and the group `design.team`; the field clears, the picker drops the group (`05`) | Pass | - | - | - |
+| 2 | Access | Owner adds `dave@example.com` and the group `design.team`; the field clears, the picker drops the group (`05`) | Pass | - | - | - |
 | 3 | Access | Owner adds `bob`: the server's "\"bob\" is no email" shows under People with Retry, the draft stays (`04`) | Pass | - | - | - |
 | 4 | Access | Owner gives CORE to a restricted member: confirm, then "an owner is a full member who has signed in" under the owner field (`06`) | Pass | - | - | - |
 | 5 | Access | Owner gives CORE to bob: the note and every control's title read "Only bob, the project's owner, changes who may see it." (`07`) | Pass | - | - | - |
-| 6 | Access | bob adds `erin@theorem.dev` from another session; alice's open tab lists erin with no reload; alice makes group `qa` and the open picker offers it | Pass | - | - | - |
+| 6 | Access | bob adds `erin@example.com` from another session; alice's open tab lists erin with no reload; alice makes group `qa` and the open picker offers it | Pass | - | - | - |
 | 7 | Access | Remove a person and a group | Pass | - | - | - |
 | 8 | Access | Restricted member opens WEB (owner carol, empty list): empty states and the disabled controls read clearly (`09`) | Pass | - | - | - |
 | 9 | Groups | Owner's Settings → Groups: own groups editable, bob's `design.team` disabled (`03`) | Pass | - | - | - |

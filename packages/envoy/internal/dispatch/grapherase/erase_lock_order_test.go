@@ -2,7 +2,6 @@ package grapherase
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -14,20 +13,22 @@ import (
 )
 
 // R17: every store write takes one lock order, and the first of its invariants is that a store
-// write takes the owner row first. `envoy-dispatch erase` is a store write: it is the one
+// write takes the owner's lock first. `envoy-dispatch erase` is a store write: it is the one
 // statement of the source tree that deletes tuple rows and a node row (R1, R5), and it deletes
 // the projection rows of that node in the same transaction. The node it erases here is a comment
-// on a document of issue CORE-1, so its owner row is that issue's row, which every writer of a
-// comment takes before anything else (the comment path, the backfill's comment batch).
+// on a document of issue CORE-1, so its owner is that issue, whose advisory lock every writer of a
+// comment takes before anything else (store.LockOwner: the comment path, the backfill's comment
+// batch).
 //
 // The run holds the comment's node row in another transaction and starts the erase. A writer
-// that takes the owner row first holds that row by the time it queues behind the node row; a
-// writer that takes the node row first queues there holding nothing of the owner. The test reads
-// which of the two the erase is by trying the owner row with nowait while the erase waits.
+// that takes the owner's lock first holds it by the time it queues behind the node row; a writer
+// that takes the node row first queues there holding nothing of the owner. The test reads which
+// of the two the erase is by trying the owner's lock without waiting while the erase waits
+// (store.TryLockOwners).
 //
 // The erase deletes graph_tuples and graph_nodes rows through graphstore.EraseNode (erase.go,
 // apply), which TestEveryStoreWriteCallSiteIsListed lists, and leaves the proof of its lock order
-// to this package: this test holds it to taking the owner row first.
+// to this package: this test holds it to taking the owner's lock first.
 func TestTheEraseTakesItsNodesOwnerRowFirst(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -65,13 +66,14 @@ func TestTheEraseTakesItsNodesOwnerRowFirst(t *testing.T) {
 	waited := lockstep.WaitingStatement(t, database, pid)
 	t.Logf("the erase waits behind the held node row at: %s", waited)
 
-	// The owner row: free to take while the erase waits means the erase does not hold it.
-	_, ownerErr := database.Pool.Exec(ctx, `select 1 from issues where key = 'CORE-1' for no key update nowait`)
-	if ownerErr == nil {
-		t.Errorf("while the erase waited at comment %s's node row (%s), the comment's owner row, issue CORE-1, was free to take: R17 has a store write take the owner row first, and the erase takes the node row first",
+	// The owner's lock: free to take while the erase waits means the erase does not hold it.
+	taken, ownerErr := store.TryLockOwners(ctx, database.Pool, store.IssueOwner("CORE-1"))
+	if ownerErr != nil {
+		t.Fatalf("try the owner's lock while the erase waits: %v", ownerErr)
+	}
+	if len(taken) != 0 {
+		t.Errorf("while the erase waited at comment %s's node row (%s), the comment's owner, issue CORE-1, had its lock free to take: R17 has a store write take the owner's lock first, and the erase takes the node row first",
 			seeded.comment, waited)
-	} else if !strings.Contains(ownerErr.Error(), "could not obtain lock") {
-		t.Fatalf("try the owner row while the erase waits: %v", ownerErr)
 	}
 
 	if err := holder.Rollback(ctx); err != nil {

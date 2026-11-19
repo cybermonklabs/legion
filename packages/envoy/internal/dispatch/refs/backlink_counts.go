@@ -286,10 +286,10 @@ func TupleKinds() []string {
 // currentTuple is the test that the row alias names is the fact the store holds now: the newest
 // tuple of its (from, kind, to), kept only while that newest one asserts, which is how the store
 // reads a current relation (graphstore.CurrentTupleRead) and how the view's own tuple arm reads
-// one. The read of the newest binds all five columns of the relation, so it is one range of
-// graph_tuples_current, whose columns are exactly those five and then the sequence; the row is
-// a relation, never a value, and the read says so, which is the predicate that index is partial
-// on.
+// one. The read of the newest binds all five columns of the relation from the row, and reads
+// them through graph_tuples_as_of_in, which leads with the far end and the kind: the row's kind
+// proves nothing of graph_tuples_current's predicate, which leaves delivered_to out. The row is a
+// relation, never a value, and the read says so, which is the predicate as_of_in is partial on.
 func currentTuple(alias string) string {
 	return alias + `.asserted and ` + alias + `.seq = (select newest.seq from (` +
 		graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`, `t.seq`,
@@ -396,13 +396,12 @@ func (a backlinkArm) sql(target backlinkTarget) string {
 }
 
 // tupleSQL is the arm's reading of the store: the current tuples of this arm's kind pointing at
-// the addresses bound as $1, read through graph_tuples_inbound, whose columns are the to side,
-// the kind and then the from side. Its last tests are the view's own three rules over the node
-// the tuple comes from: an edge is the newest tuple of its own while that one asserts, it counts
-// only while the projection row that names the node carries it (projectionCarries), and a node
-// whose state is gone holds none, the last taken with the registry's predicate for that node
-// kind out of one read of its row (liveVisibleNode), so a node the acting person may not see
-// raises no count.
+// the addresses bound as $1, read through graph_tuples_as_of_in, which leads with the to side
+// and the kind. Its last tests are the view's own three rules over the node the tuple comes
+// from: an edge is the newest tuple of its own while that one asserts, it counts only while the
+// projection row that names the node carries it (projectionCarries), and a node whose state is
+// gone holds none, the last taken with the registry's predicate for that node kind out of one
+// read of its row (liveVisibleNode), so a node the acting person may not see raises no count.
 func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 	counted, join, keyed, address := target.read(`tuple.to_id`)
 	where := `tuple.to_kind = '` + target.kind + `' and tuple.kind = '` + a.tupleKind +
@@ -588,7 +587,7 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		arm(`block_refs r`, ` and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
 			and `+rowNamesNoNode(`r.node_kind`),
 			VisibleKind("block", `r.from_node`, backlinkSeen)),
-		// The same links in the store, read through graph_tuples_inbound: every current
+		// The same links in the store, read through graph_tuples_as_of_in: every current
 		// relation a block states but its membership of its document, which is the artifact's
 		// own part_of arm, and its placement under the block holding it, which is no edge of
 		// the view, each counted only while the block_refs row of its pair carries the block's

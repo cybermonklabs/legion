@@ -7,6 +7,7 @@ import (
 
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/roles"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // TestNoRoleHolderIsTheListenersWords: Dispatch answers a role whose holder its caller may not see
@@ -16,7 +17,7 @@ import (
 func TestNoRoleHolderIsTheListenersWords(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	writeRoleHolderError(recorder, "walked-role", roles.Resolution{State: roles.Unclaimed})
-	var refusal roleHolderError
+	var refusal listenerwire.RoleRefusal
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the listener's refusal %s: %v", recorder.Body.Bytes(), err)
 	}

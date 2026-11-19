@@ -204,6 +204,7 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 			SourceEvent: second, Asserted: true,
 		}, 0)
 	})
+	storetest.RequireNoMarkedCause(t, database, "Authored, Reached and the settles that caused them")
 }
 
 // settleWrite is the settle of a delivery attempt as the API runs it: the session the attempt

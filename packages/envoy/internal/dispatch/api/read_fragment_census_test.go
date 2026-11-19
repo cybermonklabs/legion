@@ -48,8 +48,8 @@ var projectOwnedRead = regexp.MustCompile(`(?i)\b(?:from|join)\s+(` + strings.Jo
 // entry no statement of the walk matches fails the census, so the list holds only statements the
 // server still makes.
 var readsOfNoProject = map[string]string{
-	// events.Horizon's statement.
-	"from (select coalesce(max(id), 0) as id from events) m left join events e on e.id = m.id": "the event log's " +
+	// events.Horizon's statement, whose FROM clause stands on a line of its own (horizon.go).
+	"from (select coalesce(max(id), 0) as id from events) m\n\tleft join events e on e.id = m.id": "the event log's " +
 		"horizon (events.Horizon): the newest event id and the time it was written, beside the snapshot's xmin, the " +
 		"bound below which every reader's page of the log is final. It answers no event's owner, type or payload, and " +
 		"a horizon read for one viewer would let a page pass an event a transaction still holds back",
