@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -108,8 +109,21 @@ func ownedBy(name string, token claim.Token) bool {
 // not go is logged and left for the next prune, never a failed write. Every other subdirectory is
 // never a pane's: the daemon's own provider-env directory (config.ProviderEnvDir) lives here, and
 // outlives every claim.
+//
+// Under the tmux runtime a claim's gh directory is one its pane's own user can write, so its
+// removal follows no link and waits on no fifo (rolefile.RemoveTree): a link the pane plants in it
+// is unlinked and what it names is never opened, and an entry the removal cannot take, such as a
+// link under a directory the pane made 0555, is logged and left, with the gh directory holding
+// it, for the next prune. dir sits under the operator's state directory, which may be reached
+// through a link, and may be a link itself, so it is resolved once (filepath.EvalSymlinks) before
+// it is read, and RemoveTree, which refuses a parent that is a link, takes the directory that link
+// names.
 func removeSecretFiles(dir string, log *slog.Logger, remove func(name string) bool) {
-	entries, err := os.ReadDir(dir)
+	resolved, err := filepath.EvalSymlinks(dir)
+	var entries []os.DirEntry
+	if err == nil {
+		entries, err = os.ReadDir(resolved)
+	}
 	if errors.Is(err, fs.ErrNotExist) {
 		return
 	}
@@ -121,12 +135,12 @@ func removeSecretFiles(dir string, log *slog.Logger, remove func(name string) bo
 		if !remove(entry.Name()) {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
+		path := filepath.Join(resolved, entry.Name())
 		if entry.IsDir() {
 			if !strings.HasSuffix(entry.Name(), "-gh") {
 				continue
 			}
-			if err := os.RemoveAll(path); err != nil {
+			if err := rolefile.RemoveTree(path); err != nil {
 				log.Error("secrets: remove a pane's gh directory", "dir", entry.Name(), "error", err)
 			}
 			continue

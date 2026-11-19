@@ -66,7 +66,7 @@ func readRuntime(pool *store.Pool, api string, log *slog.Logger) *workflowRuntim
 	w := &workflowRuntime{
 		pool: pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
 		tokens: outboxTokens{}, dispatchProject: "CAPTURE", bootID: "test-boot", log: log, githubAPI: api,
-		mergeStates: newWakeSet[string](), mergeStateRunning: map[string]bool{},
+		mergeStates: newWakeSet[string](), mergeStateRunning: map[string]*mergeStateRun{},
 	}
 	w.engine = workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, ReadMergeState: w.queueMergeState}, log)
 	w.handlers = []intake.Handler{w.engine}
@@ -102,7 +102,7 @@ func capturePhase(t *testing.T, pool *store.Pool) (phase.Phase, *record.PullRequ
 // handoff completion do, failing the test on an error.
 func readCapture(t *testing.T, w *workflowRuntime) {
 	t.Helper()
-	if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+	if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 		t.Fatalf("read CAPTURE-1's pull request: %v", err)
 	}
 }
@@ -165,53 +165,71 @@ func noticeReasons(t *testing.T, pool *store.Pool, kind string) []string {
 
 // GitHub sends no event when it computes a pull request's mergeability, so a head that starts
 // conflicting with its base - someone merged another pull request into it - is learned only from
-// the daemon's own read of /pulls/{number}. A conflicting read sends the tree back to implementing
-// from every phase after the implementer's: GitHub computes no merge
-// ref for a conflicting head and runs no checks on it at all. A read that finds `mergeable` still
-// null - GitHub has not computed it yet - or true moves nothing. The read must apply the fact and
-// decide even when it only confirms what is already stored: a conflict can be recorded while the
-// issue is still in testing or reviewing, and the first
-// read after the issue reaches merging has to catch it then, with no change in the GitHub
+// the daemon's own read of /pulls/{number}. The read applies what it found, and the issue keeps
+// its phase whatever that is (dispatch://INFRA-4374 R1). The first read that finds the head
+// conflicting records itself, queues the read that confirms it a minute later
+// (record.ConflictConfirm) and acts on nothing (R2). A read that finds `mergeable` still null -
+// GitHub has not computed it yet - or true records only that. The read must apply the fact and
+// decide even when it only confirms what is already stored: a conflict can be confirmed while the
+// issue is still in testing or reviewing, where it needed no merge yet, and the first read after
+// the issue reaches merging has to ask for the merge forward then, with no change in the GitHub
 // answer to key off.
 func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		state        string
-		stored       record.Mergeability
+		held         string
 		mergeability record.Mergeability
-		want         phase.Phase
+		firstRead    bool
+		asked        bool
 	}{
-		{"conflicting", "false", "", record.MergeabilityConflicting, phase.Implementing},
-		{"not yet computed", "null", "", record.MergeabilityUnknown, phase.Merging},
-		{"mergeable", "true", "", record.MergeabilityMergeable, phase.Merging},
-		{"conflict already recorded", "false", record.MergeabilityConflicting, record.MergeabilityConflicting, phase.Implementing},
+		{"conflicting", "false", "", record.MergeabilityConflicting, true, false},
+		{"not yet computed", "null", "", record.MergeabilityUnknown, false, false},
+		{"mergeable", "true", "", record.MergeabilityMergeable, false, false},
+		{"conflict already recorded", "false", "code", record.MergeabilityConflicting, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			seedCapture(t, pool, phase.Merging, "retro",
 				record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "code", Summary: "READY #86 at code"})
-			if tc.stored != "" {
-				if _, err := pool.Exec(context.Background(), "update pull_requests set mergeability = $1 where issue = 'CAPTURE-1'", string(tc.stored)); err != nil {
-					t.Fatalf("seed the stored mergeability: %v", err)
+			if tc.held != "" {
+				if _, err := pool.Exec(context.Background(), "update pull_requests set mergeability = $1, conflicting_head = $2 where issue = 'CAPTURE-1'",
+					string(record.MergeabilityConflicting), tc.held); err != nil {
+					t.Fatalf("seed the confirmed conflict: %v", err)
 				}
 			}
 			w := readRuntime(pool, mergeableStandIn(t, tc.state).URL, quietLogger())
-			if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+			if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 				t.Fatalf("read the issue's pull request: %v", err)
 			}
 			got, pr := capturePhase(t, pool)
-			if got != tc.want {
-				t.Fatalf("after the read the issue is in %s, want %s", got, tc.want)
+			if got != phase.Merging {
+				t.Fatalf("after the read the issue is in %s, want merging: no read of GitHub's mergeability moves an issue", got)
 			}
 			if pr.Mergeability != tc.mergeability {
 				t.Fatalf("recorded mergeability = %q, want %q", pr.Mergeability, tc.mergeability)
 			}
-			if tc.want != phase.Implementing {
+			confirms := outboxRowsOfKind(t, pool, "CAPTURE-1", record.OutboxKindConflictConfirm)
+			wantConfirms := 0
+			if tc.firstRead {
+				wantConfirms = 1
+			}
+			if first := pr.ConflictRead != nil; first != tc.firstRead || confirms != wantConfirms {
+				t.Fatalf("after the read the record holds first read %+v and the outbox %d second reads, want a first read %t and %d second reads",
+					pr.ConflictRead, confirms, tc.firstRead, wantConfirms)
+			}
+			asked := pr.MergeForward != nil && pr.MergeForward.Head == "code" && pr.MergeForward.Phase == phase.Merging
+			if asked != tc.asked {
+				t.Fatalf("after the read the record's merge forward is %+v, want one asked of code in merging %t", pr.MergeForward, tc.asked)
+			}
+			reasons := noticeReasons(t, pool, "checks-red")
+			if !tc.asked {
+				if len(reasons) != 0 {
+					t.Fatalf("checks-red notices %q, want none: nothing was acted on", reasons)
+				}
 				return
 			}
-			want := "the head conflicts with main: GitHub runs no checks on it; merge main forward"
-			reasons := noticeReasons(t, pool, "checks-red")
-			if len(reasons) != 1 || !strings.Contains(reasons[0], want) {
+			if want := "the issue stays in merging"; len(reasons) != 1 || !strings.Contains(reasons[0], want) {
 				t.Fatalf("checks-red notices %q, want one saying %q", reasons, want)
 			}
 		})
@@ -247,7 +265,7 @@ func TestThePerIssueReadRecordsGitHubsMergeStateForTheHead(t *testing.T) {
 			// The column holds whole microseconds, as every timestamp the store writes does, so
 			// the moment before the read is read to the same precision before it is compared.
 			opened := time.Now().UTC().Truncate(time.Microsecond)
-			if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+			if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 				t.Fatalf("read the issue's pull request: %v", err)
 			}
 			got, pr := capturePhase(t, pool)
@@ -263,7 +281,7 @@ func TestThePerIssueReadRecordsGitHubsMergeStateForTheHead(t *testing.T) {
 			if pr.StateReadAt.Before(opened) || pr.StateReadAt.After(time.Now().UTC()) {
 				t.Fatalf("the read is recorded as made at %v, want a moment of the read itself (after %v)", pr.StateReadAt, opened)
 			}
-			if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+			if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 				t.Fatalf("read the issue's pull request again: %v", err)
 			}
 			_, again := capturePhase(t, pool)

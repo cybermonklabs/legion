@@ -69,6 +69,84 @@ func unitValue(name string, getenv func(string) string) string {
 	return getenv(name)
 }
 
+// unitEscapingRule is install's needsEscaping in words: the rule a value it refuses broke. A
+// refusal names the variable and this rule, never the value, since the value may be a secret a
+// person pasted in place of a path, an account or a URL.
+const unitEscapingRule = `a character a unit's Environment= line would need escaped (a space, a tab, a line break, ", ', \, %, $ or ;)`
+
+// parseInstallFlags is fs.Parse(args) with nothing of args printed or returned. The flag package
+// writes a failure to the flag set's output before it returns it, and the failure's text holds
+// the argument it could not read (bad flag syntax: <arg>, flag provided but not defined:
+// -<name>, invalid value "<v>" for flag -<name>), where a --url's credential, or a secret
+// pasted where a flag goes, would print. So the flag set writes nothing, and a failure is this
+// function's own words: which of install's flags the argument was for, where it was for one, and
+// the flags install takes otherwise. Which flag that is comes from the parse itself and from
+// args, never from the failure's text, which an argument can make read as anything: a flag
+// whose Set refused its value is the one the parse records (failedSet), and a value-taking flag
+// that is the last argument the parse read is one that needs a value. -h and -help still print
+// the flags, whose texts and defaults hold nothing from args, and answer flag.ErrHelp.
+func parseInstallFlags(fs *flag.FlagSet, args []string) error {
+	fs.SetOutput(io.Discard)
+	var refused string
+	fs.VisitAll(func(f *flag.Flag) { f.Value = failedSet{Value: f.Value, name: f.Name, refused: &refused} })
+	err := fs.Parse(args)
+	fs.VisitAll(func(f *flag.Flag) { f.Value = f.Value.(failedSet).Value })
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, flag.ErrHelp):
+		fs.SetOutput(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Usage of install:")
+		fs.PrintDefaults()
+		return err
+	case refused != "":
+		return fmt.Errorf("install --%s was given a value it does not take (the argument is not printed)", refused)
+	}
+	// The flag package stops at the first argument it cannot read, so a flag that needs a value
+	// failed only when it is the last argument (-url or --url) and the parse read every argument.
+	if last := len(args) - 1; last >= 0 && fs.NArg() == 0 && strings.HasPrefix(args[last], "-") {
+		name := strings.TrimPrefix(strings.TrimPrefix(args[last], "-"), "-")
+		if f := fs.Lookup(name); f != nil && !isBoolFlag(f.Value) {
+			return fmt.Errorf("install --%s needs a value (the argument is not printed)", name)
+		}
+	}
+	return errors.New("install takes only --url URL and --restart-with-sessions, and an argument is neither (it is not printed)")
+}
+
+// failedSet is a flag's value during parseInstallFlags' parse, recording in refused the name of
+// the flag whose Set refused the value it was given. It is a bool flag exactly when the value it
+// wraps is one, so `--restart-with-sessions` still takes no value.
+type failedSet struct {
+	flag.Value
+	name    string
+	refused *string
+}
+
+func (f failedSet) Set(value string) error {
+	err := f.Value.Set(value)
+	if err != nil {
+		*f.refused = f.name
+	}
+	return err
+}
+
+func (f failedSet) IsBoolFlag() bool { return isBoolFlag(f.Value) }
+
+// String is the wrapped value's; the flag package also calls it on a zero failedSet, which wraps
+// none.
+func (f failedSet) String() string {
+	if f.Value == nil {
+		return ""
+	}
+	return f.Value.String()
+}
+
+// isBoolFlag reports whether value is a bool flag's, which the flag package sets with no value.
+func isBoolFlag(value flag.Value) bool {
+	b, ok := value.(interface{ IsBoolFlag() bool })
+	return ok && b.IsBoolFlag()
+}
+
 // install writes the helper's systemd user unit for the binary at exe (symlinks resolved), the
 // broker URL from --url or AGENT_SECRETS_URL, and every other AGENT_SECRETS_* variable of its
 // environment the unit's helper needs (unitVariables): the socket install probes, the operator
@@ -100,11 +178,12 @@ func install(args []string, getenv func(string) string, exe string, stdout io.Wr
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	url := fs.String("url", "", "the broker's base URL (default $AGENT_SECRETS_URL)")
 	restartWithSessions := fs.Bool("restart-with-sessions", false, "restart the helper even when sessions are registered")
-	if err := fs.Parse(args); err != nil {
+	if err := parseInstallFlags(fs, args); err != nil {
 		return err
 	}
+	urlSetting := "--url"
 	if *url == "" {
-		*url = getenv("AGENT_SECRETS_URL")
+		*url, urlSetting = getenv("AGENT_SECRETS_URL"), "AGENT_SECRETS_URL"
 	}
 	// Every trailing slash, the one rule the clients read the address by, and before the check
 	// below: a URL of nothing but slashes is no broker URL at all and is refused here rather
@@ -115,7 +194,7 @@ func install(args []string, getenv func(string) string, exe string, stdout io.Wr
 	}
 	const needsEscaping = " \t\r\n\"'\\%$;"
 	if strings.ContainsAny(*url, needsEscaping) {
-		return fmt.Errorf("broker URL %q holds characters a unit's Environment= line would need escaped", redact.URL(*url))
+		return fmt.Errorf("the broker URL holds %s (%s names %s)", unitEscapingRule, urlSetting, redact.URL(*url))
 	}
 	environment := "Environment=AGENT_SECRETS_URL=" + *url + "\n"
 	for _, v := range unitVariables {
@@ -124,11 +203,11 @@ func install(args []string, getenv func(string) string, exe string, stdout io.Wr
 			continue
 		}
 		if strings.ContainsAny(value, needsEscaping) {
-			return fmt.Errorf("%s %q holds characters a unit's Environment= line would need escaped", v.name, value)
+			return fmt.Errorf("%s holds %s; its value is not printed", v.name, unitEscapingRule)
 		}
 		// The unit's helper runs in another working directory than install does.
 		if v.path && !filepath.IsAbs(value) {
-			return fmt.Errorf("%s %q is a relative path, which the unit's helper would resolve from another directory; set it to an absolute path", v.name, value)
+			return fmt.Errorf("%s is a relative path, which the unit's helper would resolve from another directory; set it to an absolute path (its value is not printed)", v.name)
 		}
 		environment += "Environment=" + v.name + "=" + value + "\n"
 	}

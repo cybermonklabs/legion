@@ -73,7 +73,7 @@ func TestAStalledReleaseNamesOnlyAnArchitectItTold(t *testing.T) {
 
 	// The root's architect's release runs out the attempts: its notice is queued on the root.
 	rootArchitect := newLiveClaim(t, h, root, claim.RoleArchitect)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": rootArchitect.grant(t), "issues": []string{child}}, nil),
+	refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": rootArchitect.grant(t), "issues": []string{child}}, nil),
 		http.StatusConflict, "CHILD_RELEASE_STALLED")
 	if got := stalledOn(root); got != 1 {
 		t.Fatalf("stalled notices on the root %s after its architect's exhausting release = %d, want 1", root, got)
@@ -84,7 +84,7 @@ func TestAStalledReleaseNamesOnlyAnArchitectItTold(t *testing.T) {
 	sub := newLiveClaimIn(t, h, root, own, claim.RoleArchitect)
 	answer := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": sub.grant(t), "issues": []string{child}}, nil)
 	body := answer.Body.String()
-	assertFailure(t, answer, http.StatusConflict, "CHILD_RELEASE_STALLED")
+	refused(t, answer, http.StatusConflict, "CHILD_RELEASE_STALLED")
 	if match := notified.FindStringSubmatch(body); match != nil && stalledOn(match[1]) == 0 {
 		t.Fatalf("the refusal %s says the architect of %s was notified, but no child-release-stalled notice was queued on %s (root %s holds %d)",
 			body, match[1], match[1], root, stalledOn(root))

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -54,9 +53,7 @@ func TestRerunChildJudgesTheTreeFromOneRead(t *testing.T) {
 
 	issues, trees := counting.issues.Load(), counting.trees.Load()
 	recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil)
-	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "CHILD_UNDER_ACCEPTED_PARENT") {
-		t.Fatalf("rerun under a root awaiting its merge = %d %s, want 409 CHILD_UNDER_ACCEPTED_PARENT", recorder.Code, recorder.Body)
-	}
+	refused(t, recorder, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
 	// The child's own record, which authorizes the request, and the one read of its tree.
 	if read, treeReads := counting.issues.Load()-issues, counting.trees.Load()-trees; read != 1 || treeReads != 1 {
 		t.Fatalf("the refused rerun read %d issues one at a time and %d whole trees, want 1 and 1: the tree it is refused by is read once", read, treeReads)
