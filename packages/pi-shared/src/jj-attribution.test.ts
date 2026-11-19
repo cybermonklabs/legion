@@ -1,9 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, symlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readdir, readFile, realpath, symlink } from "node:fs/promises";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
-import { removeAfterEachCase } from "../test/scratch-removal";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   exportJjSessionAttribution,
   JJ_CONFIG_PATH_TIMEOUT_MS,
@@ -32,6 +31,10 @@ const JJ_COMMANDS_BOUND_MS = 240_000;
  * the one that passes first, because bun runs afterEach while a case it timed out still runs:
  * here, jj in the repository that afterEach removes. */
 const JJ_CASE_MARGIN_MS = 30_000;
+
+/** Each case's scratch directories, `jj-attribution-<suffix>-*` under TMPDIR: the fixture's
+ * afterEach removes them, waiting for the removal itself with no bound on the hook. */
+const makeDirectory = temporaryDirectories("jj-attribution");
 
 /** Whether `work` settles within `ms` milliseconds; a rejection of `work` rejects. Real time is
  * required: a jj process is outside bun, and its fake timers cannot advance it. */
@@ -64,13 +67,9 @@ describe("sessionIdFromTranscript", () => {
 });
 
 describe("exportJjSessionAttribution", () => {
-  const dirs: string[] = [];
-  async function stateDir(prefix = "jj-attribution-"): Promise<string> {
-    const dir = await mkdtemp(path.join(tmpdir(), prefix));
-    dirs.push(dir);
-    return dir;
+  async function stateDir(suffix?: string): Promise<string> {
+    return makeDirectory(suffix);
   }
-  removeAfterEachCase(dirs);
   /** The overlay the writer wrote under `dir`. */
   async function overlayText(dir: string): Promise<string> {
     return await readFile(path.join(dir, `omp-attribution-${ROOT_ID}.toml`), "utf8");
@@ -101,7 +100,7 @@ describe("exportJjSessionAttribution", () => {
   }
   /** A real directory to scope an overlay to, under a scratch directory the afterEach removes. */
   async function workspace(name = "ws"): Promise<string> {
-    const dir = path.join(await stateDir("jj-attribution-ws-"), name);
+    const dir = path.join(await stateDir("ws"), name);
     await mkdir(dir, { recursive: true });
     return await realpath(dir);
   }
@@ -472,7 +471,7 @@ describe("exportJjSessionAttribution", () => {
     "the overlay's three templates give each jj command the running pair",
     async () => {
       if (JJ === null) throw new Error("no jj on PATH on GitHub Actions (install-jj installs one)");
-      const root = await stateDir("jj-attribution-jj-");
+      const root = await stateDir("jj");
       // A base chain and a home of the test's own, so no jj or git configuration of the host
       // reaches the repository, and the identity jj needs comes from JJ_USER and JJ_EMAIL.
       const base = path.join(root, "base.toml");
@@ -579,12 +578,8 @@ describe("paneAttributionOptions", () => {
 });
 
 describe("resolvedWorkspace", () => {
-  const dirs: string[] = [];
-  removeAfterEachCase(dirs);
   async function scratch(): Promise<string> {
-    const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-resolve-"));
-    dirs.push(dir);
-    return await realpath(dir);
+    return await realpath(makeDirectory("resolve"));
   }
 
   it("answers the real path of an existing directory", async () => {
@@ -622,19 +617,16 @@ describe("resolvedWorkspace", () => {
 });
 
 describe("userConfigChain", () => {
-  const dirs: string[] = [];
   /**
    * A closed environment whose PATH finds a `jj` running `body` first: PATH and a home of the
    * test's own, so nothing the developer's environment holds reaches the stub.
    */
   async function withJj(body: string): Promise<NodeJS.ProcessEnv> {
-    const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-bin-"));
-    dirs.push(dir);
+    const dir = makeDirectory("bin");
     await Bun.write(path.join(dir, "jj"), `#!/bin/sh\n${body}\n`);
     await chmod(path.join(dir, "jj"), 0o755);
     return { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir };
   }
-  removeAfterEachCase(dirs);
   /** The child pid the wrapper wrote to `pidFile`, or undefined when it wrote none. Read once
    * userConfigChain has returned: by then the wrapper has exited, or its group has been sent
    * SIGKILL, so there is no later write to wait for, and a pid it had not written counts as none. */
@@ -679,8 +671,7 @@ describe("userConfigChain", () => {
     "gives up on a jj that never answers, so attribution never holds bootstrap",
     async () => {
       const env = await withJj("exec sleep 300");
-      const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-"));
-      dirs.push(dir);
+      const dir = makeDirectory();
       const exported: NodeJS.ProcessEnv = {};
       await exportJjSessionAttribution(ROOT_ID, dir, {
         env: exported,
@@ -701,11 +692,7 @@ describe("userConfigChain", () => {
     "kills a wrapper's forked child when jj times out",
     async () => {
       for (let bound = 200; bound <= FORK_BOUND_MAX_MS; bound *= 2) {
-        const pidFile = path.join(
-          await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")),
-          "pid"
-        );
-        dirs.push(path.dirname(pidFile));
+        const pidFile = path.join(makeDirectory("child"), "pid");
         const env = await withJj(`sleep 300 & echo $! > ${JSON.stringify(pidFile)}; wait`);
         await userConfigChain(bound, env);
         const pid = await writtenPid(pidFile);
@@ -731,8 +718,7 @@ describe("userConfigChain", () => {
   it(
     "kills a wrapper's detached child after jj returns a config path",
     async () => {
-      const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
-      dirs.push(path.dirname(pidFile));
+      const pidFile = path.join(makeDirectory("child"), "pid");
       const env = await withJj(
         `sleep 30 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
       );

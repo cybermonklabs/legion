@@ -1,7 +1,4 @@
 import { expect, jest, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { SessionAnswer } from "@legion/contracts";
 import { bearerCredential } from "@legion/envoy-client/bearer";
 import {
@@ -11,7 +8,7 @@ import {
   sessionAnswersFailureLine,
   sessionAnswersWords,
 } from "@legion/envoy-client/session-answers";
-import { removeAfterEachCase } from "@legion/pi-shared/test/scratch-removal";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   ask,
   branchOf,
@@ -782,8 +779,7 @@ test("a request another copy of the extension read no text for is not read again
 // runs on Bun's fake clock, which holds every timer it sets: it must have settled by the next turn
 // of the event loop and set no timer, so a copy that waits on a timer of its own fails here
 // whatever the box's load, as a copy that reads again fails on the reads counted below.
-const stateRoots: string[] = [];
-removeAfterEachCase(stateRoots);
+const makeStateRoot = temporaryDirectories("session-answers-context");
 
 /** One macrotask turn, on a `setImmediate` that Bun's fake clock leaves real: it comes only once
  *  every promise already chained has run as far as it goes. */
@@ -794,8 +790,7 @@ function nextTurn(): Promise<void> {
 }
 
 test("two copies of the extension and an empty list: one HTTP read, which the second copy does not wait on", async () => {
-  const stateRoot = mkdtempSync(join(tmpdir(), "session-answers-context-"));
-  stateRoots.push(stateRoot);
+  const stateRoot = makeStateRoot();
   let fetches = 0;
   const fetchImpl = (async (input: string | URL | Request) => {
     fetches += 1;

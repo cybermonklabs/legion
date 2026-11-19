@@ -137,10 +137,6 @@
       "types": "./test/omp-natives.ts",
       "bun": "./test/omp-natives.ts"
     },
-    "./test/scratch-removal": {
-      "types": "./test/scratch-removal.ts",
-      "bun": "./test/scratch-removal.ts"
-    },
     "./test/skills-guard": {
       "types": "./test/skills-guard.ts",
       "bun": "./test/skills-guard.ts"
