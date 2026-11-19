@@ -3,7 +3,8 @@
 # code over two fake listener tasks: one Python process per case that serves 127.0.0.1 and
 # 127.0.0.2 on one port the kernel chose, and a fake getent on PATH that resolves probe.test to
 # both, three ticks a run. The name itself resolves nowhere for curl, so every run also lists
-# probe.test as unreached, which names it without failing the run.
+# probe.test as unreached, which names it without failing the run. Cases (l) to (n) run the probe
+# until a signal to its whole process group stops it.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -27,9 +28,11 @@ stop_servers() {
   server_pids=()
 }
 dispatch_pid=""
+probe_pid=""
 cleanup() {
   stop_servers
   [[ -z "$dispatch_pid" ]] || kill "$dispatch_pid" 2>/dev/null || true
+  [[ -z "$probe_pid" ]] || kill -s KILL -- "-${probe_pid}" 2>/dev/null || true
   rm -rf "$temporary_dir"
 }
 trap cleanup EXIT
@@ -47,6 +50,20 @@ printf '%s\n' '127.0.0.1       STREAM probe.test' '127.0.0.1       DGRAM' '127.0
 EOF
 chmod +x "${fake_bin_dir}/getent"
 
+# The probe's sleep between ticks in cases (l) to (n), on its PATH there alone: it writes its PID to
+# $PROBE_SLEEP_MARK, so the case knows the probe is in that sleep, and then becomes the real sleep.
+readonly signal_bin_dir="${temporary_dir}/signal-bin"
+readonly sleep_mark="${temporary_dir}/probe-sleeping"
+real_sleep="$(command -v sleep)"
+readonly real_sleep
+mkdir -p "$signal_bin_dir"
+cat >"${signal_bin_dir}/sleep" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >"$PROBE_SLEEP_MARK"
+exec "$PROBE_REAL_SLEEP" "$@"
+EOF
+chmod +x "${signal_bin_dir}/sleep"
+
 # The fake tasks answer /healthz and GET /v1/sessions as each address's mode says: ok (both 200),
 # starting (main's shape while the durable is held: /healthz 200 "starting", /v1 503 "service
 # starting" at every tick), flap (/v1 200, then 503 at its second request, then 200), unauthorized
@@ -54,7 +71,9 @@ chmod +x "${fake_bin_dir}/getent"
 # so that tick's /v1 finds nothing listening), unhealthy (/healthz 503 and /v1 503 at every tick).
 # empty, reset and slow fail /v1 at its first two requests and answer 200 at the third: empty
 # closes the connection without an answer and reset resets it, as Go's net/http does after a
-# handler panics, and slow answers after 4 s, past the probe's 3 s. none binds the address without
+# handler panics, and slow answers after 4 s, past the probe's 3 s. held holds every /v1 request
+# past the probe's 3 s without answering, and once it holds one it writes a file named as the port
+# file plus .held, so a case knows a request is in flight. none binds the address without
 # listening, so it refuses every connection while no other process can take the port. Any /v1
 # request without the probe's bearer is 401 too, so a pass also proves the bearer was sent. Each
 # address keeps its own mode and request count and serves in its own thread, so a task that exits
@@ -143,6 +162,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if mode == "unauthorized" or self.headers.get("Authorization") != "Bearer probe-token":
                 return self.answer(401, {"error": "unauthorized"})
             failing = v1_requests <= 2
+            if mode == "held":
+                with open(port_file + ".held", "w") as out:
+                    out.write("%d\n" % v1_requests)
+                time.sleep(10)
+                return None
             if mode == "empty" and failing:
                 self.close_connection = True
                 return None
@@ -177,34 +201,35 @@ os.rename(port_file + ".tmp", port_file)
 threading.Event().wait()
 EOF
 
-# wait_port_file FILE PID WHAT waits until the fake process PID, named WHAT, has written FILE: the
-# port it serves, written once its sockets are ready.
-wait_port_file() {
+# wait_file FILE PID WHAT waits until FILE is written while the process PID, named WHAT, runs: a
+# fake's port, which the fake writes once its sockets are ready, or a mark a signal case waits for.
+wait_file() {
   local file="$1" pid="$2" what="$3"
-  for _ in $(seq 50); do
+  for _ in $(seq 100); do
     [[ ! -s "$file" ]] || return 0
     if ! kill -0 "$pid" 2>/dev/null; then
-      printf 'FAIL: %s exited before it wrote its port\n' "$what" >&2
+      printf 'FAIL: %s exited before %s was written\n' "$what" "${file##*/}" >&2
       exit 1
     fi
     sleep 0.1
   done
-  printf 'FAIL: %s never wrote its port\n' "$what" >&2
+  printf 'FAIL: %s was never written while %s ran\n' "${file##*/}" "$what" >&2
   exit 1
 }
 
 port=""
+listener_port_file=""
 starts=0
 # start_tasks FIRST_MODE SECOND_MODE starts one fake process serving 127.0.0.1 and 127.0.0.2 in
-# those modes on one port the kernel chose, and sets $port from the fresh port file it writes.
+# those modes on one port the kernel chose, and sets $port from the fresh port file it writes, whose
+# path it leaves in $listener_port_file.
 start_tasks() {
-  local port_file
   starts=$((starts + 1))
-  port_file="${temporary_dir}/listener-port.${starts}"
-  python3 "$server" "$port_file" "$1" "$2" &
+  listener_port_file="${temporary_dir}/listener-port.${starts}"
+  python3 "$server" "$listener_port_file" "$1" "$2" &
   server_pids+=("$!")
-  wait_port_file "$port_file" "$!" "the fake tasks"
-  read -r port <"$port_file"
+  wait_file "$listener_port_file" "$!" "the fake tasks"
+  read -r port <"$listener_port_file"
 }
 
 status=0
@@ -376,7 +401,7 @@ run_dispatch_case() {
   port_file="${temporary_dir}/dispatch-port.${starts}"
   python3 "$dispatch_server" "$port_file" "$mode" &
   dispatch_pid="$!"
-  wait_port_file "$port_file" "$dispatch_pid" "the fake Dispatch"
+  wait_file "$port_file" "$dispatch_pid" "the fake Dispatch"
   read -r dispatch_port <"$port_file"
   run_case ok ok --dispatch-url "http://127.0.0.1:${dispatch_port}" --dispatch-token-file "$token_file" \
     --dispatch-issue LEGION-1 --dispatch-session ses_probe --dispatch-every 2
@@ -438,6 +463,71 @@ expect_status 1 "a task whose /v1 answers after the probe's 3 s"
 expect_text 'target 127.0.0.1: fail - ' "a task whose /v1 answers after the probe's 3 s"
 expect_line '  2 x 000:timeout' "a task whose /v1 answers after the probe's 3 s"
 printf 'PASS: a task whose /v1 answers too late fails the run (exit 1)\n'
+
+# (l) to (n): a signal sent to the probe's whole process group, as Ctrl-C at a terminal and
+# timeout -s TERM send one, also reaches the child the probe is running at that moment, its sleep
+# between ticks or a request in flight. The run still ends in the summary and the verdict, over
+# every target recorded before the signal; a target whose request it cut short is not recorded.
+#
+# run_signal_case FIRST_MODE SECOND_MODE SIGNAL MOMENT runs the probe until it is stopped, against
+# tasks in those modes, and sends SIGNAL to its process group at MOMENT: sleep once the probe is in
+# its first sleep between ticks, request once the second task holds a /v1 request. It fails the
+# case when the probe still runs 10 s after the signal. Job control gives the probe a process group
+# of its own, which it leads, and leaves SIGINT as the probe's own trap takes it, where a
+# background job started without job control ignores SIGINT; a test started with SIGINT ignored
+# hands that on to the probe, and case (n) then fails on that bound.
+run_signal_case() {
+  local first="$1" second="$2" signal="$3" moment="$4" mark
+  stop_servers
+  start_tasks "$first" "$second"
+  mark="$sleep_mark"
+  [[ "$moment" == sleep ]] || mark="${listener_port_file}.held"
+  rm -f "$sleep_mark"
+  status=0
+  set -m
+  env -u ENVOY_TOKEN_FILE PATH="${signal_bin_dir}:${fake_bin_dir}:${PATH}" ENVOY_TOKEN=probe-token \
+    PROBE_SLEEP_MARK="$sleep_mark" PROBE_REAL_SLEEP="$real_sleep" \
+    bash "$driver" --url "http://probe.test:${port}" --interval 5 --duration 0 >"$output_file" 2>&1 &
+  probe_pid=$!
+  set +m
+  wait_file "$mark" "$probe_pid" "the probe"
+  kill -s "$signal" -- "-${probe_pid}"
+  for _ in $(seq 100); do
+    kill -0 "$probe_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$probe_pid" 2>/dev/null; then
+    kill -s KILL -- "-${probe_pid}"
+    wait "$probe_pid" || true
+    probe_pid=""
+    fail "${signal} to the probe's process group at its ${moment}: the probe still ran 10 s later"
+  fi
+  wait "$probe_pid" || status=$?
+  probe_pid=""
+}
+
+run_signal_case ok ok TERM sleep
+expect_status 0 "TERM to the probe's process group during its sleep"
+expect_line '# summary' "TERM to the probe's process group during its sleep"
+expect_text 'target 127.0.0.1: pass - ' "TERM to the probe's process group during its sleep"
+expect_text 'target 127.0.0.2: pass - ' "TERM to the probe's process group during its sleep"
+expect_text 'verdict: pass - 2 target(s)' "TERM to the probe's process group during its sleep"
+printf 'PASS: TERM to the probe'"'"'s process group during its sleep ends in the summary and the verdict (exit 0)\n'
+
+run_signal_case ok held TERM request
+expect_status 0 "TERM to the probe's process group during a request"
+expect_line '# summary' "TERM to the probe's process group during a request"
+expect_text 'target 127.0.0.1: pass - ' "TERM to the probe's process group during a request"
+expect_text 'verdict: pass - 1 target(s)' "TERM to the probe's process group during a request"
+! grep -Fq '127.0.0.2' "$output_file" ||
+  fail "TERM to the probe's process group during a request: the interrupted target 127.0.0.2 is in the output"
+printf 'PASS: TERM to the probe'"'"'s process group during a request ends in the verdict, and the request it cut short is not judged (exit 0)\n'
+
+run_signal_case ok ok INT sleep
+expect_status 0 "INT to the probe's process group during its sleep"
+expect_line '# summary' "INT to the probe's process group during its sleep"
+expect_text 'verdict: pass - 2 target(s)' "INT to the probe's process group during its sleep"
+printf 'PASS: INT to the probe'"'"'s process group, as Ctrl-C sends it, ends in the summary and the verdict (exit 0)\n'
 
 stop_servers
 status=0
