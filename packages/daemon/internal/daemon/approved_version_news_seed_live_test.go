@@ -246,8 +246,11 @@ func (r *versionNewsLive) seedTree(ctx context.Context, tx pgx.Tx, engine *workf
 // which raises that role's entry on the phase the member stands in, with the phase's resume task
 // as the entry's work. Each start queues its role's start on the outbox, and each but the child
 // architect's writes its role's phases row. A role that is none of these has no start on that
-// path, and is refused.
+// path, and is refused. The starts run in one fact (workflow.Engine.OpenFact), settled in tx once
+// they are applied (workflow.Engine.SettleFact), as the fact admission's promotion applies is: the
+// engine moves, closes or starts a step's run only inside a fact's settle.
 func startRoles(ctx context.Context, tx pgx.Tx, records record.Store, engine *workflow.Engine, issue record.Issue, roles []claim.Role) error {
+	ctx = engine.OpenFact(ctx)
 	for _, role := range roles {
 		switch {
 		case role == claim.RoleArchitect:
@@ -275,7 +278,7 @@ func startRoles(ctx context.Context, tx pgx.Tx, records record.Store, engine *wo
 				"architect, a child's own architect and a member's phase worker", role, issue.Key, issue.Phase)
 		}
 	}
-	return nil
+	return engine.SettleFact(ctx, tx)
 }
 
 // toldVersions is the versions a holder row of tree's told record names when its holder took
@@ -411,8 +414,12 @@ func (r *versionNewsLive) toldByStartPath(ctx context.Context, tx pgx.Tx, engine
 		}
 		planning := member
 		planning.Phase = phase.Planning
-		if err := engine.StartPromotedWorker(ctx, probe, planning, claim.RolePlanner); err != nil {
+		fact := engine.OpenFact(ctx)
+		if err := engine.StartPromotedWorker(fact, probe, planning, claim.RolePlanner); err != nil {
 			return versionNewsTold{}, fmt.Errorf("raise the planner's entry on %s: %w", member.Key, err)
+		}
+		if err := engine.SettleFact(fact, probe); err != nil {
+			return versionNewsTold{}, fmt.Errorf("settle the fact that raised the planner's entry on %s: %w", member.Key, err)
 		}
 		return heldTold(ctx, probe, member.Key, "holder")
 	})

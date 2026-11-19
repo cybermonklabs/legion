@@ -927,12 +927,18 @@ func seedArchitectTold(ctx context.Context, tx pgx.Tx, root string, path version
 // (toldInSavepoint). It is read while root holds no gate row, so the tree has never opened. In the
 // savepoint the architect's registration of spec at version 1 is applied as the daemon applies it
 // (workflow.Engine.Apply), carrying the person's approval of that version as register_gate reads it
-// from Dispatch (intake.GateRegistered): that registration opens the gate, which writes the row.
+// from Dispatch (intake.GateRegistered): that registration opens the gate, which writes the row. It
+// is applied in a fact of its own, settled in the savepoint, as intake's settle applies a fact
+// (workflow.Engine.OpenFact, workflow.Engine.SettleFact).
 func toldAtFirstOpening(ctx context.Context, tx pgx.Tx, engine *workflow.Engine, root record.Issue, spec string) (versionNewsTold, error) {
 	return toldInSavepoint(ctx, tx, "the architect's told row of "+root.Key+" at its first opening", func(probe pgx.Tx) (versionNewsTold, error) {
-		if _, err := engine.Apply(ctx, probe, intake.GateRegistered{Issue: root.Key, Step: record.DesignStepSpec, ArtifactID: spec,
+		fact := engine.OpenFact(ctx)
+		if _, err := engine.Apply(fact, probe, intake.GateRegistered{Issue: root.Key, Step: record.DesignStepSpec, ArtifactID: spec,
 			Version: 1, DispatchVersion: 1, ApprovedVersion: 1}); err != nil {
 			return versionNewsTold{}, fmt.Errorf("register version 1 of the spec of %s, approved: %w", root.Key, err)
+		}
+		if err := engine.SettleFact(fact, probe); err != nil {
+			return versionNewsTold{}, fmt.Errorf("settle the registration of version 1 of the spec of %s: %w", root.Key, err)
 		}
 		return heldTold(ctx, probe, root.Key, "architect")
 	})
