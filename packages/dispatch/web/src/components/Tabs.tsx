@@ -108,11 +108,11 @@ export function Tabs<Id extends string>({
     selectTab(next.id);
     const node = tabRefs.current[next.id];
     node?.focus();
-    // Settled in the reader's own keystroke, for the one key the effect below does not answer:
-    // Home or End onto the tab already selected, after the reader scrolled the strip away. The
-    // selection does not change, so the effect does not run, and without this the focused tab
-    // would stay out of view. Any other key changes the selection, and the effect settles the
-    // same tab again.
+    // Settled in the reader's own keystroke too, for a key that changes no selection and so runs
+    // no effect below: Home or End onto the tab already selected after the reader scrolled the
+    // strip away, an arrow key in a strip of one tab, or a key whose selection the page refuses or
+    // defers. Without this the focused tab would stay out of view. A key that changes the
+    // selection has the effect settle the same tab again.
     settleTab(node);
   };
 
