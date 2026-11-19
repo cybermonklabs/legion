@@ -15,9 +15,11 @@
 #      holding no test of a package the patterns name, one whose only tests there are expected
 #      skips, one where a named package with test files passed with no test or is missing, a
 #      missing and an empty report, and an EXPECTED_SKIPS line whose test the report does not
-#      hold; a report holding a failed test fails; a package spelled other than canonically
-#      (`./cmd/./broker/`, `.//cmd/broker/`, `./cmd/broker/../broker/`) is still counted; and a
-#      report of the broker's tests whose only skips are the expected ones passes;
+#      hold; a report holding a failed test fails, and one holding a data race report filed under
+#      a subtest that passed prints that report and no passed test's own line; a package spelled
+#      other than canonically (`./cmd/./broker/`, `.//cmd/broker/`, `./cmd/broker/../broker/`) is
+#      still counted; and a report of the broker's tests whose only skips are the expected ones
+#      passes;
 #   4. --timeout 1s on ./internal/broker/api/, beside a planted parallel test that runs three
 #      seconds and one that passes first, ends the package's binary on its timeout: the counter
 #      prints a go_test_exit that is not 0, the timeout's panic (which test2json files under the
@@ -265,7 +267,8 @@ echo "database-skips.test.sh: control 5, a copy of the counter with one EXPECTED
 TREE="$WORK/tree"
 # The checkout holds the working tree's tracked changes (git stash create, which changes no ref and
 # no file; HEAD when there are none), so a test and its EXPECTED_SKIPS line added together and not
-# yet committed are both in it.
+# yet committed are both in it. A file git does not track yet is not: `git add` a new test file
+# before a local run.
 snapshot="$(git -C "$ENVOY" stash create)"
 git -C "$ENVOY" worktree add --detach --quiet "$TREE" "${snapshot:-HEAD}"
 tree_envoy="$TREE/${ENVOY#"$(git -C "$ENVOY" rev-parse --show-toplevel)/"}"

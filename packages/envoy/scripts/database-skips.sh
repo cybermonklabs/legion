@@ -33,10 +33,12 @@
 # it ran them); and an EXPECTED_SKIPS line whose package is listed and whose test the report does
 # not hold, since that line then excuses nothing it can name. It exits 0 only when every listed
 # package with test files shows tests run, none of them skipped but those EXPECTED_SKIPS names
-# and none failed, and, for a run of its own, go test passed; 1 otherwise. On a failure it prints,
+# and none failed, and, for a run of its own, go test passed; 1 otherwise. A run of its own also
+# prints each listed package's `pass|fail PACKAGE <seconds>s` on stderr. On a failure it prints,
 # on stderr, each failed test, each test a failed package never finished, the failed packages'
-# output (a timed-out binary's goroutine dump, a data race), go test's build output and, for a
-# run of its own, its stderr.
+# output (a timed-out binary's goroutine dump, a data race, and any line test2json files under a
+# test after that test's own `--- PASS`), go test's build output and, for a run of its own, its
+# stderr.
 set -euo pipefail
 # sort and comm compare the test lists under one collation, whatever the caller's locale.
 export LC_ALL=C

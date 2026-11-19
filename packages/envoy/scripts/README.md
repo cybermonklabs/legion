@@ -394,8 +394,10 @@ does not hold, print `database_skips=UNKNOWN`, name what could not be read, and 
 failed test fails the count, read from a report as in a run. It exits 0 only when tests ran,
 none skipped but the expected ones, none failed, and go test passed. A failure prints, on
 stderr, each failed test, each test a failed package never finished, that package's output
-from its first `panic: ` on and that of its tests that did not pass (a timed-out binary's
-goroutine dump among it), the build output and, for a run of its own, go test's stderr.
+from its first `panic: ` on, that of its tests that did not pass, and any line test2json files
+under a test after that test's own `--- PASS` (a timed-out binary's goroutine dump and a data
+race report among them), the build output and, for a run of its own, go test's stderr. A run of
+its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
 
 `ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
 `--timeout 20m`, the unit step's own `-timeout`, and a step limit of its own
@@ -405,7 +407,8 @@ Dispatch API through it as the second line above.
 skip counter": a skip planted through a Go overlay in `./internal/broker/api/`, `./cmd/broker/`
 and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
 that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
-a failed test fails, and a skip in a package spelled other than canonically is counted;
+a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
+package spelled other than canonically is counted;
 `--timeout 1s` ends a package's binary; and a copy with
 one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip. It needs
 a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
