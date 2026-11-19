@@ -5,6 +5,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // An issue pod provisions itself in two init containers, workspace-fetch and then workspace-init,
@@ -12,6 +14,8 @@ import (
 // here together: failedInit, which an observation reads a pod's death out of (verdict), and
 // provisioning, which a relaunch reads a pod still coming up by (awaitRoleLauncher). They are one
 // judgement seen from either side, so a pod cannot be dead to the one and starting to the other.
+// localInitFailure lives here too. It reads failedInit's failure again, for a kept volume
+// (keptVolume): whether the failure is the volume's own fault, which a new volume cures.
 // neverStarted lives here too, though it reads a pod's conditions rather than its init containers,
 // and judges every pod the runtime launches, the project controller's as well as an issue's: a pod
 // scheduled onto a node that never made it ready to start, which a relaunch replaces rather than
@@ -65,6 +69,52 @@ func failedInit(pod *corev1.Pod) (string, *corev1.ContainerStateTerminated) {
 		}
 	}
 	return "", nil
+}
+
+// localInitFailure is the init container whose end failedInit reads as pod's death, and how it
+// ended, when that end is a fault local to the issue's volume. It is the one rule by which a kept
+// volume (keptVolume) is reset: the launch reads it (volumeReset), and ReplacePod and the release
+// read it to mark the Sandbox (volumeFault). Both init containers write on the volume.
+// workspace-init writes the shared clone and the issue's workspace, and workspace-fetch writes the
+// feed. A fault on a kept volume fails one of them in each pod that mounts the volume, and only a
+// new volume cures it.
+//
+// These ends are not such a fault, and for them it returns "" and nil:
+//
+//   - An end in a pod that is being deleted (a deletionTimestamp, as verdict reads initFailed). An
+//     eviction through the API, a drain or a preemption ends the container with SIGTERM or SIGKILL.
+//     That move is what the volume is kept for.
+//   - An end in a pod that the kubelet ended itself and did not delete (endedByKubelet).
+//   - The exit workspace.InitExitUsage, a usage error, and the exit workspace.InitExitOutsideVolume,
+//     a cause outside the volume. A new volume cures neither.
+//   - An end with the reason OOMKilled. The container's memory limit caused it, not the volume.
+//     outOfMemory answers for the roles' container alone, so this rule reads the reason itself.
+//
+// A workspace-fetch in a Pending pod that its grace still restarts is no failure (failedInit).
+func localInitFailure(pod *corev1.Pod) (string, *corev1.ContainerStateTerminated) {
+	name, ended := failedInit(pod)
+	switch {
+	case ended == nil, pod.DeletionTimestamp != nil, endedByKubelet(pod):
+		return "", nil
+	case ended.ExitCode == workspace.InitExitUsage, ended.ExitCode == workspace.InitExitOutsideVolume, ended.Reason == "OOMKilled":
+		return "", nil
+	}
+	return name, ended
+}
+
+// endedByKubelet is whether the kubelet ended pod itself and left it in the API, as the kubelet's
+// own code writes such a pod (kubernetes v1.33.0, pkg/kubelet). Each eviction sets status.reason
+// Evicted. The eviction for node pressure writes the condition DisruptionTarget too, and the
+// evictions for a storage limit write no condition. A graceful node shutdown (status.reason
+// Terminated) and the kubelet's preemption for a critical pod (Preempting) write the condition
+// DisruptionTarget with the reason TerminationByKubelet. This reads the condition's type and
+// reason alone. A DisruptionTarget of another reason, such as the taint manager's
+// DeletionByTaintManager, is not an end by the kubelet. kubeletFailure, which reads each
+// DisruptionTarget of a Failed pod as the kubelet's, answers another question.
+func endedByKubelet(pod *corev1.Pod) bool {
+	return pod.Status.Reason == "Evicted" || slices.ContainsFunc(pod.Status.Conditions, func(condition corev1.PodCondition) bool {
+		return condition.Type == corev1.DisruptionTarget && condition.Reason == corev1.PodReasonTerminationByKubelet
+	})
 }
 
 // provisioning is whether pod is still coming up through its init containers (an issue pod's

@@ -157,6 +157,14 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // its Sandbox: that is the cutover from the release before the pod-owned disk. Every launch that
 // replaces the pod, for any reason, replaces a Sandbox of the other shape with it, so the Running
 // patch never writes a pod that mounts a claim its Sandbox does not own.
+//
+// A launch resets a kept volume in the same way (volumeReset): it replaces the Sandbox, and with it
+// the claim, before it provisions. It does so where the stored pod shows that an init container
+// failed on the volume for a cause local to it (localInitFailure). It does so too where the Sandbox
+// carries the reset mark (volumeResetAnnotation), which ReplacePod or the release wrote when they
+// took such a pod down. A fault on a kept volume stays there for each later pod of the issue, and
+// only a new volume cures it. Such a pod is not live, so the launch replaces it in any case. The
+// Sandbox that the reset creates carries no mark (createSandbox).
 func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	ctx = launching(ctx)
 	l, err := r.prepare(spec)
@@ -197,7 +205,13 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	}
 	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
 	installing := l.spec.Plugins != nil
+	// A kept volume on which an init container failed for a cause local to it is reset: the launch
+	// replaces its Sandbox as it replaces one of the other disk shape (volumeReset). A change of
+	// the disk shape replaces the Sandbox too, so its reason comes first.
 	migrate := r.supersededDisk(s, l)
+	if migrate == "" {
+		migrate = volumeReset(s, pod)
+	}
 	covered := roundCovers(l.kind)
 	// A live pod no round covers is this launch's to replace for every kind of drift: every facet
 	// of the pod itself but the account comes through movedInPod, the account is read here as
@@ -216,7 +230,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// does not drift, the cutover from the release before the pod-owned disk. A drifted record
 	// opens the pod's update round, which ends the pod once every role in it has pushed its work
 	// (ReplacePod). A pod that this launch replaces for any other reason takes such a Sandbox with
-	// it below.
+	// it below. A reset comes with a pod that is not live: a pod whose init container failed, or
+	// no pod after ReplacePod or the release.
 	replace := !live || (accountDrifted && !covered) ||
 		(migrate != "" && len(r.shapeDrift(s, l.shapeKey())) == 0) ||
 		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
@@ -271,7 +286,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		}
 		if migrate != "" {
 			if s, err = r.replaceSupersededSandbox(bounded, l, s, migrate); err != nil {
-				return fail("replace its sandbox of another disk shape", err)
+				return fail("replace its sandbox ("+string(migrate)+")", err)
 			}
 		}
 		if err := l.kind.provision(bounded, r, &l, s); err != nil {
@@ -417,12 +432,13 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // (1); provision's token mint and its Secret upsert's Get, Delete and Create (4), and its
 // repository cache's ensure (cacheEnsureCalls); the Running patch (1); the stop of an earlier
 // generation (1); the address record patch (1); the Start frame (1) — 16, the cache's ensure apart.
-// A try that replaces its Sandbox for another disk shape (replaceSupersededSandbox) still spends
-// one call more, and so sets the count at 17: its deleteStoredSandbox Get, the fenced Delete,
-// awaitSandboxDeleted's confirming Get and the Create (4) against the 3 of the 6 above that
-// ensureSandbox's wait for a Sandbox being deleted spends. That try never takes that wait: a
-// Sandbox that ensureSandbox waited out is gone, and the one it creates in its place already has
-// the disk shape that the launch renders (sandboxManifest), so the launch does not replace it.
+// A try that replaces its Sandbox for another disk shape or a reset of its kept volume
+// (replaceSupersededSandbox) still spends one call more, and so sets the count at 17: its
+// deleteStoredSandbox Get, the fenced Delete, awaitSandboxDeleted's confirming Get and the Create
+// (4) against the 3 of the 6 above that ensureSandbox's wait for a Sandbox being deleted spends.
+// That try never takes that wait: a Sandbox that ensureSandbox waited out is gone, and the one it
+// creates in its place already has the disk shape that the launch renders (sandboxManifest),
+// carries no reset mark and has no pod, so the launch does not replace it.
 // Per launcher role of the pod (relaunchRoleCalls, claim.Roles for an issue pod, the most any pod
 // has): launcherBound's Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get,
 // Delete and Create (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
@@ -725,6 +741,39 @@ const (
 	replacedForVolumeChange sandboxReplacement = "the volume's class, size or access modes changed"
 )
 
+// volumeReset is why a launch resets the kept volume of the issue Sandbox s, whose stored pod is
+// pod, or "" when it does not. It resets a Sandbox that owns a kept volume (ownsKeptVolume) when
+// pod shows that an init container failed on that volume for a cause local to it (volumeFault), or
+// when s carries the reset mark (volumeResetAnnotation). ReplacePod and the release write that mark
+// when they take such a pod down, because the launch after them reads no pod. The reason names the
+// init container, its exit code and its pod, in the same words as the mark.
+func volumeReset(s *sandbox, pod *corev1.Pod) sandboxReplacement {
+	fault := volumeFault(s, pod)
+	if fault == "" && ownsKeptVolume(s) {
+		fault = s.Annotations[volumeResetAnnotation]
+	}
+	if fault == "" {
+		return ""
+	}
+	return sandboxReplacement("an init container failed on the kept volume: " + fault)
+}
+
+// volumeFault is the reset mark (volumeResetAnnotation) for pod on the issue Sandbox s: the init
+// container that failed on the kept volume of s for a cause local to that volume
+// (localInitFailure), its exit code and the pod's uid. It is "" for a Sandbox that owns no kept
+// volume (ownsKeptVolume), for a pod that is not the Sandbox's own, and for a pod that shows no
+// such failure.
+func volumeFault(s *sandbox, pod *corev1.Pod) string {
+	if !ownsKeptVolume(s) || !ownedBy(pod, s.UID) {
+		return ""
+	}
+	container, ended := localInitFailure(pod)
+	if ended == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s exited %d in pod %s", container, ended.ExitCode, pod.UID)
+}
+
 // supersededDisk is why the issue Sandbox s does not have the disk shape that the launch l
 // renders (podKind.disk), by diskShapeChange, or "" when it has that shape. The launch's kind is
 // this Sandbox's: ensureSandbox finds it by the claim's own name, and podKindOf reads an issue
@@ -807,17 +856,18 @@ func sameAccessModes(a, b []corev1.PersistentVolumeAccessMode) bool {
 // replaceSupersededSandbox deletes the issue Sandbox s, for reason, and creates in its place one
 // of the disk shape that the launch renders (sandboxManifest: Suspended, owning the kept `issue`
 // template where the launch keeps its volume and no template otherwise), which it returns for the
-// rest of the launch to run against. spec.volumeClaimTemplates is immutable in the CRD, so no patch
-// changes the templates, and delete-and-create is the only way to another shape. The launch holds
-// the pod's launch turn and has already waited the Sandbox's pod out, so no process of the issue
-// runs while its Sandbox is away. The delete is the foreground one that every Sandbox delete is
-// (deleteSandbox), so garbage collection deletes the claim the old Sandbox owned, if any, and the
-// role Secrets it owned, before the Sandbox is gone. That claim holds the issue's whole workspace,
-// which the next pod provisions again. That is why this runs before provision and
-// writeLauncherSecrets and not after: the provisioning Secret and every role Secret of this launch
-// are written against the new Sandbox and owned by it, where ones written first would be deleted
-// with the old one. It logs one line that names the issue, the Sandbox, the old uid, the claim of
-// the issue's volume (IssueClaimName) and reason.
+// rest of the launch to run against. reason is a change of the disk shape (supersededDisk) or the
+// reset of a kept volume (volumeReset). spec.volumeClaimTemplates is immutable in the CRD, so no
+// patch changes the templates, and delete-and-create is the only way to another shape or to a new,
+// empty volume. The launch holds the pod's launch turn and has already waited the Sandbox's pod
+// out, so no process of the issue runs while its Sandbox is away. The delete is the foreground one
+// that every Sandbox delete is (deleteSandbox), so garbage collection deletes the claim the old
+// Sandbox owned, if any, and the role Secrets it owned, before the Sandbox is gone. That claim
+// holds the issue's whole workspace, which the next pod provisions again. That is why this runs
+// before provision and writeLauncherSecrets and not after: the provisioning Secret and every role
+// Secret of this launch are written against the new Sandbox and owned by it, where ones written
+// first would be deleted with the old one. It logs one line that names the issue, the Sandbox, the
+// old uid, the claim of the issue's volume (IssueClaimName) and reason.
 //
 // The one piece of the predecessor's metadata that travels is the pod it names as displaced
 // (displacedAnnotation): the five roles of the pod this launch just replaced are read as ended by
@@ -835,7 +885,9 @@ func sameAccessModes(a, b []corev1.PersistentVolumeAccessMode) bool {
 // next launch, finding the pod already gone, replaces that Sandbox without suspending anything. A
 // round's suspension (ReplacePod) leaves the name on the Sandbox in the same way, and the launch
 // after the round finds no pod to suspend.
-// A daemon that restarts inside the gap has neither, and reads those roles' ends as deaths.
+// A daemon that restarts inside the gap has neither, and reads those roles' ends as deaths. No
+// other annotation travels, the reset mark (volumeResetAnnotation) among them, so the Sandbox that
+// a reset creates is not reset again for the pod that failed on the volume it replaced.
 func (r *Runtime) replaceSupersededSandbox(ctx context.Context, l launch, s *sandbox, reason sandboxReplacement) (*sandbox, error) {
 	r.log.Info("sandbox runtime: replacing the issue's Sandbox, with any volume claim it owns",
 		"issue", l.spec.Issue, "sandbox", l.name, "uid", s.UID, "claim", IssueClaimName(l.spec.Claim), "reason", string(reason))
@@ -861,7 +913,8 @@ func (r *Runtime) replaceSupersededSandbox(ctx context.Context, l launch, s *san
 // on whatever Sandbox the name is next created as, after an issue's close and re-admission, naming
 // a pod that Sandbox never ran. Any other failure keeps it: the name may still hold no Sandbox, and
 // the roles the replacement ended are read as displaced until one exists. sandboxManifest carries
-// no annotations of its own, so this sets the one key rather than the manifest threading it.
+// no annotations of its own, so this sets the one key rather than the manifest threading it. So a
+// Sandbox that this creates carries no reset mark (volumeResetAnnotation).
 func (r *Runtime) createSandbox(ctx context.Context, l launch) (*sandbox, error) {
 	manifest := r.sandboxManifest(l)
 	held, _ := r.strandedPod(l.name)
@@ -1327,11 +1380,20 @@ const (
 // the name: a migrating launch reads it from there onto the Sandbox it creates in its place
 // (replaceSupersededSandbox).
 func (r *Runtime) suspendDisplacing(ctx context.Context, s *sandbox, uid types.UID, kind replacementKind) (*sandbox, error) {
+	return r.suspendAnnotating(ctx, s, displacing(uid, kind))
+}
+
+// displacing is the annotations of a suspension that replaces the live pod uid for kind
+// (suspendDisplacing): uid as the displaced pod (displacedAnnotation), and for a round's
+// replacement as the round's too (roundDisplacedAnnotation). ReplacePod adds the reset mark to
+// them where the pod failed on a kept volume (volumeResetAnnotation, volumeFault), so that the one
+// merge patch carries the mark as well.
+func displacing(uid types.UID, kind replacementKind) map[string]string {
 	annotations := map[string]string{displacedAnnotation: string(uid)}
 	if kind == roundReplacement {
 		annotations[roundDisplacedAnnotation] = string(uid)
 	}
-	return r.suspendAnnotating(ctx, s, annotations)
+	return annotations
 }
 
 // suspendRecordingEnd sets the Sandbox read as s Suspended to replace pod, which is not live: it

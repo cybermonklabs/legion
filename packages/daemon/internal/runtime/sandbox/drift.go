@@ -407,17 +407,24 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 // ReplacePod satisfies runtime.Runtime: it ends the pod k's process runs in, once its update round
 // is over, and waits until the cluster no longer has it. It is what a launch does to a live pod it
 // replaces, and nothing more — under the pod's launch turn, the Suspended patch that names the
-// replaced pod on the Sandbox in the same write (suspendDisplacing), then the wait for the pod's
-// end — so every role still running there is reported ended by the daemon's own act (Displaced)
-// and resumed uncharged on its session, as it is for a pod a launch replaces. That one patch
-// names the pod under the round's own mark as well (roundDisplacedAnnotation, roundReplacement),
-// which no launch writes: it is what a sweep reading the Sandbox before the pod ends tells this
-// replacement by, where a launch's replacement of the same pod is a pod gone (PodDrift).
+// replaced pod on the Sandbox in the same write (displacing, suspendAnnotating), then the wait for
+// the pod's end — so every role still running there is reported ended by the daemon's own act
+// (Displaced) and resumed uncharged on its session, as it is for a pod a launch replaces. That one
+// patch names the pod under the round's own mark as well (roundDisplacedAnnotation,
+// roundReplacement), which no launch writes: it is what a sweep reading the Sandbox before the pod
+// ends tells this replacement by, where a launch's replacement of the same pod is a pod gone
+// (PodDrift).
 //
 // It creates and provisions nothing: the first of those resumes finds the Sandbox Suspended and
 // provisions a fresh pod from the current configuration, which is the launch path a replacement
 // has always taken. It is a no-op when the Sandbox is absent or already suspended, or when the pod
 // the locator records is no longer the Sandbox's own: there is then no pod of that round to end.
+//
+// The pod may show that an init container failed on the Sandbox's kept volume for a cause local
+// to it (volumeFault, localInitFailure). The same patch then writes the reset mark on the Sandbox
+// (volumeResetAnnotation), from the pod as it stood before the suspension. The launch after the
+// round reads no pod, and it resets the volume on the mark (volumeReset). Every other pod is
+// suspended over with the two names alone.
 //
 // due is asked last of all, under the pod's launch turn and one statement before the suspension,
 // and its error is returned having written nothing. That is where it belongs rather than at the
@@ -457,7 +464,11 @@ func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(cont
 	if err := due(ctx); err != nil {
 		return err
 	}
-	if _, err := r.suspendDisplacing(ctx, s, v.pod.UID, roundReplacement); err != nil {
+	annotations := displacing(v.pod.UID, roundReplacement)
+	if fault := volumeFault(s, v.pod); fault != "" {
+		annotations[volumeResetAnnotation] = fault
+	}
+	if _, err := r.suspendAnnotating(ctx, s, annotations); err != nil {
 		return fmt.Errorf("replace %s's pod: suspend its sandbox: %w", k.Claim, err)
 	}
 	if _, err := r.awaitPodGone(ctx, s); err != nil {

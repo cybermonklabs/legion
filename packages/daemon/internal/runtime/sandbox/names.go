@@ -360,6 +360,14 @@ const (
 	volumeKept  = "kept"
 )
 
+// volumeResetAnnotation is the reset mark on the Sandbox of an issue's kept volume. Its value names
+// the init container that failed on the volume for a cause local to it (localInitFailure), its exit
+// code and the uid of its pod (volumeFault). ReplacePod and the release write it in the patch that
+// suspends the Sandbox, when the pod they take down shows such a failure, because the issue's next
+// launch then reads no pod. That launch resets the volume on the mark (volumeReset): it deletes the
+// Sandbox, with the claim it owns, and creates a new one, which carries no mark.
+const volumeResetAnnotation = "legion.dev/volume-reset"
+
 // issueVolume is the name a pod's disk is mounted under, an issue's and the controller's alike,
 // and the name of the one volume claim template that the controller's Sandbox owns. The Sandbox of
 // an issue that keeps its volume owns one of this name too (issuePod.disk). Every other issue's
