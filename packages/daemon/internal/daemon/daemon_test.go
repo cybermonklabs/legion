@@ -1160,7 +1160,9 @@ func (s *shim) prompt() shimwire.Prompt {
 // repoProjectsBoard is the Dispatch of a daemon whose project names no repository: the calls every
 // boot makes (servedBootCall) and an empty listing of issues, with every other call answered 404.
 // A request under /api/v1/settings/repo-projects, Dispatch's repo-projects table, is answered 404
-// too, and told to onRepoProjects, since the daemon reads nothing of it.
+// too, and told to onRepoProjects, since the daemon reads nothing of it: that case proves the
+// daemon sends the route no request (dispatch://INFRA-4401 check a-go, item 1), and
+// dispatch://INFRA-3532's own change deletes it, with the rename pass.
 func repoProjectsBoard(t *testing.T, project string, onRepoProjects func(*http.Request)) string {
 	t.Helper()
 	return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1181,7 +1183,8 @@ func repoProjectsBoard(t *testing.T, project string, onRepoProjects func(*http.R
 }
 
 // liveTreeBoard is the Dispatch of a daemon booted over a live tree (bootOverALiveTree),
-// repoProjectsBoard failing the test on a request under /api/v1/settings/repo-projects.
+// repoProjectsBoard failing the test on a request under /api/v1/settings/repo-projects, a case
+// dispatch://INFRA-3532's own change deletes with the rename pass.
 func liveTreeBoard(t *testing.T, project string) string {
 	t.Helper()
 	return repoProjectsBoard(t, project, func(r *http.Request) {

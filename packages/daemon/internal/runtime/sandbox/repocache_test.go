@@ -1002,13 +1002,15 @@ func TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes(t *testing.T) {
 // first sweep, as a cache whose new mark is that old is. A cache in the set loses the old
 // annotation at that sweep, as it would the new one.
 //
-// The old mark is written as its literal, as an earlier release left it. The controls, each run
-// in a copy of the tree: the old annotation left in place (markUnused's patch without
-// annotationCacheOldUnusedAt), which fails the case marked a day ago and the case in the set, each
-// cache still carrying it after the first sweep; and the old mark ignored, which is now written in
-// its place (the sweep never reading annotationCacheOldUnusedAt as the cache's mark, as before
-// this rule), which fails the case marked a day ago, marked at the sweep's time and not at its
-// first mark's, and the case marked one retention ago, kept for a retention and not retired.
+// The old mark is written as its literal, as an earlier release left it; dispatch://INFRA-3532's
+// own change deletes the literal and this test with annotationCacheOldUnusedAt and the rename
+// pass. The controls, each run in a copy of the tree: the old annotation left in place
+// (markUnused's patch without annotationCacheOldUnusedAt), which fails the case marked a day ago
+// and the case in the set, each cache still carrying it after the first sweep; and the old mark
+// ignored, which is now written in its place (the sweep never reading annotationCacheOldUnusedAt
+// as the cache's mark, as before this rule), which fails the case marked a day ago, marked at the
+// sweep's time and not at its first mark's, and the case marked one retention ago, kept for a
+// retention and not retired.
 func TestTheFirstSweepReadsACachesOldMarkAsItsFirstMark(t *testing.T) {
 	const oldAnnotation = "legion.dev/cache-unmapped-at"
 	name := CacheSandboxName(testProject, cacheRepo)

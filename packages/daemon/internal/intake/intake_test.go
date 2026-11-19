@@ -647,7 +647,8 @@ func TestAGitHubEventOfAHeardRepositoryInAnotherCaseIsDecoded(t *testing.T) {
 
 // settingsSubject is the subject Dispatch publishes its project settings event
 // settings.repo_project.updated on, for project: Dispatch's own event of its repo-projects table,
-// which no consumer of the daemon filters on.
+// which no consumer of the daemon filters on. It is named only to prove that, and
+// dispatch://INFRA-3532's own change deletes it and its test, with the rename pass.
 func settingsSubject(project string) string {
 	return "notifications.dispatch.project." + project + ".settings.repo_project.updated"
 }
@@ -662,7 +663,9 @@ func settingsSubject(project string) string {
 // The read-back of the filters is the control: with the settings subject put back among them, and
 // no decode of its event left (A8: no branch stays for it), the event is delivered and terminated
 // as poison, so the counts and the rows below read the same, and only the filters tell the two
-// apart (INFRA-4401 P4; dispatch://INFRA-4401 check a-go, item 2).
+// apart (INFRA-4401 P4; dispatch://INFRA-4401 check a-go, item 2). dispatch://INFRA-3532's own
+// change deletes this test, which names Dispatch's settings event only to prove the daemon hears
+// none of it, with the rename pass.
 func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)

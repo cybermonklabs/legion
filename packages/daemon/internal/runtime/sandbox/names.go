@@ -368,7 +368,8 @@ const issueVolume = "issue"
 // marked again: one outside the set has its old mark, its first, read as its mark, so it retires
 // one retention after that mark, written under annotationCacheUnusedAt with the old one removed
 // while it is kept, and one back in the set loses both. It can go once no cache carries it, one
-// runtime.kubernetes.repository_cache.retain_hours after this release is deployed.
+// runtime.kubernetes.repository_cache.retain_hours after this release is deployed:
+// dispatch://INFRA-3532's own change deletes it, and its test, with the rename pass.
 const (
 	labelCache                 = "legion.dev/cache"
 	cacheMarker                = "true"

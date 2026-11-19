@@ -2093,6 +2093,62 @@ func TestControllerStartWithNoGitHubAppRemovesAStaleHostsFile(t *testing.T) {
 	}
 }
 
+// legion controller start prints its own line for each code of a daemon that has nothing for the
+// controller's gh to act as, and each line says why: a daemon with no GitHub App
+// (GITHUB_TOKEN_SOURCE_UNAVAILABLE) has none, and a daemon whose review App is installed on no
+// account (GITHUB_OWNER_UNCONFIGURED) has the App and no GitHub owner, so the first line would be
+// false of it (dispatch://INFRA-4401 A3). Each start still empties the gh directory and launches.
+// Control: with the first line printed for both codes, the review App's case fails.
+func TestControllerStartSaysWhyTheControllersGhActsAsNobodyForEachCode(t *testing.T) {
+	noApp := "[legion] the daemon has no GitHub App to act as; the controller's gh acts as nobody\n"
+	noOwner := "[legion] the review App is installed on no account, so the controller has no GitHub owner; the controller's gh acts as nobody\n"
+	for _, tc := range []struct {
+		name      string
+		daemon    func(*testing.T) *controllerDaemon
+		code      string
+		want, not string
+	}{
+		{"a daemon with no GitHub App", newControllerDaemon, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", noApp, noOwner},
+		{"a review App installed on no account", func(t *testing.T) *controllerDaemon {
+			tokens := newControllerCredentialTokens("ghs_never_minted")
+			tokens.installOn()
+			return newControllerDaemonWithTokens(t, tokens)
+		}, "GITHUB_OWNER_UNCONFIGURED", noOwner, noApp},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := tc.daemon(t)
+			c := newControllerStart(t, d, controllerOptions{})
+			code, _, errb := c.run()
+			if code != 0 {
+				t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+			}
+			var answers []api.Failure
+			for _, r := range d.requests() {
+				if r.path == "/legion/v1/controller/github-credential" {
+					var failure api.Failure
+					if err := json.Unmarshal(r.answer, &failure); err != nil {
+						t.Fatalf("github-credential answer %s: %v", r.answer, err)
+					}
+					answers = append(answers, failure)
+				}
+			}
+			if len(answers) != 1 || answers[0].Code != tc.code {
+				t.Fatalf("the daemon answered the github-credential requests %+v, want one answer with the code %s", answers, tc.code)
+			}
+			if !strings.Contains(errb, tc.want) || strings.Contains(errb, tc.not) {
+				t.Errorf("stderr = %q; want the line of %s, %q, and not %q", errb, tc.code, tc.want, tc.not)
+			}
+			ghDir := filepath.Join(c.defaultDir, "gh")
+			if entries, err := os.ReadDir(ghDir); err != nil || len(entries) != 0 {
+				t.Errorf("gh directory holds %v (%v); want nothing, since the controller's gh acts as nobody", entries, err)
+			}
+			if !c.launched() {
+				t.Errorf("Oh My Pi did not start; want it started with the controller's gh acting as nobody")
+			}
+		})
+	}
+}
+
 // The real gh the controller's `legion gh` runs is the operator's LEGION_GH_PATH when set, and
 // otherwise the first gh on the operator's PATH that is not this state directory's own wrapper,
 // which must be a compiled program: a script there is a gh wrapper (a machine's own shim), which

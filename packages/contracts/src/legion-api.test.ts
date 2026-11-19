@@ -1588,11 +1588,29 @@ test("a Stage 3 issue without its Dispatch status is refused", () => {
  * block's `withoutWebhookApp` is its one report. */
 const LIVE_ENTRY_KEYS = ["apps", "cache", "readError", "repo", "servedAs"];
 
-/** Every key the `live` entries of a written repositories block carry, once each and sorted. */
-function liveEntryKeys(block: unknown): string[] {
+/** Each raw `live` entry of a written repositories block, as the file holds it. */
+function liveEntries(block: unknown): unknown[] {
   const live = isJsonObject(block) ? block.live : undefined;
-  const entries = Array.isArray(live) ? live : [];
-  const keys = entries.flatMap((entry) => (isJsonObject(entry) ? Object.keys(entry) : []));
+  return Array.isArray(live) ? live : [];
+}
+
+/** The keys of each raw `live` entry of a written repositories block that are not entry keys
+ * (LIVE_ENTRY_KEYS), one list per entry in `live`'s order: a list is empty where its entry's keys
+ * are a subset of the entry keys, and an entry that is no JSON object lists itself. */
+function keysOutsideTheEntryKeys(block: unknown): string[][] {
+  return liveEntries(block).map((entry) =>
+    isJsonObject(entry)
+      ? Object.keys(entry).filter((key) => !LIVE_ENTRY_KEYS.includes(key))
+      : [JSON.stringify(entry)]
+  );
+}
+
+/** Every key the raw `live` entries of a written repositories block carry, the union over the
+ * entries, once each and sorted. */
+function liveEntryKeys(block: unknown): string[] {
+  const keys = liveEntries(block).flatMap((entry) =>
+    isJsonObject(entry) ? Object.keys(entry) : []
+  );
   return [...new Set(keys)].sort();
 }
 
@@ -1603,9 +1621,10 @@ function liveEntryKeys(block: unknown): string[] {
 // `withoutWebhookApp` and nothing else. `live` is one entry for each repository a live record
 // names, sorted, with the name its pair serves it as where the rename rule serves it under the
 // other name, each role App's installation once GitHub answered both reads, why GitHub's last read
-// did not name it, and its cache, each absent until it holds something, and nothing else: the
-// fixture's entries carry each of those keys between them, and an entry carrying a copy of the
-// webhook App state, `webhookApp`, fails. `withoutWebhookApp` is the block's one report of that
+// did not name it, and its cache, each absent until it holds something, and nothing else: each
+// raw entry's keys are a subset of those keys, the union over the fixture's entries is all of them,
+// so its entries carry each optional key between them, and an entry carrying a copy of the
+// webhook App state, `webhookApp`, fails both. `withoutWebhookApp` is the block's one report of that
 // state and keeps contract 152's shape for every caller, since a `legion state` of 152 reads its
 // webhook App lines from it. A state without the block, without `live`, without
 // `withoutWebhookApp` or without its caches is refused, and so is an entry whose read error is
@@ -1624,10 +1643,12 @@ test("the state golden carries each issue's repository and the repositories its 
     "live",
     "withoutWebhookApp",
   ]);
+  expect(keysOutsideTheEntryKeys(written)).toEqual(liveEntries(written).map(() => []));
   expect(liveEntryKeys(written)).toEqual(LIVE_ENTRY_KEYS);
-  // What the comparison refuses: one entry carrying `webhookApp` beside the block's list.
+  // What the comparisons refuse: one entry carrying `webhookApp` beside the block's list.
   const copied = fixture("state.json") as { repositories: { live: Record<string, unknown>[] } };
   Object.assign(copied.repositories.live[0] ?? {}, { webhookApp: "the webhook App check failed" });
+  expect(keysOutsideTheEntryKeys(copied.repositories)[0]).toEqual(["webhookApp"]);
   expect(liveEntryKeys(copied.repositories)).not.toEqual(LIVE_ENTRY_KEYS);
   const both = { implement: true, review: true };
   expect(state.repositories.live).toEqual([

@@ -30,6 +30,9 @@ import (
 // boot: the count is 0 at the boot and after the event. Control: with the boot's read of
 // Dispatch's repo-projects table put back, the first case refuses its boot for a project that
 // table names no repository for, and the second counts the boot's request and fails on its 404.
+// The route and the event are named here only to prove that the daemon asks the one nothing and
+// hears nothing of the other; dispatch://INFRA-3532's own change deletes this test, with the
+// rename pass.
 func TestADaemonBootsAndServesForAProjectWithNoRepository(t *testing.T) {
 	t.Run("the real Dispatch, a project with no default and no repository row", func(t *testing.T) {
 		// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
@@ -101,7 +104,9 @@ func servesWithNoRepository(t *testing.T, d *daemon) {
 }
 
 // repoProjectEnvelope is Dispatch's settings.repo_project.updated event for project, a row of its
-// repo-projects table naming acme/widgets, as Envoy carries it on the project's subject.
+// repo-projects table naming acme/widgets, as Envoy carries it on the project's subject: the
+// event the daemon hears nothing of, which dispatch://INFRA-3532's own change deletes with this
+// test and the rename pass.
 func repoProjectEnvelope(t *testing.T, project string) []byte {
 	t.Helper()
 	event, err := json.Marshal(map[string]any{"id": 70, "issue_key": nil, "artifact_id": nil, "project": project, "seq": 0, "type": "settings.repo_project.updated",

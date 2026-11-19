@@ -55,6 +55,8 @@ per owner the review App is installed on, each token reaching every repository t
 installation holds, refreshed
 every minute. When the daemon has no GitHub App, `legion controller start`
 prints `[legion] the daemon has no GitHub App to act as; the controller's gh acts as nobody`.
+When the review App is installed on no account, it prints
+`[legion] the review App is installed on no account, so the controller has no GitHub owner; the controller's gh acts as nobody`.
 
 End every pull-request comment or review you post with
 `<!-- legion: {"session":"<session-id>","phase":"controller"} -->`, because the daemon reads that

@@ -29,7 +29,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -384,6 +386,88 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 	}
 	if got := renameTables(t, logged.String())["issues"]; got != (renameTableTally{written: 1}) {
 		t.Fatalf("the pod end's issues line = %+v, want one row written and none left", got)
+	}
+}
+
+// The next pod after a rename works the new name with the saved workspace restored
+// (dispatch://INFRA-4401 A10). An issue's idle release saves its workspace bundle while its record
+// names the pair's `from`, and the end of that release's pod (outbox.releaseIssue, after its
+// teardown) writes the pair's `to` over it and keeps the bundle. The read of the live records the
+// pass wakes (wakeLive, refreshCacheRepositories) then caches the `to`; the issue's next launch's
+// spec (specs.repository, workflowRuntime.launchRepository) names the `to` at the record's default
+// branch; and the next pod's restore takes the bundle that release saved, which the store keeps by
+// issue and not by repository (store.TakeWorkspaceBundleForRestore). Control: with the pass at
+// that hook deleted (releaseIssue's endPods), the next launch's spec names the `from`.
+func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	key := rig.issue.Key
+	if _, err := rig.pool.Exec(ctx, "update issues set repo = $2, github_repo = $2 where key = $1", key, renameFrom); err != nil {
+		t.Fatal(err)
+	}
+	rig.w.repositories = transferredRepositories()
+	rig.w.liveWake = make(chan struct{}, 1)
+	rig.runner.podEnded = rig.w.podEndsOn(renamePodRuntime{rig.rt})
+	// Inside the teardown, before the pod end: the release has saved the bundle by then, and the
+	// record still names the `from`.
+	var atTeardown struct {
+		repo    string
+		bundled bool
+		err     error
+	}
+	rig.rt.beforeAuthorize = func() {
+		if atTeardown.err = rig.pool.QueryRow(ctx, "select repo from issues where key = $1", key).Scan(&atTeardown.repo); atTeardown.err == nil {
+			_, atTeardown.bundled, atTeardown.err = rig.st.WorkspaceBundleSize(ctx, key)
+		}
+	}
+
+	rig.w.releaseIdlePods(ctx)
+	rig.drain(t)
+	if _, suspended := rig.rt.reads(); suspended != 1 {
+		t.Fatalf("Sandbox teardowns = %d, want the release's one", suspended)
+	}
+	if atTeardown.err != nil || !atTeardown.bundled || atTeardown.repo != renameFrom {
+		t.Fatalf("at the release's teardown %s's record names %q with a bundle saved %t (%v), want %s with the bundle saved",
+			key, atTeardown.repo, atTeardown.bundled, atTeardown.err, renameFrom)
+	}
+	if names := storedRepositoryNames(t, rig.pool, key); !namedAll(names, renameTo) {
+		t.Errorf("%s's stored names after its release's pod end = %v, want each on %s", key, names, renameTo)
+	}
+	if !rig.bundled(t) {
+		t.Errorf("%s holds no saved bundle after its release's pod end, want the one the release saved", key)
+	}
+	select {
+	case <-rig.w.liveWake:
+	default:
+		t.Errorf("the pod end woke no read of the live records, want one: its pass wrote %s's rows", key)
+	}
+	// The refresher's read of the live records, which that wake runs (refreshLive), over the
+	// workflow's own records.
+	rig.w.records = rig.issues
+	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error { return rig.w.refreshCacheRepositories(ctx, tx) }); err != nil {
+		t.Fatalf("read the live records again: %v", err)
+	}
+	if cached := repositoryNames(rig.w.cacheRepositories()); !slices.Equal(cached, []string{renameTo}) {
+		t.Errorf("the cache set after the read of the live records = %v, want [%s]", cached, renameTo)
+	}
+
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	launches := specs{stateDir: t.TempDir(), project: "legion", prompts: composer, appOwners: noAppOwners, repository: rig.w.launchRepository}
+	spec, err := launches.SpawnSpec(ctx, rig.machine.Claim())
+	if err != nil {
+		t.Fatalf("build the next launch of %s: %v", rig.token, err)
+	}
+	if spec.Repository.String() != renameTo || spec.DefaultBranch != "main" {
+		t.Errorf("the next launch's spec works %s at %s, want %s at main: the pod after the rename works the new name",
+			spec.Repository, spec.DefaultBranch, renameTo)
+	}
+	saved, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, key, "pod-after-the-rename", time.Now().UTC().Add(time.Minute))
+	if err != nil || take != runtime.WorkspaceBundleSend || string(saved.Bundle) != "PACK" || saved.Head != "abc" || saved.PodUID != releasedPodUID {
+		t.Errorf("the next pod's restore took %v of a bundle with head %q off %q (%v), want the bundle the release saved off %s sent to it",
+			take, saved.Head, saved.PodUID, err, releasedPodUID)
 	}
 }
 

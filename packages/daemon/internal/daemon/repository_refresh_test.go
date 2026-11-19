@@ -1656,7 +1656,9 @@ func TestARecoveryWhoseNoticeFailsPastItsBoundWaitsItsBackoff(t *testing.T) {
 // again, zeta/extra is heard and cached, and the count of requests under the route is not 0; with
 // each pair's partner added to the cache set (refreshCacheRepositories storing the live
 // repositories with the partner of each pair whose `from` they hold), cybermonklabs/widgets is
-// cached.
+// cached. Its stand-in Dispatch serves the repo-projects route only to prove that the boot asks it
+// nothing (INFRA-4401 P5), and dispatch://INFRA-3532's own change deletes that route's case, with
+// the rename pass.
 func TestTheBootHearsTheRecordsRepositoriesAndCachesTheLiveOnes(t *testing.T) {
 	ctx := context.Background()
 	var settings atomic.Int64
