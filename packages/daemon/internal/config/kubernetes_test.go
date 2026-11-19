@@ -696,6 +696,45 @@ func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnot
 	}
 }
 
+// An operator's own projected ServiceAccount token (pod.volumes[].projected.sources[]
+// .service_account_token) is mounted into the roles container, where every role of the pod reads
+// it, and carries the pod's ServiceAccount as its subject, as the broker's tokens do. So a
+// writer_audience that such a token also carries hands every role the writer token, past the
+// socket's peer check, exactly as one equal to agent_secrets.audience would: `legion config check`
+// and the daemon's boot refuse it, naming the writer audience and the operator's volume. The same
+// file with the operator's token of another audience passes the check, so the refusal is the
+// audience's alone.
+func TestTheLoadersRefuseAWriterAudienceThatAnOperatorsPodTokenAlsoCarries(t *testing.T) {
+	file := func(audience string) string {
+		return withSessionStore("    session_store: cloudsql-iam\n"+
+			"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions,"+
+			" user: legion-sessions@example-project.iam, impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com,"+
+			" writer_audience: \""+testWriterAudience+"\"}\n") +
+			"    pod:\n" +
+			"      volumes:\n" +
+			"        - name: operator-token\n" +
+			"          projected: {sources: [{service_account_token: {audience: \"" + audience + "\", expiration_seconds: 3600, path: token}}]}\n" +
+			"      volume_mounts:\n" +
+			"        - {volume: operator-token, mount_path: /var/run/operator}\n"
+	}
+	if _, err := LoadForValidation(writeConfigFile(t, file("model-gateway.example.com")), noEnv); err != nil {
+		t.Fatalf("LoadForValidation of the file with the operator's token of another audience: %v", err)
+	}
+	for _, loader := range []struct {
+		name string
+		load func(string, func(string) string) (Config, error)
+	}{{"LoadForValidation", LoadForValidation}, {"Load", Load}} {
+		t.Run(loader.name, func(t *testing.T) {
+			_, err := loader.load(writeConfigFile(t, file(testWriterAudience)), noEnv)
+			if err == nil || !strings.Contains(err.Error(), "runtime.kubernetes.session_database.writer_audience") ||
+				!strings.Contains(err.Error(), "runtime.kubernetes.pod.volumes[0]") {
+				t.Fatalf("%s error = %v; want a refusal that names the writer audience and runtime.kubernetes.pod.volumes[0], whose token every role reads",
+					loader.name, err)
+			}
+		})
+	}
+}
+
 func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 	for _, tc := range []struct {
 		name string
