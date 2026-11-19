@@ -748,12 +748,17 @@ func (s *secretSession) rereadSigner() (proofSigner, error) {
 // ran and failed, or that the broker refused for another reason, is the answer as it stands: the
 // write is served only from the broker's next reload, and a second call would fail the same way
 // and spend a second token of both reread buckets. unsigned is why the call that answered carried
-// no proof, nil for a signed one.
+// no proof, nil for a signed one the broker answered in full. A signed call the broker answered
+// 202, as it answers a call with no proof, is the broker's answer as it stands, and unsigned then
+// says so: a front between this command and the broker dropped the Proof header on the way.
 func (s *secretSession) askReread(ctx context.Context, name string) (r Reread, unsigned, err error) {
 	signer, unsigned := s.rereadSigner()
 	if signer != nil {
 		r, err = s.broker.RereadSecret(ctx, signer, name)
-		if !proofFailed(err) {
+		switch {
+		case err == nil && !r.Told:
+			return r, errors.New("the broker answered the signed reread as it answers a call with no proof (202), so something between this command and the broker dropped its Proof header"), nil
+		case !proofFailed(err):
 			return r, nil, err
 		}
 		unsigned = fmt.Errorf("the signed reread failed: %w", err)

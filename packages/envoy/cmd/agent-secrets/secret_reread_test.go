@@ -9,6 +9,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -265,6 +268,48 @@ func TestARereadThatRanAndFailedIsNotSentAgainUnsigned(t *testing.T) {
 			}
 			if unsigned := broker.rereadUnsigned(); len(unsigned) != 0 {
 				t.Fatalf("the rereads %v went again with no proof; want none after a signed reread the broker answered %d %s", unsigned, row.status, row.code)
+			}
+		})
+	}
+}
+
+// TestASignedRereadAnsweredAsUnsignedSaysWhy: a front between the command and the broker that
+// drops the Proof header of the signed reread gets that reread answered 202, as a call with no
+// proof is. The form says the broker's view was not checked and why: the broker answered the
+// signed reread as unsigned, so something dropped its Proof header. It sends no second reread,
+// and the reason is never empty: before, the line printed "(<nil>)". A stored secret's write and a
+// type secret's both exit 0, the type secret's on its tag.
+func TestASignedRereadAnsweredAsUnsignedSaysWhy(t *testing.T) {
+	const because = "the broker answered the signed reread as it answers a call with no proof (202), so something between this command and the broker dropped its Proof header"
+	for _, form := range []string{"a stored secret's create", "a type secret's create"} {
+		t.Run(form, func(t *testing.T) {
+			local := secrets.NewLocal()
+			broker := startSecretBroker(t, servedBy(local))
+			upstream, err := url.Parse(os.Getenv("AGENT_SECRETS_URL"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			proxy := httputil.NewSingleHostReverseProxy(upstream)
+			front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/reread") {
+					r.Header.Del("Proof")
+				}
+				proxy.ServeHTTP(w, r)
+			}))
+			t.Cleanup(front.Close)
+			t.Setenv("AGENT_SECRETS_URL", front.URL)
+			useAWS(t, local, testAccount, adaSignIn)
+			args := []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}
+			useStdin(t, "v1")
+			if form == "a type secret's create" {
+				args = typedWrite(t, local, "create")
+			}
+			stdout, stderr, code := runSecret(args...)
+			if code != 0 || !strings.Contains(stdout, "broker: rereading ") || !strings.Contains(stderr, "was not checked ("+because+")") || strings.Contains(stderr, "<nil>") {
+				t.Fatalf("%s behind a front that drops Proof: exit %d, stdout %q, stderr %q; want 0 and the unchecked line naming why", form, code, stdout, stderr)
+			}
+			if got := len(broker.rereadUnsigned()); got != 1 {
+				t.Fatalf("the broker took %d rereads with no proof; want the one the front stripped, and no second", got)
 			}
 		})
 	}
