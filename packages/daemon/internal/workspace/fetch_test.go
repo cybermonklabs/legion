@@ -1337,6 +1337,39 @@ func (r *killedClone) Run(ctx context.Context, command Command) (Result, error) 
 	return Result{ExitCode: 137, Stderr: "killed mid-transfer"}, nil
 }
 
+// A transfer a signal ended after git printed the provisioning token, as a `fatal: unable to
+// access` line naming the URL with its credential does, returns that line with the token scrubbed:
+// what a killed run printed goes under its error only in checkedResult, after the transfer has
+// scrubbed the Result's stderr, never inside the runner, whose error Fetch does not scrub. The
+// stand-in git prints the token it was handed and kills itself on a transfer from GitHub (the one
+// command that names the credential's file), and runs the real git for every other command.
+func TestFetchScrubsTheTokenFromATransferASignalEnded(t *testing.T) {
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	fakeGit := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\nif [ -n \"${" + provisioningTokenFileEnv + ":-}\" ]; then\n" +
+		"  echo \"fatal: unable to access 'https://x-access-token:$(cat \"$" + provisioningTokenFileEnv + "\")@github.com/acme/widgets/': The requested URL returned error: 502\" >&2\n" +
+		"  kill -KILL $$\nfi\nexec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+		t.Fatalf("write the stand-in git: %v", err)
+	}
+	run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
+
+	_, err = Fetch(context.Background(), run, fetchRequest(t))
+
+	if err == nil {
+		t.Fatal("Fetch succeeded through a transfer a signal ended")
+	}
+	if strings.Contains(err.Error(), testInstallationToken) {
+		t.Errorf("Fetch's error carries the provisioning token: %v", err)
+	}
+	if !strings.Contains(err.Error(), ": signal: killed\nfatal: unable to access 'https://x-access-token:***@github.com/acme/widgets/'") {
+		t.Errorf("Fetch = %v, want the transfer's signal and its line with the token scrubbed", err)
+	}
+}
+
 // Feed configuration prevents automatic maintenance from competing with the token-holding fetch,
 // and keeps each fetched object in a pack for the repository cache to stream. The clone owns its
 // history, so a feed refresh cannot remove objects from it.

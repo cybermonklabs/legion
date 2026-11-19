@@ -38,6 +38,7 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 - An unanswered request fails the test (`web/src/__tests__/network.ts`): spy the `api` method, or `answerRequests(http.get(…))`.
 - A React `act` warning fails the test: wrap updates in `act`, a promise in `await act(async …)`, and under fake timers give a held answer there after the press. Silence logs only with `quietConsoleError()`.
 - Use `user-event` (`userOnFakeClock()` under fake timers). A `fireEvent` call needs a `biome-ignore` on the import and a reason comment above it.
+- Rows run in random order: rerun a failure as its file alone with the `--seed=<n>` its lane printed (`docs/testing.md`).
 
 ## End-to-end tests
 

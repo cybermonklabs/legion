@@ -168,6 +168,17 @@ func TestSenderLimitSettings(t *testing.T) {
 		}
 	})
 
+	t.Run("start line for 1 message a minute and 1 at once", func(t *testing.T) {
+		limit, err := parseSenderLimit(senderLimitEnv(map[string]string{rate: "1"}))
+		if err != nil {
+			t.Fatalf("refused: %v", err)
+		}
+		const want = "listener sender limit: 1 message a minute, 1 at once, for each agent session in this process"
+		if got := describeSenderLimit(limit); got != want {
+			t.Fatalf("start line %q, want %q", got, want)
+		}
+	})
+
 	t.Run("start line for no limit", func(t *testing.T) {
 		limit, err := parseSenderLimit(senderLimitEnv(nil))
 		if err != nil {
@@ -1155,7 +1166,8 @@ func TestSenderLimitCost(t *testing.T) {
 
 // TestSenderLimitSenders is check a-senders: the limit counts the session a secrets-broker token
 // proves, else the request's source_session, and only for a message whose source is agent or
-// absent. A message with no sender, or from Dispatch or Envoy itself, takes nothing.
+// absent. A message with no sender takes nothing, and so does one from Dispatch, a person (source
+// human) or Envoy itself, with a secrets-broker token or without one.
 func TestSenderLimitSenders(t *testing.T) {
 	t.Run("a sender a secrets-broker token proves is counted and named in the field sender", func(t *testing.T) {
 		rig := newBrokerRig(t)
@@ -1180,6 +1192,38 @@ func TestSenderLimitSenders(t *testing.T) {
 				first.requireStatus(t, "the token's message", http.StatusOK)
 				first.requireNamed(t, "the token's message", bound)
 				publish().requireRefused(t, "the token's next message", bound, 4, 1, 15)
+			})
+		}
+	})
+
+	t.Run("a secrets-broker token does not make a message with another source count", func(t *testing.T) {
+		rig := newBrokerRig(t)
+		const bound, token = "ses_senders_broker_sources", "access-token-of-a-session-sending-another-source"
+		rig.broker.Says(token, sessionAnswer(bound, "ada@example.com", rig.caller.JKT()))
+		for _, source := range []string{"dispatch", "envoy", "human"} {
+			t.Run("source "+source, func(t *testing.T) {
+				rig.deps.senderLimit = newSenderLimit(4, 1, func() time.Time { return senderLimitStart })
+				topic := "notifications.team.sender-limit-broker-" + source + "-" + id.New()
+				publish := func(fields map[string]any) limitedAnswer {
+					t.Helper()
+					body := messageJSON(t, map[string]any{"topic": topic, "message": countedMessage}, fields)
+					return serveLimited(t, rig.handler, rig.logs.String, brokerTokenRequest(t, rig.caller, http.MethodPost, "/v1/messages/publish", token, body))
+				}
+				// Two messages past a burst of 1, the first naming the token's session and the
+				// second no session: each answers 200, and its line names no sender.
+				for i, fields := range []map[string]any{
+					{"source": source, "source_session": bound},
+					{"source": source},
+				} {
+					what := fmt.Sprintf("the token's %s message %d", source, i+1)
+					message := publish(fields)
+					message.requireStatus(t, what, http.StatusOK)
+					message.requireUnnamed(t, what)
+				}
+				// The count is still full: the token's next message, with no source, takes it.
+				next := publish(nil)
+				next.requireStatus(t, "the token's next message, with no source", http.StatusOK)
+				next.requireNamed(t, "the token's next message, with no source", bound)
 			})
 		}
 	})
@@ -1219,7 +1263,7 @@ func TestSenderLimitSenders(t *testing.T) {
 		requireUncounted(t, "notice", notices)
 	})
 
-	for _, source := range []string{"dispatch", "envoy"} {
+	for _, source := range []string{"dispatch", "envoy", "human"} {
 		t.Run("source "+source+" with a source_session is not counted", func(t *testing.T) {
 			rig.limit(4, 1)
 			sender := "ses_senders_" + source

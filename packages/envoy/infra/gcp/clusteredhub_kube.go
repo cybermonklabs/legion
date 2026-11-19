@@ -98,8 +98,8 @@ func refuseClusteredHubSecret(value pulumi.StringInput, name, input string) pulu
 
 // newClusteredHubKubernetes registers the hub's Kubernetes children, each the component's child
 // on the Kubernetes provider it builds from kubeconfig: the priority class read, the nats chart,
-// the hub pods' NetworkPolicy and their PodMonitoring and, with tailnet, the tailnet hosts
-// (newClusteredHubTailnetHosts) and the session listener they forward to
+// the hub pods' NetworkPolicy and their PodMonitoring, with tailnet the tailnet hosts
+// (newClusteredHubTailnetHosts), and with a session listener that listener
 // (newClusteredHubListener).
 func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name string, args *ClusteredNatsHubArgs, s clusteredHubSettings) error {
 	// The provider is the component's own, so it can promise mutable ConfigMaps: pulumi-kubernetes
@@ -155,21 +155,26 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 			}},
 		}},
 	}, child...)
-	if err != nil || s.tailnet == nil {
+	if err != nil {
 		return err
 	}
-	if err := newClusteredHubTailnetHosts(ctx, name, args.TailnetAuthKey, s, classRead, child...); err != nil {
-		return err
+	if s.tailnet != nil {
+		if err := newClusteredHubTailnetHosts(ctx, name, args.TailnetAuthKey, s, classRead, child...); err != nil {
+			return err
+		}
+	}
+	if s.listener == nil {
+		return nil
 	}
 	return newClusteredHubListener(ctx, s, classRead, child...)
 }
 
 // clusteredHubIngress is what the hub pods' NetworkPolicy admits, by TCP port: NATS's client port
-// from every pod of each client namespace and, with tailnet, from the component's tailnet hosts,
-// which forward the tailnet's NATS port to it, and from its session listener, which since the
-// split is a pod of neither kind: it carried the tailnet hosts' labels while it was a container
-// of their pods, and without a rule of its own it would reach NATS only while clientNamespaces
-// happened to name the hub's namespace; the route port from the hub pods alone, which is
+// from every pod of each client namespace, with tailnet from the component's tailnet hosts, which
+// forward the tailnet's NATS port to it, and with a session listener from that listener, which is
+// a pod of neither kind: it carried the tailnet hosts' labels while it was a container of their
+// pods, and without a rule of its own it would reach NATS only while clientNamespaces happened to
+// name the hub's namespace; the route port from the hub pods alone, which is
 // all that keeps anything else from joining the cluster, since routes carry no credential; the
 // monitoring port from each monitor namespace, and from none without one, as an empty from would
 // admit every pod; and the exporter's port from each metrics namespace.
@@ -177,6 +182,8 @@ func clusteredHubIngress(s clusteredHubSettings) networkingv1.NetworkPolicyIngre
 	ingress := networkingv1.NetworkPolicyIngressRuleArray{ingressFrom(natsPort, namespacePeers(s.clientNamespaces))}
 	if s.tailnet != nil {
 		ingress = append(ingress, ingressFrom(natsPort, networkingv1.NetworkPolicyPeerArray{labelPeer(clusteredHubTailnetSelector(s.name))}))
+	}
+	if s.listener != nil {
 		ingress = append(ingress, ingressFrom(natsPort, networkingv1.NetworkPolicyPeerArray{labelPeer(clusteredHubListenerSelector(s.name))}))
 	}
 	ingress = append(ingress, ingressFrom(clusteredHubClusterPort, networkingv1.NetworkPolicyPeerArray{labelPeer(clusteredHubSelector(s.name))}))

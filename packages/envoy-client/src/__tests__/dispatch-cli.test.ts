@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -16,6 +17,9 @@ interface Recorded {
 }
 
 const makeDirectory = temporaryDirectories("dispatch-cli");
+
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const requests: Recorded[] = [];
@@ -538,7 +542,7 @@ function environment(
   return {
     HOME: stateDir,
     DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-    DISPATCH_TOKEN: "test-token",
+    DISPATCH_TOKEN: TOKEN,
     DISPATCH_STATE_DIR: stateDir,
     ...extra,
   };
@@ -1643,7 +1647,7 @@ describe("the dispatch entry as its own process", () => {
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-1",
         DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN: TOKEN,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -1746,7 +1750,7 @@ describe("the dispatch CLI's envoy.json", () => {
         dispatch: {
           enabled: true,
           serverUrl: `http://127.0.0.1:${server.port}`,
-          token: "test-token",
+          token: TOKEN,
         },
       })
     );
@@ -2029,7 +2033,7 @@ describe("the dispatch CLI's envoy.json", () => {
     writeFileSync(
       old,
       JSON.stringify({
-        dispatch: { enabled: true, serverUrl: "http://127.0.0.1:1", token: "checkout-token" },
+        dispatch: { enabled: true, serverUrl: "http://127.0.0.1:1", token: fixtureSecret("file") },
       })
     );
 
@@ -2090,7 +2094,7 @@ describe("the dispatch CLI's envoy.json", () => {
     const file = join(dir, "envoy.json");
     for (const contents of [
       { envoy: { enabled: true, natsUrls: ["nats://nats.internal.example:4222"] } },
-      { dispatch: { token: "file-token" } },
+      { dispatch: { token: fixtureSecret("file") } },
     ]) {
       writeFileSync(file, JSON.stringify(contents));
       const { code, stdout } = await run(["projects"], { ...fromFile, ENVOY_CONFIG_FILE: file });
@@ -2106,7 +2110,7 @@ describe("the dispatch CLI's envoy.json", () => {
   // the session's one long-lived shell keeps until a command unsets or empties DISPATCH_URL.
   test("DISPATCH_TOKEN_FILE with no DISPATCH_URL says the shell lost it, not that envoy.json is missing, and exits 2, sending nothing", async () => {
     const tokenFile = join(stateDir, "DISPATCH_TOKEN");
-    writeFileSync(tokenFile, "test-token\n");
+    writeFileSync(tokenFile, `${TOKEN}\n`);
     const chosen = join(stateDir, "profile", "envoy.json");
     for (const variables of [
       { DISPATCH_TOKEN_FILE: tokenFile },

@@ -547,6 +547,10 @@ test("scrolling under a hover-opened card closes it", () => {
       jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
     });
     expect(screen.getByRole("tooltip")).toBeTruthy();
+    // The reader turns the wheel over the reference, which makes the scroll after it theirs: a
+    // scroll with no input of the reader's behind it is the page moving by itself, which keeps
+    // the card. user-event has no wheel form.
+    fireEvent.wheel(first);
     // user-event has no scroll form.
     fireEvent.scroll(document);
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();

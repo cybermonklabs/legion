@@ -154,10 +154,11 @@ export interface SessionContext {
   readonly getAsyncJobSnapshot?: () => AsyncJobSnapshot | null;
   /**
    * The host's `ctx.getContextUsage()`: how much of the current model's context window this
-   * session's conversation fills now, or undefined when the host holds no breakdown to answer
-   * with. It takes no argument on the extension surface, and it is read live from a context
-   * kept since `session_start`. Absent on a host that predates it, so a call site asks
-   * `typeof ctx.getContextUsage === "function"` first, as the host's own callers do
+   * session's conversation fills now, or undefined when the host has no reading to answer with
+   * (at the pin, only before its runner is initialised; see `ContextUsage`). It takes no argument
+   * on the extension surface, and it is read live from a context kept since `session_start`.
+   * Absent on a host that predates it, so a call site asks `typeof ctx.getContextUsage ===
+   * "function"` first, as the host's own callers do
    * (`typeof this.session.getContextUsage === "function"`).
    */
   readonly getContextUsage?: () => ContextUsage | undefined;
@@ -251,9 +252,10 @@ export interface AsyncJobDelivery {
  *
  * Read out of Oh My Pi 18.16.0-sami.20261105-032528 (the fork's build of 2026-11-05), which builds
  * the extension context with `getContextUsage: () => this.#d()` over a session method answering
- * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`, and nothing
- * at all when it holds no context breakdown. `percent` is nullable because the same build
- * carries a second wiring of this shape, the status line's startup session, which answers
+ * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`. The pinned
+ * build (18.18.6-sami.20261117-013345, `.omp-pin`) answers undefined only before its runner is
+ * initialised, and `contextWindow: 0` for a model with no window or for no model at all.
+ * `percent` is nullable because the older build's status-line startup wiring answered
  * `{tokens: 0, contextWindow, percent: null}`: a reader of these figures handles a host that
  * reports a window and no percentage.
  */

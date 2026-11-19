@@ -272,11 +272,14 @@ trade for that session only with a DPoP proof of that key, and refuses one prove
 are registered for one pod, so this is what keeps one role from trading for another role's
 session; the Legion daemon names each role's key. A later write that names no key keeps the one
 the registration names, and a registration that names none, as a session pod's is, admits any key
-of that pod. Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53
-makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session
-id a role's agent reports, so a role can still have its own claim registered under another
-claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in
-your daemon and its pods.
+of that pod. Set no `exchange_audience` until your daemon, its pods and its broker carry three
+more changes: each role trading with a key of its own, since until then a role's own trade is
+refused; each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the
+daemon that registered it, not only each registrar to the pods of its own daemon, since until then
+any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another
+claim's session; and the daemon choosing each role's session id rather than taking its agent's
+report. The daemon already holds each session id to the claim of its project that first recorded
+it and registers no session another of its claims holds.
 
 A registration may also name its `generation` (0 or more, 0 when absent; a negative one is
 `400 GENERATION_INVALID`), the registrar's own order of its writes for that pod and session. The
@@ -768,7 +771,8 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | The sign-in provider | A person's browser signs in to the broker at the provider (Google, under the Workspace's internal consent screen), and the broker reaches its token endpoint and keys over HTTPS at a sign-in, and its discovery document at the first sign-in each process serves (kept once a read succeeds) and at the client check it takes at startup and every hour after. A discovery that could not be read answers the page `503` naming the issuer and logs `approval sign-in: reach the provider`; machines are served as before, and `GET /signin/status` reports `issuer_unreachable` ([What the sign-in is doing](#what-the-sign-in-is-doing)). |
 | Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE` name the cluster's service-account token issuer and the audience the pods' and the services' projected tokens carry. The broker fetches the issuer's discovery document at startup and refuses to start if it cannot. |
 | Google Cloud (optional) | To let machines trade their Google identity tokens, `BROKER_GOOGLE_OIDC_AUDIENCE` names the audience of those tokens, and `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_VM_EXCHANGE_ACCOUNTS` describe each fleet. The broker fetches Google's discovery document at startup and refuses to start if it cannot. |
-| Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. |
+| Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. It calls the listener with its own projected ServiceAccount token, which `BROKER_ENVOY_ACCOUNT_TOKEN_FILE` names and which it reads for each notice, so the listener must admit that account. The shared bearer `BROKER_ENVOY_TOKEN` is removed, and a broker started with it refuses to start. |
+| The Envoy hub's NATS auth service (optional) | With `BROKER_NATS_URLS`, the broker answers the authorization of each connection the Envoy hub sends it: a session presenting its broker access token and a proof of its key gets its own delivery channel, and a service presenting a platform token for `BROKER_NATS_K8S_AUDIENCE` or `BROKER_NATS_GOOGLE_AUDIENCE`, from an account `BROKER_NATS_SERVICES` lists, gets its kind's grant. It connects to the hub as the user `BROKER_NATS_SEED_FILE` holds, signs with the account seed in `BROKER_NATS_ISSUER_SEED_FILE` and opens each request with the curve seed in `BROKER_NATS_XKEY_SEED_FILE`; each file is refused at startup unless it holds a seed of its kind. Every replica answers in one queue group, so a stopped replica delays no connection. With none of these set the broker runs no auth service. |
 | The model judge (optional) | Outbound HTTPS access to the model endpoint `BROKER_JUDGE_MODEL_URL` names, which the broker reaches with its machine's own Google identity token for `BROKER_JUDGE_MODEL_AUDIENCE`, and to the Dispatch `BROKER_JUDGE_DISPATCH_URL` names, which it reads with the projected ServiceAccount token in the file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, read at call time and never at boot, so a rotation needs no restart. It reads one issue and that issue's spec document there for the judge, and one issue's assignee for a Legion worker pod's request for a shared secret, and writes nothing. With those settings unset the broker makes neither call and runs no judge ([Concepts](/legion/broker/concepts/#the-model-judge)). |
 | Dispatch's project access (optional) | To let a token name the projects its person may see, `BROKER_PROJECT_ACCESS_URL` names the Dispatch the token exchange asks whether a person may see a project and what kind of member a person is, through Dispatch's `GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person` routes, and `BROKER_PROJECT_ACCESS_TOKEN_FILE` names the broker's own projected ServiceAccount token for Dispatch's audience, read at call time and never at boot. No Dispatch release serves those routes yet: leave both unset until the broker can reach one that does, since against one that does not, every trade naming a project is refused `temporarily_unavailable`. Dispatch must list that account as one that may ask: until it does, Dispatch answers 403 and every trade that asks it is refused `server_error`, saying Dispatch refused the broker's account; so is every such trade while the broker cannot read the token file, and while Dispatch answers a member kind the broker does not know. The two are set together or not at all. Answers are kept 30 seconds, and the questions are asked before the exchange's database transaction begins. While Dispatch cannot be asked, a token naming no project is minted as before, and each such mint logs a warning naming the account or person and the session; every trade naming a project, an operator entry's included, is refused `temporarily_unavailable`. With neither set the broker asks Dispatch nothing: a token naming no project and an operator entry's token are minted as before, and a person's trade naming a project is refused. The boot log's `project access check state=on` or `state=off` line says which. |
 
@@ -1257,26 +1261,77 @@ Many fields of these lines are the command's own text. From its request's header
 `correlation_id`, which is the `X-Correlation-Id` header, and the host of a `CONNECT` whose target
 is a path, which is its `Host` header. From the rest of its request: the method, the path, the
 host and the port it asked for, the address that host resolved to, and a `reason` or `error` that
-quotes them — an upstream failure's `error` can quote the names a service's certificate holds,
-which the service chose. A host is written as the command sent it, lowercased: a client that
-sends a Unicode name as its punycode (`xn--…`) form, as Go's and curl's do, has the punycode
-written, and the proxy converts no name of its own. A cut to 256 bytes keeps a line small, and
-lowercasing a host keeps it one spelling; neither is redaction. What keeps a placeholder off
-every line the airlock's proxy port writes, a refusal line among them, is that each text the
-line holds has each placeholder written whole — `agent-secrets-placeholder-` and the letters and
-digits after it, in any case — replaced by `[placeholder]` before the line is written. So no line
-holds a placeholder as it was minted or lowercased: a command that writes its placeholder into
-its request's path, its `X-Correlation-Id` or the host it asks for, or a service that names it in
-its certificate, has `[placeholder]` written there. A placeholder encoded on purpose — its
-characters percent-escaped, written in fullwidth letters, or its 32 characters after the prefix
-written without it — is text the proxy cannot tell from any other, and is written as it came;
-that is out of the mask's scope, since a command that wants its placeholder sent somewhere can
-send it through a tunnel, and the mask is for a placeholder written as it is. No line holds a
-secret's value: no field is read from a request's body or from a header the swap puts a value
-in. The API port's refusal line takes its `correlation_id` from the caller's `X-Correlation-Id`
-too, and masks no placeholder; its line holds no message text, and names the code. Each answer,
-a refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is the one
-record of the API port's `429` and of a device grant's poll answers.
+quotes them. A host is written as the command sent it, lowercased: a client that sends a Unicode
+name as its punycode (`xn--…`) form, as Go's and curl's do, has the punycode written. A
+plain-HTTP request whose URL names a Unicode host is the one place the proxy's side
+converts it: net/http's transport dials the punycode form, so the line of the transport's dial —
+the tunnel's, or a failed dial's when the transport's own check or dial fails — names
+`xn--caf-dma.example.net`, while the line of the proxy's own check before it, the refusal line
+and `airlock proxy: upstream` name `café.example.net`. A cut to 256 bytes keeps a line small,
+and lowercasing a host keeps it one spelling; neither is redaction. What keeps a placeholder off
+a line is the broker's mask, which reads each line its JSON handler writes, after the handler has
+written it: it decodes each string of the line — each value, each key, each group's name — and
+writes again each string whose decoded text holds a placeholder, with each placeholder replaced
+by `[placeholder]`, and leaves every other byte as the handler wrote it. A placeholder is
+`agent-secrets-placeholder-`, in any case, and the letters and digits after it, at most the 32
+the broker mints and up to where another placeholder starts, so two placeholders written
+together are two. A line of one JSON object that holds no `\u` escape, no byte past ASCII and no
+`agent-secrets-placeholder-` in any ASCII case cannot hold a placeholder, and is handed on as it
+came: every other escape JSON has decodes to a character no placeholder holds. So a value is
+masked in the one form the line holds it, and a name a command chose
+changes no other field of its line, whatever bytes it holds. That holds for every line the
+broker writes through slog or Go's `log`
+package: every line of the airlock's proxy port, a refusal line and net/http's and httputil's own
+`airlock proxy: net/http` lines among them, the API port's lines, the standard logger's, the AWS
+SDK's, which the broker writes as `broker: aws sdk` at `WARNING`, grpc's, written as
+`broker: grpc` (its errors at `ERROR`; its infos and warnings, which grpc drops by default, at
+`DEBUG`, which the broker drops too), and OpenTelemetry's internal errors. grpc's own
+`GRPC_GO_LOG_SEVERITY_LEVEL` and `GRPC_GO_LOG_VERBOSITY_LEVEL` therefore change nothing the broker
+writes. net/http's transport has no error log of its own: when a service sends bytes after a
+whole answer on a connection the proxy keeps, the transport writes them to the standard logger,
+which the broker writes as one line for each write, its first line cut to 256 bytes and the rest
+kept as `stack`. So no such line holds a placeholder as it was minted or lowercased: a command
+that writes its placeholder into its request's path, its `X-Correlation-Id` or the host it asks
+for has `[placeholder]` written there. A line the mask cannot read as one JSON object is written
+as a fixed line in its place, and none of its text
+is written. A value whose methods fail or panic is written as slog writes that failure —
+`!ERROR:…` or `!PANIC: …`, with a placeholder in that text masked too; the mask calls no method
+of a value and so cannot panic for one, though slog itself can panic for a value whose failure
+it cannot print. Two kinds of text are not masked. A library that writes to stderr or stdout
+itself writes past it — the Anthropic SDK's warnings, go-retryablehttp's default client, the
+pg_query WebAssembly module's stdout and stderr, and the Google client libraries' own logger when
+`GOOGLE_SDK_GO_LOGGING_LEVEL` is set and a client was given no logger (the broker's Secret
+Manager client is given one that drops every line, since at debug it prints each response, and a
+read's response holds the value) — as does the Go runtime's report of a fatal error or a panic no
+handler recovered, and anything written before `main` runs. And a placeholder the line holds in
+another spelling: a `[]byte`, which the JSON handler writes in base64 wherever it is in a line,
+and a placeholder encoded on purpose — its characters percent-escaped, written in fullwidth
+letters, a separator written after the prefix, an invisible character written inside it, or its
+32 characters after the prefix written alone — is text the mask cannot tell from any other, and
+is written as it came; that is out of the mask's scope, since a command that wants its
+placeholder sent somewhere can send it through a tunnel, and the mask is for a placeholder
+written as it is.
+
+No field of a line is read from a request's body or from a header the swap puts a value in. A
+bound service is sent the real value, though, and can send it back, and the token endpoint of an
+Azure exchange is sent the real federated token; the placeholder mask can see neither. net/http,
+net/textproto and httputil quote each run of bytes they repeat from a peer — an answer's bytes on
+an idle connection, a header, trailer or status line they could not read, a client's ALPN list —
+so a library's text from the first quotation mark of each of its lines to that line's end is
+written as `"[service bytes not shown]"`: in the lines those libraries write (the standard
+logger's and `airlock proxy: net/http`), in the `error` of `airlock proxy: upstream` and in the
+`502` the proxy answers with it, and in the reason, line and answer of an Azure exchange the
+endpoint's answer failed. The whole rest of the line goes, not only the quoted run, since a stray
+quotation mark before a run would otherwise pair with the run's opening one and leave the run in
+clear. A service's text a library writes without quotes is written as it came, but for the names
+a certificate holds: crypto/x509's error for a certificate that names other hosts than the one
+asked for lists every name in it, so the `error` of `airlock proxy: upstream`, the `502`, and the
+reason, line and answer of an Azure exchange whose token endpoint's certificate names other hosts
+write `tls: the service's certificate is not valid for this host; the names it holds are not shown`
+in its place. The API port's refusal line takes its `correlation_id` from the caller's
+`X-Correlation-Id` too; its line holds no message text, and names the code. Each
+answer, a refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is
+the one record of the API port's `429` and of a device grant's poll answers.
 
 On the API port, an answer that no refusal line records names its id in no line: a `429`, the two
 answers of a device login's poll, and every answer of 500 and above. `agent-secrets` prints the id
@@ -1366,12 +1421,12 @@ request, and that stops the retry at once.
 ## Metrics
 
 The broker serves its metrics in the Prometheus text format at `GET /metrics`, on a port of its
-own: `BROKER_METRICS_LISTEN_ADDR`, by default `127.0.0.1:13382`. The API's port serves no
-`/metrics`, and the metrics port serves nothing else: every other path answers `404`, and a method
-other than `GET` or `HEAD` answers `405`. The boot binds it after the API's port and the airlock's
-proxy port and logs `broker metrics listening addr=<host:port>`, and a pod that cannot bind it
-does not start. A draining pod goes on answering scrapes through its drain, and the port closes
-with the others.
+own: `BROKER_METRICS_LISTEN_ADDR`, by default `127.0.0.1:13382`. The same port serves `GET /livez`,
+the NATS auth service's liveness (below). The API's port serves neither, and the metrics port
+serves nothing else: every other path answers `404`, and a method other than `GET` or `HEAD`
+answers `405`. The boot binds it after the API's port and the airlock's proxy port and logs
+`broker metrics listening addr=<host:port>`, and a pod that cannot bind it does not start. A
+draining pod goes on answering scrapes through its drain, and the port closes with the others.
 
 The default address answers on the pod itself alone, so a scraper in another pod needs an address
 it can reach, such as `0.0.0.0:13382`. Let that scraper alone reach the port, and never route it
@@ -1387,6 +1442,9 @@ own listing.
 | `broker_mint_attempts_total` | counter | `type`, `outcome`, `attempt` | Each attempt of each call a minter makes to GitHub or Google ([the mint retry](#the-mint-retry)). `type` is the secret's type. `outcome` is `ok`, `upstream` (an answer of 500 or above, no answer, or an answer it could not use), `rate_limited`, `refused` (a `4xx` that is no rate limit) or `cancelled` (the caller's request ended). `attempt` is `1`, `2` or `3`. |
 | `broker_unservable_secrets` | gauge | `secret`, `reason`, `owner` | One series of value 1 for each secret the broker refuses to serve now. `secret` is the secret's whole name in the store, as the `agent secret policy refused` line names it, `reason` is that line's reason, and `owner` its owner tag, empty for `owner-tag-missing` and `owner-tag-malformed`. A secret that becomes servable, or leaves the store, is gone from the next scrape, and a reread of a name nobody created adds no series. Nor does a secret waiting for its value in the ten minutes after its creation (`agent secret policy waiting for a value`), which is no refusal. |
 | `broker_policy_store_reads_total` | counter | `read` | Each call the policy makes to the secret store, a failed one too: `list` for a load of the whole namespace, `describe` for one secret's reread, and `value` for one type secret's value ([the value read](#the-value-read)). It is how to see that this pod read the store: the broker logs no line for a read whose secrets it serves. On Secret Manager each of them spends the project's read quota. A `list` is one `ListSecrets` for each page and one `GetSecretVersion` for each secret, and a `describe` is one `GetSecret` and one `GetSecretVersion`. A `value` is one `GetSecret`, or none when this pod read that secret in the 30 seconds before, and then the `AccessSecretVersion` that reads the value, which counts against Secret Manager's separate access quota. |
+| `broker_nats_callout_decisions_total` | counter | `kind`, `outcome`, `reason` | Each NATS connection the auth service answered, where the broker runs it. `kind` is the credential the connection presented: `session`, `service` or `none`. `outcome` is `admitted` or `refused`, and `reason` is a refusal's one fixed word (empty when admitted), such as `waiting_bound` for one refused at once because the replica already held 1024 requests waiting for a decision. |
+| `broker_nats_callout_seconds` | histogram | | How long the auth service took to answer one connection, from the request reaching the replica. Its buckets straddle the decision's 1.5-second budget and the two seconds the hub waits for an answer. |
+| `broker_nats_callout_dropped_total` | counter | `reason` | Each authorization request the auth service answered not at all; the hub refuses that client at its own timeout. `reason` is `past_bounds` (the replica already held 1024 requests waiting and 1024 being refused), `hub_gave_up` (the hub had stopped waiting for the answer, read from the hub's own clock, so no skew between the broker's clock and the hub's counts here), `unopened` (not sealed to the service's curve key), `not_a_request`, or `pending_limit` (dropped by the NATS client on arrival, past the subscription's pending limits). The count moves every second whether or not the log takes writes. The broker logs the first drop in a minute, at WARN, `natscallout: dropped authorization requests unanswered` with each reason's count since the last such line and each reason's first drop (`<reason>_first`); a replica that stops logs what it counted since its last line. |
 
 Each pod counts its own answers, attempts and reads, from zero at its start.
 [Run the broker locally](/legion/broker/guides/run-locally/#read-the-log-and-the-metrics) shows a
@@ -1421,6 +1479,16 @@ boot, so nobody adds it up by hand: `broker stop budget drain=5s shutdown=60s to
 **`/healthz` as the readiness probe, and as nothing else.** A liveness probe on it has the kubelet
 kill the container in the middle of the drain, which is what the drain exists to prevent
 ([Health and logs](#health-and-logs)).
+
+**`/livez` on the metrics port as the liveness probe, where the broker runs the NATS auth
+service.** It answers `200` while the service's loop has turned in the last ten seconds, and `503`
+with a line naming how long ago it last turned once it has not; a broker that runs no auth service
+answers `200`. A stalled replica keeps its place in the hub's queue group and is sent requests it
+never answers, so the probe must read the status: a probe that only checks the port answers passes
+a `503`. Probe it on the metrics port, which a pod must make reachable to the kubelet (the default
+address answers on the pod alone), every five seconds with three failures before a restart. Unlike
+the `/livez` of `envoy-dispatch` and `envoy-listener`, which answer `204` reading nothing, this one
+reads the service's own heartbeat, which a decision that never ends stops.
 
 **One more Postgres connection per pod, on a session-mode path.** The fan-out below listens on a
 connection of its own, held for as long as the process runs and outside whatever `pool_max_conns`
