@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 )
 
 // failingTokenTransport fails every request to the broker's token endpoint as an unreachable
@@ -361,7 +362,7 @@ func TestContractALostRefreshAnswerIsRedeemableUntilTheGraceEnds(t *testing.T) {
 			if !lost {
 				t.Fatal("the start's refresh answer was not lost")
 			}
-			if _, err := first.broker.Store.Pool.Exec(ctx, tc.shift); err != nil {
+			if _, err := storetest.Unguarded(ctx, first.broker.Store.Pool, tc.shift); err != nil {
 				t.Fatal(err)
 			}
 			err := b.refresh(ctx)

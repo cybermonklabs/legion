@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 )
 
 // wireIntrospection is the route's answer as a caller reads it: RFC 7662's active flag and, for a
@@ -136,7 +137,7 @@ func TestIntrospectionAnswersAStorageOutage503(t *testing.T) {
 func TestIntrospectionAnswersAMalformedStoredClaimAsSuch(t *testing.T) {
 	rig := brokertest.NewRig(t)
 	_, tok, credentialID := approvedLogin(t, rig)
-	tag, err := rig.Store.Pool.Exec(context.Background(), `update oauth_access_tokens
+	tag, err := storetest.Unguarded(context.Background(), rig.Store.Pool, `update oauth_access_tokens
 		set request = jsonb_set(request, '{session,extra,projects}', '["ACME"]') where credential_id = $1`, credentialID)
 	if err != nil || tag.RowsAffected() == 0 {
 		t.Fatalf("rewrite the token's row: %v, %d rows", err, tag.RowsAffected())

@@ -196,7 +196,7 @@ func TestARotatedRefreshTokenIsRedeemableOnlyWithinItsGrace(t *testing.T) {
 		t.Errorf("grace left = %.1fs, want about five minutes", graceSeconds)
 	}
 
-	if _, err := pool.Exec(ctx, `update oauth_refresh_tokens set grace_until = now() - interval '1 second' where signature = 'refresh-1'`); err != nil {
+	if _, err := storetest.Unguarded(ctx, pool, `update oauth_refresh_tokens set grace_until = now() - interval '1 second' where signature = 'refresh-1'`); err != nil {
 		t.Fatalf("expire the grace: %v", err)
 	}
 	got, err = s.GetRefreshTokenSession(ctx, "refresh-1", nil)
@@ -307,7 +307,7 @@ func TestARowNamingAnUnregisteredClientIsNotNotFound(t *testing.T) {
 	if err := s.CreateAccessTokenSession(ctx, "access-1", tokenRequest(t, s, "request-1", credential)); err != nil {
 		t.Fatalf("CreateAccessTokenSession: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `update oauth_access_tokens set request = jsonb_set(request, '{client_id}', '"example-unregistered"') where signature = 'access-1'`); err != nil {
+	if _, err := storetest.Unguarded(ctx, pool, `update oauth_access_tokens set request = jsonb_set(request, '{client_id}', '"example-unregistered"') where signature = 'access-1'`); err != nil {
 		t.Fatal(err)
 	}
 	_, err := s.GetAccessTokenSession(ctx, "access-1", nil)

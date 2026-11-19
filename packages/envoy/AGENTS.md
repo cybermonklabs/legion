@@ -7862,6 +7862,16 @@ grant lifetimes and pending requests still run on wall-clock time;
 the table starts empty, so the first deploy restores nothing; and a pod whose renewer already exited 76 stays without one until it is relaunched.
 `internal/broker/enroll/serving_test.go`, `internal/broker/api/renew_liveness_test.go`, `cmd/broker/serving_start_test.go` and `cmd/broker/outage_test.go` (`TestABrokerOutageLongerThanALease`, the real broker and `agent-secrets` binaries across an outage longer than a lease) test it.
 
+Every column that decides whether a broker credential is live, for which person and machine it acts, and which key may present it moves only as the broker's own writers move it (migration 0033, `0033_credential_columns_write_once`, whose header names each writer): the database refuses any other write with SQLSTATE 23514, whatever statement sends it.
+A token's (`oauth_access_tokens`, `oauth_refresh_tokens`) `signature`, `request`, `request_id` and `credential_id` are written at its insert alone, its `active` goes from true to false and never back, and a refresh token's `grace_until` is set once, at its first rotation, and never cleared or moved.
+A `person_signins` row's `person`, `thumbprint`, `machine_account` and `created_at` are written at its insert alone and its `revoked_at` once; a revoked row is never deleted and the table is never truncated, while a live row may be deleted.
+A `launcher_credentials` row's `subject` never changes, its `revoked_at` is set once, and its `expires_at` is fixed once it is revoked; its `operator`, `service`, `host`, `key_thumbprint`, `public_jwk` and `pod_uid` move only on a live row that names a subject, as the token-login upsert and the pod claim move them (`enroll.Service.IssueTokenLoginTx`).
+A decided `oauth_device_codes` row changes its `request` in nothing but its top-level `last_checked` (a poll), and a code's `status` moves only from new (0) to a decision (approved 1, denied 2) and from any status to invalidated (-1): never back to new, never from one decision to the other, and never out of invalidated, since `oauthstore.Store.GetDeviceCodeSession` answers "not found" only for an invalidated code.
+Each trigger fires only on a write no writer makes (its `when`), so the writers' own statements cost nothing, and every statement of the migration writes the catalogue alone.
+`store.TestEveryBrokerCredentialColumnMovesOnlyAsItsWritersMoveIt` holds each refused transition, each with a control that turns off exactly the guard it names, and each writer's own statement.
+A test that builds a state no writer makes (a refresh token's grace ended early, a token's stored request rewritten) writes it through `storetest.Unguarded`, which turns the guard off on the tables its statement writes for that one transaction and back on before it commits.
+A role that disables a trigger or replaces a function changes the schema itself, which the guard cannot hold.
+
 Tests: `cd packages/envoy && go vet ./... && go test ./internal/broker/... ./cmd/broker/...
 ./cmd/agent-secrets/... ./cmd/agent-secrets-devrelay/... ./cmd/dev-oidc-issuer/...`.
 The Postgres-backed tests skip, rather than fail, when `BROKER_TEST_DATABASE_URL` is unset (`t.Skip`, e.g. `internal/broker/store`, `internal/broker/requests`);

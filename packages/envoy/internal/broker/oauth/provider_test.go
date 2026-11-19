@@ -502,7 +502,7 @@ func TestARefreshRotatesAndTheOldTokenIsRefusedAfterItsGrace(t *testing.T) {
 		t.Fatalf("refresh of the rotated token = %d %v, want a new pair", status, body)
 	}
 
-	if _, err := f.pool.Exec(context.Background(), `update oauth_refresh_tokens set grace_until = now() - interval '1 second' where grace_until is not null`); err != nil {
+	if _, err := storetest.Unguarded(context.Background(), f.pool, `update oauth_refresh_tokens set grace_until = now() - interval '1 second' where grace_until is not null`); err != nil {
 		t.Fatalf("end the grace: %v", err)
 	}
 	if status, body := f.refresh(t, first, key); status != http.StatusBadRequest || body["error"] != "invalid_grant" {
@@ -514,7 +514,7 @@ func TestARefreshRotatesAndTheOldTokenIsRefusedAfterItsGrace(t *testing.T) {
 // its rotation.
 func (f *fixture) shiftGrace(t *testing.T, elapsed time.Duration) {
 	t.Helper()
-	if _, err := f.pool.Exec(context.Background(), `update oauth_refresh_tokens set grace_until = grace_until - make_interval(secs => $1) where grace_until is not null`, elapsed.Seconds()); err != nil {
+	if _, err := storetest.Unguarded(context.Background(), f.pool, `update oauth_refresh_tokens set grace_until = grace_until - make_interval(secs => $1) where grace_until is not null`, elapsed.Seconds()); err != nil {
 		t.Fatalf("shift the grace: %v", err)
 	}
 }
@@ -581,7 +581,7 @@ func TestReusingARotatedTokenEndsTheLogin(t *testing.T) {
 	if second == "" {
 		t.Fatalf("refresh answer %v has no refresh_token", body)
 	}
-	if _, err := f.pool.Exec(context.Background(), `update oauth_refresh_tokens set grace_until = now() - interval '1 second' where grace_until is not null`); err != nil {
+	if _, err := storetest.Unguarded(context.Background(), f.pool, `update oauth_refresh_tokens set grace_until = now() - interval '1 second' where grace_until is not null`); err != nil {
 		t.Fatalf("end the grace: %v", err)
 	}
 	if status, body := f.refresh(t, first, key); status != http.StatusBadRequest || body["error"] != "invalid_grant" {
@@ -603,7 +603,7 @@ func TestReusingARotatedTokenEndsTheLoginAfterASweep(t *testing.T) {
 	if second == "" {
 		t.Fatalf("refresh answer %v has no refresh_token", body)
 	}
-	if _, err := f.pool.Exec(context.Background(), `update oauth_refresh_tokens set grace_until = now() - interval '1 second' where grace_until is not null`); err != nil {
+	if _, err := storetest.Unguarded(context.Background(), f.pool, `update oauth_refresh_tokens set grace_until = now() - interval '1 second' where grace_until is not null`); err != nil {
 		t.Fatalf("end the grace: %v", err)
 	}
 	if err := oauthstore.New(f.pool).Sweep(context.Background()); err != nil {

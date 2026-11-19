@@ -1,0 +1,5 @@
+kind: Added
+body: The secrets broker's database refuses, with SQLSTATE 23514, every change of the columns that decide whether a broker credential is live, for which person and machine it acts, and which key may present it, unless the broker's own code makes it (migration 0033). A revoked or spent token is never live again and never moves to another person, credential or key; a revoke is never cleared; a revoked sign-in is never deleted and the sign-ins are never truncated; a machine login never changes its subject, and one a device approval made, or a revoked one, never moves to another person, host or key; and a decided device code keeps its decision, never goes back to new, and once invalidated is never exchanged again. Tests that build a state no writer makes write it through storetest.Unguarded.
+time: 2026-11-18T08:26:46.218771104Z
+custom:
+    Issue: pr4398

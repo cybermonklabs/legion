@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
@@ -390,9 +391,13 @@ func TestMigrationTwentyFiveHoldsOneSignInPerPersonAndBoxKey(t *testing.T) {
 		t.Fatalf("the table holds %d rows, want the one revoked row and no other", rows)
 	}
 	// A revoked time before the row was made is refused: a revoke that could predate its own
-	// sign-in would read as a sign-in that never worked.
-	if _, err := st.Pool.Exec(ctx, `update person_signins set revoked_at = created_at - interval '1 hour' where revoked_at is not null`); err == nil {
-		t.Error("a revoke dated before its sign-in was accepted, want Postgres to refuse it")
+	// sign-in would read as a sign-in that never worked. Migration 0033 refuses any move of a
+	// revoke too, so the write goes through storetest.Unguarded, and the refusal is the table's
+	// own check (SQLSTATE 23514, check_violation, naming person_signins_check).
+	_, err := storetest.Unguarded(ctx, st.Pool, `update person_signins set revoked_at = created_at - interval '1 hour' where revoked_at is not null`)
+	var pgError *pgconn.PgError
+	if !errors.As(err, &pgError) || pgError.ConstraintName != "person_signins_check" {
+		t.Errorf("a revoke dated before its sign-in answered %v, want Postgres's check person_signins_check to refuse it", err)
 	}
 }
 

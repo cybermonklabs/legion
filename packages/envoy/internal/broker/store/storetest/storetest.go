@@ -3,8 +3,9 @@
 // against one server at once, and the poller's passes act on every row of their tables, so tests
 // that shared tables would act on each other's rows; with a schema per test no test can see
 // another's rows, in its own package, a sibling package, or a concurrent run of either. It also
-// writes the rows only a database writer other than the broker could (Exec, ForgeRequestSignature,
-// CopyAsOtherKind), for the tests that pin what a release or an authentication refuses. It is an
+// writes the rows only a database writer other than the broker could (Exec, Unguarded,
+// ForgeRequestSignature, CopyAsOtherKind), for the tests that pin what a release or an
+// authentication refuses, or that build a state no writer of the broker makes. It is an
 // ordinary package rather than a _test.go file so every broker package can import it.
 package storetest
 
@@ -13,6 +14,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
@@ -20,9 +22,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
@@ -209,6 +213,68 @@ func Exec(statements ...string) func(t testing.TB, st *store.Store, recordID str
 			}
 		}
 	}
+}
+
+// credentialColumnGuards are the triggers of migration 0033 (0033_credential_columns_write_once),
+// by the table each guards: what Unguarded turns off.
+var credentialColumnGuards = map[string][]string{
+	"oauth_access_tokens":  {"oauth_access_tokens_credential_columns"},
+	"oauth_refresh_tokens": {"oauth_refresh_tokens_credential_columns"},
+	"person_signins":       {"person_signins_credential_columns", "person_signins_revoked_kept", "person_signins_not_truncated"},
+	"launcher_credentials": {"launcher_credentials_credential_columns"},
+	"oauth_device_codes":   {"oauth_device_codes_decision_kept"},
+}
+
+// Beginner is what Unguarded opens its transaction on: a pool, or a connection.
+type Beginner interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+// Unguarded runs statement, with args, as a writer other than the broker would, for a test that
+// builds a state no writer of the broker makes: a refresh token's grace ended early, a token's
+// stored request rewritten to an older or a broken shape. Migration 0033 refuses such a write from
+// any statement, so Unguarded runs it in a transaction of its own that turns that guard off on
+// each table the statement writes (pgmigrate.TouchedTables), turns it back on after the
+// statement, and commits: no other transaction ever runs without the guard. It answers the
+// statement's own command tag and error, as Pool.Exec does. A statement that writes no table the
+// guard holds is an error, since it needs no helper. Turning a trigger off takes SHARE ROW
+// EXCLUSIVE on its table until the commit, so Unguarded waits for any open transaction that writes
+// one of those tables.
+func Unguarded(ctx context.Context, db Beginner, statement string, args ...any) (pgconn.CommandTag, error) {
+	type guard struct{ table, trigger string }
+	var guards []guard
+	for _, table := range pgmigrate.TouchedTables(statement) {
+		for _, trigger := range credentialColumnGuards[table] {
+			guards = append(guards, guard{table, trigger})
+		}
+	}
+	if len(guards) == 0 {
+		return pgconn.CommandTag{}, fmt.Errorf("storetest.Unguarded: %q writes no table migration 0033 guards; run it as it is", statement)
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	defer tx.Rollback(ctx)
+	turn := func(how string) error {
+		for _, g := range guards {
+			if _, err := tx.Exec(ctx, "alter table "+g.table+" "+how+" trigger "+g.trigger); err != nil {
+				return fmt.Errorf("storetest.Unguarded: %s trigger %s on %s: %w", how, g.trigger, g.table, err)
+			}
+		}
+		return nil
+	}
+	if err := turn("disable"); err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	tag, err := tx.Exec(ctx, statement, args...)
+	if err != nil {
+		return tag, err
+	}
+	if err := turn("enable"); err != nil {
+		return tag, err
+	}
+	return tag, tx.Commit(ctx)
 }
 
 // ForgeRequestSignature writes a copy of record recordID whose embedded request object carries an

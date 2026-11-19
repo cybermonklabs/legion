@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -1194,7 +1195,7 @@ func TestAnIntrospectionFailureNamesItsCause(t *testing.T) {
 	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
 
 	t.Run("a stored row naming a client the provider does not register", func(t *testing.T) {
-		if _, err := f.pool.Exec(ctx, `update oauth_access_tokens set request = jsonb_set(request, '{client_id}', '"unregistered-client"')`); err != nil {
+		if _, err := storetest.Unguarded(ctx, f.pool, `update oauth_access_tokens set request = jsonb_set(request, '{client_id}', '"unregistered-client"')`); err != nil {
 			t.Fatalf("rewrite the token's row: %v", err)
 		}
 		_, err := f.provider.Introspect(ctx, token)
@@ -1207,7 +1208,7 @@ func TestAnIntrospectionFailureNamesItsCause(t *testing.T) {
 	})
 
 	t.Run("a stored projects claim that is not its string", func(t *testing.T) {
-		if _, err := f.pool.Exec(ctx, `update oauth_access_tokens set request = jsonb_set(jsonb_set(request, '{client_id}', '"dispatch-token-exchange"'), '{session,extra,projects}', '["ACME"]')`); err != nil {
+		if _, err := storetest.Unguarded(ctx, f.pool, `update oauth_access_tokens set request = jsonb_set(jsonb_set(request, '{client_id}', '"dispatch-token-exchange"'), '{session,extra,projects}', '["ACME"]')`); err != nil {
 			t.Fatalf("rewrite the token's row: %v", err)
 		}
 		_, err := f.provider.Introspect(ctx, token)
@@ -1245,7 +1246,7 @@ func TestIntrospectingATokenWhoseRowDoesNotDecodeIsABrokerFailure(t *testing.T) 
 	if live := f.introspected(t, token); !live.Active {
 		t.Fatalf("Introspect of the token as minted = %+v, want it live", live)
 	}
-	if _, err := f.pool.Exec(ctx, `update oauth_access_tokens set request = jsonb_set(request, '{session,public_key_jwk}', '"!"')`); err != nil {
+	if _, err := storetest.Unguarded(ctx, f.pool, `update oauth_access_tokens set request = jsonb_set(request, '{session,public_key_jwk}', '"!"')`); err != nil {
 		t.Fatalf("rewrite the token's row: %v", err)
 	}
 	answer, err := f.provider.Introspect(ctx, token)
@@ -1614,7 +1615,7 @@ func TestATokenStoredBeforeTheListIsNotLive(t *testing.T) {
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
 	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
-	tag, err := f.pool.Exec(ctx, `update oauth_access_tokens
+	tag, err := storetest.Unguarded(ctx, f.pool, `update oauth_access_tokens
 		set request = jsonb_set(request #- '{session,extra,projects}', '{session,extra,project}', to_jsonb($1::text))
 		where request #> '{session,extra,projects}' is not null and request #> '{session,extra,project_scope}' is not null`, project)
 	if err != nil || tag.RowsAffected() != 1 {
@@ -1624,7 +1625,7 @@ func TestATokenStoredBeforeTheListIsNotLive(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(answer, oauthwire.Introspection{}) {
 		t.Fatalf("Introspect of a row stored before the list = %+v, %v; want not live", answer, err)
 	}
-	if _, err := f.pool.Exec(ctx, `update oauth_access_tokens set request = jsonb_set(request #- '{session,extra,project}', '{session,extra,projects}', to_jsonb($1::text))`, project); err != nil {
+	if _, err := storetest.Unguarded(ctx, f.pool, `update oauth_access_tokens set request = jsonb_set(request #- '{session,extra,project}', '{session,extra,projects}', to_jsonb($1::text))`, project); err != nil {
 		t.Fatal(err)
 	}
 	f.introspectsProjects(t, token, oauthwire.ProjectScopeNamed, []string{project})
@@ -1639,7 +1640,7 @@ func TestATokenStoredBeforeTheListIsNotLive(t *testing.T) {
 	// it always was, so a deployment with no private project keeps every such token live.
 	boxKey := newKey(t)
 	traded := f.exchanged(t, exchangeForm(f.devBoxToken(t, boxKey, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), boxKey)
-	tag, err = f.pool.Exec(ctx, `update oauth_access_tokens set request = request #- '{session,extra,projects}'
+	tag, err = storetest.Unguarded(ctx, f.pool, `update oauth_access_tokens set request = request #- '{session,extra,projects}'
 		where request #>> '{session,extra,project_scope}' = 'person'`)
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("rewrite the person token's row to the older shape: %v, %d rows; want exactly the one row rewritten", err, tag.RowsAffected())

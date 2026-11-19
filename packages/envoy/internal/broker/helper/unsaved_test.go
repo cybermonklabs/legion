@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 )
 
 // fullDisk fails every machine-file save of b the way a full disk does (ENOSPC), while an
@@ -208,7 +209,7 @@ func TestContractASaveFailingThroughTwoRestartsRevokesNothing(t *testing.T) {
 	}
 	first := restart() // inside the grace
 	// More than five minutes pass with the disk still full: the rotated-away token's grace ends.
-	if _, err := cr.broker.Store.Pool.Exec(ctx, `update oauth_refresh_tokens set grace_until = now() - interval '1 second' where grace_until is not null`); err != nil {
+	if _, err := storetest.Unguarded(ctx, cr.broker.Store.Pool, `update oauth_refresh_tokens set grace_until = now() - interval '1 second' where grace_until is not null`); err != nil {
 		t.Fatal(err)
 	}
 	second := restart()

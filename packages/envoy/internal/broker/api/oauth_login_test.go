@@ -345,7 +345,7 @@ func TestReusingARotatedRefreshTokenRevokesTheMachine(t *testing.T) {
 		t.Fatalf("refresh: %v", err)
 	}
 	ctx := context.Background()
-	if _, err := rig.Store.Pool.Exec(ctx, `update oauth_refresh_tokens set grace_until = now() - interval '1 second' where grace_until is not null`); err != nil {
+	if _, err := storetest.Unguarded(ctx, rig.Store.Pool, `update oauth_refresh_tokens set grace_until = now() - interval '1 second' where grace_until is not null`); err != nil {
 		t.Fatal(err)
 	}
 	_, err := m.refresh(tok)
