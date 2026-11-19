@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A shared clone''s `jj git clone` from GitHub, and its `git fetch` under the one-shot provisioning credential, no longer return the provisioning token in their error when git printed it: each scrubs the token from what the command wrote, as the repository feed''s fetch already did.'
+time: 2026-11-19T01:01:38.390300939Z
+custom:
+    Issue: pr4460
