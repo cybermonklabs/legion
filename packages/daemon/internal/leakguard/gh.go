@@ -159,6 +159,12 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 	// opens for nothing.
 	files := req.Files
 	if files == nil {
+		if upload, found := ghUnreadUploadArg(req.Args); found {
+			return buffered, false, &SetupFailure{
+				What: whatGhCall,
+				Why:  upload + " uploads the file it names, which this guard does not read, so the call sends nothing; write the text in --body or --body-file, which it reads",
+			}
+		}
 		files = ghFileArgs(req.Args)
 	}
 	for _, named := range files {
@@ -271,6 +277,32 @@ var ghFileOptions = map[string]bool{
 	"--input": true,
 	// `gh agent-task create`'s task description.
 	"--from-file": true,
+}
+
+// ghUnreadUploads are the options whose value names a file gh uploads to GitHub that this
+// package does not read: gh 2.104.0's --attach, of `gh issue` and `gh pr` comment, create and
+// edit and of `gh issue artifact create` and `edit`, which uploads an image (an SVG's text among
+// them, up to 10 MiB) or a video (up to 100 MiB) as an asset GitHub serves. It has no short
+// spelling. The fallback refuses a call naming one (ghUnreadUploadArg) rather than read a file
+// of that kind and size; `legion gh`, which hands the guard the files it parsed, refuses it
+// before the guard runs.
+var ghUnreadUploads = map[string]bool{"--attach": true}
+
+// ghUnreadUploadArg is the first option of ghUnreadUploads args names, in its separate or its
+// attached spelling (`--attach=<path>`), before a bare `--`, and whether there is one. It reads
+// the argv with no gh to say which options take a value, so an option's value that is itself
+// `--attach` refuses the call too, the direction ghFileArgs errs in as well.
+func ghUnreadUploadArg(args []string) (string, bool) {
+	for _, arg := range args {
+		if arg == "--" {
+			return "", false
+		}
+		name, _, _ := strings.Cut(arg, "=")
+		if ghUnreadUploads[name] {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 // ghFileArgs are the files args would have gh send to GitHub as content, each named once and in

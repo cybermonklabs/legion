@@ -389,37 +389,60 @@ func TestExpiredDismissRefusesWhatIsNotAnExpiredRecordOfTheLogin(t *testing.T) {
 	}
 }
 
-// TestExpiredSharedRequestOneLoginDismissesLeavesEveryList pins decision 3: a request for a shared
-// secret waits on anyone, so every signed-in person's list holds it once it expires, and the
-// first person's dismissal takes it out of every list. A second person's dismissal answers the
-// first one's.
+// TestExpiredSharedRequestOneLoginDismissesLeavesEveryList pins decision 3 under the notify rule
+// (credential_requests.notify): a request for a shared secret waits on anyone, and once it
+// expires it stays on the lists it was on while pending. One nobody is responsible for is on every
+// signed-in person's list, and one with a responsible person on that person's alone. Anyone may
+// dismiss it either way, and the first person's dismissal takes it out of every list; a second
+// person's dismissal answers the first one's.
 func TestExpiredSharedRequestOneLoginDismissesLeavesEveryList(t *testing.T) {
-	m, enr, key, _ := newFixture(t)
-	ctx := context.Background()
-	shared, err := m.Create(ctx, enr, signRequest(t, m, key, "need the shared one", "SHARED_KEY"), "", nil)
-	if err != nil || shared.State != "pending" || shared.RecordID == nil {
-		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending on a record", shared, err)
-	}
-	pastDeadline(t, m, shared.ID)
 	const bob, carol = "bob@example.com", "carol@example.com"
-	want := []string{listing(*shared.RecordID, "expired")}
-	for _, person := range []string{bob, carol} {
-		if got := listedStates(t, m, person, bothStates); !slices.Equal(got, want) {
-			t.Fatalf("%s's list = %q; want %q", person, got, want)
+	t.Run("nobody is responsible: every list", func(t *testing.T) {
+		m, _, _, _ := newFixture(t)
+		ctx := context.Background()
+		enrollment, key := newClaimPod(t, m, "")
+		shared := askShared(t, m, enrollment, key)
+		pastDeadline(t, m, shared.ID)
+		want := []string{listing(*shared.RecordID, "expired")}
+		for _, person := range []string{bob, carol} {
+			if got := listedStates(t, m, person, bothStates); !slices.Equal(got, want) {
+				t.Fatalf("%s's list = %q; want %q", person, got, want)
+			}
 		}
-	}
-	first, err := m.Dismiss(ctx, *shared.RecordID, "Bob@Example.com")
-	if err != nil || !first.Wrote || first.DismissedBy != bob {
-		t.Fatalf("Dismiss by bob = %+v, %v; want this call's dismissal by %s", first, err, bob)
-	}
-	for _, person := range []string{bob, carol} {
-		if got := listedStates(t, m, person, bothStates); len(got) != 0 {
-			t.Fatalf("%s's list after bob dismissed = %q; want it empty", person, got)
+		first, err := m.Dismiss(ctx, *shared.RecordID, "Bob@Example.com")
+		if err != nil || !first.Wrote || first.DismissedBy != bob {
+			t.Fatalf("Dismiss by bob = %+v, %v; want this call's dismissal by %s", first, err, bob)
 		}
-	}
-	if again, err := m.Dismiss(ctx, *shared.RecordID, carol); err != nil || again.Wrote || again.DismissedBy != bob || !again.DismissedAt.Equal(first.DismissedAt) {
-		t.Fatalf("Dismiss by carol after bob = %+v, %v; want bob's dismissal %+v", again, err, first)
-	}
+		for _, person := range []string{bob, carol} {
+			if got := listedStates(t, m, person, bothStates); len(got) != 0 {
+				t.Fatalf("%s's list after bob dismissed = %q; want it empty", person, got)
+			}
+		}
+		if again, err := m.Dismiss(ctx, *shared.RecordID, carol); err != nil || again.Wrote || again.DismissedBy != bob || !again.DismissedAt.Equal(first.DismissedAt) {
+			t.Fatalf("Dismiss by carol after bob = %+v, %v; want bob's dismissal %+v", again, err, first)
+		}
+	})
+	t.Run("a responsible person: that person's list, and anyone dismisses", func(t *testing.T) {
+		m, enr, key, operator := newFixture(t)
+		ctx := context.Background()
+		shared, err := m.Create(ctx, enr, signRequest(t, m, key, "need the shared one", "SHARED_KEY"), "", nil)
+		if err != nil || shared.State != "pending" || shared.RecordID == nil {
+			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending on a record", shared, err)
+		}
+		pastDeadline(t, m, shared.ID)
+		if got, want := listedStates(t, m, operator, bothStates), []string{listing(*shared.RecordID, "expired")}; !slices.Equal(got, want) {
+			t.Fatalf("the responsible person %s's list = %q; want %q", operator, got, want)
+		}
+		if got := listedStates(t, m, bob, bothStates); len(got) != 0 {
+			t.Fatalf("%s's list = %q; want it empty: the request is its operator's to be asked", bob, got)
+		}
+		if first, err := m.Dismiss(ctx, *shared.RecordID, bob); err != nil || !first.Wrote || first.DismissedBy != bob {
+			t.Fatalf("Dismiss by bob = %+v, %v; want it written: anyone may dismiss a shared request", first, err)
+		}
+		if got := listedStates(t, m, operator, bothStates); len(got) != 0 {
+			t.Fatalf("%s's list after bob dismissed = %q; want it empty", operator, got)
+		}
+	})
 }
 
 // TestExpiredRequestWhoseSessionEndedIsListedAndDismissed pins decision 6 for both ways a session

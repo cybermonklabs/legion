@@ -209,9 +209,10 @@ func TestTheMovedSessionFindsItsPendingRequestAndTheBoxItLeftDoesNot(t *testing.
 }
 
 // TestTheMovedSessionCancelsItsMovedPendingRequestAndTheBoxItLeftCannot pins Cancel's owner
-// check after a move: it compares the caller against the requests row's own enrollment_id, which
-// the move rewrote, so the session cancels its card from the box it runs on now and the box it
-// left is ErrNotYours.
+// check after a move: it compares the caller's owner with the owner of the enrollment the request
+// hangs off now, which the move rewrote. Neither box records an owner here, so each is its own
+// (enrollment:<id>): the session cancels its card from the box it runs on now and the box it left
+// is ErrNotYours.
 func TestTheMovedSessionCancelsItsMovedPendingRequestAndTheBoxItLeftCannot(t *testing.T) {
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
