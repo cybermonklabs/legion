@@ -304,9 +304,10 @@ test("a connection closed for good between a /clear's deregistration and its reg
 // A relay subscription that ends while a heartbeat's registration is still on the wire queues a
 // registration behind it, which names the outage. Shutdown then closes the relay and sends the
 // DELETE once its bounded wait for the chain gives up. The queued registration runs after that:
-// it must tell the leaving session nothing (`inboundOutage` says nothing once shutdown began) and
-// register nothing (`register` returns at once), since a registration behind the DELETE would
-// write the record back.
+// it must tell the leaving session nothing (`inboundOutage` says nothing once shutdown began),
+// which the shutdown guards alone ensure. That it registers nothing after the DELETE is kept by
+// more than `register`'s own guard: the stopped relay sets `relayMissing`, so `registerWithRelay`
+// sends nothing, and `closeRelay()` removes the relay; this row cannot tell those apart.
 test("a registration queued behind a held listener call as the session shuts down tells no outage and registers nothing after the DELETE", async () => {
   const SESSION = "ses_relay_shutdown"
   const RELAY = deliverSubject(SESSION)
