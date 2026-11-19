@@ -278,11 +278,9 @@ require (
 // stop a decode outside an apply at the apply's value limit (roomHolds, refusedDuplicate);
 // Server.ReadOnlySyncStep2MaxBytes answers a read-only browser's sync step 2 past
 // unslottedApplyBytes without a decode, and Server.ReadOnlySyncStep2MaxValues stops the decode of
-// one at or under it at the apply's value limit; under AnswerOnceStored a frame that commits nothing waits
-// for the stores in flight, and a room instance one commit of which was not stored answers
-// nothing applied again; and under RelayIntegratedOnly a frame whose drain landed anything is
-// relayed to its own sender too (ApplyOutcome.Drained).
-// TEMPORARY local replace: round 9 develops against the fork's cut release/v1.55.1/2026-11-19
-// (theorem-labs/ygo 3943af6f, theorem.10, not tagged yet), checked out at this path. Move it to
-// the published tag, github.com/theorem-labs/ygo v1.55.1-theorem.10, before this is committed.
-replace github.com/reearth/ygo => /legion/scratch/tmp/ygo-t10
+// one at or under it at the apply's value limit; under AnswerOnceStored a frame that commits
+// nothing waits for the stores in flight, and a room instance one commit of which was not stored
+// answers nothing applied again; and under RelayIntegratedOnly a frame whose drain landed anything
+// is relayed to its own sender too (ApplyOutcome.Drained). The tag is on 382ed018, the head of
+// release/v1.55.1/2026-11-19.
+replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.10
