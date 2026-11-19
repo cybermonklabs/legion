@@ -10,6 +10,7 @@ import {
   messageStream,
   ompRoot,
   type Request,
+  runCleanup,
   sendRelayFrame,
   serveStandin,
   spawnRpc,
@@ -46,9 +47,9 @@ function setup(): { readonly binary: string; readonly nats: string } {
 }
 
 /** How long a case waits for one thing the session owes it before failing on it. The two shared
- *  hooks take it too: bun's own 5 s per hook is less than a connection to the NATS server, or the
- *  teardown of every session the cases shared (each a real binary killed and awaited, and its
- *  scratch tree removed), takes on a loaded machine. */
+ *  hooks take it too: bun's own 5 s per hook is less than a connection to the NATS server takes
+ *  on a loaded machine, or the end of the sessions the cases shared, which the harness bounds at
+ *  OMP_TEARDOWN_MS each and the hook runs side by side. */
 const DEADLINE_MS = 30_000;
 
 // The real `connect`'s connection reports the server it reached (`getServer`); the mock's has no
@@ -77,10 +78,12 @@ const CONTEXT_INTERVAL_MS = 2_000;
 const SHELL_LIMIT_MS = 2_000;
 
 /** The sessions these cases share are torn down once, at the end: each boot costs the real
- *  binary's startup, and every case of a session leaves it settled for the next one. */
-const cleanup: Cleanup = [];
+ *  binary's startup, and every case of a session leaves it settled for the next one. Each session
+ *  has its own steps, and the sessions are ended side by side, so the hook waits for the slowest
+ *  one session's end, not for the sum of them. */
+const sessionCleanups: Cleanup[] = [];
 afterAll(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
+  await runCleanup(...sessionCleanups.splice(0));
 }, DEADLINE_MS);
 
 function text(reply: string): Block {
@@ -209,6 +212,8 @@ async function startSession(
 ): Promise<SurfaceSession> {
   const { config = [], env = {}, prepare } = options;
   const { binary, nats } = setup();
+  const cleanup: Cleanup = [];
+  sessionCleanups.push(cleanup);
   const { home, workspace, sessions } = await ompRoot(binary, "session-surface-omp-", cleanup);
   await prepare?.({ home, workspace });
 

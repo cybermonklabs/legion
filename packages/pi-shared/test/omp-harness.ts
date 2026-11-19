@@ -6,7 +6,13 @@
 // together as one Legion pane against a stand-in daemon and listener. The profile format, the
 // flags and the RPC stream are the Oh My Pi pin's (the repository's .omp-pin), so a pin bump that
 // changes one is fixed here once.
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+//
+// A case's teardown (`runCleanup`) waits only for what the next case needs: every process of the
+// case ended, each omp with every process of its own group under OMP_END_MS and then OMP_KILL_MS,
+// and one that did not end named in the error; and the stand-in stopped. It does not wait for the
+// case's scratch root to be removed, which nothing after the case reads (`ompRoot`).
+import { readdirSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -17,6 +23,7 @@ import {
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { Terminal } from "@xterm/headless";
+import type { Subprocess } from "bun";
 import { linkOmpNatives } from "./omp-natives";
 
 export interface Request {
@@ -34,13 +41,50 @@ export type Block =
  */
 export type Reply = readonly Block[] | ((request: Request) => readonly Block[]);
 
-/** What a test undoes after each case, run last first. */
+/** What a test undoes after each case, run last first by `runCleanup`. */
 export type Cleanup = (() => Promise<void>)[];
+
+/**
+ * Runs each list's steps last first, the lists side by side, and every step even when one before
+ * it threw: a step that names a process that did not end still leaves the stand-in stopped and the
+ * scratch root's removal started. Then throws what the steps threw, the one error or all of them
+ * in one AggregateError. Each list is emptied, so a step runs once.
+ */
+export async function runCleanup(...lists: Cleanup[]): Promise<void> {
+  const errors = (
+    await Promise.all(
+      lists.map(async (list) => {
+        const failed: unknown[] = [];
+        for (const step of list.splice(0).reverse()) {
+          try {
+            await step();
+          } catch (error) {
+            failed.push(error);
+          }
+        }
+        return failed;
+      })
+    )
+  ).flat();
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    const messages = errors.map((error) =>
+      error instanceof Error ? error.message : String(error)
+    );
+    throw new AggregateError(errors, messages.join("\n"));
+  }
+}
 
 /**
  * A scratch root with the profile's home, the session's workspace and its transcript directory.
  * The home's Oh My Pi natives are hardlinks to `binary`'s one cached copy (omp-natives.ts), so
  * a case writes none of them.
+ *
+ * The case's cleanup starts the root's removal and does not wait for it: nothing after the case
+ * reads the root, and removing it (some 240 files: omp's databases, its extension cache, the
+ * natives' links) is the disk's work, whose time on a loaded machine ran from milliseconds to
+ * seconds and failed hooks that waited on it. The steps that end the case's processes are pushed
+ * after this one, so they run before it and nothing of the case writes into the root as it goes.
  */
 export async function ompRoot(
   binary: string,
@@ -53,7 +97,16 @@ export async function ompRoot(
   readonly root: string;
 }> {
   const root = await mkdtemp(path.join(os.tmpdir(), prefix));
-  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  // An `rm` of its own that nobody waits on: in a session of its own and unref'd, so it finishes
+  // after this process has exited, and it writes any error it meets to this process's stderr.
+  cleanup.push(async () => {
+    Bun.spawn(["rm", "-rf", "--", root], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "inherit",
+      detached: true,
+    }).unref();
+  });
   const home = path.join(root, "home");
   const workspace = path.join(root, "workspace");
   const sessions = path.join(root, "sessions");
@@ -62,6 +115,115 @@ export async function ompRoot(
   }
   await linkOmpNatives(binary, home);
   return { root, home, workspace, sessions };
+}
+
+/**
+ * How long an omp the harness started, with every process of its group, gets to be gone once it
+ * is asked to end: its stdin closed (`Rpc.end`) or SIGTERM (a teardown). Measured on a loaded
+ * machine (a 1-minute load of 356 to 524 on 288 CPUs): omp exited 150 to 660 ms after its stdin
+ * closed and its group was empty within 25 ms of that, and a live session's group was gone 270
+ * to 520 ms after SIGTERM.
+ */
+export const OMP_END_MS = 10_000;
+
+/** How long a group gets to be gone after SIGKILL: a live session was reaped 100 to 150 ms after
+ *  SIGKILL on that machine. */
+export const OMP_KILL_MS = 5_000;
+
+/** The most one omp's end waits before it fails, naming what did not end. A hook that ends one
+ *  omp is given at least this. */
+export const OMP_TEARDOWN_MS = OMP_END_MS + OMP_KILL_MS;
+
+/** Whether `child` has exited and Bun has reaped it. */
+function reaped(child: Subprocess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+/** Whether any process of the group `child` leads is left, a zombie included. */
+function groupLeft(child: Subprocess): boolean {
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+/** Sends `signal` to `child`, until Bun has reaped it, and to every process of its group; a group
+ *  already gone is none. */
+function signalGroup(child: Subprocess, signal: NodeJS.Signals): void {
+  if (!reaped(child)) child.kill(signal);
+  try {
+    process.kill(-child.pid, signal);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
+/** Resolves true once `child` and its group are gone, false once `ms` have passed first. A gone
+ *  group sends no event, so it is polled. */
+async function goneWithin(child: Subprocess, ms: number): Promise<boolean> {
+  const deadline = performance.now() + ms;
+  for (;;) {
+    if (reaped(child) && !groupLeft(child)) return true;
+    if (performance.now() >= deadline) return false;
+    await Bun.sleep(20);
+  }
+}
+
+/** Each process still running in the group `child` leads, as `pid <pid> (<command line>)`, read
+ *  from /proc, the leader among them until Bun has reaped it. A process with no command line (one
+ *  exiting) is named by the name its stat gives. */
+function groupProcesses(child: Subprocess): string[] {
+  const named: string[] = [];
+  let entries: string[] = [];
+  try {
+    entries = readdirSync("/proc").filter((entry) => /^[0-9]+$/.test(entry));
+  } catch {
+    // No /proc: the leader alone is named below.
+  }
+  for (const entry of entries) {
+    try {
+      const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+      // The fields after the command's closing parenthesis: state, ppid, pgrp, ...
+      const pgrp = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[2]);
+      if (pgrp !== child.pid) continue;
+      const command =
+        readFileSync(`/proc/${entry}/cmdline`, "utf8").replaceAll("\0", " ").trim() ||
+        stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")"));
+      named.push(`pid ${entry} (${command})`);
+    } catch {
+      // The process ended while the list was read.
+    }
+  }
+  if (!reaped(child) && !named.some((each) => each.startsWith(`pid ${child.pid} `))) {
+    named.unshift(`pid ${child.pid} (omp)`);
+  }
+  return named;
+}
+
+/**
+ * Ends `child`, an omp started with `detached` so that it leads a process group of its own, with
+ * every process of that group: `ask` asks them to end (`asked` says how, for the error), they get
+ * OMP_END_MS to be gone, then SIGKILL and OMP_KILL_MS. A group that needed the SIGKILL fails the
+ * call, naming each process that was still running, so no case waits on one past the bound and
+ * none outlives its case unnamed. A group already gone returns at once, asking nothing.
+ */
+async function endGroup(child: Subprocess, asked: string, ask: () => void): Promise<void> {
+  if (reaped(child) && !groupLeft(child)) return;
+  ask();
+  if (await goneWithin(child, OMP_END_MS)) return;
+  const running = groupProcesses(child);
+  signalGroup(child, "SIGKILL");
+  const killed = await goneWithin(child, OMP_KILL_MS);
+  const after = killed
+    ? `SIGKILL ended them within ${OMP_KILL_MS} ms`
+    : `still running ${OMP_KILL_MS} ms after SIGKILL: ${groupProcesses(child).join(", ")}`;
+  throw new Error(
+    `omp's process group (pid ${child.pid}) did not end within ${OMP_END_MS} ms of ${asked}; ` +
+      `still running then: ${running.join(", ")}; ${after}`
+  );
 }
 
 /**
@@ -352,7 +514,8 @@ export async function writeStandinProfile(
 export interface Rpc {
   /** Writes one RPC command to omp's stdin. */
   send(command: Record<string, unknown>): void;
-  /** Closes omp's stdin and waits for it to exit. */
+  /** Closes omp's stdin and waits for omp and every process of its group to end, under
+   *  OMP_END_MS; past that it kills them and throws, naming each that was still running. */
   end(): Promise<void>;
   /**
    * Rejects, naming omp's stderr, once omp closes its RPC stream, as it does when it exits. Race it
@@ -374,8 +537,9 @@ export interface Rpc {
  * skills, rules, LSP or title call, its transcripts under `sessions`, `home` as HOME and `bin`, when
  * given, first on PATH. `args` go on the command line after those flags, which is where a second
  * life of one pane names `--resume <session>`. `onFrame` gets each RPC frame omp prints, in order.
- * Both of omp's streams are read to the end, so a full pipe never blocks it, and the child is
- * killed at cleanup.
+ * Both of omp's streams are read to the end, so a full pipe never blocks it. omp leads a process
+ * group of its own, and cleanup ends it with every process of that group: SIGTERM, OMP_END_MS,
+ * then SIGKILL, failing on and naming each process that needed the SIGKILL.
  */
 export function spawnRpc(
   binary: string,
@@ -399,12 +563,10 @@ export function spawnRpc(
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
+      detached: true,
     }
   );
-  cleanup.push(async () => {
-    child.kill("SIGKILL");
-    await child.exited;
-  });
+  cleanup.push(() => endGroup(child, "SIGTERM", () => signalGroup(child, "SIGTERM")));
 
   const stderr = new Response(child.stderr).text();
   const closed = (async (): Promise<never> => {
@@ -428,9 +590,10 @@ export function spawnRpc(
       child.stdin.write(`${JSON.stringify(command)}\n`);
       child.stdin.flush();
     },
-    async end() {
-      child.stdin.end();
-      await child.exited;
+    end() {
+      return endGroup(child, "its stdin closing", () => {
+        if (!reaped(child)) child.stdin.end();
+      });
     },
     closed,
     exited: child.exited,
@@ -491,7 +654,9 @@ export interface Interactive {
  * (an `--append-system-prompt <prompt>`, a positional word Oh My Pi runs once its startup is over).
  * TERM is `xterm-256color` and OMP_SKIP_SETUP skips the first-run setup wizard, so the TUI starts
  * straight into the session; `env` is spread last. Every byte omp writes to the terminal is fed to
- * a headless xterm of the same size, which `screen` reads. The child is killed at cleanup.
+ * a headless xterm of the same size, which `screen` reads. omp leads a process group of its own,
+ * which cleanup ends as `spawnRpc`'s does; the pseudo-terminal is not its controlling terminal
+ * either way.
  */
 export function spawnInteractive(
   binary: string,
@@ -521,12 +686,15 @@ export function spawnInteractive(
     cwd: options.workspace,
     env: { ...ompEnv(options), TERM: "xterm-256color", OMP_SKIP_SETUP: "1", ...options.env },
     terminal,
+    detached: true,
   });
   cleanup.push(async () => {
-    child.kill("SIGKILL");
-    await child.exited;
-    terminal.close();
-    emulator.dispose();
+    try {
+      await endGroup(child, "SIGTERM", () => signalGroup(child, "SIGTERM"));
+    } finally {
+      terminal.close();
+      emulator.dispose();
+    }
   });
 
   return {
