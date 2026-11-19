@@ -377,6 +377,21 @@ unpatched_head "$(printf 'line one\nline two')"
 key_run
 check "the same file, clean, passes" "$(is "$status" 0)"
 check "and nothing is UNKNOWN" "$(is "$(contains "$out" 'UNKNOWN')" false)"
+# A section of git's diff that cannot be copied into its entry's patch: a `cat` ahead of the real
+# one on PATH fails for the split's section files alone. The diff git read is then not held whole,
+# so the commit is UNKNOWN and refused, with the cause named, never passed with a key unread.
+fail_dir="$work/failing-cat"
+mkdir -p "$fail_dir"
+# The script's own "$@" and $a are for the fake cat to expand, not this harness.
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\nfor a in "$@"; do case $a in */sections/*) echo "cat: refused $a" >&2; exit 1 ;; esac; done\nexec %q "$@"\n' \
+  "$(command -v cat)" > "$fail_dir/cat"
+chmod +x "$fail_dir/cat"
+unpatched_head "$(printf 'line one\nline two, as %s said' "$planted_key")"
+PATH="$fail_dir:$PATH" key_run
+check "a section git's diff cannot copy into its entry's patch: exits 2" "$(is "$status" 2)"
+check "says UNKNOWN and names the section it could not copy" \
+  "$(contains "$out" "UNKNOWN: GitHub returned no patch for file 1 of commit ${pr_sha:0:12}, and git could not read it either (section 1 of git's diff could not be copied into entry 1's patch)")"
 # A file that becomes a directory: git's diff of that commit lists the rename of the file and the
 # file added under the directory of its old name, and each gets its own patch, so the key the
 # commit moves into the new file is carried once, not counted twice.
@@ -432,9 +447,10 @@ mv "$work/commit.next" "$work/commit.$pr_sha"
 key_run
 check "a key after a NUL past byte 8000, read from git, fails" "$(is "$status" 1)"
 check "names its line" "$(contains "$out" "commit:${pr_sha:0:12}:docs/nul.md:202: $key_refused")"
-# typechange_head <big.md content> [link path]: a commit that adds docs/big.md, which GitHub
-# answers with no patch, and turns <link path> (docs/link.md by default) from a file into a
-# symlink: git's diff gives that typechange two sections and its name list one entry.
+# typechange_head <big.md content> [link path] [link target]: a commit that adds docs/big.md, which
+# GitHub answers with no patch, and turns <link path> (docs/link.md by default) from a file into a
+# symlink to <link target> (notes.md by default): git's diff gives that typechange two sections and
+# its name list one entry.
 typechange_head() {
   local link=${2:-docs/link.md}
   write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
@@ -446,7 +462,7 @@ typechange_head() {
   git_fixture "$src" add "$link"
   git_fixture "$src" commit -q -m "docs: a plain file"
   rm "$src/$link"
-  ln -s notes.md "$src/$link"
+  ln -s "${3:-notes.md}" "$src/$link"
   printf '%s\n' "$1" > "$src/docs/big.md"
   git_fixture "$src" add "$link" docs/big.md
   git_fixture "$src" commit -q -m "docs: a link and a big file"
@@ -472,6 +488,12 @@ check "names that line" "$(contains "$out" "commit:${pr_sha:0:12}:docs/big.md:2:
 typechange_head "$(printf 'line one\nline two')" "docs/$planted_key-link.md"
 key_run
 check "a file whose path holds a key, turned into a symlink, passes: the path is no new text" "$(is "$status" 0)"
+# The typechange's new side is read: a key in the symlink's target, its second section's one added
+# line, is new text.
+typechange_head "$(printf 'line one\nline two')" docs/link.md "$planted_key.md"
+key_run
+check "a symlink whose target holds a key, from a file, fails: its new side is read" "$(is "$status" 1)"
+check "names the link's one line" "$(contains "$out" "commit:${pr_sha:0:12}:docs/link.md:1: $key_refused")"
 
 echo "case: a key or a link the same diff also removes is carried over, not new"
 # carry_commit <status> <path> <patch>: a pull request opened after the cutoff whose one commit is

@@ -382,8 +382,6 @@ BEGIN {
   for (i = 1; i <= count; i++) {
     file = stage "/" i ".patch"; started = 0
     while ((getline line < file) > 0) {
-      # A typechange's patch holds two sections; the second's header lines are no removed line.
-      if (line ~ /^diff --git /) { started = 0; continue }
       if (line ~ /^@@ /) { started = 1; continue }
       if (started && substr(line, 1, 1) == "-") scan(substr(line, 2), 1)
     }
@@ -393,6 +391,9 @@ BEGIN {
     file = stage "/" i ".patch"; out = stage "/" i ".added"; started = 0; n = 0; written = 0
     printf "" > out
     while ((getline line < file) > 0) {
+      # A typechange's patch holds two sections; the second's header lines, its `+++ b/<path>`
+      # among them, are no added line. (The removed-line pass above needs no reset: the only header
+      # line of a second section that starts with "-" is `--- /dev/null`, which holds no word.)
       if (line ~ /^diff --git /) { started = 0; continue }
       if (line ~ /^@@ /) {
         split(line, parts, " "); split(parts[3], plus, ",")
@@ -470,9 +471,8 @@ AWK
       return 1
     # Inside a hunk every line starts with " ", "+", "-" or "\", so a line that starts with
     # "diff --git " is a header.
-    sections=$(awk -v dir="$stage/sections" '/^diff --git / { if (out != "") close(out); i++; out = dir "/" i }
-      i { print > out } END { print i + 0 }' "$work/whole.patch") || return 1
-    if ! [[ $sections =~ ^[0-9]+$ ]]; then
+    if ! sections=$(awk -v dir="$stage/sections" '/^diff --git / { if (out != "") close(out); i++; out = dir "/" i }
+      i { print > out } END { print i + 0 }' "$work/whole.patch") || ! [[ $sections =~ ^[0-9]+$ ]]; then
       echo "git's diff could not be split into its file sections" > "$work/git-error"
       return 1
     fi
@@ -496,7 +496,10 @@ AWK
       : > "$stage/$i.patch"
       while [ "$take" -gt 0 ]; do
         s=$((s + 1))
-        if [ -e "$stage/sections/$s" ]; then cat "$stage/sections/$s" >> "$stage/$i.patch" || return 1; fi
+        if [ -e "$stage/sections/$s" ] && ! cat "$stage/sections/$s" >> "$stage/$i.patch"; then
+          echo "section $s of git's diff could not be copied into entry $i's patch" > "$work/git-error"
+          return 1
+        fi
         take=$((take - 1))
       done
     done < "$work/name-status"
