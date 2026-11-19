@@ -1334,7 +1334,7 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 		if m.unansweredAsks >= unansweredAsksWarn {
 			level = slog.LevelWarn
 		}
-		m.log.Log(ctx, level, unanswered, "claim", m.claim.Token, "unanswered", m.unansweredAsks)
+		m.log.Log(ctx, level, unanswered, "unanswered", m.unansweredAsks)
 		return nil
 	}
 	m.unansweredAsks = 0
@@ -2438,7 +2438,35 @@ func reready(m *Machine, ctx context.Context, _ Event) error {
 }
 
 func resume(m *Machine, ctx context.Context, ev Event) error {
+	if err := m.resumeRefusal(ctx, "resume"); err != nil {
+		return err
+	}
 	return m.revive(ctx, exemptWake(ev), nil)
+}
+
+// resumeRefusal is nil when a suspended claim's recorded session may be relaunched, and otherwise
+// why not, asked before anything of the claim changes: a claim recording a session another claim
+// holds, or one no claim holds, is refused its resume, and stays suspended, rather than launched
+// into the hold's refusal at start, which charges each launch to its budget and fails the claim
+// within it (acceptance of #4220). Its remedy is a new session, `legion claims forget-session`,
+// then the resume. A store that does not answer is the store's error, no refusal, and the claim is
+// left as it was, so a resume run again asks again. A claim recording no session resumes as
+// before, and so does one holding its session, which costs no store call once admitted (R9).
+func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
+	if m.claim.Session == "" {
+		return nil
+	}
+	err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile)
+	var refusal claim.Refusal
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &refusal):
+		return &RefusedError{State: m.claim.State, Request: request, Err: fmt.Errorf(
+			"%s records session %s, which it does not hold (%w), so relaunching it would be refused at every launch until the claim failed; give it a new session first (`legion claims forget-session --claim %s --session %s`), then resume it",
+			m.claim.Token, m.claim.Session, err, m.claim.Token, m.claim.Session)}
+	}
+	return fmt.Errorf("%s: ask whether %s holds session %s before relaunching it: %w", request, m.claim.Token, m.claim.Session, err)
 }
 
 // resumeByRule is the daemon's own resume of a suspended claim (RequestRuleResume): the same
@@ -2446,11 +2474,19 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 // claim: that suspension holds until
 // the operator resumes the claim. A launch that fails is charged to the claim's launch budget like
 // any other, so a claim the rule resumes that keeps failing fails once the budget is spent, and a
-// failed claim is never resumed by rule.
+// failed claim is never resumed by rule. A claim recording a session it does not hold is not
+// resumed by rule either (resumeRefusal): it stays suspended, and the line says why.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	rule := ev.(RequestRuleResume).Reason
 	if !m.claim.RuleMayResume() {
 		m.log.Info("supervise: not resumed by rule: its suspension holds until the operator resumes it", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
+		return nil
+	}
+	// A store that does not answer is start's to retry, at the probe interval and charging
+	// nothing (launchNow), as before; only a refusal keeps the claim suspended.
+	var refused *RefusedError
+	if err := m.resumeRefusal(ctx, "resume by rule"); errors.As(err, &refused) {
+		m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)

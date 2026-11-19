@@ -1022,7 +1022,7 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 	if streaming, _ := m.streaming(ctx, conn); !streaming {
 		return nil
 	}
-	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped", "claim", m.claim.Token)
+	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped")
 	// The turn is dated from the agent's answer, the daemon's first word of it, as the askFirst
 	// branch of sendPending dates the turn it confirms a task by (Claim.LastTurnStart).
 	m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()

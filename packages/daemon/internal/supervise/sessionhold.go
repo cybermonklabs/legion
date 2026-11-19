@@ -211,7 +211,12 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 		free = releasable(free, r.session, "")
 	}
 	a := m.claim.Abandoned
-	mark := a.Session != "" && a.Released.IsZero()
+	// An abandoned record of the session the claim records again (a relaunch that found no file
+	// abandoned it, then its agent registered it again), or of the one its live registration
+	// names, is a current session: none of its names is freed, so the release neither reports it
+	// nor marks it released (acceptance of #4220).
+	current := a.Session == m.claim.Session || m.registration != nil && a.Session == m.registration.session
+	mark := a.Session != "" && !current && a.Released.IsZero()
 	released := ReleasedNames{Checked: CheckedNothing}
 	switch {
 	case len(free) == 0:
@@ -265,7 +270,7 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	m.claim.Abandoned.Released = c.Abandoned.Released
 	m.settleOwedWrite("ReleaseHolds")
 	m.log.Info("supervise: released the names of a claim's other sessions",
-		"claim", m.claim.Token, "freed", len(released.Freed), "checked", released.Checked, "abandoned", released.Abandoned)
+		"freed", len(released.Freed), "checked", released.Checked, "abandoned", released.Abandoned)
 	return released, nil
 }
 
@@ -274,7 +279,7 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 // the operator's route answers 409 (operatorFailure).
 func (m *Machine) refuseCarried(refusal *NamesCarriedError, names int) error {
 	m.log.Warn("supervise: refused a release of a claim's names: the secrets broker still carries some of them",
-		"claim", m.claim.Token, "names", names, "carried", len(refusal.Carried), "error", refusal.Error())
+		"names", names, "carried", len(refusal.Carried), "error", refusal.Error())
 	return &RefusedError{State: m.claim.State, Request: "release-names", Err: refusal}
 }
 
@@ -477,7 +482,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 			what = "session file"
 		}
 		m.warnRefusal("supervise: refused a session whose name this daemon cannot hold",
-			"kind", n.hold.Kind, "name", n.hold.Name, "bytes", len(n.hold.Name), "why", n.why, "claim", m.claim.Token, "holder", "none")
+			"kind", n.hold.Kind, "name", n.hold.Name, "bytes", len(n.hold.Name), "why", n.why, "holder", "none")
 		return fmt.Errorf("%s as %s %s: %w", m.claim.Token, what, n.why, claim.SessionNameUnheldRefusal(what))
 	}
 	var ask []Hold
@@ -498,7 +503,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		return err
 	}); errors.Is(err, ErrHeldNamesCap) {
 		m.log.Warn(heldNamesCapLine,
-			"claim", m.claim.Token, "names", len(ask), "cap", MaxHeldNamesPerClaim, "error", err,
+			"names", len(ask), "cap", MaxHeldNamesPerClaim, "error", err,
 			"release", ReleaseNamesCommand(m.claim.Token))
 		return fmt.Errorf("hold the session of %s: %w", m.claim.Token, claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim))
 	} else if err != nil {
@@ -513,7 +518,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 			named = "none"
 		}
 		m.warnRefusal("supervise: refused a session another claim recorded first",
-			"kind", h.Kind, "name", h.Name, "claim", m.claim.Token, "holder", named)
+			"kind", h.Kind, "name", h.Name, "holder", named)
 		return &heldElsewhereError{hold: h, holder: holder, err: fmt.Errorf("%s as %s %s: %w", m.claim.Token, h.Kind, h.Name, claim.SessionHeldRefusal(h.Name))}
 	}
 	if m.heldNames == nil {
@@ -660,6 +665,15 @@ func (w forgetWait) Unwrap() error { return w.error }
 // claim's (holdRecorded, HoldsItsSession), kept for HoldsItsSession to read without the lock.
 type admittedSession struct{ session, file string }
 
+// Admits reports whether the store last answered every name of session and sessionFile as this
+// claim's (Machine.admitted), with no lock and no store call: what a reader inside a fact's
+// transaction, which holds the fact lock, may ask of the machine (the daemon's step record). False
+// says only that the machine has not seen that answer, not that the claim does not hold them.
+func (m *Machine) Admits(session, sessionFile string) bool {
+	a := m.admitted.Load()
+	return a != nil && *a == (admittedSession{session, sessionFile})
+}
+
 // HoldsItsSession is nil when every name of the session the claim records is held to it, or it
 // records none, and otherwise the hold's refusal (a claim.Refusal) or the store's error. The
 // daemon's outbox asks it before it publishes to the claim's Envoy role topic: a claim the boot
@@ -681,7 +695,7 @@ type admittedSession struct{ session, file string }
 // follows them, and the next release frees them again.
 func (m *Machine) HoldsItsSession(ctx context.Context) error {
 	c := m.View().Claim
-	if a := m.admitted.Load(); a != nil && *a == (admittedSession{c.Session, c.SessionFile}) {
+	if m.Admits(c.Session, c.SessionFile) {
 		return nil
 	}
 	if invalid := invalidSessionNames(c.Session, c.SessionFile); len(invalid) > 0 {

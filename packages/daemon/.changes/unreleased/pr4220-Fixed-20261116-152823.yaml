@@ -66,8 +66,11 @@ body: |-
   the suspension again; an
   operator suspends the claim once its runtime answers, or stops its pod or pane by hand; it takes
   no `legion claims forget-session` while it is live. Dispatch's role holders name a live claim's
-  session only while the claim holds every name of it. For each claim the boot names that is not
-  the rightful holder,
+  session only while the claim holds every name of it, and a step's record in Dispatch names a
+  claim's session only while the claim holds it. `legion claims resume` of a suspended claim
+  recording a session it does not hold is refused `409`, naming the `legion claims forget-session`
+  to run first, and the claim stays suspended, charged nothing; a rule's resume leaves it
+  suspended the same way. For each claim the boot names that is not the rightful holder,
   an operator runs `legion claims forget-session` as its state allows, then resumes a suspended
   one, retries a failed one and leaves a retired one as it is, and for a name held for none records
   the rightful holder (`update claim_sessions set claim = '<token>' where project = E'<project>'

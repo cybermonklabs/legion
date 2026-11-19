@@ -3106,11 +3106,11 @@ func (m *Machine) sessionGone(ctx context.Context) {
 	if err := m.holdRecorded(context.WithoutCancel(ctx), m.claim.Session, m.claim.SessionFile); err != nil {
 		if errors.Is(err, errHoldUnanswered) {
 			m.log.Warn("supervise: no clean stop of the Envoy session: the store did not answer whether the claim holds it",
-				"claim", m.claim.Token, "session", m.claim.Session, "error", err)
+				"session", m.claim.Session, "error", err)
 			return
 		}
 		m.log.Info("supervise: no clean stop of the Envoy session of a claim that does not hold it",
-			"claim", m.claim.Token, "session", m.claim.Session, "error", err)
+			"session", m.claim.Session, "error", err)
 		return
 	}
 	m.deps.SessionGone(m.claim.Session)

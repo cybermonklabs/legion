@@ -2442,6 +2442,42 @@ func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string)
 	return holders, nil
 }
 
+// SessionHeld reports whether claim_sessions holds, for token in project, every name its record
+// gives session and sessionFile, by LiveRoleHolders' rule: every name supervise.RecordedHolds
+// gives, none of them one supervise.UnholdableNames refuses. It only reads, in tx, which may be a
+// fact's transaction holding the fact lock (the daemon's step record): one statement on that
+// transaction's own connection, so it waits on no other connection and writes nothing. It runs
+// under a savepoint, so a failure of the read leaves tx usable and answers false with the error.
+func SessionHeld(ctx context.Context, tx pgx.Tx, project string, token claim.Token, session, sessionFile string) (bool, error) {
+	names := supervise.RecordedHolds(session, sessionFile)
+	if len(names) == 0 || len(supervise.UnholdableNames(session, sessionFile)) > 0 {
+		return false, nil
+	}
+	var kinds, values []string
+	distinct := map[supervise.Hold]bool{}
+	for _, h := range names {
+		if !distinct[h] {
+			distinct[h] = true
+			kinds, values = append(kinds, string(h.Kind)), append(values, h.Name)
+		}
+	}
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("read whether %s holds session %s: %w", token, session, err)
+	}
+	defer sp.Rollback(ctx)
+	var held int
+	if err := sp.QueryRow(ctx, `select count(distinct (h.kind, h.name)) from claim_sessions h
+		join unnest($3::text[], $4::text[]) as want(kind, name) on h.kind = want.kind and h.name = want.name
+		where h.project = $1 and h.claim = $2`, project, string(token), kinds, values).Scan(&held); err != nil {
+		return false, fmt.Errorf("read whether %s holds session %s: %w", token, session, err)
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return false, fmt.Errorf("read whether %s holds session %s: %w", token, session, err)
+	}
+	return held == len(distinct), nil
+}
+
 // RecentClaimIssues is every issue of the Dispatch project whose key starts `<project>-` and
 // that has a live claim, or a claim that changed at or after since (claims.updated_at, which every
 // claim write sets), in key order. The boot publishes each of them, for what a release that
