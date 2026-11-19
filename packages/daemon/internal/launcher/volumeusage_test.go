@@ -76,12 +76,13 @@ func TestTheVolumesPercentageIsUsedOverUsedPlusAvailable(t *testing.T) {
 	}
 }
 
-// The reader itself is one statfs on Linux and a refusal naming the platform anywhere else, and
-// the trimmer injects both through the same package variable (readVolumeUsage), so this case
-// reads whichever twin the binary was built with. On Linux it reads a real filesystem — the
-// test's own temporary directory, since a machine running the tests has no /legion — and holds
+// The reader is volumestat.Read under the trimmer's package variable (readVolumeUsage): one statfs
+// on Linux and a refusal naming the platform anywhere else, so this case reads whichever twin the
+// binary was built with, through the seam the trimmer reads. On Linux it reads a real filesystem —
+// the test's own temporary directory, since a machine running the tests has no /legion — and holds
 // the reading to what statfs can answer: a volume of some size, with the used bytes no more than
-// the volume holds.
+// the volume holds. The arithmetic of the reading is volumestat's own test
+// (TestTheVolumesBytesAreCountedInFragments).
 func TestTheVolumeReaderAnswersOneReadingOfTheFilesystemItIsGiven(t *testing.T) {
 	dir := t.TempDir()
 	reading, err := readVolumeUsage(dir)

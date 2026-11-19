@@ -26,7 +26,7 @@ import (
 //
 // Everything the trimmer reads of the machine is a field or a package-level var, so a test
 // drives a tree, a /proc and a clock of its own: the volume reading is readVolumeUsage
-// (volumeusage_linux.go), and the rest are the fields of the trimmer below.
+// (volumeusage.go), and the rest are the fields of the trimmer below.
 
 // volumeTrimLog begins every line the trimmer writes, but the stack lines below a recovered
 // panic's own line (fault), which do not carry it. In an issue pod every line the trimmer
@@ -1227,8 +1227,8 @@ type sweepOutcome struct {
 // only answer yes; the platforms where a handle could keep a name rather than a descriptor —
 // GOOS=plan9 and GOOS=js, where os.Root does (`go doc os.Root`) — run no sweep at all, because
 // this binary opens no directory of the volume outside Linux and the reading every interval
-// starts from refuses by name there (volumedir_other.go, readVolumeUsage in
-// volumeusage_other.go).
+// starts from refuses by name there (volumedir_other.go, and readVolumeUsage through
+// volumestat.Read, volumestat_other.go).
 type sweepDir struct {
 	root  ReclaimableRoot // the row of the table whose entries this directory holds
 	shard string          // its name under that root, "" when the directory is the root itself
