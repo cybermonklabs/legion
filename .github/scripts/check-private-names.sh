@@ -23,7 +23,10 @@
 #      client's own `this` property of that name in the one bundle that vendors it
 #      (packages/claude-envoy/dist/envoy-channel.js, which reaches this check on main and through
 #      packages/claude-envoy/scripts/verify-build.sh, never in a pull request's diff), and nowhere
-#      else;
+#      else. A namespace passes too: a name holding a capital letter, then a segment spelled
+#      exactly `Internal`, as a Lean module or function or an OCaml value path has. That is the one
+#      shape a host and a namespace share, so a host written that way passes with it. So does
+#      Lean's own option `internal.cmdlineSnapshots` under its `Lean` namespace, and no near name;
 #   4. a Tailscale MagicDNS host — a DNS label then `.ts.net`, in any case, with no letter or
 #      digit after it. A reserved tailnet name (`example-tailnet`, under any machine name of its
 #      own in front) passes;
@@ -160,6 +163,12 @@ private_host_rule='[[:alnum:]-]+[.]internal[.][[:alnum:].-]+'
 allowed_host='[[:alnum:]-]+[.]internal[.]example([.](com|net|org))?[.]*'
 vendored_nats='packages/claude-envoy/dist/envoy-channel.js'
 vendored_property='this[.]internal[.][[:alnum:]_]+'
+# Two whole matches of the host rule that name a Lean name, read case-sensitively, since their
+# case is their shape: a name holding a capital letter, then a segment spelled exactly Internal;
+# and Lean's own option `internal.cmdlineSnapshots` under its Lean namespace, with at most one
+# method after it, as src/Lean/Elab/Frontend.lean of leanprover/lean4 sets it.
+namespace_host='[^[:alnum:]]?[[:alnum:]-]*[[:upper:]][[:alnum:]-]*[.]Internal[.]'
+lean_option='Lean[.]internal[.]cmdlineSnapshots([.][[:alnum:]]+)?'
 # A Tailscale MagicDNS host: one DNS label immediately before the literal, with no letter or digit
 # right after it (a GNU "\b" word boundary would miss a host that sits next to a "_").
 tailnet_host_rule='[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)'
@@ -469,11 +478,12 @@ run() {
 }
 
 # allowed <file> <match>: whether a committed rule's whole match names no private host: a reserved
-# example host, a host under the reserved example tailnet, or the NATS client's property in the
-# bundle that vendors it.
+# example host, a host under the reserved example tailnet, the NATS client's property in the
+# bundle that vendors it, or one of the two Lean names, which are read in the match's own case.
 allowed() {
   local match=${2,,}
   [[ $match =~ ^($allowed_host)$ || $match =~ ^($allowed_tailnet_host)$ ]] && return
+  [[ $2 =~ ^$namespace_host || $2 =~ ^$lean_option$ ]] && return
   [[ $1 == "$vendored_nats" && $match =~ ^$vendored_property$ ]]
 }
 
