@@ -92,8 +92,9 @@ func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
 
 // TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce: a create run where this process has no
 // broker identity at all sends its reread with no proof, which the real broker answers 202 at
-// once and says nothing more of. The form says so and exits 0, the write standing, and the
-// broker still rereads the name after that answer and serves the new secret, with no reload.
+// once and says nothing more of. The form exits 0, the write standing, and the broker still
+// rereads the name after that answer and serves the new secret, with no reload. The line it
+// prints about the unchecked view is TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned's.
 func TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce(t *testing.T) {
 	rig := brokertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
@@ -101,9 +102,8 @@ func TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce(t *testing.T) {
 	useAWS(t, rig.Secrets, testAccount, "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/"+rig.Operator)
 	useStdin(t, "fresh-v1")
 	stdout, stderr, code := runSecret("create", "FRESH_KEY", "--owner", "me", "--tier", "agent")
-	if code != 0 || !strings.Contains(stdout, "broker: rereading FRESH_KEY from ") || strings.Contains(stdout, "broker: serving") ||
-		!strings.Contains(stderr, "took the reread of FRESH_KEY, but how it serves FRESH_KEY was not checked ("+errNoHeldIdentity.Error()+"), so this exit 0 says only that the write stands") {
-		t.Fatalf("create with no broker identity: exit %d, stdout %q, stderr %q; want 0, the reread taken and why it went with no proof", code, stdout, stderr)
+	if code != 0 || !strings.Contains(stdout, "broker: rereading FRESH_KEY from ") || strings.Contains(stdout, "broker: serving") {
+		t.Fatalf("create with no broker identity: exit %d, stdout %q, stderr %q; want 0 and the reread sent with no proof", code, stdout, stderr)
 	}
 	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
 		_, served := rig.Policy.Get().Secrets["FRESH_KEY"]

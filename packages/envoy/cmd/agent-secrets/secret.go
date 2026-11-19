@@ -6,9 +6,9 @@
 // identity that is, then asks the broker to reread each one written, so the change is served at
 // once. The broker is asked only for its settings (GET /v1/settings: the namespace, key and which
 // store it uses) and for the reread; every read and write is the caller's own call to the store,
-// which the store's own IAM decides. The reread is signed with this process's broker identity
-// where it has one, the identity every session form signs with, since the broker says what it
-// now serves only to a session; with none it goes unsigned, and the broker takes it all the same.
+// which the store's own IAM decides. The reread is signed with a broker identity this process
+// already holds (heldSigner), since the broker says what it now serves only to a session; with
+// none, or where that proof fails, it goes unsigned, and the broker takes it all the same.
 package main
 
 import (
@@ -731,33 +731,54 @@ type secretSession struct {
 }
 
 // rereadSigner is the signer this session's rereads are sent under: a broker identity this process
-// already holds (heldSigner), looked up the first time a reread needs it, so a form that rereads
+// already holds (heldSigner, not buildSigner, which the session forms use and which may wait on a
+// launcher, trade or register), looked up the first time a reread needs it, so a form that rereads
 // nothing looks for none, and one with no identity waits on nothing and trades nothing. It
-// answers nil and why where the process holds none.
+// answers nil and why where the process holds none; askReread then sends the reread unsigned.
 func (s *secretSession) rereadSigner() (proofSigner, error) {
 	s.signerOnce.Do(func() { s.signer, s.noSigner = heldSigner() })
 	return s.signer, s.noSigner
 }
 
 // askReread asks the broker to reread name on ctx, signed by the identity this process holds
-// (rereadSigner), which the broker answers with what it now serves. Where the process holds none,
-// or the signed call fails for any reason but the broker's 400 (a name no secret can carry) or 429
-// (a reread limit, which an unsigned call meets too) - the signer could not sign, the broker did
-// not accept the proof, or could not check it (503) - the call goes again with no proof, which the
-// broker takes whatever it can check and rereads after answering. unsigned is why the call that
-// answered carried no proof, nil for a signed one.
+// (rereadSigner), which the broker answers with what it now serves; a person's sign-in whose
+// lease lapsed registers again once on the way (doProofBuilt). Where the process holds none, or
+// the signed call failed for its proof alone (proofFailed), the call goes again with no proof,
+// which the broker takes whatever it can check and rereads after answering. A signed reread that
+// ran and failed, or that the broker refused for another reason, is the answer as it stands: the
+// write is served only from the broker's next reload, and a second call would fail the same way
+// and spend a second token of both reread buckets. unsigned is why the call that answered carried
+// no proof, nil for a signed one.
 func (s *secretSession) askReread(ctx context.Context, name string) (r Reread, unsigned, err error) {
 	signer, unsigned := s.rereadSigner()
 	if signer != nil {
 		r, err = s.broker.RereadSecret(ctx, signer, name)
-		var refused *apiError
-		if err == nil || errors.As(err, &refused) && (refused.Status == http.StatusBadRequest || refused.Status == http.StatusTooManyRequests) {
+		if !proofFailed(err) {
 			return r, nil, err
 		}
 		unsigned = fmt.Errorf("the signed reread failed: %w", err)
 	}
 	r, err = s.broker.RereadSecret(ctx, nil, name)
 	return r, unsigned, err
+}
+
+// proofFailed reports whether a signed reread failed for its proof and not for the reread: the
+// proof could not be signed (signError), the broker did not accept it (401, a lapsed enrollment
+// the sign-in could not register again among them), or the broker could not check it (503
+// DATABASE_UNAVAILABLE, which it answers before it reads anything). A reread that ran and failed
+// (500, 503 REQUEST_ENDED), a name no secret can carry (400), a spent reread limit (429) and a
+// broker that could not be reached are not: an unsigned call would meet each of them too.
+func proofFailed(err error) bool {
+	var unsigned *signError
+	if errors.As(err, &unsigned) {
+		return true
+	}
+	var refused *apiError
+	if !errors.As(err, &refused) {
+		return false
+	}
+	return refused.Status == http.StatusUnauthorized ||
+		refused.Status == http.StatusServiceUnavailable && refused.Code == "DATABASE_UNAVAILABLE"
 }
 
 // whoDecides is secret show's decides and guidance lines: who decides a request for the key, and
@@ -1076,7 +1097,7 @@ func sayUnchecked(s *secretSession, stderr io.Writer, form, name, secretType str
 			pipeCommand(s.backend.signInPrefix(), "secret", "retag", name, "--type", secretType), brokerclient.SignInCommand, name, secretType)
 		return
 	}
-	route := `"$` + brokerURLVar + `/v1/secrets/` + name + `/reread"`
+	route := s.broker.baseURL.Call(s.broker.route("/v1/secrets/" + name + "/reread"))
 	fmt.Fprintf(stderr, "agent-secrets %s: %s took the reread of %s, but how it serves %s was not checked (%v), so this exit 0 says only that the write stands. To check it, run `curl -s -X POST -H \"Proof: $(agent-secrets sign --method POST --url %s)\" %s` where this command has a broker identity (`%s`)\n",
 		form, s.src.brokerAt(), name, name, unsigned, route, route, brokerclient.SignInCommand)
 }

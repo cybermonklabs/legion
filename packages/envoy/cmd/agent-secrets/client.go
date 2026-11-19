@@ -441,10 +441,17 @@ func (c *client) proofCall(ctx context.Context, signer proofSigner, method, path
 	signedPath, _, _ := strings.Cut(path, "?")
 	token, err := signer.Sign(method, c.route(signedPath))
 	if err != nil {
-		return 0, nil, fmt.Errorf("sign proof: %w", err)
+		return 0, nil, &signError{err: err}
 	}
 	return c.doStatus(ctx, method, url, body, map[string]string{"Proof": token})
 }
+
+// signError is proofCall's failure to sign the proof, before anything was sent: the signer's own
+// error, which a caller tells apart from any answer of the broker's (askReread).
+type signError struct{ err error }
+
+func (e *signError) Error() string { return "sign proof: " + e.err.Error() }
+func (e *signError) Unwrap() error { return e.err }
 
 // --- POST /v1/requests, GET /v1/requests/{id}, POST /v1/requests/{id}/cancel ---
 

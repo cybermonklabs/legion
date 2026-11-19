@@ -750,9 +750,11 @@ broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 
 After each write, the CLI asks the broker to reread the secret (`POST /v1/secrets/{name}/reread`)
 and prints its answer on a line of its own, naming the store the secret is in. The CLI signs that
 call with a broker identity this process already holds — a key directory holding its key and
-enrollment, an `agent-secrets login` with its enrollment, a helper that answers, or the machine's
-cached session — because the broker says what it now serves only to a call a session signs. It
-waits on nothing and trades nothing to find one:
+enrollment, your `agent-secrets login`, a helper that answers, or the machine's cached session —
+because the broker says what it now serves only to a call a session signs. It waits on nothing
+and trades no machine identity to find one. Your sign-in's session lapses after 15 minutes with
+nothing to renew it; when the broker says so, the CLI registers it again once, under the same box
+key, and signs the reread with the new session:
 
 | Line | What it means |
 | --- | --- |

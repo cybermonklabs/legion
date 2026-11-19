@@ -449,7 +449,7 @@ const RereaderOperator = "rereader@example.com"
 // this way.
 func (r *Rig) Reread(t *testing.T, name string) (int, []byte) {
 	t.Helper()
-	enrollmentID, key := r.NewSession(t, r.Operator)
+	enrollmentID, key := r.NewSession(t, RereaderOperator)
 	path := "/v1/secrets/" + name + "/reread"
 	signed, err := proof.Sign(key, enrollmentID, http.MethodPost, r.URL+path, time.Now())
 	if err != nil {

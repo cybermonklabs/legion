@@ -107,6 +107,36 @@ func readMachineCacheHeld(dir string) (*fileSigner, error) {
 	return &fileSigner{key: key, enrollmentID: id, register: machineReregister}, nil
 }
 
+// readMachineCacheNow is readMachineCache for heldSigner, which must not wait: it takes the
+// cache's shared lock only where no writer holds it (tryLockShared). A registration that holds the
+// exclusive lock across its token trade and enrollment (registerMachine) makes the cache hold
+// nothing now, a sourceAbsent, rather than a wait for that registration. The signer it answers
+// registers nothing again, so a session whose lease lapsed is never traded for here: the call that
+// signs with it is refused, and its caller goes on without a proof.
+func readMachineCacheNow() (*fileSigner, error) {
+	dir := machineCacheDir()
+	if !machineCacheHolds(dir) {
+		return nil, absent("the machine cache holds no session (%s)", dir)
+	}
+	unlock, held, err := tryLockShared(filepath.Join(dir, machineCacheLock))
+	switch {
+	case err != nil:
+		return nil, err
+	case !held:
+		return nil, absent("another command is registering this machine's session in %s", dir)
+	}
+	defer unlock()
+	signer, err := readMachineCacheHeld(dir)
+	switch {
+	case err != nil:
+		return nil, err
+	case signer == nil:
+		return nil, absent("the machine cache holds no session (%s)", dir)
+	}
+	signer.register = nil
+	return signer, nil
+}
+
 // registerMachine is this machine's session made under the machine cache's exclusive lock, held
 // from its read of the cache to its write. A session the cache holds whose enrollment is not
 // stale — any where stale is "", the first registration, and one another process registered in

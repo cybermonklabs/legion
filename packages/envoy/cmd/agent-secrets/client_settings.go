@@ -72,17 +72,19 @@ type Reread struct {
 // RereadSecret asks the broker to read the secret name from its store now, as whoever just wrote
 // it does, so the write is served (or gone) at once instead of at its next reload. name is a
 // validated agent secret name, so it needs no escaping in the path. With signer the call is a
-// session's, one signed call that registers nothing again, and the broker answers it once the
-// reread is done with what it now serves (Told). With a nil signer the call carries no proof, and
-// a broker of this release answers 202 at once, before it reads the store, and says nothing more
-// (Told false); a broker from before that answer says what it serves to either call.
+// session's, and the broker answers it once the reread is done with what it now serves (Told); a
+// signer that can register its session again (a person's sign-in) does so once where the broker
+// says the enrollment is not live (doProofStatus), and the retry spends a second token of both
+// reread buckets. With a nil signer the call carries no proof, and a broker of this release
+// answers 202 at once, before it reads the store, and says nothing more (Told false); a broker
+// from before that answer says what it serves to either call.
 func (c *client) RereadSecret(ctx context.Context, signer proofSigner, name string) (Reread, error) {
 	path := "/v1/secrets/" + name + "/reread"
 	var status int
 	var raw []byte
 	var err error
 	if signer != nil {
-		status, raw, err = c.proofCall(ctx, signer, http.MethodPost, path, nil)
+		status, raw, err = c.doProofStatus(ctx, signer, http.MethodPost, path, nil)
 	} else {
 		status, raw, err = c.doStatus(ctx, http.MethodPost, c.route(path), nil, nil)
 	}

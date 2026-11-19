@@ -49,11 +49,13 @@ func absent(format string, args ...any) error {
 // signerSource is one source of the chain. build answers its signer, registering a session where
 // the source is one that registers its own (a sign-in that has none yet, the machine); describe
 // answers what `identity --source` prints after the name, found the way build finds it and
-// registering nothing.
+// registering nothing; held answers the signer for an identity the source holds now, with no wait
+// and no machine trade (heldSigner).
 type signerSource struct {
 	name     string
 	build    func(ctx context.Context) (enrollmentID string, signer Signer, err error)
 	describe func(ctx context.Context) (string, error)
+	held     func() (proofSigner, error)
 }
 
 // signerChain is the chain for a process whose key directory is dir, in R4's order.
@@ -105,35 +107,32 @@ func describeSource(dir string) (name, detail string, err error) {
 	return "", "", noBrokerIdentity(reasons)
 }
 
-// heldSigner is a broker identity this process already holds, found with no wait, no token trade
-// and no registration, for a call that signing only adds to: a secret form's reread, which the
-// broker answers in full only for a session, and which goes unsigned all the same where this finds
-// none. It looks in the chain's four sources in the chain's order and takes from each only what is
-// there now: a key directory holding key.pem and its enrollment (never waiting on a launcher still
-// enrolling), a sign-in whose enrollment is recorded (never registering one), a helper that says
-// the caller is in a session it enrolled, and the session the machine cache holds (never trading
-// for one). A source that holds nothing whole, or cannot be read, is passed over, so a process set
-// up with no identity answers errNoHeldIdentity at once, having asked nobody.
+// heldSigner is a broker identity this process already holds, for a call that signing only adds
+// to: a secret form's reread, which the broker answers in full only for a session, and which goes
+// unsigned all the same where this finds none. It walks the chain in its order and takes the first
+// source's held signer (signerSource.held): what each source holds now, with no wait on a launcher
+// still enrolling or a machine registration in progress, and no machine trade. A source with
+// nothing for the caller is passed over; one that is present but not usable now (a launcher still
+// enrolling, a broken key or record, a stopped helper) stops the walk with its error, as the
+// chain stops, so the reread never signs as another identity than the one the caller set up.
+// It moves no machine session an older client left in the key directory, since that move takes
+// the machine cache's exclusive lock (migrateKeyDirMachineSession): such a key directory is
+// signed with as it stands. With no source holding anything it answers errNoHeldIdentity.
+//
+// A person's sign-in is the one held signer that may register again: its lease lapses after
+// BROKER_LEASE_SECONDS and nothing renews it, so its signer keeps signInSigner's register, and the
+// reread's call (doProofBuilt) registers the session again once when the broker says the
+// enrollment is not live. That costs one trade of the person's own sign-in, with this machine's
+// identity as its actor, and one enrollment; it waits on nothing and registers no machine session.
 func heldSigner() (proofSigner, error) {
-	dir := keyDir()
-	if key, err := loadKey(filepath.Join(dir, keyFile)); err == nil {
-		if id, err := readTrimmed(filepath.Join(dir, enrollmentFile)); err == nil && id != "" {
-			return &fileSigner{key: key, enrollmentID: id}, nil
+	for _, source := range signerChain(keyDir()) {
+		signer, err := source.held()
+		switch {
+		case err == nil:
+			return signer, nil
+		case !errors.Is(err, errSourceAbsent):
+			return nil, fmt.Errorf("%s: %w", source.name, err)
 		}
-	}
-	store := brokerclient.SignIns(homeGetenv)
-	if records, err := store.List(); err == nil && len(records) > 0 {
-		if record, err := store.Choose(os.Getenv(brokerclient.PersonVar)); err == nil && record.EnrollmentID != "" {
-			if key, err := record.Key(); err == nil {
-				return &fileSigner{key: key, enrollmentID: record.EnrollmentID}, nil
-			}
-		}
-	}
-	if answer := probeHelper(); answer.answered() && answer.resp.OK {
-		return &helperSigner{sock: answer.sock}, nil
-	}
-	if cached, err := readMachineCache(); err == nil && cached != nil {
-		return cached, nil
 	}
 	return nil, errNoHeldIdentity
 }
@@ -180,6 +179,9 @@ func keyDirSource(dir string) signerSource {
 			return "", err
 		}
 		return dir, nil
+	}, held: func() (proofSigner, error) {
+		_, signer, err := build(context.Background())
+		return signer, err
 	}}
 }
 
@@ -217,6 +219,16 @@ func signInSource() signerSource {
 				return "", err
 			}
 			return record.Person, nil
+		},
+		held: func() (proofSigner, error) {
+			signer, err := signInSigner()
+			switch {
+			case err != nil:
+				return nil, err
+			case signer == nil:
+				return nil, noSignIn()
+			}
+			return signer, nil
 		},
 	}
 }
@@ -259,6 +271,13 @@ func helperSource() signerSource {
 			return "", &helperSigner{sock: sock}, nil
 		},
 		describe: func(context.Context) (string, error) { return find() },
+		held: func() (proofSigner, error) {
+			sock, err := find()
+			if err != nil {
+				return nil, err
+			}
+			return &helperSigner{sock: sock}, nil
+		},
 	}
 }
 
@@ -295,6 +314,7 @@ func machineChainSource() signerSource {
 			}
 			return identity.Describe(), nil
 		},
+		held: func() (proofSigner, error) { return readMachineCacheNow() },
 	}
 }
 

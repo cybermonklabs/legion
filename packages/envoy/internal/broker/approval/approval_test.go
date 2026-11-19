@@ -168,21 +168,9 @@ func TestThePagePrintsTheRecordAfterTheBrokersOwnSignIn(t *testing.T) {
 		if res := b.Get(t, "/approve/"+unknown); res.Status != http.StatusNotFound {
 			t.Errorf("a signed-in person's unknown record = %d, want 404", res.Status)
 		}
-		// With no session a well-formed id starts a sign-in whether or not a record has it, and
-		// that sign-in names nobody, so a machine with no person behind it learns nothing about
-		// which records exist (TestASignedOutSignInIsTheSameForEveryRecordID).
+		// With no session a well-formed id starts the same sign-in whether or not a record has it
+		// (TestASignedOutSignInIsTheSameForEveryRecordID), and a malformed one is refused 400.
 		stranger := r.browser(t)
-		res := stranger.Get(t, "/approve/"+unknown)
-		if res.Status != http.StatusFound {
-			t.Errorf("a stranger's unknown record = %d, want 302 to sign in", res.Status)
-		}
-		auth, err := url.Parse(res.Header.Get("Location"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if auth.Query().Has("login_hint") {
-			t.Errorf("an unknown record's sign-in hints %q, want no login_hint", auth.Query().Get("login_hint"))
-		}
 		if res := stranger.Get(t, "/approve/"+strings.ToUpper(first.recordID)); res.Status != http.StatusBadRequest {
 			t.Errorf("a stranger's malformed record id = %d, want 400", res.Status)
 		}

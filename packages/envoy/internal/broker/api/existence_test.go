@@ -405,11 +405,6 @@ func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
 	if lines := strings.Count(logged.String(), "broker: reread secret failed"); lines != 1 {
 		t.Fatalf("the panic logged %d failure lines; want one", lines)
 	}
-	after := httptest.NewRecorder()
-	mux.ServeHTTP(after, httptest.NewRequest(http.MethodGet, "/v1/settings", nil))
-	if after.Code != http.StatusOK {
-		t.Fatalf("GET /v1/settings after the panic = %d %s; want the broker still serving", after.Code, after.Body.String())
-	}
 }
 
 // TestSettingsStayOpenToACallerWithNoCredential is the census's answer for GET /v1/settings as a

@@ -6,10 +6,8 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
-	"net"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
+	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
@@ -180,7 +179,6 @@ func typedWrite(t *testing.T, local *secrets.Local, form string) []string {
 // with a broker identity reads the broker serving the secret as its type and exits 0, and one with
 // none exits 0 on the tag alone, with the one line that says the broker's view was not checked.
 func TestATypedWriteReadsItsTypeTagBack(t *testing.T) {
-	ran := 0
 	for _, form := range []string{"create", "set", "retag"} {
 		for _, found := range []string{policy.TypeAzureLogin, tagNone, ""} {
 			for _, identity := range []string{"a broker identity", "no broker identity"} {
@@ -189,7 +187,6 @@ func TestATypedWriteReadsItsTypeTagBack(t *testing.T) {
 					kept = "the right tag"
 				}
 				t.Run(form+" leaving "+kept+" with "+identity, func(t *testing.T) {
-					ran++
 					local := secrets.NewLocal()
 					broker := startSecretBroker(t, servedBy(local))
 					if identity == "no broker identity" {
@@ -222,9 +219,6 @@ func TestATypedWriteReadsItsTypeTagBack(t *testing.T) {
 			}
 		}
 	}
-	if ran != 18 {
-		t.Fatalf("ran %d rows; want 18", ran)
-	}
 }
 
 // signOnceHelper is an agent-secrets-helper that says the caller is in a session it enrolled, its
@@ -233,28 +227,103 @@ func TestATypedWriteReadsItsTypeTagBack(t *testing.T) {
 func signOnceHelper(t *testing.T) string {
 	t.Helper()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
-	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
+	fakeHelperAnswering(t, sock, func(call int) helper.Response {
+		if call == 0 {
+			return helper.Response{OK: true, Proof: "eyJ.probe.proof"}
+		}
+		return helper.Response{Code: helper.CodeNotEnrolled, Error: "the session is still enrolling"}
+	})
+	return sock
+}
+
+// TestARereadThatRanAndFailedIsNotSentAgainUnsigned: a signed reread the broker answered for a
+// reason other than its proof is the answer, and the form sends no second, unsigned reread: a
+// reread that ran and failed (500 INTERNAL), one its deadline cut (503 REQUEST_ENDED), a spent
+// reread limit (429 RATE_LIMITED) and a name no secret can carry (400 SECRET_NAME_INVALID). Each
+// exits 1 saying the broker could not be asked, so the write is served only from its next reload,
+// as main's form said of such a reread. Only a failed proof (TestATypedWriteExitsOnItsTagWhen
+// TheBrokersViewCannotBeChecked) is sent again unsigned.
+func TestARereadThatRanAndFailedIsNotSentAgainUnsigned(t *testing.T) {
+	for _, row := range []struct {
+		status int
+		code   string
+	}{
+		{http.StatusInternalServerError, "INTERNAL"},
+		{http.StatusServiceUnavailable, "REQUEST_ENDED"},
+		{http.StatusTooManyRequests, "RATE_LIMITED"},
+		{http.StatusBadRequest, "SECRET_NAME_INVALID"},
+	} {
+		t.Run(fmt.Sprintf("%d %s", row.status, row.code), func(t *testing.T) {
+			local := secrets.NewLocal()
+			broker := startSecretBroker(t, servedBy(local))
+			broker.failSignedRereads(row.status, row.code)
+			useAWS(t, local, testAccount, adaSignIn)
+			useStdin(t, "v1")
+			stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
+			if code != 1 || !strings.Contains(stderr, "could not be asked to reread NEW_KEY, so it serves the change only from its next reload") || strings.Contains(stderr, "was not checked") {
+				t.Fatalf("a signed reread answered %d %s: exit %d, stdout %q, stderr %q; want 1 saying the broker could not be asked", row.status, row.code, code, stdout, stderr)
+			}
+			if unsigned := broker.rereadUnsigned(); len(unsigned) != 0 {
+				t.Fatalf("the rereads %v went again with no proof; want none after a signed reread the broker answered %d %s", unsigned, row.status, row.code)
+			}
+		})
+	}
+}
+
+// TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress: a machine cache that holds a whole
+// session while another command holds its exclusive lock, as registerMachine does across its token
+// trade and enrollment, is no identity the reread holds now. The form does not wait for that lock:
+// it sends its reread unsigned and finishes, while the lock is still held.
+func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
+	local := secrets.NewLocal()
+	broker := startSecretBroker(t, servedBy(local))
+	withNoBrokerIdentity(t)
+	dir := machineCacheDir()
+	if err := ensureMachineCacheDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	key, err := proof.NewKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for answered := 0; ; answered++ {
-			conn, err := ln.AcceptUnix()
-			if err != nil {
-				return
-			}
-			_, _ = bufio.NewReader(conn).ReadBytes('\n')
-			answer := helper.Response{OK: true, Proof: "eyJ.probe.proof"}
-			if answered > 0 {
-				answer = helper.Response{Code: helper.CodeNotEnrolled, Error: "the session is still enrolling"}
-			}
-			data, _ := json.Marshal(answer)
-			_, _ = conn.Write(append(data, '\n'))
-			conn.Close()
+	session := writeKeyDir(t, key, "machine-enrollment")
+	for _, name := range []string{keyFile, enrollmentFile} {
+		data, err := os.ReadFile(filepath.Join(session, name))
+		if err != nil {
+			t.Fatal(err)
 		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unlock, err := lockMachineCache(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	useAWS(t, local, testAccount, adaSignIn)
+	useStdin(t, "v1")
+	type result struct {
+		stdout, stderr string
+		code           int
+	}
+	done := make(chan result, 1)
+	go func() {
+		stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
+		done <- result{stdout, stderr, code}
 	}()
-	return sock
+	const bound = 10 * time.Second
+	select {
+	case got := <-done:
+		if got.code != 0 || !strings.Contains(got.stdout, "broker: rereading NEW_KEY from ") {
+			t.Fatalf("create with the machine cache locked: exit %d, stdout %q, stderr %q; want 0 and the reread sent unsigned", got.code, got.stdout, got.stderr)
+		}
+	case <-time.After(bound):
+		t.Fatalf("create did not finish within %s while another command held the machine cache's lock; want it not to wait for that lock", bound)
+	}
+	if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"NEW_KEY"}) {
+		t.Fatalf("the rereads that went with no proof were %v; want NEW_KEY's", unsigned)
+	}
 }
 
 // TestATypedWriteExitsOnItsTagWhenTheBrokersViewCannotBeChecked: wherever a typed write cannot

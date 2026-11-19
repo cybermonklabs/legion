@@ -578,10 +578,11 @@ Its client id is `BROKER_SIGNIN_CLIENT_ID`, and its secret goes in the file
 `BROKER_SIGNIN_CLIENT_SECRET_FILE` names. The broker asks for `openid email profile` with PKCE,
 and asks for no offline access and keeps no refresh token. A browser with no session is sent to
 sign in with no `login_hint`: the page reads no record before a person signs in, so the redirect
-is the same for every record id and says nothing of whether the record exists or whose it is. The
-page's **Sign in as someone else** link, which a person already signed in follows, sends the
-record's approver as `login_hint`, so that person, if already signed in to Google, is asked
-nothing.
+is the same for every record id and says nothing of whether the record exists or whose it is. A
+person signed in to one Google account is asked nothing; one signed in to several is shown
+Google's account chooser. The page's **Sign in as someone else** link, which a person already
+signed in follows, opens that account chooser (`prompt=select_account`) with the record's
+approver named in it as `login_hint`.
 
 Deploy the broker with these settings before the Dispatch release whose Inbox links the page. In
 between, an open Dispatch tab's **Approve** on a secret request gets the broker's
@@ -957,17 +958,26 @@ read the secret's type tag back from the store, under the sign-in they wrote wit
 when it is not the type they wrote, when it is gone, or when the read back fails, naming the
 secret and both types; they ask the broker to reread the secret in every case, even one whose
 reread the broker refused. The CLI signs that reread only with a broker identity the process
-already holds: a key directory holding its key and enrollment, a sign-in with its enrollment, a
-helper that answers, or the machine's cached session. It waits on no launcher still enrolling,
-trades no token and registers nothing. Signed, the reread is answered with the type the broker
-serves, and a form exits 1 when it names another type than the secret holds, saying the retag that
-asks the broker to read it again. Where the broker's view cannot be checked — no identity, an
-identity that cannot sign, or a broker that cannot check or does not accept the proof — the CLI
-sends the reread again with no proof, which the broker answers `202` and says no more of. The form
-then prints one line saying the broker's view was not checked and why, and exits on the type tag
-alone: 0 when the store holds the type. That exit 0 says only that the store holds the tag, not
-that the broker serves the secret as that type, so store no App key or login in the secret until
-a retag run where the CLI has a broker identity prints `broker: serving NAME from … (type …)`.
+already holds: a key directory holding its key and enrollment, a person's sign-in, a helper that
+answers, or the machine's cached session. It waits on no launcher still enrolling and on no
+machine registration in progress, and trades no machine identity. A person's sign-in is the one
+that registers again: nothing renews its lease, so after `BROKER_LEASE_SECONDS` (900 by default)
+the broker answers its proof `401` "not live", and the CLI registers the sign-in's session again
+once, under the same box key — one trade of that person's sign-in, with the machine's identity as
+its actor, and one enrollment — and sends the reread again, signed, at a second token of both
+reread limits. Signed, the reread is answered with the type the broker serves, and a form exits 1
+when it names another type than the secret holds, saying the retag that asks the broker to read
+it again. Where the proof itself fails — no identity, an identity that cannot sign, a sign-in that
+cannot register again, or a broker that does not accept the proof or cannot check it (`503
+DATABASE_UNAVAILABLE`) — the CLI sends the reread again with no proof, which the broker answers
+`202` and says no more of. The form then prints one line saying the broker's view was not checked
+and why, and exits on the type tag alone: 0 when the store holds the type. That exit 0 says only
+that the store holds the tag, not that the broker serves the secret as that type, so store no App
+key or login in the secret until a retag run where the CLI has a broker identity exits 0 with
+`broker: serving NAME from … (type …)`. A signed reread that ran and failed (`500`, `503
+REQUEST_ENDED`), a spent reread limit (`429`) and a name no secret can carry (`400`) are not sent
+again: the form exits 1 saying the broker could not be asked to reread, and the broker serves the
+write from its next reload.
 
 The CLI and the broker ship in one legion-envoy release, so move the broker's pin to that release
 before people use its CLI. An `agent-secrets` from an earlier release still writes `kind`, which
