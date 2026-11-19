@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { stubMatchMedia } from "../margin/margin-fixture";
+import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymap } from "../shell/keymap";
 import { useDialog } from "../shell/useDialog";
@@ -34,7 +34,7 @@ function menuItem(preset: Preset): HTMLElement {
 // button, so the keys are WAI-ARIA's menu button's (the tester's reading of part V at 390 px).
 test("the one control is a menu button: Enter, Space, Down and Up open it on the view that is on, the arrows, Home and End move in it, Escape gives the focus back, and Tab leaves it", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
       <IssuePresets active="spec" issueKey="CORE-1" signals={SIGNALS} />
@@ -99,7 +99,7 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
 // address that names a node (`#b-`) the press would end elsewhere and do nothing.
 test("a press on a view control leaves the focus where it is, and moves to the view's address", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1#b-r1"]}>
       <button type="button">a row of the outline</button>
@@ -128,7 +128,7 @@ test("a press on a view control leaves the focus where it is, and moves to the v
 // its own activation would focus the button at the click.
 test("a press on a view control's count leaves the focus where it is, and moves to the view's address", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1#b-r1"]}>
       <button type="button">a row of the outline</button>
@@ -158,7 +158,7 @@ test("a press on a view control's count leaves the focus where it is, and moves 
 // and takes it (decision 93), so the outline keeps its row open under the pointer.
 test("a press on the one control leaves the focus where it is, then opens its menu on the view that is on", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
       <button type="button">a row of the outline</button>
@@ -205,7 +205,7 @@ function DialogOverTheRow(): ReactNode {
 // that Details' drawer asks too, so a dialog's markup does not change it.
 test("below 1280 px, Escape with a dialog open over the menu closes the dialog alone, the focus outside it", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
       <KeymapProvider>

@@ -24,6 +24,8 @@ const REASONS = {
   12: "12. The rest is focus and scrolling: the compose takes focus once it is on screen (`onScreen`, `autoFocus`), the margin scrolls the compose or a linked card into view only in an open panel (`useMarginListeners`, `useCardHold`), and an open panel or thread view keeps focus inside it and the page still under it (`useDialog`). None moves an address or ends a mount. The app shell's forms, above every host, are the sign-in file's.",
   13: "13. The compose's kind (`composer.kind`) changes only by the compose's own Comment, Suggest and Ask switch (`onKindChange`), the reader's own control, which retypes the same mark (`retypeCompose`) and leaves the draft in the field (`useKeptDrafts`), so it re-addresses the same compose and moves nothing it holds.",
   14: "14. A render inside the margin that throws draws the shell's error section in its place (`ErrorBoundary`, \"the margin\", in `app.tsx`), which unmounts the compose and every card as leaving the document does. Each composer keeps what it holds as it goes (`useKeptDrafts`): the compose and an editor by their address (`keepAway`), a thread's reply under its thread's name, written at each keystroke (`unsent.write`), and what was typed over a refusal in its held send (`keepDraft`). Those stores live with the query client, above the boundary (`unsentDraftsOf`, `heldSends`), and so does the compose (`MarginProvider`). The boundary draws the margin again when the page's path changes (`resetKey`, `componentDidUpdate`), with no thread open and no editor (`useMarginSheet` starts again), and its Reload Dispatch reloads the page as the reload rows do. A composer drawn again at its address opens on its draft (`mountDraft`): the compose on its document, a thread's reply when its thread is opened, an editor when its comment's Edit is pressed (beside a newer body where the comment changed, `changedUnder`), as the document-left rows, the another-thread row and the edit file's margin card show.",
+  15: "15. On the new issue page, once its reader turns it on, the margin is Details (`Margin`'s `drawer`, `DetailsDrawer`): the same `MarginSheet` with the same model, under the same `MarginProvider`, in a drawer over the right of the page, so where it sits - its width, its resize handle, its class, and on a phone its dialog role and its shade - moves no composer, as (11) says of the column and the panel. Closed, Details hides itself (`hidden={!open}`) and keeps the compose and every card, reply and editor mounted under it, as (9) says of the phone panel. Its being open is the reader's own (its Close, its shade, `Shift+M`, and Escape on a phone), or the margin's when a card the reader picked or a link names lands, and on a phone a link followed inside it closes it; none moves an address. Its focus, and its dialog on a phone, are (12)'s.",
+  16: "16. In Details the margin's box draws only what the page put in the margin's slot (`SheetBody`, `useMarginSlotFill`), and nothing while the page has put nothing there; and a reader who turns the new page on or off, or leaves the issue page, moves the margin between Details and its column (`Margin`'s `drawer`). Either unmounts the compose and every card as leaving the document does, and each keeps what it holds as (5) and (14) say: its stores and the compose live above the margin, so it comes back as it was when the margin draws it again, as the document-left rows' returns show.",
 } as const;
 
 /** The rows that end a newer compose offering the earlier compose's draft beside its field. */
@@ -122,7 +124,7 @@ export const coverage: readonly CoverageEntry[] = [
     )
   ),
   ...answers(
-    "MarginSheet | MarginComposerSlot | conditional | <div hidden={covered}>",
+    "MarginSheet | MarginComposerSlot | conditional | <SheetBody hidden={covered}>",
     cells(`${HOST} · phone · a thread opened over the compose, then Back (the margin's compose)`),
     { reason: REASONS[4] }
   ),
@@ -229,7 +231,7 @@ export const coverage: readonly CoverageEntry[] = [
     'MarginSheet | CommentsTab | conditional | (tab.value === "comments" && !covered && owner !== undefined && visibleArtifact !== undefined) ? …',
     { reason: REASONS[6] }
   ),
-  ...answers("MarginSheet | CommentsTab | conditional | <div hidden={covered}>", {
+  ...answers("MarginSheet | CommentsTab | conditional | <SheetBody hidden={covered}>", {
     reason: REASONS[4],
   }),
   ...answers("MarginSheet | CommentsTab | address prop | commentsError={commentsError}", {
@@ -256,15 +258,17 @@ export const coverage: readonly CoverageEntry[] = [
     "MarginComposerSlot | MarginComposerSlot <MentionComposer mutationKey={sendKey}> | form | autoFocus={onScreen}",
     { reason: REASONS[12] }
   ),
-  ...answers("MarginSheet | MarginComposerSlot | form | <div className>", { reason: REASONS[9] }),
-  ...answers("MarginSheet | CommentsTab | form | <div className>", { reason: REASONS[9] }),
+  ...answers("MarginSheet | MarginComposerSlot | form | <SheetBody className>", {
+    reason: REASONS[9],
+  }),
+  ...answers("MarginSheet | CommentsTab | form | <SheetBody className>", { reason: REASONS[9] }),
   ...answers(
-    "MarginSheet | MarginComposerSlot | form | <div hidden={covered}>",
+    "MarginSheet | MarginComposerSlot | form | <SheetBody hidden={covered}>",
     cells(`${HOST} · phone · a thread opened over the compose, then Back (the margin's compose)`),
     { reason: REASONS[4] }
   ),
   ...answers(
-    "MarginSheet | CommentsTab | form | <div hidden={covered}>",
+    "MarginSheet | CommentsTab | form | <SheetBody hidden={covered}>",
     cells(`${HOST} · phone · a thread opened over the compose, then Back (the margin's compose)`),
     { reason: REASONS[4] }
   ),
@@ -278,7 +282,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[11],
   }),
   ...answers(
-    'MarginSheet | MarginComposerSlot | form | onScreen={ !covered && tab.value === "comments" && (sheet.expanded || !isCompactViewport) }',
+    'MarginSheet | MarginComposerSlot | form | onScreen={ !covered && tab.value === "comments" && (drawer ? drawerOpen : sheet.expanded || !isCompactViewport) }',
     { reason: REASONS[12] }
   ),
   ...answers("Margin | MarginSheet | form | <div className>", { reason: REASONS[11] }),
@@ -299,10 +303,10 @@ export const coverage: readonly CoverageEntry[] = [
     'MarginSheet | CommentsTab | form | (tab.value === "comments" && !covered && owner !== undefined && visibleArtifact !== undefined) ? …',
     { reason: REASONS[6] }
   ),
-  ...answers("MarginSheet | - | form | (sheet.expanded && isCompactViewport) ? …", {
+  ...answers("MarginSheet | - | form | (sheet.expanded && compactSheet) ? …", {
     reason: REASONS[11],
   }),
-  ...answers("MarginSheet | - | form | (isCompactViewport) ? …", { reason: REASONS[11] }),
+  ...answers("MarginSheet | - | form | (compactSheet) ? …", { reason: REASONS[11] }),
   ...answers("MarginSheet | - | form | (covered) ? …", { reason: REASONS[4] }),
   ...answers('MarginSheet | - | form | !covered && tab.value === "comments" && …', {
     reason: REASONS[12],
@@ -341,4 +345,59 @@ export const coverage: readonly CoverageEntry[] = [
     "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | lifetime | <MentionComposer mutationKey={replyMutationKey}>",
     cells(`${HOST} · the page reloaded, then back`)
   ),
+  // The new issue page's Details (#4189): the margin in a drawer, and the box that draws the
+  // page's fill there.
+  ...answers("SheetBody | MarginComposerSlot | conditional | <div hidden={hidden}>", {
+    reason: REASONS[4],
+  }),
+  ...answers("SheetBody | MarginComposerSlot | conditional | if (!drawer)", {
+    reason: REASONS[16],
+  }),
+  ...answers("SheetBody | MarginComposerSlot | conditional | !(fill === undefined) ? …", {
+    reason: REASONS[16],
+  }),
+  ...answers("SheetBody | MarginComposerSlot | early return | if (!drawer) return …", {
+    reason: REASONS[16],
+  }),
+  ...answers("SheetBody | MarginComposerSlot | form | <div hidden={hidden}>", {
+    reason: REASONS[4],
+  }),
+  ...answers("SheetBody | CommentsTab | conditional | <div hidden={hidden}>", {
+    reason: REASONS[4],
+  }),
+  ...answers("SheetBody | CommentsTab | conditional | if (!drawer)", { reason: REASONS[16] }),
+  ...answers("SheetBody | CommentsTab | conditional | !(fill === undefined) ? …", {
+    reason: REASONS[16],
+  }),
+  ...answers("SheetBody | CommentsTab | early return | if (!drawer) return …", {
+    reason: REASONS[16],
+  }),
+  ...answers("SheetBody | CommentsTab | form | <div hidden={hidden}>", { reason: REASONS[4] }),
+  ...answers("Margin | MarginSheet | early return | if (drawer !== undefined) return …", {
+    reason: REASONS[16],
+  }),
+  ...answers("Margin | DetailsDrawer | conditional | if (drawer !== undefined)", {
+    reason: REASONS[16],
+  }),
+  ...answers("Margin | DetailsDrawer | address prop | drawer={drawer}", { reason: REASONS[15] }),
+  ...answers("Margin | DetailsDrawer | address prop | model={model}", { reason: REASONS[15] }),
+  ...answers("DetailsDrawer | MarginSheet | conditional | <aside hidden={!open}>", {
+    reason: REASONS[15],
+  }),
+  ...answers("DetailsDrawer | MarginSheet | address prop | model={model}", { reason: REASONS[15] }),
+  ...answers("DetailsDrawer | MarginSheet | form | <aside className role aria-modal ref>", {
+    reason: REASONS[15],
+  }),
+  ...answers("Margin | DetailsDrawer | form | model={model}", { reason: REASONS[15] }),
+  ...answers("DetailsDrawer | - | form | (open && isPhoneViewport) ? …", {
+    reason: REASONS[15],
+  }),
+  ...answers("DetailsDrawer | - | form | if (!open || isPhoneViewport) return …", {
+    reason: REASONS[15],
+  }),
+  ...answers(
+    "DetailsDrawer | - | form | if (drawerBox === null || !open || !isPhoneViewport) return …",
+    { reason: REASONS[15] }
+  ),
+  ...answers("DetailsDrawer | - | form | (isPhoneViewport) ? …", { reason: REASONS[15] }),
 ];

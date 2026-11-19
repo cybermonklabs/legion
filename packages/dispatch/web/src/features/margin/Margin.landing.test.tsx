@@ -228,7 +228,7 @@ function Details({
 // its copy of the comment and expands nothing at a desktop width either: an expanded thread's
 // Reply box takes the focus off that node as it mounts.
 test("a desktop link to a comment's node marks its card without expanding its thread", async () => {
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   // The card below the margin's view, as main's deep-link case puts it, so a hold on it would
   // scroll the margin: only the address's rule keeps it still.
   const restoreRects = stubRects(() => 900);
@@ -279,7 +279,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
 // leaves Details closed.
 test("a link to a card beside its document opens Details on it, and a link to a node does not", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = stubScrollTo();
   try {
     for (const [path, opens] of [
@@ -329,7 +329,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
 // drawer's React tree, so the drawer must hear the link's click from the DOM.
 test("on a phone, a link followed in a panel portaled into Details closes the sheet", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const tree = (target: Element | null) => (
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={landingClient([])}>
@@ -372,7 +372,7 @@ test("on a phone, a link followed in a panel portaled into Details closes the sh
 // plain link beside it still closes the sheet.
 test("on a phone, a link that keeps Details open leaves the sheet open, and a plain link still closes it", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const tree = (target: Element | null) => (
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={landingClient([])}>
@@ -435,7 +435,7 @@ function ListOfKeys(): ReactNode {
 // takes it, or on the page after a press on the list's own text.
 test("with the list of keys over Details, Escape closes the list alone, the focus outside it", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={landingClient([])}>
