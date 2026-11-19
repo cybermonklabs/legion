@@ -4629,7 +4629,9 @@ Each item below names a path with its method and identity, then its purpose.
     The public text check refuses a host below `.internal.` and not one ending in `.internal`: it guards the whole repository, where names such as `metadata.google.internal` and `host.docker.internal` are well known, while the line is pasted into public text with no reader in between.
     A key counts in any case, at the start of a word or after a character that is neither a letter nor a digit, and up to the end of its number: `ACME-12's`, `(ACME-12)`, `fix/acme-12-lines` and `ACME‑12` with a non-breaking hyphen each hold one.
     `UTF-8`, `SHA-256` and `TEST-1` hold none while no project is called UTF, SHA or TEST, and `kernel-6.8` holds none even where KERNEL is a project, since a number that runs on into a decimal part is a version.
-    What is left is cut at a word to at most 80 runes, with `…` where it was cut, and a cut text is judged again, since a cut inside a word can leave a key the whole word did not hold; a reading left with nothing says `The reading holds only links, hosts and issue keys, which this line leaves out.`, and a result with no reading says `The role recorded no reading.`
+    What is left is cut at a word to at most 80 runes, with `…` where it was cut, and a cut text is judged again, since a cut inside a word can leave a key the whole word did not hold; a reading left with nothing says `The reading holds only links, hosts, issue keys and markup, which this line leaves out.`, and a result with no reading says `The role recorded no reading.`
+    A word holding `<`, `>` or `](` is dropped whole, since an HTML tag or comment or a Markdown link can split or join words once the pull request renders it; a plain `a->b` or `Vec<u8>` drops with them.
+    Words are judged only until what is kept passes 80 runes, since the cut reads no further.
     No line is stored: each is written when it is answered, from the projects Dispatch holds then.
 
 - `/api/v1/issues/{key}/results/dry-run` (POST; cookie, trusted header, or bearer)

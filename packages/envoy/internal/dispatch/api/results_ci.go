@@ -319,7 +319,7 @@ func ciRunOfLine(name string, words lineWords) string {
 // keeps nothing of ends the line at the run, as a check with no words does.
 func ciVerdictLine(check model.CheckBlock, name, verdict, sha string, words lineWords) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, from %s.", check.BlockID, check.When, verdict, sha, ciRunOfLine(name, words))
-	kept := words.keep(check.Text)
+	kept := words.keepThrough(check.Text, checkResultReadingRunes)
 	if kept == "" {
 		return line
 	}

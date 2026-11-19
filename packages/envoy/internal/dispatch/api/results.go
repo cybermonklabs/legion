@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -1040,45 +1042,57 @@ type lineWords struct {
 // privateHost and tailnetHost are the two host rules of .github/scripts/check-private-names.sh,
 // read in any case as that script reads them: a host below `.internal.`, and a Tailscale MagicDNS
 // host, a DNS label then `.ts.net` with no letter or digit after it. privateHost also takes a host
-// that ends in `.internal`, which the script does not refuse: the script guards the whole
-// repository, where names such as metadata.google.internal and host.docker.internal are well known
-// and not private, while the line is pasted into public text with no reader in between, so it is
-// stricter on purpose. The line drops every word holding one, written without a scheme too, and
-// the script's reserved example hosts with them, since no line needs a host.
+// that ends in `.internal`, a sentence's full stop or a bracket after it included, which the script
+// does not refuse: the script guards the whole repository, where names such as
+// metadata.google.internal and host.docker.internal are well known and not private, while the line
+// is pasted into public text with no reader in between, so it is stricter on purpose. The line
+// drops every word holding one, written without a scheme too, and the script's reserved example
+// hosts with them, since no line needs a host.
 var (
-	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal([.][[:alnum:].-]+|[^[:alnum:].-]|$)`)
+	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal([^[:alnum:]-]|$)`)
 	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
 )
 
 // markdownEscape is a Markdown backslash escape, a backslash before an ASCII punctuation
-// character, and htmlTag an HTML tag; the pull request renders the first as the character alone
-// and the second as nothing.
+// character, which the pull request renders as the character alone, and markdownDelimiters the
+// emphasis, strikethrough and code delimiters, which it renders as nothing.
 var (
-	markdownEscape = regexp.MustCompile("\\\\([!-/:-@\\[-`{-~])")
-	htmlTag        = regexp.MustCompile(`<[^>]*>`)
+	markdownEscape     = regexp.MustCompile("\\\\([!-/:-@\\[-`{-~])")
+	markdownDelimiters = strings.NewReplacer("*", "", "_", "", "~", "", "`", "")
 )
 
 // readerWord is word as a reader of the rendered pull request reads it, which the line judges
 // beside the word as written: HTML character references decoded, Markdown backslash escapes and
-// HTML tags taken out, the emphasis, strikethrough and code delimiters (`*`, `_`, `~` and the
-// backtick) taken out, then NFKC, every format character (unicode.Cf, the zero-width space and
-// the soft hyphen among them) taken out, and every dash (unicode.Pd) and the minus sign read as
-// `-`. So `ACME‑12` with a non-breaking hyphen, `ACME\-12`, `ACME&#45;12` and `**ACME**-12` read
-// as `ACME-12`. The line prints the word as written, never this reading.
+// the emphasis, strikethrough and code delimiters (`*`, `_`, `~` and the backtick) taken out, then
+// NFKC, every invisible character taken out (a format character, unicode.Cf, such as the
+// zero-width space and the soft hyphen, a variation selector, and every other default-ignorable
+// code point, such as the combining grapheme joiner and the Hangul fillers), and every dash
+// (unicode.Pd) and the minus sign read as `-`. So `ACME‑12` with a non-breaking hyphen,
+// `ACME\-12`, `ACME&#45;12` and `**ACME**-12` read as `ACME-12`. A word holding markup is
+// dropped before this reading is made (holdsMarkup). The line prints the word as written, never
+// this reading.
 func readerWord(word string) string {
 	word = html.UnescapeString(word)
 	word = markdownEscape.ReplaceAllString(word, "$1")
-	word = htmlTag.ReplaceAllString(word, "")
-	word = strings.NewReplacer("*", "", "_", "", "~", "", "`", "").Replace(word)
+	word = markdownDelimiters.Replace(word)
 	return strings.Map(func(r rune) rune {
 		switch {
-		case unicode.Is(unicode.Cf, r):
+		case unicode.In(r, unicode.Cf, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point):
 			return -1
 		case unicode.Is(unicode.Pd, r), r == '\u2212':
 			return '-'
 		}
 		return r
 	}, norm.NFKC.String(word))
+}
+
+// holdsMarkup reports whether a word holds `<`, `>` or `](`, with which an HTML tag or comment, or
+// a Markdown inline link, opens or closes in it. Such markup can split a word or join two words
+// once the pull request renders it (`[ACME](#)-12`, `ACME<!-- x -->-12` both show `ACME-12`), and
+// one word read alone cannot say what the rendering shows, so the line drops every such word. A
+// plain `a->b` or `Vec<u8>` is dropped with them: the price of no markup reaching the line.
+func holdsMarkup(word string) bool {
+	return strings.ContainsAny(word, "<>") || strings.Contains(word, "](")
 }
 
 // readLineWords is lineWords for every project q reads and for this Dispatch's own URL.
@@ -1121,10 +1135,11 @@ func lineWordsFor(keys []string, serverURL string) lineWords {
 	return words
 }
 
-// drops reports whether the line leaves word out: when the word as written, or as a reader of the
-// rendered pull request reads it (readerWord), holds what the line never carries.
+// drops reports whether the line leaves word out: when it holds markup (holdsMarkup), or when the
+// word as written, or as a reader of the rendered pull request reads it (readerWord), holds what
+// the line never carries.
 func (w lineWords) drops(word string) bool {
-	return w.holds(word) || w.holds(readerWord(word))
+	return holdsMarkup(word) || w.holds(word) || w.holds(readerWord(word))
 }
 
 // holds reports whether word holds a link, a private host, this Dispatch's own host or an issue
@@ -1137,13 +1152,31 @@ func (w lineWords) holds(word string) bool {
 
 // keep is text's words joined by single blanks, less every word the line drops.
 func (w lineWords) keep(text string) string {
-	var kept []string
-	for _, word := range strings.Fields(text) {
-		if !w.drops(word) {
-			kept = append(kept, word)
+	return w.keepThrough(text, math.MaxInt)
+}
+
+// keepThrough is keep stopped once what it has kept is longer than budget runes. cut reads no more
+// of a text than that (text.HeadWords reads its first budget runes and whether there are more), so
+// a word past that point can change no line, and judging it would cost work that grows with the
+// text and changes nothing.
+func (w lineWords) keepThrough(text string, budget int) string {
+	var kept strings.Builder
+	runes := 0
+	for word := range strings.FieldsSeq(text) {
+		if runes > budget {
+			break
 		}
+		if w.drops(word) {
+			continue
+		}
+		if kept.Len() > 0 {
+			kept.WriteByte(' ')
+			runes++
+		}
+		kept.WriteString(word)
+		runes += utf8.RuneCountInString(word)
 	}
-	return strings.Join(kept, " ")
+	return kept.String()
 }
 
 // blockContent is a typed block's own content as markdown: what stands between its opening line
@@ -1187,9 +1220,9 @@ func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWo
 	if strings.TrimSpace(result.Observed) == "" {
 		return line + " The role recorded no reading."
 	}
-	reading := words.keep(result.Observed)
+	reading := words.keepThrough(result.Observed, checkResultReadingRunes)
 	if reading == "" {
-		return line + " The reading holds only links, hosts and issue keys, which this line leaves out."
+		return line + " The reading holds only links, hosts, issue keys and markup, which this line leaves out."
 	}
 	return line + " " + words.cut(reading)
 }

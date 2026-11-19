@@ -83,7 +83,7 @@ func TestThePullRequestLineDropsIssueKeysAndLinksFromTheReading(t *testing.T) {
 		{
 			name:     "a reading of nothing but issue keys and links",
 			observed: "RESK-1 dispatch://RESK-1/spec ACME-2",
-			want:     "The reading holds only links, hosts and issue keys, which this line leaves out.",
+			want:     "The reading holds only links, hosts, issue keys and markup, which this line leaves out.",
 		},
 		{
 			name:     "a Tailscale MagicDNS host written without a scheme",
@@ -157,6 +157,43 @@ func TestThePullRequestLineDropsIssueKeysAndLinksFromTheReading(t *testing.T) {
 			name:     "the word internal and a path under internal/ stay",
 			observed: "The .internal suffix and internal/dispatch/api stay.",
 			want:     "The .internal suffix and internal/dispatch/api stay.",
+			control:  true,
+		},
+		{
+			name:     "a host ending in .internal before a full stop or a bracket",
+			observed: "Read from vm-1.c.proj-1.internal. Then (on box.internal.) it passed.",
+			want:     "Read from Then (on it passed.",
+		},
+		{
+			name:     "an issue key behind an inline link or an HTML tag",
+			observed: "[ACME](#)-12, ACME-[12](#) and ACME-<span class=x>12</span> passed.",
+			want:     "and passed.",
+		},
+		{
+			name:     "a key or a link joined across an HTML comment",
+			observed: "ACME<!-- x -->-12 and dispatch:<!-- y -->//role/notes read.",
+			want:     "x and y read.",
+		},
+		{
+			name:     "a plain arrow and angle brackets drop too, the cost of dropping markup",
+			observed: "a->b and Vec<u8> both compile.",
+			want:     "and both compile.",
+		},
+		{
+			name:     "brackets and parentheses that open no link stay",
+			observed: "Lists [1, 2] and f(x) stay.",
+			want:     "Lists [1, 2] and f(x) stay.",
+			control:  true,
+		},
+		{
+			name:     "an issue key with an invisible character that is no format character",
+			observed: "Ran ACME\u034f-12, ACME\ufe0f-12, ACME\u180b-12 and ACME\u3164-12 again.",
+			want:     "Ran and again.",
+		},
+		{
+			name:     "invisible characters in a word that names no project stay",
+			observed: "UTF\u034f-8 and x\ufe0f stay.",
+			want:     "UTF\u034f-8 and x\ufe0f stay.",
 			control:  true,
 		},
 		{
@@ -335,5 +372,38 @@ func TestTheCIPullRequestLineDropsIssueKeysFromTheRunName(t *testing.T) {
 			t.Fatalf("%s's pull-request line = %q, want %q", want.check, check.CI.Line, want.line)
 		}
 		requireNoPrivateReference(t, check.CI.Line)
+	}
+}
+
+// The line judges a text's words only until what it kept passes the cut's budget, because the cut
+// reads no further. For each body the line from that shortened reading equals the line from
+// reading the whole body: one body whose private words sit just past the cut, and one whose
+// dropped words come before it, so later words move in. A stop placed one word too early changes
+// the line, which shows the comparison can fail. Each kept `abcd` adds five runes with its blank,
+// so the kept text passes the budget at its seventeenth `abcd` (84 runes), and a budget two runes
+// lower stops at its sixteenth (79 runes), which the cut then leaves whole.
+func TestTheLineStopsJudgingOnceItsKeptTextPassesTheCut(t *testing.T) {
+	words := lineWordsFor([]string{"ACME"}, testServerURL)
+	lineOf := func(body string, budget int) string { return words.cut(words.keepThrough(body, budget)) }
+	for _, row := range []struct{ name, body string }{
+		{
+			name: "private words just past the cut",
+			body: strings.Repeat("abcd ", 17) + "ACME-12 dispatch.internal.example/x efgh",
+		},
+		{
+			name: "dropped words before the cut, so later words move in",
+			body: "ACME-1 dispatch://ACME-2/spec logs.example-tailnet.ts.net " + strings.Repeat("abcd ", 20) + "ACME-3",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			whole := words.cut(words.keep(row.body))
+			if got := lineOf(row.body, checkResultReadingRunes); got != whole {
+				t.Fatalf("the line from the shortened reading = %q, want the whole reading's %q", got, whole)
+			}
+			if early := lineOf(row.body, checkResultReadingRunes-2); early == whole {
+				t.Fatalf("a stop one word too early gave the whole reading's line %q: the comparison cannot fail", early)
+			}
+			requireNoPrivateReference(t, whole)
+		})
 	}
 }

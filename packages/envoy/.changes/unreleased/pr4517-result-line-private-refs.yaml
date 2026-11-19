@@ -1,12 +1,13 @@
 kind: Fixed
 body: |-
   The pull-request body line Dispatch answers for a recorded result, and the line it writes for a
-  check proved by CI, leave out every word of their text that holds a link (`://`), a host below
-  or ending in `.internal`, a Tailscale MagicDNS host, this Dispatch's own host, or an issue key of
-  a project this Dispatch holds, in any case and with or without a scheme. Each word is judged as
-  written and as the rendered pull request reads it (HTML character references and Markdown escapes
-  decoded, emphasis and tags taken out, dashes and invisible characters folded), and the 80-rune
-  cut is judged again. The CI line's run name goes through the same rule. Hyphenated words whose
-  first part names no project (`UTF-8`, `SHA-256`) stay, and so does a project's name followed by a
-  version. `POST /api/v1/issues/{key}/results/dry-run` takes a result's body, refuses it as the
+  check proved by CI, leave out every word of their text that holds markup (`<`, `>` or `](`), a
+  link (`://`), a host below or ending in `.internal`, a Tailscale MagicDNS host, this Dispatch's own
+  host, or an issue key of a project this Dispatch holds, in any case and with or without a scheme.
+  Each word is judged as written and as the rendered pull request reads it (HTML character
+  references and Markdown escapes decoded, emphasis delimiters taken out, dashes folded and
+  invisible characters removed), and the 80-rune cut is judged again. The CI line's run name goes
+  through the same rule. Hyphenated words whose first part names no project (`UTF-8`, `SHA-256`)
+  stay, and so does a project's name followed by a version; a plain `a->b` or `Vec<u8>` is dropped
+  with markup. `POST /api/v1/issues/{key}/results/dry-run` takes a result's body, refuses it as the
   record does before it writes, and answers `{line}`, recording nothing.
