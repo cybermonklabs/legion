@@ -2769,16 +2769,10 @@ function storedPriority(patchIssue: { mock: { calls: unknown[][] } }): IssuePrio
 }
 
 /** The project's board as the Board reads it (`projectIssuesQuery`, whose read waits until every
- *  board move on the project is answered), showing the priority of CORE-1's card, and, with
- *  `picker`, the card's own priority picker, as each card of the board draws one, each commit of
- *  it recorded in `commits` with the card's priority. */
-function BoardCard({
-  commits,
-  picker = false,
-}: {
-  commits: Commits<IssuePriority | null>;
-  picker?: boolean;
-}): ReactNode {
+ *  board move on the project is answered), showing the priority of CORE-1's card, and, given
+ *  `commits`, the card's own priority picker, as each card of the board draws one, each commit of
+ *  it recorded there with the card's priority. */
+function BoardCard({ commits }: { commits?: Commits<IssuePriority | null> }): ReactNode {
   const board = useQuery({
     ...projectIssuesQuery(issue.project, []),
     staleTime: Number.POSITIVE_INFINITY,
@@ -2787,7 +2781,7 @@ function BoardCard({
   return (
     <>
       <p data-testid="board-priority">P{card?.priority}</p>
-      {picker && card !== undefined ? (
+      {commits !== undefined && card !== undefined ? (
         <commits.Recorded host={issuePriority(card.priority)}>
           <PriorityControl issueKey={card.key} priority={issuePriority(card.priority)} />
         </commits.Recorded>
@@ -2801,7 +2795,7 @@ function BoardCard({
  *  Dispatch answers with the priority it stores as each read reaches it (`stored`), once the row
  *  lets the reads it holds go (`hold`). The client holds the list as Dispatch last answered it,
  *  or, `unread`, holds none yet, so the board reads it. `commits` records each commit of the
- *  card's picker: what its select holds and what its badge says. */
+ *  card's picker, `onCard`: what its select holds and what its badge says. */
 function renderBoard(
   client: DispatchQueryClient,
   stored: () => IssuePriority | null,
@@ -2834,11 +2828,11 @@ function renderBoard(
   const view = renderIn(
     client,
     onCard ? (
-      <BoardCard commits={commits} picker />
+      <BoardCard commits={commits} />
     ) : (
       <>
         <CachedPriority reads={reads} />
-        <BoardCard commits={commits} />
+        <BoardCard />
       </>
     )
   );
@@ -3244,11 +3238,15 @@ test("a pick refused while a later drag of its card still waits behind another c
 // A pick made on a card while a drag of that card still waits its turn behind another card's
 // move is older than the drag (`fieldWritesOf`): the pick goes out first, Dispatch stores the
 // drag's lane last, and the card shows that lane. The card's picker draws the card's own priority
-// in every commit from the pick on, never the pick, which the card does not show, and the drag's
-// lane once every write has landed - whichever of the pick and the other card's move Dispatch
-// answers first, with no picker drawn again.
+// in every commit from the pick on - never a pick the card does not draw - and the drag's lane
+// once every write has landed, whichever of the pick and the other card's move Dispatch answers
+// first, with no picker drawn again. The row asserts that and not "never P2": when the other
+// card's move lands first, the card itself draws P2 for one commit, while the drag has left its
+// board's queue and not yet joined the issue's line, so `fieldWritesOf` counts it as neither and
+// the pick is the newest write for those microtasks. That gap is the write engine's, which this
+// change does not touch; the picker draws P2 there because its card does.
 for (const first of ["the pick", "the other card's move"] as const) {
-  test(`a pick made on a card while a drag of it waits behind another card's move draws the card's priority in every commit, never the pick, when ${first} lands first`, async () => {
+  test(`a pick made on a card while a drag of it waits behind another card's move draws the card's priority in every commit, when ${first} lands first`, async () => {
     const other = Promise.withResolvers<Issue>();
     const pick = Promise.withResolvers<Issue>();
     const drag = Promise.withResolvers<Issue>();

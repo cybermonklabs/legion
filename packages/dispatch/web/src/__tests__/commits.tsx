@@ -1,6 +1,6 @@
-/** What the unit rows of a picker that keeps its pick on screen share (`RepoControl.test.tsx`,
- *  `PriorityControl.test.tsx`, `AssigneeControl.test.tsx`): a record of every commit of the
- *  control, and TanStack Query's notifications held back as a browser's timer holds them. */
+/** A record of every commit of a control: the value its host passed it and what it drew, read
+ *  from the DOM React has just committed; and TanStack Query's notifications to its caches'
+ *  observers, held back as a browser's timer holds them and told one at a time. */
 import { notifyManager } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
 import { Profiler, type ReactNode } from "react";
@@ -53,8 +53,10 @@ export function recordCommits<Host>(draw: () => string): Commits<Host> {
 export interface HeldNotifications {
   /** How many notifications wait. */
   readonly held: () => number;
-  /** Tells every notification held, within `act`, and tells each one after it at once again, as
-   *  `setup.ts` has every case do. A case calls it in its `finally` as well. */
+  /** Tells the notifications held one at a time, in the order they were queued, each in an `act`
+   *  of its own, so React commits after each as a browser does after each timer; from then on it
+   *  tells each at once again, as `setup.ts` has every case do. A case calls it in its `finally`
+   *  as well. */
   readonly tell: () => void;
 }
 
@@ -70,9 +72,7 @@ export function holdNotifications(): HeldNotifications {
     held: () => untold.length,
     tell: () => {
       notifyManager.setScheduler((tell) => tell());
-      act(() => {
-        for (const tell of untold.splice(0)) tell();
-      });
+      for (const tell of untold.splice(0)) act(() => tell());
     },
   };
 }

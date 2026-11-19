@@ -553,17 +553,23 @@ function withHeld(
   return [held, ...rows];
 }
 
-/** The row to keep where the reader last saw it, if any. Dropped from the list: kept as last
- *  seen. Moved to another band: what the list says about it changed under the reader's hand, so
- *  the listed row is kept in the band they saw it in. A move into or out of Later is a snooze -
- *  the reader's own click, shown at once. */
+/** The row to keep where the reader last saw it, if any. Dropped from the list: kept where last
+ *  seen, as the Inbox now holds it (`candidateOf`) where one of the list's filters dropped it - a
+ *  pick in the row that took it out of a priority filter shows there - and as last seen where
+ *  the server no longer sends it. Moved to another band: what the list says about it changed
+ *  under the reader's hand, so the listed row is kept in the band they saw it in. A move into or
+ *  out of Later is a snooze - the reader's own click, shown at once. */
 function heldRow(
   seen: PlacedRow | undefined,
   listed: InboxListRow | undefined,
+  candidateOf: (id: string) => InboxListRow | undefined,
   now: string | undefined
 ): PlacedRow | undefined {
   if (seen === undefined) return undefined;
-  if (listed === undefined) return seen;
+  if (listed === undefined) {
+    const current = candidateOf(rowId(seen.row));
+    return current === undefined ? seen : { ...seen, row: current };
+  }
   const movedBand =
     now !== undefined &&
     now !== seen.group &&
@@ -836,6 +842,10 @@ export function Inbox({
   const threads = useInboxThreadRows({ asksOnly, listRef, show });
   /** Every row this list could hold before its five fields narrow it: what the bar counts. */
   const candidates = [...askRows, ...threads.rows];
+  /** The row `id` as the Inbox holds it now, before the filters and the typed text narrow the
+   *  list; undefined where the server no longer sends it. A held row and the reading column's
+   *  kept row draw this, so a pick in one that took it out of a filter shows there. */
+  const candidateOf = (id: string) => candidates.find((row) => rowId(row) === id);
   // The filters and the typed text both decide what is listed, with two exceptions that
   // outrank them all: a row whose "Assign to me" write is live stays, and so does one whose
   // hand-on is. Taking a question under the Unassigned filter is exactly the first case - the
@@ -1451,7 +1461,7 @@ export function Inbox({
     listed === undefined
       ? undefined
       : bands.find(({ rows: banded }) => banded.includes(listed))?.key;
-  const held = heldRow(seen, listed, nowBand);
+  const held = heldRow(seen, listed, candidateOf, nowBand);
 
   // The filtered agent as its asks wrote it (the title it stamped, its attribution), or only its
   // id when none of its asks is listed; either way its registry title names it when listed.
@@ -1673,7 +1683,7 @@ export function Inbox({
         )}
       </div>
     );
-    return page(empty, paneSelection.showing([]));
+    return page(empty, paneSelection.showing([], candidateOf));
   }
 
   // The held row is drawn in the band the reader saw it in, after the row it then followed.
@@ -1707,7 +1717,7 @@ export function Inbox({
   const ordinals = askOrdinals(
     presented.current.flatMap(({ row }) => (row.kind === "ask" ? [row.ask] : []))
   );
-  const selectedRow = paneSelection.showing(listedRows);
+  const selectedRow = paneSelection.showing(listedRows, candidateOf);
 
   const renderRow = (bandKey: string, row: InboxListRow): ReactNode => {
     const id = rowId(row);

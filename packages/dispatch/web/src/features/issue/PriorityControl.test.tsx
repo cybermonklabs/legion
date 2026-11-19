@@ -133,21 +133,26 @@ const detailKey = ["issue", issue.key] as const;
 const listKey = ["issues", "project", issue.project] as const;
 const inboxKey = ["inbox"] as const;
 
-/** Renders the control the way every surface does: with the priority it reads from the cache,
- *  each commit of it recorded with that priority. */
-function CachedControl({ commits }: { commits: Commits<IssuePriority | null> }): ReactNode {
-  const cached = useQuery<IssueDetails>({
+/** The issue as the case seeds it in the cache, which no read replaces. */
+function useCachedIssue(): IssueDetails | undefined {
+  return useQuery<IssueDetails>({
     queryKey: detailKey,
     queryFn: () => Promise.reject(new Error("the test seeds this query")),
     staleTime: Number.POSITIVE_INFINITY,
-  });
-  if (cached.data === undefined) {
+  }).data;
+}
+
+/** Renders the control the way every surface does: with the priority it reads from the cache,
+ *  each commit of it recorded with that priority. */
+function CachedControl({ commits }: { commits: Commits<IssuePriority | null> }): ReactNode {
+  const cached = useCachedIssue();
+  if (cached === undefined) {
     return null;
   }
-  const host = issuePriority(cached.data.priority);
+  const host = issuePriority(cached.priority);
   return (
     <commits.Recorded host={host}>
-      <PriorityControl issueKey={cached.data.key} priority={host} />
+      <PriorityControl issueKey={cached.key} priority={host} />
     </commits.Recorded>
   );
 }
@@ -156,12 +161,7 @@ function CachedControl({ commits }: { commits: Commits<IssuePriority | null> }):
  *  component, and the header's editor draws the write (`IssuePage`, `IssueHeader`), each commit
  *  of it recorded with the priority the page read. */
 function PageControl({ commits }: { commits: Commits<IssuePriority | null> }): ReactNode {
-  const cached = useQuery<IssueDetails>({
-    queryKey: detailKey,
-    queryFn: () => Promise.reject(new Error("the test seeds this query")),
-    staleTime: Number.POSITIVE_INFINITY,
-  });
-  const host = issuePriority(cached.data?.priority);
+  const host = issuePriority(useCachedIssue()?.priority);
   const write = useIssuePriority(issue.key, host);
   return (
     <commits.Recorded host={host}>
