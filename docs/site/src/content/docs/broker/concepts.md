@@ -587,8 +587,9 @@ enrolls nothing.
 Such a pod is its person's own session in the table above. The person's agent-tier secrets are
 granted to it at once, the person's human-tier secrets go to the person for approval, and another
 person's secrets go to their owner. A `requesters` list that names the person admits the pod too.
-No service entry admits it, since its login service is no service the deployment registers, and it
-gets no service's secret.
+Its request for a shared human-tier secret waits in the person's Inbox, as a request of the
+person's box does. No service entry admits it, since its login service is no service the
+deployment registers, and it gets no service's secret.
 
 The pod's login enrolls that pod alone and names no session, so it never takes over a session of
 the person's box. The routes that list and revoke the person's machine logins and grants refuse the
@@ -1074,14 +1075,17 @@ human-tier secret, or for a shared agent-tier secret its session's operator with
 names the approver `anyone`: anyone who signs in to the broker may decide it, and the
 broker records the email of whoever did. It waits in the Inbox of the person responsible for the
 agent that asked, which the broker records when the request is made, in this order: the session's
-operator (the person of an `agent-secrets login` sign-in, or the person who approved its machine
-login); for a fleet machine's own session, the person its `BROKER_VM_EXCHANGE_ACCOUNTS` entry
-names; for a Legion worker pod, the assignee of the Dispatch issue its claim names, which the broker
-reads at `BROKER_JUDGE_DISPATCH_URL` and stops waiting for after three seconds. Where none of these
-names a person — a pod with no claim, a broker with no judge settings, a Dispatch that did not
-answer in time, an issue nobody is assigned to, a machine whose fleet names nobody — it waits in
-every person's Inbox, so no request waits where nobody sees it. A Dispatch read that failed or ran
-out of its three seconds is logged at WARN, naming the issue
+operator (the person of an `agent-secrets login` sign-in, the person who approved its machine
+login, or, for [a person's pod](#a-persons-pod), its person while `BROKER_POD_OPERATORS` still maps
+the pod's account to that person); for a fleet machine's own session, the person its
+`BROKER_VM_EXCHANGE_ACCOUNTS` entry names; for a Legion worker pod, the assignee of the Dispatch
+issue its claim names, which the broker reads at `BROKER_JUDGE_DISPATCH_URL` and stops waiting for
+after three seconds. Where none of these names a person — a pod with no claim that acts for no
+person (a person's pod too, once the setting drops its account or maps it to another person), a
+broker with no judge settings, a Dispatch that did not answer in time, an issue nobody is assigned
+to, a machine whose fleet names nobody — it waits in every person's Inbox, so no request waits
+where nobody sees it. A Dispatch read that failed or ran out of its three seconds is logged at
+WARN, naming the issue
 ([Health and logs](/legion/broker/operate/#health-and-logs)), so a broker that cannot read Dispatch
 is seen to list those requests for everyone. Who is asked changes nobody's right
 to decide: anyone signed in still decides it from its page. That is also why the broker takes the

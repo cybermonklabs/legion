@@ -5,7 +5,8 @@ body: |-
     person. A pod that logs in with a pod-bound token of a mapped account, under that account's own
     `BROKER_SERVICE_LOGINS` service, acts as the person on the terms of the person's dev box: the
     person's own agent-tier secrets with no approval, a human-tier secret after the person approves
-    it, and another person's secret after its owner approves it. The pod enrols itself alone, with
+    it, and another person's secret after its owner approves it. Its request for a shared
+    human-tier secret waits in the person's Inbox. The pod enrols itself alone, with
     no session name. Only the person lists and revokes its login. The four operator routes refuse it
     (`403 PERSON_POD_LOGIN`), and every service route refuses the mapped account
     (`403 PERSON_ACCOUNT`). The pod and the person's box read and cancel each other's requests

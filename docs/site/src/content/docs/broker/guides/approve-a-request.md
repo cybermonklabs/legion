@@ -9,12 +9,13 @@ When an agent asks for a secret a person must approve, that person decides it on
 broker's own page, signed in to the broker. Only the approver the request names can decide it: the
 secret's owner, for a person's secret, or anyone who signs in to the broker, for a shared secret. A
 shared secret's request waits in the Inbox of the person responsible for the agent that asked: the
-person whose session it is (their own `agent-secrets login`, or the machine login they approved),
-the person a fleet machine's `BROKER_VM_EXCHANGE_ACCOUNTS` entry names, or the assignee of the
-Dispatch issue a Legion worker pod works on. Where none of these names a person, it waits in every
-person's Inbox, so no request waits where nobody sees it. Anyone signed in may still decide it from
-its page whether or not their Inbox lists it, and the first person to decide it decides it for
-everyone: it then leaves every Inbox.
+person whose session it is (their own `agent-secrets login`, the machine login they approved, or
+[their pod](/legion/broker/concepts/#a-persons-pod), while the broker's `BROKER_POD_OPERATORS`
+still maps its account to them), the person a fleet machine's `BROKER_VM_EXCHANGE_ACCOUNTS` entry
+names, or the assignee of the Dispatch issue a Legion worker pod works on. Where none of these
+names a person, it waits in every person's Inbox, so no request waits where nobody sees it. Anyone
+signed in may still decide it from its page whether or not their Inbox lists it, and the first
+person to decide it decides it for everyone: it then leaves every Inbox.
 [Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret) explains which
 requests need whom.
 
