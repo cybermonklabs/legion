@@ -124,7 +124,8 @@ replaces it carries.
 A dormant enrollment proves nothing from the moment it goes dormant, as any ended enrollment proves
 nothing, and its next renewal is refused `ENROLLMENT_NOT_LIVE`; what it holds waits for the next
 enrollment of that session name under the same principal, or under a service account paired with
-it ([Requests and grants](#requests-and-grants)), to take.
+it whose pod a login of the same account enrols ([Requests and grants](#requests-and-grants)), to
+take.
 An approval given while the box is gone still mints a grant: the broker hangs it off the row the
 carry is keeping for that session, and the session's next enrollment takes it with the rest
 (`packages/envoy/internal/broker/requests/machine_state.go`, `ApplyDecision`).

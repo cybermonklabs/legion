@@ -638,9 +638,10 @@ type Config struct {
 	// BROKER_SESSION_CARRY_SECONDS: how long what a session holds — its grants and its pending
 	// requests — waits on the enrollment of a box the session has left, for the next enrollment of
 	// that session name under the same principal, or under an account BROKER_SESSION_ACCOUNT_PAIRS
-	// pairs with it, to take it. An enrollment that ends while it holds either is left dormant
-	// instead of having them revoked (enroll.endEnrollment), and the sweep ends it for good once
-	// this long has passed since it went dormant (enroll.Service.EndCarried).
+	// pairs with it whose pod a login of the same account enrols, to take it. An enrollment that
+	// ends while it holds either is left dormant instead of having them revoked
+	// (enroll.endEnrollment), and the sweep ends it for good once this long has passed since it
+	// went dormant (enroll.Service.EndCarried).
 	//
 	// 12 hours is requests.DefaultGrantLifetime, the life the broker already gives a grant whose
 	// request named none, so the default carry never outlives the grant it carries; and it is what

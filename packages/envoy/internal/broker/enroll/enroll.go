@@ -636,10 +636,10 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // an account paired with its own (SessionBinder.PairedWith), still holds: its grants, its pending
 // requests and its withholds move to this row, and a predecessor a box's end left dormant is
 // finished by the move (adopt). That is how a grant follows a session to the next box it comes up
-// on, and to the next pod of a deployment an operator moved to another account, which the same
-// login enrols. It changes none of the identity checks above and nothing in the answer: an
-// enrollment that names no session, one whose caller proved no principal and one with no
-// predecessor each adopt nothing, an idempotent re-enrollment (Existing) adopts nothing, and a
+// on, and to the next pod of a deployment an operator moved to another account, which a login of
+// the same account enrols. It changes none of the identity checks above and nothing in the
+// answer: an enrollment that names no session, one whose caller proved no principal and one with
+// no predecessor each adopt nothing, an idempotent re-enrollment (Existing) adopts nothing, and a
 // pod's token check and the pod-uid ratchet run exactly as they did. Only the rows move.
 //
 // Because a grant follows a name under one principal, the name has to belong to one principal,
@@ -850,9 +850,9 @@ func (s *Service) bindSessionName(ctx context.Context, tx pgx.Tx, in Enrollment)
 // carryPrincipal is the identity an enrollment's grants follow, which the insert writes into
 // enrollments.carry_principal: the half of the pair a grant follows that keeps one session name
 // from reaching another principal's grant (adopt), an account paired with this one under the same
-// launcher (SessionBinder.PairedWith) excepted. It is read from what the caller has already proved
-// and never from anything the launcher states, and every spelling is exchange's own, the broker's
-// one definition of each.
+// login account (SessionBinder.PairedWith, exchange.LaunchedBy) excepted. It is read from what the
+// caller has already proved and never from anything the launcher states, and every spelling is
+// exchange's own, the broker's one definition of each.
 //
 //   - A pod's grants follow the service account its own projected token proved
 //     (exchange.AccountPrincipal, the same account requests.Machine.requester reads a pod's
