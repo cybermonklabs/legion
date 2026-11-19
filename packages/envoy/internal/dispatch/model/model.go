@@ -2910,11 +2910,12 @@ type CommentEventPayload struct {
 	// AskSessions is carried by comment.created alone, on a comment in an ask's thread: the
 	// sessions that own the ask as the comment's write leaves them, read in the comment's own
 	// transaction (api's askSessions). They are the ask's author when a session wrote it, then
-	// each session that follows it (ask_followers) in the order they joined, the comment's own
-	// author among them when a session wrote the comment, each once. Every copy of the event
-	// carries the same list, the outbox's stand-in for an event the bus refused among them (it
-	// keeps this list whole, whatever its size: outbox's standInWholeFields), so a reader that
-	// knows its own session tells from this list whether the reply is on that session's own ask.
+	// each other session that follows it (ask_followers), ordered by its follow time (since) and
+	// then session id, then the comment's own author when a session wrote the comment and neither
+	// of those names it, each once. Every copy of the event carries the same list, the outbox's
+	// stand-in for an event the bus refused among them (it keeps this list whole, whatever its
+	// size: outbox's standInWholeFields), so a reader that knows its own session tells from this
+	// list whether the reply is on that session's own ask, as the comment's write left the owners.
 	// [] when no session owns the ask (a person wrote it and no session follows it). Absent on
 	// every other comment event, on a comment outside an ask's thread, and on an event a server
 	// older than the field wrote.

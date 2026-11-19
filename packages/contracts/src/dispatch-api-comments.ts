@@ -134,11 +134,12 @@ export const commentEventPayloadFields = {
    *  Absent when the comment does not reply to an open ask. */
   ask_waiting_on: z.enum(ASK_TURNS).optional(),
   /** The sessions that own the ask this comment replies in, read when the comment was written:
-   *  the ask's author when a session wrote it, then each session that follows it, in the order
-   *  they joined, each once. Every copy of the event carries the same list, so a reader that
-   *  knows its own session tells from it whether the reply is on that session's own ask. `[]`
-   *  when no session owns the ask. Carried by `comment.created` alone; absent on a comment
-   *  outside an ask's thread and from a Dispatch older than the field. */
+   *  the ask's author when a session wrote it, then each session that follows it, ordered by its
+   *  follow time and then session id, then the replying session when neither of those names it,
+   *  each once. Every copy of the event carries the same list, so a reader that knows its own
+   *  session tells from it whether the reply is on that session's own ask. `[]` when no session
+   *  owns the ask. Carried by `comment.created` alone; absent on a comment outside an ask's thread
+   *  and from a Dispatch older than the field. */
   ask_sessions: z.array(z.string()).optional(),
   ...referenceChangesFields,
   ...threadLoginsFields,

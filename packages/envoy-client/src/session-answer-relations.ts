@@ -4,7 +4,10 @@ import type { SessionAnswerRelation } from "@legion/contracts";
  * What an item of Dispatch's answers read (`GET /api/v1/agents/{session_id}/answers`) is to the
  * session, in words. The answers list (`renderSessionAnswerItem`) prints them, and the live card
  * of a reply in an ask's thread (`renderInbound`) names its reader's relation to the reply in the
- * same words, so the two cannot tell one session the same reply two ways.
+ * same words, so the two agree for each session the comment named as the ask's owner. They can
+ * differ for a session that follows the ask after the comment was written: the card reads the
+ * comment's `ask_sessions`, the owners as its write left them, and the answers read decides who
+ * owns the ask when it is read.
  */
 const RELATION_PHRASES: Readonly<Record<SessionAnswerRelation, string>> = {
   answered_your_ask: "answered your ask",
