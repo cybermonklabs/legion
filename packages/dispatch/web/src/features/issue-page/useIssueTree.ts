@@ -127,15 +127,16 @@ export const issueAsksQuery = (key: string) =>
  * document's upload or new version; `["issue", key, "results"]` on those too, on a result
  * recorded or retracted and on a pull request moved to another issue; `["artifact", id]`, a
  * prefix of the document's blocks read (`["artifact", id, "blocks"]`), on its new version, its
- * rename, removal or review, and an ask or comment in it; and the names reads
- * (`["reference-targets", …]`, by that prefix) on a comment's edit, an ask's edit and a
- * document's new version (`referenceNameTargets`). A names read's key is the set
- * of addresses it names, so a tree that comes to hold another set reads again under a key of its
- * own, and those three events are what change a target's words under an address the tree
- * already names: a cited comment edited, a cited ask's question edited, a block of a document's
- * new version. No rule there names `["whoami"]`: the reader's login does not change while the
- * page is open. A gap in the feed refreshes every read the app holds (`refreshQueries`), these
- * among them, and window focus fetches again only a read in error (`refetchFailedOnFocus`).
+ * rename, removal or review, and an ask or comment in it; and a names read
+ * (`["reference-targets", …]`) on an event that changes the words or the name under an address
+ * its key holds, on the issue or project document that address is of: a comment's edit, an
+ * ask's edit, a document's new version, rename or removal, and an issue's write that changes its
+ * title (`referenceNameTargets`). A names read's key is the set of addresses it names, so a tree
+ * that comes to hold another set reads again under a key of its own, and only a change under an
+ * address the tree already names needs a rule. No rule there names `["whoami"]`: the reader's
+ * login does not change while the page is open. A gap in the feed refreshes every read the app
+ * holds (`refreshQueries`), these among them, and window focus fetches again only a read in
+ * error (`refetchFailedOnFocus`).
  */
 const EVENT_FRESH = {
   refetchOnWindowFocus: refetchFailedOnFocus,

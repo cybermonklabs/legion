@@ -1451,21 +1451,112 @@ function askThreadsOn(issue: string): RefreshTarget {
 }
 
 /**
- * Every names read the app holds (`referenceTargetsQuery`, `["reference-targets", <sorted
- * addresses>]`, by that prefix) on an event that changes the words under an address a names read
- * can already name, and none on any other: a comment's edit (its body), an ask's edit (its
- * question) and a document's new version (its blocks' words), on whichever issue or project
- * document it is, since a page's words can cite another issue's target. The issue page's
- * names reads are kept fresh by events (`useIssueTree`'s `EVENT_FRESH`), never by their age,
- * and a names read's key is the set of addresses it names, so a page that comes to hold
- * another set reads again under a key of its own: only a change of words under the same
- * address needs a rule.
+ * Whether `address` is `owner` or an address under it: `owner`, then the end of the address or
+ * one of `next`, the characters that may stand after an owner of that kind in an address
+ * (`buildDispatchReference`), so that `dispatch://CORE-1` is never read as the start of
+ * `dispatch://CORE-12`.
+ */
+function addressUnder(address: string, owner: string, next: string): boolean {
+  return (
+    address.startsWith(owner) &&
+    (address.length === owner.length || next.includes(address.charAt(owner.length)))
+  );
+}
+
+/** The slug of the project document `event` is on, where its payload carries it: a renamed or
+ *  removed document's own, and an edited comment's document's (`artifact_slug`, absent from a
+ *  comment event written before the field). A new version and an ask's edit carry none. */
+function projectDocumentSlug(event: DispatchEvent): string | undefined {
+  switch (event.type) {
+    case "artifact.removed":
+    case "artifact.renamed":
+      return event.payload.artifact.slug;
+    case "comment.edited":
+      return event.payload.artifact_slug;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Which addresses `event` can change the words or the name under, or undefined for an event on
+ * neither an issue nor a project document. An issue's event is on the issue or on something it
+ * owns - a comment, an ask, a message, a document and its blocks - each written under
+ * `dispatch://<KEY>`, with `/` or `#` next. A project document's event is on the document or on
+ * an ask, a comment or a block of it, each written under `dispatch://<PROJECT>/artifact/<slug>`,
+ * with `@`, `/` or `#` next. A rename, a removal and a comment's edit carry that slug
+ * (`projectDocumentSlug`); a new version and an ask's edit name the document by its id alone,
+ * which no address is written with, so theirs are the addresses of every document of the
+ * project.
+ */
+function eventAddresses(event: DispatchEvent): ((address: string) => boolean) | undefined {
+  if (event.issue_key !== null) {
+    const issue = buildDispatchReference({ key: event.issue_key, kind: "issue" });
+    return (address) => addressUnder(address, issue, "/#");
+  }
+  const project = event.project;
+  if (event.artifact_id === null || event.artifact_id === undefined || project === undefined) {
+    return undefined;
+  }
+  const slug = projectDocumentSlug(event);
+  if (slug === undefined) {
+    const documents = `dispatch://${project}/artifact/`;
+    return (address) => address.startsWith(documents);
+  }
+  const document = buildDispatchReference({ kind: "document", project, slug });
+  return (address) => addressUnder(address, document, "@/#");
+}
+
+/**
+ * Every names read whose key (`["reference-targets", <sorted addresses>]`) holds an address
+ * `event` can change the words under (`eventAddresses`), or one written in a form other than
+ * `dispatch://` and its owner, which could name anything and so is refreshed for rather than
+ * missed. An event on neither an issue nor a project document refreshes every names read.
+ */
+function namesReadsNaming(event: DispatchEvent): RefreshTarget {
+  const touched = eventAddresses(event);
+  if (touched === undefined) {
+    return { queryKey: ["reference-targets"] };
+  }
+  return {
+    queryKey: ["reference-targets"],
+    when: (_data, query) => {
+      const addresses: unknown = query.queryKey[1];
+      return (
+        Array.isArray(addresses) &&
+        addresses.some(
+          (address: unknown) =>
+            typeof address === "string" && (!address.startsWith("dispatch://") || touched(address))
+        )
+      );
+    },
+  };
+}
+
+/**
+ * Which names reads (`referenceTargetsQuery`, `["reference-targets", <sorted addresses>]`) an
+ * event refreshes: those whose key holds an address it changes the words under, on a comment's
+ * edit (its body), an ask's edit (its question) and a document's new version (its blocks' words),
+ * and none on any other event. The issue page's names reads are kept fresh by events
+ * (`useIssueTree`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
+ * addresses it names, so a page that comes to hold another set reads again under a key of its
+ * own: only a change of words under the same address needs a rule.
  * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
- * naming none, as an older server sends it) renames every address to that issue, since a names
- * read names an issue by its title, so it refreshes them too.
+ * naming none, as an older server sends it) renames the issue's address, since a names read
+ * names an issue by its title, so it refreshes them too.
  * A document's rename (`artifact.renamed`) moves the name the read answers for an address to the
  * document, and its removal (`artifact.removed`) makes every address to it and to its blocks
  * name nothing (`gone`), so each refreshes them too.
+ *
+ * Of the names reads the app holds, each event refreshes those whose key holds an address of the
+ * issue or the project document it is on (`namesReadsNaming`). The test reads the query's key,
+ * not the page's issue, since a page's words can cite another issue's target. Every address the
+ * issue page names a read by is written `dispatch://` and its owner (`treeReferences`): a node's
+ * own, a chip's, each one its words cite, a bare key asked as its issue's own address, and an
+ * item id or a block id written short still under its owner, so the key alone ties each address
+ * to what owns it. An event of these kinds on neither an issue nor a project document never
+ * reaches this rule: `documentTargets` refuses it first, and the feed then refreshes every read
+ * the app holds.
  *
  * A person's edit of a document (`artifact.human_edited`) is none of them: it is the notice sent
  * once the document has been quiet after those edits, each of which wrote a version that sent
@@ -1474,12 +1565,17 @@ function askThreadsOn(issue: string): RefreshTarget {
  * `message.delivery`, `message.accepted` and `message.answered`), so a message's body never
  * changes under its address.
  *
- * It costs one read per names query the app holds and renders (one request per batch of its
+ * The feed is the workspace's (`api/event-feed.ts`): these events arrive for every issue and
+ * project document of the workspace, a document's new version above all, and one that no names
+ * read the app holds names costs nothing. One that a read's key names - an event of the open
+ * issue itself, whose tree holds its addresses, or of an issue or a project document its words
+ * cite - costs one read per such query the app holds and renders (one request per batch of its
  * addresses, which no ordinary issue passes), at most two for an open issue page - the tree's
  * own and the one naming what a typed block's words cite (`useIssueTree`) - and marks stale one
- * the app holds and renders not. It refreshes through the same `refreshQueries` every other
- * rule does, so a read already out, or begun under a second ago, is fetched again once those
- * rules allow.
+ * the app holds and renders not. A project document's new version or ask's edit reaches a read
+ * naming any document of its project, since neither carries the slug its addresses are written
+ * with (`eventAddresses`). It refreshes through the same `refreshQueries` every other rule does,
+ * so a read already out, or begun under a second ago, is fetched again once those rules allow.
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {
@@ -1488,12 +1584,10 @@ function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
     case "artifact.version":
     case "ask.edited":
     case "comment.edited":
-      return [{ queryKey: ["reference-targets"] }];
+      return [namesReadsNaming(event)];
     case "issue.updated": {
       const changes = issueChanges(event);
-      return changes === undefined || changes.has("title")
-        ? [{ queryKey: ["reference-targets"] }]
-        : [];
+      return changes === undefined || changes.has("title") ? [namesReadsNaming(event)] : [];
     }
     default:
       return [];
