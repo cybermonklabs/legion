@@ -178,11 +178,11 @@ type Pool struct {
 }
 
 // NewPool wraps an open pgx pool. The daemon's own pool is opened by Open; a test that builds a
-// pool of its own wraps it here, so what it exercises is the pool the daemon runs on. The argument
-// rule (storableArgs) runs on any pool it wraps, but the codec rule, which is what makes a string
-// storable, runs only on a pool built from PoolConfig (testpg.ClonePool's is): a pool built
-// without it sends a NUL, an invalid byte or a \u0000 escape to the server as pgx's own codecs
-// write it, and the server refuses the write.
+// pool of its own wraps it here, so that it exercises what this type adds to any pool it wraps:
+// the guard (ErrNestedAcquire) and the argument rule (storableArgs). The codec rule, which is what
+// makes a string storable, belongs to the pgx pool instead: it runs only on a pool built from
+// PoolConfig (testpg.ClonePool's is), and a pool built without it sends a NUL, an invalid byte or a
+// \u0000 escape to the server as pgx's own codecs write it, and the server refuses the write.
 func NewPool(pool *pgxpool.Pool) *Pool {
 	return &Pool{pool: pool}
 }
@@ -343,14 +343,18 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 
 // begin is the body both transaction entry points share once their guard has passed. The
 // transaction it gives is always the store's own (storeTx), so every statement of it passes the
-// argument rule. It carries the release of the caller's hold mark, and none for a context the pool
-// cannot see, which has no mark to clear.
+// argument rule. It carries the release of the caller's hold mark, which does nothing for a
+// context the pool cannot see, as acquire's does.
 func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	tx, err := p.pool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
 	}
-	return &storeTx{Tx: tx, release: hold(ctx)}, nil
+	release := hold(ctx)
+	if release == nil {
+		release = func() {}
+	}
+	return &storeTx{Tx: tx, release: release}, nil
 }
 
 // storeTx is every transaction the pool hands out, and every savepoint opened inside one. Its
@@ -361,10 +365,10 @@ func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 // statement run on it reaches the codecs but not the argument rule, and no code of the daemon
 // calls it.
 //
-// release clears the caller's hold mark however the transaction ends, and is nil for a
-// transaction on a context the pool cannot see and for a savepoint, which ends inside the
-// transaction that holds the connection. Callers commit and then run a deferred rollback; the
-// release absorbs that second call (hold).
+// release clears the caller's hold mark however the transaction ends. It is never nil: it does
+// nothing for a transaction on a context the pool cannot see and for a savepoint, which ends
+// inside the transaction that holds the connection. Callers commit and then run a deferred
+// rollback; the release absorbs that second call (hold).
 type storeTx struct {
 	pgx.Tx
 	release func()
@@ -375,20 +379,16 @@ func (t *storeTx) Begin(ctx context.Context) (pgx.Tx, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &storeTx{Tx: savepoint}, nil
+	return &storeTx{Tx: savepoint, release: func() {}}, nil
 }
 
 func (t *storeTx) Commit(ctx context.Context) error {
-	if t.release != nil {
-		defer t.release()
-	}
+	defer t.release()
 	return t.Tx.Commit(ctx)
 }
 
 func (t *storeTx) Rollback(ctx context.Context) error {
-	if t.release != nil {
-		defer t.release()
-	}
+	defer t.release()
 	return t.Tx.Rollback(ctx)
 }
 

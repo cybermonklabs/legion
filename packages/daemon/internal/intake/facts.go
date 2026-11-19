@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1638,19 +1637,16 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 	if err != nil {
 		return nil, fmt.Errorf("read which %s facts are applied: %w", source, err)
 	}
+	found := make(map[string]bool, len(ids))
 	for _, id := range ids {
-		applied[id] = true
+		found[id] = true
 	}
-	if slices.Equal(stored, eventIDs) {
-		return applied, nil
-	}
-	answered := make(map[string]bool, len(eventIDs))
 	for i, id := range eventIDs {
-		if applied[stored[i]] {
-			answered[id] = true
+		if found[stored[i]] {
+			applied[id] = true
 		}
 	}
-	return answered, nil
+	return applied, nil
 }
 
 // settleObserved is the fact ApplyFact applies in fact's place, under the fact lock, and whether it

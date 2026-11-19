@@ -21,7 +21,9 @@ import (
 // refusals, and the daemon's own image probe Sandbox, under the credentials runtime.kubernetes
 // names (in a pod, the pod's ServiceAccount). It prints one OK line on a pass and exits 0, or the
 // refusal and exits 1. A configuration change to the worker pod is proven with it before the
-// daemon restarts on it.
+// daemon restarts on it. A refusal passes the URL rule (redact.URLCredentials) on its way to
+// stderr, as every error `legion start` writes there does: a cluster read that never reaches the
+// API server fails with a *url.Error, which keeps the server URL's query and user name.
 func newProbeBootCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "probe-boot",
@@ -36,13 +38,13 @@ func newProbeBootCommand(stdout, stderr io.Writer) *cobra.Command {
 func runProbeBoot(ctx context.Context, configPath string, stdout, stderr io.Writer) int {
 	cfg, err := config.LoadForValidation(configPath, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion probe-boot: %v\n", err)
+		fmt.Fprintf(stderr, "legion probe-boot: %s\n", redact.URLCredentials(err.Error()))
 		return 1
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, redact.HandlerOptions(nil)))
 	report, err := daemon.ProbeBoot(ctx, cfg, os.LookupEnv, log)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion probe-boot: %v\n", err)
+		fmt.Fprintf(stderr, "legion probe-boot: %s\n", redact.URLCredentials(err.Error()))
 		return 1
 	}
 	fmt.Fprintf(stdout, "probe-boot: OK project=%s image=%s model-fallback=%s capacity-waits=%d\n",

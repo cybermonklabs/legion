@@ -2,7 +2,7 @@ kind: Fixed
 body: |-
     A NUL character or a byte that is not UTF-8 in any text the daemon stores no longer makes PostgreSQL refuse the write: the store replaces each NUL and each run of invalid bytes with U+FFFD, and in `jsonb` each `\u0000` escape and each lone surrogate escape, so a GitHub or Dispatch event, a worker's frame and a `handoff_complete` or deliver call holding one apply instead of answering 500 or being delivered again with no end.
     A far side's error text is stored cut to 2048 runes, with its whole text in the log, and no URL query or userinfo from an error text reaches a claim, the state, the store, an API answer or a log line.
-    The daemon now refuses to start on a `postgres_dsn` whose `default_query_exec_mode` is `exec` or `simple_protocol`, because the store's rule needs the parameter types those modes do not read.
+    The daemon now refuses to start on a `postgres_dsn` whose `default_query_exec_mode` is `exec` or `simple_protocol`, because the store's rule needs the parameter types those modes do not read, and `legion config check` makes the same refusal.
 time: 2026-11-19T03:46:35Z
 custom:
     Issue: pr4463

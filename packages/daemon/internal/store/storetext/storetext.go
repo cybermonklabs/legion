@@ -44,7 +44,6 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"maps"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -89,12 +88,12 @@ func TextBytes(b []byte) []byte {
 // can be JSON structure, so this changes strings only. Then, only when the text holds a \u0000
 // escape or a surrogate escape that is not half of a pair (a high one, \ud800 to \udbff, followed
 // at once by a low one, \udc00 to \udfff), the value is decoded (json.Decoder with UseNumber),
-// Text applies to every string and key (where Go's decoder made the escape a NUL or a lone
-// surrogate U+FFFD), and it is encoded again (SetEscapeHTML(false), no trailing newline). For
-// jsonb the result is the same value: jsonb keeps no white space and no key order, a duplicate key
-// keeps its last value in both Go and jsonb, and json.Number keeps each number's text (1e400,
-// 0.10). Two keys that the rule makes one (a\u0000 and a\ufffd) keep the value of the greater
-// original key, so the result does not depend on a map's order.
+// Text applies to every string and key at any depth (storableValue), where Go's decoder made the
+// escape a NUL or a lone surrogate U+FFFD, and it is encoded again (SetEscapeHTML(false), no
+// trailing newline). For jsonb the result is the same value: jsonb keeps no white space and no key
+// order, a duplicate key keeps its last value in both Go and jsonb, and json.Number keeps each
+// number's text (1e400, 0.10). Two keys that the rule makes one (a\u0000 and a\ufffd) keep the
+// value of the greater original key, so the result does not depend on a map's order.
 //
 // A text that does not decode, or holds more than one value, is returned after the byte rule, and
 // PostgreSQL refuses it as before: invalid JSON is a defect of the daemon, not outside text. JSON
@@ -123,7 +122,12 @@ func JSON(b []byte) []byte {
 }
 
 // storableValue is v, a value json.Decoder decoded with UseNumber, with Text applied to every
-// string and key.
+// string and key; of two keys the rule makes one, the entry of the greater original key is kept
+// (originalKeys). It is a walk of its own rather than Strings because Strings stops at maxDepth,
+// and a decoded value costs it two levels for each array or object (the container and the
+// interface that holds it): a string nested deeper would be left as Go decoded it, its NUL encoded
+// as \u0000 again, and the server would refuse the whole value. A decoded value holds no pointer,
+// so no cycle, and Go's decoder bounds its nesting itself, so this walk needs no bound.
 func storableValue(v any) any {
 	switch v := v.(type) {
 	case string:
@@ -135,12 +139,31 @@ func storableValue(v any) any {
 		return v
 	case map[string]any:
 		out := make(map[string]any, len(v))
-		for _, k := range slices.Sorted(maps.Keys(v)) {
-			out[Text(k)] = storableValue(v[k])
+		originals := make(originalKeys, len(v))
+		for k, e := range v {
+			if key := Text(k); originals.keeps(key, k) {
+				out[key] = storableValue(e)
+			}
 		}
 		return out
 	}
 	return v
+}
+
+// originalKeys is the one rule that decides a key collision, for both walks that apply Text to a
+// map's keys (storableValue and Strings): of two or more keys that the rule makes one, the entry
+// of the greatest original key is kept, so the result does not depend on a map's order. It maps
+// each key as the rule makes it to the original key of the entry kept under it so far.
+type originalKeys map[string]string
+
+// keeps reports whether the entry of original key original, whose key the rule makes key, is kept
+// over every entry put under key so far, and records it as the one kept when it is.
+func (o originalKeys) keeps(key, original string) bool {
+	if kept, found := o[key]; found && kept > original {
+		return false
+	}
+	o[key] = original
+	return true
 }
 
 // Changes reports whether the rule changes s where it is stored, in a text or a jsonb column:

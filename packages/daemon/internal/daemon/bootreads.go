@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // bootReads is what boot reads from the configuration, the daemon's environment and the files they
@@ -255,12 +256,19 @@ func checkRoleConfigFiles(cfg config.Config) error {
 
 // CheckStart is `legion config check`'s reading of what boot reads before it writes
 // anything (readBoot), over the daemon's environment (lookup, and the process's for the OMP
-// invocation): nil when boot would get past every such refusal, and the public keys of the pane
-// seed's user and the daemon seed's user, each "" when the daemon has no such seed, never a seed.
+// invocation), then of postgres_dsn as the store reads it before it opens a connection
+// (store.PoolConfig, which parses the DSN and opens nothing): nil when boot would get past every
+// such refusal, and the public keys of the pane seed's user and the daemon seed's user, each ""
+// when the daemon has no such seed, never a seed. The store's refusal comes in the words
+// `legion start` prints for it (store.ConnectError, as store.Open wraps it): the DSN's address
+// and the refusal, never the DSN's password.
 func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser string, err error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {
 		return "", "", err
+	}
+	if _, err := store.PoolConfig(cfg.PostgresDSN); err != nil {
+		return "", "", store.ConnectError(cfg.PostgresDSN, err)
 	}
 	if r.nats.source == natsSeedDaemon {
 		daemonNatsUser = r.nats.user

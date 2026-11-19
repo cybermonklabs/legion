@@ -142,11 +142,11 @@ func cleaned(v reflect.Value, depth int) reflect.Value {
 		return out
 	case reflect.Map:
 		out := reflect.MakeMapWithSize(t, v.Len())
-		// originals is, for a map whose keys are strings, the key each entry of out had in v, by
-		// the key it has in out.
-		var originals map[string]string
+		// originals decides, for a map whose keys are strings, which entry keeps a key that the
+		// rule makes of two or more (originalKeys, the rule JSON's walk follows too).
+		var originals originalKeys
 		if t.Key().Kind() == reflect.String {
-			originals = make(map[string]string, v.Len())
+			originals = make(originalKeys, v.Len())
 		}
 		var entries reflect.MapIter
 		entries.Reset(v)
@@ -156,11 +156,8 @@ func cleaned(v reflect.Value, depth int) reflect.Value {
 			if holdsChange(key, depth+1) {
 				key = cleaned(key, depth+1)
 			}
-			if originals != nil {
-				if kept, found := originals[key.String()]; found && kept > original.String() {
-					continue
-				}
-				originals[key.String()] = original.String()
+			if originals != nil && !originals.keeps(key.String(), original.String()) {
+				continue
 			}
 			if holdsChange(elem, depth+1) {
 				elem = cleaned(elem, depth+1)

@@ -116,6 +116,31 @@ func TestJSONReturnsItsArgumentWhenNothingChanges(t *testing.T) {
 	}
 }
 
+// JSON applies the rule at any depth of a value: a \u0000 escape and a lone surrogate escape
+// nested forty containers deep, in arrays and objects in turn, become U+FFFD as they do at the
+// top. This is what keeps JSON's own walk (storableValue) rather than Strings: Strings stops at
+// maxDepth, and a decoded value costs it two levels for each container (the container and the
+// interface that holds it), so it would leave these strings as Go decoded them, the NUL encoded
+// as \u0000 again, and the server would refuse the whole value.
+func TestJSONMakesEveryStringStorableAtAnyDepth(t *testing.T) {
+	const containers = 40
+	text, want := `{"k\u0000":"a\u0000b\udc00"}`, "{\"k\uFFFD\":\"a\uFFFDb\uFFFD\"}"
+	for i := 1; i < containers; i++ {
+		if i%2 == 1 {
+			text, want = "["+text+"]", "["+want+"]"
+		} else {
+			text, want = `{"o":`+text+"}", `{"o":`+want+"}"
+		}
+	}
+	got := JSON([]byte(text))
+	if string(got) != want {
+		t.Fatalf("JSON of a value %d containers deep = %q, want %q", containers, got, want)
+	}
+	if !json.Valid(got) || bytes.IndexByte(got, 0) >= 0 || refusedEscape(got) {
+		t.Fatalf("JSON of a value %d containers deep = %q, want valid JSON with no NUL and no refused escape", containers, got)
+	}
+}
+
 func TestChangesReportsWhetherTheRuleChangesAText(t *testing.T) {
 	for _, tc := range []struct {
 		name, text string
