@@ -269,10 +269,10 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 
 // Every kind the lanes run is decided here as held by a project's pause or not (decision 9 of
 // dispatch://INFRA-3759), and the decision is the one list the outbox's claim reads (pauseHolds):
-// a kind added to a lane fails this test until somebody writes it below, held or not. "every row"
-// is a kind the pause holds whole, "op start" the supervise kind, whose start alone launches a
-// role, and "" a kind that runs through the pause: a stop, a write to Dispatch, a controller's
-// notice.
+// a kind added to a lane, a new lane's among them (OutboxLanes), fails this test until somebody
+// writes it below, held or not. "every row" is a kind the pause holds whole, "op start" the
+// supervise kind, whose start alone launches a role, and "" a kind that runs through the pause: a
+// stop, a write to Dispatch, a controller's notice.
 func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 	decided := map[OutboxKind]string{
 		OutboxKindSupervise:          "op start",
@@ -302,8 +302,12 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// The role-holders publication writes Dispatch the sessions that hold an issue's roles and
 		// starts no turn, and a pause's stops change those holders, which Dispatch should show.
 		OutboxKindRoleHoldersPublish: "",
+		// A step record writes Dispatch one start or one end of a step of an issue
+		// (cybermonklabs/legion#4400) and starts no turn, so the pause lets it run as it does a
+		// status write.
+		OutboxKindStepRecord: "",
 	}
-	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim} {
+	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
 			if _, ok := decided[kind]; !ok {
 				t.Errorf("%s runs on the %s lane and nobody decided whether a project's pause holds it: add it to pauseHolds or to this test as not held", kind, lane)
