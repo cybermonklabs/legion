@@ -207,7 +207,7 @@ func (f *loopSeedCheckFlags) register(fs *flag.FlagSet) {
 
 // resolve reads the credential file and judges every value, before the first connection.
 func (f *loopSeedCheckFlags) resolve() error {
-	if err := readCredentials(credentialFile{"-pg", "-pg-file", f.pgFile, &f.pg, &f.pgGiven}); err != nil {
+	if err := readCredentials(credentialFile{"-pg", "-pg-file", f.pgFile, &f.pg}); err != nil {
 		return err
 	}
 	if f.plan == "" || f.pg == "" {

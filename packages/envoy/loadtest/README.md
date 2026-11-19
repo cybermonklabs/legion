@@ -2640,14 +2640,18 @@ is given. The guard stops a mistaken target before the first write:
    `seed-finish`'s `-pg-file` and `-token-file`, and `stub-embed`'s `-key-file`. `-token`,
    `-listener-token` and `stub-embed`'s `-key` are removed: given a value, empty or not, each is
    refused right after the flags are parsed, before the command checks, reads or opens anything
-   else, naming its file form, and the refusal holds nothing of the value (given none, the flag
-   package refuses it as it refuses any flag that needs a value). `-pg` still takes a URL that
-   sets no password, as the local stack's own does. Every `-pg` the command line gives is judged,
-   not the last alone, and as text, before anything reads a file it names: one that sets a
-   password where pgx reads one (a `postgres://` URL's userinfo, which pgx ends at the first `@`
-   before any `/`, or a `password` or `sslpassword` key of a keyword list or of a URL's query,
-   percent-encoded or not) is refused the same way, naming `-pg-file`. The other URL flags are
-   not judged: no caller puts a user or a password in one, so a check of them guards against
+   else, naming its file form, and the refusal holds nothing of the value. So is one given after
+   a positional argument or `--`, where the flag package stops reading flags. A `-h`, or a parse
+   error beside one (an unknown flag, a bad number, one of these flags given no value at all),
+   ends the command as the flag package ends it, with exit 0 after the usage or exit 2, and
+   prints nothing of the value either: these flags never fail their own parse, and the usage
+   shows none of their values. `-pg` still takes a URL that sets no password, as the local
+   stack's own does. Every `-pg` the command line gives is judged, not the last alone, and after
+   a positional argument or `--` too, and as text, before anything reads a file it names: one
+   that sets a password where pgx reads one (a `postgres://` URL's userinfo, which pgx ends at the
+   first `@` before any `/`, or a `password` or `sslpassword` key of a keyword list or of a URL's
+   query, percent-encoded or not) is refused the same way, naming `-pg-file`. The other URL flags
+   are not judged: no caller puts a user or a password in one, so a check of them guards against
    nothing anyone has seen. One reader serves every credential (`readCredentials`), so
    each reads the same way: the file's content, with its trailing white space trimmed, is the
    value, so a file written with a final newline carries the credential itself. The file form
@@ -2884,10 +2888,13 @@ refused or reset connection to the API server) is retried once, 5 s later, with 
 so. A write (`drop database`, a `kubectl cp`, a start in the runner) is never retried.
 
 No credential of the copy is an argument of anything, on this pod or in the runner, where every
-argument of every process is readable by every user of the machine (`/proc/<pid>/cmdline`). Each
-`loadgen` job that reads the Dispatch agent token, the listener token or the Postgres URL with its
-password — `seed`, `seed-refs` and `seed-finish`, a step's and a replay's `loadgen run`, and
-`replay-checksum` — gets them on the standard input of the `kubectl exec` that starts it. The
+argument of every process is readable by every user of the machine (`/proc/<pid>/cmdline`). `up`
+makes the copy's four secrets (the Postgres password, the two tokens, the signing key) and gives
+each to the `jq` that writes `state.json` as a file it reads (`--rawfile` from a pipe), never as
+a value; each manifest takes them through `sed`'s standard input. Each `loadgen` job that reads
+the Dispatch agent token, the listener token or the Postgres URL with its password — `seed`,
+`seed-refs` and `seed-finish`, a step's and a replay's `loadgen run`, and `replay-checksum` —
+gets them on the standard input of the `kubectl exec` that starts it. The
 runner's `sh` writes them into `/work/secrets/<job>.<random>`, a directory of mode 700 that one
 start alone claims (its `mkdir` fails on one that is there, and then nothing is written, removed
 or started), each in a file of mode 600, and `loadgen` is given `-token-file`,

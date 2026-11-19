@@ -320,6 +320,13 @@ func TestACredentialOnTheCommandLineIsRefused(t *testing.T) {
 		{"seed-finish", runSeedFinish, []string{"-pg", "postgres://postgres@127.0.0.1:1/dispatch", "-url", "http://127.0.0.1:1", "-token", secret}, "-token", "-token-file"},
 		{"stub-embed", stubEmbed, []string{"-key", secret}, "-key", "-key-file"},
 		{"stub-embed", stubEmbed, []string{"-key=" + secret, "-listen", ""}, "-key", "-key-file"},
+		// The flag package stops at the first argument that is not a flag, and at "--": a removed
+		// flag after either is refused all the same (parseArgs), naming its file form, and the
+		// command does not go on to refuse the stray argument or to read a file instead.
+		{"run", runLoad, run("-token-file", tokenFile, "-listener-token-file", listenerFile, "stray", "-token", secret), "-token", "-token-file"},
+		{"replay-checksum", runReplayChecksum, []string{"--", "--listener-token=" + secret}, "-listener-token", "-listener-token-file"},
+		{"replay-check-seed", runReplayCheckSeed, []string{"stray", "-token"}, "-token", "-token-file"},
+		{"stub-embed", stubEmbed, []string{"-key-file", filepath.Join(t.TempDir(), "absent"), "--", "-key", secret}, "-key", "-key-file"},
 	} {
 		err := c.run(c.args)
 		var removed *removedFlagError
@@ -399,6 +406,23 @@ func TestACommandLineSecretIsRefusedBeforeAnyOtherInput(t *testing.T) {
 	}
 }
 
+// TestAStrayArgumentIsRefused: the replay commands take no positional argument, and each refuses
+// one right after the parse, before it reads its bundle or connects, as every other command of
+// this package does. A credential flag after the stray argument is refused first, naming its file
+// form (TestACredentialOnTheCommandLineIsRefused).
+func TestAStrayArgumentIsRefused(t *testing.T) {
+	isolatePG(t)
+	for command, run := range map[string]func([]string) error{
+		"replay-check-seed":   runReplayCheckSeed,
+		"replay-checksum":     runReplayChecksum,
+		"replay-logical-dump": runReplayLogicalDump,
+	} {
+		if err := run([]string{"stray"}); err == nil || err.Error() != `unexpected argument "stray"` {
+			t.Errorf("loadgen %s stray: error %v, want the stray argument refused", command, err)
+		}
+	}
+}
+
 // TestTheTokenFilesAreRead: what a command reads in place of a token flag is the file its
 // -…-file form names, trailing white space trimmed, given on the command line as a caller gives it.
 func TestTheTokenFilesAreRead(t *testing.T) {
@@ -407,7 +431,7 @@ func TestTheTokenFilesAreRead(t *testing.T) {
 	fs.SetOutput(io.Discard)
 	var ef endpointFlags
 	ef.register(fs)
-	err := fs.Parse([]string{
+	err := parseArgs(fs, []string{
 		"-allow-foreign", "-url", "http://dispatch.example:8080", "-listener", "http://listener.example:9120",
 		"-nats", "nats://nats.example:4222", "-nats-mon", "http://nats.example:8222", "-pprof", "http://dispatch.example:6061",
 		"-pg", "postgres://postgres@db.example:5432/dispatch",
@@ -453,6 +477,10 @@ func TestAPostgresPasswordOnTheCommandLineIsRefused(t *testing.T) {
 		// tab or a space.
 		pgOnce("host=db.example user=postgres password\v=" + frag + "9"),
 		pgOnce("host=db.example user=postgres sslpassword\v=" + frag + "10"),
+		// After a positional argument, or "--", where the flag package stops, a -pg is judged all
+		// the same (parseArgs).
+		{"stray", "-pg", "postgres://postgres:" + frag + "11@db.example/dispatch"},
+		{"--", "--pg=host=db.example password=" + frag + "12"},
 	}
 	withoutPassword := []string{
 		"postgres://postgres@127.0.0.1:15432/dispatch?sslmode=disable",
@@ -476,8 +504,8 @@ func TestAPostgresPasswordOnTheCommandLineIsRefused(t *testing.T) {
 				"-allow-foreign", "-url", "http://dispatch.example:8080", "-listener", "http://listener.example:9120",
 				"-nats", "nats://nats.example:4222", "-nats-mon", "http://nats.example:8222", "-pprof", "http://dispatch.example:6061",
 			}, tokenFiles...)
-			if err := fs.Parse(append(args, pg...)); err != nil {
-				t.Fatal(err)
+			if err := parseArgs(fs, append(args, pg...)); err != nil {
+				return err
 			}
 			_, err := resolveEndpoints(ef, nil)
 			return err

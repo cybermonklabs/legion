@@ -246,6 +246,23 @@ c=${cmd[*]:-}
 # DIR-MODE CONTENT", appended to LOG -- what the job would read, and how the runner kept it.
 # shellcheck disable=SC2016 # expanded by the runner's sh
 credential_reader='for f in "$2"/*; do printf "%s %s %s %s %s\n" "$1" "${f##*/}" "$(stat -c %a "$f")" "$(stat -c %a "$2")" "$(cat "$f")"; done >>"$3"'
+# flags_name_dir DIR ARG...: every -token-file, -listener-token-file and -pg-file of the job's
+# command ARG... names a file in DIR, the directory its start claims, and there is one at least:
+# a job whose flags named another directory would open no file at all.
+flags_name_dir() {
+  local dir=$1 prev="" a n=0
+  shift
+  for a in "$@"; do
+    case $prev in
+      -token-file | -listener-token-file | -pg-file)
+        ((++n))
+        [ "${a%/*}" = "$dir" ] || { echo "fake kubectl exec: the start claims $dir, and its job's $prev names $a" >&2; return 1; }
+        ;;
+    esac
+    prev=$a
+  done
+  ((n > 0)) || { echo "fake kubectl exec: a start given credentials gives its job no -…-file flag" >&2; return 1; }
+}
 case $verb in
   get)
     case "$*" in
@@ -348,10 +365,13 @@ case $verb in
         printf '%s\n' "${cmd[*]:4}" >>"$FAKE_DIR/runner-starts"
         if [[ ${cmd[2]} == *'read -r v'* ]]; then
           mkdir -p "$FAKE_DIR/runner/work"
-          # The directory the start claims is in its script (runner_start -c DIR).
+          # The directory the start claims is in its script (runner_start -c DIR), and it is the
+          # one the job's -…-file flags name.
           [[ ${cmd[2]} =~ secrets=\'(/work/secrets/[A-Za-z0-9._-]+)\' ]] || { echo "fake kubectl exec: a start given credentials names no directory: $c" >&2; exit 1; }
+          claimed=${BASH_REMATCH[1]}
+          flags_name_dir "$claimed" "${cmd[@]:5}" || exit 1
           sh -c "${cmd[2]//\/work/$FAKE_DIR/runner/work}" sh "${cmd[4]}" \
-            sh -c "$credential_reader" sh "${cmd[4]}" "$FAKE_DIR/runner${BASH_REMATCH[1]}" "$FAKE_DIR/runner-credentials" || exit $?
+            sh -c "$credential_reader" sh "${cmd[4]}" "$FAKE_DIR/runner$claimed" "$FAKE_DIR/runner-credentials" || exit $?
         fi
         ;;
       # replay_checksum: the runner's own script too, with credential_reader and then the checksum
@@ -361,6 +381,7 @@ case $verb in
           echo "fake kubectl exec: unexpected command given the copy's credentials: $c" >&2
           exit 1
         fi
+        flags_name_dir "${cmd[4]}" "${cmd[@]:5}" || exit 1
         mkdir -p "$FAKE_DIR/runner/work"
         sh -c "${cmd[2]//\/work/$FAKE_DIR/runner/work}" sh "$FAKE_DIR/runner${cmd[4]}" \
           sh -c "$credential_reader"' && echo "{\"issues\": 1047, \"md5\": \"fakemd5\"}"' \
@@ -883,6 +904,16 @@ if [ "\$*" = 3 ] || [[ " \${FAKE_FAST_SLEEP:-none} " == *" \$* "* ]]; then
 fi
 exec $real_sleep "\$@"
 EOF
+
+# The jq stand-in: every jq call of cluster.sh and of the fakes, its arguments recorded in
+# jq-argv.log, one call a line, then the real jq. An argument is what every user of the pod reads
+# (/proc/<pid>/cmdline), so no_credential_in_args reads this log as it reads kubectl.log.
+real_jq=$(PATH=$real_path command -v jq)
+cat >"$bin/jq" <<EOF
+#!/usr/bin/env bash
+[ -z "\${FAKE_DIR:-}" ] || [ ! -d "\$FAKE_DIR" ] || printf '%s\n' "\$*" >>"\$FAKE_DIR/jq-argv.log"
+exec $real_jq "\$@"
+EOF
 chmod +x "$bin"/*
 
 export FAKE_DIR=$fake FAKE_NS=$ns
@@ -1000,7 +1031,7 @@ write_pods() {
 }
 
 reset_fake() {
-  rm -f -- "$fake/lock.json" "$fake/applied.yaml" "$fake/kubectl.log" "$fake/kubectl-calls.log" "$fake/seeded" "$fake/runner-starts" "$fake/runner-credentials" "$fake/dispatch.log" "$fake/loadgen.log" "$fake"/refine.[0-9]* \
+  rm -f -- "$fake/lock.json" "$fake/applied.yaml" "$fake/kubectl.log" "$fake/kubectl-calls.log" "$fake/jq-argv.log" "$fake/seeded" "$fake/runner-starts" "$fake/runner-credentials" "$fake/dispatch.log" "$fake/loadgen.log" "$fake"/refine.[0-9]* \
     "$fake/runner-stops" "$fake/runner-kills" "$fake/runner-kill-times" "$fake/rc-polls" "$fake/rc-kill-polls" "$fake/df-seq" "$fake/runner-heap-kept" "$fake/lock-get-fails" "$fake/lock-get-oks" \
     "$fake/sleep.log" "$fake/apply-errors" "$fake/replay-template" "$fake/restores" "$fake/pod-dump" \
     "$fake/stored-order.log" "$fake/go-dispatch.log" "$fake/go-browsertype.log" "$fake/git.log" \
@@ -1337,18 +1368,31 @@ job_credentials() {
   done <<<"$creds"
 }
 
-# no_credential_in_kubectl_args: no kubectl call so far carries a credential of the copy among its
-# arguments, where every user of this pod can read it (/proc/<pid>/cmdline).
-no_credential_in_kubectl_args() {
-  local file value creds
-  creds=$(copy_credentials)
-  while read -r file value; do
-    # The Postgres URL's password alone: the rest of the URL is no secret.
-    [ "$file" != pg-url ] || value=$(jq -r .secrets.pg_password "$run_dir/state.json")
-    ! grep -qF -- "$value" "$fake/kubectl.log" ||
-      fail "a kubectl call carries the copy's $file on its command line: $(grep -m1 -F -- "$value" "$fake/kubectl.log")"
-  done <<<"$creds"
+# no_credential_in_args: no kubectl call and no jq call so far carries a credential of the copy
+# among its arguments, where every user of this pod can read it (/proc/<pid>/cmdline).
+no_credential_in_args() {
+  local log name value
+  for log in "$fake/kubectl.log" "$fake/jq-argv.log"; do
+    # A log no call wrote cannot show a credential in a call, so the check would prove nothing.
+    [ -s "$log" ] || fail "no call wrote $log, so no_credential_in_args can see no argument in it"
+  done
+  # All four of the copy's secrets, as up made them; the Postgres password stands for the URL
+  # that holds it, whose rest is no secret. A state.json without one fails here, so no check
+  # below compares against nothing.
+  while read -r name value; do
+    [ -n "$value" ] || fail "$run_dir/state.json has no $name"
+    for log in "$fake/kubectl.log" "$fake/jq-argv.log"; do
+      ! grep -qF -- "$value" "$log" ||
+        fail "a ${log##*/} call carries the copy's $name on its command line: $(grep -m1 -F -- "$value" "$log" | cut -c1-300)"
+    done
+  done < <(jq -r '.secrets | to_entries[] | "\(.key) \(.value)"' "$run_dir/state.json")
+  [ "$(jq '.secrets | length' "$run_dir/state.json")" = 4 ] || fail "$run_dir/state.json does not hold the copy's four secrets"
 }
+
+# up made the copy's four secrets and wrote them into state.json: no call of up carried one as an
+# argument (the logs hold only up's calls here, since reset_fake ran before it).
+no_credential_in_args
+pass "up writes the copy's four secrets into state.json with no kubectl or jq call carrying one as an argument"
 
 run_cluster seed --namespace "$ns"
 ((RC == 0)) || fail "seed exited $RC"
@@ -1376,7 +1420,7 @@ for job in seed seed-refs seed-finish; do
   done
   job_credentials "$job"
 done
-no_credential_in_kubectl_args
+no_credential_in_args
 pass "seed's loadgen jobs read the copy's credentials from files of mode 600 the runner writes for each job alone and removes when it ends, and no kubectl call carries one"
 
 run_cluster step --namespace "$ns" smoke 1 --duration 1m
@@ -1399,7 +1443,7 @@ for want in "-listener-token-file ${BASH_REMATCH[1]}/listener-token " "-pg-file 
   [[ $start == *"$want"* ]] || fail "the step's loadgen run lacks '$want': $start"
 done
 job_credentials step-smoke
-no_credential_in_kubectl_args
+no_credential_in_args
 jq -e '.namespace == "'"$ns"'" and .postgres.version != "" and .postgres.settings_sha256 != "" and .node_cpu_model.dispatch == "Fake CPU @ 2.00GHz" and (.pods | length) == 8' \
   "$run_dir/steps/smoke/copy-meta.json" >/dev/null || fail "copy-meta.json lacks a field: $(cat "$run_dir/steps/smoke/copy-meta.json")"
 # The phase and the reads-only flag, which loadgen curves reads to place the step in the curves.
@@ -1572,8 +1616,8 @@ job_credentials replay-r16
 job_credentials replay-checksum
 grep -qE -- "sh /work/secrets/replay-checksum\.[0-9a-f]+ /work/loadgen replay-checksum -allow-foreign -url http://dispatch\.$ns\.svc:8766 -token-file /work/secrets/replay-checksum\.[0-9a-f]+/dispatch-token " "$fake/kubectl.log" ||
   fail "no loadgen replay-checksum was given its credentials' files: $(grep -F 'replay-checksum' "$fake/kubectl.log" | tail -n1)"
-no_credential_in_kubectl_args
-pass "replay and replay-checksum read the copy's credentials from files the runner writes for each and removes when it ends, and no kubectl call of up, seed, step, replay-prepare or replay carries one"
+no_credential_in_args
+pass "replay and replay-checksum read the copy's credentials from files the runner writes for each and removes when it ends, and no kubectl or jq call of up, seed, step, replay-prepare or replay carries one"
 for f in reset.json replay-prepared.json last-reset.json envoy-dispatch.json pg-stats-before.json pg-stats-after.json summary.json CODEPATHS.md; do
   [ -f "$run_dir/steps/r16/$f" ] || fail "the replay step directory has no $f"
 done
@@ -2159,6 +2203,10 @@ pass "the sampler writes an error line with no number when its exec fails, and a
 
 # The runner's own scripts (RUNNER_CREDENTIALS, RUNNER_SECRETS_CLEANUP), run here under dash, the
 # runner image's sh, against a directory under this test's own root standing in for /work/secrets.
+# Without dash this section cannot run them as the runner does, so it fails naming dash rather than
+# blaming the scripts for a 127.
+command -v dash >/dev/null ||
+  fail "(g2) needs dash, the runner image's sh, to run the runner's credential scripts as the runner does; install dash (Debian and Ubuntu: apt-get install dash)"
 (
   # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
   source "$cluster"

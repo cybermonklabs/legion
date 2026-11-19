@@ -496,8 +496,8 @@ func loopSeedExportResolve(t *testing.T, args ...string) (loopSeedExportFlags, e
 	fs.SetOutput(io.Discard)
 	var f loopSeedExportFlags
 	f.register(fs)
-	if err := fs.Parse(args); err != nil {
-		t.Fatalf("loop-seed-export %q: %v", args, err)
+	if err := parseArgs(fs, args); err != nil {
+		return f, err
 	}
 	return f, f.resolve()
 }

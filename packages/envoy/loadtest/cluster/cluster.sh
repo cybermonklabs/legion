@@ -230,18 +230,20 @@
 # are scoped to the run's label) run then.
 #
 # No credential of the copy is an argument of anything, here or in the runner pod, where every
-# argument of every process is readable by every user of the machine (/proc/<pid>/cmdline): the
-# Dispatch agent token, the listener token and the Postgres URL with its password reach the
-# runner on the standard input of the kubectl exec that starts the loadgen job reading them
-# (runner_start -c, replay_checksum), whose sh writes them into /work/secrets/<job>.<random>, a
-# directory of mode 700 that one start alone claims (mkdir fails on one that is there) with each
-# file mode 600, and loadgen is given their -…-file forms (endpoints). Once the job has ended,
-# however it ended, the sh that waits on it removes that directory, and on a HUP or TERM of that
-# sh too, so none outlives the job that read it and no start removes another's (a detached job's
-# sh ignores INT, as sh does in every background job, so an INT leaves it running with its job);
-# loadgen refuses -token, -listener-token and a -pg that sets a password outright (guard.go). The
-# stored-order check takes its URL on standard input too (STORED_ORDER_SCRIPT), and browser typing
-# is given none.
+# argument of every process is readable by every user of the machine (/proc/<pid>/cmdline). up
+# makes them (random_hex) and gives each to the jq that writes state.json as a file it reads
+# (--rawfile from a pipe), never as a value. The Dispatch agent token, the listener token and the
+# Postgres URL with its password reach the runner on the standard input of the kubectl exec that
+# starts the loadgen job reading them (runner_start -c, replay_checksum), whose sh writes them
+# into /work/secrets/<job>.<random>, a directory of mode 700 that one start alone claims (mkdir
+# fails on one that is there) with each file mode 600, and loadgen is given their -…-file forms
+# (endpoints). Once the job has ended, however it ended, the sh that waits on it removes that
+# directory, and on a HUP or TERM of that sh too, so none outlives the job that read it and no
+# start removes another's (a detached job's sh ignores INT, as sh does in every background job, so
+# an INT leaves it running with its job); loadgen refuses -token, -listener-token and a -pg that
+# sets a password outright (guard.go). Each manifest's credentials go into its sed script on sed's
+# standard input (render_manifest), the stored-order check takes its URL on standard input too
+# (STORED_ORDER_SCRIPT), and browser typing is given none.
 #
 # Every subcommand needs --namespace (no default; a Legion pod's own namespace is builds), and
 # every kubectl call names it. Subcommands after up find the run from the lock's `run` and its
@@ -3541,13 +3543,16 @@ up_run() {
   local tier
   tier=$(pg_tier 16 60)
   tier=$(jq -c --arg v "$pg_volume" '. + {volume: $v}' <<<"$tier")
+  # The four credentials are files jq reads (--rawfile from a pipe random_hex writes, which ends in
+  # no newline), never arguments: an argument of jq is readable by every user of this pod while it
+  # runs (/proc/<pid>/cmdline).
   (umask 077 && jq -n --arg ns "$NS" --arg run "$RUN" --arg sc "$sc" --arg commit "$commit" --arg major "$major" \
     --argjson stored_order "$STORED_ORDER_STATE" \
     --arg repo "$PRODUCTION_REPO" --arg created "$(utc_now)" --arg holder "$HOLDER_POD" --arg pidns "$(pid_ns)" \
     --arg dispatch "$dispatch_image" --arg listener "$listener_image" --arg listener_ref "$listener_ref" \
     --arg pg "$pg_image" --arg socat "$socat_image" --arg runner "$runner_image" --argjson nats "$nats_images" \
-    --argjson tier "$tier" --arg pgpw "$(random_hex 24)" --arg dt "$(random_hex 32)" --arg lt "$(random_hex 32)" \
-    --arg sk "$(random_hex 32)" '{namespace: $ns, run: $run, storage_class: $sc, dispatch_commit: $commit,
+    --argjson tier "$tier" --rawfile pgpw <(random_hex 24) --rawfile dt <(random_hex 32) --rawfile lt <(random_hex 32) \
+    --rawfile sk <(random_hex 32) '{namespace: $ns, run: $run, storage_class: $sc, dispatch_commit: $commit,
       pg_major: $major, production_repo: $repo, created: $created, holder_pod: $holder, pid_ns: $pidns,
       images: ({dispatch: $dispatch, listener: $listener, postgres: $pg, socat: $socat, runner: $runner} + $nats),
       image_sources: {listener: $listener_ref}, postgres: $tier, stored_order: $stored_order, browsertype: null,

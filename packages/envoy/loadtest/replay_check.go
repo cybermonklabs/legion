@@ -67,6 +67,9 @@ func runReplayCheckSeed(args []string) error {
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
 	if *bundleDir == "" {
 		return fmt.Errorf("-bundle is required")
 	}
@@ -492,6 +495,9 @@ func runReplayChecksum(args []string) error {
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
 	ctx := context.Background()
 	conn, err := df.connect(ctx)
 	if err != nil {
@@ -575,6 +581,9 @@ func runReplayLogicalDump(args []string) error {
 	out := fs.String("out", "", "output file")
 	if err := parseArgs(fs, args); err != nil {
 		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
 	if *out == "" {
 		return fmt.Errorf("-out is required")

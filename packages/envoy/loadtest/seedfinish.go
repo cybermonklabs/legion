@@ -147,8 +147,8 @@ func (f *seedFinishFlags) register(fs *flag.FlagSet) {
 // before the first connection.
 func (f *seedFinishFlags) resolve() error {
 	if err := readCredentials(
-		credentialFile{"-pg", "-pg-file", f.pgFile, &f.pg, &f.pgGiven},
-		credentialFile{"-token", "-token-file", f.tokenFile, &f.token, &f.tokenGiven},
+		credentialFile{"-pg", "-pg-file", f.pgFile, &f.pg},
+		credentialFile{"-token", "-token-file", f.tokenFile, &f.token},
 	); err != nil {
 		return err
 	}

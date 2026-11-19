@@ -393,9 +393,10 @@ func stubEmbedArgs(args []string) (stubEmbedOptions, error) {
 		return stubEmbedOptions{}, err
 	}
 	// The key is a credential, so it is read from its file before anything else is judged
-	// (readCredentials), and -key, given at all, is refused: an api-key on a command line is in
-	// the argv of this process and of any ssh that carried it, for as long as the stub serves.
-	if err := readCredentials(credentialFile{"-key", "-key-file", *keyFile, &key, &keyGiven}); err != nil {
+	// (readCredentials); -key, given at all, was refused by parseArgs: an api-key on a command
+	// line is in the argv of this process and of any ssh that carried it, for as long as the stub
+	// serves.
+	if err := readCredentials(credentialFile{"-key", "-key-file", *keyFile, &key}); err != nil {
 		return stubEmbedOptions{}, err
 	}
 	switch {

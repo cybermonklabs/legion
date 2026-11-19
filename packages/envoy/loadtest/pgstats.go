@@ -696,7 +696,7 @@ func runPGStatements(args []string) error {
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
-	if err := readCredentials(credentialFile{"-pg", "-pg-file", pgFile, &pg, &pgGiven}); err != nil {
+	if err := readCredentials(credentialFile{"-pg", "-pg-file", pgFile, &pg}); err != nil {
 		return err
 	}
 	switch {
@@ -770,7 +770,7 @@ func runPGSize(args []string) error {
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
-	if err := readCredentials(credentialFile{"-pg", "-pg-file", pgFile, &pg, &pgGiven}); err != nil {
+	if err := readCredentials(credentialFile{"-pg", "-pg-file", pgFile, &pg}); err != nil {
 		return err
 	}
 	switch {

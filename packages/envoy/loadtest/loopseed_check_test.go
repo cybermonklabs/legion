@@ -526,8 +526,8 @@ func loopSeedCheckResolve(t *testing.T, args ...string) (loopSeedCheckFlags, err
 	fs.SetOutput(io.Discard)
 	var f loopSeedCheckFlags
 	f.register(fs)
-	if err := fs.Parse(args); err != nil {
-		t.Fatalf("loop-seed-check %q: %v", args, err)
+	if err := parseArgs(fs, args); err != nil {
+		return f, err
 	}
 	return f, f.resolve()
 }

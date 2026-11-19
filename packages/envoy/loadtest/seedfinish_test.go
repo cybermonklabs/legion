@@ -512,16 +512,17 @@ func TestDispatchCoverageReadsTheReportAndReportsWhatItCannotRead(t *testing.T) 
 	}
 }
 
-// seedFinishResolve parses args as `loadgen seed-finish` parses them and resolves the flags, so
-// a test reads what a command line resolves to without a database to connect to.
+// seedFinishResolve parses args as `loadgen seed-finish` parses them (parseArgs, which refuses a
+// secret on the command line) and resolves the flags, so a test reads what a command line
+// resolves to without a database to connect to.
 func seedFinishResolve(t *testing.T, args ...string) (seedFinishFlags, error) {
 	t.Helper()
 	fs := flag.NewFlagSet("seed-finish", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var f seedFinishFlags
 	f.register(fs)
-	if err := fs.Parse(args); err != nil {
-		t.Fatalf("seed-finish %q: %v", args, err)
+	if err := parseArgs(fs, args); err != nil {
+		return f, err
 	}
 	return f, f.resolve()
 }
