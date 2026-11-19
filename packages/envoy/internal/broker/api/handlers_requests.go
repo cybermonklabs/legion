@@ -62,9 +62,11 @@ type createRequestResponse struct {
 	RecordID *string `json:"record_id"`
 	// Who decides it, as its record names them: a person's login (their lowercase email), or
 	// "anyone" for a shared secret, which anyone signed in to the broker's approval page may
-	// decide. While it is pending it is listed in that person's Dispatch Inbox, or in everyone's
-	// for "anyone", linking approve_url. Null when the policy decided it at once, so no record
-	// names one.
+	// decide. While it is pending it is listed in that person's Dispatch Inbox, linking
+	// approve_url; for "anyone", in the Inbox of the person responsible for the agent that asked
+	// (the session's operator, a fleet machine's person, or a Legion pod's issue assignee), or in
+	// everyone's when no such person is found. Null when the policy decided it at once, so no
+	// record names one.
 	Approver *string `json:"approver"`
 	// How many seconds its grant lasts, as the signed request asked; or, when it asked for none, 12
 	// hours; null when every name is tagged default-grant=session and the grant lasts until the
@@ -75,14 +77,19 @@ type createRequestResponse struct {
 	// True when the request joined an identical one this session already had pending.
 	Coalesced bool `json:"coalesced,omitempty"`
 	// The broker's one sentence about why it denied the request: the secret that refused it and
-	// the rule that did, as "GCLOUD_SAMI: requester-not-listed", several joined with "; ". Null
+	// the rule that did, as "GCLOUD_DEMO: requester-not-listed", several joined with "; ". Null
 	// when the broker recorded none — every request it did not deny, and a denial whose rule it
 	// cannot name. A session reads it to learn that asking for that secret again will not help.
 	Detail *string `json:"detail"`
 	// While it is pending, its record's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>,
 	// where a person signed in to the broker decides it; absent when the policy decided it at once,
-	// and on a broker with BROKER_SIGNIN=off, which serves no page.
+	// on a broker with BROKER_SIGNIN=off, which serves no page, and while the model judge holds
+	// it, which judge_deciding says instead.
 	ApproveURL string `json:"approve_url,omitempty"`
+	// True while the model judge holds the request: its keys are ones the judge decides, and no
+	// person is asked unless the judge cannot decide it, when the request comes back with its
+	// approve_url. Absent for every other request.
+	JudgeDeciding bool `json:"judge_deciding,omitempty"`
 }
 
 // createRequest requests secrets for the proof-verified caller, never for an enrollment named in
@@ -159,7 +166,8 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		LifetimeSeconds: req.LifetimeSeconds,
 		Coalesced:       req.Coalesced,
 		Detail:          req.Detail,
-		ApproveURL:      s.pendingApproveURL(req.State, req.RecordID),
+		ApproveURL:      s.pendingApproveURL(req),
+		JudgeDeciding:   req.JudgeDeciding,
 	})
 }
 
@@ -200,13 +208,17 @@ type requestStatusResponse struct {
 	// expired.
 	Decision *requestDecision `json:"decision"`
 	// The broker's one sentence about why it denied the request, as POST /v1/requests answers it:
-	// the secret that refused it and the rule that did, as "GCLOUD_SAMI: requester-not-listed".
+	// the secret that refused it and the rule that did, as "GCLOUD_DEMO: requester-not-listed".
 	// Null when the broker recorded none, a request it did not deny among them.
 	Detail *string `json:"detail"`
 	// While it is pending, its record's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>,
 	// where a person signed in to the broker decides it; absent once it is no longer pending, when
-	// the policy decided it at once, and on a broker with BROKER_SIGNIN=off, which serves no page.
+	// the policy decided it at once, on a broker with BROKER_SIGNIN=off, which serves no page, and
+	// while the model judge holds it.
 	ApproveURL string `json:"approve_url,omitempty"`
+	// True while the model judge holds the request, as POST /v1/requests answers it; absent for
+	// every other request.
+	JudgeDeciding bool `json:"judge_deciding,omitempty"`
 }
 
 // grantValuesBody is POST /v1/grants/{id}/values's optional body: no body at all, or one with no
@@ -402,15 +414,17 @@ type airlockName struct {
 // requestWaitStep is how often a held read reads its request again.
 const requestWaitStep = 500 * time.Millisecond
 
-// readRequest answers one of the calling session's requests. With ?wait=N, N a whole number of
-// seconds from 1 to record.MaxRequestWaitSeconds, it holds the read while the request is pending
-// (readHeld) and answers the first state that is not pending, or pending once N seconds have
-// passed since the request reached the broker (answer.Recorder.Arrived), so a slow proof check
-// shortens the hold rather than lengthening it. The state it reads is the database's, so a decision
-// made on either broker process — the approval page's, the model judge's, the sweeper's expiry,
-// the session's own cancel — is seen within one step of its commit. Any other wait is refused
-// REQUEST_WAIT_INPUT before any read; an absent or empty one answers at once, as before the
-// parameter.
+// readRequest answers one request to any enrollment of the principal that made it: the same
+// person, the same Legion claim, the same machine (requests.Machine.OwnerAndState), and a request
+// of an enrollment that records no owner to that enrollment alone. Everyone else is 403 NOT_YOURS.
+// With ?wait=N, N a whole number of seconds from 1 to record.MaxRequestWaitSeconds, it holds the
+// read while the request is pending (readHeld) and answers the first state that is not pending, or
+// pending once N seconds have passed since the request reached the broker
+// (answer.Recorder.Arrived), so a slow proof check shortens the hold rather than lengthening it.
+// The state it reads is the database's, so a decision made on either broker process — the
+// approval page's, the model judge's, the sweeper's expiry, the session's own cancel — is seen
+// within one step of its commit. Any other wait is refused REQUEST_WAIT_INPUT before any read; an
+// absent or empty one answers at once, as before the parameter.
 //
 // A store that fails is 503 DATABASE_UNAVAILABLE, logged at ERROR and counted failed, which
 // agent-secrets reads as a failed read and waits through (retryable), where a 500 would end its
@@ -445,7 +459,7 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such request")
 		return
 	case errors.Is(err, requests.ErrNotYours):
-		writeError(w, http.StatusForbidden, "NOT_YOURS", "this request belongs to another session")
+		writeError(w, http.StatusForbidden, "NOT_YOURS", err.Error())
 		return
 	case err != nil && wait > 0 && errors.Is(ctx.Err(), context.Canceled) && time.Now().Before(deadline.Add(requestWaitStep)):
 		recorder.NoteCallerEnded()
@@ -457,7 +471,7 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 	}
 	resp := requestStatusResponse{
 		State: req.State, GrantID: req.GrantID, RecordID: req.RecordID, Approver: req.Approver, LifetimeSeconds: req.LifetimeSeconds,
-		DecidedAt: req.DecidedAt, Detail: req.Detail, ApproveURL: s.pendingApproveURL(req.State, req.RecordID),
+		DecidedAt: req.DecidedAt, Detail: req.Detail, ApproveURL: s.pendingApproveURL(req), JudgeDeciding: req.JudgeDeciding,
 	}
 	if req.DecidedBy != nil && req.DecidedAt != nil {
 		resp.Decision = &requestDecision{By: *req.DecidedBy, At: *req.DecidedAt}
@@ -479,25 +493,35 @@ func requestWait(w http.ResponseWriter, raw string) (time.Duration, bool) {
 	return time.Duration(seconds) * time.Second, true
 }
 
-// readHeld reads request id for enrollmentID. It reads the request's owner and state
-// (Machine.OwnerAndState, one statement), refusing requests.ErrNotYours when the owner is another
-// enrollment; while the state is pending and deadline has not passed, it reads them again every
-// requestWaitStep; then it reads the whole request (Machine.Get) once. A deadline already passed
-// is the one read. The owner is checked at every step, so a request that moves to another
-// enrollment while the read is held (adopt moves a predecessor's requests to its successor) is
-// refused at the next step, as a new read of it is. Any other error is the store's, or ctx's when
-// ctx ended first.
+// readHeld reads request id for enrollmentID. It reads the caller's owner once
+// (Machine.EnrollmentOwner), then the request's owner, state and whether the model judge holds it
+// (Machine.OwnerAndState, one statement), refusing requests.ErrNotOwner when the request's owner is
+// not the caller's; while the state is pending and deadline has not passed, it reads them again
+// every requestWaitStep; then it reads the whole request (Machine.Get) once. A request the judge
+// held at the first read and holds no more has been handed to its person, still pending: that ends
+// the hold too, so the caller learns at once who decides it now and where. A deadline already
+// passed is the one read. The owner is checked at every step, so a request that moves to an
+// enrollment of another owner while the read is held is refused at the next step, as a new read of
+// it is. Any other error is the store's, or ctx's when ctx ended first.
 func (s *server) readHeld(ctx context.Context, id, enrollmentID string, deadline time.Time) (requests.Request, error) {
+	caller, err := s.deps.Machine.EnrollmentOwner(ctx, enrollmentID)
+	if err != nil {
+		return requests.Request{}, fmt.Errorf("read the caller's owner: %v", err)
+	}
+	first, heldByJudge := true, false
 	for {
-		owner, state, err := s.deps.Machine.OwnerAndState(ctx, id)
+		owner, state, judging, err := s.deps.Machine.OwnerAndState(ctx, id)
 		if err != nil {
 			return requests.Request{}, err
 		}
-		if owner != enrollmentID {
-			return requests.Request{}, requests.ErrNotYours
+		if owner != caller {
+			return requests.Request{}, requests.ErrNotOwner
+		}
+		if first {
+			first, heldByJudge = false, judging
 		}
 		left := time.Until(deadline)
-		if state != "pending" || left <= 0 {
+		if state != "pending" || left <= 0 || (heldByJudge && !judging) {
 			return s.deps.Machine.Get(ctx, id)
 		}
 		select {

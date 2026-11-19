@@ -714,27 +714,50 @@ type DispatchIssue struct {
 	Spec string
 }
 
-// DispatchOptions is the fixture a DispatchStand answers from.
-type DispatchOptions struct {
-	// Issues are the issues it holds. A key none of them carries is 404 on both routes.
-	Issues []DispatchIssue
+// DispatchAsk is one ask a DispatchStand holds, as the judge's third read answers it.
+type DispatchAsk struct {
+	// ID is the ask's own id, the {id} the read names it by, and IssueKey the issue it
+	// belongs to.
+	ID, IssueKey string
+	// State is open, answered or resolved, as Dispatch holds one, and the judge decides on
+	// an answered ask alone.
+	State string
+	// Question is what the person was asked and Options the labels it offered.
+	Question string
+	Options  []string
+	// AnsweredBy is the login of the person who answered, Selected the option labels they
+	// chose and Text what they wrote. All three are empty for an ask nobody has answered,
+	// which the answer then carries as null.
+	AnsweredBy string
+	Selected   []string
+	Text       string
 }
 
-// DispatchStand is the two reads the broker's model judge makes of Dispatch: GET
-// /api/v1/issues/{key}, which answers the issue, and GET
-// /api/v1/issues/{key}/artifacts/spec/text, which answers that issue's spec document. It
-// answers both from a fixture, since a Dispatch of its own would want Postgres and a sign-in,
-// and it keeps the one thing of the real API a fixture could quietly lose: a request carrying
-// no bearer is refused 401 before either route is read (api.requireAuthenticated), so a caller
-// that presented no token reads that refusal rather than an issue.
+// DispatchOptions is the fixture a DispatchStand answers from.
+type DispatchOptions struct {
+	// Issues are the issues it holds. A key none of them carries is 404 on both issue routes.
+	Issues []DispatchIssue
+	// Asks are the asks it holds. An id none of them carries is 404 on the ask route.
+	Asks []DispatchAsk
+}
+
+// DispatchStand is the three reads the broker's model judge makes of Dispatch: GET
+// /api/v1/issues/{key}, which answers the issue, GET
+// /api/v1/issues/{key}/artifacts/spec/text, which answers that issue's spec document, and GET
+// /api/v1/asks/{id}, which answers one ask of an issue. It answers all three from a fixture,
+// since a Dispatch of its own would want Postgres and a sign-in, and it keeps the one thing of
+// the real API a fixture could quietly lose: a request carrying no bearer is refused 401 before
+// any route is read (api.requireAuthenticated), so a caller that presented no token reads that
+// refusal rather than an issue.
 //
-// Each answer carries the fields of the real one that a reader of these two routes reads —
-// key, title and status of api.getIssue's issue, and the markdown of api.getArtifactText's
-// document — and none of the artifacts, children, open asks and progress the issue read also
-// answers: a caller that needs one of those is reading a route this stand does not stand in
-// for.
+// Each answer carries the fields of the real one that a reader of those routes reads — key,
+// title and status of api.getIssue's issue, the markdown of api.getArtifactText's document, and
+// the id, issue, state, question, options and answer of api.getAsk's ask — and none of the
+// artifacts, children, open asks, progress, replies, edits and followers those reads also
+// answer: a caller that needs one of those is reading a route this stand does not stand in for.
 type DispatchStand struct {
 	issues map[string]DispatchIssue
+	asks   map[string]DispatchAsk
 }
 
 // NewDispatchStand builds one. Install it with Service.AnswerWith(stand.Answer).
@@ -743,14 +766,18 @@ func NewDispatchStand(o DispatchOptions) *DispatchStand {
 	for _, issue := range o.Issues {
 		issues[issue.Key] = issue
 	}
-	return &DispatchStand{issues: issues}
+	asks := make(map[string]DispatchAsk, len(o.Asks))
+	for _, ask := range o.Asks {
+		asks[ask.ID] = ask
+	}
+	return &DispatchStand{issues: issues, asks: asks}
 }
 
-// Answer is Dispatch's answer to the two reads, and false for every other request, which leaves
-// the service its own body: a caller that asked for a route this stand does not serve has not
-// asked Dispatch anything.
+// Answer is Dispatch's answer to the three reads, and false for every other request, which
+// leaves the service its own body: a caller that asked for a route this stand does not serve has
+// not asked Dispatch anything.
 func (d *DispatchStand) Answer(w http.ResponseWriter, _ *http.Request, seen Request) bool {
-	key, spec, ok := dispatchRoute(seen)
+	name, kind, ok := dispatchRoute(seen)
 	if !ok {
 		return false
 	}
@@ -759,13 +786,23 @@ func (d *DispatchStand) Answer(w http.ResponseWriter, _ *http.Request, seen Requ
 		dispatchError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "the stand-in Dispatch takes a bearer token")
 		return true
 	}
-	issue, held := d.issues[key]
+	if kind == dispatchAskRoute {
+		ask, held := d.asks[name]
+		if !held {
+			dispatchError(w, http.StatusNotFound, "NOT_FOUND", "the stand-in Dispatch holds no ask "+name)
+			return true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ask": askBody(ask), "replies": []any{}})
+		return true
+	}
+	issue, held := d.issues[name]
 	switch {
 	case !held:
-		dispatchError(w, http.StatusNotFound, "NOT_FOUND", "the stand-in Dispatch holds no issue "+key)
-	case spec && issue.Spec == "":
-		dispatchError(w, http.StatusNotFound, "ARTIFACT_NOT_FOUND", "issue "+key+" holds no spec document")
-	case spec:
+		dispatchError(w, http.StatusNotFound, "NOT_FOUND", "the stand-in Dispatch holds no issue "+name)
+	case kind == dispatchSpecRoute && issue.Spec == "":
+		dispatchError(w, http.StatusNotFound, "ARTIFACT_NOT_FOUND", "issue "+name+" holds no spec document")
+	case kind == dispatchSpecRoute:
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"markdown": issue.Spec, "version": 1, "token": "sha256:the-stand-in-document-token",
@@ -779,21 +816,55 @@ func (d *DispatchStand) Answer(w http.ResponseWriter, _ *http.Request, seen Requ
 	return true
 }
 
-// dispatchRoute reads which of the two routes a request is and the issue key it names: the
-// issue read itself, and the text of that issue's spec document. Both are GETs, and every other
-// request is no route of this stand's.
-func dispatchRoute(seen Request) (key string, spec, ok bool) {
+// askBody is one ask as the read answers it: the options as the labelled objects the API sends,
+// and the answer as an object or as null, since an ask nobody has answered carries no answer.
+func askBody(ask DispatchAsk) map[string]any {
+	options := make([]any, 0, len(ask.Options))
+	for _, label := range ask.Options {
+		options = append(options, map[string]any{"label": label})
+	}
+	body := map[string]any{
+		"id": ask.ID, "issue_key": ask.IssueKey, "state": ask.State,
+		"kind": "question", "question": ask.Question, "options": options, "answer": nil,
+	}
+	if ask.AnsweredBy != "" {
+		selected := ask.Selected
+		if selected == nil {
+			selected = []string{}
+		}
+		body["answer"] = map[string]any{
+			"user": ask.AnsweredBy, "selected": selected, "text": ask.Text,
+			"at": "2026-01-01T00:00:00Z",
+		}
+	}
+	return body
+}
+
+// The three routes this stand serves, which dispatchRoute tells apart.
+const (
+	dispatchIssueRoute = iota
+	dispatchSpecRoute
+	dispatchAskRoute
+)
+
+// dispatchRoute reads which of the three routes a request is and the issue key or ask id it
+// names: the issue read itself, the text of that issue's spec document, and one ask. All three
+// are GETs, and every other request is no route of this stand's.
+func dispatchRoute(seen Request) (name string, kind int, ok bool) {
 	if seen.Method != http.MethodGet {
-		return "", false, false
+		return "", 0, false
+	}
+	if id, found := strings.CutPrefix(seen.Path, "/api/v1/asks/"); found {
+		return id, dispatchAskRoute, id != "" && !strings.Contains(id, "/")
 	}
 	rest, found := strings.CutPrefix(seen.Path, "/api/v1/issues/")
 	if !found {
-		return "", false, false
+		return "", 0, false
 	}
 	if key, found := strings.CutSuffix(rest, "/artifacts/spec/text"); found {
-		return key, true, key != "" && !strings.Contains(key, "/")
+		return key, dispatchSpecRoute, key != "" && !strings.Contains(key, "/")
 	}
-	return rest, false, rest != "" && !strings.Contains(rest, "/")
+	return rest, dispatchIssueRoute, rest != "" && !strings.Contains(rest, "/")
 }
 
 // dispatchError is a refusal in the shape the API writes one (api.writeError), so a caller that

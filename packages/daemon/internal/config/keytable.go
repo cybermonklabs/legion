@@ -261,7 +261,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "gates", Default: "`design: [spec]`, the root issue's primary document", RequiredBy: "no",
-			Description: "The design gate: the documents of a tree's root a person approves before any phase of the tree starts, any released child starts or the merger's `READY` is accepted.",
+			Description: "The design gate: the documents of a tree's root a person approves before any phase of the tree starts, any released child starts or a merger of the tree starts.",
 			Read:        reads(readGates, func(f *fileConfig, v *Gates) { f.Gates = v }),
 		},
 		{

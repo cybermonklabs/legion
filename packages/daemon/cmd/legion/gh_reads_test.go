@@ -280,7 +280,7 @@ func TestGhCallModeDecidesTheUncheckedCallsBeforeTheReadGrammar(t *testing.T) {
 // against (ghPinnedCheckPortSHA256, gh_pinned_check_test.go). A bump of the pin fails here until
 // the tag, the sha256 and that port all move.
 func TestGhReadsAreProvenAgainstThePinnedCheck(t *testing.T) {
-	const prove = "port the check's gh_guard, is_read, collect and api_read into ghPinnedCheckReads and its sha256 into ghPinnedCheckPortSHA256 (gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ghReadsProvenCheck"
+	const prove = "follow the steps in ghReadsProvenCheck's comment (gh_reads.go): read the definitions it lists and every definition they reach in the new check, port each change to what they read as a read into ghPinnedCheckReads and the new sha256 into ghPinnedCheckPortSHA256 (gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ghReadsProvenCheck"
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "worker.Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
@@ -396,18 +396,20 @@ type ghGuardRecord struct {
 	stderr, gh, checked, log string
 }
 
-// ghRigEnv is the pager and browser the rig's caller names, and what the stand-in gh records of
-// them when it is given them unchanged; ghRigReadEnv is what it records for a call that writes
-// nothing, which runs with no pager and no browser program from the environment.
+// ghRigEnv is what the stand-in gh records of the pager, browsers and editor the rig's caller
+// names for a call guarded whole: none of them, since gh is run from an allowlist of its caller's
+// environment that holds no program (ghChildEnviron), and as its editor a program that fails
+// (ghNoEditor), so no editor gh starts can post text the guard never read; ghRigReadEnv is what it
+// records for a call that writes nothing, which runs with cat as its pager.
 const (
-	ghRigEnv     = "env GH_PAGER=rig-pager GH_BROWSER=rig-gh-browser BROWSER=rig-browser\n"
-	ghRigReadEnv = "env GH_PAGER=cat GH_BROWSER=unset BROWSER=unset\n"
+	ghRigEnv     = "env GH_PAGER=unset GH_BROWSER=unset BROWSER=unset GH_EDITOR=" + ghNoEditor + " EDITOR=unset VISUAL=unset\n"
+	ghRigReadEnv = "env GH_PAGER=cat GH_BROWSER=unset BROWSER=unset GH_EDITOR=" + ghNoEditor + " EDITOR=unset VISUAL=unset\n"
 )
 
 // ghGuardRig answers a run of `legion gh args…` with stdin against the shared check at the path
 // check (ghCheckAt), a stand-in gh that answers the visibility read `public` and every call with
 // exit 7 after recording it, and a state directory of the run's own, so no visibility is kept
-// from another run. The caller's environment names a pager and two browsers.
+// from another run. The caller's environment names a pager, two browsers and three editors.
 func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...string) ghGuardRecord {
 	t.Helper()
 	root, defaultDir := gitCredentialBundle(t)
@@ -418,7 +420,7 @@ func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...st
 	stub := filepath.Join(t.TempDir(), "gh")
 	script := ghStandInPrefix(help) +
 		"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\n" +
-		"printf 'env GH_PAGER=%s GH_BROWSER=%s BROWSER=%s\\n' \"${GH_PAGER-unset}\" \"${GH_BROWSER-unset}\" \"${BROWSER-unset}\" >>\"$GH_STANDIN_RECORD\"\n" +
+		"printf 'env GH_PAGER=%s GH_BROWSER=%s BROWSER=%s GH_EDITOR=%s EDITOR=%s VISUAL=%s\\n' \"${GH_PAGER-unset}\" \"${GH_BROWSER-unset}\" \"${BROWSER-unset}\" \"${GH_EDITOR-unset}\" \"${EDITOR-unset}\" \"${VISUAL-unset}\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"printf 'stdin %s\\n' \"$(cat)\" >>\"$GH_STANDIN_RECORD\"\n" +
 		"exit 7\n"
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
@@ -434,6 +436,7 @@ func ghGuardRig(t *testing.T) func(t *testing.T, check, stdin string, args ...st
 			"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord, "XDG_STATE_HOME": state,
 			"LEGION_ROLE": "merger", "LEGION_ISSUE": "issue-9", "LEAK_CHECK_STANDIN_TARGET": "acme/widgets",
 			"GH_PAGER": "rig-pager", "GH_BROWSER": "rig-gh-browser", "BROWSER": "rig-browser",
+			"GH_EDITOR": "rig-gh-editor", "EDITOR": "rig-editor", "VISUAL": "rig-visual",
 		}
 		code, _, stderr := legionGhIn(t, t.TempDir(), env, stdin, args...)
 		return ghGuardRecord{
@@ -658,8 +661,8 @@ func TestLegionGhGuardsAReadWholeUnderAnUnprovenCheck(t *testing.T) {
 // guardedWhole fails t unless got is a call the guard read whole under a check that clears it:
 // the check recorded its run of the call, the guard asked gh the visibility of the repository the
 // call names (none for a call naming none, such as a GraphQL call, which the guard scans for that
-// reason), and only then did gh run, with the pager and the browsers the caller set, and the log
-// line is no checked-only one.
+// reason), and only then did gh run, with none of the pager and the browsers the caller set, and
+// the log line is no checked-only one.
 func guardedWhole(t *testing.T, got ghGuardRecord, args []string) {
 	t.Helper()
 	if got.code != 7 {
@@ -676,7 +679,7 @@ func guardedWhole(t *testing.T, got ghGuardRecord, args []string) {
 		t.Errorf("the guard read the visibility %d times, want %d: %q", reads, wantReads, got.gh)
 	}
 	if want := "gh " + strings.Join(args, " ") + "\n" + ghRigEnv; !strings.Contains(got.gh, want) {
-		t.Errorf("gh recorded %q, want the call %q after the guard, with the caller's pager and browsers", got.gh, want)
+		t.Errorf("gh recorded %q, want the call %q after the guard, with none of the caller's pager and browsers", got.gh, want)
 	}
 	if strings.Contains(got.log, `visibility="checked-only"`) {
 		t.Errorf("the call log reads a call the guard read whole as checked-only: %q", got.log)

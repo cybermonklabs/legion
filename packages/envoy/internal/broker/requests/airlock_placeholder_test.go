@@ -159,6 +159,29 @@ func TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest(t *testing.T) {
 	}
 }
 
+// TestAHostlessEntryReleasesItsValue: an entry with no host says who decides a request for its key
+// and binds the value nowhere, so a grant of it releases the value itself, as a name with no entry
+// does, and nothing of it goes to the airlock.
+func TestAHostlessEntryReleasesItsValue(t *testing.T) {
+	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{
+		{Name: "AUTO_TOKEN", Judge: new(uint32(600)), Guidance: "grant for the release job"},
+	}})
+	requestID, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
+	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+	if err != nil {
+		t.Fatalf("Values: %v", err)
+	}
+	if got := release.Values["AUTO_TOKEN"]; got != "auto-v1" {
+		t.Fatalf("values = %v; want AUTO_TOKEN's own value: a host-less entry holds nothing back", release.Values)
+	}
+	if release.Airlock != nil {
+		t.Errorf("the release carries an airlock %+v; want none for a key the airlock binds nowhere", release.Airlock)
+	}
+	if got := deliveries(t, m, requestID); got["AUTO_TOKEN"] != "inject" {
+		t.Errorf("delivery = %v; want AUTO_TOKEN inject", got)
+	}
+}
+
 // TestASecondReleaseHandsBackTheSamePlaceholders: the placeholders a grant was given are its own
 // for as long as it lives, so a session that releases twice — a retry, or a second process —
 // finds the strings already in its environment still working, and the table grows no row.

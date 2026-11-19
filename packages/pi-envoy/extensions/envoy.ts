@@ -187,7 +187,7 @@ import { connect, Events, type NatsConnection, StringCodec, type Subscription } 
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
-import { CardAges } from "../src/card-age";
+import { CARD_DELIVERED_ENTRY, CardAges } from "../src/card-age";
 import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
@@ -212,6 +212,7 @@ import {
 } from "../src/registration-state";
 import { ServerClock } from "../src/server-clock";
 import {
+  ANSWERS_SENT_ENTRY,
   type CarriedAnswers,
   carriedAnswers,
   withSessionAnswers,
@@ -1282,12 +1283,30 @@ export default function envoyExtension(pi: PiApi): void {
   });
 
   // When each card reached each session this process serves, which every model request shows
-  // beside the card's send time (`../src/card-age`): a card's `message_end` in a session fixes it
-  // for that session, so a session the host moves to reads when it was shown the card itself. The
+  // beside the card's send time (`../src/card-age`): a card's delivery in a session is the one the
+  // session records for it, else what that session's own `message_end`, ledger record or entry
+  // position gives, so a session the host moves to reads when it was shown the card itself. The
   // listener's clock, from its replies, says how much of the gap this machine's clock made.
   const cardAges = new CardAges({
     now: () => Date.now(),
     clockOffset: () => serverClock.offset(),
+    // The delivery a session first gives a card goes into its file, so every later request, and
+    // the first of a process that resumes the session, shows the card with the same bytes.
+    // `CardAges` calls this synchronously while the request or the card's `message_end` is
+    // handled, so the session it names is the one the host is on and no guard is needed, unlike
+    // the answers record, which is written after an await. A write that throws is logged; the
+    // request still shows the card's time, and a process that resumes the session takes it from
+    // the card's ledger record or its place in the session.
+    record: (session, entry) => {
+      try {
+        pi.appendEntry(CARD_DELIVERED_ENTRY, entry);
+      } catch (error) {
+        logger.warn(
+          `envoy: the time card ${entry.event_id} reached session ${session} could not be recorded in the session file`,
+          { error: messageFor(error) }
+        );
+      }
+    },
   });
 
   // A card's message: its `details` name the frame (`ledgerIdentity`), which the host keeps
@@ -2912,9 +2931,12 @@ export default function envoyExtension(pi: PiApi): void {
   });
 
   // The host writes a message to the transcript as it ends it: a card or a person's turn handed to
-  // it, idle or taken by a turn after it streamed, is shown from here on (`UnwrittenFrames`), and a
-  // card's write is when it reached this session (`../src/card-age`). A card the host appended
-  // also arms the wake's check (`../src/card-wake`).
+  // it, idle or taken by a turn after it streamed, is shown from here on (`UnwrittenFrames`). A
+  // card's write fixes when it reached this session in the order every request reads it too: the
+  // delivery the session records for the card's event, else the time the session's entries give
+  // the event (its ledger record, or the newest message time up to its first entry, which is the
+  // older card's for a card a resumed process replays), else the time of this write
+  // (`../src/card-age`). A card the host appended also arms the wake's check (`../src/card-wake`).
   pi.on("message_end", async (event, context) => {
     const { message } = event;
     if (!shuttingDown) cardWake.messageEnd(message, context);
@@ -2922,7 +2944,11 @@ export default function envoyExtension(pi: PiApi): void {
     // Every message of a turn moves the context window's filling, and this is where the host has
     // finished one.
     refreshAgentStreamContext(sessionID);
-    cardAges.written(message, context.sessionManager.getSessionId());
+    cardAges.written(
+      message,
+      context.sessionManager.getSessionId(),
+      () => context.sessionManager.getBranch?.() ?? []
+    );
     await unwritten.written(message);
   });
   // The host asks whether any extension handles `session_before_compact`, which turns its
@@ -2983,14 +3009,15 @@ export default function envoyExtension(pi: PiApi): void {
     );
 
   // The Envoy role a session pod's launch named (`ENVOY_SESSION_ROLE`) and the one session it named
-  // it for (`ENVOY_SESSION_ROLE_SESSION`, the id the pod starts the agent with; agent-infra's
-  // sessions workload sets both once t-e-32 lands). That session claims the role itself, under its
-  // own credential, which the listener holds to that very session, at every pass that registers
-  // it (`settleRole`). No other session claims it, by any path: not a process the agent starts in
-  // the pod, such as an `omp -p` review, which gets the same environment; not an ACP host's other
-  // session; not an id a `/new`, a `/fork` or a tree branch mints, though a fork's or a branch's
-  // transcript carries the named session's record of the claim. Each pass compares the session
-  // open then. Read when the instance is created; nothing takes them out of the environment.
+  // it for (`ENVOY_SESSION_ROLE_SESSION`, the id the pod starts the agent with; the deployment
+  // repository's sessions workload sets both once t-e-32 lands). That session claims the role
+  // itself, under its own credential, which the listener holds to that very session, at every
+  // pass that registers it (`settleRole`). No other session claims it, by any path: not a process
+  // the agent starts in the pod, such as an `omp -p` review, which gets the same environment; not
+  // an ACP host's other session; not an id a `/new`, a `/fork` or a tree branch mints, though a
+  // fork's or a branch's transcript carries the named session's record of the claim. Each pass
+  // compares the session open then. Read when the instance is created; nothing takes them out of
+  // the environment.
   const sessionRole = listenerRoleName(process.env.ENVOY_SESSION_ROLE ?? "") || undefined;
   const sessionRoleSession = process.env.ENVOY_SESSION_ROLE_SESSION?.trim() || undefined;
   // Why session `id` may not claim `role`, or undefined when it may: the launch's role is the
@@ -4304,11 +4331,12 @@ export default function envoyExtension(pi: PiApi): void {
     } catch (error) {
       // Oh My Pi drops all a `context` handler returns when it throws, the dispatch-first skill
       // with it, so a read that throws instead of answering with its failure line still costs
-      // only the list: the request says the list could not be read, after its last message where
-      // a list sat (`withSessionAnswers`), and the log says why. A failure line already placed
-      // keeps its own reason.
-      logger.warn(`envoy: people's answers could not be read: ${messageFor(error)}`);
-      return { text: sessionAnswersFailureLine(messageFor(error)) };
+      // only the list: it gives the failure line, with the error as its reason, which
+      // `withSessionAnswers` appends after the last message unless the newest answers message
+      // sent is a failure line already. The log says why through its failure episode
+      // (`readFailed`), once per episode as for every failed read, so nothing is logged here.
+      const reason = messageFor(error);
+      return { text: sessionAnswersFailureLine(reason), reason };
     }
   };
 
@@ -4317,35 +4345,51 @@ export default function envoyExtension(pi: PiApi): void {
     // (`../src/card-age`), so a reader whose inbox ran behind does not take a late card's stamp
     // for the present time. Every session that reaches Dispatch, Legion panes and `task` subagents
     // included, also carries the dispatch-first skill on every request at the head, where its
-    // bytes never change, and on every request of its main loop what people wrote to it: after the
-    // last message when it shows something new, then where it went (`withSessionAnswers`). The host runs this handler on
-    // its side turns, its handoff prompt and a remote compaction's conversions too;
-    // `withSessionAnswers` leaves the list off those. Oh My Pi hands this handler no abort signal:
-    // it races the handler against the run's own and drops what an aborted handler returns, and
-    // the read it shares goes on to fill the cache.
+    // bytes never change, and on every request of its main loop what people wrote to it: every
+    // answers message an earlier request sent, which the session records and each request
+    // rebuilds at its old place with its old bytes, and a new one after the last message when the
+    // read shows a change (`withSessionAnswers`). The host runs this handler on its side turns,
+    // its handoff prompt and a remote compaction's conversions too; `withSessionAnswers` leaves
+    // the answers off those and records nothing for them. Oh My Pi hands this handler no abort
+    // signal: it races the handler against the run's own and drops what an aborted handler
+    // returns, and the handler goes on to its read, which it shares and which goes on to fill the
+    // cache, and to its decision and its record, which come after those of every earlier request
+    // of the session, so the request after it rebuilds what it recorded (`withSessionAnswers`).
     pi.on("context", async (event, context) => {
       // The host's own live id, as `message_end` reads it: this one process serves one session at
       // a time and moves between them, and a session that followed the same topic reads the same
       // event when its own host writes it, not when the session before it did (`../src/card-age`).
+      // It is also the session the request is built from, as it began: the host can move to
+      // another session while the read waits, and an answers message this request sent, like the
+      // branch it reads again after the read, belongs to this one alone.
+      const id = context.sessionManager.getSessionId();
       const aged = cardAges.annotate(
         event.messages,
         () => context.sessionManager.getBranch?.() ?? [],
-        context.sessionManager.getSessionId()
+        id
       );
       if (!atStart.dispatch.enabled) return aged === undefined ? undefined : { messages: aged };
       const withSkill = withDispatchFirst(aged ?? event.messages, DISPATCH_FIRST_CONTEXT);
       const messages = await withSessionAnswers(withSkill ?? aged ?? event.messages, {
-        branch: () => context.sessionManager.getBranch?.() ?? [],
+        // The session's branch, read before the read and again after it: undefined once the host
+        // is on another session than `id`, whose branch is not this request's, and the request
+        // then decides from the branch as it began, and `record` below writes nothing.
+        branch: () =>
+          context.sessionManager.getSessionId() === id
+            ? (context.sessionManager.getBranch?.() ?? [])
+            : undefined,
         session: context.sessionManager,
-        id: context.sessionManager.getSessionId(),
+        id,
         // Read off the live `AgentSession` (18.12.2), whose getters the declared host surface
         // leaves out: `get isCompacting() { return this.#C.isCompacting; }` and
         // `get compactionSpeculation() { return this.#C.speculationState; }`, the compaction
         // controller's `this.#i !== undefined || this.#u !== undefined || this.#l !== undefined`
         // (an automatic or manual compaction, or a handoff) and `e.armed ? "armed" : "running"`
-        // for a speculative one. A session the registry does not list reads as not compacting.
+        // for a speculative one. A session the registry does not list reads as not compacting. It
+        // is read after the read too, so it asks about `id`, the session the request was built
+        // from, and not the one the host may have moved to while the read waited.
         compacting: () => {
-          const live = liveAgentSession(context.sessionManager.getSessionId());
+          const live = liveAgentSession(id);
           return (
             live !== undefined &&
             (("isCompacting" in live && live.isCompacting === true) ||
@@ -4353,16 +4397,39 @@ export default function envoyExtension(pi: PiApi): void {
           );
         },
         read: () => sessionAnswersText(context),
-        // A failed read that gave the cached list, or a list an older copy of this extension
-        // rendered from its cache, where the placed bytes stay: the model is not told of that
-        // failure (the kept bytes may name an earlier one), unless the kept bytes are that read's
-        // own text, which say it. So the log says it, on the first such request and not again
-        // until a read has answered, so a lasting failure logs once. The reason is this copy's
-        // read's own, as its failure line would carry it, or the sentence an older copy's read
-        // line names, as that copy's renderer wrote it, ending with a full stop, `?` or `!`.
-        unshownFailure: (reason) =>
+        // The answers message this request appends goes into the session file as it is sent, so
+        // every later request, and the first of a process that resumes the session, rebuilds it
+        // where it went. The write is guarded as `recordNotice` is: when the host moved to another
+        // session while the read waited, the entry would land in that session's file, so nothing
+        // is written and the log says so; the request still carries the message.
+        record: (entry) => {
+          if (context.sessionManager.getSessionId() !== id) {
+            logger.warn(
+              "envoy: the message of people's answers this request sent was not recorded: the host moved to another session while the request waited on the read"
+            );
+            return;
+          }
+          try {
+            pi.appendEntry(ANSWERS_SENT_ENTRY, entry);
+          } catch (error) {
+            logger.warn(
+              "envoy: the message of people's answers this request sent could not be recorded in the session file",
+              { error: messageFor(error) }
+            );
+          }
+        },
+        // The first failed read of a failure episode, which runs until a read Dispatch answers,
+        // whether the request shows the model a message for it (the failure line, or the cached
+        // list when it shows something new, after the last message) or keeps the answers messages
+        // sent, which do not name this read's failure. Logged once per episode, so a lasting
+        // failure logs one line. The reason is this copy's read's own, as its failure line would
+        // carry it, or the sentence an older copy's read line names, as that copy's renderer wrote
+        // it, ending with a full stop, `?` or `!`.
+        readFailed: (reason, shown) =>
           logger.warn(
-            `envoy: people's answers could not be read (${reason}); the request keeps the list placed before, which does not name this read's failure`
+            shown
+              ? `envoy: people's answers could not be read (${reason}); the request tells the model after its last message`
+              : `envoy: people's answers could not be read (${reason}); the request keeps the answers messages sent, which do not name this read's failure`
           ),
       });
       const result = messages ?? withSkill ?? aged;

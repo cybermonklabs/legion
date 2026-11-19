@@ -209,15 +209,15 @@ func TestTheModelStandsAnswerIsSetWhileItRuns(t *testing.T) {
 			out.DispatchOpenIssue, out.DispatchDoneIssue)
 	}
 
-	// Until a check sets anything the model approves, so a stack nothing called this route
-	// on still judges a request through to a grant.
-	if reply := askTheModel(t, out.Stands[standModel].URL); !strings.Contains(reply, "approve") {
-		t.Errorf("the first answer is %q; want the approving one it starts with", reply)
+	// Until a check sets anything the model grants, so a stack nothing called this route on
+	// still judges a request through to a grant.
+	if reply := askTheModel(t, out.Stands[standModel].URL); !strings.Contains(reply, "grant") || strings.Contains(reply, "approve") {
+		t.Errorf("the first answer is %q; want the granting one it starts with", reply)
 	}
 	for _, c := range []struct {
 		name, answer, want, unwanted string
 	}{
-		{name: "a referring verdict", answer: `{"verdict":"refer","reason":"the reason names no issue"}`, want: "refer", unwanted: "approve"},
+		{name: "a denying verdict", answer: `{"verdict":"deny","reason":"the reason names no issue"}`, want: "deny", unwanted: "grant"},
 		{name: "a reply that is no object", answer: `{"text":"I would rather not say."}`, want: "I would rather not say."},
 	} {
 		t.Run(c.name, func(t *testing.T) {

@@ -51,6 +51,7 @@ import type {
   IssueRead,
   IssueReferences,
   IssueRouteStatus,
+  IssueSteps,
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
@@ -1216,9 +1217,11 @@ export class DispatchClient {
   }
 
   /** `GET /api/v1/credential-requests?approver=me`: the credential requests the caller may
-   *  decide, relayed from the secrets broker, or null from a Dispatch that has no broker
-   *  configured, which is an ordinary deployment rather than a failure. `me` is the only approver
-   *  the route takes. It needs the same `person` scope the Inbox does. */
+   *  decide, then the expired ones nobody has dismissed (each row's `state`, `pending` or
+   *  `expired`; none from an older broker, which is pending), relayed from the secrets broker, or
+   *  null from a Dispatch that has no broker configured, which is an ordinary deployment rather
+   *  than a failure. `me` is the only approver the route takes. It needs the same `person` scope
+   *  the Inbox does. */
   async credentialPending(): Promise<CredentialPendingResponse | null> {
     return this.#json("GET", ["api", "v1", "credential-requests"], undefined, { approver: "me" });
   }
@@ -1806,6 +1809,13 @@ export class DispatchClient {
   /** `GET /api/v1/handoffs/{id}`: one handoff by id, with its body. */
   async handoff(id: string): Promise<Handoff> {
     return this.#json("GET", ["api", "v1", "handoffs", id]);
+  }
+
+  /** `GET /api/v1/issues/{key}/steps`: every run of each step of the issue, task by task in the
+   *  order each task first ran, each with the attempt the read computes. An issue no step ran on
+   *  answers with no task; a key Dispatch does not hold is `404 NOT_FOUND`, as the issue read. */
+  async listSteps(issue: string): Promise<IssueSteps> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "steps"]);
   }
 
   async getIssueReferences(issue: string): Promise<IssueReferences> {

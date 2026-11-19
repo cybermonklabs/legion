@@ -52,7 +52,10 @@ import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatc
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
-import { renderSessionAnswers } from "@legion/envoy-client/session-answers";
+import {
+  renderSessionAnswers,
+  sessionAnswersFailureLine,
+} from "@legion/envoy-client/session-answers";
 import { subjectsOverlap } from "@legion/envoy-client/stream-topics";
 import {
   type EnvoyStack,
@@ -1579,13 +1582,13 @@ function sessionPodListener(): SessionPodListener {
  * A session `sessionID` in a session pod, registering with `listener`, its transcript starting with
  * `transcript` (a fresh session has none). A `launch` names the role the pod's launch names in
  * `ENVOY_SESSION_ROLE` and, when it names one, the session it names for it in
- * `ENVOY_SESSION_ROLE_SESSION` (agent-infra's sessions workload); with no `launch` the environment
- * is left as it is. The host has one session manager, as Oh My Pi's has: `move` takes it to session
- * `id` the way `reason` does (a `/fork` or a tree branch carries the branch on, a `/new` starts an
- * empty one, and a `/fork`, a `/new` or a resume opens the branch `opens` gives, where given; a tree
- * branch keeps its own). `heartbeat` runs one heartbeat pass and lets it settle, `records` reads the
- * role claim records the session's transcript holds, and `notices` is every notice the extension
- * showed on screen, as `<level>: <text>`.
+ * `ENVOY_SESSION_ROLE_SESSION` (the deployment repository's sessions workload); with no `launch`
+ * the environment is left as it is. The host has one session manager, as Oh My Pi's has: `move`
+ * takes it to session `id` the way `reason` does (a `/fork` or a tree branch carries the branch on,
+ * a `/new` starts an empty one, and a `/fork`, a `/new` or a resume opens the branch `opens` gives,
+ * where given; a tree branch keeps its own). `heartbeat` runs one heartbeat pass and lets it
+ * settle, `records` reads the role claim records the session's transcript holds, and `notices` is
+ * every notice the extension showed on screen, as `<level>: <text>`.
  */
 async function bootSessionPod(
   query: string,
@@ -18823,6 +18826,48 @@ console.log(JSON.stringify(args));
     return result.messages as unknown[];
   }
 
+  /** The sentence every list the `context` handler appends carries as its second text block. */
+  const REPLACES =
+    "This list replaces every earlier list of people's answers in this conversation, and every earlier line saying the list could not be read: read only the newest one as current.";
+
+  /** The custom type of an answers message recorded, written as a literal so the cases also load
+   *  against a source without that export. */
+  const ANSWERS_SENT = "envoy-answers-sent";
+
+  /** `sessionContext()` whose session manager hands back what the extension appended (`entries`,
+   *  a fixture's) as the session's branch, as Oh My Pi's hands back what `pi.appendEntry` wrote,
+   *  so each request reads every answers message the requests before it recorded. `id` is read on
+   *  every call, so a case can move the host to another session. */
+  function recordingContext(entries: readonly BranchEntry[], id: () => string): SessionContext {
+    const context = sessionContext();
+    return {
+      ...context,
+      sessionManager: { ...context.sessionManager, getSessionId: id, getBranch: () => entries },
+    };
+  }
+
+  /** The answers messages the extension recorded in the session (`ANSWERS_SENT`), in the order it
+   *  wrote them. */
+  const answersSent = (entries: readonly BranchEntry[]) =>
+    entries.filter((entry) => entry.customType === ANSWERS_SENT);
+
+  /** Tool round `n` of a conversation: a read call and its result. */
+  const toolRound = (n: number) => [
+    {
+      role: "assistant",
+      content: [{ type: "toolCall", id: `call-${n}`, name: "read", arguments: { path: "x.ts" } }],
+      timestamp: 2 * n,
+    },
+    {
+      role: "toolResult",
+      toolCallId: `call-${n}`,
+      toolName: "read",
+      content: [{ type: "text", text: "export {};" }],
+      isError: false,
+      timestamp: 2 * n + 1,
+    },
+  ];
+
   test("the context handler appends what people wrote to the session after the request's last message", async () => {
     const { reads, item } = answeringDispatch("Go the second way.");
     const { default: envoyExtension } = await import("./envoy.ts?session-answers-top");
@@ -18853,18 +18898,36 @@ console.log(JSON.stringify(args));
 
     expect(reads).toEqual(["/api/v1/agents/ses_answers_top/answers"]);
     // The skill stays at the head, the conversation is untouched, and the list is its own last
-    // message.
+    // message, with the sentence saying it replaces every earlier one as its second block.
     expect(JSON.stringify(messages[0])).toContain("<dispatch-first-skill>");
     expect(messages.slice(1, -1)).toEqual(conversation);
+    const list = renderSessionAnswers([item], { now: Date.now() });
     expect(messages.at(-1)).toEqual({
       role: "user",
-      content: [{ type: "text", text: renderSessionAnswers([item], { now: Date.now() }) }],
+      content: [
+        { type: "text", text: list },
+        { type: "text", text: REPLACES },
+      ],
       timestamp: 0,
     });
+    // The session records the message as it was sent, after the message it followed, so every
+    // later request rebuilds it there with these bytes.
+    expect(answersSent(fixture.entries)).toEqual([
+      {
+        type: "custom",
+        customType: ANSWERS_SENT,
+        data: {
+          after: "toolResult@3#call-1",
+          blocks: [list, REPLACES],
+          words: [expect.any(String)],
+        },
+      },
+    ]);
   });
 
   // Oh My Pi drops everything a `context` handler returns when it throws: whatever Dispatch
-  // answers, the skill stays and the request says the list could not be read.
+  // answers, the skill stays and the request says the list could not be read, in a message of
+  // one block with no sentence after it.
   test("a Dispatch answering 200 with no list keeps the dispatch-first skill and carries the failure line", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
     process.env.DISPATCH_TOKEN = "answers-token";
@@ -18885,9 +18948,17 @@ console.log(JSON.stringify(args));
 
     expect(JSON.stringify(messages[0])).toContain("<dispatch-first-skill>");
     expect(messages.slice(1, -1)).toEqual([prompt]);
-    expect(JSON.stringify(messages.at(-1))).toContain(
+    const failure = sessionAnswersFailureLine(
+      "Dispatch answered with something that is not an answers list"
+    );
+    expect(failure).toStartWith(
       "[Dispatch: people's answers from the last 72 hours could not be read ("
     );
+    expect(messages.at(-1)).toEqual({
+      role: "user",
+      content: [{ type: "text", text: failure }],
+      timestamp: 0,
+    });
   });
 
   // A Dispatch URL of its own: the no-route back-off is process-wide, by URL.
@@ -18940,11 +19011,13 @@ console.log(JSON.stringify(args));
     ]);
   });
 
-  // A failed read that gives the cached list with the same items keeps the bytes placed before,
-  // which do not say that the read failed, so the log says it: on the first such request, and
-  // then not until a read has answered again, so a lasting failure is one line. A read that
-  // answers logs nothing: what it gives reaches the model, or is what the model has.
-  test("a failed read whose cached list keeps the placed bytes logs why once, and again only after a read has answered", async () => {
+  // A failed read that gives the cached list with the same items keeps the bytes sent before,
+  // which do not say that the read failed, so the log says it, once per failure episode: on the
+  // first such request, and then not until a read has answered again, so a lasting failure is one
+  // line. A read that answers logs nothing: what it gives reaches the model, or is what the model
+  // has. Each request rebuilds the list where the first put it from the session's record of it,
+  // which the context's branch hands back.
+  test("a failed read whose cached answers list keeps the bytes sent logs why once per failure episode, and again only after a read has answered", async () => {
     answeringDispatch("Go the second way.");
     const answering = rowFetch();
     let failing = false;
@@ -18955,68 +19028,255 @@ console.log(JSON.stringify(args));
     const { default: envoyExtension } = await import("./envoy.ts?session-answers-kept-failure");
     const fixture = createPi();
     envoyExtension(fixture.pi);
-    const context = sessionContext("ses_answers_kept_failure");
+    const context = recordingContext(fixture.entries, () => "ses_answers_kept_failure");
     await fixture.handlers.get("session_start")?.({}, context);
     const prompt = {
       role: "user",
       content: [{ type: "text", text: "Fix the bug." }],
       timestamp: 1,
     };
-    /** Tool round `n` of the conversation: a read call and its result. */
-    const round = (n: number) => [
-      {
-        role: "assistant",
-        content: [{ type: "toolCall", id: `call-${n}`, name: "read", arguments: { path: "x.ts" } }],
-        timestamp: 2 * n,
-      },
-      {
-        role: "toolResult",
-        toolCallId: `call-${n}`,
-        toolName: "read",
-        content: [{ type: "text", text: "export {};" }],
-        isError: false,
-        timestamp: 2 * n + 1,
-      },
-    ];
     const warnings: string[] = [];
     const stopSink = logger.registerLogSink((entry) => {
       if (entry.level === "warn") warnings.push(entry.message);
     });
     const unshown = () => warnings.filter((warning) => warning.includes("could not be read"));
     const failure =
-      "envoy: people's answers could not be read (Dispatch answered with something that is not an answers list); the request keeps the list placed before, which does not name this read's failure";
+      "envoy: people's answers could not be read (Dispatch answered with something that is not an answers list); the request keeps the answers messages sent, which do not name this read's failure";
     try {
       const first = contextMessages(
         await fixture.handlers.get("context")?.({ messages: [prompt] }, context)
       );
+      const [skill] = first;
       const placed = first.at(-1);
+      expect(first).toEqual([skill, prompt, placed]);
       expect(JSON.stringify(placed)).toContain("Go the second way.");
+      expect(answersSent(fixture.entries)).toHaveLength(1);
       expect(unshown()).toEqual([]);
-      const rounds = [1, 2, 3, 4, 5].map(round);
-      /** Sends the request after `n` tool rounds, and checks that it keeps the placed bytes where
+      const rounds = [1, 2, 3, 4, 5].map(toolRound);
+      /** Sends the request after `n` tool rounds, and checks that it keeps the bytes sent where
        *  the first request put them. */
       const keeps = async (n: number) => {
         const conversation = [prompt, ...rounds.slice(0, n).flat()];
         const messages = contextMessages(
           await fixture.handlers.get("context")?.({ messages: conversation }, context)
         );
-        expect(messages.slice(1)).toEqual([prompt, placed, ...conversation.slice(1)]);
+        expect(messages).toEqual([skill, prompt, placed, ...conversation.slice(1)]);
       };
 
-      // Three failed reads keep the placed bytes, and only the first logs.
+      // Three failed reads keep the bytes sent, and only the first of the episode logs.
       failing = true;
       for (const n of [1, 2, 3]) {
         await keeps(n);
         expect(unshown()).toEqual([failure]);
       }
-      // Dispatch answers again, with the same item: the placed bytes stay, and nothing is logged.
+      // Dispatch answers again, with the same item: the bytes sent stay, nothing is logged, and
+      // the episode ends.
       failing = false;
       await keeps(4);
       expect(unshown()).toEqual([failure]);
-      // The first failed read after that logs again.
+      // The first failed read after that begins a new episode, and logs again.
       failing = true;
       await keeps(5);
       expect(unshown()).toEqual([failure, failure]);
+      // No request after the first appended a message, so the session holds its one record.
+      expect(answersSent(fixture.entries)).toHaveLength(1);
+    } finally {
+      stopSink();
+    }
+  });
+
+  // A Dispatch that cannot be read, with no list cached: the first request appends the failure
+  // line after its last message, and the log says so once for the failure episode; the requests
+  // after it rebuild that line where it went and log nothing. A read that answers ends the
+  // episode, and its empty window appends nothing, so the failure line stays the newest answers
+  // message; the next failed read begins a new episode and logs once more, now that the request
+  // keeps the answers messages sent. A Dispatch URL and a session of their own: the read's cache
+  // is the process's, by session and URL.
+  test("a Dispatch answering 503 with nothing cached logs one line per failure episode, whether the request shows the failure or keeps the line sent", async () => {
+    const id = "ses_answers_503";
+    process.env.DISPATCH_URL = "http://dispatch-503.test";
+    process.env.DISPATCH_TOKEN = "answers-token";
+    let answering = false;
+    const reads: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.host !== "dispatch-503.test") return responseWithRegistration(input, init, {});
+      if (url.pathname.endsWith("/answers")) reads.push(url.pathname);
+      return answering
+        ? Response.json({
+            session_id: id,
+            since: url.searchParams.get("since"),
+            total: 0,
+            items: [],
+          })
+        : Response.json(
+            { code: "UNAVAILABLE", error: "the database is unavailable" },
+            { status: 503 }
+          );
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?session-answers-503");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const context = recordingContext(fixture.entries, () => id);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn" && entry.message.includes("people's answers")) {
+        warnings.push(entry.message);
+      }
+    });
+    const reason = "UNAVAILABLE: the database is unavailable";
+    const shown = `envoy: people's answers could not be read (${reason}); the request tells the model after its last message`;
+    const kept = `envoy: people's answers could not be read (${reason}); the request keeps the answers messages sent, which do not name this read's failure`;
+    const failureLine = {
+      role: "user",
+      content: [{ type: "text", text: sessionAnswersFailureLine(reason) }],
+      timestamp: 0,
+    };
+    const prompt = { role: "user", content: [{ type: "text", text: "Fix it." }], timestamp: 1 };
+    const [round1, round2, round3] = [1, 2, 3].map(toolRound);
+    const request = async (messages: readonly unknown[]) =>
+      contextMessages(await fixture.handlers.get("context")?.({ messages }, context));
+    try {
+      // The first failed read: the failure line after the prompt, recorded alone in its message,
+      // and one line in the log.
+      const first = await request([prompt]);
+      const [skill] = first;
+      expect(first).toEqual([skill, prompt, failureLine]);
+      expect(warnings).toEqual([shown]);
+      expect(answersSent(fixture.entries)).toEqual([
+        {
+          type: "custom",
+          customType: ANSWERS_SENT,
+          data: { after: "user@1", blocks: [sessionAnswersFailureLine(reason)] },
+        },
+      ]);
+
+      // The same failure a tool round later: the line stays after the prompt, the request ends
+      // with the tool result, and nothing is appended, recorded or logged.
+      expect(await request([prompt, ...round1])).toEqual([skill, prompt, failureLine, ...round1]);
+      expect(warnings).toEqual([shown]);
+      expect(answersSent(fixture.entries)).toHaveLength(1);
+
+      // Dispatch answers, with no item in the window: nothing to say, so nothing is appended,
+      // recorded or logged, and the episode ends.
+      answering = true;
+      expect(await request([prompt, ...round1, ...round2])).toEqual([
+        skill,
+        prompt,
+        failureLine,
+        ...round1,
+        ...round2,
+      ]);
+      expect(warnings).toEqual([shown]);
+      expect(answersSent(fixture.entries)).toHaveLength(1);
+
+      // 503 again: a new episode, logged once. The failure line sent is still the newest answers
+      // message, so this request keeps it and appends none.
+      answering = false;
+      expect(await request([prompt, ...round1, ...round2, ...round3])).toEqual([
+        skill,
+        prompt,
+        failureLine,
+        ...round1,
+        ...round2,
+        ...round3,
+      ]);
+      expect(warnings).toEqual([shown, kept]);
+      expect(answersSent(fixture.entries)).toHaveLength(1);
+    } finally {
+      stopSink();
+    }
+    // Every request asked Dispatch: none rode on a read still in flight.
+    expect(reads).toHaveLength(4);
+  });
+
+  // The answers message a request appends is written to the session (`pi.appendEntry`), and the
+  // next request finds it in the branch and carries it where it went, with its bytes, appending
+  // nothing while the read shows nothing new. A request during which the host moved to another
+  // session while the read waited still carries the new list it appends, but records nothing: the
+  // entry would land in the file of the session the host moved to.
+  test("the session records the answers list a request appends, the next request rebuilds it from that record, and a request whose host moved during the read records nothing", async () => {
+    const { item } = answeringDispatch("Go the second way.");
+    const answering = rowFetch();
+    let text = item.text;
+    let live = "ses_answers_recorded";
+    /** The session the host moves to while the next read waits, if it moves. */
+    let moveTo: string | undefined;
+    globalThis.fetch = async (input, init) => {
+      if (new URL(input.toString()).host !== "dispatch.test") return answering(input, init);
+      if (moveTo !== undefined) live = moveTo;
+      return Response.json({
+        session_id: "ses_answers_recorded",
+        since: item.at,
+        total: 1,
+        items: [{ ...item, text }],
+      });
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?session-answers-recorded");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const context = recordingContext(fixture.entries, () => live);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn" && entry.message.includes("people's answers")) {
+        warnings.push(entry.message);
+      }
+    });
+    const prompt = { role: "user", content: [{ type: "text", text: "Fix it." }], timestamp: 1 };
+    const [round1, round2] = [1, 2].map(toolRound);
+    const request = async (messages: readonly unknown[]) =>
+      contextMessages(await fixture.handlers.get("context")?.({ messages }, context));
+    try {
+      const first = await request([prompt]);
+      const [skill] = first;
+      const blocks = [renderSessionAnswers([item], { now: Date.now() }), REPLACES];
+      const placed = {
+        role: "user",
+        content: blocks.map((block) => ({ type: "text", text: block })),
+        timestamp: 0,
+      };
+      expect(first).toEqual([skill, prompt, placed]);
+      const recorded = answersSent(fixture.entries);
+      expect(recorded).toEqual([
+        {
+          type: "custom",
+          customType: ANSWERS_SENT,
+          data: { after: "user@1", blocks, words: [expect.any(String)] },
+        },
+      ]);
+
+      // A tool round later, with the same item: the list is rebuilt from the record, after the
+      // prompt, and nothing is appended or recorded.
+      expect(await request([prompt, ...round1])).toEqual([skill, prompt, placed, ...round1]);
+      expect(answersSent(fixture.entries)).toEqual(recorded);
+
+      // The person edits the answer, and the host moves to another session while the read waits:
+      // the request carries the new list after its last message, and the session gains no record.
+      text = "Go the third way.";
+      moveTo = "ses_answers_moved";
+      const edited = renderSessionAnswers([{ ...item, text }], { now: Date.now() });
+      expect(await request([prompt, ...round1, ...round2])).toEqual([
+        skill,
+        prompt,
+        placed,
+        ...round1,
+        ...round2,
+        {
+          role: "user",
+          content: [
+            { type: "text", text: edited },
+            { type: "text", text: REPLACES },
+          ],
+          timestamp: 0,
+        },
+      ]);
+      expect(live).toBe("ses_answers_moved");
+      expect(answersSent(fixture.entries)).toEqual(recorded);
+      expect(warnings).toEqual([
+        "envoy: the message of people's answers this request sent was not recorded: the host moved to another session while the request waited on the read",
+      ]);
     } finally {
       stopSink();
     }
@@ -22460,6 +22720,31 @@ describe("consumer delivery", () => {
       expect(live).not.toContain(movedIso);
       // Returning to it reads the same bytes, so the provider's prompt cache reads them again.
       expect(liveAgain).toBe(live);
+    });
+
+    // The delivery a session first gives a card goes into its file once, at the card's
+    // `message_end` (`envoy-card-delivered`, a literal so the case loads against a source without
+    // the export), and the requests after it record nothing (`../src/card-age`).
+    test("a card's write records its delivery in the session once", async () => {
+      const session = await bootConsumer("card-age-recorded", { turn: "streaming" });
+      session.relay(1, peer("card-age-recorded"));
+      await until(() => session.cards("evt-card-age-recorded").length > 0, "the relayed card");
+      await session.take();
+      const [card] = session.cards("evt-card-age-recorded");
+      if (card === undefined) throw new Error("the card was not handed");
+      const { customType, content, details } = card;
+      const written = { role: "custom", customType, content, display: true, details, timestamp: 1 };
+      const contextHandler = session.fixture.handlers.get("context");
+      if (contextHandler === undefined) throw new Error("no context handler was registered");
+      await contextHandler({ messages: [written] }, sessionContext(SESSION));
+      await contextHandler({ messages: [written] }, sessionContext(SESSION));
+
+      const recorded = session.fixture.entries.filter(
+        (entry) => entry.customType === "envoy-card-delivered"
+      );
+      expect(recorded.map((entry) => entry.data)).toEqual([
+        { event_id: "evt-card-age-recorded", at: expect.any(Number) },
+      ]);
     });
   });
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 )
 
 func executable(t *testing.T, dir, name string) string {
@@ -206,8 +207,10 @@ func TestResolveToolsRefusesAJJOlderThanTheLayoutProvisioningReliesOn(t *testing
 // The jj --version boot runs starts without either raw NATS seed the daemon holds, as every
 // command the daemon starts does (runtime.WithoutNATSSeeds).
 func TestTheJJVersionCheckGetsNoNATSSeed(t *testing.T) {
-	t.Setenv("NATS_NKEY_SEED", "pane-seed-value")
-	t.Setenv("NATS_DAEMON_NKEY_SEED", "daemon-seed-value")
+	// Unique values, so that only a variable a seed reached can hold one (envlisting).
+	paneSeed, daemonSeed := envlisting.Unique("pane-seed-"), envlisting.Unique("daemon-seed-")
+	t.Setenv("NATS_NKEY_SEED", paneSeed)
+	t.Setenv("NATS_DAEMON_NKEY_SEED", daemonSeed)
 	dir := t.TempDir()
 	dump := filepath.Join(dir, "env")
 	jj := filepath.Join(dir, "jj")
@@ -221,7 +224,11 @@ func TestTheJJVersionCheckGetsNoNATSSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jj --version never ran: %v", err)
 	}
-	if strings.Contains(string(seen), "seed-value") || !strings.Contains(string(seen), "PATH=") {
-		t.Errorf("jj --version's environment carries a NATS seed (or is not the daemon's):\n%s", seen)
+	vars := envlisting.Vars(string(seen))
+	if name, leaked := envlisting.Carrying(vars, paneSeed, daemonSeed); leaked {
+		t.Errorf("jj --version's environment carries a NATS seed in %s:\n%s", name, seen)
+	}
+	if vars["PATH"] == "" {
+		t.Errorf("jj --version's environment is not the daemon's (no PATH):\n%s", seen)
 	}
 }

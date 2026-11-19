@@ -361,7 +361,7 @@ func below(request, limit string) bool {
 // knows the root volume raises the request so the scheduler reserves disk; GKE Autopilot admits no
 // main container requesting more than 10Gi of it and clamps each container's limit to its request,
 // so a deployment there sets both to at most 10Gi. The controller, which runs alone in its pod,
-// gets a pod of its own size. The image probe pod takes none of these: its own fixed 250m and 1Gi
+// gets a pod of its own size. The image probe pod takes none of these: its own fixed 500m and 1Gi
 // (internal/daemon/kubernetes.go, probeReservation), since it starts one Oh My Pi at a time and
 // runs no lane, and a probe sized as a pod could not boot on a full pool.
 var defaultResources = PodResources{

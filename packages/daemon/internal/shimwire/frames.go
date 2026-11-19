@@ -78,6 +78,12 @@ const (
 	TypeLauncherLeakCheckResult = "launcher_leak_check_result"
 )
 
+// SyntheticModel is the model Claude Code names on a message no model wrote, such as its own answer
+// to a provider's refusal (internal/claudebridge's testdata/api-error-429.jsonl:4). Such a message
+// answers nothing: the bridge writes no message_end for it, and the stream reads none that names it
+// as an answer (internal/stream's answeredBy).
+const SyntheticModel = "<synthetic>"
+
 // The protocol's sizes, verified against the shipped files: the largest plain line including its
 // newline (worker-rpc.ts:8-12), the base64 payload of one chunk (worker-rpc.ts:16-18), the
 // largest frame a chunk sequence may carry (worker-rpc.ts:13-15), and the bytes a connection may
