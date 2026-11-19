@@ -45,9 +45,10 @@
 # never PASS's 0, and refuses an empty value with exit 2.
 # OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS and OUTSIDE_PATH_ORIGIN_READ_SECONDS bound each of the two
 # reads of the origin, as curl's --connect-timeout and --max-time: 3 and 10 s when unset or empty.
-# Each must be a whole number of seconds from 1 to 999999, in digits; any other value refuses the
-# run, naming the setting. A bound under 1 s fails every read on a curl that resolves names without
-# threads, which gives up with under 1000 ms left; curl reads 0 as no bound; and curl 7.55 and
+# Each must be a whole number of seconds from 2 to 999999, in digits; any other value refuses the
+# run, naming the setting. A curl built with the synchronous resolver (neither threaded nor c-ares)
+# gives up before it resolves a name, 127.0.0.1 included, with under 1000 ms of the bound left,
+# which a 1 s bound reaches once 1 ms has passed; curl reads 0 as no bound; and curl 7.55 and
 # later refuse a bound past 2147483 s where a long has 32 bits. They do not bound the probes, whose
 # 3 s to connect and 5 s in all the classifier's rules count on.
 #
@@ -334,11 +335,11 @@ fi
   unknown "OUTSIDE_PATH_TARGETS is unset: set it to the file of 'name host port' lines naming every internal target"
 
 # check_seconds NAME VALUE: refuses the run, naming NAME, unless VALUE is a whole number of seconds
-# from 1 to 999999, in digits, which every curl from 7.40 takes as a bound (the header says why).
+# from 2 to 999999, in digits (the header says why).
 check_seconds() {
   local whole=${2#"${2%%[!0]*}"}
-  is_count "$2" && [ -n "$whole" ] && [ "${#whole}" -le 6 ] && return
-  unknown "$1 must be a whole number of seconds from 1 to 999999, not $2"
+  is_count "$2" && [ -n "$whole" ] && [ "$whole" != 1 ] && [ "${#whole}" -le 6 ] && return
+  unknown "$1 must be a whole number of seconds from 2 to 999999, not $2"
 }
 origin_connect=${OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS:-3}
 origin_read=${OUTSIDE_PATH_ORIGIN_READ_SECONDS:-10}

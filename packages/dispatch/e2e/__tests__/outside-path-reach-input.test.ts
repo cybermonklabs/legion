@@ -189,7 +189,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   );
 
   row(withoutTools)(
-    "refuses an origin-read bound that is not a whole number of seconds from 1 to 999999, naming the setting, before going on the network",
+    "refuses an origin-read bound that is not a whole number of seconds from 2 to 999999, naming the setting, before going on the network",
     async () => {
       const origin = await fakeDispatch();
       try {
@@ -198,13 +198,16 @@ describe.concurrent("outside-path-reach.sh", () => {
           "OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS",
           "OUTSIDE_PATH_ORIGIN_READ_SECONDS",
         ] as const;
-        // A bound under 1 s fails every read on a curl that resolves names without threads, curl
-        // reads 0 as no bound, and curl 7.55 and later refuse one past 2147483 s where a long has
-        // 32 bits: so 0.5, 1.5, 0 and 1000000 are refused, as is anything not digits.
+        // A curl built with the synchronous resolver gives up before it resolves a name with under
+        // 1000 ms of the bound left, which a 1 s bound reaches once 1 ms has passed; curl reads 0
+        // as no bound; and curl 7.55 and later refuse a bound past 2147483 s where a long has 32
+        // bits: so 1, 0.5, 0 and 1000000 are refused, as is anything not digits.
         const values = [
           "abc",
           "0",
           "00",
+          "1",
+          "01",
           "0.0",
           "0.5",
           "1.5",
@@ -233,7 +236,7 @@ describe.concurrent("outside-path-reach.sh", () => {
           cases.map(({ setting, value }) => ({
             setting,
             value,
-            verdict: `UNKNOWN: ${setting} must be a whole number of seconds from 1 to 999999, not ${value}`,
+            verdict: `UNKNOWN: ${setting} must be a whole number of seconds from 2 to 999999, not ${value}`,
             code: 2,
           }))
         );
