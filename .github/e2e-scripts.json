@@ -98,7 +98,7 @@
       "apt": ["postgresql-client"],
       "bun": true,
       "evidence_variable": "",
-      "timeout_minutes": 20,
+      "timeout_minutes": 21,
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
       "jj": false
     }

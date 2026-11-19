@@ -33,12 +33,13 @@
 #
 # The harness runs with NATS disabled, so no `pull_request` event ever stores a pull request
 # head, and the results read derives a check CI proves only at a head Dispatch holds. So each
-# head is staged with psql as such an event would have stored it: one pull_request_heads row
-# attributed to the issue, read just now, so the delivery reconcile has no reason to read it
-# again. The fake GitHub is given one repository holding the same pull requests and each head's
-# check runs, replacing every repository it served. That repository is PROJECT's default where
-# PROJECT maps one, since every issue then resolves to it and a recorded result's commit must be
-# one it holds, and otherwise one of this run's own, which nothing maps.
+# head is staged with psql (stage_head): one pull_request_heads row attributed to the issue, with
+# no texts. Each reader takes the issue that row stores until a read of GitHub stores its texts,
+# and that read asks the fake, which answers the same pull request. The fake GitHub is given one
+# repository holding the same pull requests and each head's check runs, replacing every
+# repository it served. That repository is PROJECT's default where PROJECT maps one, since every
+# issue then resolves to it and a recorded result's commit must be one it holds, and otherwise
+# one of this run's own, which nothing maps.
 #
 # It writes nine issues in PROJECT and closes every one of them, also when a check fails; on exit
 # it deletes the pull_request_heads rows it staged and empties the fake GitHub. Nothing it writes
@@ -274,19 +275,20 @@ fake_pull() {
 }
 
 # stage_head SECTION ISSUE NUMBER SHA STATE: pull request NUMBER of ISSUE is STATE (open or
-# merged) at SHA, in the fake and in Dispatch's own head record, as a `pull_request` event would
-# have stored it. attribution_rule is delivery.AttributionRuleVersion, so the reconcile has no
-# merged row to judge again either; were it to, it reads the same pull request from the fake.
+# merged) at SHA, in the fake and in Dispatch's own head record. The row holds no texts, as a row
+# of the release before holds none, so each reader takes the issue that the row stores until a
+# read of GitHub stores its texts. That read asks the fake, which answers the same pull request,
+# and its title names ISSUE.
 stage_head() {
   fake_pull "$@"
   sql "$1" "stage pull request $3 of $2" -v repo="$driven_repo" -v number="$3" -v sha="$4" \
     -v state="$5" -v issue="$2" -v title="$2 the ci-check acceptance run" <<'SQL'
 insert into pull_request_heads
-  (repo, number, head_sha, state, issue_key, attribution_source, title, attribution_rule, checked_at)
-values (:'repo', :'number', :'sha', :'state', :'issue', 'title_body', :'title', 3, now())
+  (repo, number, head_sha, state, issue_key, attribution_source, title, checked_at)
+values (:'repo', :'number', :'sha', :'state', :'issue', 'title_body', :'title', now())
 on conflict (repo, number) do update set
   head_sha = excluded.head_sha, state = excluded.state, issue_key = excluded.issue_key,
-  title = excluded.title, attribution_rule = excluded.attribution_rule, checked_at = excluded.checked_at;
+  title = excluded.title, checked_at = excluded.checked_at;
 SQL
   pass "$1" "staged pull request $3 of $2, $5 at $4"
 }
