@@ -563,13 +563,22 @@ near its memory limit. `reason` names the program by its executable and its pid,
 it held, how much the pod held, and the pod's limit. It names none of the program's arguments.
 Your session and the pod's other processes go on, and the guard touched no pod of any tree.
 
+A pod in a microVM has no memory guard. There the pod's own kernel stops a program when the pod
+runs out of memory, and `reason` begins "The pod's kernel stopped one of your processes because
+the pod ran out of memory". It names the same facts, and the advice below holds for it too.
+
 Do not run the same program again unchanged, because it would end the same way. Bound its output:
 read a page at a time, set a limit on what it returns, or stream it to a file and read only the
 part you need. Send heavy work where your deployment's instructions say, never to your own pod.
 
+The kernel can also stop one of the processes that run your session. `reason` then says "It was
+one of the processes that run your session". If it was your agent, your turn ended with it, and
+so did every command it was running. The daemon then starts your session again. Bound what you
+run from then on, as the paragraph above says.
+
 An `eval` cell that answers "Kernel died during execution; completion is uncertain", with such a
-notice beside it, is this kill: the guard stopped the cell's kernel. Some of the cell's work may
-have run and some may not, so check what it was to change before you run a bounded form of it.
+notice beside it, is this kill: the program stopped was the cell's kernel. Some of the cell's work
+may have run and some may not, so check what it was to change before you run a bounded form of it.
 
 Each kill is a notice of its own, even while an earlier one is still unsent.
 
