@@ -528,7 +528,7 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 // its pass once.
 type ProjectResumed struct{}
 
-func (ProjectResumed) isFact() {}
+func (ProjectResumed) namedIssue() (string, bool) { return "", false }
 
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {

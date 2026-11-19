@@ -621,7 +621,7 @@ func TestAPendingStepRecordHoldsNoIdlePod(t *testing.T) {
 			if err != nil || !slices.Contains(candidates, rootIssue) {
 				t.Fatalf("IdlePods = %v, %v; want %s, whose claim is live, a candidate", candidates, err, rootIssue)
 			}
-			_, boundary, _ := releaseThroughTheStore(t, st)
+			_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
 			queueRecord()
 			decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
 			if err != nil || decision.Act != ReleaseActs {
