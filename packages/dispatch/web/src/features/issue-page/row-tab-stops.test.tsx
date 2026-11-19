@@ -1,6 +1,4 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
@@ -17,6 +15,7 @@ import { NoTooltips } from "./NoTooltips";
 import { CONTROL_LABELS } from "./page-words";
 import { RowText, useOutOfTabOrder } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
+import { wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
  * Whether the controls inside a node's words and facts take a place in the tab order (part G's
@@ -283,28 +282,6 @@ test("useOutOfTabOrder takes an element that scrolls out of the tab order, a lat
     view.unmount();
   }
 });
-
-/** The rules of `styles.css` that give a block in a node's words a scroll of its own (decision
- *  282), as one style sheet: no DOM of a unit test loads the page's styles, and the overflow
- *  `useOutOfTabOrder` reads is the one these rules compute. */
-function wordsScrollSheet(): HTMLStyleElement {
-  const css = readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    ""
-  );
-  const rules = [...css.matchAll(/([^{};]+)\{([^{}]*)\}/g)].flatMap(
-    ([rule, selectors = "", body = ""]) =>
-      selectors.includes("[data-node-words]") && /overflow-x:\s*auto/.test(body)
-        ? [rule.trim()]
-        : []
-  );
-  expect(rules.length, "no rule of styles.css scrolls a block in a node's words").toBeGreaterThan(
-    0
-  );
-  const sheet = document.createElement("style");
-  sheet.textContent = rules.join("\n");
-  return sheet;
-}
 
 /** A comment that holds a code block and a table, each wider than a row's words. */
 const WIDE_BLOCKS = [

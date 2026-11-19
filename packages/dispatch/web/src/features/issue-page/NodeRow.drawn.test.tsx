@@ -1,6 +1,4 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -36,6 +34,7 @@ import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { ProvidersSlot } from "./slots/providers";
 import { addressesAsShortForms } from "./tree-drafts";
+import { wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
  * What one row of the tree draws, read as a reader reads it (R1, R6, R9,
@@ -629,41 +628,26 @@ test("a node whose read sends no reading of its text draws the text as stored", 
   }
 });
 
-/** The selector list of each rule of `styles.css` that gives a block a sideways scroll of its
- *  own: it is drawn as a block, held to the width of what holds it, and scrolls along its own x
- *  axis. The browser applies these rules and no DOM of a unit test does, so a row reads them
- *  here. A list is kept whole, since a comma inside `:is(…)` separates no selectors. */
-function sidewaysScrollRules(): string[] {
-  const css = readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    ""
-  );
-  return [...css.matchAll(/([^{};]+)\{([^{}]*)\}/g)].flatMap(([, selectors = "", body = ""]) => {
-    const declared = new Set(body.split(";").map((one) => one.replace(/\s+/g, " ").trim()));
-    const scrolls = ["display: block", "max-width: 100%", "overflow-x: auto"].every((one) =>
-      declared.has(one)
-    );
-    return scrolls ? [selectors.trim()] : [];
-  });
-}
-
 // Decision 282: at 390 px a note whose body holds a table of sixteen columns, drawn in its row,
 // made the whole page 794 px wide. A wide block in a node's words - a table, a code block -
 // scrolls sideways inside itself, as a table does in a document's reading, so neither the row
-// nor the page does. The row's own blocks are the ones a rule of `styles.css` gives that scroll;
-// the widths are the browser suite's to read, since no DOM of a unit test lays any out.
+// nor the page does. The row's own blocks are the ones a rule of `styles.css` gives that scroll,
+// drawn as a block held to the width of what holds it; the widths are the browser suite's to
+// read, since no DOM of a unit test lays any out.
 test("a table and a code block in a row's words each scroll sideways on their own", () => {
   const text = "| One | Two |\n| --- | --- |\n| 1 | 2 |\n\n```\nconst wide = true;\n```";
   const view = renderRow(
     node({ id: "notes-md#b-n1", text, tree: displayTree(text), type: "callout" })
   );
   try {
-    const rules = sidewaysScrollRules();
+    const rules = wordsScrollRules().filter(({ declared }) =>
+      ["display: block", "max-width: 100%"].every((one) => declared.has(one))
+    );
     for (const block of ["table", "pre"]) {
       const drawn = view.container.querySelector(`[data-node-words] ${block}`);
       if (drawn === null) throw new Error(`the row's words draw no ${block}`);
       expect(
-        rules.some((selectors) => [...document.querySelectorAll(selectors)].includes(drawn)),
+        rules.some(({ selectors }) => [...document.querySelectorAll(selectors)].includes(drawn)),
         `no rule of styles.css scrolls the ${block} in a row's words sideways on its own`
       ).toBe(true);
     }
@@ -678,10 +662,7 @@ test("a table and a code block in a row's words each scroll sideways on their ow
 test("out of the tab order, a focused row's code block and table keep their tab stop, named, and an unfocused row's do not", () => {
   const text = "| One | Two |\n| --- | --- |\n| 1 | 2 |\n\n```\nconst wide = true;\n```";
   // The rules that make each block scroll, which the hook reads through the computed style.
-  const sheet = document.createElement("style");
-  sheet.textContent = sidewaysScrollRules()
-    .map((selectors) => `${selectors} { overflow-x: auto; }`)
-    .join("\n");
+  const sheet = wordsScrollSheet();
   document.head.append(sheet);
   const drawn = (focused: boolean) => {
     const view = renderRow(
