@@ -39,8 +39,8 @@ import (
 // failure that follows the delivery, and a worker that is not taking the task now — its shim is
 // not connected here, as a worker is handed nothing while the wake pacing holds back the relaunch
 // that replaces its process, until the pacing lets that launch run (supervise's sendPending,
-// launchWaits). The phase is then entered again, as a head that starts conflicting with its base
-// or a sign-off enters one, and the transition writes its start through workflow.StartOrOwe
+// launchWaits). The phase is then entered again, as a tester's fail or a worker's backward move
+// enters one, and the transition writes its start through workflow.StartOrOwe
 // exactly as the engine does.
 //
 // The negative control is the fix reverted — the later task written over the owed row in
