@@ -23,7 +23,7 @@ const makeDirectory = temporaryDirectories("dispatch-review");
 const TOKEN = fixtureSecret("dsp");
 
 /** The person the token names, whom Dispatch records every review under. */
-const PERSON = "alice@theorem.dev";
+const PERSON = "alice@example.com";
 
 interface Recorded {
   readonly method: string;

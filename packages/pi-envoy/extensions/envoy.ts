@@ -3082,14 +3082,15 @@ export default function envoyExtension(hostApi: PiApi): void {
     );
 
   // The Envoy role a session pod's launch named (`ENVOY_SESSION_ROLE`) and the one session it named
-  // it for (`ENVOY_SESSION_ROLE_SESSION`, the id the pod starts the agent with; agent-infra's
-  // sessions workload sets both once t-e-32 lands). That session claims the role itself, under its
-  // own credential, which the listener holds to that very session, at every pass that registers
-  // it (`settleRole`). No other session claims it, by any path: not a process the agent starts in
-  // the pod, such as an `omp -p` review, which gets the same environment; not an ACP host's other
-  // session; not an id a `/new`, a `/fork` or a tree branch mints, though a fork's or a branch's
-  // transcript carries the named session's record of the claim. Each pass compares the session
-  // open then. Read when the instance is created; nothing takes them out of the environment.
+  // it for (`ENVOY_SESSION_ROLE_SESSION`, the id the pod starts the agent with; the deployment
+  // repository's sessions workload sets both once t-e-32 lands). That session claims the role
+  // itself, under its own credential, which the listener holds to that very session, at every
+  // pass that registers it (`settleRole`). No other session claims it, by any path: not a process
+  // the agent starts in the pod, such as an `omp -p` review, which gets the same environment; not
+  // an ACP host's other session; not an id a `/new`, a `/fork` or a tree branch mints, though a
+  // fork's or a branch's transcript carries the named session's record of the claim. Each pass
+  // compares the session open then. Read when the instance is created; nothing takes them out of
+  // the environment.
   const sessionRole = listenerRoleName(process.env.ENVOY_SESSION_ROLE ?? "") || undefined;
   const sessionRoleSession = process.env.ENVOY_SESSION_ROLE_SESSION?.trim() || undefined;
   // Why session `id` may not claim `role`, or undefined when it may: the launch's role is the

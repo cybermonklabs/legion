@@ -209,10 +209,10 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 // hold (reapOrphans), and a put-back's jj and git are the launcher's own children. Each starts
 // through the guard the reaper skips (pidGuard.starter, which newManagers gives the pod's
 // restore): a command whose exit the reaper took first fails its own wait with `waitid: no child
-// processes`, or under gVisor at times `waitid: no such process`, and the roles start without the
-// saved work. The race needs a pod's shape, as TestTheLeakCheckInstallSurvivesPID1sReaper says, so
-// the put-backs run in the test binary as PID 1 of a PID namespace of its own
-// (TestPutBacksPIDOneHelper).
+// processes`, or under gVisor at times `wait: no child processes` or `waitid: no such process`,
+// and the roles start without the saved work. The race needs a pod's shape, as
+// TestTheLeakCheckInstallSurvivesPID1sReaper says, so the put-backs run in the test binary as PID 1
+// of a PID namespace of its own (TestPutBacksPIDOneHelper).
 func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
 	t.Logf("%s", runAsPIDOne(t, "TestPutBacksPIDOneHelper"))
 }

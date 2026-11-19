@@ -37,8 +37,10 @@ broker's token exchange, which answers a Dispatch access token and the machine l
 minted, and the machine enrols with that login. That login names the machine's fleet and no
 person, so the session acts for the fleet's service: it reads the secrets that service owns and
 the shared agent-tier ones, and no person's. The person a fleet's
-`BROKER_VM_EXCHANGE_ACCOUNTS` entry names reaches the Dispatch token alone; that person reaches
-their own secrets on the machine only by signing in on it.
+`BROKER_VM_EXCHANGE_ACCOUNTS` entry names reaches the Dispatch token and no secret, and is the
+person whose Inbox lists a request the machine makes for a shared human-tier secret
+([Approvals](#approvals)); that person reaches their own secrets on the machine only by signing in
+on it.
 
 A person signs in on a machine with `agent-secrets login`, which runs Google's device flow and then
 trades the person's own identity token at the exchange with the machine's as the actor token. That
@@ -780,6 +782,47 @@ The two login revokes reach the dormant enrollments that login made as well as i
 grant a person has just taken back never waits on the session's next box
 (`enroll.go`, `endCredential`).
 
+A request is wider than its session: it belongs to the principal that made it, which the broker
+records on every enrollment when it is made, from what the enrolling box proved and, for a pod, the
+claim its launcher states (`enroll.go`, `ownerKey`).
+That owner is the person, for a box of theirs and for their sign-in on a machine; the Legion claim
+under the account the launcher's own login proved, for a pod the Legion daemon enrols, which states
+the role's claim token (`legion-<project>-<issue>-<role>`) for every generation and every
+replacement pod of the role; and the machine itself, by the subject its credential proved, for a
+machine's own session.
+Every project's daemon logs in as the same service under an account of its own, so a daemon whose
+pod states another project's claim token is another owner and takes nothing of that claim's.
+A pod that states no claim is its own pod's, and each slot of it, one role process of an issue pod,
+is its own slot's, so the roles of one pod read none of each other's requests.
+Any enrollment of the same owner reads the request (`agent-secrets status`) and cancels it
+(`agent-secrets cancel`), and every other one is refused `NOT_YOURS`
+(`packages/envoy/internal/broker/requests/machine_read.go`, `OwnerOf`): a person reads their
+request from another box, the next pod of a claim cancels what the pod before it asked for, and a
+second machine of the same fleet, or another role of the same issue, reads neither.
+An enrollment that records no owner, every one made before the broker recorded owners, reads and
+cancels its own requests alone.
+
+Reading and cancelling is all the owner adds for a person and for a machine: their grants still
+follow the session that asked, so a person's other session sees the request but never takes its
+grant, and a session that resumes on another box gets its own grant back even after another
+session of that person enrolled first.
+A claim is the one owner a grant follows.
+A role's next pod comes up under a session of its own, which the carry cannot follow, so the next
+enrollment of a claim also takes the grants and the pending requests a dormant enrollment of that
+claim still holds, after the carry has taken what its own session left; a pod of the claim that is
+still running keeps what it holds (`enroll.go`, `adopt`).
+The next pod can also come up before the pod before it is ended, when the daemon's revoke lands late
+or never and the old enrollment lives until its lease lapses.
+Then the end of the old enrollment, when it comes, hands what it holds to the running pod of the
+claim instead of leaving it dormant (`enroll.go`, `handOver`).
+So a person who approves a role's request after its pod is gone has the grant land on the role's
+next pod, which reads the value, and that pod asking for the same names again joins the request
+rather than putting a second card in the approver's Inbox.
+A pending request that moves to the next pod names that pod's session for its wake, so the
+request's expiry wakes the pod waiting on it, not the session of the pod that is gone.
+Each move is in the audit record as the carry's is, its `enrollment.adopted` row naming the rule
+`claim`, and an end that handed over names the pod it handed to (`handed_to`).
+
 Within one principal the session name is asserted, not proved.
 The name rides in the enrollment request's body, outside the launcher proof, which signs the call's
 method and URL and nothing else
@@ -803,6 +846,14 @@ Three things bound it.
 Another principal is refused the name outright.
 Every adoption is in the audit record, naming both enrollments.
 And a person's revoke ends the grant at once.
+
+A claim is asserted the same way: it rides in the enrollment's body, and it is the launcher's word,
+so a holder of the Legion daemon's login can state any claim of the daemon's service and take what a
+pod of that claim leaves, whether it enrols after that pod went dormant or runs when that pod ends.
+A pod enrolling itself states none, `400 INVALID_CLAIM`, because a claim it picked for itself
+would make it a sibling pod's owner, and neither does a pod under a service login a person
+approved, which no token proved to be the launcher's
+(`enroll.go`, `podUnderTokenLogin`).
 
 The broker never stores a value. Each time a session reads a grant, the broker checks that the
 session is still enrolled, the grant is live, its approval still verifies, and the current policy
@@ -974,9 +1025,23 @@ The broker checks the signed-in person against the record's approver: anyone els
 saying who may decide it, with a link to sign in as someone else, and no buttons. A request for a
 shared
 human-tier secret, or for a shared agent-tier secret its session's operator withheld from it,
-names the approver `anyone`: it waits in every person's Inbox, anyone who signs in to the broker may
-decide it, and the
-broker records the email of whoever did. A withheld secret is its owner's to approve for that
+names the approver `anyone`: anyone who signs in to the broker may decide it, and the
+broker records the email of whoever did. It waits in the Inbox of the person responsible for the
+agent that asked, which the broker records when the request is made, in this order: the session's
+operator (the person of an `agent-secrets login` sign-in, or the person who approved its machine
+login); for a fleet machine's own session, the person its `BROKER_VM_EXCHANGE_ACCOUNTS` entry
+names; for a Legion worker pod, the assignee of the Dispatch issue its claim names, which the broker
+reads at `BROKER_JUDGE_DISPATCH_URL` and stops waiting for after three seconds. Where none of these
+names a person — a pod with no claim, a broker with no judge settings, a Dispatch that did not
+answer in time, an issue nobody is assigned to, a machine whose fleet names nobody — it waits in
+every person's Inbox, so no request waits where nobody sees it. A Dispatch read that failed or ran
+out of its three seconds is logged at WARN, naming the issue
+([Health and logs](/legion/broker/operate/#health-and-logs)), so a broker that cannot read Dispatch
+is seen to list those requests for everyone. Who is asked changes nobody's right
+to decide: anyone signed in still decides it from its page. That is also why the broker takes the
+claim and the assignee as they come: a claim is the launcher's word, so a launcher that states a
+Legion claim naming some issue, and anyone who reassigns that issue in Dispatch, chooses whose
+Inbox lists the request, and neither gains a right to decide it. A withheld secret is its owner's to approve for that
 session even in a request that was already waiting when the operator withheld it: a request that
 waited on anyone for a shared human-tier secret and the operator's own withheld secret is then the
 operator's alone to approve, and anyone else's approval is refused `NOT_APPROVER`. While the broker
@@ -1130,12 +1195,15 @@ within each one's seconds, so a forged record, and one a rules change left behin
 nothing either. What the reason says is the judge's to read against the guidance, and no part of
 that check.
 
-The judge's reads of Dispatch are its only ones: the issue a reason names and the text of its spec
-document, and the ask it cites, with the broker's own projected ServiceAccount token, read again
-from its file once the copy it holds is 30 seconds old. The broker writes nothing there — no ask,
-no comment, no status. It reaches its model at the endpoint its settings name, presenting the
-broker machine's own Google identity token for the audience they name. Those settings are
-all-or-none, and the
+The judge's reads of Dispatch are the issue a reason names and the text of its spec document, and
+the ask it cites, with the broker's own projected ServiceAccount token, read again from its file
+once the copy it holds is 30 seconds old. Another, with the same token, is one GET of the issue a
+Legion worker pod's claim names, for its assignee alone ([Approvals](#approvals)); the token
+exchange's reads of a person's project access are the last, at `BROKER_PROJECT_ACCESS_URL`
+([Operating the broker](/legion/broker/operate/)). The broker writes nothing there — no
+ask, no comment, no status — and reads nothing that belongs to a person. It reaches its model at
+the endpoint its settings name, presenting the broker machine's own Google identity token for the
+audience they name. Those settings are all-or-none, and the
 [configuration reference](/legion/broker/reference/config/) gives each one.
 
 ## The audit record

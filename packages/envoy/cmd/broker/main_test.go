@@ -240,7 +240,7 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil, nil)
 	want := map[string]string{
 		"system:serviceaccount:example:example-sa": "example-service",
 		"system:serviceaccount:example:another-sa": "example-service",

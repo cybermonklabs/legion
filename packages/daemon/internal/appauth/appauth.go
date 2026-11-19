@@ -113,7 +113,7 @@ const responseBound = 1 << 20
 // is the installation's whole breadth. Those objects measure 4.9 to 5.3 KB each, which is what
 // the secrets broker bounds one of them at 64 KB on
 // (packages/envoy/internal/broker/secrets/githubapp.go, githubRepositoryAnswerBound), and this
-// deployment's theorem-labs installation held 216 repositories at 15:45Z on 2026-11-10, about
+// deployment's example-org installation held 216 repositories at 15:45Z on 2026-11-10, about
 // 1.1 MB of answer. 16 MiB holds about 3,000 repositories at the measured size, far above any
 // installation a Legion deployment mints on, and an answer past it is refused rather than read
 // into the daemon's memory.

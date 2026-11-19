@@ -246,7 +246,7 @@ async function createIssueWithComponents(
       if (source === "several") {
         return response([
           architectureSource("LEGION"),
-          architectureSource("LEGION", "theorem-labs/agent-infra"),
+          architectureSource("LEGION", "example-org/deployment"),
         ]);
       }
       if (source === "none") return noSources();
@@ -2143,7 +2143,7 @@ describe("executeDispatchTool", () => {
           key: "CORE",
           name: "Core",
           open_asks: 0,
-          default_assignee: "alice@theorem.dev",
+          default_assignee: "alice@example.com",
           created_at: "2026-10-11T00:00:00Z",
         },
         201
@@ -2170,13 +2170,13 @@ describe("executeDispatchTool", () => {
     });
     expect(result.text).toBe(
       "Created project CORE (Core) at 2026-10-11T00:00:00Z: http://dispatch.test/projects/CORE\n" +
-        "Its unowned work lands on alice@theorem.dev: a question on an issue nobody holds reaches them."
+        "Its unowned work lands on alice@example.com: a question on an issue nobody holds reaches them."
     );
     expect(result.details).toEqual({
       project: "CORE",
       name: "Core",
       created_at: "2026-10-11T00:00:00Z",
-      default_assignee: "alice@theorem.dev",
+      default_assignee: "alice@example.com",
     });
   });
 
@@ -2282,7 +2282,7 @@ describe("executeDispatchTool", () => {
             human_replied: false,
             last_reply: null,
             waiting_on: "human",
-            waiting_on_person: "alice@theorem.dev",
+            waiting_on_person: "alice@example.com",
           },
           {
             id: "ask-2",
@@ -2300,7 +2300,7 @@ describe("executeDispatchTool", () => {
               created_at: "2026-09-13T00:00:00Z",
             },
             waiting_on: "agent",
-            waiting_on_person: "dana@theorem.dev",
+            waiting_on_person: "dana@example.com",
           },
         ],
       });
@@ -2323,10 +2323,10 @@ describe("executeDispatchTool", () => {
         "2 unanswered asks you authored on active issues and project documents.",
         "",
         "Waiting on human (1):",
-        `- 1m 5s · P0 · LEGION-1: Reminder · asked of alice@theorem.dev · ${releaseQuestion} · http://dispatch.test/issues/LEGION-1/asks/ask-1`,
+        `- 1m 5s · P0 · LEGION-1: Reminder · asked of alice@example.com · ${releaseQuestion} · http://dispatch.test/issues/LEGION-1/asks/ask-1`,
         "",
         "Waiting on agent (1):",
-        "- 2h · OPS / Runbook · asked of dana@theorem.dev · Which region? · http://dispatch.test/projects/OPS/documents/runbook?ask=ask-2",
+        "- 2h · OPS / Runbook · asked of dana@example.com · Which region? · http://dispatch.test/projects/OPS/documents/runbook?ask=ask-2",
       ].join("\n"),
       details: {
         session_id: "session-1",

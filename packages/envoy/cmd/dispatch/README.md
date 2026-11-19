@@ -1385,7 +1385,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   A subcommand of an earlier build that an operator runs beside this one neither publishes nor registers, so it is never in the fleet.
   Of those subcommands, `rebuild-refs` takes issues' and documents' rows `for no key update` (from `legion-envoy-v30.21.1` on), and `backfill-block-ids` and `backfill-anchor-blocks` settle a document they open that owes a settlement, which takes its owner's row and appends its events: run those from a build that carries this change.
   The others write no owner's row: `census` reads in one read-only transaction, `stored-order` reads, `backfill-files` writes only file versions' bytes, `redeliver-webhooks` writes the shared GitHub rate limits and asks GitHub to deliver again to the serving processes, and `settings`, `routes` and `openapi` open no database.
-  The production deployment runs two of them as Jobs from the image its server is moving to (theorem-labs/agent-infra, `dispatch/main.go`), and neither writes an owner's row.
+  The production deployment runs two of them as Jobs from the image its server is moving to (example-org/deployment, `dispatch/main.go`), and neither writes an owner's row.
   `census` runs before the server's Deployment moves to that image, and runs again only when the Job's template changes, a new image among them, or after a run that failed (`declareCensusJob`): so a roll forward runs the later build's census beside the earlier server, and a rollback the earlier build's census beside the later server.
   `backfill-files` runs once the server has rolled out, and only when a file move or restore is set (`declareFileJob`).
 
@@ -3932,9 +3932,12 @@ Each item below names a path with its method and identity, then its purpose.
   each ask's current answer (`replaced` when it changed an earlier one), each decline of an ask (a question a person closed without answering it), each comment at its current body (`edited_at` when edited) and each message, once however it arrived:
   a person's `ask.answered`, `comment.created`, `message.created`, `message.answered` or `ask.resolved` event whose `published_destinations` hold the session's own topic, of which the list takes the declines alone, its sent or queued message deliveries, and its sent or queued comment deliveries (mentions).
   Never an agent's or the system's words, any other resolution of an ask or its hand-back, or a delivery to a `role:` route.
-  Each item carries its `relation`, the `ask` and its question where it answers, declines or replies in one, and its `owner`, `ref` and `href`.
-  A decline is the kind `declined` under the relation `declined_your_ask`, and it carries both parts apart:
-  `text` is the person's own note, empty where they wrote none, and `dispatch_words` the sentences Dispatch wrote beside it for the asking agent.
+  Each item carries its `relation`, the `ask` and its question where it answers, declines or replies in one, whoever asked it, and its `owner`, `ref` and `href`.
+  A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own:
+  an answer is `answered_your_ask` for an owner and `answered_an_ask` for any other session, a decline is `declined_your_ask` for an owner and `declined_an_ask` for any other session, and a reply in an ask's thread is `replied_on_your_ask` for an owner, which outranks `mentioned_you`.
+  A session that does not own the ask reads a reply in its thread by the reason that delivered it: `mentioned_you` for a mention, else `replied_in_a_comment_thread`, `commented_on_a_document` or `commented_on_an_issue`, as for any other comment, when the issue's route, its claim or a credit on its primary document delivered it.
+  A decline is the kind `declined`, and it carries its words in parts:
+  `text` is the person's own note, empty where they wrote none, and `dispatch_words`, on `declined_your_ask` alone, the sentences Dispatch wrote beside it for the asking agent.
   `since` defaults to 72 hours ago (older than 7 days or in the future is `400 INVALID_QUERY`);
   `max_chars` (1–100,000) stops the list after the item whose words take the running sum past it, counting an item's `text` and the `dispatch_words` a decline carries beside it, `total` still counting every item;
   a bad `session_id` is `400 INVALID_SESSION_ID`.
@@ -4140,7 +4143,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-six tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
   The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
   Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.
@@ -4356,7 +4359,8 @@ Each item below names a path with its method and identity, then its purpose.
   An ask of kind `approval` is `409 ASK_NOT_DECLINABLE`, decided inside the transaction under the ask's owner lock, since an ask's kind is known only once its row is read:
   an approval request is answered `Approve` or `Request changes`.
   An ask on a closed issue is `409 ISSUE_CLOSED`.
-  The whole resolution rides `ask.resolved` to every session following the ask, `GET /api/v1/agents/{session_id}/answers` lists the decline under the relation `declined_your_ask`, and a write that opens another question on the issue is answered the issue's `declined_asks`.
+  The whole resolution rides `ask.resolved` to every session following the ask, and a write that opens another question on the issue is answered the issue's `declined_asks`.
+  `GET /api/v1/agents/{session_id}/answers` lists the decline under the relation `declined_your_ask` for the ask's author and its followers, and under `declined_an_ask`, without Dispatch's sentences, for any other session it reached.
 
 - `/api/v1/issues/{key}/comments?artifact=` (GET; cookie, trusted header, or bearer)
 

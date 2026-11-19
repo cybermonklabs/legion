@@ -32,9 +32,9 @@ const TOKEN = fixtureSecret("dsp");
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..", "..");
 
 /** The issue's own assignee, whom a question on DSP-1 reaches. */
-const ASSIGNEE = "bob@theorem.dev";
+const ASSIGNEE = "bob@example.com";
 /** The person CORE defaults to, whom a question on an issue nobody holds reaches. */
-const DEFAULT_ASSIGNEE = "dana@theorem.dev";
+const DEFAULT_ASSIGNEE = "dana@example.com";
 
 interface Recorded {
   readonly method: string;

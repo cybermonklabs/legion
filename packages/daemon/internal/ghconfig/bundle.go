@@ -132,9 +132,11 @@ func ParsePairs(data []byte) ([]ghrepo.Rename, error) {
 // rename moved, since the bundle the daemon writes is all either of them reads. A root with no
 // such file holds no pair — a pod launched before this file existed projects none, and its drift
 // check replaces it — while a file that cannot be read or parsed is an error, which the caller
-// answers nothing on.
+// answers nothing on. It is read as ReadRegular reads, following the link a pod's Secret volume
+// makes of a file at its top (readRegularFollowing), so a named pipe a pane put there stalls no
+// call.
 func ReadPairs(root string) ([]ghrepo.Rename, error) {
-	data, err := os.ReadFile(filepath.Join(root, PairsFile))
+	data, err := readRegularFollowing(filepath.Join(root, PairsFile))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}

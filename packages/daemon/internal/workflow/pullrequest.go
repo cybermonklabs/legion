@@ -346,7 +346,8 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // merged records the pull request merged, with its merge commit, whatever the issue's phase, and
-// closes an issue that reached merging (closeMerged): the merger merges, and the merge is what
+// closes an issue that awaits its merge (awaitsMerge: in merging, or held from it, the hold a
+// merger's failed claim leaves) with closeMerged: the merger merges, and the merge is what
 // ends that phase. A merge before merging is the architect's to act on, as the shipped daemon
 // routes it: it is told, and the merge closes the issue once it reaches merging (transition). A
 // redelivered merge changes nothing.
@@ -386,7 +387,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if issue.Phase == phase.Merging {
+	if awaitsMerge(*issue) {
 		return intake.Result{}, e.closeMergedTelling(ctx, tx, *issue, pr)
 	}
 	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect,
@@ -476,6 +477,11 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	status := PhaseStatus(row.To)
 	if err := e.status(ctx, tx, issue, status, ""); err != nil {
+		return nil, err
+	}
+	// The merge ends the merge step the linger left open, passed: no transition runs in a lingering
+	// tree, so this move names that end itself, as a move of the table does (nameMoveEnd).
+	if err := e.nameMoveEnd(ctx, issue, TriggerPullRequestMerged, row.To, record.PhaseRow{}); err != nil {
 		return nil, err
 	}
 	issue.Phase, issue.Hold = row.To, nil
