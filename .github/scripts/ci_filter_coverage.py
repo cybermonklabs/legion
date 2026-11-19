@@ -1255,11 +1255,16 @@ def job_up_to(job: dict, step: dict, including: bool = True) -> dict:
 
 def names_script(holder: dict, job: dict, step: dict, source: str) -> bool:
     """Whether a run: step names the repository script `source`: by its path from the repository
-    root, or from the directory the step runs in, as a whole word of its run: text."""
+    root, or from the directory the step runs in, as a whole word of its run: text. The path may
+    open the line or follow a space, a quote, an `=`, a `(` or a backtick - `$(<script> ...)` and
+    a backticked call start it in a substitution - or a `/`, which a directory before it ends:
+    "$GITHUB_WORKSPACE/<script>", `${{ github.workspace }}/<script>`,
+    `$(git rev-parse --show-toplevel)/<script>` and `./<script>`. Nothing that goes on the path
+    after it (`.bak`, `-old`, a longer name) counts."""
     run = str(step.get("run", ""))
     workdir = step_workdir(holder, job, step)
     paths = {source, os.path.relpath(source, workdir)} if workdir != "." else {source}
-    return any(re.search(rf"(?:^|[\s'\"=]|\./){re.escape(p)}(?![\w.-])", run) for p in paths)
+    return any(re.search(rf"(?:^|[\s'\"=(`/]){re.escape(p)}(?![\w.-])", run) for p in paths)
 
 
 def around_reason(document: dict, job: dict, steps: list) -> str:
@@ -1321,20 +1326,18 @@ def owner_steps(units: list, owner: str) -> list:
 def around_job(units: list, owner: str, source: str) -> str:
     """The first thing around a ci.yaml job that can change what a go command its script `source`
     holds compiles, over its own steps and those of a workflow it calls, each read under the env:,
-    defaults and container of the file that holds it; or ''. Where steps of those jobs name the
-    script (names_script), each such job is read up to and including the last of them, since a
-    step after it runs after the script, and a job naming it nowhere is not read; where none
-    does, every job is read whole, since the script may be started some way this check does not
-    see - by another script, or by a test it compiles."""
-    owned = [(holder, job) for own, _, _, holder, job in units if own == owner]
-    read = []
-    for holder, job in owned:
+    defaults and container of the file that holds it; or ''. A job some step of which names the
+    script (names_script) is read up to and including the last such step, since a step after it
+    runs after the script. A job that names it nowhere is read whole, since it may start the
+    script some way this check does not see - in a form names_script does not read, by another
+    script, or by a test it compiles."""
+    for own, _, _, holder, job in units:
+        if own != owner:
+            continue
         steps = job.get("steps") or []
         naming = [i for i, s in enumerate(steps) if "run" in s and names_script(holder, job, s, source)]
-        if naming:
-            read.append((holder, {**job, "steps": steps[:naming[-1] + 1]}))
-    for holder, job in read or owned:
-        reason = around_reason(holder, job, job.get("steps") or [])
+        read = {**job, "steps": steps[:naming[-1] + 1]} if naming else job
+        reason = around_reason(holder, read, read.get("steps") or [])
         if reason:
             return reason
     return ""
@@ -1559,11 +1562,11 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                                                                           f"runs `{r.text}`; update or remove the Run"))
     # A script's go command is held exact rather than reduced: the line holding the pinned text is
     # that text alone, uncontinued, and no env:, shell: or defaults.run.shell of the workflow, the
-    # job or its steps, no container: and no environment write of the job can move it - its steps
-    # up to the last one naming the script, or all of them where none does (around_job), since the
-    # check does not otherwise know which step starts it. A job that calls a workflow runs the
-    # script from that workflow's jobs, so each of them is read the same way. Its variables are
-    # the Run author's.
+    # job or its steps, no container: and no environment write of the job can move it - each job's
+    # steps up to the last one naming the script, or all of them where it names the script nowhere
+    # (around_job), since the check does not otherwise know which step starts it. A job that calls
+    # a workflow runs the script from that workflow's jobs, so each of them is read the same way.
+    # Its variables are the Run author's.
     for g in data.GATES:
         for r in g.runs:
             if not r.source:

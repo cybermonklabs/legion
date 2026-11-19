@@ -1513,10 +1513,10 @@ check "names the script's command and its line" \
   "$(contains "$out" 'build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (its line is `go build ./cmd/app ./other`, not the text alone), so it counts as reading every Go file of the repository')"
 check "and the file the module adds" "$(contains "$out" '::error file=mod/other/other.go::')"
 
-# A script's go command is read under the job's steps up to the last one whose run: names the
-# script, since a later step runs after the script; where no step names it, under every step,
-# since it may be started some way this check does not see. script_job <root>: script-line's Run
-# of build.sh, its line the text alone.
+# A script's go command is read under each job's steps up to the last one whose run: names the
+# script, since a later step runs after the script; and under every step of a job that names it
+# nowhere, since it may be started some way this check does not see. script_job <root>:
+# script-line's Run of build.sh, its line the text alone.
 script_job() {
   printf '#!/bin/sh\ngo build ./cmd/app\n' > "$1/build.sh"
   replace "$1/.github/scripts/ci_job_reads.py" 'text="go test ./cmd/app ./lib"),' \
@@ -1550,6 +1550,57 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the script's command and the write" \
   "$(contains "$out" 'build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)')"
+
+# The forms a workflow starts a script in: after a path a directory ends (the workspace, the
+# repository's top level) or inside a substitution. Each is a start after a write the plain start
+# before it does not see, so the script's commands are read under the write.
+widened='build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)'
+for form in workspace-variable workspace-expression substitution backticks rev-parse; do
+  case $form in
+    workspace-variable) start='sh "$GITHUB_WORKSPACE/build.sh"' ;;
+    workspace-expression) start='sh ${{ github.workspace }}/build.sh' ;;
+    substitution) start='version=$(build.sh --version)' ;;
+    backticks) start='version=`build.sh --version`' ;;
+    rev-parse) start='sh "$(git rev-parse --show-toplevel)/build.sh"' ;;
+  esac
+  echo "case: a script started again after a write, as $start, is read under the write"
+  root=$(fixture "script-start-$form")
+  script_job "$root"
+  again=$'      - name: Build the app again\n        run: '"$start"$'\n'
+  replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$again$report_step"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the script's command and the write" "$(contains "$out" "$widened")"
+done
+
+# A path that only begins with the script's - a copy beside it, a longer name - names no start of
+# it, and nor does a name whose letters merely end with it (xbuild.sh): the write before such a
+# step is no write before the script.
+for other in build.sh.bak build.sh-old build.shx xbuild.sh; do
+  echo "case: a step that runs $other after a write does not start the script"
+  root=$(fixture "script-other-$other")
+  script_job "$root"
+  again=$'      - name: Build something else\n        run: sh '"$other"$'\n'
+  replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$again$report_step"
+  run_check "$root"
+  check "exits 0" "$(is "$status" 0)"
+done
+
+echo "case: a job of the called workflow that names the script nowhere is read whole beside one that names it"
+root=$(fixture called-script-other-job)
+called_input_gate "$root"
+printf '#!/bin/sh\ngo build ./cmd/app\n' > "$root/build.sh"
+replace "$root/.github/scripts/ci_job_reads.py" 'text="go test ./lib"),' \
+  'text="go test ./lib"), run("mod", ["./cmd/app"], "build.sh: go build ./cmd/app", mode="build", source="build.sh", text="go build ./cmd/app"),'
+replace "$root/.github/workflows/called.yaml" "$report_step" "$build_step$report_step"
+run_check "$root"
+check "passes while the job that starts the script writes nothing before it" "$(is "$status" 0)"
+replace "$root/.github/workflows/called.yaml" "  called:" \
+  $'  other:\n    runs-on: ubuntu-24.04\n    steps:\n'"$path_write"'  called:'
+run_check "$root"
+check "fails once another job of the file writes the path, naming the script nowhere" "$(is "$status" 1)"
+check "and names the script's command and the write" \
+  "$(contains "$out" 'build.sh, which job called runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)')"
 
 echo "case: a claimed simple go command whose step runs it in another directory"
 root=$(fixture moved-working-directory)

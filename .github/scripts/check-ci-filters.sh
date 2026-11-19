@@ -353,9 +353,10 @@
 # with the command's own `go -C` the Run's. A -race line's closure is the one `go list -race`
 # lists, so its Run says race too. A script_run is held exact instead: the script's line holding
 # its text must be that text alone and uncontinued, under such an env, shell and container (the
-# job's, and those of its steps up to the last one whose run: names the script, or of all of them
-# where none does) and such a job; the script's variables are the Run author's to read, and
-# anything appended to that line falls to everything.
+# job's, and those of its steps up to the last one whose run: names the script - by its path,
+# after a space, a quote, a `(`, a backtick or a `/` - or of all of them where it names the script
+# nowhere, each job of a workflow it calls read the same way) and such a job; the script's
+# variables are the Run author's to read, and anything appended to that line falls to everything.
 # A step whose go commands are in no such form can be an exact entry instead: it pins the step's
 # whole run: script (compared as text after trailing whitespace, nothing parsed) and directory,
 # and lists Runs that stand for what the script compiles. While the step holds exactly that, under

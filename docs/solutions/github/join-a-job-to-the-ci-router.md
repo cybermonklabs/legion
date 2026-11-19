@@ -298,9 +298,11 @@ fails the pull request that adds it.
 - `GATES`: per filter, the job, its go commands and its other steps' reads. Each go command is a
   `Run` pinned to its text: `step_run` for a `run:` step of the job, `script_run` for a script the
   job runs, pinned to the script's whole line and read under the env, shell and environment writes
-  of the job's steps up to the last one whose `run:` names the script (all of them where none
-  does). The check fails when a job's `run:` step starts a go command (`go test`, `vet`, `build`,
-  `run`, `list`, `install`, `generate`) nothing claims.
+  of each job's steps up to the last one whose `run:` names the script, and of all of a job's steps
+  where it names the script nowhere. A step names it by its path from the root or from the step's
+  directory, after a space, a quote, a `(`, a backtick or a `/`: `"$GITHUB_WORKSPACE/<script>"`,
+  `$(<script> ...)` and `./<script>` all name it. The check fails when a job's `run:` step starts
+  a go command (`go test`, `vet`, `build`, `run`, `list`, `install`, `generate`) nothing claims.
   It reduces a claimed command only in its simple form: one line of `go test|vet|build`,
   relative package paths and only `-v`, `-race`, `-count=N`, `-timeout D`, `-buildvcs=false` and
   one `-tags T`, that is its step's whole `run:` script (split at `\n` alone, stripped of spaces
