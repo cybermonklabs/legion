@@ -399,11 +399,15 @@ func entryNames(t *testing.T, dir string) []string {
 }
 
 // The root a runtime hands WriteBundle may sit under a state directory reached through a link, or
-// be a link itself, and its cleaning runs all the same: the root is resolved once before it is
-// cleaned, so rolefile.RemoveTree, which refuses a parent that is a link, is handed the directory
-// the link names. In both rows a stray file at the root and a `<owner>/<repo>` directory an older
-// run left go, and the owners' own files stay. Without that resolution the second row's cleaning
-// is refused ("… is a symlink"), and the stray file outlives the write.
+// be a link itself, and it is written and cleaned all the same. Before the second write the root's
+// pairs file is a fifo, which replaceFile removes under the root resolved once, and the root is
+// resolved once again before it is cleaned, so rolefile.RemoveTree, which refuses a parent that is
+// a link, is handed the directory the link names both times. In both rows the pairs file is then a
+// regular file holding the bundle's pairs, a stray file at the root and a `<owner>/<repo>`
+// directory an older run left go, and the owners' own files stay. Without replaceFile's
+// resolution the row whose root is itself a link fails the write ("write the gh bundle's
+// renames.txt: … is a symlink"); without the cleaning's, that row's cleaning is refused ("… is a
+// symlink"), and the stray file outlives the write.
 func TestWriteBundleCleansARootReachedThroughALink(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -426,7 +430,8 @@ func TestWriteBundleCleansARootReachedThroughALink(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := tc.root(t)
-			if _, err := WriteBundle(root, twoOwnerBundle("ghs_acme_write")); err != nil {
+			bundle := twoOwnerBundle("ghs_acme_write")
+			if _, err := WriteBundle(root, bundle); err != nil {
 				t.Fatalf("first WriteBundle: %v", err)
 			}
 			if err := os.WriteFile(filepath.Join(root, "stray"), []byte("x"), 0o600); err != nil {
@@ -436,8 +441,50 @@ func TestWriteBundleCleansARootReachedThroughALink(t *testing.T) {
 			if _, err := Write(Dir(root, "acme/widgets"), Render("ghs_acme_widgets", "implement", expires)); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := WriteBundle(root, twoOwnerBundle("ghs_acme_write")); err != nil {
+			pairs := filepath.Join(root, PairsFile)
+			if err := os.Remove(pairs); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Mkfifo(pairs, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			answered := make(chan error, 1)
+			go func() {
+				_, err := WriteBundle(root, bundle)
+				answered <- err
+			}()
+			var err error
+			select {
+			case err = <-answered:
+			case <-time.After(5 * time.Second):
+				// A write waiting in an open of the fifo is released by an open of it for reading
+				// and writing, which waits on nothing, so its goroutine ends before the test does.
+				released := time.After(10 * time.Second)
+				for {
+					if fifo, err := os.OpenFile(pairs, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {
+						_ = fifo.Close()
+					}
+					select {
+					case err := <-answered:
+						t.Fatalf("second WriteBundle over the fifo %s waited more than 5 seconds, and answered %v only once the open it waited in was released", pairs, err)
+					case <-released:
+						t.Fatalf("second WriteBundle over the fifo %s has not answered in 15 seconds", pairs)
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+			}
+			if err != nil {
 				t.Fatalf("second WriteBundle: %v", err)
+			}
+			info, err := os.Lstat(pairs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.Mode().IsRegular() {
+				t.Fatalf("%s is %v after the second WriteBundle, want a regular file", pairs, info.Mode())
+			}
+			if body, err := os.ReadFile(pairs); err != nil || string(body) != RenderPairs(bundle.Pairs) {
+				t.Fatalf("%s holds %q (%v) after the second WriteBundle, want %q", pairs, body, err, RenderPairs(bundle.Pairs))
 			}
 			if got, want := entryNames(t, root), []string{"acme", PairsFile, "sjawhar"}; !slices.Equal(got, want) {
 				t.Fatalf("root holds %q, want %q: the stray file goes", got, want)
@@ -463,9 +510,13 @@ func TestWriteBundleCleansARootReachedThroughALink(t *testing.T) {
 // stays. A link under a stale `<owner>/<repo>` directory the pane made 0555, which the daemon,
 // holding no capability, cannot unlink it from, is left as it is: WriteBundle answers a permission
 // error naming that stale directory, and the directory the link names, and the file in it, are as
-// they were. os.RemoveAll opens such an entry with O_DIRECTORY|O_NOFOLLOW, which a gVisor release
-// follows a link through (rolefile.OpenDirectory), so in such a pod it deletes what the link names;
-// Linux refuses that open, so only such a gVisor shows that control fail.
+// they were. So is a link under a 0555 subdirectory of a directory the pane made at an owner's
+// config.yml: replaceFile removes what is there before it writes the file, and removes it without
+// following a link, so the write answers the unlink's permission error, naming the link, and the
+// file in the directory the link names stays. os.RemoveAll, in the cleaning or in replaceFile,
+// opens such an entry with O_DIRECTORY|O_NOFOLLOW, which a gVisor release follows a link through
+// (rolefile.OpenDirectory), so in such a pod it deletes what the link names; Linux refuses that
+// open, so only such a gVisor shows either control fail.
 func TestWriteBundleRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("as root a 0555 directory does not stop the unlink, so the removal never opens the link")
@@ -518,6 +569,45 @@ func TestWriteBundleRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
 	kept(t)
 	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("the planted link is %v (%v), want it left as it was", info, err)
+	}
+
+	// The stale directory goes, its link first, so that nothing but the config.yml below is left
+	// for the write to refuse.
+	if err := os.Chmod(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(stale); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(Dir(root, "acme"), ConfigFile)
+	if err := os.Remove(config); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(config, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	buried := filepath.Join(sub, "link")
+	if err := os.Symlink(outside, buried); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sub, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
+	_, err = WriteBundle(root, twoOwnerBundle("ghs_acme_write"))
+	// The file the link names is checked first, so that a removal which followed the link fails
+	// the test naming the file it deleted.
+	kept(t)
+	named := filepath.Join("acme", ConfigFile, "sub", "link")
+	if !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), named) {
+		t.Fatalf("WriteBundle over a link under a 0555 directory at acme's %s = %v, want the unlink refused naming %s", ConfigFile, err, named)
+	}
+	if info, err := os.Lstat(buried); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link planted under acme's %s is %v (%v), want it left as it was", ConfigFile, info, err)
 	}
 }
 
