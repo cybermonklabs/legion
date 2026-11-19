@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { connect, ErrorCode, NatsError, nkeys } from "nats";
 import { LoggableError, natsFailureReason } from "../errors";
 import { natsDialedAddress, natsDialFailure, natsServersForLog } from "../nats-connection";
@@ -14,7 +14,7 @@ import { natsDialedAddress, natsDialFailure, natsServersForLog } from "../nats-c
 // leak check to find.
 const userinfo = (...parts: string[]) => `${parts.join(":")}@`;
 const canary = () => `canary${randomBytes(4).toString("hex")}`;
-const sixDigits = () => String(100000 + (randomBytes(4).readUInt32BE() % 900000));
+const sixDigits = () => String(randomInt(100000, 1000000));
 
 /** What real nats.js throws when it fails to connect to `server`: no server runs, so each fails
  *  at the URL parser, the resolver or the socket, and the error is nats.js's own. */
