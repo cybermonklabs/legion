@@ -50,9 +50,10 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // on — and one naming a repository a pair moved to an owner the bundle holds no directory for are
 // refused, exit 2, naming why, and the real gh never runs: no token is ever sent for a repository
 // it cannot reach, but by one exception, R4 of dispatch://INFRA-3399 (ghTargetOf): a call that
-// writes nothing and names only owners the bundle holds no directory for, in a working directory
-// whose remotes name no github.com repository for it, keeps GH_CONFIG_DIR, as a command naming no
-// owner does. Under a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any directory's token,
+// writes nothing, names only owners the bundle holds no directory for and names no repository a
+// configured rename moves, in a working directory whose remotes name no github.com repository for
+// it, keeps GH_CONFIG_DIR, as a command naming no owner does. Under a GH_TOKEN or GITHUB_TOKEN,
+// which gh sends in place of any directory's token,
 // every command is refused the same way but these: the guard's own visibility reads, which run
 // with that token (ghVisibilityRead), the shared check's visibility read
 // (sharedCheckVisibilityRead), the exact `gh api rate_limit` (ghRateLimitRead) and `gh auth
@@ -839,9 +840,11 @@ func ghCallerToken(env map[string]string) string {
 // whatever else of that owner's gh resolves — is routed through dirFor, the bundle's own pick
 // (ghConfigDirFor), and they must all route to one directory; two are an error (selectors.dir).
 // A call that writes nothing (ghWritesNothing, or a GraphQL query ghGraphQLQueryRead admits),
-// whose every item is an owner the bundle holds no directory for and whose working directory's
-// remotes named no github.com repository for it, runs with GH_CONFIG_DIR's directory, the one a
-// command naming no owner runs with, rather than being refused (R4 of dispatch://INFRA-3399);
+// whose every item is an owner the bundle holds no directory for, which names no repository a
+// configured rename moves (dirFor answers one with the pair's own refusal, or routes it to the
+// `to` owner's directory) and whose working directory's remotes named no github.com repository
+// for it, runs with GH_CONFIG_DIR's directory, the one a command naming no owner runs with,
+// rather than being refused (R4 of dispatch://INFRA-3399);
 // every other call is routed and refused by the rule above. The target's writesNothing stays
 // ghWritesNothing's alone, which the guard's reading of the call rests on. The target's
 // repository is the one repository they all name, which is none where a selector names an owner

@@ -182,14 +182,19 @@ A read that names only owners the bundle holds no directory for runs, rather tha
 with the token of `GH_CONFIG_DIR`, the directory a command naming no owner runs with
 (`selectors.dir`): a call `ghWritesNothing` admits, or `gh api graphql` in the one form
 `ghGraphQLQueryRead` reads for certain (`api graphql` typed first, its query given with
-`-f query=…` and holding no `mutation` or `subscription` token, its other fields given with `-f`
-or with `-F` values that read no file and none of them with a key that holds `query`, no `-H`
-naming a method override or `Content-Length`, and no option but `-f`, `-F`, `-H`, `-q`, `-t`,
-`--paginate` and `--slurp`, by either spelling, each value in its own word), where no repository
-it names is one a configured rename moves and no
-`github.com` remote of the working directory was read for it. An installation's token reads
-public data and that installation's own repositories alone, and GitHub answers 404 for another
-owner's private repository. Every other command naming such an owner is refused as above.
+`-f query=…` and holding the words `mutation` and `subscription` nowhere, in any case and inside a
+string or a comment too, its other fields given with `-f` or with `-F` values that read no file
+and none of them with a key that holds `query`, no `-H` naming a method override or
+`Content-Length`, and no option but `-f`, `-F`, `-H`, `-q`, `-t`, `--paginate` and `--slurp`, by
+either spelling, each value in its own word), where no repository it names is one a configured
+rename moves and no `github.com` remote of the working directory was read for it.
+The GraphQL rule reads no GraphQL syntax: GitHub's lexer (graphql-ruby's `BLOCK_STRING_REGEXP`)
+ends a block string at other quotes than the GraphQL specification does, and a document runs a
+mutation or a subscription only through that word, so one that holds neither word writes nothing
+however a lexer reads it.
+An installation's token reads public data and that installation's own repositories alone, and
+GitHub answers 404 for another owner's private repository. Every other command naming such an
+owner is refused as above.
 It refuses the same way, before gh runs: `--editor`/`-e` on any command, because gh runs the
 editor after the leak guard has read the call and posts what it wrote; `gh gist edit`, which opens
 an editor unless a file is named; `gh agent-task`, which sends the token to the Copilot API host
