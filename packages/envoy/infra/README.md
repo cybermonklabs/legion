@@ -819,8 +819,18 @@ random suffix when it creates it, so only a stack whose Network exists can name 
 `clusterIdentifier`, set to the cluster's issuer. pulumi-kubernetes v4.34.2 then replaces the
 provider, and so every Kubernetes object on it, only when the identifier changes. It does not
 replace the provider when the cluster's CA or endpoint rotates, or when the kubeconfig is unknown
-in a preview. The component's own cluster gives no `clusterIdentifier`, so the provider of a stack
-without `existingCluster` keeps the inputs it always had.
+in a preview. pulumi-kubernetes does not use this rule when the identifier is added or removed. So
+on the apply that first sets `existingCluster`, the change of the cluster that the kubeconfig names
+replaces the provider ([Moving a running stack onto a cluster and a database instance it does not
+make](#moving-a-running-stack-onto-a-cluster-and-a-database-instance-it-does-not-make)). The
+component's own cluster gives no `clusterIdentifier`, so the provider of a stack without
+`existingCluster` keeps the inputs it always had.
+
+The identifier names the cluster by its project, location and name alone. So when another program
+deletes the cluster and makes it again with the same name and location, the identifier does not
+change: pulumi-kubernetes updates the provider and does not replace it, and Pulumi's state still
+holds the Kubernetes objects that the new cluster does not have. An update does not make those
+objects again while the state holds them.
 
 **The database.** The component makes neither the database nor the login on an instance that
 `existingDatabaseInstance` names. That instance must hold the database `dispatch` and the login
@@ -1999,6 +2009,13 @@ says what each apply registers, and what Pulumi then does.
   with node auto-provisioning off, give the pods a node pool or a compute class that fits them.
 - Create the PriorityClass that `priorityClassName` names in the new cluster. With
   `existingNamespace`, create the namespace there too, since the component then makes none.
+- With `natsInCluster`, make sure that `natsUrl` names an address that the new cluster resolves
+  and reaches, and that the hub admits the namespace of the pods there to its client port. The
+  pods dial `natsUrl` with the DNS of the cluster they run in, so the name of a Service in the old
+  cluster does not resolve in the new one.
+- Move each caller in a namespace that `allowedNamespaces` names to the new cluster, or give it
+  another way to Dispatch. The app's Service and its NetworkPolicy move to the new cluster, so a
+  pod in the old cluster no longer reaches Dispatch at that Service.
 - Make sure that the new instance holds the database `dispatch` and the login `dispatch` with the
   component's password, on a private IP that the pods reach. A promoted replica of the
   component's own instance does.
