@@ -1073,7 +1073,7 @@ These tasks adopt nothing:
 
 - the controller's start.
 
-Notices, hooks, phase-ended messages and phase reminders reach the agent through Envoy or through its plugin, not as a task, so they adopt nothing either.
+Notices, hooks, merge-forward messages and phase reminders reach the agent through Envoy or through its plugin, not as a task, so they adopt nothing either.
 
 **A phase task waits for the turns of the other roles.**
 The daemon does not send a phase task while another claim of the same issue is in a turn, or while a prompt is on its way to one.
@@ -1461,8 +1461,9 @@ These arrive as messages on the Dispatch issue:
   the whole change. The footer of the reviewer's newest deciding review on GitHub shows which case
   holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
-  GitHub can neither merge nor start pull-request CI for: the daemon sends such a head back to
-  `implementing` on its own. And it enqueues nothing on a merge-queue base whose
+  GitHub can neither merge nor start pull-request CI for: the daemon asks the implementer to merge
+  the base forward while the issue stays in `merging`, and the merger merges the new head once the
+  reviewer's approval of it is on the pull request. And it enqueues nothing on a merge-queue base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
@@ -1490,9 +1491,8 @@ These arrive as messages on the Dispatch issue:
   ([An architect is told `pull-request-missing`](#an-architect-is-told-pull-request-missing)).
 - **A worker's completion refused `HANDOFF_STALE_ENTRY`.** The phase the completing turn was
   working ended under that turn, and the role has since been handed the phase's work again: the
-  issue left the phase and came back, or the head started conflicting with its base while the
-  tester tested, while the reviewer reviewed a round it had not completed, or while the merger
-  worked toward the merge. The daemon ends no turn, so the turn reporting the completion is of
+  issue left the phase and came back, as when a request for changes ended a review round the
+  reviewer had not completed. The daemon ends no turn, so the turn reporting the completion is of
   an entry behind the one the role's phases row names, and nothing is recorded. The refusal
   names the issue, the role and the phase, the entry the completion is of and the entry the
   role's phases row is on, and then what decided it, which is one of four readings: the
@@ -1525,23 +1525,20 @@ These arrive as messages on the Dispatch issue:
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
   none.
 
-An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
-GitHub computes no merge ref for such a head and runs no check on it at all, so the daemon sent
-the issue back to the implementer with the base to merge forward and told the architect. From
-`retro` the implementer kept its turn and was handed the implementing task once that turn ended;
-from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
-interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
-workspace is the implementer's now. The implementer's retro completion after the move reports the
-entry retro handed it while its phases row is on the implementing one. The issue is in
-`implementing` by then, so the `legion` tool sends it as the implementer's completion of
-implementing, with the newest `implement` record and the head that record names, which can be the
-head the record holds; it is refused (`HANDOFF_STALE_ENTRY`) because retro back to `implementing`
-is a move back, which raised the entry the phase stands on, and the refusal names that move. The
-implementer merges the base forward in the implementing task's own turn and completes that work
-with a handoff of its own, never retro's commit; the merger's phases row still names the entry
-merging gave it, so a completion it sends for the phase it lost is refused
-(`HANDOFF_NOT_CURRENT_PHASE`).
-The work comes back through testing, review, acceptance and retro to a new merge. A red check
+An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
+conflicts with its base is waiting on the daemon's merge forward or on nothing at all. The daemon
+reads the pull request's mergeability twice, at least a minute apart, and acts only on a conflict
+both reads report, and only when the next step needs a mergeable head: the issue stands past its
+review, a check the base requires has no green result on the head, the base requires a current
+branch, or the daemon could not read the base's rules. Its log says which: `workflow: a conflict
+read waits for a second read` for a first read, `workflow: a second read did not confirm the
+conflict` for a read GitHub took back, `workflow: a confirmed conflict needs no merge yet` with the
+required contexts and the green ones, and `workflow: merge forward asked` with the reason. A merge
+forward keeps the phase: the implementer merges in the issue workspace and pushes with no handoff
+and no completion, the phase's worker is told to stop writing the workspace and then the new head,
+and `workflow: the merge forward landed` names both heads. A completion that names the replaced
+head is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is made again at the new
+head. Past review the reviewer is asked to read the merge and approve the new head. A red check
 sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:

@@ -743,9 +743,9 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"over the diff that round reads, when that diff touches runtime code",
 		"The thermonuclear pair reads that same difference, and runs only when it touches runtime code.",
 		"The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other",
-		"Read the whole change again, and give the pair the whole change, in three cases: the task names no commit;",
+		"Read the whole change again, and give the pair the whole change, in two cases: the task names no commit,",
 		"the commit is not an ancestor of the head (`git merge-base --is-ancestor <commit> <head>` does not exit 0)",
-		"a forward merge of the base changed the unchanged-diff fingerprint",
+		"After a forward merge of the base, read the merge as the next paragraph says",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed reviewer prompt omits %q", phrase)

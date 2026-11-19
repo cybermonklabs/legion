@@ -12,7 +12,7 @@ Environment or secret-scrub evidence (for example "`LEGION_*`/`DISPATCH_*`/`ENVO
 
 ## Forward merges
 
-For the unchanged-diff fingerprint procedure, follow `skill://legion-worker/references/conflicts-and-rewrites.md`. When the fingerprint is equal, record each result again at the new head with `forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean` at the end of its `observed`, except in a parent's last round, where you run a full test round (`skill://legion-worker/references/pr-body.md`). A search that finds an instance is a failure, not a re-check: record it under `failures` with the command and what it found, and run a full test round.
+After a forward merge of the base, read what the merge changed and record each check as the core rule above says (`skill://legion-worker/references/pr-body.md`): a check the merge cannot reach is recorded again at the new head without running it, its `observed` naming the earlier pass and why the merge cannot reach what the check drives, except in a parent's last round, where you run a full test round. A class search that finds an instance is a failure, not a re-check: record it under `failures` with the command and what it found, and run a full test round.
 
 ## Workspace restrictions
 
