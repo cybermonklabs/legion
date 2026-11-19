@@ -12,7 +12,7 @@ import {
 } from "../../theme/classes";
 import type { ComposerAnchor, ComposerKind, ComposerOwner } from "../conversation/composer-model";
 import { useHeldSend, useHeldSends } from "../conversation/held-sends";
-import { DraftOffer } from "../conversation/KeptDraftOffers";
+import { DraftOffer, KIND_WORDS } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import type { AwayDraft } from "../conversation/unsent-drafts";
@@ -165,13 +165,6 @@ export function MarginComposerSlot({
   );
 }
 
-/** How a kept draft names the kind it was written as, where it is not a comment. */
-const KEPT_KIND_WORDS: Record<ComposerKind, string> = {
-  ask: " as an ask,",
-  comment: "",
-  suggestion: " as a suggestion,",
-};
-
 /**
  * What the margin's compose kept for words of the open document (`AwayDraft.anchor`), while no
  * compose is open on it (`useMarginSheet`'s `keptDrafts`). A reload, a sign-in after a lapse and
@@ -200,7 +193,7 @@ export function MarginKeptDrafts({
           body={away.draft.body}
           drop={{ label: "Discard my draft", press: () => onDiscard(away) }}
           key={`${away.anchor.mark_id ?? ""}:${away.anchor.occurrence ?? ""}:${away.anchor.quote}`}
-          lead={`You wrote this draft${KEPT_KIND_WORDS[away.kind ?? "comment"]} for the words “${away.anchor.quote}”. It is kept here, and offered in the next compose you open on this document:`}
+          lead={`You wrote this draft${away.kind === undefined || away.kind === "comment" ? "" : ` as ${KIND_WORDS[away.kind]},`} for the words “${away.anchor.quote}”. It is kept here, and offered in the next compose you open on this document:`}
           replacement={away.draft.replacement}
         />
       ))}

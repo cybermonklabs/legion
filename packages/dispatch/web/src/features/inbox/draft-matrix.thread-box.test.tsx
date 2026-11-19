@@ -49,56 +49,10 @@
  * the tab's `sessionStorage`, with the reader signed in as before. They are the boxes' lifetimes
  * the census finds (`lifetime.ts`).
  *
- * The moves this host cannot make:
- * 1. The box draws no Back of its own; Escape from the reading column takes focus back to its row
- *    (`Inbox`'s `back`), and below the column's width there is no column to leave (13).
- * 2. Elsewhere needs a held refusal; the typed version is the unmount row.
- * 3. The column draws no collapse of the thread; leaving it is the move to another row.
- * 4. A standing box's reply is its own address, so it draws no Cancel reply (asserted absent).
- * 5. The box has no anchor, so it draws no Close (asserted absent below).
- * 6. An Agent row's box always answers a message of its thread (`agentReplyTo`), and its
- *    `AgentMessageComposer` draws the issue picker only while it answers none, so it draws no
- *    issue picker (asserted absent below).
- *
- * The moves the composer census found that the rows above do not make:
- * 7. `CommentThreadBody` and `AgentThreadBody` draw a loading line or an error in place of the
- *    thread while its read is out or failed, which unmounts the box as the move to another row
- *    does, and the box drawn when the read lands again is the one that row draws.
- * 8. Which end of the thread the box sits at (`composerFirst`, from `useThreadOrder`) is read
- *    when the thread is drawn and again only when who is signed in changes
- *    (`useUserPreference`), so it never moves a box that is on screen; the shell draws no thread
- *    before it knows who is signed in, and another person is the sign-in file's row.
- * 9. An Agent row's box is drawn only while its session is in the live list; a session that
- *    leaves it and comes back unmounts and draws the box again at the same thread, as the move to
- *    another row and back does.
- * 10. A thread in a document is drawn inside the document's page where its block is found and
- *    beside it where the document fails or the block is gone (`ThreadPane`, `DocumentPane`,
- *    `ProofDocument`, keyed by the document); moving between the two draws the box afresh at the
- *    same thread, as the move to another row and back does, and a version or an admission that
- *    hides the document's page keeps the box mounted at its thread.
- * 11. A box answers its thread's root; a read that no longer holds the root draws no box, since
- *    there is no message left to answer, and a read that holds it again draws the box at the same
- *    thread, as the move to another row and back does.
- * 12. The Inbox draws a thread's box in the reading column above the column's width and in the
- *    row's card below it (`paneShown`), in a drawer that closing takes away (`InboxDrawer`), and
- *    on its own page (`app.tsx`'s `/` and `/credentials/*`); a resize across that width, closing
- *    the drawer, leaving the page, a column with no row selected or an empty list, and the
- *    Inbox's loading line or error unmount the box as the move to another row does, and the box
- *    drawn on return is the one that row draws, at the same thread's send name.
- *
- * The forms the composer census found, where the layout draws, hides or moves this composer
- * otherwise than the rows above, which the rows do not make:
- * 13. Below the reading column's width, a phone's included, the Inbox draws no column: each thread
- *    row is a card that draws its thread's own box (`ThreadRowCard`, `renderRow`'s `paneShown`),
- *    so no move takes a box from one row to another there, and each box stays at its thread while
- *    its row is listed. What ends a card's box is (12)'s: leaving the page, closing the drawer the
- *    compact header's Peek opens (`inboxDrawerOpen`), the row leaving the list. The box's own
- *    moves are the same `ThreadBody`'s as the rows above. The layout's other branches in `Inbox`
- *    and `usePaneSelection` pick, focus and scroll the column's row and draw the list beside the
- *    column, and move no box; the app shell's forms are the sign-in file's.
- *
- * `draft-matrix.thread-box.coverage.ts` holds each census item this file answers for to a test
- * above or to a numbered reason, and is the source this header is the prose of.
+ * The numbered reasons - the moves this host cannot make, and the moves and forms the composer
+ * census found that the rows above do not make - are `REASONS` in
+ * `draft-matrix.thread-box.coverage.ts`, which holds each census item this file answers for to a
+ * test above or to one of them.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey, QueryClient } from "@tanstack/react-query";

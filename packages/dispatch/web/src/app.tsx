@@ -12,14 +12,12 @@ import { useLiveViews } from "./features/agent-view/live-views";
 import { LiveViewRoute, MountedLiveViews } from "./features/agent-view/MountedLiveViews";
 import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
-import { unsentDraftsOf } from "./features/conversation/unsent-drafts";
+import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
-import { answerDraftsSignedIn, answerDraftsSignedOut } from "./features/inbox/answer-drafts";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
-import { replyDraftsSignedIn, replyDraftsSignedOut } from "./features/inbox/reply-drafts";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
@@ -1089,12 +1087,7 @@ export function AuthGate(): ReactNode {
   // shell goes among them (`DraftStore.signedOut`). It listens before the effect below tells the
   // write store who is signed in, since a lapse that effect tells of can land a sign-out.
   useEffect(
-    () =>
-      writesOf(queryClient).onSignedOut((person) => {
-        unsentDraftsOf(queryClient).signedOut(person);
-        answerDraftsSignedOut(person);
-        replyDraftsSignedOut(person);
-      }),
+    () => writesOf(queryClient).onSignedOut((person) => draftStoresSignedOut(queryClient, person)),
     [queryClient]
   );
   // A write belongs to the person who pressed it: once someone else is signed in here - in place,
@@ -1122,9 +1115,7 @@ export function AuthGate(): ReactNode {
   useEffect(() => {
     if (!known) return;
     writesOf(queryClient).signedIn(login);
-    unsentDraftsOf(queryClient).signedIn(login);
-    answerDraftsSignedIn(login);
-    replyDraftsSignedIn(login);
+    draftStoresSignedIn(queryClient, login);
     signIns.signedIn(login ?? null);
     if (login !== undefined) setShellFor(login);
   }, [known, login, queryClient]);

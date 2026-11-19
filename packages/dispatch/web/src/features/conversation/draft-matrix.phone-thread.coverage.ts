@@ -1,14 +1,14 @@
 /**
  * The draft matrix's coverage list, phone thread (INFRA-1503): each composer census item that
  * `draft-matrix.phone-thread.test.tsx` answers for, held to one of its tests or to one of the
- * numbered reasons of its header, as `__tests__/composer-census/coverage.ts` says.
+ * numbered reasons below, as `__tests__/composer-census/coverage.ts` says.
  */
 import { answers, type CoverageEntry, cells } from "../../__tests__/composer-census/coverage";
 
 /** The host as the matrix file's titles name it. */
 const HOST = "phone thread";
 
-/** The numbered reasons of the matrix file's header. */
+/** The numbered reasons, said here alone, which the matrix file's header points to. */
 const REASONS = {
   1: "1. Every Reply the thread composer answers is redirected onto the comment its refusal answers (`redirectedReplyTarget`), so the host never moves it while a refusal is held.",
   2: "2. The thread view draws its comment forced open with no Collapse thread (`forceExpanded`), so Back, the first row, is its one way out.",

@@ -1,10 +1,10 @@
 /**
  * The draft matrix's coverage lists (INFRA-1503). Each `draft-matrix.*.coverage.ts`, beside its
  * matrix file, holds every census item that file answers for to one of its tests, by its exact
- * title, or to one of the numbered reasons of its header, by that reason's text; the header's
- * tables are the prose of the list. The lists sit beside the matrix files rather than in them
- * because a matrix file is a test, which a list imported from it would run again inside the
- * census's own test.
+ * title, or to one of its numbered reasons (`REASONS`, which the file holds alone and its matrix
+ * file's header points to), by that reason's text; the header's tables are the prose of the
+ * list. The lists sit beside the matrix files rather than in them because a matrix file is a
+ * test, which a list imported from it would run again inside the census's own test.
  *
  * An entry is keyed by its item's key (`census.ts`). A reason for a move a host cannot make at
  * all, since its composer draws no Close, no issue picker or no Back, is about that composer as a

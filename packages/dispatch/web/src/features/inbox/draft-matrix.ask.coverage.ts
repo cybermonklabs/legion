@@ -1,7 +1,7 @@
 /**
  * The draft matrix's coverage list, ask card (INFRA-1503): each composer census item that
  * `draft-matrix.ask.test.tsx` answers for, held to one of its tests or to one of the numbered
- * reasons of its header, as `__tests__/composer-census/coverage.ts` says.
+ * reasons below, as `__tests__/composer-census/coverage.ts` says.
  */
 import { answers, type CoverageEntry, cells } from "../../__tests__/composer-census/coverage";
 
@@ -13,7 +13,7 @@ const COLLAPSED = "Ask reply, collapsed";
 /** Each cell writes its draft typed (the file's header). */
 const TYPED = ["typed"];
 
-/** The numbered reasons of the matrix file's header. */
+/** The numbered reasons, said here alone, which the matrix file's header points to. */
 const REASONS = {
   1: "1. Which end of the card the answer field and the reply composer sit at (`answerFirst`, `composerFirst`) is the reader's thread order (`useThreadOrder`), which the card reads when it is drawn and again only when who is signed in changes (`useUserPreference`), and never sets, so it never moves a field that is on screen; the shell draws no card before it knows who is signed in, and another person's sign-in forgets every ask draft (`DraftStore.signedIn`).",
   2: '2. Each host draws its cards in one variant and with one thread, literals of its own (`variant="compact"` and `thread="collapsed"` in the Conversation and a decision block, `variant="compact"` in the margin, `variant="full"`, `thread="inline"` or the defaults elsewhere), so no card switches between its full and its compact form, or moves its reply composer between its inline thread and its collapsed one; both composers hold the ask\'s one draft (`useReplyDraft(ask.id)`).',

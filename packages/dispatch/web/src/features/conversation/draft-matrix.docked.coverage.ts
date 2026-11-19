@@ -1,14 +1,14 @@
 /**
  * The draft matrix's coverage list, docked composer (INFRA-1503): each composer census item that
  * `draft-matrix.docked.test.tsx` answers for, held to one of its tests or to one of the numbered
- * reasons of its header, as `__tests__/composer-census/coverage.ts` says.
+ * reasons below, as `__tests__/composer-census/coverage.ts` says.
  */
 import { answers, type CoverageEntry, cells } from "../../__tests__/composer-census/coverage";
 
 /** The host as the matrix file's titles name it. */
 const HOST = "docked composer";
 
-/** The numbered reasons of the matrix file's header. */
+/** The numbered reasons, said here alone, which the matrix file's header points to. */
 const REASONS = {
   1: "1. Above the phone layout no thread view covers the docked composer; on a phone a comment's Reply covers it with one, and Back uncovers it, the phone row.",
   2: "2. Elsewhere needs a held refusal; the typed version is the unmount row.",

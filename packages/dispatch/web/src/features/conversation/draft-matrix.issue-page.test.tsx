@@ -37,29 +37,13 @@
  * stopped note. The phone thread's tab move is made through the address, as the browser's Back
  * and Forward make it, since the thread view covers the tab list.
  *
- * The moves the census found that these rows do not make:
- * 1. `IssueDetail` draws an error or a loading line in place of the tabs while a read of the
- *    issue, the reader's issue state or an item link's landing fails or is pending, which ends
- *    the Conversation's mount as leaving the issue does; the composer it draws again on recovery
- *    is the one the issue-left row draws again on return.
- * 2. `IssuePage` draws the outline page in place of today's when the reader's stored page choice
- *    says so (`useIssuePageChoice`), which ends the Conversation's mount as leaving the issue
- *    does; choosing today's page again draws it afresh, as the issue-left row's return does.
- * 3. `activatedTabs` only ever gains a tab: the Conversation is drawn the first time its tab is
- *    active and stays drawn, so this conditional starts the mount and never ends one.
- * 4. `state`, which `IssueDetail` hands the Conversation, is the reader's read mark and pins for
- *    the issue (`stateForIssue`), which only the unread boundary, the read mark's dwell and each
- *    card's pin read, so it moves no composer's address and draws or ends no composer.
- * 5. An address under `/issues/` that parses as no issue draws the not-found page in place of
- *    `IssueDetail` (`route === undefined`), so no composer is drawn there, and going there from
- *    an issue is leaving the issue, the issue-left row.
- *
  * The forms the composer census found: none in `IssuePage` or `IssueDetail`, which draw the page
  * the same at every width. The layout's forms under them are `ConversationTab`'s, which the docked
  * and phone thread files map, and the app shell's above them are the sign-in file's.
  *
- * `draft-matrix.issue-page.coverage.ts` holds each census item this file answers for to a test
- * above or to a numbered reason, and is the source this header is the prose of.
+ * The numbered reasons - the moves the census found that these rows do not make - are `REASONS`
+ * in `draft-matrix.issue-page.coverage.ts`, which holds each census item this file answers for to
+ * a test above or to one of them.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClientProvider } from "@tanstack/react-query";

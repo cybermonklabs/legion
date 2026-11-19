@@ -103,7 +103,7 @@ import {
 } from "./composer-model";
 import { MODE_LABELS, plainDelivery } from "./delivery";
 import type { HeldSend } from "./held-sends";
-import { type GoneReplyDraft, KeptDraftOffers } from "./KeptDraftOffers";
+import { KeptDraftOffers } from "./KeptDraftOffers";
 import { keptAwayLine } from "./KeptReply";
 import { ReplyQuote } from "./ReplyQuote";
 import {
@@ -121,7 +121,7 @@ import {
   survivingMentions,
   unedited,
 } from "./send-request";
-import { type AwayDraft, useUnsentDrafts } from "./unsent-drafts";
+import { useUnsentDrafts } from "./unsent-drafts";
 import { useAgents } from "./useAgents";
 import { useComposerSend } from "./useComposerSend";
 import { useDraftHomes } from "./useDraftHomes";
@@ -799,8 +799,7 @@ export function MentionComposer({
    *  host's handle on the field runs (`DraftIntake.drop`). */
   const discardNow = useRef(() => {});
   /** Whether the host lists `reply` (`ListedReplies`), so its Reply is there to go back by. */
-  const listsReply = (reply: ReplyTarget): boolean =>
-    listed === undefined || listed === "own reply" || listed.has(reply.id);
+  const listsReply = (reply: ReplyTarget): boolean => listed === undefined || listed.has(reply.id);
   const {
     awayTakes,
     changed,
@@ -809,6 +808,7 @@ export function MentionComposer({
     dropOffered,
     elsewhere,
     forgetUnsent,
+    goneAway,
     keepDraft,
     keepNothing,
     keptAway,
@@ -840,12 +840,6 @@ export function MentionComposer({
     stoppedAside,
     unsent,
   });
-  // A draft kept for a reply the host no longer lists has lost the Reply its line names, so it
-  // is drawn itself beside the field (`KeptDraftOffers`), and every other one with its line.
-  const unlisted = (away: AwayDraft): away is GoneReplyDraft =>
-    away.replyTo !== null && !listsReply(away.replyTo);
-  const goneAway = keptAway.filter(unlisted);
-  const keptLines = keptAway.filter((away) => !unlisted(away));
   // Closed to this kind or finishing, with no send out, no refusal to show and no draft offered
   // beside the field: nothing of this composer is on screen. A margin compose its closed issue
   // refuses stays while it offers a draft (`useMarginSheet`), and shows that draft until the
@@ -1610,7 +1604,7 @@ export function MentionComposer({
       {notice}
       {/* A draft kept for another reply, or for none, while the composer answers this one: the
           line says whose it is and the way back, so the host's move takes nothing with no word. */}
-      {keptLines.map((away) => (
+      {keptAway.map((away) => (
         <p
           className={`text-sm ${textMutedOnSurfaceMuted}`}
           key={away.replyTo?.id ?? ""}

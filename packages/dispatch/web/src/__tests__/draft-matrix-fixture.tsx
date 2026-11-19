@@ -31,11 +31,9 @@ import type {
   UserState,
 } from "../api/types";
 import { ConversationTab } from "../features/conversation/ConversationTab";
-import { unsentDraftsOf } from "../features/conversation/unsent-drafts";
+import { draftStoresReloaded, draftStoresSignedIn } from "../features/conversation/unsent-drafts";
 import { DocumentRuntime } from "../features/doc/runtime";
-import { answerDraftsSignedIn, reloadAnswerDrafts } from "../features/inbox/answer-drafts";
 import { ReadingPane } from "../features/inbox/ReadingPane";
-import { reloadReplyDrafts, replyDraftsSignedIn } from "../features/inbox/reply-drafts";
 import { Margin } from "../features/margin/Margin";
 import { type DocumentBridge, MarginProvider, useMargin } from "../features/margin/margin-context";
 import {
@@ -47,6 +45,7 @@ import {
 import { buildIssuePath } from "../features/refs/routes";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { SendStoppedError } from "../features/writes/keyed-write";
+import { entryNames, removeEntry } from "../features/writes/tab-storage";
 import { writesOf } from "../features/writes/write-store";
 import { commentDeliveryFields } from "./comment-fixture";
 import { fakeDocumentRuntime } from "./document-runtime";
@@ -157,9 +156,9 @@ export function goneIn(place: HTMLElement): {
 
 /** Whether an entry of the tab's `sessionStorage` holds `text`, for a reload to bring back. */
 export function inTheTab(text: string): boolean {
-  return Array.from({ length: sessionStorage.length }, (_, index) =>
-    sessionStorage.key(index)
-  ).some((name) => name !== null && (sessionStorage.getItem(name) ?? "").includes(text));
+  return entryNames(sessionStorage, "").some((name) =>
+    (sessionStorage.getItem(name) ?? "").includes(text)
+  );
 }
 
 export const alice: Actor = { id: "alice", kind: "user" };
@@ -276,9 +275,7 @@ const READER_LOGIN = "alice";
 export function signedInAsReader(queryClient: QueryClient): QueryClient {
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: READER_LOGIN });
   writesOf(queryClient).signedIn(READER_LOGIN);
-  unsentDraftsOf(queryClient).signedIn(READER_LOGIN);
-  answerDraftsSignedIn(READER_LOGIN);
-  replyDraftsSignedIn(READER_LOGIN);
+  draftStoresSignedIn(queryClient, READER_LOGIN);
   writesOf(queryClient).resume(READER_LOGIN);
   return queryClient;
 }
@@ -296,14 +293,12 @@ export function endAsAReload(end: () => void): void {
   act(() => {
     window.dispatchEvent(new Event("pagehide"));
   });
-  const names = Array.from({ length: sessionStorage.length }, (_, index) =>
-    sessionStorage.key(index)
-  ).filter((name): name is string => name !== null);
-  const left = names.map((name) => [name, sessionStorage.getItem(name) ?? ""] as const);
+  const left = entryNames(sessionStorage, "").map(
+    (name) => [name, sessionStorage.getItem(name) ?? ""] as const
+  );
   end();
-  reloadAnswerDrafts();
-  reloadReplyDrafts();
-  sessionStorage.clear();
+  draftStoresReloaded();
+  for (const name of entryNames(sessionStorage, "")) removeEntry(sessionStorage, name);
   for (const [name, value] of left) sessionStorage.setItem(name, value);
 }
 

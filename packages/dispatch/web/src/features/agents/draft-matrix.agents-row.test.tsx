@@ -56,41 +56,10 @@
  * stays in the field there, as in the elsewhere row, and Send says the message it answered is no
  * longer listed in place of naming that message's Reply, with Discard draft beside its note.
  *
- * The moves this host cannot make:
- * 1. The Agents page has no thread view and no Back of its own; the row's composer stays on the
- *    page.
- * 2. Elsewhere needs a held refusal; the typed version is the unmount row.
- * 3. The row's composer has no anchor, so it draws no Close (asserted absent below).
- *
- * The moves the composer census found that the rows above do not make:
- * 4. A row draws its details, and the composer in them, from the first time the reader opens it
- *    (`opened`, from `openedRows`, which only gains rows), so that conditional starts the mount
- *    and never ends one.
- * 5. A row the reader has opened stays mounted, hidden, when its group is folded, the filters
- *    leave it out, or the window scrolls past it (`keptAside`, the row's `hidden`), in the same
- *    parent under the same key, so nothing its composer holds moves.
- * 6. A session that leaves the live list takes its row with it, and a page with no session lists
- *    none (`isPending`, `isError`, an empty list); the row drawn when the session is back is the
- *    one the page-left row's return draws, at the same session's send name.
- * 7. The windowed list draws a group's heading for an item of kind `group` and a row for one of
- *    kind `row` (`renderItem`), and each item's kind is fixed where `items` builds it under a key
- *    of its own (`group:<name>` or the session), so no row is ever drawn as a heading in its place.
- *
- * The forms the composer census found, where the layout draws, hides or moves this composer
- * otherwise than the rows above, which the rows do not make:
- * 8. The layout changes one thing in a row: from `md` its directory shows the path's last segment
- *    and below it the whole path (`mdViewport`). The row, its details and its composer are drawn
- *    the same at every width, so a phone makes the rows above as they are. The app shell's forms
- *    are the sign-in file's.
- *
- * The moves this host cannot make, continued:
- * 9. A refused or stopped reply is never kept away from the field, so Cancel reply takes nothing
- *    of it to the row's own address for Use it here: the field holds it there as it does on
- *    Message B in the row above, with Send saying its message is no longer listed (`elsewhere`),
- *    and Discard draft beside its note.
- *
- * `draft-matrix.agents-row.coverage.ts` holds each census item this file answers for to a test
- * above or to a numbered reason, and is the source this header is the prose of.
+ * The numbered reasons - the moves this host cannot make, and the moves and forms the composer
+ * census found that the rows above do not make - are `REASONS` in
+ * `draft-matrix.agents-row.coverage.ts`, which holds each census item this file answers for to a
+ * test above or to one of them.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";

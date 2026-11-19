@@ -1,11 +1,11 @@
 /**
  * The draft matrix's coverage list, sign-in (INFRA-1503): each composer census item that
  * `draft-matrix.sign-in.test.tsx` answers for, held to one of its tests or to one of the numbered
- * reasons of its header, as `__tests__/composer-census/coverage.ts` says.
+ * reasons below, as `__tests__/composer-census/coverage.ts` says.
  */
 import { answers, type CoverageEntry } from "./__tests__/composer-census/coverage";
 
-/** The numbered reasons of the matrix file's header. */
+/** The numbered reasons, said here alone, which the matrix file's header points to. */
 const REASONS = {
   1: "1. Run under each client: TanStack's own, which the other app-shell rows use, and `DispatchQueryClient`, built as `main.tsx` builds it. While the check holds no answer the first joins a check still out, and the second waits for it and asks again once it lands, so a page that only invalidates draws alice under the first, and alice and then bob under the second.",
   2: '2. `app-sign-out.test.tsx`, "a composer\'s typed text is not shown to another person signed in from another tab", is this cell, and it is not repeated here.',

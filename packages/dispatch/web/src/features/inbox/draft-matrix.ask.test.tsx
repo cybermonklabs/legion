@@ -34,63 +34,9 @@
  * load finds, with the reader signed in as before (`signedInAsReader`). They are the fields'
  * lifetimes the census finds (`lifetime.ts`).
  *
- * The moves the composer census found that the rows above do not make:
- * 1. Which end of the card the answer field and the reply composer sit at (`answerFirst`,
- *    `composerFirst`) is the reader's thread order (`useThreadOrder`), which the card reads when
- *    it is drawn and again only when who is signed in changes (`useUserPreference`), and never
- *    sets, so it never moves a field that is on screen; the shell draws no card before it knows
- *    who is signed in, and another person's sign-in forgets every ask draft
- *    (`DraftStore.signedIn`).
- * 2. Each host draws its cards in one variant and with one thread, literals of its own
- *    (`variant="compact"` and `thread="collapsed"` in the Conversation and a decision block,
- *    `variant="compact"` in the margin, `variant="full"`, `thread="inline"` or the defaults
- *    elsewhere), so no card switches between its full and its compact form, or moves its reply
- *    composer between its inline thread and its collapsed one; both composers hold the ask's one
- *    draft (`useReplyDraft(ask.id)`).
- * 3. A compact card holds its answer field behind the note disclosure (`ownWordsOpen`). Folding
- *    the note takes the field off the screen while the card stays drawn, and with it the form
- *    hook that holds the ask's draft (`useAskAnswerForm`), so the field the disclosure opens
- *    again shows the draft, as the field of a card ended and drawn again does.
- * 4. The card draws the ask's record in place of its form once the ask is settled (`completed`).
- *    An answer the server records for the reader ends the draft with the form, since it is no
- *    longer unsent (`answer-drafts.ts`); a question settled otherwise draws the reader's text
- *    under the record, read-only (`unsentAnswer`; `AskCard.test.tsx`, "a question closed under
- *    the reader keeps their unsent answer, out of the form"), and the draft stays the ask's, so a
- *    form drawn for the ask again holds it. A change of the reader's recorded answer (`changing`)
- *    draws the form over that answer's own text, which is the form's and no draft (`changeAnswer`
- *    in `useAskAnswerForm.ts`).
- * 5. An open ask takes no reply composer (`takesReply`): its card's one composer answers it. A
- *    reply the reader had not sent under a settled ask that opens again is drawn read-only in the
- *    composer's place, in either thread (`useUnsentReply`; `AskCard.test.tsx`, "a reply typed
- *    under a retracted ask that opens again stays on screen in the inline thread" and "… in the
- *    collapsed thread"), and the draft stays the ask's, so the composer drawn once the ask is
- *    settled again holds it. The collapsed thread draws nothing only for an open ask with no
- *    replies and no such reply (`replyCount === 0 && !takesReply(ask) && unsentReply === ""`),
- *    where there is no composer and no draft to show.
- * 6. The thread is the card's own read of its ask's thread (`threadQuery`), of the same ask as
- *    the card. It decides which replies the thread shows and folds (`threadLayout`), and, in the
- *    collapsed thread, whether the disclosure draws a retry control in place of the replies and
- *    the composer while the read fails (`thread.isError`): that takes the composer off the screen
- *    as closing Write a reply does, and the composer drawn when the read lands again holds the
- *    ask's draft, as the composer Write a reply opens again does.
- * 7. A card draws its thread under its record while the ask is settled, and under its form while
- *    the ask is open or the reader is changing their recorded answer (`completed`). An open ask's
- *    thread holds no composer (5), so a thread holding one moves between the two only at the
- *    reader's own Change answer and its end, which draws the thread afresh, its composer with it,
- *    for the same ask: the composer holds the ask's draft, as the composer of a card ended and
- *    drawn again does.
- * 8. Which replies the reader has not read (`unread`) decides only which replies the thread folds
- *    away (`threadLayout`): it never draws, ends, moves or keys a composer, whose place is the
- *    order's alone (`composerFirst(order)`, (1)).
- * 9. `AskThread` draws no composer where it is passed `showComposer={false}`, which only the
- *    collapsed thread passes, drawing `AskThread` for its replies alone: the collapsed thread's
- *    composer is the disclosure's own, the `Ask reply, collapsed` rows', and every other
- *    `AskThread` takes the default, `true`. So nothing that draws, ends or moves the collapsed
- *    thread's `AskThread` (its replies being there, its read, its order, its ask) draws, ends or
- *    moves a composer.
- *
- * `draft-matrix.ask.coverage.ts` holds each census item this file answers for to a test above or
- * to a numbered reason, and is the source this header is the prose of.
+ * The numbered reasons - the moves the composer census found that the rows above do not make -
+ * are `REASONS` in `draft-matrix.ask.coverage.ts`, which holds each census item this file answers
+ * for to a test above or to one of them.
  */
 import { expect, test } from "bun:test";
 import { QueryClientProvider } from "@tanstack/react-query";

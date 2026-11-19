@@ -47,46 +47,10 @@
  * client and write store over the tab's `sessionStorage`, with the reader signed in as before. It
  * is the composer's lifetime the census finds (`lifetime.ts`).
  *
- * The moves this host cannot make:
- * 1. The card's reply always answers its own thread's root on its own issue, so no move of the
- *    host's changes its address, and it is never elsewhere.
- * 2. An inline reply is compact, so it draws no Close (asserted absent below).
- * 3. The issue picker is an Agents row's (`AgentMessageComposer`), and a thread card draws no
- *    Agents row's composer.
- *
- * The moves the composer census found that the rows above do not make:
- * 4. A card is drawn per item of the Conversation's list, keyed by it (`CommentTurn`): the list's
- *    All, Open and Closed filter, and a thread the list no longer holds, unmount the card and its
- *    reply as Collapse thread does, and the card drawn when it is listed again opens on the same
- *    thread's send name.
- * 5. The Conversation draws a loading line or an error in place of the list while its reads are
- *    out or failed (`loading`, `failed`), which unmounts the reply as Collapse thread does.
- * 6. Another issue's address draws the issue page afresh (`IssueDetail` keyed by `route.key`),
- *    unmounting the card and its reply as Collapse thread does, and another tab hides the
- *    Conversation's panel with the reply mounted (`draft-matrix.issue-page.test.tsx` makes both
- *    moves for the docked and phone thread composers).
- * 7. Which end of the thread the reply sits at (`composerFirst`, from `useThreadOrder`) is read
- *    when the card is drawn and again only when who is signed in changes (`useUserPreference`),
- *    so it never moves a reply that is on screen.
- *
- * The forms the composer census found, where the layout draws, hides or moves this composer
- * otherwise than the rows above, which the rows do not make:
- * 8. On a phone the comment's Expand thread opens the full-screen thread view in place of opening
- *    the card in the list (`toggleThread`'s `isPhone`), and its Reply answers in the view's own
- *    composer (`onReply`, and Reply's `!isPhone`), so the first row and the phone Reply row are the
- *    phone's forms of the Collapse thread and Reply rows. A comment link opens the view as Expand
- *    thread does (`ConversationTab`'s focus effect), and a decision landing on the comment closes
- *    it as Back does (`phone.hide`).
- * 9. The view's card is drawn only while a thread is open (`phoneThread`) and keyed by its thread
- *    (`key={phoneThread.id}`): another thread is opened after Back, and widening the page past
- *    the phone layout closes the view as Back does unless a send from it is out
- *    (`usePhoneThread`'s `outlived`), the first row's move either way.
- * 10. The read mark's ref on the newest card (`register`) moves to the view's copy of it while a
- *    thread is open; it marks the issue read and moves no reply. The margin's thread reply is the
- *    margin file's, and the app shell's forms are the sign-in file's.
- *
- * `draft-matrix.inline-reply.coverage.ts` holds each census item this file answers for to a test
- * above or to a numbered reason, and is the source this header is the prose of.
+ * The numbered reasons - the moves this host cannot make, and the moves and forms the composer
+ * census found that the rows above do not make - are `REASONS` in
+ * `draft-matrix.inline-reply.coverage.ts`, which holds each census item this file answers for to
+ * a test above or to one of them.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { render, screen, waitFor, within } from "@testing-library/react";

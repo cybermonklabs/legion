@@ -13,8 +13,8 @@ import { boardMoveMutationKey } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Issue, IssuePriority } from "../../api/types";
 import type { BoardMoveVariables } from "../project/board-moves";
+import { type Shape, shape } from "../writes/tab-storage";
 import type { KeyedPress } from "../writes/useKeyedWrite";
-import { type Shape, shape } from "../writes/write-storage";
 import {
   defineWriteKind,
   isLive,

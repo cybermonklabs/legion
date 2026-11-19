@@ -22,6 +22,7 @@ import {
   WriteDiscardedError,
   writeUnderKey,
 } from "./keyed-write";
+import type { Shape } from "./tab-storage";
 import {
   KEPT_SEND_RESUME_MS,
   type KeptState,
@@ -32,7 +33,6 @@ import {
   refusalFrom,
   requestFrom,
   resumesOnItsOwn,
-  type Shape,
   type WriteStorage,
   writeStorage,
 } from "./write-storage";

@@ -305,11 +305,15 @@ export function keptForOtherWords(
     .at(-1);
 }
 
+/** A draft the composer keeps for a reply whose comment or message its host no longer lists
+ *  (`ListedReplies`). */
+export type GoneReplyDraft = AwayDraft & { readonly replyTo: ReplyTarget };
+
 /** What the composer keeps of a draft the field does not send, the edit it offers beside a newer
  *  body, the draft a margin compose offers beside a compose at other words, and the presses for a
  *  draft kept for a reply its host no longer lists. */
 export interface KeptDrafts {
-  /** Where Use it here can put a draft kept for another reply (`keptAway`) whose comment or
+  /** Where Use it here can put a draft kept for another reply (`goneAway`) whose comment or
    *  message its host no longer lists (`ListedReplies`), as the composer draws it beside its field
    *  (`KeptDraftOffers`): into this field, while the composer shows its owner's own address and
    *  the field holds nothing of the reader's own and no send (`"here"`); not yet, while that field
@@ -324,7 +328,7 @@ export interface KeptDrafts {
    *  Meanwhile the field is read only and Save refuses, so nothing is saved over a body the reader
    *  has not seen, and nothing they wrote goes with no word. */
   readonly changed: SentDraft | undefined;
-  /** Discard my draft for a draft kept for another address (`keptAway`): forgets it where it is
+  /** Discard my draft for a draft kept for another address (`goneAway`): forgets it where it is
    *  kept, in the page and in the tab. */
   readonly dropAway: (away: AwayDraft) => void;
   /** Drops the edit waiting beside a newer body, with what is kept of it for the comment: Discard
@@ -339,6 +343,11 @@ export interface KeptDrafts {
   readonly elsewhere: string | undefined;
   /** Forgets the unsent copy under the send name: from Send on the held send keeps the draft. */
   readonly forgetUnsent: () => void;
+  /** The drafts kept for other replies than the one the composer shows whose comment or message
+   *  its host no longer lists (`ListedReplies`): the Reply a kept line would name is gone with
+   *  it, so the composer draws each itself beside its field (`KeptDraftOffers`), with Discard my
+   *  draft (`dropAway`) and, where `awayTakes` says so, Use it here (`takeAway`). */
+  readonly goneAway: readonly GoneReplyDraft[];
   /** Writes what the field holds back to the held refusal now, as the debounced write does: the
    *  margin asks for it before it sends a refused compose again itself (`ComposerBridge`). */
   readonly keepDraft: () => void;
@@ -346,7 +355,7 @@ export interface KeptDrafts {
    *  (`keepsNothing`). */
   readonly keepNothing: () => void;
   /** The drafts kept for other addresses than the one the composer shows, each of which the
-   *  composer names with the way back to it. */
+   *  composer names with the way back to it: every one but those of `goneAway`. */
   readonly keptAway: readonly AwayDraft[];
   /** A draft kept for other words of the document than the ones this compose shows: a newer
    *  compose on the document is the host's move for the one before it, which carries nothing,
@@ -361,7 +370,7 @@ export interface KeptDrafts {
    *  draft, and Discard drops it with that. A stopped send, which the composer's host hands it
    *  (`stoppedAside`), is offered first, then the newest draft (`keptForOtherWords`). */
   readonly offered: OfferedDraft | undefined;
-  /** Use it here for a draft kept for another reply (`keptAway`), while `awayTakes` says
+  /** Use it here for a draft kept for another reply (`goneAway`), while `awayTakes` says
    *  `"here"`: puts it in the field, under the channel's own seed as a draft that arrives at this
    *  address takes it, and forgets it where it was kept. From here on it is the draft of the
    *  address the composer shows, which the reader sends with their own press. */
@@ -391,8 +400,9 @@ const KEEP_DRAFT_MS = 300;
  * composer, and drops the draft for a control its host draws out of the composer's sight
  * (`intake`); offers an edit written over a body the comment no longer holds beside the newer body
  * (`changed`); offers a margin compose's draft kept for other words of the document beside the
- * compose at these (`offered`); and drops, or takes into the field, a draft kept for a reply its
- * host no longer lists (`dropAway`, `takeAway`).
+ * compose at these (`offered`); and splits the drafts kept for other replies into those it names
+ * with the way back (`keptAway`) and those whose comment or message its host no longer lists
+ * (`goneAway`), which it drops, or takes into the field (`dropAway`, `takeAway`).
  *
  * The composer's own state is handed in as it stands at this render: the field (`field`), the
  * files pasted into it (`homes`), how many times the reader has moved its address with its own
@@ -442,8 +452,9 @@ export function useKeptDrafts({
     readonly initial: MountDraft;
     readonly intake: Ref<DraftIntake> | undefined;
     readonly kind: ComposerKind;
-    /** Whether the host lists `reply` (`ListedReplies`), which a refusal held for a reply the
-     *  composer has left goes back to by its Reply (`writtenElsewhere`). */
+    /** Whether the host lists `reply` (`ListedReplies`): a draft kept for a reply it no longer
+     *  lists is drawn itself (`goneAway`), and a refusal held for a reply the composer has left
+     *  goes back to it by its Reply only while it is listed (`writtenElsewhere`). */
     readonly listsReply: (reply: ReplyTarget) => boolean;
     readonly mountedHeld: RefObject<boolean>;
     readonly moves: number;
@@ -459,7 +470,13 @@ export function useKeptDrafts({
   const { askOptions, body, mentions, multiple, replacement, urgency } = field;
   const { awayName, unsentName } = keptNames({ composerName, inline, standing });
   const keptByAddress = unsent.useAway(awayName ?? "");
-  const keptAway = keptByAddress.filter((away) => !sameReply(away.replyTo, replyTo));
+  // A draft kept for a reply the host no longer lists has lost the Reply its line names, so it
+  // is drawn itself beside the field (`KeptDraftOffers`), and every other one with its line.
+  const unlisted = (away: AwayDraft): away is GoneReplyDraft =>
+    away.replyTo !== null && !listsReply(away.replyTo);
+  const keptElsewhere = keptByAddress.filter((away) => !sameReply(away.replyTo, replyTo));
+  const goneAway = keptElsewhere.filter(unlisted);
+  const keptAway = keptElsewhere.filter((away) => !unlisted(away));
   // Only a composer with an anchor keeps drafts by it, so only a margin compose offers one: the
   // send the reader stopped, set aside for it, first, then the newest draft kept for other words.
   // A kept draft's two presses both forget it where it is kept, since Use my draft has put it in
@@ -799,6 +816,7 @@ export function useKeptDrafts({
     forgetUnsent: () => {
       if (unsentName !== undefined) unsent.write(unsentName, undefined);
     },
+    goneAway,
     keepDraft: () => keepDraft.current(),
     keepNothing: () => {
       keepsNothing.current = true;

@@ -6,6 +6,7 @@ import {
   type WriteRequest,
 } from "../../api/client";
 import { keySpent, SendExpiredError, SendInterruptedError, SendStoppedError } from "./keyed-write";
+import { entryNames, pageStorage, readEntry, removeEntry, type Shape, shape } from "./tab-storage";
 
 /**
  * Where every write to Dispatch waits out a reload (`write-store.ts`). Every `POST` and `PATCH`
@@ -115,57 +116,6 @@ export interface KeptWrite {
   readonly keyed: boolean;
   readonly detail: unknown;
 }
-
-/** A value's shape, checked: what a kept record is parsed by before it is trusted, and a type
- *  guard, so each is held to the type it stands for (`satisfies Shape<T>`) and nothing is cast. */
-export type Shape<T> = (value: unknown) => value is T;
-
-/** The type a shape checks for. */
-export type ShapeOf<S> = S extends Shape<infer T> ? T : never;
-
-/** The shapes a kept record is checked by: a record has each named field in its shape (a missing
- *  one reads as undefined, and others are not read), and `either` fits a value that one of its
- *  shapes fits. */
-export const shape = {
-  // `T[]`, not `readonly T[]`: `Array.isArray` proves a real array, and a kept record whose shape
-  // is checked against a request body the route table types (`CarriedBlockIds`) needs the mutable
-  // one — `readonly T[]` does not fit it, while `T[]` fits both.
-  array:
-    <T>(item: Shape<T>): Shape<T[]> =>
-    (value): value is T[] =>
-      Array.isArray(value) && value.every(item),
-  boolean: ((value) => typeof value === "boolean") as Shape<boolean>,
-  either:
-    <S extends readonly Shape<unknown>[]>(...shapes: S): Shape<ShapeOf<S[number]>> =>
-    (value): value is ShapeOf<S[number]> =>
-      shapes.some((fits) => fits(value)),
-  nullable:
-    <T>(inner: Shape<T>): Shape<T | null> =>
-    (value): value is T | null =>
-      value === null || inner(value),
-  number: ((value) => typeof value === "number" && Number.isFinite(value)) as Shape<number>,
-  oneOf:
-    <const V extends readonly (boolean | number | string | null)[]>(
-      ...values: V
-    ): Shape<V[number]> =>
-    (value): value is V[number] =>
-      values.includes(value as V[number]),
-  optional:
-    <T>(inner: Shape<T>): Shape<T | undefined> =>
-    (value): value is T | undefined =>
-      value === undefined || inner(value),
-  record:
-    <F extends Readonly<Record<string, Shape<unknown>>>>(
-      fields: F
-    ): Shape<{ readonly [K in keyof F]: ShapeOf<F[K]> }> =>
-    (value): value is { readonly [K in keyof F]: ShapeOf<F[K]> } =>
-      typeof value === "object" &&
-      value !== null &&
-      !Array.isArray(value) &&
-      Object.entries(fields).every(([name, field]) => field(Reflect.get(value, name))),
-  string: ((value) => typeof value === "string") as Shape<string>,
-  unknown: ((_value) => true) as Shape<unknown>,
-} as const;
 
 const keptRefusalShape = shape.either(
   shape.record({ kind: shape.oneOf("interrupted", "stopped") }),
@@ -327,7 +277,7 @@ export class WriteStorage {
       this.#storage?.setItem(name, JSON.stringify({ ...write, version: FORMAT_VERSION }));
     } catch {
       // The write is still made; only its reload is lost.
-      this.#remove(name);
+      removeEntry(this.#storage, name);
     }
     this.#confirm(write.key, WriteStorage.#settled(write));
   }
@@ -340,14 +290,14 @@ export class WriteStorage {
    *  reads rather than a whole record, since its caller has no reason to build one. */
   keepNothing(write: Pick<KeptWrite, "key" | "presentation" | "state">): void {
     if (this.#retired) return;
-    this.#remove(`${ENTRY_PREFIX}${write.key}`);
+    removeEntry(this.#storage, `${ENTRY_PREFIX}${write.key}`);
     this.#confirm(write.key, WriteStorage.#settled(write));
   }
 
   /** Drops the write kept under `key`: it landed, or the reader dropped its refusal. */
   forget(key: string): void {
     if (this.#retired) return;
-    this.#remove(`${ENTRY_PREFIX}${key}`);
+    removeEntry(this.#storage, `${ENTRY_PREFIX}${key}`);
     this.#confirm(key, true);
   }
 
@@ -364,10 +314,14 @@ export class WriteStorage {
     const storage = this.#storage;
     if (storage === undefined || this.#retired) return [];
     const loaded: KeptWrite[] = [];
-    for (const name of this.#names(storage)) {
-      const entry = this.#read(storage, name);
-      if (entry === undefined || `${ENTRY_PREFIX}${entry.key}` !== name || entry.login !== login) {
-        this.#remove(name);
+    for (const name of entryNames(storage, ENTRY_PREFIX)) {
+      const entry = readEntry(storage, name);
+      if (
+        !keptEntryShape(entry) ||
+        `${ENTRY_PREFIX}${entry.key}` !== name ||
+        entry.login !== login
+      ) {
+        removeEntry(storage, name);
         continue;
       }
       const { carried: keptCarried, keyed, version: _version, ...write } = entry;
@@ -411,31 +365,7 @@ export class WriteStorage {
     this.#unconfirmed.clear();
     const storage = this.#storage;
     if (storage === undefined) return;
-    for (const name of this.#names(storage)) this.#remove(name);
-  }
-
-  #remove(name: string): void {
-    try {
-      this.#storage?.removeItem(name);
-    } catch {
-      // A storage that refuses even a removal holds nothing this page wrote.
-    }
-  }
-
-  /** The names of every entry, read before any is removed. */
-  #names(storage: Storage): string[] {
-    return Array.from({ length: storage.length }, (_, index) => storage.key(index)).filter(
-      (name): name is string => name?.startsWith(ENTRY_PREFIX) === true
-    );
-  }
-
-  #read(storage: Storage, name: string) {
-    try {
-      const value: unknown = JSON.parse(storage.getItem(name) ?? "null");
-      return keptEntryShape(value) ? value : undefined;
-    } catch {
-      return undefined;
-    }
+    for (const name of entryNames(storage, ENTRY_PREFIX)) removeEntry(storage, name);
   }
 
   /** Marks the write under `key` confirmed - landed, refused or dropped - or still out, and asks
@@ -478,16 +408,6 @@ export class WriteStorage {
 /** What says the page is plainly still the person's after a navigation that did not happen: a
  *  press on it, or the page shown again. */
 const STAYING = ["keydown", "pageshow", "pointerdown"] as const;
-
-/** The page's sessionStorage, or undefined where the browser refuses it the page. The draft
- *  stores keep their drafts there too (`draft-store.ts`). */
-export function pageStorage(): Storage | undefined {
-  try {
-    return window.sessionStorage;
-  } catch {
-    return undefined;
-  }
-}
 
 let pageWrites: WriteStorage | undefined;
 

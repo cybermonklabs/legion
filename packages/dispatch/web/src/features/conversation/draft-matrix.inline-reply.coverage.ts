@@ -1,14 +1,14 @@
 /**
  * The draft matrix's coverage list, inline reply (INFRA-1503): each composer census item that
  * `draft-matrix.inline-reply.test.tsx` answers for, held to one of its tests or to one of the
- * numbered reasons of its header, as `__tests__/composer-census/coverage.ts` says.
+ * numbered reasons below, as `__tests__/composer-census/coverage.ts` says.
  */
 import { answers, type CoverageEntry, cells } from "../../__tests__/composer-census/coverage";
 
 /** The host as the matrix file's titles name it. */
 const HOST = "inline reply";
 
-/** The numbered reasons of the matrix file's header. */
+/** The numbered reasons, said here alone, which the matrix file's header points to. */
 const REASONS = {
   1: "1. The card's reply always answers its own thread's root on its own issue, so no move of the host's changes its address, and it is never elsewhere.",
   2: "2. An inline reply is compact, so it draws no Close (asserted absent below).",

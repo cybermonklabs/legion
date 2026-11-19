@@ -1,14 +1,14 @@
 /**
  * The draft matrix's coverage list, margin thread (INFRA-1503): each composer census item that
  * `draft-matrix.margin.test.tsx` answers for, held to one of its tests or to one of the numbered
- * reasons of its header, as `__tests__/composer-census/coverage.ts` says.
+ * reasons below, as `__tests__/composer-census/coverage.ts` says.
  */
 import { answers, type CoverageEntry, cells } from "../../__tests__/composer-census/coverage";
 
 /** The host as the matrix file's titles name it. */
 const HOST = "margin thread";
 
-/** The numbered reasons of the matrix file's header. */
+/** The numbered reasons, said here alone, which the matrix file's header points to. */
 const REASONS = {
   1: "1. A thread's reply always answers its own thread's root, so no move of the host's changes its address, and it is never elsewhere.",
   2: "2. The margin's card draws no collapse of its own: the desktop list closes it only by opening another thread (the second row), and the phone only by Back (the first row).",

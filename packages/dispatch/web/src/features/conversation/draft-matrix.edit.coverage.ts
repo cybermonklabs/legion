@@ -1,7 +1,7 @@
 /**
  * The draft matrix's coverage list, comment edit (INFRA-1503): each composer census item that
  * `draft-matrix.edit.test.tsx` answers for, held to one of its tests or to one of the numbered
- * reasons of its header, as `__tests__/composer-census/coverage.ts` says.
+ * reasons below, as `__tests__/composer-census/coverage.ts` says.
  */
 import {
   type Answer,
@@ -55,7 +55,7 @@ function reloaded(host: Host): Answer[] {
   return cells(`${host.name} edit · the page reloaded, then back`);
 }
 
-/** The numbered reasons of the matrix file's header. */
+/** The numbered reasons, said here alone, which the matrix file's header points to. */
 const REASONS = {
   1: "1. The editor's address is its comment (`edit`, under the send name `[\"comment-edit\", id]`): another comment's editor is another address under a name of its own, so no move of the host's gives an editor another comment.",
   2: "2. A comment that leaves its thread's list, and a thread that leaves the Conversation's or the margin's list (its resolution, the Conversation's All, Open and Closed filter, another document's list), unmount the editor with its row or its card, as Collapse thread and another thread's opening do in the rows above.",

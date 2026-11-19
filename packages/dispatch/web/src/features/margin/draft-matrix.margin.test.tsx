@@ -97,81 +97,10 @@
  *
  * (hidden) marks a host move that keeps the compose mounted but out of sight.
  *
- * The moves this host cannot make:
- * 1. A thread's reply always answers its own thread's root, so no move of the host's changes its
- *    address, and it is never elsewhere.
- * 2. The margin's card draws no collapse of its own: the desktop list closes it only by opening
- *    another thread (the second row), and the phone only by Back (the first row).
- * 3. The issue picker is an Agents row's (`AgentMessageComposer`), and the margin draws no Agents
- *    row's composer.
- *
- * The moves the composer census found that the rows above do not make:
- * 4. The Pinned tab, and above the compact layout the rail the margin collapses to, hide the
- *    compose (`MarginComposerSlot`'s `hidden`, `MarginSheet`'s `covered`, `Margin`'s `railShown`,
- *    which also opens the rail for each compose the margin shows) and keep it mounted at its
- *    address, so nothing it holds moves; a phone thread hides it the same way, the third phone
- *    row.
- * 5. On a page with no margin above the compact layout `Margin` draws nothing, which unmounts the
- *    compose and every card as leaving the document does; below it `Margin` stays drawn there with
- *    no document, and so with no compose, which is the shown document's (`useMarginSheet`). The
- *    compose is the provider's (`MarginProvider`) and a reply's draft is held under its name, as
- *    the document-left rows' and the another-thread row's returns show.
- * 6. The Comments tab's list is not drawn on the Pinned tab, under a phone margin thread, or while
- *    the comments read failed (`MarginSheet`, `CommentsTab`), which unmounts a thread's reply and
- *    its editor as opening another thread does (the second row, and the edit file's margin card).
- * 7. A thread's card is drawn per thread of the open document, keyed by it (`ThreadList`): a
- *    thread that leaves the list, by its resolution or another document's list, unmounts its card
- *    as opening another thread does, and a resolved thread folded away under Show resolved is the
- *    same; its reply is held by its thread's name.
- * 8. Which end of a margin thread its reply sits at (`composerFirst`, from `useThreadOrder` in
- *    `ThreadCard`) is read when the card is drawn and again only when who is signed in changes
- *    (`useUserPreference`), so it never moves a reply that is on screen.
- *
- * The forms the composer census found, where the layout draws, hides or moves these composers
- * otherwise than the rows above, which the rows do not make:
- * 9. The phone panel's being open or closed is the reader's own (its toggle, its backdrop and
- *    Escape, `toggleSheet`) and moves no address: closed, only the stylesheet hides what is in it
- *    (`hidden xl:block`), so the compose and every card, reply and editor stay mounted under it,
- *    and opening it shows them as they were. Closing it closes a phone thread as Back does
- *    (`closeThread`), the first row. The margin opens it for each compose it shows
- *    (`openCompactSheet`), which the first two phone rows assert.
- * 10. On a phone a card's tap and a mark's click open the thread full-screen in place of opening
- *    it in the list (`onToggleThread`, `selectMarginItem`), so the first row's Back is the way off
- *    a thread there, and another thread is opened after it; a comment or ask link only selects
- *    its card (`openPhoneThread` false), which moves no composer.
- * 11. Where the margin sits moves no composer: the desktop column's width, class and resize
- *    handle, the compact layout's `contents` class (`Margin`), and the panel's dialog role, its
- *    place at the foot of the screen and its backdrop (`MarginSheet`).
- * 12. The rest is focus and scrolling: the compose takes focus once it is on screen (`onScreen`,
- *    `autoFocus`), the margin scrolls the compose or a linked card into view only in an open panel
- *    (`useMarginListeners`, `useCardHold`), and an open panel or thread view keeps focus inside
- *    it and the page still under it (`useDialog`). None moves an address or ends a mount. The
- *    app shell's forms, above every host, are the sign-in file's.
- *
- * The address prop the composer census found that no move of the host's changes:
- * 13. The compose's kind (`composer.kind`) changes only by the compose's own Comment, Suggest and
- *    Ask switch (`onKindChange`), the reader's own control, which retypes the same mark
- *    (`retypeCompose`) and leaves the draft in the field (`useKeptDrafts`), so it re-addresses
- *    the same compose and moves nothing it holds.
- *
- * The move the composer census found above the margin, in the shell, which no row makes:
- * 14. A render inside the margin that throws draws the shell's error section in its place
- *    (`ErrorBoundary`, "the margin", in `app.tsx`), which unmounts the compose and every card as
- *    leaving the document does. Each composer keeps what it holds as it goes (`useKeptDrafts`):
- *    the compose and an editor by their address (`keepAway`), a thread's reply under its
- *    thread's name, written at each keystroke (`unsent.write`), and what was typed over a
- *    refusal in its held send (`keepDraft`). Those stores live with the query client, above the
- *    boundary (`unsentDraftsOf`, `heldSends`), and so does the compose (`MarginProvider`). The
- *    boundary draws the margin again when the page's path changes (`resetKey`,
- *    `componentDidUpdate`), with no thread open and no editor (`useMarginSheet` starts again),
- *    and its Reload Dispatch reloads the page as the reload rows do. A composer drawn again at
- *    its address opens on its draft (`mountDraft`): the compose on its document, a thread's
- *    reply when its thread is opened, an editor when its comment's Edit is pressed (beside a
- *    newer body where the comment changed, `changedUnder`), as the document-left rows, the
- *    another-thread row and the edit file's margin card show.
- *
- * `draft-matrix.margin.coverage.ts` holds each census item this file answers for to a test above
- * or to a numbered reason, and is the source this header is the prose of.
+ * The numbered reasons - the moves this host cannot make; the moves, the forms and the address
+ * prop the composer census found that the rows above do not make; and the move it found above the
+ * margin, in the shell - are `REASONS` in `draft-matrix.margin.coverage.ts`, which holds each
+ * census item this file answers for to a test above or to one of them.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey, QueryClient } from "@tanstack/react-query";

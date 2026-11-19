@@ -53,42 +53,10 @@
  * docked composer, in place of the line that names that comment's Reply; it offers no Use it
  * here, since the docked composer's field holds a draft of its own.
  *
- * The moves this host cannot make:
- * 1. Every Reply the thread composer answers is redirected onto the comment its refusal answers
- *    (`redirectedReplyTarget`), so the host never moves it while a refusal is held.
- * 2. The thread view draws its comment forced open with no Collapse thread (`forceExpanded`), so
- *    Back, the first row, is its one way out.
- * 3. The thread composer has no anchor, so it draws no Close (asserted absent below).
- * 4. The issue picker is an Agents row's (`AgentMessageComposer`), and the thread view draws no
- *    Agents row's composer.
- *
- * The moves the composer census found above `ConversationTab`, and in it:
- * 5. `draft-matrix.issue-page.test.tsx` makes these cells, with the issue page drawn around the
- *    Conversation: another issue's address draws the page afresh (`IssueDetail` keyed by
- *    `route.key`), and another tab hides the Conversation's panel and keeps it drawn. The
- *    composer's `owner` and send name follow `issueKey`, which only that remount changes.
- * 6. Another comment's thread opened with Expand thread, while the composer answers Comment A,
- *    hides the composer (`hidden={!phoneReplyTargetsThread}`) and keeps it mounted at A's address,
- *    so nothing it holds moves; A's Reply shows it again, as the first row's return does.
- * 7. The Conversation draws a loading line or an error in place of the list while its reads are
- *    out or failed (`loading`, `failed`), which unmounts the thread composer as leaving the issue
- *    does, and the composer drawn when they land again is the one the issue-left row draws on
- *    return.
- *
- * The forms the composer census found, where the layout draws, hides or moves this composer
- * otherwise than the rows above, which the rows do not make:
- * 8. A comment link opens the thread view as it lands (`ConversationTab`'s focus effect), as the
- *    comment's Reply opens it here, and a decision landing on the comment closes the view as Back
- *    does (`phone.hide`), the first row's move; the composer stays mounted while its reply is set
- *    (`phone.replyTo`).
- * 9. Widening the page past the phone layout closes the view as Back does, unless a send from it
- *    is out, which keeps the view open at any width until Back (`usePhoneThread`'s `outlived`);
- *    the composer stays mounted while its reply is set, whatever the width. The Jump to latest
- *    pill and the read mark's ref on the newest card move no composer, and the app shell's forms
- *    are the sign-in file's.
- *
- * `draft-matrix.phone-thread.coverage.ts` holds each census item this file answers for to a test
- * above or to a numbered reason, and is the source this header is the prose of.
+ * The numbered reasons - the moves this host cannot make, and the moves and forms the composer
+ * census found above `ConversationTab` and in it that the rows do not make - are `REASONS` in
+ * `draft-matrix.phone-thread.coverage.ts`, which holds each census item this file answers for to
+ * a test above or to one of them.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey } from "@tanstack/react-query";

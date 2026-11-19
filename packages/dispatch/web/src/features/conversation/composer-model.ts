@@ -74,13 +74,13 @@ export interface ReplyTarget {
  *
  * A host that can lose a reply its composer's drafts answer passes the ids of every comment and
  * message its reads hold, whatever its filter, a fold or a Clear shows of them, since the host's
- * own controls reach the Reply of each (`listedReplies`). A host whose composer answers only the
- * reply drawn with it - a thread card's own reply - passes `"own reply"`: that reply leaves the
- * page with the composer, so no line of the composer's can outlive it. A host whose composer
- * answers no reply, or whose reads have not answered yet, passes none, and every kept reply is
- * said to be kept as before.
+ * own controls reach the Reply of each (`listedReplies`). Every other host passes none, and every
+ * kept reply is said to be kept as before: one whose composer answers no reply, one whose reads
+ * have not answered yet, and one whose composer answers only the reply drawn with it - a thread
+ * card's own reply - which leaves the page with the composer, so no line of the composer's can
+ * outlive it.
  */
-export type ListedReplies = ReadonlySet<string> | "own reply";
+export type ListedReplies = ReadonlySet<string>;
 
 /** One accepted mention: the target, and the span of the body that names it. */
 export interface AcceptedMention {

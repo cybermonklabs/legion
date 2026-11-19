@@ -8,18 +8,14 @@ import {
   quoteBodyText,
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
-import type { ComposerKind, ReplyTarget } from "./composer-model";
+import type { ComposerKind } from "./composer-model";
 import { GoneReply } from "./KeptReply";
 import type { SentDraft } from "./send-request";
-import type { AwayDraft } from "./unsent-drafts";
-import type { KeptDrafts, OfferedDraft } from "./useKeptDrafts";
+import type { GoneReplyDraft, KeptDrafts, OfferedDraft } from "./useKeptDrafts";
 
-/** A draft the composer keeps for a reply whose comment or message its host no longer lists
- *  (`ListedReplies`). */
-export type GoneReplyDraft = AwayDraft & { readonly replyTo: ReplyTarget };
-
-/** Each kind as an offered draft names the one it was written as, beside a compose of another. */
-const KIND_WORDS: Record<ComposerKind, string> = {
+/** Each kind as a kept draft names the one it was written as, beside a compose of another
+ *  (`KeptDraftOffers`) or in the margin's list of what its compose kept (`MarginKeptDrafts`). */
+export const KIND_WORDS: Record<ComposerKind, string> = {
   ask: "an ask",
   comment: "a comment",
   suggestion: "a suggestion",

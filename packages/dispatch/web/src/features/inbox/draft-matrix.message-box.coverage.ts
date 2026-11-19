@@ -1,14 +1,14 @@
 /**
  * The draft matrix's coverage list, Inbox message box (INFRA-1503): each composer census item that
  * `draft-matrix.message-box.test.tsx` answers for, held to one of its tests or to one of the
- * numbered reasons of its header, as `__tests__/composer-census/coverage.ts` says.
+ * numbered reasons below, as `__tests__/composer-census/coverage.ts` says.
  */
 import { answers, type CoverageEntry, cells } from "../../__tests__/composer-census/coverage";
 
 /** The host as the matrix file's titles name it. */
 const HOST = "Inbox message box";
 
-/** The numbered reasons of the matrix file's header. */
+/** The numbered reasons, said here alone, which the matrix file's header points to. */
 const REASONS = {
   1: "1. The box draws no Back of its own; Escape from the reading column takes focus back to its row (`Inbox`'s `back`), and below the column's width there is no column to leave (11).",
   2: "2. The box always answers its thread's root message (`replyTo` names `thread.thread_id`'s message), so a newer message in the thread does not move it, and it is never elsewhere.",

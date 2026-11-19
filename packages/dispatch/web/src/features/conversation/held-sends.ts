@@ -15,7 +15,7 @@ import type { Actor } from "../../api/types";
 import { pastDeadlineKey } from "../../hooks/useSending";
 import { newSendKey } from "../../lib/send-key";
 import { SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
-import { type Shape, shape } from "../writes/write-storage";
+import { type Shape, shape } from "../writes/tab-storage";
 import {
   defineWriteKind,
   ofKind,

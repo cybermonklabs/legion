@@ -341,7 +341,7 @@ export function ThreadCard({
      first. Its Cancel reply, and Escape in its field, close the thread and keep the draft for
      it, typed or refused or stopped, which the closed card says (`keptReply`). It answers the
      card's own comment alone, which leaves the page with the card, so no line of it can outlive
-     the comment it names (`listed`). */
+     the comment it names, and it is handed no `listed`. */
   const replyComposer = expanded ? (
     <div className="contents" hidden={hideReplyComposer}>
       <MentionComposer
@@ -350,7 +350,6 @@ export function ThreadCard({
         frame={composerClassName}
         inline
         kind="comment"
-        listed="own reply"
         mutationKey={replyMutationKey}
         onCancelReply={onToggle}
         onClose={onToggle}

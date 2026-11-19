@@ -1,14 +1,14 @@
 /**
  * The draft matrix's coverage list, Agents row (INFRA-1503): each composer census item that
  * `draft-matrix.agents-row.test.tsx` answers for, held to one of its tests or to one of the
- * numbered reasons of its header, as `__tests__/composer-census/coverage.ts` says.
+ * numbered reasons below, as `__tests__/composer-census/coverage.ts` says.
  */
 import { answers, type CoverageEntry, cells } from "../../__tests__/composer-census/coverage";
 
 /** The host as the matrix file's titles name it. */
 const HOST = "Agents row";
 
-/** The numbered reasons of the matrix file's header. */
+/** The numbered reasons, said here alone, which the matrix file's header points to. */
 const REASONS = {
   1: "1. The Agents page has no thread view and no Back of its own; the row's composer stays on the page.",
   2: "2. Elsewhere needs a held refusal; the typed version is the unmount row.",

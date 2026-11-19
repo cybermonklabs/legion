@@ -1,8 +1,18 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 
+import {
+  answerDraftsSignedIn,
+  answerDraftsSignedOut,
+  reloadAnswerDrafts,
+} from "../inbox/answer-drafts";
 import { createDraftStore } from "../inbox/draft-store";
-import { type Shape, shape } from "../writes/write-storage";
+import {
+  reloadReplyDrafts,
+  replyDraftsSignedIn,
+  replyDraftsSignedOut,
+} from "../inbox/reply-drafts";
+import { type Shape, shape } from "../writes/tab-storage";
 import type { ComposerAnchor, ComposerKind, ComposerOwner, ReplyTarget } from "./composer-model";
 import {
   type HeldSend,
@@ -225,4 +235,33 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
 /** The unsent drafts of the query client this component renders under (`unsentDraftsOf`). */
 export function useUnsentDrafts(): UnsentDrafts {
   return unsentDraftsOf(useQueryClient());
+}
+
+/** Who is signed in now, told to every draft store of the page: the composers' drafts and the
+ *  ones each keeps by address, which live with `client` (`unsentDraftsOf`), and the asks' answers
+ *  and replies (`answer-drafts.ts`, `reply-drafts.ts`). Another person's sign-in forgets every
+ *  draft, a lapse keeps them, and the first sign-in takes up what the tab kept for that person
+ *  before a reload (`DraftStore.signedIn`). */
+export function draftStoresSignedIn(client: QueryClient, login: string | undefined): void {
+  unsentDraftsOf(client).signedIn(login);
+  answerDraftsSignedIn(login);
+  replyDraftsSignedIn(login);
+}
+
+/** `login`'s sign-out landed, told to every draft store of the page (`draftStoresSignedIn`):
+ *  each forgets every draft of theirs, in the page and in the tab, and takes none until someone
+ *  signs in (`DraftStore.signedOut`). */
+export function draftStoresSignedOut(client: QueryClient, login: string): void {
+  unsentDraftsOf(client).signedOut(login);
+  answerDraftsSignedOut(login);
+  replyDraftsSignedOut(login);
+}
+
+/** What a reload of the page does to the draft stores modules hold, the asks' answers and
+ *  replies, for the draft matrix: the page forgets them, and the tab keeps them for the next
+ *  sign-in (`DraftStore.reload`). The composers' drafts live with the page's query client, which
+ *  the next load makes anew. */
+export function draftStoresReloaded(): void {
+  reloadAnswerDrafts();
+  reloadReplyDrafts();
 }

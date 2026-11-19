@@ -1,6 +1,13 @@
 import { type Dispatch, type SetStateAction, useCallback, useSyncExternalStore } from "react";
 
-import { pageStorage, type Shape, shape } from "../writes/write-storage";
+import {
+  entryNames,
+  pageStorage,
+  readEntry,
+  removeEntry,
+  type Shape,
+  shape,
+} from "../writes/tab-storage";
 
 /** One keyed store of unsent text, and the ways its callers reach it. */
 export interface DraftStore {
@@ -118,31 +125,6 @@ const subscribeNotKept = (listener: () => void): (() => void) => {
  *  fixed order; empty while it keeps every one. */
 export function useDraftsNotKept(): readonly NotKeptReason[] {
   return useSyncExternalStore(subscribeNotKept, () => notKeptReasons);
-}
-
-/** The names of the entries of `storage` that start with `prefix`, read before any is removed. */
-function entryNames(storage: Storage, prefix: string): string[] {
-  return Array.from({ length: storage.length }, (_, index) => storage.key(index)).filter(
-    (name): name is string => name?.startsWith(prefix) === true
-  );
-}
-
-/** What `storage` holds under `name`, read as JSON, or undefined where it holds nothing readable:
- *  an entry to check against `keptDraftShape` before it is read as a draft. */
-function readEntry(storage: Storage, name: string): unknown {
-  try {
-    return JSON.parse(storage.getItem(name) ?? "null");
-  } catch {
-    return undefined;
-  }
-}
-
-function removeEntry(storage: Storage | undefined, name: string): void {
-  try {
-    storage?.removeItem(name);
-  } catch {
-    // A storage that refuses even a removal holds nothing this page wrote.
-  }
 }
 
 /** Drops, once for each storage, every draft entry of a store name none of `STORE_NAMES` is,
