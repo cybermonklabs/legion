@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -183,8 +184,9 @@ func makeTestPGLog(rolesDir string) error {
 // `ensure` has no deadline of its own. At this one the script's whole process group is stopped
 // (runTestPG), and the roles start without the test database, with a line in the container's log,
 // which is better than a pod the daemon gives up on; the next tick carries the start on, since
-// each step of the script is idempotent and a postmaster already launched runs in a session of its
-// own. A test shortens it.
+// each step of the script is idempotent, a postmaster already launched runs in a session of its
+// own, and an initdb stopped part way left its part in a directory of its own, which the next start
+// removes and makes again (legion-testpg's start). A test shortens it.
 var testPGBootBudget = 60 * time.Second
 
 // testPGDeadline is the script's environment entry for ctx's deadline: LEGION_TESTPG_DEADLINE,
@@ -264,9 +266,12 @@ func runTestPG(ctx context.Context, cfg Config, log *roleLog, guard *pidGuard, c
 // The server is stopped whatever the steps answered, and the stop waits as long as ctx allows,
 // as the steps do. Where ctx has already ended, the stop still runs, under ctx's values but not
 // its end, and with a deadline that has passed, so the script asks for the shutdown and waits for
-// none. The probe then reads whether a process of the server still runs (testPGServerProcesses)
-// and names it. A failed stop and a server left running are named after the step's own failure,
-// on the same line.
+// none; that run is given testPGLateStopGrace, and its group is stopped past it. The probe then
+// reads whether a process of the server still runs (testPGServerProcesses). One that does is the
+// probe's to end, since the probe pod must leave nothing running: it stops each (its process group,
+// then the process, each after a start-time check), waits for them to leave, and removes the
+// cluster's data (stopTestPGServer). A failed stop and a server left running are named after the
+// step's own failure, on the same line, with what the probe did about them.
 func CheckTestPostgres(ctx context.Context, dir string) error {
 	base := []string{TestPGVariable + "=" + TestPGDSN, testPGDirVariable + "=" + dir}
 	run := func(ctx context.Context, env []string, name string, argv ...string) error {
@@ -304,17 +309,26 @@ func CheckTestPostgres(ctx context.Context, dir string) error {
 			err = run(ctx, env, testPGProgram, "stop")
 		} else {
 			passed := []string{testPGDeadlineVariable + "=" + strconv.FormatInt(time.Now().Unix(), 10)}
-			err = run(context.WithoutCancel(ctx), testPGEnviron(passed, base...), testPGProgram, "stop")
+			late, cancel := context.WithTimeout(context.WithoutCancel(ctx), testPGLateStopGrace)
+			err = run(late, testPGEnviron(passed, base...), testPGProgram, "stop")
+			cancel()
 		}
 		data := filepath.Join(dir, "data")
-		if running := testPGServerProcesses("/proc", data); len(running) > 0 {
-			left := fmt.Errorf("the pod's own test database: the server in %s still runs after the stop: %s", data, strings.Join(running, ", "))
-			if err != nil {
-				return fmt.Errorf("%w; %w", err, left)
-			}
-			return left
+		running, readErr := testPGServerProcesses("/proc", data)
+		var left error
+		switch {
+		case readErr != nil:
+			left = fmt.Errorf("the pod's own test database: whether the server in %s still runs after the stop is unknown: %w", data, readErr)
+		case len(running) > 0:
+			left = stopTestPGServer("/proc", dir, running)
 		}
-		return err
+		if left == nil {
+			return err
+		}
+		if err != nil {
+			return fmt.Errorf("%w; %w", err, left)
+		}
+		return left
 	}
 	for _, step := range steps {
 		if err := run(ctx, env, step[0], step[1:]...); err != nil {
@@ -327,17 +341,42 @@ func CheckTestPostgres(ctx context.Context, dir string) error {
 	return stop()
 }
 
-// testPGServerProcesses names each process of the /proc mounted at proc that belongs to the
-// server whose data directory is data, as `pid <n> (<name>)`, in pid order: a process whose
-// working directory is data, as the postmaster's is from its first steps and every backend's after
-// it, or whose arguments name data, as the postmaster's do from the moment pg_ctl starts it, before
-// it has written postmaster.pid. So a postmaster the stop found no pid file for is still found. A
-// process that is gone, a zombie and one this process may not read are passed over: none of them
-// holds the cluster.
-func testPGServerProcesses(proc, data string) []string {
+// testPGLateStopGrace is how long the probe's stop may run once the probe's own deadline has
+// passed. That run is told a deadline that has passed, so the script sends the shutdown and waits
+// for none (`pg_ctl stop --no-wait`), which takes it a start of its own and one signal: it answers
+// within it on a loaded node, and the bound fires only on a stop that gives no answer. Past it the
+// probe stops the script's group and then, by the data directory, the server itself
+// (stopTestPGServer), so a stop that never answers leaves nothing running.
+const testPGLateStopGrace = 10 * time.Second
+
+// testPGServerGone is how long stopTestPGServer waits, after its SIGKILLs, for each process it sent
+// one to leave. A SIGKILL ends a process once it leaves the kernel, so a process still there at the
+// end of it is one the kernel holds (an uninterruptible wait), which is named rather than waited
+// out.
+const testPGServerGone = 10 * time.Second
+
+// testPGProcess is one process testPGServerProcesses found: its pid, its name, its process group
+// and its start time (field 22 of /proc/<pid>/stat), which a later signal is checked against so a
+// pid reused since is never signalled.
+type testPGProcess struct {
+	pid, group int
+	name       string
+	started    string
+}
+
+func (p testPGProcess) String() string { return fmt.Sprintf("pid %d (%s)", p.pid, p.name) }
+
+// testPGServerProcesses answers each process of the /proc mounted at proc that belongs to the
+// server whose data directory is data, in pid order: a process whose working directory is data,
+// as the postmaster's is from its first steps and every backend's after it, or whose arguments name
+// data, as the postmaster's do from the moment pg_ctl starts it, before it has written
+// postmaster.pid. So a postmaster the stop found no pid file for is still found. A process that is
+// gone, a zombie and one this process may not read are passed over: none of them holds the cluster.
+// The error is a /proc that could not be listed: then nothing is known.
+func testPGServerProcesses(proc, data string) ([]testPGProcess, error) {
 	pids, err := procPIDs(proc)
 	if err != nil {
-		return []string{fmt.Sprintf("unknown (%s could not be read: %v)", proc, err)}
+		return nil, fmt.Errorf("%s could not be read: %w", proc, err)
 	}
 	resolved := data
 	if real, err := filepath.EvalSymlinks(data); err == nil {
@@ -345,7 +384,7 @@ func testPGServerProcesses(proc, data string) []string {
 	}
 	self := os.Getpid()
 	slices.Sort(pids)
-	var running []string
+	var running []testPGProcess
 	for _, pid := range pids {
 		if pid == self {
 			continue
@@ -357,8 +396,79 @@ func testPGServerProcesses(proc, data string) []string {
 		if (cwdErr != nil || cwd != resolved) && !slices.Contains(args, data) && !slices.Contains(args, resolved) {
 			continue
 		}
+		group, started, ok := testPGProcessStat(proc, pid)
+		if !ok {
+			continue
+		}
 		name, _ := os.ReadFile(filepath.Join(entry, "comm"))
-		running = append(running, fmt.Sprintf("pid %d (%s)", pid, strings.TrimSpace(string(name))))
+		running = append(running, testPGProcess{pid: pid, group: group, name: strings.TrimSpace(string(name)), started: started})
 	}
-	return running
+	return running, nil
+}
+
+// testPGProcessStat reads a process's group and start time from /proc/<pid>/stat, and false for one
+// that is gone or a zombie: the fields after the command's closing parenthesis start at the state,
+// field 3, so the group, field 5, is the third of them and the start time, field 22, the
+// twentieth.
+func testPGProcessStat(proc string, pid int) (group int, started string, ok bool) {
+	stat, err := os.ReadFile(filepath.Join(proc, strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, "", false
+	}
+	fields := strings.Fields(string(stat[strings.LastIndexByte(string(stat), ')')+1:]))
+	if len(fields) < 20 || fields[0] == "Z" {
+		return 0, "", false
+	}
+	group, err = strconv.Atoi(fields[2])
+	if err != nil {
+		return 0, "", false
+	}
+	return group, fields[19], true
+}
+
+// stopTestPGServer ends the processes of the server in dir's data directory that the probe's stop
+// left running, and answers the error that names them and what it did. Each process, while its
+// start time is still the one it was found with, is sent SIGKILL to its process group, where it
+// leads one other than this process's (the postmaster runs in a session of its own, which pg_ctl
+// starts), and then to itself. It waits up to testPGServerGone for every one to leave, and once
+// none is left it removes the cluster's data (data, and data.initdb, an initdb's that did not
+// finish), so the probe leaves nothing behind. A process still there is named, and the data is
+// left as it is.
+func stopTestPGServer(proc, dir string, running []testPGProcess) error {
+	data := filepath.Join(dir, "data")
+	names := make([]string, len(running))
+	ownGroup := syscall.Getpgrp()
+	for i, p := range running {
+		names[i] = p.String()
+		if group, started, ok := testPGProcessStat(proc, p.pid); !ok || started != p.started || group != p.group {
+			continue
+		}
+		if p.group == p.pid && p.group != ownGroup {
+			_ = syscall.Kill(-p.group, syscall.SIGKILL)
+		}
+		_ = syscall.Kill(p.pid, syscall.SIGKILL)
+	}
+	found := fmt.Sprintf("the pod's own test database: the server in %s still ran after the stop: %s", data, strings.Join(names, ", "))
+	var still []string
+	for wait := time.Now().Add(testPGServerGone); ; time.Sleep(20 * time.Millisecond) {
+		still = still[:0]
+		for _, p := range running {
+			if _, started, ok := testPGProcessStat(proc, p.pid); ok && started == p.started {
+				still = append(still, p.String())
+			}
+		}
+		if len(still) == 0 || !time.Now().Before(wait) {
+			break
+		}
+	}
+	if len(still) > 0 {
+		return fmt.Errorf("%s; the probe sent each SIGKILL, and %s still ran %s later, so %s is left as it is",
+			found, strings.Join(still, ", "), testPGServerGone, data)
+	}
+	for _, part := range []string{data, filepath.Join(dir, "data.initdb")} {
+		if err := os.RemoveAll(part); err != nil {
+			return fmt.Errorf("%s; the probe stopped it (SIGKILL to its process group and to each pid), and removing %s failed: %w", found, part, err)
+		}
+	}
+	return fmt.Errorf("%s; the probe stopped it (SIGKILL to its process group and to each pid) and removed %s", found, data)
 }

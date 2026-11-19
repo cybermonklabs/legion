@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -591,28 +592,77 @@ func TestCheckTestPostgresStopsAStepThatOutlivesItsCallersDeadline(t *testing.T)
 	}
 }
 
+// recordedPIDs answers every pid a record file of probeStandIn's names, running or not.
+func recordedPIDs(t *testing.T, file string) []int {
+	t.Helper()
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pids []int
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		pidText, _, _ := strings.Cut(line, " ")
+		pid, err := strconv.Atoi(pidText)
+		if err != nil {
+			t.Fatalf("%s holds %q, which names no pid", file, line)
+		}
+		pids = append(pids, pid)
+	}
+	return pids
+}
+
+// otherServer starts a process that stands for a server of another cluster: a sleep in a session
+// of its own whose working directory is another data directory, as a postmaster's is. It answers
+// the record file that names it, which stillRunning reads; the process is killed when the test
+// ends.
+func otherServer(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	data := filepath.Join(dir, "data")
+	if err := os.Mkdir(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(dir, "record")
+	cmd := exec.Command("sh", "-c", `(cd "$1" && exec setsid sleep 300 < /dev/null > /dev/null 2>&1) & echo "$! $(cut -d" " -f22 /proc/$!/stat)" > "$2"`, "other", data, record)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("start the other cluster's server: %v: %s", err, out)
+	}
+	t.Cleanup(func() {
+		for _, pid := range stillRunning(t, record) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	if len(stillRunning(t, record)) != 1 {
+		t.Fatal("the other cluster's server is not running, so this run proves nothing")
+	}
+	return record
+}
+
 // A failed step is followed by the stop, a stop that fails is named after the step's own failure
-// on the same line, and the probe then reads the server by its data directory and names it as
-// still running: nothing the probe started is left unnamed.
-func TestCheckTestPostgresNamesAFailedStopAndTheServerItLeft(t *testing.T) {
+// on the same line, and the probe then reads the server by its data directory: one still running
+// is the probe's to end, so it stops it, removes the cluster's data, and names both, so the probe
+// pod leaves nothing running. A server of another data directory is left alone.
+func TestCheckTestPostgresStopsAndNamesTheServerAFailedStopLeft(t *testing.T) {
 	stand := probeStandIn(t, "0")
 	for _, knob := range []string{"psql-fails", "stop-fails"} {
 		if err := os.WriteFile(filepath.Join(stand, knob), nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
+	other := otherServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	cluster := filepath.Join(stand, "cluster")
 	err := CheckTestPostgres(ctx, cluster)
-	servers := stillRunning(t, filepath.Join(stand, "servers"))
+	servers := recordedPIDs(t, filepath.Join(stand, "servers"))
 	if len(servers) != 1 {
-		t.Fatalf("the stand-in's server runs as %v, want the one ensure started, which the failed stop left", servers)
+		t.Fatalf("the stand-in started servers %v, want the one ensure starts", servers)
 	}
+	data := filepath.Join(cluster, "data")
 	for _, want := range []string{
 		"the pod's own test database: psql -X -q " + TestPGDSN + " -c create database legion_probe_testpg strategy file_copy: exit status 3: psql: the copy was refused",
 		"; and the stop after it: the pod's own test database: " + testPGProgram + " stop: exit status 1: pg_ctl: could not send stop signal",
-		"; the pod's own test database: the server in " + filepath.Join(cluster, "data") + " still runs after the stop: pid " + strconv.Itoa(servers[0]) + " (sleep)",
+		"; the pod's own test database: the server in " + data + " still ran after the stop: pid " + strconv.Itoa(servers[0]) + " (sleep); the probe stopped it (SIGKILL to its process group and to each pid) and removed " + data,
 	} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("CheckTestPostgres = %v, want %q in it", err, want)
@@ -621,12 +671,21 @@ func TestCheckTestPostgresNamesAFailedStopAndTheServerItLeft(t *testing.T) {
 	if err != nil && strings.Contains(err.Error(), "\n") {
 		t.Errorf("the refusal is %d lines, want one: %q", strings.Count(err.Error(), "\n")+1, err)
 	}
+	if running := stillRunning(t, filepath.Join(stand, "servers")); len(running) > 0 {
+		t.Errorf("the server the failed stop left still runs after the probe returned: %v", running)
+	}
+	if _, statErr := os.Stat(data); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("the probe's cluster data %s is still there after the probe returned (%v)", data, statErr)
+	}
+	if len(stillRunning(t, other)) != 1 {
+		t.Error("the probe stopped a server of another data directory")
+	}
 }
 
 // A stop is waited for as long as the caller's deadline allows, and no longer: one that has not
-// ended by then is stopped with its process group and named, and the server it left is named
-// with it.
-func TestCheckTestPostgresNamesAStopThatOutlivesItsCallersDeadline(t *testing.T) {
+// ended by then is stopped with its process group and named, and the server it left is stopped by
+// the probe and named with it, and the cluster's data removed.
+func TestCheckTestPostgresStopsTheServerAStopThatOutlivesItsCallersDeadlineLeft(t *testing.T) {
 	stand := probeStandIn(t, "0")
 	if err := os.WriteFile(filepath.Join(stand, "stop-hangs"), nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -637,20 +696,70 @@ func TestCheckTestPostgresNamesAStopThatOutlivesItsCallersDeadline(t *testing.T)
 	cluster := filepath.Join(stand, "cluster")
 	err := CheckTestPostgres(ctx, cluster)
 	returned := time.Now()
-	servers := stillRunning(t, filepath.Join(stand, "servers"))
+	servers := recordedPIDs(t, filepath.Join(stand, "servers"))
 	if len(servers) != 1 {
-		t.Fatalf("the stand-in's server runs as %v, want the one ensure started, which the stop never ended", servers)
+		t.Fatalf("the stand-in started servers %v, want the one ensure starts", servers)
 	}
+	data := filepath.Join(cluster, "data")
 	for _, want := range []string{
 		"the pod's own test database: " + testPGProgram + " stop did not finish before the probe's context ended (context deadline exceeded), so its process group was stopped",
-		"; the pod's own test database: the server in " + filepath.Join(cluster, "data") + " still runs after the stop: pid " + strconv.Itoa(servers[0]) + " (sleep)",
+		"; the pod's own test database: the server in " + data + " still ran after the stop: pid " + strconv.Itoa(servers[0]) + " (sleep); the probe stopped it (SIGKILL to its process group and to each pid) and removed " + data,
 	} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("CheckTestPostgres = %v, want %q in it", err, want)
 		}
 	}
+	if running := stillRunning(t, filepath.Join(stand, "servers")); len(running) > 0 {
+		t.Errorf("the server the stop left still runs after the probe returned: %v", running)
+	}
 	if returned.Before(deadline) || returned.Sub(deadline) > 15*time.Second {
 		t.Errorf("CheckTestPostgres returned %s after its caller's 4 s deadline, want at it", returned.Sub(deadline))
+	}
+}
+
+// The server is found by its arguments as well as by its working directory: a postmaster that
+// pg_ctl has started and that has not yet changed into its data directory is named by the data
+// directory among its arguments, a backend by its working directory, and a process that holds
+// neither is not named. A fake /proc, so the argument branch is read on its own.
+func TestTheTestDatabasesServerIsFoundByItsArgumentsOrItsWorkingDirectory(t *testing.T) {
+	proc := t.TempDir()
+	data := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := t.TempDir()
+	entry := func(pid int, cwd, comm string, args ...string) {
+		dir := filepath.Join(proc, strconv.Itoa(pid))
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(cwd, filepath.Join(dir, "cwd")); err != nil {
+			t.Fatal(err)
+		}
+		files := map[string]string{
+			"cmdline": strings.Join(args, "\x00") + "\x00",
+			"comm":    comm + "\n",
+			"stat":    strconv.Itoa(pid) + " (" + comm + ") S 1 " + strconv.Itoa(pid) + " " + strconv.Itoa(pid) + " 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 4242 0 0",
+		}
+		for name, text := range files {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	entry(100, elsewhere, "postgres", "/usr/lib/postgresql/18/bin/postgres", "-D", data, "-p", "5433")
+	entry(101, data, "postgres", "postgres: checkpointer")
+	entry(102, elsewhere, "postgres", "/usr/lib/postgresql/18/bin/postgres", "-D", filepath.Join(elsewhere, "data"))
+	running, err := testPGServerProcesses(proc, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named []string
+	for _, p := range running {
+		named = append(named, p.String())
+	}
+	if got, want := strings.Join(named, ", "), "pid 100 (postgres), pid 101 (postgres)"; got != want {
+		t.Errorf("testPGServerProcesses named %q, want %q: the postmaster by its arguments and the backend by its working directory", got, want)
 	}
 }
 
