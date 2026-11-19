@@ -1057,11 +1057,12 @@ type lineWords struct {
 // can split, join, hide or forge a key or a host once GitHub renders the line, which one word read
 // alone cannot see; rather than list which, the rule allows these few runes and nothing else, which
 // closes that class.
-// Two look-alikes pass by design: a letter or digit of another script that looks like a Latin one,
-// such as Cyrillic `А` in `АСМЕ-12`, and GitHub's `:name:` emoji shortcodes, such as `:one:`, a
-// picture that can look like a digit. Neither is made of the characters of a key. Closing the first
-// would break international text, which needs the visible letters and digits of every script;
-// closing the second would drop from the line every word of ordinary prose that ends in `:`.
+// Three look-alikes pass by design: a letter or digit of another script that looks like a Latin
+// letter or digit, such as Cyrillic `А` in `АСМЕ-12`; a letter that looks like the key's `-`, such
+// as the prolonged sound mark `ー` in `ACMEー12`; and GitHub's `:name:` emoji shortcodes, such as
+// `:one:`, a picture that can look like a digit. None is made of the characters of a key.
+// Excluding the letters and digits of other scripts would break international text, and excluding
+// `:` would drop from the line every word of ordinary prose that ends in `:`.
 // The cost is that a word such as `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b` or `it’s` leaves the
 // line, while the record keeps the whole reading.
 const plainPunctuation = `.,;:!?'"-()/`
@@ -1204,10 +1205,11 @@ func blockContent(node *pmdoc.Node) string {
 }
 
 // checkResultLine is the pull-request body line one recorded result implies. Dispatch writes it
-// rather than each caller, so every writer writes one grammar. Its reading carries no link, no
-// private or Dispatch host, no word that is not plain, and no word holding an issue key of a
-// project Dispatch holds as lineWordsFor reads one (lineWords); the check's block id and the
-// role are printed as written.
+// rather than each caller, so every writer writes one grammar. Its reading carries no word
+// holding `://` (holdsLink), no private or Dispatch host, no word that is not plain but for the
+// ellipsis that marks a cut, and no word holding an issue key of a project Dispatch holds as
+// lineWordsFor reads one (lineWords). A public host written as `www.` and a domain, which GitHub
+// renders as a link, is kept, and the check's block id and the role are printed as written.
 //
 // The tail is the reading the role recorded (Observed) and not the check's own words, which
 // every reader of the pull request can read on the issue and which a pass and a fail would
