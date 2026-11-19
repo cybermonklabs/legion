@@ -206,7 +206,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	repo = s.renamedIssueRepo(repo)
+	repo = s.renamedRepo(repo)
 	// The near-copy gate, run once for every create it covers whatever `force` says: a forced
 	// create's record of what it went past must be the refusal an unforced create would have met,
 	// and two reads would drift. The gate bounds and logs its own read (duplicateGate), and a read

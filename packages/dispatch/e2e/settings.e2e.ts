@@ -61,7 +61,7 @@ test("a person sets a project's default repository in Settings, a new issue of t
     await expect(box).toHaveValue("");
     await expect(box).toHaveAttribute("placeholder", "None");
     await expect(clear).toHaveCount(0);
-    // The project row holds the default repository now, and the section it replaces is gone.
+    // The Settings page has no "Repositories → Projects" section (C4).
     await expect(page.getByRole("heading", { name: "Repositories → Projects" })).toHaveCount(0);
 
     // A value that is not owner/name is refused at the box, with what was typed still in it,

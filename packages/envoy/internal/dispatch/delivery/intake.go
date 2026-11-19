@@ -618,7 +618,7 @@ func (a *Attributor) completePullRequest(ctx context.Context, pool *store.Pool, 
 		}
 		messages = paged
 	}
-	inputs := attributionInputsFrom(a.renames, attributionFacts{
+	inputs := a.attributionInputsFrom(attributionFacts{
 		Repo: repoFull, URL: fetched.URL, Title: fetched.Title, Body: fetched.Body,
 		HeadRef: fetched.HeadRef, CommitMessages: messages,
 	})

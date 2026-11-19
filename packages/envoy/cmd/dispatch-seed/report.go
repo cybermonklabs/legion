@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // buildTermStatistics runs one full term-statistics build for every project, the build the
@@ -88,7 +89,7 @@ func (r *seedRun) rowCounts(ctx context.Context) (map[string]int, error) {
 	counts := make(map[string]int, len(reportTables))
 	var parts []string
 	for _, table := range reportTables {
-		parts = append(parts, fmt.Sprintf("select %s as name, count(*) as rows from %s", quoteLiteral(table), table))
+		parts = append(parts, fmt.Sprintf("select %s as name, count(*) as rows from %s", store.QuoteLiteral(table), table))
 	}
 	rows, err := r.database.Pool.Query(ctx, strings.Join(parts, " union all "))
 	if err != nil {
@@ -147,7 +148,7 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 		{"anchored comments and asks", `select 'comments=' || (select count(*) from comments where anchor is not null) ||
 			' of ' || (select count(*) from comments) || ' asks=' || (select count(*) from asks where anchor is not null) ||
 			' of ' || (select count(*) from asks) || ' on a table row=' ||
-			(select count(*) from comments where anchor->>'block_id' = ` + quoteLiteral(r.tableRow) + `)`},
+			(select count(*) from comments where anchor->>'block_id' = ` + store.QuoteLiteral(r.tableRow) + `)`},
 		{"open asks", `select count(*) || ' of ' || (select count(*) from asks) from asks where state = 'open'`},
 		{"root messages", `select count(*) || ' of ' || (select count(*) from messages) from messages where in_reply_to is null`},
 		{"events with a session actor", `select count(*) || ' of ' || (select count(*) from events) || ' over ' ||
@@ -184,12 +185,6 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 	}
 	fmt.Fprintf(r.out, "  %-32s %s\n", "versions written per band", bandReport(r.bands))
 	return nil
-}
-
-// quoteLiteral writes a string as a SQL literal, for the one reading whose value is read off the
-// rendered document rather than fixed in the source (the table-row block id).
-func quoteLiteral(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 func bandReport(bands map[string]int) string {

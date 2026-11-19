@@ -183,10 +183,10 @@ func isHostByte(b byte) bool {
 	return isDigitByte(b) || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b == '.' || b == '-'
 }
 
-func attributionInputsFrom(renames refs.Renames, facts attributionFacts) AttributionInputs {
+func (a *Attributor) attributionInputsFrom(facts attributionFacts) AttributionInputs {
 	return AttributionInputs{
 		TitleKeys:   uniqueKeys(facts.Title + "\n" + facts.Body),
-		CitedIssues: citedIssues(renames, facts.Repo, facts.Body),
+		CitedIssues: citedIssues(a.renames, facts.Repo, facts.Body),
 		BranchKeys:  uniqueKeys(strings.ToUpper(facts.HeadRef)),
 		CommitKeys:  uniqueKeys(strings.Join(facts.CommitMessages, "\n")),
 	}
@@ -397,10 +397,11 @@ func attributionBatchQuery(renames refs.Renames) string {
 
 // Attributor attributes pull requests to issues by the rename pairs this process read at boot
 // (refs.Renames), and keys every pull_request_heads row it writes by the canonical name of the
-// row's repository (Renames.Canonical). NewAttributor builds its two statements once from those
-// pairs, where the process builds each part that attributes: the delivery reconcile
-// (NewReconcile), the intake (StartIntakes) and the API (api.NewDeps). No package variable
-// holds the pairs, so a test builds an Attributor from pairs of its own.
+// row's repository (canonical). NewAttributor builds its two statements once from those pairs.
+// The process builds one Attributor (cmd/dispatch's main) and gives it to each part that
+// attributes: the delivery reconcile (NewReconcile), the intake (StartIntakes) and the API
+// (api.DepsInput). No package variable holds the pairs, so a test builds an Attributor from pairs
+// of its own.
 type Attributor struct {
 	renames         refs.Renames
 	candidatesQuery string
@@ -414,6 +415,11 @@ func NewAttributor(renames refs.Renames) *Attributor {
 		candidatesQuery: attributionCandidatesQuery(renames),
 		batchQuery:      attributionBatchQuery(renames),
 	}
+}
+
+// canonical is repo under the name it is called today (refs.Renames.Canonical).
+func (a *Attributor) canonical(repo string) string {
+	return a.renames.Canonical(repo)
 }
 
 // attributionCandidate is one issue a pull request's sources name: the key, the source that

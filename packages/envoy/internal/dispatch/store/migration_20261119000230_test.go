@@ -97,13 +97,8 @@ func TestTheDefaultRepositoryMigrationKeepsEveryResolvedRepositoryAndThePassWrit
 		t.Fatalf("seed as the release before %d wrote: %v", projectsDefaultRepoVersion, err)
 	}
 
-	census, err := migrationFiles.ReadFile("migrations/20261119000230_projects_default_repo.census.sql")
-	if err != nil {
-		t.Fatalf("read the census: %v", err)
-	}
-	var counted int64
-	if err := store.Pool.QueryRow(ctx, string(census)).Scan(&counted); err != nil || counted != 0 {
-		t.Fatalf("the census at %d = %d (%v), want 0", projectsDefaultRepoVersion-1, counted, err)
+	if got := censusCount(t, store, projectsDefaultRepoVersion); got != 0 {
+		t.Fatalf("the census at %d = %d, want 0", projectsDefaultRepoVersion-1, got)
 	}
 	const wantResolved = "BETA-1=acme/widgets BETA-2=acme/widgets BETA-3=none GAMMA-1=none GAMMA-2=acme/elsewhere " +
 		"INFRA-1=sjawhar/legion INFRA-2=sjawhar/legion INFRA-3=cybermonklabs/legion INFRA-4=cybermonklabs/legion INFRA-5=sjawhar/dotfiles"

@@ -62,7 +62,18 @@ The work goes to whoever already owns that code. You file an issue only when nob
    Once the root leaves `admission.trees`, no running tree owns the code, and step 4 files it.
    File nothing while a tree owns it: a second issue splits the work.
 4. No running tree owns that code: file it on the repository where the fix belongs, in the
-   project whose default repository it is (`GET /api/v1/projects` names each `default_repo`):
+   project whose default repository it is. Read the key of that project in bash, with the
+   repository in lower case for `<owner/name>`:
+
+   ```text
+   projects=$(curl -sS --fail-with-body -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/projects") || { echo "Dispatch read failed" >&2; exit 1; }
+   printf '%s' "$projects" | jq -rn --arg r '<owner/name>' 'input | if type == "array" then .[] | select(.default_repo == $r) | .key else error("Dispatch did not answer the list") end'
+   ```
+
+   It prints the key of each project whose default repository is that one, and a failed read
+   files nothing. When it prints one key, file it in that project. When it prints no key, or
+   more than one, file it in your own project, `<PROJECT>`. In both cases, name the repository
+   with `--repo`:
 
    ```text
    dispatch issue --project <KEY> --repo <owner/name> --title '<the defect, as a title>' --label legion --spec-file -

@@ -12,10 +12,7 @@ import (
 // are one pair, with the greater new name, so every reader takes the same new name for it.
 func TestReadRepoRenamesAnswersOneLowerCasePairForEachOldName(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := migratedEmptyStore(t)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into repo_projects (repo, project, created_by, renamed_to) values
@@ -45,10 +42,7 @@ func TestReadRepoRenamesAnswersOneLowerCasePairForEachOldName(t *testing.T) {
 // no error, so it serves, and every reader then names each repository as it is stored.
 func TestReadRepoRenamesReadsNothingOnceRepoProjectsIsDropped(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := migratedEmptyStore(t)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into repo_projects (repo, project, created_by, renamed_to)

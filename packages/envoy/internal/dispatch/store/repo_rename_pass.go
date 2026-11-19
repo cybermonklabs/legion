@@ -57,9 +57,10 @@ const repoRenameLockNamespace int32 = 0x524E414D
 // longer fails and is logged, and the next boot writes it.
 const repoRenameLockTimeout = `set local lock_timeout = '5s'`
 
-// repoRenamesLeftTimeout bounds the count of the rows left on an old name. The count has a bound
-// of its own, which the end of the pass's bound does not end, so a pass whose lines ran out of
-// time still says how much they left. The count is one statement over the pass's tables.
+// repoRenamesLeftTimeout bounds each count of the rows left on an old name, the one before the
+// lines and the one after them. The count has a bound of its own, which the end of the pass's
+// bound does not end, so a pass whose lines ran out of time still says how much they left. The
+// count is one statement over the pass's tables.
 const repoRenamesLeftTimeout = 10 * time.Second
 
 // RepoRenamePass is what one run of RewriteRenamedRepositories did.
@@ -120,6 +121,10 @@ func (p RepoRenamePass) Err() error {
 // the end of the boot's bound, fails the line in flight and each line after it; the count runs
 // all the same, under repoRenamesLeftTimeout. With no pairs it reads and writes nothing, and no
 // row can name an old name.
+//
+// It first counts those rows too, under repoRenamesLeftTimeout. Where that count finds none, it
+// runs no line and answers none left, as a pass after a pass that wrote everything would. Where
+// that count fails, it runs every line, and the failure is not counted.
 func RewriteRenamedRepositories(ctx context.Context, pool *Pool, pairs []RepoRename) RepoRenamePass {
 	pass := RepoRenamePass{Pairs: len(pairs)}
 	if len(pairs) == 0 {
@@ -129,6 +134,10 @@ func RewriteRenamedRepositories(ctx context.Context, pool *Pool, pairs []RepoRen
 	renames := make([]repoRename, 0, len(pairs))
 	for _, pair := range pairs {
 		renames = append(renames, repoRename{RepoRename: pair, url: NewRepoURLRule(pair.From, pair.To)})
+	}
+	if left, err := countRepoRenamesLeftBounded(ctx, pool, renames); err == nil && left == 0 {
+		pass.Left = RepoRenamesLeft{Counted: true}
+		return pass
 	}
 	for _, line := range repoRenameLines {
 		rows, deleted, err := rewriteRepoRenameLine(ctx, pool, line, renames)
@@ -140,9 +149,7 @@ func RewriteRenamedRepositories(ctx context.Context, pool *Pool, pairs []RepoRen
 		pass.Rows += rows
 		pass.Deleted += deleted
 	}
-	countCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), repoRenamesLeftTimeout)
-	defer cancel()
-	left, err := countRepoRenamesLeft(countCtx, pool, renames)
+	left, err := countRepoRenamesLeftBounded(ctx, pool, renames)
 	if err != nil {
 		pass.Failures++
 		slog.Error("dispatch: count the rows left on a renamed repository's old name", "error", err)
@@ -150,6 +157,14 @@ func RewriteRenamedRepositories(ctx context.Context, pool *Pool, pairs []RepoRen
 	}
 	pass.Left = RepoRenamesLeft{Rows: left, Counted: true}
 	return pass
+}
+
+// countRepoRenamesLeftBounded is countRepoRenamesLeft under repoRenamesLeftTimeout, a bound of
+// its own that the end of ctx does not end.
+func countRepoRenamesLeftBounded(ctx context.Context, pool *Pool, renames []repoRename) (int64, error) {
+	countCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), repoRenamesLeftTimeout)
+	defer cancel()
+	return countRepoRenamesLeft(countCtx, pool, renames)
 }
 
 // rewriteRepoRenameLine runs line's statements for each pair in one transaction and commits it,
@@ -262,10 +277,11 @@ func (r repoRename) named(column string) string {
 	return `lower(` + column + `) = ` + r.from()
 }
 
-// urlNamed is true where column, a URL, names the old name by the URL rule. The rule changes such
-// a URL, as the new name differs from the old one, and no other.
+// urlNamed is true where column, a URL, names the old name by the URL rule: the pattern RewriteSQL
+// replaces. The rewrite changes each URL it matches, as the new name differs from the old one in
+// lower case.
 func (r repoRename) urlNamed(column string) string {
-	return r.url.RewriteSQL(column) + ` <> ` + column
+	return column + ` ~ ` + QuoteLiteral(r.url.pattern)
 }
 
 // token is the pattern of the old name as a token of a reconcile progress scope, as a SQL literal.

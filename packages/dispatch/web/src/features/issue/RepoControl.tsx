@@ -10,6 +10,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { NOT_OWNER_NAME, wholeValue } from "../settings/classes";
 import { useIssueRepo } from "./useIssueRepo";
 
 /** The grammar a repository GitHub could hold is written in, which is the grammar the server
@@ -28,13 +29,10 @@ import { useIssueRepo } from "./useIssueRepo";
  *  holds the box. */
 const ownerRepoPattern = "[A-Za-z0-9][A-Za-z0-9_\\-]{0,38}/(?!\\.{1,2}$)[A-Za-z0-9._\\-]{1,100}";
 
-/** `ownerRepoPattern` as a test of a whole value: the check this control makes before it writes,
- *  so a typo shows at the box rather than coming back as the server's 400 a round trip later. */
-const ownerRepo = new RegExp(`^(?:${ownerRepoPattern})$`);
-
-/** What the box says about a value GitHub could hold no repository at. The server says the same
- *  thing in its own words for anything that reaches it. */
-const NOT_OWNER_NAME = "Write the repository as owner/name.";
+/** `ownerRepoPattern` as a test of a whole value: the check this control makes before it writes.
+ *  The server says the same thing as `NOT_OWNER_NAME` in its own words for anything that reaches
+ *  it. */
+const ownerRepo = wholeValue(ownerRepoPattern);
 
 /**
  * The issue's repository in the details rail: `Repository:` and one combobox, labelled

@@ -169,10 +169,7 @@ var noneLeft = RepoRenamesLeft{Counted: true}
 func openRenamedRepositoriesStore(t *testing.T, seed string) (*Store, []RepoRename) {
 	t.Helper()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := migratedEmptyStore(t)
 	if _, err := store.Pool.Exec(ctx, seed); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -268,6 +265,49 @@ func TestTheRenamePassWritesEveryFieldAndASecondRunWritesNothing(t *testing.T) {
 	}
 	if got := readText(t, store, untouchedByThePass); got != untouched {
 		t.Errorf("a second pass changed the mapping, the events or an updated_at:\nbefore %s\nafter  %s", untouched, got)
+	}
+}
+
+// A pass that finds no row on an old name before its lines runs none of them. A second run on a
+// written database meets a trigger that refuses every statement on each table of the pass, even
+// one that meets no row, and is not refused: it reports its pair, no row, no failure and none
+// left.
+func TestASecondRenamePassOnAWrittenDatabaseRunsNoLine(t *testing.T) {
+	ctx := context.Background()
+	store, pairs := openRenamedRepositoriesStore(t, renamedRepositoriesSeed)
+	if first := RewriteRenamedRepositories(ctx, store.Pool, pairs); first.Failures != 0 || first.Left != noneLeft {
+		t.Fatalf("the first pass = %+v, want no failure and nothing left", first)
+	}
+	if _, err := store.Pool.Exec(ctx, `
+		create function refuse_rename_pass() returns trigger language plpgsql as $$
+		begin raise exception '% refuses statements', tg_table_name; end $$`); err != nil {
+		t.Fatalf("create the refusing trigger function: %v", err)
+	}
+	tables := map[string]bool{}
+	r := repoRename{RepoRename: pairs[0], url: NewRepoURLRule(pairs[0].From, pairs[0].To)}
+	for _, line := range repoRenameLines {
+		for _, rows := range line.left(r) {
+			tables[rows.table] = true
+		}
+	}
+	for table := range tables {
+		if _, err := store.Pool.Exec(ctx, `create trigger refuse_rename_pass before insert or update or delete on `+table+`
+			for each statement execute function refuse_rename_pass()`); err != nil {
+			t.Fatalf("make %s refuse statements: %v", table, err)
+		}
+	}
+	if _, err := store.Pool.Exec(ctx, `update issues set repo = repo where false`); err == nil {
+		t.Fatal("a statement that meets no row went past the trigger, so the test cannot tell a line ran")
+	}
+	logs := capturePassLogs(t)
+
+	again := RewriteRenamedRepositories(ctx, store.Pool, pairs)
+
+	if again != (RepoRenamePass{Pairs: 1, Left: noneLeft}) || again.Err() != nil {
+		t.Fatalf("a second pass = %+v (%v), want one pair and nothing written, deleted, failed or left", again, again.Err())
+	}
+	if failed := named(logs(), failedLine); len(failed) != 0 {
+		t.Fatalf("a second pass ran a line: %v", failed)
 	}
 }
 

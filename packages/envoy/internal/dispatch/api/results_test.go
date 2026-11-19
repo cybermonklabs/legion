@@ -906,7 +906,7 @@ func TestAfterMergeResultWithNoPullRequestFollowsTheDefaultBranch(t *testing.T) 
 		}
 		return "diverged"
 	})
-	createProjects(t, handler, "RESD")
+	createTestProject(t, handler, "RESD")
 	setDefaultRepository(t, handler, "RESD", "acme/widgets")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RESD", "title": "Default branch", "spec": "A spec\n"}, "alice"))
@@ -1109,7 +1109,7 @@ func TestAfterMergeResultFallsBackWhenTheMergedRowNamesNoBaseBranch(t *testing.T
 // at another commit and no pass of them stands.
 func TestAfterMergeResultIsUnknownWhenTheAppCannotReadTheRepository(t *testing.T) {
 	handler, _ := resultsGitHub(t, map[string]bool{}, func(string, string) string { return "behind" })
-	createProjects(t, handler, "RESU")
+	createTestProject(t, handler, "RESU")
 	setDefaultRepository(t, handler, "RESU", "acme/hidden")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RESU", "title": "Unreadable", "spec": "A spec\n"}, "alice"))
@@ -1595,7 +1595,7 @@ func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *test
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: upstream.URL,
 	})
-	createProjects(t, handler, "REST")
+	createTestProject(t, handler, "REST")
 	setDefaultRepository(t, handler, "REST", "acme/widgets")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "REST", "title": "Read through", "spec": "A spec\n"}, "alice"))
@@ -1832,7 +1832,7 @@ func TestChildsResultInItsOwnRepositoryStandsAtNoBasisOnTheParentsTab(t *testing
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: upstream.URL,
 	})
-	createProjects(t, handler, "RESR")
+	createTestProject(t, handler, "RESR")
 	setDefaultRepository(t, handler, "RESR", "acme/widgets")
 	parent := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RESR", "title": "Parent", "spec": "A spec\n"}, "alice"))

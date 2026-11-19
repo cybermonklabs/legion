@@ -3932,23 +3932,20 @@ describe("executeDispatchTool", () => {
       throw new Error("network must not be called");
     }) as unknown as typeof fetch;
 
-    const refusal = await executeDispatchTool({
-      tool: "dispatch_issue",
-      args: { project: "", title: "Architecture work", external: "owner/repo#42" },
-      cwd: "/workspace",
-      host: "omp",
-      config,
-      env: {},
-      exec: repoExec("owner/repo"),
-      fetchImpl,
-    }).then(
-      () => undefined,
-      (error: unknown) => error
+    const error = await refusal(
+      executeDispatchTool({
+        tool: "dispatch_issue",
+        args: { project: "", title: "Architecture work", external: "owner/repo#42" },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl,
+      })
     );
 
-    expect(refusal).toBeInstanceOf(ToolInputError);
-    if (!(refusal instanceof ToolInputError)) throw new Error("expected ToolInputError");
-    expect(refusal.problems).toEqual([
+    expect(error.problems).toEqual([
       "--project: Too small: expected string to have >=1 characters",
     ]);
     expect(requests).toBe(0);
@@ -5177,7 +5174,7 @@ describe("executeDispatchTool", () => {
     return { requests, fetchImpl: fetchImpl as typeof fetch };
   }
 
-  const refusal = (status: number, code: string, error: string) =>
+  const errorAnswer = (status: number, code: string, error: string) =>
     new Response(JSON.stringify({ code, error }), {
       status,
       headers: { "Content-Type": "application/json" },
@@ -5236,7 +5233,7 @@ describe("executeDispatchTool", () => {
 
   test("dispatch_issue_update leaves the issue open when the reason cannot be posted", async () => {
     const server = closingServer({
-      message: () => refusal(403, "FORBIDDEN", "token may not write to ACME"),
+      message: () => errorAnswer(403, "FORBIDDEN", "token may not write to ACME"),
       patch: () => {
         throw new Error("the close must not be sent");
       },
@@ -5347,7 +5344,7 @@ describe("executeDispatchTool", () => {
         5,
       ],
       [
-        () => refusal(500, "INTERNAL", "internal server error"),
+        () => errorAnswer(500, "INTERNAL", "internal server error"),
         `INTERNAL: internal server error${unknown}`,
         5,
       ],
@@ -5413,7 +5410,7 @@ describe("executeDispatchTool", () => {
   test("dispatch_issue_update names the posted reason when the close fails after it", async () => {
     const server = closingServer({
       message: () => response({ id: "message-7", issue_key: "ACME-175" }),
-      patch: () => refusal(409, "ISSUE_CLAIMED", "claimed by session other"),
+      patch: () => errorAnswer(409, "ISSUE_CLAIMED", "claimed by session other"),
     });
 
     await expect(closeCall(server.fetchImpl)).rejects.toThrow(
@@ -5500,7 +5497,7 @@ describe("executeDispatchTool", () => {
             tries,
           ] as const
       ),
-      [() => refusal(502, "HTTP_502", "Bad Gateway"), `HTTP_502: Bad Gateway${unknown}`, 5],
+      [() => errorAnswer(502, "HTTP_502", "Bad Gateway"), `HTTP_502: Bad Gateway${unknown}`, 5],
       [
         () => gatewayPage(502, "Bad Gateway"),
         "HTTP_502: PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 502 Bad Gateway " +
@@ -5533,7 +5530,7 @@ describe("executeDispatchTool", () => {
   // a step before it, the close was never sent, so the call fails and says the reason is there.
   test("dispatch_issue_update reads KEY_COMMITTED as a landing on the close, and a failure on the reason", async () => {
     const committed = () =>
-      refusal(409, "KEY_COMMITTED", "the write landed and its answer was lost");
+      errorAnswer(409, "KEY_COMMITTED", "the write landed and its answer was lost");
     const closed = closingServer({
       message: () => response({ id: "message-7", issue_key: "ACME-175" }),
       patch: committed,
@@ -5575,7 +5572,7 @@ describe("executeDispatchTool", () => {
       ". Dispatch finishes an attempt it received whatever this command does, so read the write " +
       "back before you send it again: a new command sends it under a new key.";
     const inFlight = () =>
-      refusal(409, "KEY_IN_FLIGHT", "an earlier request with this key is still running");
+      errorAnswer(409, "KEY_IN_FLIGHT", "an earlier request with this key is still running");
     // A KEY_IN_FLIGHT says Dispatch may still be running the close, so it is asked every 3 s at
     // most until 55 s rather than five times: 20 attempts.
     for (const [first, then, expected, attempts] of [

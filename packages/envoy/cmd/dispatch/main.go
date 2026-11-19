@@ -366,9 +366,11 @@ func main() {
 
 	// The rename pairs are read once, here, before any part that reads them is built: the API,
 	// the delivery reconcile and intakes and the CI reconcile are each given this one value
-	// (refs.Renames). A read that fails does not stop the boot: it is logged, it is one failure
-	// in the rename pass's summary below (renameRepositories), and the process serves with no
-	// pairs, so an old name reads as a repository of its own until a later boot reads the pairs.
+	// (refs.Renames), and the API, the delivery reconcile and the intakes share the one
+	// Attributor built of it (delivery.NewAttributor). A read that fails does not stop the boot:
+	// it is logged, it is one failure in the rename pass's summary below (renameRepositories), and
+	// the process serves with no pairs, so an old name reads as a repository of its own until a
+	// later boot reads the pairs.
 	renamesCtx, cancelRenames := context.WithTimeout(ctx, repoRenamesReadTimeout)
 	renamePairs, renamesErr := store.ReadRepoRenames(renamesCtx, database.Pool)
 	cancelRenames()
@@ -376,6 +378,7 @@ func main() {
 		slog.Error("dispatch: read the renamed repositories' pairs; serving with none", "error", renamesErr)
 	}
 	renames := refs.NewRenames(renamePairs)
+	attributor := delivery.NewAttributor(renames)
 
 	// document_search (migration 20261101182447) holds each document's latest search vector,
 	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
@@ -524,6 +527,7 @@ func main() {
 		Embedder:       embedder,
 		Events:         broker,
 		Renames:        renames,
+		Attributor:     attributor,
 		App:            appCfg,
 		AgentStream:    agentStream,
 		AgentPublisher: agentPublisher,
@@ -941,7 +945,7 @@ func main() {
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
 	// a client, exactly like the outbox above. Both take the event broker: each writes
 	// issue.deployed on a pull request's issue once its shipping run is known (LEGION-781).
-	reconcile := delivery.NewReconcile(database.Pool, appCtx.GitHub(), broker, renames)
+	reconcile := delivery.NewReconcile(database.Pool, appCtx.GitHub(), broker, attributor)
 	if boot.ReconcileAtStart {
 		reconcile.FirstPassAtStart()
 	}
@@ -971,7 +975,7 @@ func main() {
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, renames)
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, attributor)
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
@@ -1664,9 +1668,9 @@ func fillReviewContentHashes(ctx context.Context, pool *store.Pool, timeout time
 }
 
 // repoRenamePassTimeout bounds the boot's repository rename pass: one short transaction for each
-// of its thirteen lines of fields. A pass that reaches the bound fails the transaction in flight
-// and the lines after it, and the next boot writes what is left. The pass's count of the rows
-// left has a bound of its own after this one, so the summary says what the bound left.
+// line of fields (store.repoRenameLines). A pass that reaches the bound fails the transaction in
+// flight and the lines after it, and the next boot writes what is left. The pass's count of the
+// rows left has a bound of its own after this one, so the summary says what the bound left.
 const repoRenamePassTimeout = 30 * time.Second
 
 // renameRepositories is the boot's pass that writes, in every stored repository field, the new

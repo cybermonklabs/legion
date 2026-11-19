@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -140,9 +141,10 @@ type AppContextOptions struct {
 	// Lifetime is the process context the API's background work runs on, which New passes to
 	// api.Register as its lifetime; required, since api.Register refuses a nil one.
 	Lifetime context.Context
-	// Renames is the rename pairs main read once at boot (store.ReadRepoRenames). See
-	// api.DepsInput.
-	Renames refs.Renames
+	// Renames is the rename pairs main read once at boot (store.ReadRepoRenames), and Attributor
+	// the one Attributor main built of them. See api.DepsInput.
+	Renames    refs.Renames
+	Attributor *delivery.Attributor
 	// AgentSecretsURL/AgentSecretsTokenFile configure the credential-request UI's secrets broker
 	// client; empty URL means the feature is off. See api.DepsInput.
 	AgentSecretsURL       string
@@ -213,6 +215,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Answerer:               opts.Answerer,
 		Events:                 opts.Events,
 		Renames:                opts.Renames,
+		Attributor:             opts.Attributor,
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,
 		OIDC:                   opts.OIDC,

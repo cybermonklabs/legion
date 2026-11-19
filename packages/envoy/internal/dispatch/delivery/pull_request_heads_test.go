@@ -62,10 +62,11 @@ func seedGadgetsIssue(t *testing.T, ctx context.Context, pool *store.Pool, numbe
 	return key
 }
 
-// seedRenamedGadgets maps gadgetsOldRepo to GDGT beside gadgetsRepo and records that it was
-// renamed to it, so both names canonicalise to gadgetsRepo once a test reads the pairs after it
-// (renamesOf). It is not the project's default: GDGT's default stays gadgetsRepo, which is what
-// an issue of the project with no repository of its own resolves to.
+// seedRenamedGadgets records the rename pair gadgetsOldRepo to gadgetsRepo: a repo_projects row of
+// GDGT under the old name whose renamed_to is the new one, so both names canonicalise to
+// gadgetsRepo once a test reads the pairs after it (renamesOf). The row is not the project's
+// default: GDGT's default stays gadgetsRepo, which is what an issue of the project with no
+// repository of its own resolves to.
 func seedRenamedGadgets(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	seedProjectRepository(t, ctx, pool, "GDGT", "Gadgets", gadgetsRepo)
@@ -200,7 +201,7 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 		t.Fatalf("the stale batch = %+v, want only #42", batch)
 	}
 
-	reconcile := NewReconcile(pool, client, nil, refs.Renames{})
+	reconcile := NewReconcile(pool, client, nil, unrenamed())
 	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
@@ -776,7 +777,7 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 	}
 
 	now := time.Now()
-	reconcile := NewReconcile(pool, fake.newTestClient(), nil, refs.Renames{})
+	reconcile := NewReconcile(pool, fake.newTestClient(), nil, unrenamed())
 	if err := reconcile.reconcilePullRequestHeads(ctx, now); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
@@ -938,7 +939,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 		t.Errorf("the batch = %+v, want #61, #64 and #65: an attributed merged row and one this rule has judged are not taken", batch)
 	}
 
-	reconcile := NewReconcile(pool, client, nil, refs.Renames{})
+	reconcile := NewReconcile(pool, client, nil, unrenamed())
 	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
@@ -1165,7 +1166,7 @@ func TestReconcileRekeysAHeadStoredUnderARepositorysOldName(t *testing.T) {
 		t.Fatalf("store the head under the old name: %v", err)
 	}
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), renamesOf(t, ctx, pool)).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), NewAttributor(renamesOf(t, ctx, pool))).runOnce(ctx)
 
 	if repos := headRepos(t, ctx, pool, 520); len(repos) != 1 || repos[0] != gadgetsRepo {
 		t.Fatalf("#520 is stored under %v after one pass, want only %s: a row keyed by a name the App cannot read is a row nothing can refresh", repos, gadgetsRepo)

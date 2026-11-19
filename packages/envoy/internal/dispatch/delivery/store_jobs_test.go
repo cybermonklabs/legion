@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -328,7 +327,7 @@ func TestReconcilePrunesChangesOlderThanADay(t *testing.T) {
 			mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
 		})
 	}
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{}).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	settings, err := GetSettings(ctx, pool)
 	if err != nil || settings.LastError != nil {

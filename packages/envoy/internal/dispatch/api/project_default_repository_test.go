@@ -26,17 +26,6 @@ func setDefaultRepository(t *testing.T, handler http.Handler, project string, re
 	return decodeBody[projectDefaultRepository](t, response)
 }
 
-// createProjects creates each project a test writes, as a person.
-func createProjects(t *testing.T, handler http.Handler, keys ...string) {
-	t.Helper()
-	for _, key := range keys {
-		created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": key, "name": key}, "alice")
-		if created.Code != http.StatusCreated {
-			t.Fatalf("create project %s: status=%d body=%s", key, created.Code, created.Body.String())
-		}
-	}
-}
-
 // listedDefaultRepository reads one project's default_repo member off GET /api/v1/projects as
 // the bytes the list sends, and whether the member is there at all: a project with no default
 // carries no member, not a null one.
@@ -86,7 +75,7 @@ func lastProjectUpdate(t *testing.T, database *store.Store, project string) map[
 // the list and in the event alike.
 func TestAProjectsDefaultRepositoryIsSetAndCleared(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	createProjects(t, handler, "CORE", "BARE")
+	createTestProject(t, handler, "CORE", "BARE")
 
 	if answer := setDefaultRepository(t, handler, "CORE", "Acme/Widgets.git"); answer.Project != "CORE" ||
 		answer.Repo == nil || *answer.Repo != "acme/widgets" {
@@ -143,7 +132,7 @@ func TestAProjectsDefaultRepositoryIsSetAndCleared(t *testing.T) {
 // read as a clear, so a malformed write cannot remove a default. An unknown project is 404.
 func TestADefaultRepositoryThatIsNoRepositoryIsRefused(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	createProjects(t, handler, "CORE")
+	createTestProject(t, handler, "CORE")
 	setDefaultRepository(t, handler, "CORE", "acme/widgets")
 
 	for name, body := range map[string]map[string]any{
@@ -235,7 +224,7 @@ func TestTheDefaultRepositoryIsADeploymentWrite(t *testing.T) {
 // moves every issue that takes it and no other, and a cleared one leaves them with none.
 func TestAnIssueResolvesToItsProjectsDefaultRepository(t *testing.T) {
 	handler := newTestHandler(t)
-	createProjects(t, handler, "CORE")
+	createTestProject(t, handler, "CORE")
 	setDefaultRepository(t, handler, "CORE", "acme/widgets")
 
 	create := func(body map[string]any) string {
@@ -315,7 +304,7 @@ func TestADefaultRepositoryUnderARenamedNameIsStoredUnderItsNewName(t *testing.T
 	handler, database, _ := newTestServer(t, testServerOptions{
 		renames: refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}}),
 	})
-	createProjects(t, handler, "INFRA", "SMOKE")
+	createTestProject(t, handler, "INFRA", "SMOKE")
 
 	if answer := setDefaultRepository(t, handler, "INFRA", "SJawhar/Legion"); answer.Repo == nil || *answer.Repo != "cybermonklabs/legion" {
 		t.Fatalf("the write of sjawhar/legion answered %+v, want cybermonklabs/legion", answer)
@@ -348,7 +337,7 @@ func TestAResultsReadResolvesTheDefaultRepositoryWithRepoProjectsDropped(t *test
 	if _, err := database.Pool.Exec(context.Background(), `drop table repo_projects`); err != nil {
 		t.Fatalf("drop repo_projects: %v", err)
 	}
-	createProjects(t, handler, "RESX")
+	createTestProject(t, handler, "RESX")
 	setDefaultRepository(t, handler, "RESX", "acme/widgets")
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RESX", "title": "Resolved with repo_projects gone", "spec": "A spec\n"}, "alice")

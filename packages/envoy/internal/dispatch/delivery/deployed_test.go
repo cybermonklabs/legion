@@ -17,7 +17,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -260,7 +259,7 @@ func TestReconcileWritesTheDeployedEvent(t *testing.T) {
 		mustEncode(t, w, shippedRunJobs())
 	})
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{}).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	requireDeployedEvent(t, ctx, pool, deployedIssue, "acme/widgets", 501, 900, "2024-01-01T02:10:00Z")
 	if at := deployedEventAt(t, ctx, pool, "acme/widgets", 501); at == nil {

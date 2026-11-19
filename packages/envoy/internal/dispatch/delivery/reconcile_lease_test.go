@@ -7,7 +7,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // Every reconcile pass searches and lists GitHub against one installation's rate limit, so one
@@ -19,7 +18,7 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 	leases := deliveryTestLeases(t, pool)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{})
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	// 0: this caller stands for the other process's pass while it is inside it, which is all
 	// this row is about, and records no pass of its own -- so what the passes below do is the

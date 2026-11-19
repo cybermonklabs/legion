@@ -288,12 +288,15 @@ func decodeStrict[T any](t *testing.T, response *httptest.ResponseRecorder) T {
 	return value
 }
 
-func createTestProject(t *testing.T, handler http.Handler, key string) {
+// createTestProject creates each project a test writes, as a person.
+func createTestProject(t *testing.T, handler http.Handler, keys ...string) {
 	t.Helper()
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": key, "name": key,
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	for _, key := range keys {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+			"key": key, "name": key,
+		}, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", key, response.Code, response.Body.String())
+		}
 	}
 }
 

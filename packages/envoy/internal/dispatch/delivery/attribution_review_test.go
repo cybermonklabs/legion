@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // TestAttributionMatchesGitHubURLsWhateverTheirCase: GitHub spells an owner and a repository as
@@ -152,42 +151,53 @@ func TestAttributingAStoredPullRequestUnderARepositorysOldNameCreditsItsIssue(t 
 	}
 }
 
-// TestAttributingAStoredPullRequestReadsOneCanonicalNameFromTwoMappingsOfOneRepository: the
-// renaming rule answers one name however many rows name it. repo_projects' primary key is the
-// repository's own spelling, so two mappings whose names differ only by case can exist — direct
-// SQL or a hand repair, which 20261105075455_repo_projects_renamed_to expects. The boot reads
-// them as one pair (store.ReadRepoRenames), so the rule spliced into the statement
-// (refs.CanonicalRepoSQL, attributionHeld) names the old name once and answers one new name.
-func TestAttributingAStoredPullRequestReadsOneCanonicalNameFromTwoMappingsOfOneRepository(t *testing.T) {
+// TestAttributingAStoredPullRequestUnderAnOldNameOfTwoRenamePairsTakesTheGreaterNewName: the
+// renaming rule answers one new name for an old name, however many rename pairs name it.
+// repo_projects' primary key is the repository's own spelling, so two rows whose names differ only
+// by case can rename one old name to two new names — direct SQL or a hand repair, which
+// 20261105075455_repo_projects_renamed_to expects. The boot keeps the pair with the greater new
+// name (store.ReadRepoRenames), and the rule spliced into the statement (refs.CanonicalRepoSQL,
+// attributionHeld) holds the pull request to that name alone. The title names the issue under the
+// lesser new name first, so a rule that kept the other pair credits that issue.
+func TestAttributingAStoredPullRequestUnderAnOldNameOfTwoRenamePairsTakesTheGreaterNewName(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedRenamedGadgets(t, ctx, pool)
-	own := seedGadgetsIssue(t, ctx, pool, 12)
-	// The second mapping of the same name, as only direct SQL writes it: the route canonicalises
-	// a mapping's path, so it would land on the row above instead.
+	lesser := seedGadgetsIssue(t, ctx, pool, 12)
+	// The second rename pair of the same old name, as only direct SQL writes it: the route
+	// canonicalised a row's path, so it would have landed on the row above instead. Its new name
+	// sorts after gadgetsRepo, and an issue of project GZMO resolves to it.
+	const greaterRepo = "acme/gizmos"
+	const greater = "GZMO-12"
+	seedProjectRepository(t, ctx, pool, "GZMO", "Gizmos", greaterRepo)
+	if _, err := pool.Exec(ctx, `
+		insert into issues (key, project_key, number, title, status, created_by, rank)
+		values ($1, 'GZMO', 12, $1, 'todo', '{"kind":"system","id":"test"}'::jsonb, $1)
+	`, greater); err != nil {
+		t.Fatalf("seed issue %s: %v", greater, err)
+	}
 	if _, err := pool.Exec(ctx, `
 		insert into repo_projects (repo, project, created_by, is_default, renamed_to)
-		values ('OldCo/Gadgets', 'GDGT', '{"kind":"system","id":"delivery-test"}'::jsonb, false, $1)
-		on conflict (repo) do update set renamed_to = excluded.renamed_to
-	`, gadgetsRepo); err != nil {
-		t.Fatalf("record a second mapping of %s: %v", gadgetsOldRepo, err)
+		values ('OldCo/Gadgets', 'GZMO', '{"kind":"system","id":"delivery-test"}'::jsonb, false, $1)
+	`, greaterRepo); err != nil {
+		t.Fatalf("record a second rename pair of %s: %v", gadgetsOldRepo, err)
 	}
 
 	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
 	if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
-		Repo: gadgetsOldRepo, Number: 241, Title: own + ": the work, under a twice-mapped old name",
+		Repo: gadgetsOldRepo, Number: 241, Title: lesser + " and " + greater + ": the work, under an old name two pairs rename",
 		URL: "https://github.com/" + gadgetsOldRepo + "/pull/241", Author: "octocat",
 		CreatedAt: &merged, MergedAt: &merged,
-		Attribution: &AttributionInputs{TitleKeys: []string{own}},
+		Attribution: &AttributionInputs{TitleKeys: []string{lesser, greater}},
 	}); err != nil {
 		t.Fatalf("seed the stored pull request under %s: %v", gadgetsOldRepo, err)
 	}
 
 	if _, err := NewAttributor(renamesOf(t, ctx, pool)).AttributePullRequests(ctx, pool, 100); err != nil {
-		t.Fatalf("attribute with two mappings of one name: %v", err)
+		t.Fatalf("attribute with two rename pairs of one old name: %v", err)
 	}
-	if got := storedIssueKey(t, ctx, pool, gadgetsOldRepo, 241); got != own {
-		t.Fatalf("the issue of the row stored under %s = %s, want %s: both mappings name %s",
-			gadgetsOldRepo, got, own, gadgetsRepo)
+	if got := storedIssueKey(t, ctx, pool, gadgetsOldRepo, 241); got != greater {
+		t.Fatalf("the issue of the row stored under %s = %s, want %s: of the pairs that rename %s to %s and to %s, the greater new name wins",
+			gadgetsOldRepo, got, greater, gadgetsOldRepo, gadgetsRepo, greaterRepo)
 	}
 }
 
@@ -335,7 +345,7 @@ func TestTheAttributionBackfillStaysWithinItsCallBudget(t *testing.T) {
 		})
 	}
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{}).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	if n := calls.Load(); n > attributionBackfillCalls || n == 0 {
 		t.Fatalf("one pass made %d attribution calls; want between 1 and the budget of %d", n, attributionBackfillCalls)

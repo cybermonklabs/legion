@@ -62,10 +62,7 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 			`repo is required: the project's default repository as "owner/name", or null for none`)
 		return
 	}
-	if repo != nil {
-		canonical := s.deps.Renames.Canonical(*repo)
-		repo = &canonical
-	}
+	repo = s.renamedRepo(repo)
 
 	tx, err := s.begin(r.Context())
 	if err != nil {

@@ -15,7 +15,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -42,7 +41,7 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 			clients = append(clients, client)
 		}
 		return client, err
-	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, refs.Renames{})
+	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -153,7 +152,7 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := StartIntakes(runCtx, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, refs.Renames{})
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -233,7 +232,7 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := StartIntakes(runCtx, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, refs.Renames{})
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -271,7 +270,7 @@ func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 	stop, err := StartIntakes(t.Context(), func(string) (*bus.Client, error) {
 		t.Error("connected a client for intakes that have no GitHub App")
 		return nil, errors.New("no connection here")
-	}, nil, IntakeLeases{}, nil, nil, nil, refs.Renames{})
+	}, nil, IntakeLeases{}, nil, nil, nil, unrenamed())
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -304,7 +303,7 @@ func TestIntakesWhoseSecondConnectFailsStartNeither(t *testing.T) {
 		var err error
 		first, err = bus.Connect([]string{natsURL})
 		return first, err
-	}, pool, deliveryTestIntakeLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, refs.Renames{})
+	}, pool, deliveryTestIntakeLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, unrenamed())
 	if !errors.Is(err, refused) {
 		t.Fatalf("start the intakes = %v, want the job intake's connect error", err)
 	}

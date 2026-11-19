@@ -786,11 +786,7 @@ func (s *server) checkIssueRepository(ctx context.Context, q refs.Queryer, issue
 		slog.Warn("dispatch: resolve the repository of a check's issue", "issue", issueKey, "error", err)
 		return nil, false
 	}
-	if repo == nil {
-		return nil, true
-	}
-	canonical := s.deps.Renames.Canonical(*repo)
-	return &canonical, true
+	return s.renamedRepo(repo), true
 }
 
 // repositoryOf is checkIssueRepository read once per read of the results: the repository the

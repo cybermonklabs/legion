@@ -72,10 +72,11 @@ func parseIssueRepo(raw json.RawMessage, code string) (repo *string, provided bo
 	return &canonical, true, nil
 }
 
-// renamedIssueRepo is an issue's own repository as parseIssueRepo answered it, under its new name
-// where a rename pair renames it away (refs.Renames.Canonical), so a create or a patch never
-// stores an old name. nil, no repository, stays nil.
-func (s *server) renamedIssueRepo(repo *string) *string {
+// renamedRepo is repo under its new name where a rename pair renames it away
+// (refs.Renames.Canonical). nil, no repository, stays nil. An issue's create and patch and a
+// project's default repository write take it, so no write stores an old name, and the results
+// read takes it for the repository a check's issue resolves to (checkIssueRepository).
+func (s *server) renamedRepo(repo *string) *string {
 	if repo == nil {
 		return nil
 	}

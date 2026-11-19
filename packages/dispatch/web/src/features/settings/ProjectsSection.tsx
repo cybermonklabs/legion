@@ -36,6 +36,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
+  NOT_OWNER_NAME,
   ownerRepoPattern,
   settingsFieldLabel,
   settingsMonoInput,
@@ -43,6 +44,7 @@ import {
   settingsTableHead,
   settingsTableRow,
   settingsTableWrapper,
+  wholeValue,
 } from "./classes";
 
 /** Lists native projects, lets a human create one, and carries two settings of each project:
@@ -390,7 +392,7 @@ interface ProjectSettingWrite<TValue> {
  *  mounted after it failed, until a newer pick or Retry starts another save. Each answer lands in
  *  `read`, the read that holds the setting, so the control does not flash back to the old value,
  *  and `read` is refetched after each save that reached the server settles. */
-function useProjectSettingWrite<TAnswer extends object, TValue>({
+function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
   label,
   project,
   read,
@@ -405,8 +407,8 @@ function useProjectSettingWrite<TAnswer extends object, TValue>({
   save: (value: TValue, bounds: WriteBounds) => Promise<TAnswer>;
   /** The setting's name in the mutation key and scope, such as `default-assignee`. */
   setting: string;
-  /** Puts a save's answer in `read`. */
-  store: (saved: TAnswer) => void;
+  /** The rows of `read` with a save's answer in them. */
+  store: (rows: TRows | undefined, saved: TAnswer) => TRows | undefined;
 }): ProjectSettingWrite<TValue> {
   const queryClient = useQueryClient();
   const mutationKey = [`project-${setting}`, project];
@@ -437,7 +439,7 @@ function useProjectSettingWrite<TAnswer extends object, TValue>({
       if (saved === null || "superseded" in saved) {
         return;
       }
-      store(saved);
+      queryClient.setQueryData<TRows>(read, (rows) => store(rows, saved));
     },
     onSettled: (saved) => {
       // With gcTime Infinity nothing else clears this project's saves. A save settles in pick
@@ -492,22 +494,19 @@ function useProjectSettingWrite<TAnswer extends object, TValue>({
 /** One project's default-assignee saves. A pick always names a person: no write clears a
  *  default. Each answer lands in the defaults read. */
 function useDefaultAssigneeWrite(project: string): ProjectSettingWrite<string> {
-  const queryClient = useQueryClient();
-  const defaultsKey = projectDefaultAssigneesQuery().queryKey;
-  return useProjectSettingWrite<ProjectDefaultAssignee, string>({
+  return useProjectSettingWrite<ProjectDefaultAssignee, string, ProjectDefaultAssignee[]>({
     label: (assignee) => `${project}'s default assignee ${assignee}`,
     project,
-    read: defaultsKey,
+    read: projectDefaultAssigneesQuery().queryKey,
     save: (assignee, bounds) => api.putProjectDefaultAssignee(project, { assignee }, bounds),
     setting: "default-assignee",
-    store: (saved) =>
-      queryClient.setQueryData<ProjectDefaultAssignee[]>(defaultsKey, (rows) => {
-        if (rows === undefined) {
-          return rows;
-        }
-        const others = rows.filter((row) => row.project !== saved.project);
-        return [...others, saved];
-      }),
+    store: (rows, saved) => {
+      if (rows === undefined) {
+        return rows;
+      }
+      const others = rows.filter((row) => row.project !== saved.project);
+      return [...others, saved];
+    },
   });
 }
 
@@ -557,14 +556,10 @@ function DefaultAssigneeSelect({
   );
 }
 
-/** `ownerRepoPattern` as a test of a whole value: the check the default-repository cell makes
- *  before it sends, so a typo shows at the box and not as the server's 400 a round trip later. The
- *  server holds the name to GitHub's own grammar, which is stricter, and its refusal shows under
+/** The check the default-repository cell makes before it sends. The server holds the name to
+ *  GitHub's own grammar, which is stricter than `ownerRepoPattern`, and its refusal shows under
  *  the cell. */
-const ownerRepo = new RegExp(`^(?:${ownerRepoPattern})$`);
-
-/** What the default-repository cell says about a value that is not `owner/name`. */
-const NOT_OWNER_NAME = "Write the repository as owner/name.";
+const ownerRepo = wholeValue(ownerRepoPattern);
 
 /** One project's default-repository cell. The text box holds the project's default repository,
  *  labelled `Default repository of <KEY>`, and an empty box reads **None**. Save sends what was
@@ -661,21 +656,17 @@ function DefaultRepositoryCell({
 /** One project's default-repository saves. A pick is an `owner/name`, or `null` to clear the
  *  default. Each answer lands in the project list, which holds the default as `default_repo`. */
 function useDefaultRepositoryWrite(project: string): ProjectSettingWrite<string | null> {
-  const queryClient = useQueryClient();
-  const projectsKey = projectsQuery().queryKey;
-  return useProjectSettingWrite<ProjectDefaultRepository, string | null>({
+  return useProjectSettingWrite<ProjectDefaultRepository, string | null, Project[]>({
     label: (repo) =>
       repo === null
         ? `${project}'s default repository cleared`
         : `${project}'s default repository ${repo}`,
     project,
-    read: projectsKey,
+    read: projectsQuery().queryKey,
     save: (repo, bounds) => api.putProjectDefaultRepository(project, { repo }, bounds),
     setting: "default-repository",
-    store: (saved) =>
-      queryClient.setQueryData<Project[]>(projectsKey, (rows) =>
-        rows?.map((row) => (row.key === saved.project ? withDefaultRepo(row, saved.repo) : row))
-      ),
+    store: (rows, saved) =>
+      rows?.map((row) => (row.key === saved.project ? withDefaultRepo(row, saved.repo) : row)),
   });
 }
 

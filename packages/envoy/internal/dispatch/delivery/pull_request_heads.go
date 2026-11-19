@@ -805,7 +805,7 @@ func (a *Attributor) headAttribution(ctx context.Context, pool *store.Pool, fact
 		ownHead:  headInOwnRepository(facts.Repo, headRepo),
 		complete: headRepo != "",
 	}
-	candidates, err := a.resolveAttributionCandidates(ctx, pool, facts.Repo, facts.URL, attributionInputsFrom(a.renames, facts))
+	candidates, err := a.resolveAttributionCandidates(ctx, pool, facts.Repo, facts.URL, a.attributionInputsFrom(facts))
 	if err != nil || len(candidates) == 0 {
 		return attributed, err
 	}
@@ -946,7 +946,7 @@ func (a *Attributor) RefreshPullRequestHead(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull string, number int, now time.Time,
 ) error {
-	canonical := a.renames.Canonical(repoFull)
+	canonical := a.canonical(repoFull)
 	owner, repo, err := splitRepo(canonical)
 	if err != nil {
 		return err
@@ -1028,7 +1028,7 @@ func (a *Attributor) ReadThroughCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull, sha string, now time.Time,
 ) (written int, atHead bool, err error) {
-	canonical := a.renames.Canonical(repoFull)
+	canonical := a.canonical(repoFull)
 	owner, repo, token, err := repositoryRead(ctx, client, canonical)
 	if err != nil {
 		return 0, false, err
@@ -1099,7 +1099,7 @@ func (a *Attributor) ReadThroughCommitPulls(
 // (refs.Renames.Canonical), so it cannot fail.
 func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]string, number int) ([]string, error) {
 	given := payload["repo"]
-	repoFull := in.attributor.renames.Canonical(given)
+	repoFull := in.attributor.canonical(given)
 	owner, repo, err := splitRepo(repoFull)
 	if err != nil {
 		return nil, err

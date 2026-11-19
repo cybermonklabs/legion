@@ -21,7 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -52,10 +51,10 @@ type Reconcile struct {
 	interval   time.Duration
 }
 
-// NewReconcile builds a Reconcile, which attributes pull requests and keys their head rows by
-// renames, the rename pairs the process read at boot.
-func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker, renames refs.Renames) *Reconcile {
-	return &Reconcile{pool: pool, github: github, events: broker, attributor: NewAttributor(renames)}
+// NewReconcile builds a Reconcile, which attributes pull requests and keys their head rows with
+// attributor, the process's one Attributor of the rename pairs it read at boot.
+func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker, attributor *Attributor) *Reconcile {
+	return &Reconcile{pool: pool, github: github, events: broker, attributor: attributor}
 }
 
 // FirstPassAtStart makes Run run one pass as it starts, before its jittered ticks, for an
@@ -684,7 +683,7 @@ func (r *Reconcile) readAttributionInputs(ctx context.Context, pr DeliveryPullRe
 		slog.Warn("dispatch delivery: read attribution inputs", "repo", pr.Repo, "number", pr.Number, "error", err)
 		return nil
 	}
-	inputs := attributionInputsFrom(r.attributor.renames, facts)
+	inputs := r.attributor.attributionInputsFrom(facts)
 	issueKey, _, err := r.attributor.resolveStoredIssueKey(ctx, r.pool, pr.Repo, pr.URL, inputs)
 	if err != nil {
 		slog.Warn("dispatch delivery: resolve the issue of a backfilled pull request", "repo", pr.Repo, "number", pr.Number, "error", err)

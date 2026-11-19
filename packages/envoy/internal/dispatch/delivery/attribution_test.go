@@ -45,7 +45,8 @@ func seedAttributionIssues(t *testing.T, ctx context.Context, pool *store.Pool, 
 
 func resolvedKey(t *testing.T, ctx context.Context, pool *store.Pool, facts attributionFacts) (string, attributionSource) {
 	t.Helper()
-	key, source, err := unrenamed().resolveStoredIssueKey(ctx, pool, facts.Repo, facts.URL, attributionInputsFrom(refs.Renames{}, facts))
+	attributor := unrenamed()
+	key, source, err := attributor.resolveStoredIssueKey(ctx, pool, facts.Repo, facts.URL, attributor.attributionInputsFrom(facts))
 	if err != nil {
 		t.Fatalf("resolveStoredIssueKey(%+v): %v", facts, err)
 	}
@@ -474,7 +475,7 @@ func TestReconcileBackfillsAttributionInputsOnce(t *testing.T) {
 	})
 	noRuns(t, fake)
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{})
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 	reconcile.runOnce(ctx)
 
@@ -542,7 +543,7 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 	})
 	noRuns(t, fake)
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{})
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 	first, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where number = 180`))
 	if err != nil {
@@ -641,7 +642,7 @@ func TestReconcileCreditsAPullRequestAnIssueLinksLater(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	noRuns(t, fake)
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), refs.Renames{})
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	reconcile.runOnce(ctx)
 	issueOf := func() *string {
