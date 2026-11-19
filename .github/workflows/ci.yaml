@@ -951,9 +951,6 @@ jobs:
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/ratelimit/*'
-              # internal/brokertoken's mint of a named account's identity token refuses
-              # redirects through it (GoogleAccount.HTTP).
-              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
@@ -2177,9 +2174,6 @@ jobs:
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/ratelimit/*'
-              # internal/brokertoken's mint of a named account's identity token refuses
-              # redirects through it (GoogleAccount.HTTP).
-              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/roles/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'

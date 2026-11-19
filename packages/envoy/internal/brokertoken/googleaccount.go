@@ -72,12 +72,11 @@ const (
 // caller.
 //
 // The access token comes from internal/googleidentity's metadata read rather than from Application
-// Default Credentials, since those would link golang.org/x/oauth2/google and Google's metadata
-// client into every program that links this package, the listener among them, and their token read
-// takes no context and retries past any bound this reader sets. The mint is this file's own call
-// rather than internal/brokerclient's generateIDToken because internal/brokerclient and
-// internal/googleidentity are paths release.yaml's LEGION_VERSION_ARGS names: changing either to
-// share the call would release the Legion daemon for no change in its behaviour.
+// Default Credentials, because their token read takes no context and retries past any bound this
+// reader sets. The mint is this file's own call rather than internal/brokerclient's generateIDToken
+// because internal/brokerclient and internal/googleidentity are paths release.yaml's
+// LEGION_VERSION_ARGS names: changing either to share the call would release the Legion daemon for
+// no change in its behaviour.
 //
 // Either token rotates as a projected one does, so it is asked for at call time and never once at
 // boot.
