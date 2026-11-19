@@ -342,7 +342,7 @@ export function IssueMarginPanel({
         name="development"
         sections={sections}
       >
-        <Row glyph={<StatusGlyph glyph="◐" />} label={PROPERTY_LABELS.status}>
+        <Row glyph={<StatusGlyph glyph={STATUS_ROW_SHAPE} />} label={PROPERTY_LABELS.status}>
           <span
             className={`inline-flex items-center gap-1 rounded-full border border-current px-2 text-xs leading-[18px] font-semibold ${statusTone(status)}`}
             {...pageChrome}
@@ -878,20 +878,18 @@ function PropertySection({
  *  other text glyph fits at the row's size, and each icon is drawn to the column. */
 const SMALL_GLYPH = "⊘";
 
-/** A text glyph as a row draws it. A symbol outside ASCII is followed by U+FE0E, the text
- *  presentation selector, so that no emoji face takes it from the page's typeface; ASCII has no
- *  emoji face to keep it from, and is drawn as it is. */
-function textGlyph(symbol: string): string {
-  return /^[\x20-\x7e]*$/.test(symbol) ? symbol : `${symbol}\uFE0E`;
-}
+/** The Status row's shape: that of a status in motion, as the prototype draws the row, which the
+ *  page's one status icon draws (`StatusGlyph`). It is named through `statusGlyph`, since the
+ *  character that names it is no character the page draws as text. */
+const STATUS_ROW_SHAPE = statusGlyph("in_progress");
 
 /**
  * One row of Details (the prototype's `.frow`): a column of 112 px with the property's shape
  * and its name, and the value beside it; a `wide` row is one column, for a property whose own
  * control names it. The shape is an icon of `details-icons.tsx` where the page's typeface does
- * not hold the character, and otherwise that character as text (`textGlyph`). `row` names the
- * row a control elsewhere opens Details at (`details-rows.ts`), and `valueRef` takes the box of
- * the row's value.
+ * not hold the character, and otherwise that character as text, one the typeface holds and that
+ * no font draws as an emoji unless asked to. `row` names the row a control elsewhere opens Details
+ * at (`details-rows.ts`), and `valueRef` takes the box of the row's value.
  */
 function Row({
   children,
@@ -924,7 +922,7 @@ function Row({
             aria-hidden="true"
             className={`w-3.5 shrink-0 text-center ${glyph === SMALL_GLYPH ? "text-[9px]" : ""}`}
           >
-            {typeof glyph === "string" ? textGlyph(glyph) : glyph}
+            {glyph}
           </span>
           <span className="min-w-0" {...pageChrome}>
             {label}
