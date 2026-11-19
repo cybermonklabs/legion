@@ -446,7 +446,7 @@ func TestAKubernetesDaemonRefusesAConfigurationTheClusterWouldRefuseLater(t *tes
 // the issue pod requests less than it may use, which the runtime renders as a Burstable pod, and the
 // controller's keeps request == limit at sizes the file set — and its ephemeral storage the limit
 // the file or the default set with the request under it; and the image probe carries its own fixed
-// reservation (probeReservation), 250m and 1Gi over a 5Gi disk bound and a 1Gi disk request,
+// reservation (probeReservation), 500m and 1Gi over a 5Gi disk bound and a 1Gi disk request,
 // translated the same way and no pod's share — a probe that reserved the controller's 1 CPU and
 // 4Gi could not boot the daemon on a pool with room for less.
 func TestEveryReservationReachesTheSandboxRuntimeAsRequestAndLimit(t *testing.T) {
@@ -499,12 +499,12 @@ func TestEveryReservationReachesTheSandboxRuntimeAsRequestAndLimit(t *testing.T)
 	if !reflect.DeepEqual(probe.Resources, wantProbe) {
 		t.Errorf("the image probe carries %+v, want its own reservation %+v", probe.Resources, wantProbe)
 	}
-	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "250m", corev1.ResourceMemory: "1Gi", corev1.ResourceEphemeralStorage: "1Gi"} {
+	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "500m", corev1.ResourceMemory: "1Gi", corev1.ResourceEphemeralStorage: "1Gi"} {
 		if request := probe.Resources.Requests[kind]; request.Cmp(resource.MustParse(want)) != 0 {
 			t.Errorf("the image probe requests %s %s, want %s", kind, request.String(), want)
 		}
 	}
-	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "250m", corev1.ResourceMemory: "1Gi", corev1.ResourceEphemeralStorage: "5Gi"} {
+	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "500m", corev1.ResourceMemory: "1Gi", corev1.ResourceEphemeralStorage: "5Gi"} {
 		if limit := probe.Resources.Limits[kind]; limit.Cmp(resource.MustParse(want)) != 0 {
 			t.Errorf("the image probe is limited to %s %s, want %s", kind, limit.String(), want)
 		}
@@ -615,7 +615,7 @@ func TestTheRepositoryCacheReachesTheSandboxRuntime(t *testing.T) {
 // under `controller: daemon` whose controller reservation no node can hold (the checkpoint's
 // `cpu: "100000"`, set so the relaunched controller pod is Unschedulable) is read by the loader as
 // written — the controller's requirements carry the 100000 CPU — while the image probe the daemon
-// builds from the same configuration carries its own 250m / 1Gi and nothing of the controller's,
+// builds from the same configuration carries its own 500m / 1Gi and nothing of the controller's,
 // so the daemon's boot probe still schedules. This is the manifest-level proof: the probe pod's
 // container takes ImageProbe.Resources as it is (TestManifestGoldens, probe.json), and a boot-level
 // run needs a cluster.
@@ -684,7 +684,7 @@ current-context: legion-daemon
 	if err != nil {
 		t.Fatalf("imageProbe: %v", err)
 	}
-	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "250m", corev1.ResourceMemory: "1Gi"} {
+	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "500m", corev1.ResourceMemory: "1Gi"} {
 		request, limit := probe.Resources.Requests[kind], probe.Resources.Limits[kind]
 		if request.Cmp(resource.MustParse(want)) != 0 || limit.Cmp(resource.MustParse(want)) != 0 {
 			t.Errorf("the image probe carries %s request %s / limit %s beside a 100000-CPU controller, want its own %s as both",

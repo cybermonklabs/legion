@@ -140,15 +140,18 @@ jobs:
       # with no database and no Bun, and a change to only what they read must not start this
       # one. So are internal/dispatch/architecture/notes, internal/runnerlog,
       # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, which
-      # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES). The pattern is built
-      # in .github/scripts/ci_job_reads.py from the same list those
-      # jobs' own steps are built from, so what this step leaves out and what the other jobs run
-      # cannot drift apart. The broker's packages, internal/broker and everything under it, are
-      # left out too: the database-skips step below runs them with -json and fails on a failed
-      # test as on a skipped one, so this step ran each of them a second time (DATABASE_SKIPS_TREE
-      # in ci_job_reads.py). What is left is the rest of the module, the two longest packages of
-      # it (the API's and the documents service's) now among the ones the lane runs, so its 20
-      # minutes are ample. The two tests of the web app's display-tree fixture are skipped:
+      # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES), and listenerwire and
+      # internal/wirecheck, which envoy-go-checks tests in their place (LISTENERWIRE_PACKAGES):
+      # listenerwire's clients test type-checks daemon packages, so a change to only those daemon
+      # packages starts no job with a database. The pattern is built in
+      # .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built from, so
+      # what this step leaves out and what the other jobs run cannot drift apart. The broker's
+      # packages, internal/broker and everything under it, are left out too: the database-skips
+      # step below runs them with -json and fails on a failed test as on a skipped one, so this step
+      # ran each of them a second time (DATABASE_SKIPS_TREE in ci_job_reads.py). What is left is the
+      # rest of the module, the two longest packages of it (the API's and the documents service's)
+      # now among the ones the lane runs, so its 20 minutes are ample. The two tests of the web
+      # app's display-tree fixture are skipped:
       # without `--check` TestWebDisplayFixture writes the committed fixture rather than checking
       # it, so a run here would ask nothing of it, and
       # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would make it
@@ -156,7 +159,7 @@ jobs:
       # are built from the same list.
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
       # backend's rows run that backend's own code: the store forms against the GCP fake and the

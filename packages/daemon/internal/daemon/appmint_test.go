@@ -96,8 +96,9 @@ func appTokens(t *testing.T, discover func(w http.ResponseWriter, r *http.Reques
 			mintedToken(w, "installation-token", exchangeBody(t, r))
 		case strings.HasPrefix(r.URL.Path, "/app/installations/"):
 			// A mint reads what the installation is granted before it asks for a token and cuts
-			// its request down to it (appauth's exchangeGranted), so the stand-in's installation
-			// is granted every permission a role's set names.
+			// its request down to it (appauth's exchangeGranted). The stand-in's installation is
+			// granted no issues, security_events or attestations, which these tests read nothing
+			// of, so the cut leaves those out of each request.
 			fmt.Fprint(w, `{"id":77,"permissions":{"actions":"write","checks":"write","contents":"write","metadata":"read","pull_requests":"write","statuses":"write","workflows":"write"}}`)
 		case r.URL.Path == "/app":
 			fmt.Fprintf(w, `{"slug":"legion-test-%s"}`, jwtIssuer(t, r))

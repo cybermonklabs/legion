@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // writeRoutesWithin is how long a write route may take to answer a bus that stopped answering: its
@@ -88,7 +89,7 @@ func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.Respo
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("%s with the bus silent: status %d, body %s; want 503", route, recorder.Code, recorder.Body.String())
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
