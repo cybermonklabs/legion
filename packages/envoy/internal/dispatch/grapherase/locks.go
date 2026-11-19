@@ -36,9 +36,10 @@ const eraseOwnerAttempts = 3
 //
 // The owner locks are the advisory locks every writer of an issue or a document takes
 // (store.LockOwners), each taken once, in the order of the owner keys (events.LockOwnerRows), as
-// events.lockOwners takes the owners of several events: "artifact:<id>" for a document no issue
-// owns, before "issue:<key>". That is the one order over every owner, and the backfill's batches
-// take their documents' owners in it too (graphcensus's lockBlockDocuments and lockObjectOwners).
+// events.Broker.LockOwners takes the owners of several events: "artifact:<id>" for a document no
+// issue owns, before "issue:<key>". That is the one order over every owner, and the backfill's
+// batches take their documents' owners in it too (graphcensus's lockBlockDocuments and
+// lockObjectOwners).
 //
 // Which owners those are is read before they are locked, so it is read again under them with the
 // rest of the listing (read), and the run goes on with that second read. A write that, between

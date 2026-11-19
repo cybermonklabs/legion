@@ -76,7 +76,7 @@ var storeWriteCallSites = map[string]string{
 	// The removal of an untouched document states its node gone, before its row goes, caused by
 	// the artifact.removed event it appends after the row (Write of the node the document's
 	// create would have written, for a document an earlier build made with none, then
-	// WriteUncaused, then the event and the gone statement in one batch, appendCausingEvent).
+	// QueueNodes, then the event and the gone statement in one batch, appendCausingEvent).
 	"api/artifact_removal.go#removeArtifact": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
@@ -99,7 +99,7 @@ var storeWriteCallSites = map[string]string{
 	"graphcensus/backfill.go#writeRoleBatch":     "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill.go#writeSessionBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The backfill's passes over the project of every node: the nodes of the issues, documents,
-	// asks and messages that their marker does not mark, in WriteUncaused and Caused over each run
+	// asks and messages that their marker does not mark, in QueueNodes and Caused over each run
 	// of the batch's nodes of one cause (a row's own create event, or the sentinel), after the
 	// owner locks a document's removal takes (lockObjectOwners) and under them, and the project of
 	// the comment and block nodes written before a node named one (graphstore.FillScopes), the
@@ -117,20 +117,15 @@ var storeWriteCallSites = map[string]string{
 	// sides of the node, then the node's row. It takes the owner locks it writes under before that
 	// row, and its projection rows after it.
 	"grapherase/erase.go#apply": "grapherase#TestTheEraseTakesTheStoreLockOrder",
-	// graphstore's own writers that run another of them. Authored and SessionRecorded are arms
-	// of one statement, and Reached is SessionRecorded for an attempt that was sent; each runs
-	// its queued form (QueueAuthored, QueueSessionRecorded, QueueReached) as a batch of its own.
-	// Write, WriteUncaused and Caused run QueueWrite, QueueNodes and QueueCaused the same way,
-	// and TestEveryStoreWriteTakesOneLockOrder proves the order on them.
-	"graphstore/people.go#Authored":             "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
+	// graphstore's own writers that run another of them. QueueAuthored and QueueSessionRecorded
+	// are arms of one statement, and QueueReached is QueueSessionRecorded for an attempt that was
+	// sent. Write and Caused run QueueWrite and QueueCaused as a batch of their own, and
+	// TestEveryStoreWriteTakesOneLockOrder proves the order on them.
 	"graphstore/people.go#QueueAuthored":        "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#QueueReached":         "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#QueueSessionRecorded": "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
-	"graphstore/people.go#Reached":              "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
-	"graphstore/people.go#SessionRecorded":      "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/write.go#Caused":                "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	"graphstore/write.go#Write":                 "graphstore#TestEveryStoreWriteTakesOneLockOrder",
-	"graphstore/write.go#WriteUncaused":         "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies": "outbox#TestAFallbackCopyThePassPublishedIsADelivery",

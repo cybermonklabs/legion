@@ -17,25 +17,27 @@ import (
 var peopleLockAt = time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
 
 // TestAuthoredAndReachedTakeTheStoreLockOrder holds the two writers of the people and agents
-// Dispatch records, Authored and Reached, to their steps of the lock order written on
-// api/inbox_read.go's markInboxReadThreads, against a real Postgres. Each is one statement of
-// WriteArms inside its caller's transaction, and its steps are the ones that statement takes:
-// the author's or the session's node row, then the tuples. The owner row and the event come
-// before either in the caller's transaction, and are proven where the caller is.
+// Dispatch records, QueueAuthored and QueueReached, to their steps of the lock order written on
+// api/inbox_read.go's markInboxReadThreads, against a real Postgres. Each queues one statement of
+// WriteArms, run here as a batch of its own (store.RunWrite) inside its caller's transaction, and
+// its steps are the ones that statement takes: the author's or the session's node row, then the
+// tuples. The owner row and the event come before either in the caller's transaction, and are
+// proven where the caller is.
 //
 // One statement takes a lock on every table it writes when it starts, so where it is stopped is
 // read from which holder it queues behind rather than from the tables it has locked. A new
-// author's node and the tuple Authored appends about them are each held as a row another
-// transaction inserted and has not committed, and Authored must queue behind the node first and
-// only then behind the tuple: once for its relation arm (authored_by) and once for its value arm
-// (recorded_as), since each arm is ordered after the node arm on its own. An author the store
-// already holds has no node row Authored locks, since the node arm upserts `do nothing`.
+// author's node and the tuple QueueAuthored appends about them are each held as a row another
+// transaction inserted and has not committed, and QueueAuthored's statement must queue behind the
+// node first and only then behind the tuple: once for its relation arm (authored_by) and once for
+// its value arm (recorded_as), since each arm is ordered after the node arm on its own. An author
+// the store already holds has no node row QueueAuthored locks, since the node arm upserts `do
+// nothing`.
 //
-// Reached writes the session's node alone, and the settle appends that node's two base
+// QueueReached writes the session's node alone, and the settle appends that node's two base
 // attributes under the receipt it appends after it (Caused). Its node is held the same way and
 // the settle must queue behind it, and only then behind a held copy of one of those attributes
 // under the same receipt, which the value repeat key covers. A session the store already holds
-// has no row Reached locks and no attribute the settle restates.
+// has no row QueueReached locks and no attribute the settle restates.
 func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -43,8 +45,8 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 	for index, arm := range []struct {
 		name  string
 		actor model.Actor
-		// held is the tuple of this arm that Authored appends, given the author's login and the
-		// thing's id.
+		// held is the tuple of this arm that QueueAuthored appends, given the author's login and
+		// the thing's id.
 		held func(login, thing string, actor model.Actor, event int64) Tuple
 	}{
 		{
@@ -70,7 +72,7 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 			},
 		},
 	} {
-		t.Run("Authored writes a new author's node before "+arm.name, func(t *testing.T) {
+		t.Run("QueueAuthored writes a new author's node before "+arm.name, func(t *testing.T) {
 			event := int64(9400001 + index)
 			thing := "GRAPH-1/authored-" + arm.actor.ID
 			login := model.CanonicalLogin(arm.actor.ID)
@@ -83,28 +85,32 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 			insertTupleRow(t, ctx, tupleHolder, tuple)
 
 			conn, _, done := startPeopleWrite(t, ctx, database, func(ctx context.Context, tx pgx.Tx) error {
-				return Authored(ctx, tx, "comment", thing, arm.actor, peopleLockAt, event)
+				return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					return QueueAuthored(b, "comment", thing, arm.actor, peopleLockAt, event)
+				})
 			})
-			behindNode, behindTuple := waitForTheHolderItWaitsOn(t, ctx, nodeHolder, tupleHolder, conn, done, "Authored")
+			behindNode, behindTuple := waitForTheHolderItWaitsOn(t, ctx, nodeHolder, tupleHolder, conn, done, "QueueAuthored")
 			if behindTuple || !behindNode {
-				t.Errorf("Authored waits on the transaction holding %s (%v) rather than on the one holding its author's node %s/%s (%v): it appended a tuple before it wrote the node the tuple is about",
+				t.Errorf("QueueAuthored waits on the transaction holding %s (%v) rather than on the one holding its author's node %s/%s (%v): it appended a tuple before it wrote the node the tuple is about",
 					arm.name, behindTuple, node.Kind, node.ID, behindNode)
 			}
 			releaseNode()
-			requireQueued(t, tupleHolder, conn, done, "Authored past its author's node")
+			requireQueued(t, tupleHolder, conn, done, "QueueAuthored past its author's node")
 			releaseTuple()
-			requireCommitted(t, done, "Authored")
+			requireCommitted(t, done, "QueueAuthored")
 
 			requirePeopleRows(t, database, node, 1, tuple, 1)
 		})
 	}
 
-	t.Run("Authored takes no row of an author the store already holds", func(t *testing.T) {
+	t.Run("QueueAuthored takes no row of an author the store already holds", func(t *testing.T) {
 		actor := model.Actor{Kind: "user", ID: "authored-again"}
 		login := model.CanonicalLogin(actor.ID)
 		first, second := int64(9400011), int64(9400012)
 		runPeopleWrite(t, ctx, database, "the author's first write", func(ctx context.Context, tx pgx.Tx) error {
-			return Authored(ctx, tx, "comment", "GRAPH-1/authored-first", actor, peopleLockAt, first)
+			return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				return QueueAuthored(b, "comment", "GRAPH-1/authored-first", actor, peopleLockAt, first)
+			})
 		})
 		node := PersonNode(login, actor, peopleLockAt, second)
 		tuple := Tuple{
@@ -118,17 +124,19 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 		insertTupleRow(t, ctx, tupleHolder, tuple)
 
 		conn, _, done := startPeopleWrite(t, ctx, database, func(ctx context.Context, tx pgx.Tx) error {
-			return Authored(ctx, tx, "comment", "GRAPH-1/authored-second", actor, peopleLockAt, second)
+			return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				return QueueAuthored(b, "comment", "GRAPH-1/authored-second", actor, peopleLockAt, second)
+			})
 		})
-		behindNode, behindTuple := waitForTheHolderItWaitsOn(t, ctx, nodeHolder, tupleHolder, conn, done, "Authored of a known author")
+		behindNode, behindTuple := waitForTheHolderItWaitsOn(t, ctx, nodeHolder, tupleHolder, conn, done, "QueueAuthored of a known author")
 		if behindNode || !behindTuple {
-			t.Errorf("Authored of an author the store holds waits on the transaction holding the author's row %s/%s (%v) rather than on the one holding its tuple (%v): the node arm upserts `do nothing`, which locks no row that is already there",
+			t.Errorf("QueueAuthored of an author the store holds waits on the transaction holding the author's row %s/%s (%v) rather than on the one holding its tuple (%v): the node arm upserts `do nothing`, which locks no row that is already there",
 				node.Kind, node.ID, behindNode, behindTuple)
 		}
-		// The node's holder keeps its row until Authored has committed: a write that locked
-		// that row would still be waiting for it.
+		// The node's holder keeps its row until QueueAuthored's write has committed: a write that
+		// locked that row would still be waiting for it.
 		releaseTuple()
-		requireCommitted(t, done, "Authored of a known author while another transaction holds the author's row")
+		requireCommitted(t, done, "QueueAuthored of a known author while another transaction holds the author's row")
 		releaseNode()
 
 		requirePeopleRows(t, database, node, 1, tuple, 1)
@@ -204,17 +212,21 @@ func TestAuthoredAndReachedTakeTheStoreLockOrder(t *testing.T) {
 			SourceEvent: second, Asserted: true,
 		}, 0)
 	})
-	storetest.RequireNoMarkedCause(t, database, "Authored, Reached and the settles that caused them")
+	storetest.RequireNoMarkedCause(t, database, "QueueAuthored, QueueReached and the settles that caused them")
 }
 
-// settleWrite is the settle of a delivery attempt as the API runs it: the session the attempt
-// reached recorded in the settling transaction (Reached), and the receipt appended after it,
-// which moves that node onto itself and appends its base attributes under it (Caused, as
-// api's completeCommentDelivery runs the pair).
+// settleWrite is the settle of a delivery attempt with its receipt appended after the session's
+// node: the session the attempt reached recorded in the settling transaction (QueueReached, with
+// no cause in hand), and the receipt appended after it, which moves that node onto itself and
+// appends its base attributes under it (Caused).
 func settleWrite(session string, who model.Actor, receipt int64) func(context.Context, pgx.Tx) error {
 	return func(ctx context.Context, tx pgx.Tx) error {
-		reached, err := Reached(ctx, tx, model.DeliveryStateSent, session, who, peopleLockAt)
-		if err != nil {
+		var reached Uncaused
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			var err error
+			reached, err = QueueReached(b, model.DeliveryStateSent, session, who, peopleLockAt, NoEvent)
+			return err
+		}); err != nil {
 			return err
 		}
 		return Caused(ctx, tx, reached, receipt)

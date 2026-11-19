@@ -571,10 +571,10 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 // and that node is live and states its two base attributes. A comment that names nobody holds
 // none.
 //
-// The seed states its author through its batch write and not through graphstore.Authored, so
-// Authored is run again over one seeded comment, in a transaction rolled back, and held to
-// adding nothing but that comment's authored_by: no node, since the seed already made the
-// author's, and no alias the seed left out.
+// The seed states its author through its batch write and not through graphstore.QueueAuthored,
+// so QueueAuthored is run again over one seeded comment, as a batch of its own in a transaction
+// rolled back, and held to adding nothing but that comment's authored_by: no node, since the
+// seed already made the author's, and no alias the seed left out.
 func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -677,36 +677,38 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("open the transaction Authored runs in: %v", err)
+		t.Fatalf("open the transaction QueueAuthored runs in: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var lastSeq, nodesBefore, nodesAfter int64
 	if err := tx.QueryRow(ctx, `select coalesce(max(seq), 0), (select count(*) from graph_nodes) from graph_tuples`).
 		Scan(&lastSeq, &nodesBefore); err != nil {
-		t.Fatalf("read the store before Authored: %v", err)
+		t.Fatalf("read the store before QueueAuthored: %v", err)
 	}
-	if err := graphstore.Authored(ctx, tx, graphstore.KindComment, sample.id, sample.author, sample.createdAt,
-		graphstore.NoEvent); err != nil {
-		t.Fatalf("state the author of comment %s through Authored: %v", sample.id, err)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return graphstore.QueueAuthored(b, graphstore.KindComment, sample.id, sample.author, sample.createdAt,
+			graphstore.NoEvent)
+	}); err != nil {
+		t.Fatalf("state the author of comment %s through QueueAuthored: %v", sample.id, err)
 	}
 	if err := tx.QueryRow(ctx, `select count(*) from graph_nodes`).Scan(&nodesAfter); err != nil {
-		t.Fatalf("count the nodes after Authored: %v", err)
+		t.Fatalf("count the nodes after QueueAuthored: %v", err)
 	}
 	rows, err = tx.Query(ctx, `
 		select from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id
 		from graph_tuples where seq > $1 order by seq`, lastSeq)
 	if err != nil {
-		t.Fatalf("read what Authored appended: %v", err)
+		t.Fatalf("read what QueueAuthored appended: %v", err)
 	}
 	appended, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		t.Fatalf("read what Authored appended: %v", err)
+		t.Fatalf("read what QueueAuthored appended: %v", err)
 	}
 	kind, id, _ := graphstore.AuthorOf(sample.author)
 	want := []string{graphstore.KindComment + ":" + sample.id + " " + graphstore.TupleAuthoredBy + " " + kind + ":" + id}
 	if nodesAfter != nodesBefore || !slices.Equal(appended, want) {
-		t.Errorf("Authored over comment %s made %d node(s) and appended %v, want no node and %v: the seed"+
-			" states less of its author than Authored does", sample.id, nodesAfter-nodesBefore, appended, want)
+		t.Errorf("QueueAuthored over comment %s made %d node(s) and appended %v, want no node and %v: the seed"+
+			" states less of its author than QueueAuthored does", sample.id, nodesAfter-nodesBefore, appended, want)
 	}
 }
 

@@ -100,7 +100,7 @@ type versionCause struct {
 }
 
 // causeOfVersion reads a version's own row for its time and its writer, the first of its
-// authors (refs.indexedVersionRecord), beside the event that recorded it.
+// authors (refs.ReadIndexedVersion), beside the event that recorded it.
 func causeOfVersion(t *testing.T, database *store.Store, artifactID string, number int, event int64) versionCause {
 	t.Helper()
 	cause := versionCause{number: number, event: event}

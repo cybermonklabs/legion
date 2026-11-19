@@ -1380,13 +1380,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// The stamp of the reply's references and everything the reply states in the node and tuple
 	// store, in one batch right after its event: the reply's node's cause, its two base
 	// attributes and the artifact it is owned by; who wrote it, which for a session answering a
-	// mention is the first write that records that session (graphstore.Authored), skipped with
-	// the rest for a reply left out of the store; the follow of the ask a session replies in the
-	// thread of, which comes after the author's own write for the reason the comment path takes
-	// them in that order - that write takes the author's person node and their session node in
-	// one statement in ascending (kind, id), and a follow before it would take the pair in the
-	// other order (R17); and what the answer makes of the attempt it answers, which the flip above
-	// records sent, an attempt the store owes its session a node for.
+	// mention is the first write that records that session (graphstore.QueueAuthored), skipped
+	// with the rest for a reply left out of the store; the follow of the ask a session replies
+	// in the thread of, which comes after the author's own write for the reason the comment
+	// path takes them in that order - that write takes the author's person node and their
+	// session node in one statement in ascending (kind, id), and a follow before it would take
+	// the pair in the other order (R17); and what the answer makes of the attempt it answers,
+	// which the flip above records sent, an attempt the store owes its session a node for.
 	answered := answeredDelivery{was: attempt.State, itemKind: graphstore.KindComment, itemID: comment.ID}
 	if attempt.SessionID != nil {
 		answered.session = *attempt.SessionID
@@ -1441,9 +1441,9 @@ type answeredDelivery struct {
 // graphcensus's recordedSessions), and this answer is the write that moves the attempt into
 // that set: without it the census holds the store to a node no writer ever wrote, for good.
 //
-// The node is written as a settle writes one (graphstore.Reached): `do nothing`, so a session
-// another write recorded keeps that write's cause, and nothing at all for a session past the
-// store's address bound. The event is in hand here, so the node states its own two base
+// The node is written as a settle writes one (graphstore.QueueReached): `do nothing`, so a
+// session another write recorded keeps that write's cause, and nothing at all for a session past
+// the store's address bound. The event is in hand here, so the node states its own two base
 // attributes under it and no fact of this write waits for a cause.
 //
 // The delivered_to tuple is stated only where this flip is what makes the attempt a delivery.

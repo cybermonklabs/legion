@@ -75,8 +75,8 @@ func TestAMentionQueuedForAStoppedSessionReachesItsPerson(t *testing.T) {
 	}
 	// The proved session's comment ties it to its person (the alias_of tuple graphstore.AuthorFacts
 	// states), which carries a delivery to the session onto that person's page. It is written after
-	// the node check because it writes the same node (graphstore.Authored). That check does not stop
-	// the test, so the page below is read whatever the check found.
+	// the node check because it writes the same node (graphstore.QueueAuthored). That check does
+	// not stop the test, so the page below is read whatever the check found.
 	rig.created(t, "the proved session's comment", rig.serve(caller.presenting(t, http.MethodPost,
 		"/api/v1/issues/"+issue+"/comments", token, map[string]any{"body": "Written by the session the broker proved."})))
 	rig.publish(t, issue)

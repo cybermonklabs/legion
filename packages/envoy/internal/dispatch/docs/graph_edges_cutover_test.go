@@ -1195,9 +1195,10 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 
 // writeVersionAsAnOlderBuild replaces the document's live text with markdown and writes the
 // version a build without the block index wrote: the version row, the artifact.version event
-// that recorded it, and the settlement cleared. The trigger of migration 0122 leaves the
-// document owed a block index, and the tick indexes it, which is the one path in this package
-// that states a version's blocks and links in the store.
+// that recorded it, whose seq it takes off the issue's own counter as events.Append does, and the
+// settlement cleared. The trigger of migration 0122 leaves the document owed a block index, and
+// the tick indexes it, which is the one path in this package that states a version's blocks and
+// links in the store.
 func writeVersionAsAnOlderBuild(t *testing.T, database *store.Store, service *Service, artifactID, name, markdown string) {
 	t.Helper()
 	ctx := context.Background()
@@ -1221,10 +1222,11 @@ func writeVersionAsAnOlderBuild(t *testing.T, database *store.Store, service *Se
 		t.Fatalf("write the version of %s: %v", artifactID, err)
 	}
 	if _, err := tx.Exec(ctx, `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
 		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"alice"}',
+		select 'CORE-1', bumped.last_seq, 'artifact.version', '{"kind":"user","id":"alice"}',
 		       jsonb_build_object('artifact_id', $1::text, 'name', $3::text, 'version', jsonb_build_object('number', $2::int)), false
-		from events where issue_key = 'CORE-1'
+		from bumped
 	`, artifactID, number, name); err != nil {
 		t.Fatalf("append the version's event: %v", err)
 	}

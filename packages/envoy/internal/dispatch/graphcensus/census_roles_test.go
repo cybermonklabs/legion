@@ -234,7 +234,8 @@ func (w addressingWrites) mentionRole(t *testing.T, key, role, reader string, by
 }
 
 // settleMention settles a comment's first attempt at a role sent, as the mention sender's settle
-// does: the row, the session it reached (graphstore.Reached) and the comment.delivery receipt.
+// does: the row, the session it reached (graphstore.QueueReached) and the comment.delivery
+// receipt.
 func (w addressingWrites) settleMention(t *testing.T, key, commentID, role, reader string, by model.Actor) model.Event {
 	t.Helper()
 	target := "role:" + role
@@ -246,7 +247,10 @@ func (w addressingWrites) settleMention(t *testing.T, key, commentID, role, read
 		`, commentID, target, model.DeliveryStateSent).Scan(&attemptedAt); err != nil {
 			return model.Event{}, err
 		}
-		if _, err := graphstore.Reached(ctx, tx, model.DeliveryStateSent, reader, by, attemptedAt); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			_, err := graphstore.QueueReached(b, model.DeliveryStateSent, reader, by, attemptedAt, graphstore.NoEvent)
+			return err
+		}); err != nil {
 			return model.Event{}, err
 		}
 		return model.Event{

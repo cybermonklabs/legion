@@ -173,8 +173,8 @@ func TestALateMentionOfASessionThatClaimedARoleGivesItNoPageOfItsOwn(t *testing.
 // settles it once its send is answered (api's completeCommentDelivery and settleDeliveryAttempt):
 // in one transaction, under the comment's owner lock, the row is set sent, or failed with
 // failure when that is not empty; the session a sent attempt reached is made a node
-// (graphstore.Reached); and the attempt's comment.delivery receipt is appended. It returns the
-// receipt.
+// (graphstore.QueueReached); and the attempt's comment.delivery receipt is appended. It returns
+// the receipt.
 func settleMention(t *testing.T, database *store.Store, broker *events.Broker, commentID, session string, actor model.Actor, failure string) model.Event {
 	t.Helper()
 	ctx := context.Background()
@@ -201,7 +201,10 @@ func settleMention(t *testing.T, database *store.Store, broker *events.Broker, c
 		&receipt.Target, &receipt.Attempt, &receipt.Delivery, &receipt.SessionID, &createdAt); err != nil {
 		t.Fatalf("settle the mention of %s %s: %v", session, state, err)
 	}
-	if _, err := graphstore.Reached(ctx, tx, state, session, actor, createdAt); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		_, err := graphstore.QueueReached(b, state, session, actor, createdAt, graphstore.NoEvent)
+		return err
+	}); err != nil {
 		t.Fatalf("record the session the mention of %s reached: %v", session, err)
 	}
 	event := owner

@@ -80,7 +80,7 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 // existed. The node arm upserts `do nothing`, which locks no row that is already there, and
 // ask_followers carries no key into the store, so which of the two arms Postgres runs first moves
 // no lock of the store's order. A session id past the store's address bound is no node the store
-// can key, and the follow then writes the follower row alone, as graphstore.SessionRecorded
+// can key, and the follow then writes the follower row alone, as graphstore.QueueSessionRecorded
 // writes nothing for such a session.
 //
 // A follow whose cause comes later states no base attribute in that statement and holds the

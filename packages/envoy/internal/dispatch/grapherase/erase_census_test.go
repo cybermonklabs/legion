@@ -92,7 +92,7 @@ func writeIssueComment(t *testing.T, database *store.Store, id string, author mo
 
 // settleMention writes comment's mention of session and its first attempt, settled in state as
 // the mention sender's settle settles it: the attempt's row, the session it reached where the
-// listener took it (graphstore.Reached, which records nothing for a failed one), and the
+// listener took it (graphstore.QueueReached, which records nothing for a failed one), and the
 // comment.delivery receipt, onto which that session's node is moved (graphstore.Caused).
 func settleMention(t *testing.T, database *store.Store, comment string, by model.Actor, session, state string) {
 	t.Helper()
@@ -116,8 +116,12 @@ func settleMention(t *testing.T, database *store.Store, comment string, by model
 	`, comment, target, session, state).Scan(&attemptedAt); err != nil {
 		t.Fatalf("write the attempt at %s: %v", target, err)
 	}
-	reached, err := graphstore.Reached(ctx, tx, state, session, by, attemptedAt)
-	if err != nil {
+	var reached graphstore.Uncaused
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		var err error
+		reached, err = graphstore.QueueReached(b, state, session, by, attemptedAt, graphstore.NoEvent)
+		return err
+	}); err != nil {
 		t.Fatalf("record the session the attempt at %s reached: %v", target, err)
 	}
 	receipt := appendEventBy(t, tx, "CORE-1", "comment.delivery", by, model.CommentDeliveryEventPayload{

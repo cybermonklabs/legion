@@ -95,7 +95,9 @@ var planCacheModes = []string{"force_custom_plan", "force_generic_plan"}
 // each read's answer against a reference that walks the whole log in Go, so an index that
 // answers fewer rows than the log holds fails here rather than passing as a faster plan; and it
 // reads the migration files and the catalog, so an index moved to a later migration - where an
-// existing deployment would build it on a full table - fails too, and so does a dropped one.
+// existing deployment would build it on a full table - fails too, and so does a dropped one, and
+// so does any index outside the set a migration declares on graph_tuples, however its statement
+// spells the index and the table (indexDeclaration).
 //
 // Each read is explained under both plan-cache modes (planCacheModes), and each plan of each
 // mode is held to one rule: it reads graph_tuples through one of the four read indexes, that
@@ -533,6 +535,16 @@ func asLiteral(t *testing.T, argument any) string {
 			quotedValues = append(quotedValues, quoted(element))
 		}
 		return "array[" + strings.Join(quotedValues, ", ") + "]"
+	case []*string:
+		quotedValues := make([]string, 0, len(value))
+		for _, element := range value {
+			if element == nil {
+				quotedValues = append(quotedValues, "null")
+				continue
+			}
+			quotedValues = append(quotedValues, quoted(*element))
+		}
+		return "array[" + strings.Join(quotedValues, ", ") + "]::text[]"
 	case int:
 		return strconv.Itoa(value)
 	case time.Time:
@@ -1267,15 +1279,24 @@ var laterGraphNodesIndexes = []requiredGraphIndex{
 	},
 }
 
-// declaredIndex is one create index a migration file holds.
+// declaredIndex is one create index a migration file holds, with the statement that declares
+// it. An index declared under no name of its own has the empty name: Postgres makes one up.
 type declaredIndex struct {
-	migration       string
-	name, table     string
-	keys, predicate string
-	unique          bool
+	migration, statement string
+	name, table          string
+	keys, predicate      string
+	unique               bool
 	// concurrent is a build `create index concurrently` in a migration whose first line is
 	// `-- pgmigrate:non-transactional`, the one way such a build reaches the database.
 	concurrent bool
+}
+
+// called is how a failure names the index: by its name, or as one Postgres names.
+func (index declaredIndex) called() string {
+	if index.name == "" {
+		return "an index under no name of its own, which Postgres names,"
+	}
+	return index.name
 }
 
 // requireIndexSetOfTheFirstMigration reads the migration files in version order and holds the
@@ -1363,8 +1384,8 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 				continue
 			}
 			if !strings.Contains(index.predicate, "to_kind") {
-				t.Errorf("%s (%s) in %s keys the far end under no to_kind predicate: a value and an address share that key, and a key over to_id itself refuses the insert of a long value",
-					index.name, index.keys, index.migration)
+				t.Errorf("%s (%s) in %s keys the far end under no to_kind predicate: a value and an address share that key, and a key over to_id itself refuses the insert of a long value: %s",
+					index.called(), index.keys, index.migration, index.statement)
 			}
 		}
 	}
@@ -1377,8 +1398,8 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 		for _, index := range indexes {
 			inTheSet := slices.ContainsFunc(requiredGraphIndexes, func(want requiredGraphIndex) bool { return want.name == index.name })
 			if index.table == "graph_tuples" && !inTheSet {
-				t.Errorf("%s declares %s on graph_tuples (%s)%s, an index outside the store's index set: graph_tuples carries its four read indexes %v and its two repeat keys, and no other",
-					index.migration, index.name, index.keys, wherePart(index.predicate), graphTupleReadIndexes)
+				t.Errorf("%s declares %s on graph_tuples (%s)%s, an index outside the store's index set: graph_tuples carries its four read indexes %v and its two repeat keys, and no other; the statement: %s",
+					index.migration, index.called(), index.keys, wherePart(index.predicate), graphTupleReadIndexes, index.statement)
 			}
 		}
 	}
@@ -1513,9 +1534,28 @@ func readMigration(t *testing.T, file string) string {
 	return string(body)
 }
 
-// indexDeclaration matches one create index up to the semicolon that ends it; no index of this
-// tree writes a semicolon inside its own definition.
-var indexDeclaration = regexp.MustCompile(`(?is)\bcreate\s+(unique\s+)?index\s+(concurrently\s+)?(?:if\s+not\s+exists\s+)?([a-z0-9_]+)\s+on\s+([a-z0-9_]+)\s*([^;]*);`)
+// indexDeclaration matches one create index up to the semicolon that ends it, in every form
+// Postgres takes one in: in either case; unique or not; concurrently or not; if not exists or
+// not; under a name of its own, or none, which Postgres then makes up; on the table, or on only
+// the table; and with the table under its schema or not. Each name is a SQL identifier, bare or
+// quoted (sqlIdentifier, read through sqlName). It captures whether the index is unique, whether
+// it is built concurrently, its name, its table and what follows the table. No index of this tree
+// writes a semicolon inside its own definition.
+var indexDeclaration = regexp.MustCompile(`(?is)\bcreate\s+(unique\s+)?index\s+(concurrently\s+)?(?:if\s+not\s+exists\s+)?` +
+	`(?:(` + sqlIdentifier + `)\s+)?on\s+(?:only\s+)?(?:` + sqlIdentifier + `\s*\.\s*)?(` + sqlIdentifier + `)\s*([^;]*);`)
+
+// sqlIdentifier matches one SQL identifier: a bare one, or a quoted one, inside which a doubled
+// quote stands for one.
+const sqlIdentifier = `(?:[a-z_][a-z0-9_$]*|"(?:[^"]|"")+")`
+
+// sqlName is the name an identifier sqlIdentifier matched names, as Postgres reads it: a bare
+// one folded to lower case, a quoted one as written, without its quotes.
+func sqlName(identifier string) string {
+	if quoted, ok := strings.CutPrefix(identifier, `"`); ok {
+		return strings.ReplaceAll(strings.TrimSuffix(quoted, `"`), `""`, `"`)
+	}
+	return strings.ToLower(identifier)
+}
 
 // indexPredicateStart matches where an index's key list ends and its partial predicate begins.
 var indexPredicateStart = regexp.MustCompile(`(?is)\)\s*where\b`)
@@ -1532,8 +1572,10 @@ var lineComment = regexp.MustCompile(`(?m)^[ \t]*--.*$`)
 func withoutLineComments(body string) string { return lineComment.ReplaceAllString(body, "") }
 
 // indexesOf is every index one migration file declares, with its key list and predicate written
-// the way requiredGraphIndexes writes them. body is the file with its comments taken out, so
-// whether the file runs outside the runner's transaction is read off firstLine, the file's own.
+// the way requiredGraphIndexes writes them, its name and its table as Postgres reads them
+// (sqlName), the table without its schema, and the statement as it is written, on one line. body
+// is the file with its comments taken out, so whether the file runs outside the runner's
+// transaction is read off firstLine, the file's own.
 func indexesOf(migration, body, firstLine string) []declaredIndex {
 	nonTransactional := strings.TrimSpace(firstLine) == "-- pgmigrate:non-transactional"
 	var indexes []declaredIndex
@@ -1541,8 +1583,9 @@ func indexesOf(migration, body, firstLine string) []declaredIndex {
 		keys, predicate := splitIndexBody(match[5])
 		indexes = append(indexes, declaredIndex{
 			migration:  migration,
-			name:       match[3],
-			table:      match[4],
+			statement:  strings.TrimSpace(whitespaceRun.ReplaceAllString(match[0], " ")),
+			name:       sqlName(match[3]),
+			table:      sqlName(match[4]),
 			keys:       keys,
 			predicate:  predicate,
 			unique:     strings.TrimSpace(match[1]) != "",

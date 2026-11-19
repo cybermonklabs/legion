@@ -231,7 +231,7 @@ const (
 	// the document_block_versions row of each document it marks `for no key update`.
 	docsMarkingStatement = "with held as ( select b.artifact_id from document_block_versions b"
 	// docsCommentRowStatement is the comment write's naming of each comment's node on its row
-	// (graphcensus.CommentWrite's NameNodes).
+	// (graphcensus.CommentWrite.Queue).
 	docsCommentRowStatement = "update comments c set node_kind"
 )
 

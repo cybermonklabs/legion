@@ -858,7 +858,9 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	}
 	// Who wrote each: the author's own person node, which the person page reads.
 	for _, written := range []struct{ kind, id string }{{"block", fixture.private}, {graphstore.KindComment, fixture.privateComment}} {
-		if err := graphstore.Authored(ctx, tx, written.kind, written.id, author, at, graphstore.NoEvent); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			return graphstore.QueueAuthored(b, written.kind, written.id, author, at, graphstore.NoEvent)
+		}); err != nil {
 			t.Fatalf("record who wrote the private %s: %v", written.kind, err)
 		}
 	}

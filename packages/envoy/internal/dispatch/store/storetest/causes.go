@@ -12,7 +12,7 @@ import (
 // RequireNoMarkedCause fails t when a committed graph_nodes row or graph_tuples row of database
 // holds a negative source_event. A node write marks each row it makes or moves with a negative
 // source_event until the statement that states that write's facts moves the row onto its cause
-// (graphstore's nodeMark, graphstore.QueueCaused), and a writer queues that statement before it
+// (graphstore's nodeMarks, graphstore.QueueCaused), and a writer queues that statement before it
 // commits; a tuple is appended with its cause, an event's id or the sentinel 0, in its first
 // statement. A negative source_event that committed is a write that wrote uncaused and was never
 // caused, which a read of the store would take for an event. after names what ran, for the

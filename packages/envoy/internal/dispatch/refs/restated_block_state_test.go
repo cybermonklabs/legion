@@ -98,7 +98,7 @@ func TestAWriteOfANodeAgainKeepsTheValuesItDoesNotOwn(t *testing.T) {
 // markBlockState writes, by SQL, a state of a block's node as a later release's build
 // writes it: one state tuple, an attribute of the node with the value itself as its far end
 // (graphstore.KindValue), carrying the write's time and writer at the sentinel cause, as the
-// store's writer states a base attribute it moved (write.go's baseAttributeTuple), and the node
+// store's writer states a base attribute it moved (write.go's queueAppend), and the node
 // row's state moved to match, its cause kept.
 func markBlockState(t *testing.T, document parentDocument, blockID, state string, who model.Actor, at time.Time) {
 	t.Helper()

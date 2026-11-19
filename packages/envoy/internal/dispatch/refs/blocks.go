@@ -199,9 +199,11 @@ type BlockIndexing struct {
 	versionAt     time.Time
 	firstIndexing bool
 	won           bool
-	// marked says the pass drains this build's mark (blockStand.owed), which names the node of
-	// every block_refs row of the document that names none (queueBlockRefs).
-	marked bool
+	// namesSurvivingRows says the pass names the node of every surviving block_refs row of the
+	// document that names none, stating the link that row projects (queueBlockRefs), because
+	// such a row may be another release's: on the drain of this build's mark (blockStand.owed)
+	// and where the pass reads the store's statement of the document as stale (blockStand.stale).
+	namesSurvivingRows bool
 	// deleted are the blocks the version no longer holds; ids, types, sums and excerpts the
 	// blocks whose text it changed (new, changed or restored); textIDs and texts the block texts
 	// it records, nil for a deleted block.
@@ -283,19 +285,26 @@ type BlockIndexing struct {
 // re-index owed - and the release before this one can index the document before that pass runs,
 // which writes its rows with no node. A row of a pair that survives is what that release leaves,
 // and a pass that named a row's node only when it inserted the row would leave it naming none
-// until someone ran the backfill again.
+// until someone ran the backfill again. The drain is not the only pass that meets such a row: a
+// pass that reads the store's statement as stale names it too (below).
 //
 // Where another release indexed the document after the store last stated its blocks
 // (blockStand.stale), the rows the pass compares the render with are that release's, and they no
 // longer name everything the store holds: the release before this one deletes the rows of the
-// blocks and the links its version drops and states no node gone and retracts no tuple. The pass
-// then also reads the store's own statement of the document (heldDocumentBlocks) and states, from
-// the render, what a version dropping those rows would have stated: each block the store holds in
-// any state but gone that the version does not hold, gone (goneSinceStated), and each link the
-// store asserts out of a block of the document that no pair of the version writes, retracted
-// (unheldLinks). That is no repair: what decides each statement is the version's render, and the
-// store is read only for what it would go on asserting against it, as planBlockParents reads it
-// for the parents. A pass over a document only this release indexed reads none of it.
+// blocks and the links its version drops, inserts the rows of those it adds naming no node, and
+// states no node gone, retracts no tuple and asserts none. The pass then also reads the store's
+// own statement of the document (heldDocumentBlocks) and states, from the render, what a version
+// dropping those rows would have stated: each block the store holds in any state but gone that
+// the version does not hold, gone (goneSinceStated), and each link the store asserts out of a
+// block of the document that no pair of the version writes, retracted (unheldLinks). That is no
+// repair: what decides each statement is the version's render, and the store is read only for
+// what it would go on asserting against it, as planBlockParents reads it for the parents. Such a
+// pass also names the node of every block_refs row that survives naming none, stating the link
+// that row projects, as the drain does, whether or not the document holds the mark: a version
+// this build writes before any tick of this build reads the event of that release's version is
+// such a pass, and it moves store_version to its own version, after which no tick marks the
+// document (docs' markVersionedDocuments) and no drain reaches the row. A pass over a document
+// only this release indexed reads none of it.
 func PlanBlocks(
 	ctx context.Context,
 	q Queryer,
@@ -314,8 +323,8 @@ func PlanBlocks(
 	if !index.stand.admits(version) {
 		return indexing, nil
 	}
-	indexing.won, indexing.marked = true, index.stand.owed
 	stale := index.stand.stale()
+	indexing.won, indexing.namesSurvivingRows = true, index.stand.owed || stale
 	refKey, writer := record.RefKey, record.Writer
 	stored := maps.Clone(index.blocks)
 	indexing.firstIndexing = len(stored) == 0
@@ -524,12 +533,14 @@ func membership(address, refKey string, joined time.Time, writer model.Actor) gr
 //
 // The insert writes a row's node columns only where it inserts the row. A surviving row that
 // names no node - a pair a build before the store wrote, or one the release before this one
-// inserted after this build's mark was set - takes its node in a statement of its own on the drain
-// of that mark (BlockIndexing.marked), with the one tuple out of the block that row projects,
-// dated, written and caused as the tuple of a pair the insert inserts. That statement names only
-// rows that name no node, so a surviving pair whose row names its node still earns no tuple.
-// Outside the drain such a row keeps its nulls, which the old block_refs arm answers, until the
-// backfill names it and marks the document.
+// inserted after this build's mark was set or after the store last stated the document - takes
+// its node in a statement of its own wherever such a row may be another release's
+// (BlockIndexing.namesSurvivingRows): on the drain of this build's mark, and where the pass reads
+// the store's statement of the document as stale. It takes the one tuple out of the block that
+// row projects, dated, written and caused as the tuple of a pair the insert inserts. That
+// statement names only rows that name no node, so a surviving pair whose row names its node still
+// earns no tuple. Any other pass leaves such a row its nulls, which the old block_refs arm
+// answers, until the backfill names it and marks the document.
 func (b *BlockIndexing) planBlockRefs(ctx context.Context, q Queryer, index BlockIndex, writer model.Actor) ([]graphstore.UncausedTuple, []indexedLink, error) {
 	written := make(map[blockPairKey]struct{}, len(b.pairs))
 	for _, pair := range b.pairs {
@@ -593,7 +604,7 @@ func (b *BlockIndexing) planBlockRefs(ctx context.Context, q Queryer, index Bloc
 			tuples = append(tuples, assertedLink(b.refKey, link, writer))
 		}
 	}
-	if !b.marked {
+	if !b.namesSurvivingRows {
 		return tuples, links, nil
 	}
 	// The pairs whose row survived naming no node. Every block a pair is held by is a block of
@@ -1397,8 +1408,9 @@ func pointerPairs(nodes []model.ArtifactBlock, pointers []Pointer) ([]blockPair,
 // queueBlockRefs queues the reconciliation of the document's block_refs with the indexing's pairs,
 // matching on the five columns of its key (planBlockRefs planned what it states): the delete of
 // the pairs the version drops, the insert of those it adds, which names a row's node only where
-// it inserts the row, and, on the drain of this build's mark, the naming of each surviving row
-// that names none.
+// it inserts the row, and, where the rows may be another release's (namesSurvivingRows: on the
+// drain of this build's mark and where the store's statement is stale), the naming of each
+// surviving row that names none.
 func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 	pairs := b.pairs
 	blockIDs := make([]string, len(pairs))
@@ -1427,7 +1439,8 @@ func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 	// A surviving pair takes this version's to_types, so a change of an attribute's targets
 	// reaches it here; PlanBlocks named the targets it moves. Adding the node columns to the
 	// conflict update would rewrite a surviving row no version changed, so a surviving row that
-	// names no node learns its node in the statement after this one, on the drain alone.
+	// names no node learns its node in the statement after this one, and only where the pass names
+	// surviving rows (namesSurvivingRows).
 	batch.Queue(fmt.Sprintf("record the block mentions of version %d of %s", b.version, b.artifactID), `
 		insert into block_refs (artifact_id, block_id, from_node, node_kind, node_address, to_kind, to_id, kind, to_types, created_version, created_at, source_seq)
 		select $1::uuid, p.block_id, a.ref_key || '#' || p.block_id,
@@ -1442,7 +1455,7 @@ func (b BlockIndexing) queueBlockRefs(batch *store.WriteBatch) {
 		on conflict (artifact_id, block_id, to_kind, to_id, kind) do update set to_types = excluded.to_types
 		where block_refs.to_types is distinct from excluded.to_types
 	`, b.artifactID, blockIDs, kinds, toKinds, toIDs, b.version, b.versionAt, b.firstIndexing, toTypes, BlockNodeKind, MaxBlockNodeBytes)
-	if !b.marked {
+	if !b.namesSurvivingRows {
 		return
 	}
 	batch.Queue(fmt.Sprintf("name the nodes of the block mentions of %s that name none at version %d", b.artifactID, b.version), `

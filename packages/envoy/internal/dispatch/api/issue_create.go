@@ -476,11 +476,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// the issue.created event below (graphstore.QueueCaused). It is one of the create's inline
 	// writes, before the ledger's: the spec's version and block index run at Commit, and the
 	// index's projection rows name the spec's node.
-	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{
+	issueNodes := graphstore.PlanUncaused([]graphstore.Node{
 		graphstore.IssueNode(key, input.Project, actor, createdAt),
 		graphstore.ArtifactNode(specRef, input.Project, "", actor, createdAt),
 	}, nil)
-	if err != nil {
+	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, issueNodes) }); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

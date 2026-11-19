@@ -542,8 +542,9 @@ func TestBlockIndexDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
 // writeAsAnOlderBuild writes the document's next version as a build without the block index does:
 // the edit (from replaced by to in a text of the live document) reaches the store through the room,
 // and its settlement writes the version, the document's reference to CORE-2 with the old grammar,
-// and the version's artifact.version event, and clears the pending settlement. It indexes no block,
-// and nothing here marks the document owed. It returns the version and its event's id.
+// and the version's artifact.version event, whose seq it takes off the issue's own counter as
+// events.Append does, and clears the pending settlement. It indexes no block, and nothing here
+// marks the document owed. It returns the version and its event's id.
 func writeAsAnOlderBuild(t *testing.T, database *store.Store, service *Service, artifactID, from, to string) (model.Version, int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -584,10 +585,11 @@ func writeAsAnOlderBuild(t *testing.T, database *store.Store, service *Service, 
 	}
 	var eventID int64
 	if err := tx.QueryRow(ctx, `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
 		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"alice"}',
+		select 'CORE-1', bumped.last_seq, 'artifact.version', '{"kind":"user","id":"alice"}',
 		       jsonb_build_object('artifact_id', $1::text, 'name', 'spec.md', 'version', jsonb_build_object('number', $2::int)), false
-		from events where issue_key = 'CORE-1'
+		from bumped
 		returning id
 	`, artifactID, version.Number).Scan(&eventID); err != nil {
 		t.Fatalf("append the version's event: %v", err)

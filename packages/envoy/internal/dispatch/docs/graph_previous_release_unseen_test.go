@@ -96,7 +96,7 @@ func TestAVersionThePreviousReleaseWritesWhileItHoldsTheLeaseReachesTheStore(t *
 // build's first tick reaches the store, where no build of this code has run before.
 //
 // R13 starts the cursor at this build's first boot. The code starts it at the build's first tick
-// that reads a proven horizon (markVersionsAnotherBuildWrote), at that horizon where no build has
+// that reads a proven horizon (readEventsAfterCursor), at that horizon where no build has
 // left a row, which is every first deploy of this code. A process of this build boots during a
 // roll while the release before holds the shared block-index lease, so its first tick comes only
 // once that release has left, and everything that release wrote since this build booted is below

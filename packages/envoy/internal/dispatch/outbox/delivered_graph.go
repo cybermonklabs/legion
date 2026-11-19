@@ -53,8 +53,8 @@ type resolvedRole struct {
 // bus is not: a route delivery leaves no row in `comment_deliveries` or `message_deliveries`,
 // so no table this child projects holds that session and a node for it would be a node the
 // census rightly reports as projected by no row. The two writers that do see such a row record
-// it there: graphstore.Authored for a comment's author, and graphstore.Reached where an attempt
-// settles in a state the listener took it in.
+// it there: graphstore.QueueAuthored for a comment's author, and graphstore.QueueReached where an
+// attempt settles in a state the listener took it in.
 //
 // The tuple side is R1's: a tuple's far end is an address and never a foreign key, and a tuple
 // may point at an address a later child writes. So the delivered_to tuple of a destination this
@@ -178,7 +178,7 @@ func deliveredGraph(events []*batchEvent, inARole map[string]struct{}, at time.T
 		// over the bus is in no table this child projects, so its node is not this writer's to
 		// make and one written here would be a node the census rightly reports as projected by
 		// no row. A holder a comment or a settled attempt does name takes its node from the
-		// writer that saw that row (graphstore.Authored, graphstore.Reached).
+		// writer that saw that row (graphstore.QueueAuthored, graphstore.QueueReached).
 		if _, holds := held[claim.holder]; claim.holder == "" || holds {
 			continue
 		}
@@ -312,8 +312,8 @@ func deliveredItem(event model.Event) (kind, id string, ok bool) {
 // failed attempt reached nobody, and a taken one whose resolution named no session reached
 // nobody the store can name. A queued attempt is one the listener stored for a session that is
 // not running, and it reaches that session when it runs again, so the later move of such an
-// attempt to answered states nothing new. The session is trimmed as graphstore.Reached trims
-// it, so the tuple points at the node that settle made.
+// attempt to answered states nothing new. The session is trimmed as graphstore.QueueReached
+// trims it, so the tuple points at the node that settle made.
 func mentionReached(event model.Event) (comment, session string, ok bool) {
 	if event.Type != "comment.delivery" || !model.DeliveryTaken(payloadString(event.Payload, "state")) {
 		return "", "", false

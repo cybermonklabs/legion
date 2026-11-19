@@ -600,9 +600,9 @@ func seededDrives(database *store.Store) []StoreDrive {
 		// The backfill's passes over the rows the build before the store wrote: the blocks of the
 		// window's document, which it states a block's node and membership of and leaves the
 		// parent of to the index; that document's reference; the comment, as api's commentStored
-		// and graphstore.Authored state one (graphstore.CommentFacts, graphstore.AuthorFacts), so
-		// its kinds are the comment path's; the role sizer and its page; and the sessions the
-		// census holds to a node.
+		// and graphstore.QueueAuthored state one (graphstore.CommentFacts,
+		// graphstore.AuthorFacts), so its kinds are the comment path's; the role sizer and its
+		// page; and the sessions the census holds to a node.
 		Name: blockBatchDrive, Sites: []string{"graphcensus/backfill.go#writeBlockBatch", "graphstore/write.go#Write"},
 		Database: database, Drive: backfill(backfillBlocks),
 		Counts: map[StoredKind][]string{

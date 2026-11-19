@@ -82,21 +82,24 @@ func requireEveryListedSiteDriven(t *testing.T, drives []StoreDrive) {
 	}
 }
 
-// The drives of graphstore's own writers that no site of another package runs: Authored, Reached,
-// SessionRecorded and WriteUncaused. Each runs in a transaction of its own, as a writer with no
-// write phase calls it; a write held for its cause (Reached, SessionRecorded, WriteUncaused) is
-// then caused at the sentinel (graphstore.Caused), as a write no event recorded is.
+// The drives of graphstore's own writers, each run on its own over an input of this test's: the
+// queued forms of the writers of the people and agents Dispatch records (QueueAuthored,
+// QueueReached, QueueSessionRecorded), and the cause of a node write held for it (Caused over
+// QueueNodes). Each runs as a batch of its own (store.RunWrite) in a transaction of its own, as a
+// writer with no write phase runs it; a write held for its cause (QueueReached and
+// QueueSessionRecorded given NoEvent, and QueueNodes) is then caused at the sentinel
+// (graphstore.Caused), as a write no event recorded is.
 const (
-	authoredDrive        = "graphstore/people.go#Authored"
-	reachedDrive         = "graphstore/people.go#Reached"
-	sessionRecordedDrive = "graphstore/people.go#SessionRecorded"
-	writeUncausedDrive   = "graphstore/write.go#WriteUncaused"
+	authoredDrive        = "graphstore/people.go#QueueAuthored"
+	reachedDrive         = "graphstore/people.go#QueueReached"
+	sessionRecordedDrive = "graphstore/people.go#QueueSessionRecorded"
+	heldNodeDrive        = "graphstore/write.go#Caused, over a node QueueNodes held for its cause"
 )
 
-// graphstoreDrives are the drives of graphstore's own writers that no other site runs, over a
-// database of their own: who wrote a comment a build before the store wrote, as "Dana", whose
-// canonical login is dana, so the write states the recorded_as alias beside the authored_by; a
-// sent attempt's session; a session a write records; and a person's node held for its cause.
+// graphstoreDrives are the drives of graphstore's own writers run on their own, over a database
+// of their own: who wrote a comment a build before the store wrote, as "Dana", whose canonical
+// login is dana, so the write states the recorded_as alias beside the authored_by; a sent
+// attempt's session; a session a write records; and a person's node held for its cause.
 func graphstoreDrives(t *testing.T) []StoreDrive {
 	t.Helper()
 	database := storetest.Open(t)
@@ -119,7 +122,7 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 	var comment string
 	var commented time.Time
 	return []StoreDrive{{
-		Name: authoredDrive, Sites: []string{"graphstore/people.go#Authored", "graphstore/people.go#QueueAuthored"},
+		Name: authoredDrive, Sites: []string{"graphstore/people.go#QueueAuthored"},
 		Database: database,
 		Ready: func(t *testing.T) {
 			t.Helper()
@@ -140,7 +143,9 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 		},
 		Drive: func(t *testing.T) {
 			inTransaction(t, "record who wrote the comment", func(tx pgx.Tx) error {
-				return graphstore.Authored(ctx, tx, graphstore.KindComment, comment, dana, commented, graphstore.NoEvent)
+				return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					return graphstore.QueueAuthored(b, graphstore.KindComment, comment, dana, commented, graphstore.NoEvent)
+				})
 			})
 		},
 		Counts: map[StoredKind][]string{
@@ -151,12 +156,16 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 		},
 	}, {
 		Name: reachedDrive, Database: database,
-		Sites: []string{"graphstore/people.go#Reached", "graphstore/people.go#QueueReached",
-			"graphstore/people.go#QueueSessionRecorded", "graphstore/write.go#Caused"},
+		Sites: []string{"graphstore/people.go#QueueReached", "graphstore/people.go#QueueSessionRecorded",
+			"graphstore/write.go#Caused"},
 		Drive: func(t *testing.T) {
 			inTransaction(t, "record the session a sent attempt reached", func(tx pgx.Tx) error {
-				write, err := graphstore.Reached(ctx, tx, model.DeliveryStateSent, "ses_reached", dana, time.Now())
-				if err != nil {
+				var write graphstore.Uncaused
+				if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					var err error
+					write, err = graphstore.QueueReached(b, model.DeliveryStateSent, "ses_reached", dana, time.Now(), graphstore.NoEvent)
+					return err
+				}); err != nil {
 					return err
 				}
 				return graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
@@ -168,12 +177,15 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 		},
 	}, {
 		Name: sessionRecordedDrive, Database: database,
-		Sites: []string{"graphstore/people.go#SessionRecorded", "graphstore/people.go#QueueSessionRecorded",
-			"graphstore/write.go#Caused"},
+		Sites: []string{"graphstore/people.go#QueueSessionRecorded", "graphstore/write.go#Caused"},
 		Drive: func(t *testing.T) {
 			inTransaction(t, "record a session a write names", func(tx pgx.Tx) error {
-				write, err := graphstore.SessionRecorded(ctx, tx, "ses_recorded", dana, time.Now(), graphstore.NoEvent)
-				if err != nil {
+				var write graphstore.Uncaused
+				if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+					var err error
+					write, err = graphstore.QueueSessionRecorded(b, "ses_recorded", dana, time.Now(), graphstore.NoEvent)
+					return err
+				}); err != nil {
 					return err
 				}
 				return graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
@@ -184,13 +196,13 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
 	}, {
-		Name: writeUncausedDrive, Database: database,
-		Sites: []string{"graphstore/write.go#WriteUncaused", "graphstore/write.go#Caused"},
+		Name: heldNodeDrive, Database: database,
+		Sites: []string{"graphstore/write.go#Caused"},
 		Drive: func(t *testing.T) {
 			inTransaction(t, "write a person's node held for its cause", func(tx pgx.Tx) error {
-				write, err := graphstore.WriteUncaused(ctx, tx,
+				write := graphstore.PlanUncaused(
 					[]graphstore.Node{graphstore.PersonNode("erin", dana, time.Now(), graphstore.NoEvent)}, nil)
-				if err != nil {
+				if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, write) }); err != nil {
 					return err
 				}
 				return graphstore.Caused(ctx, tx, write, graphstore.NoEvent)

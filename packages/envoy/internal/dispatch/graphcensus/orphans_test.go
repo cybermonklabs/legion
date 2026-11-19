@@ -124,8 +124,9 @@ func TestTheOrphanSweepLosesNothingOfACreateItRacesWith(t *testing.T) {
 	ref, _ := seedOrphan(t, database, "notes-md")
 	create := &lockstep.Hold{Name: "a create of " + ref + " that wrote its node and its row"}
 	lockstep.Begin(t, database, create)
-	if _, err := graphstore.WriteUncaused(ctx, create.Tx, []graphstore.Node{graphstore.ArtifactNode(
-		ref, "ORPH", "", model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC())}, nil); err != nil {
+	created := graphstore.PlanUncaused([]graphstore.Node{graphstore.ArtifactNode(
+		ref, "ORPH", "", model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC())}, nil)
+	if err := store.RunWrite(ctx, create.Tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, created) }); err != nil {
 		t.Fatalf("write the created document's node: %v", err)
 	}
 	if _, err := create.Tx.Exec(ctx, `

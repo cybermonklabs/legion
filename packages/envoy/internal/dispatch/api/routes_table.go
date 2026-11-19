@@ -288,7 +288,7 @@ func (route idRoute) resolves() bool { return route.Kind != "" || route.Blocks }
 //
 // The ids this layer never sees are no part of it: an id a request's body carries (reply_to,
 // ask_id, in_reply_to) and the ?artifact= filters are in no path value, and the resolver that
-// rewrites a body's short ids as its text is indexed is their one reader (refs.Resolver).
+// rewrites a body's short ids as its text is indexed is their one reader (refs.Reader).
 var idRoutes = map[string]idRoute{
 	// A document's own routes, and the caller's read mark on one: the {id} is an artifact,
 	// looked for among every document and file, as a whole artifact id is. Every one of them

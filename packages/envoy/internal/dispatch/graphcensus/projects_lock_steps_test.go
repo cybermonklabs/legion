@@ -27,9 +27,10 @@ const zedDocumentID = "00000000-0000-4000-8000-0000000000d3"
 // writer deletes rows of (objectKind.owners). The batch first takes the owner lock of each of its
 // documents (lockObjectOwners), each once and in ascending owner key (events.LockOwnerRows), and
 // reads under them which rows still stand and the nodes the store holds of them. It then writes
-// its nodes in runs of consecutive nodes of one cause, each run through graphstore.WriteUncaused,
-// which takes the run's node rows in ascending (kind, id), and graphstore.Caused, which appends
-// the run's tuples under that cause. It writes no projection row and appends no event.
+// its nodes in runs of consecutive nodes of one cause, each run queued through
+// graphstore.QueueNodes, which takes the run's node rows in ascending (kind, id), and
+// graphstore.Caused, which appends the run's tuples under that cause. It writes no projection row
+// and appends no event.
 //
 // Three documents are seeded as a build before the node writers left them, rows with no node: an
 // issue document of ACME-1 with its own artifact.created event, an issue document of CORE-1 with

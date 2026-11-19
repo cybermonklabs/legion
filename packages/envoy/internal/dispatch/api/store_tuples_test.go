@@ -631,7 +631,9 @@ func requireProvedSessionAlias(t *testing.T, database *store.Store, issue *strin
 		comment string
 		actor   model.Actor
 	}{{"4c6e7b00-0000-4000-8000-000000000001", actor}, {"4c6e7b00-0000-4000-8000-000000000002", claimedActor}} {
-		if err := graphstore.Authored(ctx, tx, "comment", write.comment, write.actor, at, graphstore.NoEvent); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			return graphstore.QueueAuthored(b, "comment", write.comment, write.actor, at, graphstore.NoEvent)
+		}); err != nil {
 			t.Fatalf("record who wrote %s: %v", write.comment, err)
 		}
 	}

@@ -22,7 +22,7 @@ const (
 )
 
 // OwnerRows are owner rows a writer takes before it writes under them, each by its owner key as
-// lockOwners keys the owner of an event - "issue:<key>", or "artifact:<id>" for a document no
+// eventOwnerLock keys the owner of an event - "issue:<key>", or "artifact:<id>" for a document no
 // issue owns - with the first thing read standing under it, which an error or a refusal names.
 // The erase takes the owner rows it writes under through them (grapherase's lockInStoreOrder), and
 // a backfill batch the owners of its documents (graphcensus's lockBlockDocuments and

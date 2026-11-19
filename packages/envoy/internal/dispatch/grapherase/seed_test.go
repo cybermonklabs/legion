@@ -144,11 +144,11 @@ type agreeingStore struct {
 }
 
 // seedAgreeingStore writes the rows as a build before the store existed wrote them, runs the
-// backfill over them (graphcensus.Backfill), and states each block's parent with the tuples and
-// the column the block index's reconciliation writes (refs' reconcileBlockParents): the outer
-// block's part_of to the document, the inner block's to the outer block, and the inner row's
-// parent_block_id beside it. It is graphcensus's own seed of the same name, but for the census
-// graphcensus takes after it, which is that package's to hold.
+// backfill over them (graphcensus.Backfill), and states each block's parent with the tuples the
+// block index plans (refs' planBlockParents) and the column it projects them into
+// (queueBlockParents): the outer block's part_of to the document, the inner block's to the outer
+// block, and the inner row's parent_block_id beside it. It is graphcensus's own seed of the same
+// name, but for the census graphcensus takes after it, which is that package's to hold.
 func seedAgreeingStore(t *testing.T, database *store.Store) agreeingStore {
 	t.Helper()
 	return seedStore(t, database, false)

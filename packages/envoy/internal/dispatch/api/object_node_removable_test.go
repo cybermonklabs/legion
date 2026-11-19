@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The project census tells which document row a live node stands for by the row's own create
@@ -61,9 +62,9 @@ func TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent(t *testing.T) {
 			`, issue.Key, 100000+index).Scan(&other); err != nil {
 				return err
 			}
-			made, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{
+			made := graphstore.PlanUncaused([]graphstore.Node{
 				graphstore.ArtifactNode(ref, artifact.Project, deref(artifact.SessionID), alice, at)}, nil)
-			if err != nil {
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, made) }); err != nil {
 				return err
 			}
 			if err := graphstore.Caused(ctx, tx, made, other); err != nil {

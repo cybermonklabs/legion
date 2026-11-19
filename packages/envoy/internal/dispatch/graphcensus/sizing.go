@@ -218,12 +218,12 @@ const movedParents = "block_parent_moved"
 //     dismissal and snooze. Each of the tables those four are written to keeps the newest mark of
 //     a key and no earlier one, so its term counts every key marked inside the window once;
 //   - the person, session, role and page nodes the first write that records each makes
-//     (graphstore.AuthorFacts, graphstore.Reached, outbox.deliveredGraph), each with its two base
-//     attributes: a page's part_of its role, and a session's part_of the role it claimed, with
-//     that role's held_by and the retraction that ends it, or else a page of its own with that
-//     page's base attributes and its part_of the session (R14);
-//   - the inbox child's message's author and parent, and the tuples its target and its
-//     broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, a
+//     (graphstore.AuthorFacts, graphstore.QueueReached, outbox.deliveredGraph), each with its two
+//     base attributes: a page's part_of its role, and a session's part_of the role it claimed,
+//     with that role's held_by and the retraction that ends it, or else a page of its own with
+//     that page's base attributes and its part_of the session (R14);
+//   - the inbox child's message node with its author, its parent and the tuples its target
+//     and its broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, a
 //     person's part in a thread, the delivered_to of each write to every other participant and of
 //     an ask to the person it waits on, the move of that person, the body blocks of a comment, a
 //     message and an ask with their links, and a delivery attempt's node (its spec's
@@ -892,7 +892,7 @@ type replayedParents struct{ moved, read, unreadable int64 }
 
 // replayParents counts the blocks each version the block index indexed inside the window placed
 // under another parent than the version it indexed before did, which is how many part_of moves
-// that index stated (refs' reconcileBlockParents). No table written before the store holds a
+// that index stated (refs' planBlockParents). No table written before the store holds a
 // block's parent, so each version's markdown is parsed and its blocks placed by the walk the
 // index places them by (refs.PlaceBlocks).
 //

@@ -298,7 +298,7 @@ func (r *seedRun) askAnswer(ask askPlan, options []model.AskOption) model.AskAns
 //
 // Who wrote a comment is written as the server's comment write writes it (api/comment_create.go).
 // The row holds the author as the model encodes it, which is the value the comment's node holds
-// as made_by, and the batch states what graphstore.Authored states of each comment
+// as made_by, and the batch states what graphstore.QueueAuthored states of each comment
 // (graphstore.AuthorFacts): the author's node, the comment's authored_by tuple to it and the
 // aliases the server proved of the author (commentStoreWrite). The store census holds each
 // comment row to its node and its authored_by, so a seeded comment answers it as a comment the
@@ -438,15 +438,15 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 // alone, so the batch can state it before it writes a row.
 //
 // Who wrote a comment is what graphstore.AuthorFacts states of it, which is what
-// graphstore.Authored writes for a comment of the server's: the comment's authored_by tuple and
-// the aliases the server proved of its author go among the comment's own tuples, and the
+// graphstore.QueueAuthored writes for a comment of the server's: the comment's authored_by tuple
+// and the aliases the server proved of its author go among the comment's own tuples, and the
 // author's node goes among the batch's nodes once, as AuthorFacts makes it for the batch's first
 // comment. The batch's one graphstore.Write then takes every node row before it appends a tuple,
 // which is the store's lock order. Every batch writes the author's node again, so it restates the
 // author (graphstore.Node's Restates), as the backfill's comment write does: no comment owns its
 // author's state or visibility, so a later batch keeps the ones the store holds, and only the
 // first batch makes the author's node, at the time of the first comment the seed writes, as
-// Authored makes it at the first comment that names it. writeComments refused an author that
+// QueueAuthored makes it at the first comment that names it. writeComments refused an author that
 // names nobody before its first batch, so every comment here names one.
 func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphstore.Tuple) {
 	nodes := make([]graphstore.Node, 0, to-from+1)

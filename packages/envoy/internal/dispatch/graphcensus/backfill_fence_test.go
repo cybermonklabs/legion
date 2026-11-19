@@ -258,11 +258,11 @@ func TestTheBackfillHoldsTheOwnerRowWhileItWaitsForTheOwedRow(t *testing.T) {
 }
 
 // R23 for the block references: a version write that drops a mention deletes its block_refs row
-// and states the mention's tuple retracted (refs' replaceBlockRefs), holding the document's owner
-// row and its owed row. The backfill reads its batch of references before it takes any lock, so
-// it can read a row such a write is deleting. A tuple it then asserted for that row would be
-// appended after the retraction, and the store's current read takes the newest tuple of a link:
-// it would answer a mention no row holds.
+// and states the mention's tuple retracted (refs' queueBlockRefs and planBlockRefs), holding the
+// document's owner row and its owed row. The backfill reads its batch of references before it
+// takes any lock, so it can read a row such a write is deleting. A tuple it then asserted for that
+// row would be appended after the retraction, and the store's current read takes the newest tuple
+// of a link: it would answer a mention no row holds.
 //
 // The run builds that race. The block pass has run, so the block has its node, and the block holds
 // two references naming no node. A second transaction stands for the version write: it takes the

@@ -21,9 +21,9 @@ import (
 // after it names no node, and the census refuses it until someone runs the backfill again, which
 // nothing tells anyone to do. Every tick of this build reads the events after its cursor, and gives
 // each comment those two events name whose row names no node the backfill's own write for that
-// row, in the tick's transaction (readEventsAfterCursor, writeCommentsTheEventsName): the
-// comment's node, the facts its row projects and who wrote it, with the event that stored it as
-// their cause.
+// row, in the tick's transaction (readEventsAfterCursor, through graphcensus.CommentsNamingNoNode
+// and graphcensus.CommentWrite's Queue): the comment's node, the facts its row projects and who
+// wrote it, with the event that stored it as their cause.
 //
 // The stand-in for that release writes the rows and appends the events as its API does: a
 // person's comment on issue CORE-1 with its comment.created, and a session's reply to it with its
@@ -116,7 +116,8 @@ func TestACommentThePreviousReleaseWritesAfterTheBackfillReachesTheStore(t *test
 // author on issue CORE-1, a reply to comment replyTo where that is not empty, as that release's API
 // writes one: the comments row, which names no node, and in the same transaction the event that
 // stores it, comment.created for a comment and comment.answered for a reply, whose payload is the
-// comment (model.CommentEventPayload). It answers the comment and the event.
+// comment (model.CommentEventPayload) and whose seq it takes off the issue's own counter as that
+// release's events.Append does. It answers the comment and the event.
 func commentAsThePreviousRelease(t *testing.T, database *store.Store, author model.Actor, replyTo, body string) (string, int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -150,9 +151,10 @@ func commentAsThePreviousRelease(t *testing.T, database *store.Store, author mod
 	}
 	var event int64
 	if err := tx.QueryRow(ctx, `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
 		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, $1, $2, $3, false
-		from events where issue_key = 'CORE-1'
+		select 'CORE-1', bumped.last_seq, $1, $2, $3, false
+		from bumped
 		returning id
 	`, kind, encoded, payload).Scan(&event); err != nil {
 		t.Fatalf("append the %s event of %s: %v", kind, written.ID, err)

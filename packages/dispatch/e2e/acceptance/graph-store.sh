@@ -124,13 +124,15 @@ readonly session
 # own, so the role this driver routes a comment to is nobody else's, and a second forward of it
 # resolves another holder (G9). The session the broker proves a person's (G13) is no session of
 # the listener's: nothing is delivered to it.
-readonly loose_session="019a1c09-0000-7000-8000-$(printf '%012d' "$$")"
-readonly holder_session="019a1c09-1111-7000-8000-$(printf '%012d' "$$")"
-readonly second_holder_session="019a1c09-1112-7000-8000-$(printf '%012d' "$$")"
-readonly mentioned_session="019a1c09-6666-7000-8000-$(printf '%012d' "$$")"
-readonly stopped_session="019a1c09-7777-7000-8000-$(printf '%012d' "$$")"
-readonly answering_session="019a1c09-aaaa-7000-8000-$(printf '%012d' "$$")"
-readonly proved_session="019a1c09-9999-7000-8000-$(printf '%012d' "$$")"
+loose_session="019a1c09-0000-7000-8000-$(printf '%012d' "$$")"
+holder_session="019a1c09-1111-7000-8000-$(printf '%012d' "$$")"
+second_holder_session="019a1c09-1112-7000-8000-$(printf '%012d' "$$")"
+mentioned_session="019a1c09-6666-7000-8000-$(printf '%012d' "$$")"
+stopped_session="019a1c09-7777-7000-8000-$(printf '%012d' "$$")"
+answering_session="019a1c09-aaaa-7000-8000-$(printf '%012d' "$$")"
+proved_session="019a1c09-9999-7000-8000-$(printf '%012d' "$$")"
+readonly loose_session holder_session second_holder_session mentioned_session stopped_session \
+  answering_session proved_session
 readonly role="acceptance-$stamp"
 # The role the message of G10 is delivered to, the route of an issue of that section's own: no
 # other issue or write of this run names it, so its role and page nodes are that route's and the
@@ -548,7 +550,7 @@ want_value G5 "the mention's delivery is a delivered_to tuple into that session"
 # holds stopped: it knows that session by its known-session record and no plugin runs it, so the
 # send is stored for it and answered `state: stopped`, and Dispatch records the attempt `queued`
 # (cybermonklabs/legion#2643). A queued attempt is one the listener took (model.DeliveryTaken), so
-# its settle writes the session's node (graphstore.Reached) and the outbox's record of its receipt
+# its settle writes the session's node (graphstore.QueueReached) and the outbox's record of its receipt
 # states the comment delivered to that session, once (outbox's mentionReached). Before #2643 the
 # same send ended failed, wrote no node, and a fallback copy carried the comment instead.
 #
@@ -995,7 +997,7 @@ expect G13 "what the proved session wrote stays that session's and is on no pers
 # even where every read of the store agrees with it; and each kind it holds holds at least one
 # tuple of this run (tuples_carry).
 #
-#   - authored_by is the comment's own write (graphstore.Authored): the comment's author, the
+#   - authored_by is the comment's own write (graphstore.QueueAuthored): the comment's author, the
 #     event that stored the comment by that author - comment.created, or comment.answered for a
 #     reply (G12) - and the comment's own time, each equal to the record's.
 #   - alias_of is appended by that same write beside it (graphstore's aliases): the actor of the
@@ -1026,7 +1028,7 @@ expect G13 "what the proved session wrote stays that session's and is on no pers
 #     comment's project, the third base attribute this run's nodes carry: a comment's by its own
 #     write at its own time; a person's and a session's that wrote by the comment that
 #     first named them, at that comment's time; a session's an attempt reached by the settle of
-#     that attempt, at the attempt's time (graphstore.Reached), or by an answer it gave, at the
+#     that attempt, at the attempt's time (graphstore.QueueReached), or by an answer it gave, at the
 #     answer's (api's queueAnsweredDelivery); a follower's by the follow, no earlier than it
 #     (asks.Follow); and a role's, a page's, and a session's a copy of a comment reached, by the
 #     outbox, under the same events its claims are stated under, at no earlier time.

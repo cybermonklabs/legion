@@ -162,7 +162,7 @@ func (e *Erasure) forgetEmbeddings(ctx context.Context, tx pgx.Tx, read erasedRe
 // rewritten, and one whose issue is gone as removed.
 //
 // A document whose windows went is marked owed them, keeping a mark already set as refs'
-// standsAtVersion keeps it, which is how the block-index tick's window arm learns of an owner
+// queueStand keeps it, which is how the block-index tick's window arm learns of an owner
 // whose windows were removed outside the one statement that writes them (refs.DocumentsOwedWindows):
 // the arm writes them from the latest version left, which holds none of the erased text either.
 // A document with no markdown version left is not marked: the arm writes nothing for it

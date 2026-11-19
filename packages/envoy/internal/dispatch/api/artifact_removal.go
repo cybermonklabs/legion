@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // removeArtifact removes a document of an issue that is still untouched: one made by typing a
@@ -151,8 +152,8 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		}
 		gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, removedAt)
 		gone.State = graphstore.StateGone
-		var err error
-		if goneNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{gone}, nil); err != nil {
+		goneNode = graphstore.PlanUncaused([]graphstore.Node{gone}, nil)
+		if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, goneNode) }); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the node of the removed document %s gone: %w", artifact.ID, err))
 			return
 		}

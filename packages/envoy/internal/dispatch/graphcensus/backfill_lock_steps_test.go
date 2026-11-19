@@ -147,7 +147,7 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 // comment c1's node row before the comments row whose foreign key names it. Where its tuples fall
 // among its node rows they leave to the batch: a batch that appended its comments' tuples before
 // it wrote its authors' nodes, as the comment path appends its comment's tuples before its
-// author's node (graphstore.Authored), passes as well.
+// author's node (graphstore.QueueAuthored), passes as well.
 func requireTheCommentBatchLockOrder(t *testing.T) {
 	ctx := context.Background()
 	writes := newAddressingWrites(t)

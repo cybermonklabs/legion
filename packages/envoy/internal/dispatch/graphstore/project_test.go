@@ -18,22 +18,23 @@ import (
 // appended once its cause comes (Caused) to what the store states for a node it makes: its
 // visibility and state, its project or its parties where it carries one, each under its own value
 // and the cause, and nothing of an attribute it does not carry. Both uncaused writers leave the
-// mark that names those attributes (nodeMark): the node write of WriteUncaused and the arms of
-// WriteArmsUncaused.
+// mark that names those attributes (nodeMarks): the node write PlanUncaused plans and QueueNodes
+// queues, and the arms of WriteArmsUncaused.
 //
-// A node the write makes whose state its caller states itself (WriteUncaused's stated tuples) is
+// A node the write makes whose state its caller states itself (PlanUncaused's stated tuples) is
 // one an upload makes where it read an orphaned node standing and an erase took that node before
 // the upload's write: the caller's gone and live come first, and the node write states every
-// other base attribute of the node it made, as it states them for any node it makes. Only
-// WriteUncaused takes such tuples; the arms state no caller's base attribute.
+// other base attribute of the node it made, as it states them for any node it makes. Only the
+// node write takes such tuples; the arms state no caller's base attribute.
 func TestAnUncausedWriteStatesEachAttributesOwnValue(t *testing.T) {
 	database := storetest.Open(t)
 	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
 	const cause = int64(9500002)
 	writers := map[string]func(context.Context, pgx.Tx, Node, []Tuple) (Uncaused, error){
-		"WriteUncaused": func(ctx context.Context, tx pgx.Tx, node Node, stated []Tuple) (Uncaused, error) {
-			return WriteUncaused(ctx, tx, []Node{node}, stated)
+		"QueueNodes": func(ctx context.Context, tx pgx.Tx, node Node, stated []Tuple) (Uncaused, error) {
+			write := PlanUncaused([]Node{node}, stated)
+			return write, store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueNodes(b, write) })
 		},
 		"WriteArmsUncaused": func(ctx context.Context, tx pgx.Tx, node Node, _ []Tuple) (Uncaused, error) {
 			arms, params, held, err := WriteArmsUncaused(1, []Node{node}, nil, nil)
@@ -54,7 +55,7 @@ func TestAnUncausedWriteStatesEachAttributesOwnValue(t *testing.T) {
 	for name, test := range map[string]struct {
 		node func(suffix string) Node
 		// stated is what the caller states of the node itself, nil for none; a row that states
-		// something runs through WriteUncaused alone.
+		// something runs through QueueNodes alone.
 		stated func(Node) []Tuple
 		// want is every value tuple of the node, "kind=value", in the order the log holds them.
 		want []string
@@ -82,7 +83,7 @@ func TestAnUncausedWriteStatesEachAttributesOwnValue(t *testing.T) {
 		},
 	} {
 		for writer, write := range writers {
-			if test.stated != nil && writer != "WriteUncaused" {
+			if test.stated != nil && writer != "QueueNodes" {
 				continue
 			}
 			t.Run(name+" through "+writer, func(t *testing.T) {
@@ -142,7 +143,7 @@ func TestAnUncausedWriteStatesEachAttributesOwnValue(t *testing.T) {
 // TestANodeStatesItsProjectOnce holds the write to stating a node's project and parties once: the
 // write that makes the node states both, a node an earlier build stored without a project takes
 // it from the first write that names one, and a node written again with nothing moved states
-// neither, through Write, WriteUncaused and WriteArms alike.
+// neither, through Write, QueueNodes and WriteArms alike.
 func TestANodeStatesItsProjectOnce(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -192,11 +193,11 @@ func TestANodeStatesItsProjectOnce(t *testing.T) {
 		requireNeverStated(t, ctx, database, node.Kind, node.ID, AttributeProject)
 	})
 
-	t.Run("WriteUncaused and Caused state the parties with the other base attributes", func(t *testing.T) {
+	t.Run("an uncaused node write and Caused state the parties with the other base attributes", func(t *testing.T) {
 		node := ArtifactNode("agent/s-2/photo-png", "", "s-2", who, at)
 		runInOneTransaction(t, database, "the uncaused write", func(ctx context.Context, tx pgx.Tx) error {
-			write, err := WriteUncaused(ctx, tx, []Node{node}, nil)
-			if err != nil {
+			write := PlanUncaused([]Node{node}, nil)
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueNodes(b, write) }); err != nil {
 				return err
 			}
 			return Caused(ctx, tx, write, 9500003)

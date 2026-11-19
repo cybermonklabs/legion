@@ -405,7 +405,7 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 // The same transaction marks each document it wrote a block of, which is how the block's parent
 // is reached (Backfill): store_owed_at, the column migration 20261116221539 adds, which only this
 // release reads and which its index pass clears once it has stated every block of the document
-// (refs' standsAtVersion). The null version the release before this one reads too is left alone,
+// (refs' queueStand). The null version the release before this one reads too is left alone,
 // since that release would drain it, write the rows and state nothing. The mark is an update of a
 // row the document already holds: every pass that writes a document's block rows writes that row
 // first, in either release, and it goes only with the artifact, whose delete takes the block rows
@@ -575,7 +575,7 @@ func markStaleBatch(ctx context.Context, database *store.Store, batch []string) 
 //
 // Over several documents it takes every owner lock first, each once, in the order of its owner
 // key (events.LockOwnerRows): the one order over owners, in which the erase takes the owners it
-// writes under (grapherase's lockInStoreOrder) and events.lockOwners the owners of several
+// writes under (grapherase's lockInStoreOrder) and events.Broker.LockOwners the owners of several
 // events, "artifact:<id>" for a document no issue owns before "issue:<key>". Only then does it
 // take each document's document_block_versions row, in document id order. Taking one document's
 // owner lock and fence row before the next document's owner would put an issue at a different
@@ -683,7 +683,7 @@ type blockRefRow struct {
 // node of its own: it runs after the blocks, and a row whose block has no node in the store, or
 // one the store holds gone, is skipped and counted. A row whose far end is past the address bound
 // is no tuple the store can key beside the block's own address, as the live writer leaves it out
-// too (refs' replaceBlockRefs), so this reads none of those and the row keeps its null node
+// too (refs' planBlockRefs), so this reads none of those and the row keeps its null node
 // columns for the old arm. A row a version write deleted or wrote after its batch was read is not
 // written (writeBlockRefBatch), and is counted nowhere.
 //
@@ -793,7 +793,7 @@ func blockNodeStands(alias string) string {
 //
 // The batch was read outside this transaction, so a version write may have deleted one of its
 // references since, and a version write that deletes a reference states its tuple retracted
-// (refs' replaceBlockRefs). A tuple asserted for that row would be appended after the retraction
+// (refs' planBlockRefs). A tuple asserted for that row would be appended after the retraction
 // and so be the newest word on the link: the store would answer a mention no row holds. The
 // batch is therefore held to the revision fence as writeBlockBatch is: before it writes anything
 // it takes the locks a version write holds while it writes a document's references
@@ -863,7 +863,7 @@ func writeBlockRefBatch(ctx context.Context, database *store.Store, batch []bloc
 // are still there, still name no node and are still links out of a block whose node stands
 // (blockNodeStands), locks each of them `for update` in key order, and answers them in the
 // batch's own order. The rest of a row is what the batch read: a version write keeps a surviving
-// row's dates and source_seq, and a row it inserts names its node (refs' replaceBlockRefs), so a
+// row's dates and source_seq, and a row it inserts names its node (refs' queueBlockRefs), so a
 // row that still names no node is one no version has written since.
 func heldBlockRefRows(ctx context.Context, tx pgx.Tx, batch []blockRefRow) ([]blockRefRow, error) {
 	artifacts := make([]string, 0, len(batch))
@@ -932,7 +932,7 @@ type commentRow struct {
 // written before the store existed: the artifact it is anchored to and the artifact that owns it
 // where it has them (graphstore.CommentFacts, as api's commentStored states them), the two base
 // attributes graphstore.Write states for every node it makes, and who wrote it, as
-// graphstore.Authored states that (graphstore.AuthorFacts).
+// graphstore.QueueAuthored states that (graphstore.AuthorFacts).
 func backfillComments(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.KindComment}
 	after := "00000000-0000-0000-0000-000000000000"
@@ -1011,7 +1011,7 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 
 // CommentsNamingNoNode is the backfill's write (CommentWrite) of each comment of ids whose row
 // names no node, read through q, for the block-index tick's write of the comments the events after
-// its cursor name (docs' writeCommentsTheEventsName). Beside each id, causes holds the event that
+// its cursor name (docs' readEventsAfterCursor). Beside each id, causes holds the event that
 // stored the comment, the comment.created or comment.answered the tick read, which is the cause of
 // what the write states, as readCommentRows reads it for the backfill's own pass: the tick has it
 // in hand, so it reads no event of the log to find it. A row that names its node already is left
@@ -1097,9 +1097,10 @@ func scanCommentRows(rows pgx.Rows) ([]commentRow, error) {
 // CommentWrite is the backfill's write of a batch of comments rows that name no node, built once
 // (commentWriteOf) for both of its writers: the backfill's own pass (writeCommentBatch) and the
 // block-index tick's write of the comments the events after its cursor name (docs'
-// writeCommentsTheEventsName). Nodes and Tuples are what the writer states in its one store write
-// (graphstore.Write): each comment's node and the facts its row projects (graphstore.CommentFacts),
-// and who wrote it (graphstore.AuthorFacts). Queue then names each comment's node on its row.
+// readEventsAfterCursor). Nodes and Tuples are what the writer states in its one store write
+// (graphstore.QueueWrite): each comment's node and the facts its row projects
+// (graphstore.CommentFacts), and who wrote it (graphstore.AuthorFacts). Queue then names each
+// comment's node on its row.
 type CommentWrite struct {
 	Nodes  []graphstore.Node
 	Tuples []graphstore.Tuple
@@ -1184,12 +1185,13 @@ func commentWriteOf(batch []commentRow) CommentWrite {
 // store write, the comments' and their authors', so the transaction takes every node row in
 // ascending (kind, id) before it appends its first tuple, and names the nodes on the comments rows
 // only after both: the order of the lock order on api/inbox_read.go's markInboxReadThreads. Who
-// wrote a comment is what graphstore.Authored states of it (graphstore.AuthorFacts): the author's
-// node, made at the first comment of the batch that names them, the comment's authored_by tuple
-// and the aliases the server proved. The store write makes an author's node as Authored's arms
-// make it and moves nothing on one that is already there, since every writer of a person or a
-// session node writes it as AuthorFacts does: project-visible, live and carrying no attribute. The
-// batch restates that node too, so a state or a visibility another write gave it stays.
+// wrote a comment is what graphstore.QueueAuthored states of it (graphstore.AuthorFacts): the
+// author's node, made at the first comment of the batch that names them, the comment's
+// authored_by tuple and the aliases the server proved. The store write makes an author's node as
+// QueueAuthored's arms make it and moves nothing on one that is already there, since every writer
+// of a person or a session node writes it as AuthorFacts does: project-visible, live and carrying
+// no attribute. The batch restates that node too, so a state or a visibility another write gave it
+// stays.
 func writeCommentBatch(ctx context.Context, database *store.Store, batch []commentRow) (int64, int64, int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -1395,7 +1397,7 @@ func backfillSessions(ctx context.Context, database *store.Store) (KindBackfill,
 
 // readSessionRows reads every session recordedSessions names whose node the store does not hold
 // and whose id fits the store's bound, in id order. A session past the bound is no node of the
-// store, so it is neither written here nor counted as remaining (graphstore.SessionRecorded).
+// store, so it is neither written here nor counted as remaining (graphstore.QueueSessionRecorded).
 func readSessionRows(ctx context.Context, database *store.Store) ([]sessionRow, error) {
 	rows, err := database.Pool.Query(ctx, `
 		select recorded.id, coalesce(recorded.event, $1), coalesce(e.created_at, recorded.at)

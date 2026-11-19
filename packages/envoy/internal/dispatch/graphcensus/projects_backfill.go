@@ -526,9 +526,10 @@ func derefText(value *string) string {
 // (graphstore.ErrProjectMoved), which is a difference for the census to report rather than for
 // this run to paper over. Each node and what it states carry its row's own create event where the
 // read found one (readObjectNodes), and the sentinel otherwise: the batch writes its nodes in
-// ascending id, in runs of consecutive nodes of one cause, each run through graphstore.WriteUncaused
-// and then graphstore.Caused under that cause, and the report counts the tuples the store appended
-// for those runs (graphstore.Counting).
+// ascending id, in runs of consecutive nodes of one cause, each run's nodes queued as one write
+// (graphstore.PlanUncaused and graphstore.QueueNodes) and then stated through graphstore.Caused
+// under that cause, and the report counts the tuples the store appended for those runs
+// (graphstore.Counting).
 //
 // The batch was read before this transaction opened, and a removal may commit in between: a node
 // written live then would stand behind no row. So for a kind a writer deletes rows of
@@ -622,8 +623,8 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 					stated = append(stated, stateTuple(statement), stateTuple(node))
 				}
 			}
-			made, err := graphstore.WriteUncaused(ctx, tx, run, stated)
-			if err != nil {
+			made := graphstore.PlanUncaused(run, stated)
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, made) }); err != nil {
 				return err
 			}
 			var appended int64

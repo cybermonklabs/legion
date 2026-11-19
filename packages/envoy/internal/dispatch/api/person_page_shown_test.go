@@ -69,7 +69,7 @@ func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testin
 // seedLaterAuthorOnlyComment writes, by SQL, a comment on issue reserved for its author login, as
 // a later release writes one: the comment's node at visibility author and the author's person
 // node, each with the two base attributes the store states of a node its insert makes
-// (graphstore.BaseAttributeFacts), the authored_by tuple from the comment to the person, and the
+// (graphstore.BaseAttributes), the authored_by tuple from the comment to the person, and the
 // comment's row naming its node. It answers the comment's id.
 func seedLaterAuthorOnlyComment(t *testing.T, database *store.Store, issue, login, body string) string {
 	t.Helper()

@@ -56,8 +56,8 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 	if err != nil {
 		t.Fatalf("read the time of document %s: %v", slug, err)
 	}
-	documentNode, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{graphstore.ArtifactNode(refKey, "CORE", "", alice, createdAt)}, nil)
-	if err != nil {
+	documentNode := graphstore.PlanUncaused([]graphstore.Node{graphstore.ArtifactNode(refKey, "CORE", "", alice, createdAt)}, nil)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueNodes(b, documentNode) }); err != nil {
 		t.Fatalf("write the node of document %s: %v", slug, err)
 	}
 	var artifactID string
@@ -649,8 +649,8 @@ var indexPasses = map[string]string{
 	// queueAppend is the second half of one write rather than a second look at it: it appends the
 	// tuples its caller states, and states the base attributes of the node rows its node write
 	// marked and moves them onto the write's cause, which it reads off those rows' marks
-	// (nodeMark). It reads the store's own rows its write just wrote, no projection, and mends
-	// nothing.
+	// (graphstore's nodeMarks). It reads the store's own rows its write just wrote, no
+	// projection, and mends nothing.
 	"graphstore/write.go#queueAppend": "the tuples its caller states and the node rows its own node write marked",
 	// FillScopes states the project of a node an earlier build stored with none: it locks and
 	// updates the rows of the nodes its caller names, reading of each only whether it carries a

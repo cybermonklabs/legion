@@ -796,10 +796,11 @@ func blockNodesOf(t *testing.T, document parentDocument) int {
 //
 // The rows are put back in the shape the previous release left them in - node columns null, no
 // node and no tuple in the store - which is what a database the backfill has not reached holds.
-// A version is then written and indexed. It must commit: reconcileBlockParents names each
-// block's node on its row, and document_blocks_node is checked inside that statement, so a pass
-// that gave a node only to the blocks whose text the version changed would be refused there
-// (SQLSTATE 23503) and the document could never take another version.
+// A version is then written and indexed. It must commit: the projection of the parents
+// planBlockParents plans (queueBlockParents) names each block's node on its row, and
+// document_blocks_node is checked inside that statement, so a pass that gave a node only to the
+// blocks whose text the version changed would be refused there (SQLSTATE 23503) and the document
+// could never take another version.
 //
 // Afterwards every row names its node, the store holds each one live, and each block is a
 // member of its document exactly once, dated from its own row's created_at and stated by the
@@ -882,7 +883,7 @@ func TestAPreStoreDocumentTakesItsNodesAtItsNextVersion(t *testing.T) {
 // document takes version after version all the same.
 //
 // Its document's ref_key alone is longer than refs.MaxBlockNodeBytes, so no block of it can be
-// a node (blockNodeFits). The pass therefore writes no node, states nothing, and leaves the
+// a node (blockFits). The pass therefore writes no node, states nothing, and leaves the
 // node columns null - which is what keeps the `document_blocks` arm of graph_edges answering
 // those rows - and the second version indexes as the first did rather than being refused by
 // document_blocks_node for a node nobody may write.

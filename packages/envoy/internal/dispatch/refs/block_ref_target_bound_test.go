@@ -16,10 +16,10 @@ import (
 // for a version's block index. A block's address is one end of a mention's tuple and the target is
 // the other: graph_tuples' read and repeat indexes key both ends whole, so a block address of
 // 1,024 bytes beside a reference target of text.MaxTargetBytes (2,048) is a key of about 3 KiB,
-// past the roughly 2,704 bytes a btree entry holds. replaceBlockRefs now leaves out the tuple and
-// stamps nothing on the block_refs row it projects, so the version write goes on: the block's node
-// and its in_document tuple are written, the row keeps its null node columns for the old
-// `block_refs` arm, and no mention tuple is appended.
+// past the roughly 2,704 bytes a btree entry holds. The block index now leaves out the tuple
+// (planBlockRefs) and stamps nothing on the block_refs row it projects (queueBlockRefs), so the
+// version write goes on: the block's node and its in_document tuple are written, the row keeps
+// its null node columns for the old `block_refs` arm, and no mention tuple is appended.
 func TestAMentionWhoseFarEndIsPastTheBoundLeavesOutItsTuple(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)

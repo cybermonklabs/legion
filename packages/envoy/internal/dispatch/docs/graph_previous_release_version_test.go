@@ -453,7 +453,7 @@ func registerProcess(t *testing.T, database *store.Store, commit string) func() 
 //
 // That release's version write also settles the row the version's insert owes the re-index queue
 // (refs_grammar_owed, migration 20261103205041), since it indexes the version's own text with the
-// whole grammar in the same transaction (refs.settleOwed). The stand-in leaves that row, and this
+// whole grammar in the same transaction (refs.SettleOwed). The stand-in leaves that row, and this
 // build's drain of it would owe the document a block index with this build's own mark
 // (oweDocumentIndex): a mark that release never sets. So the row is settled here, before any
 // tick runs, and the only way left for this build to reach the document is the version's event.
@@ -493,11 +493,12 @@ func moveLinkAsThePreviousRelease(t *testing.T, database *store.Store, service *
 // createAsThePreviousRelease has the stand-in for the release before this one create document
 // slug of issue CORE-1, a nestedSpec, as that release's upload does: the artifact, its live text
 // and version 1 (createOwedDocument), then, in one transaction, the artifact.created event, whose
-// payload carries the whole artifact (api's artifactCreatedEventPayload), and that release's index
+// payload carries the whole artifact (api's artifactCreatedEventPayload) and whose seq it takes
+// off the issue's own counter as that release's events.Append does, and that release's index
 // pass of version 1, which writes every block row and the inner paragraph's link row naming no
 // node and states nothing in the store (indexVersionAsThePreviousRelease). The link takes its kind
 // and far end from like, a link to the same issue. The version's insert owes the re-index queue a
-// row, which that release's write settles as it indexes the text (refs.settleOwed), so it is
+// row, which that release's write settles as it indexes the text (refs.SettleOwed), so it is
 // settled here too, as moveLinkAsThePreviousRelease settles its own. It answers the document, its
 // link and the event that created it.
 func createAsThePreviousRelease(t *testing.T, database *store.Store, service *Service, slug string, like blockLinkRow) (string, blockLinkRow, int64) {
@@ -523,11 +524,12 @@ func createAsThePreviousRelease(t *testing.T, database *store.Store, service *Se
 	defer tx.Rollback(ctx)
 	var event int64
 	if err := tx.QueryRow(ctx, `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
 		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.created', '{"kind":"user","id":"alice"}',
+		select 'CORE-1', bumped.last_seq, 'artifact.created', '{"kind":"user","id":"alice"}',
 		       jsonb_build_object('artifact', jsonb_build_object('id', $1::text, 'issue_key', 'CORE-1',
 		           'project', 'CORE', 'slug', $2::text, 'name', $2::text || '.md', 'kind', 'doc')), false
-		from events where issue_key = 'CORE-1'
+		from bumped
 		returning id
 	`, document, slug).Scan(&event); err != nil {
 		t.Fatalf("append the creation's event of %s: %v", slug, err)
@@ -546,11 +548,12 @@ func createAsThePreviousRelease(t *testing.T, database *store.Store, service *Se
 // key, number number of project CORE, with its spec, as that release's issue create does (api's
 // issue create): the issue row, its primary document spec.md, a nestedSpec, with its live text and
 // version 1, then, in one transaction, the issue.created event, which is the issue's own, names
-// the issue in issue_key and in its payload's key and no document, and records the spec's version
-// 1, and that release's index pass of that version (indexVersionAsThePreviousRelease), which
-// writes every block row and the inner paragraph's link row naming no node and states nothing in
-// the store. The link takes its kind and far end from like, a link to the same issue, and the
-// re-index queue's row of the version is settled as that release's write settles it
+// the issue in issue_key and in its payload's key and no document, records the spec's version 1
+// and takes its seq off the issue's own counter as that release's events.Append does, and that
+// release's index pass of that version (indexVersionAsThePreviousRelease), which writes every
+// block row and the inner paragraph's link row naming no node and states nothing in the store.
+// The link takes its kind and far end from like, a link to the same issue, and the re-index
+// queue's row of the version is settled as that release's write settles it
 // (createAsThePreviousRelease). It answers the spec, its link and the issue's event.
 func createIssueAsThePreviousRelease(t *testing.T, database *store.Store, service *Service, key string, number int, like blockLinkRow) (string, blockLinkRow, int64) {
 	t.Helper()
@@ -585,10 +588,11 @@ func createIssueAsThePreviousRelease(t *testing.T, database *store.Store, servic
 	defer tx.Rollback(ctx)
 	var event int64
 	if err := tx.QueryRow(ctx, `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = $1 returning last_seq)
 		insert into events (issue_key, seq, type, actor, payload, notify)
-		select $1, coalesce(max(seq), 0) + 1, 'issue.created', '{"kind":"user","id":"alice"}',
+		select $1, bumped.last_seq, 'issue.created', '{"kind":"user","id":"alice"}',
 		       jsonb_build_object('key', $1::text, 'project', 'CORE', 'title', 'An issue the previous release created'), false
-		from events where issue_key = $1
+		from bumped
 		returning id
 	`, key).Scan(&event); err != nil {
 		t.Fatalf("append the issue.created event of %s: %v", key, err)
@@ -707,14 +711,16 @@ func recordedBackfillHorizon(t *testing.T, database *store.Store) int64 {
 }
 
 // appendIssueEvent appends one event of issue CORE-1 that names no document, as the stand-in for
-// the previous release appends its own (indexAsThePreviousRelease), and answers its id.
+// the previous release appends its own (indexAsThePreviousRelease), its seq taken off the issue's
+// own counter as that release's events.Append takes it, and answers its id.
 func appendIssueEvent(t *testing.T, database *store.Store) int64 {
 	t.Helper()
 	var id int64
 	if err := database.Pool.QueryRow(context.Background(), `
+		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
 		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, 'issue.updated', '{"kind":"user","id":"alice"}', '{}'::jsonb, false
-		from events where issue_key = 'CORE-1'
+		select 'CORE-1', bumped.last_seq, 'issue.updated', '{"kind":"user","id":"alice"}', '{}'::jsonb, false
+		from bumped
 		returning id
 	`).Scan(&id); err != nil {
 		t.Fatalf("append an event of CORE-1: %v", err)

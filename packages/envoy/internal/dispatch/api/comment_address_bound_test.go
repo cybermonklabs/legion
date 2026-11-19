@@ -129,7 +129,9 @@ func TestACommentWhoseAuthorIsASessionPastTheBoundLeavesOutItsNode(t *testing.T)
 	}
 	// On the old code the session node's primary key and the authored_by tuple failed with "index
 	// row size ... exceeds btree ... 2704"; now AuthorFacts leaves them out and the write commits.
-	if err := graphstore.Authored(ctx, tx, graphstore.KindComment, commentID, author, time.Now().UTC(), graphstore.NoEvent); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		return graphstore.QueueAuthored(b, graphstore.KindComment, commentID, author, time.Now().UTC(), graphstore.NoEvent)
+	}); err != nil {
 		t.Fatalf("record who wrote the comment: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

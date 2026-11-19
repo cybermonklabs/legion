@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
@@ -558,15 +559,36 @@ func threeBadRequests(t *testing.T) {
 	owned := seedTwoProjects(t, handler, database)
 	probed := 0
 	for _, route := range rows {
-		target, addressable := crossProjectPath(route, owned)
+		target, addressable := crossProjectPath(t, route, owned)
 		if !addressable {
 			continue
 		}
 		probed++
-		response := dispatchRequest(t, handler, route.Method, target, routeProbeBodyValue(route), "alice")
+		response := crossProjectRequest(t, handler, route, target, owned)
 		if response.Code < 400 {
 			t.Errorf("%s answers %d for an identifier of another project: %s",
 				route.Method+" "+target, response.Code, firstLine(response.Body.String()))
+			continue
+		}
+		// A server error is no refusal: a route that let another project's object past its key
+		// fails further in, where it reads that object as its key's - the step write's read of the
+		// key's issue's runs, which does not list a run of another issue, answers 500 - and a 5xx
+		// from a route that refused nothing would pass the check above as a refusal.
+		if response.Code >= 500 {
+			t.Errorf("%s fails %d for an identifier of another project rather than refusing it: %s",
+				route.Method+" "+target, response.Code, firstLine(response.Body.String()))
+			continue
+		}
+		// A refusal of the caller comes before the identifier is read, so it says nothing about
+		// whether the route would answer another project's object: each route is sent as a caller
+		// its own checks admit (crossProjectRequest), and one that refuses that caller all the same
+		// proves nothing about the identifier.
+		if code := responseCode(t, response); code == codeStepWriter {
+			t.Errorf("%s refuses the probe's caller %d %s before it reads the identifier, so the probe proves nothing about it",
+				route.Method+" "+target, response.Code, code)
+		} else if refused, why := authRefusal(response); refused {
+			t.Errorf("%s refuses the probe's caller %s before it reads the identifier, so the probe proves nothing about it",
+				route.Method+" "+target, why)
 		}
 	}
 	if probed < 5 {
@@ -817,9 +839,14 @@ type crossProject struct {
 	artifact, slug, block string
 	// message is an issue message, and document a project document, with its slug and one of
 	// its blocks: the objects a route of the project's own documents and messages reads. The
-	// message is also the id the cross-project probe sends a route that names a message
-	// (crossProjectPath), so that route is sent another project's id of its own kind.
+	// message is also the id the cross-project probe sends a route that names a message, and the
+	// document's slug the slug it sends a route of a project document (crossProjectPath), so each
+	// route is sent another project's object of its own kind; slug, the issue's design.md, is
+	// what it sends a route of an issue document.
 	message, document, documentSlug, documentBlock string
+	// step is the id of a run of a step of the issue, written as the project's Legion daemon
+	// writes one: the id the cross-project probe sends the step write.
+	step string
 	// priority is the id of a priority. A priority belongs to no project, so no project's key
 	// addresses it, and only the probe that reads each object at its own address reads it.
 	priority string
@@ -827,10 +854,14 @@ type crossProject struct {
 	nearCopyCheck string
 }
 
-// seedTwoProjects writes one project with an issue, a document, a comment, an ask, a message, a
-// project document and a block of each document, and the Legion daemon it names with a read of
-// it; a second project the probe addresses them under; and one priority, which belongs to neither
-// project and is read at its own id.
+// seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
+// comment, an ask, a message, a run of a step of the issue, a project document and a block of
+// each document, and the Legion daemon it names with a read of it; a second project with an
+// issue, which the cross-project probe addresses them under; and one priority, which belongs to
+// neither project and is read at its own id. Under the second project's key the probe sends each
+// route the object of the first its path names (crossProjectPath): design.md to a route of an
+// issue document, the project document to a route of a project document, the message to the
+// message read and the run to the step write.
 func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -866,6 +897,12 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 	owned.message = decodeBody[struct {
 		ID string `json:"id"`
 	}](t, message).ID
+	// A run of a step of the issue, written over the credential the deployment configures for
+	// its daemon and naming that daemon's session (putStepOK), as Legion writes one: an id the
+	// step write answers for under its own issue's key, so its refusal under another project's
+	// key is the refusal of an id outside that key.
+	owned.step = uuid.NewString()
+	putStepOK(t, handler, issue.Key, owned.step, implementerStart(daemonSessionOf("TEST")))
 	document := createProjectDocument(t, handler, "TEST", "Notes", "# Notes\n\nA passage of the project's own document.\n")
 	owned.document, owned.documentSlug = document.ID, document.Slug
 	owned.documentBlock = firstBlockOf(t, handler, document.ID)
@@ -905,33 +942,43 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 	return blocks[0].ID
 }
 
-// crossProjectPath is the route's path with another project's key and this project's object of
-// the route's own kind - a message to a route whose path names a message, an ask to an ask's, a
-// comment otherwise - or false for a route that addresses no object of a project under a key at
-// all.
-func crossProjectPath(route apiRoute, owned crossProject) (string, bool) {
+// crossProjectPath is the route's path under another project's key, each other place of it
+// filled with this project's object of the kind that place names, or false for a route that
+// addresses no object of a project under a key at all. A route under /issues/{key} takes the
+// other project's issue as its key, and every other route the other project's key. What each
+// place takes:
+//
+//   - {slug} of /issues/{key}/artifacts/{slug}: the issue's design.md, a document of the issue,
+//     where the issue's spec would be every issue's own slug and cross nothing;
+//   - {slug} of /projects/{key}/artifacts/{slug}: the project's own document, so a read that
+//     served a project document under whatever project's key it was sent answers a row;
+//   - {number} beside either: 1, the first version, which each of the two documents holds;
+//   - {id} of /issues/{key}/messages/{id}: the issue's message;
+//   - {id} of /issues/{key}/steps/{id}: the run of a step of the issue its project's daemon
+//     wrote.
+//
+// A route under a key whose {slug} or {id} is of a kind no line above names fails the test: an
+// id of another kind is refused under every key alike, and would prove nothing about this one.
+func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string, bool) {
+	t.Helper()
 	pattern := route.Pattern
-	if !strings.Contains(pattern, "{key}") {
+	if !strings.Contains(pattern, "{key}") || !strings.Contains(pattern, "{slug}") && !strings.Contains(pattern, "{id}") {
 		return "", false
 	}
-	identifier := ""
-	switch {
-	case strings.Contains(pattern, "{slug}"):
-		identifier = owned.slug
-		pattern = strings.ReplaceAll(pattern, "{slug}", owned.slug)
-	case strings.Contains(pattern, "{id}"):
-		identifier = owned.comment
-		switch {
-		case strings.Contains(pattern, "/messages/{id}"):
-			identifier = owned.message
-		case strings.Contains(pattern, "/asks/"):
-			identifier = owned.ask
+	for _, place := range []struct{ named, wildcard, object string }{
+		{"/issues/{key}/artifacts/{slug}", "{slug}", owned.slug},
+		{"/projects/{key}/artifacts/{slug}", "{slug}", owned.documentSlug},
+		{"/artifacts/{slug}/versions/{number}", "{number}", "1"},
+		{"/issues/{key}/messages/{id}", "{id}", owned.message},
+		{"/issues/{key}/steps/{id}", "{id}", owned.step},
+	} {
+		if strings.Contains(route.Pattern, place.named) {
+			pattern = strings.ReplaceAll(pattern, place.wildcard, place.object)
 		}
-		pattern = strings.ReplaceAll(pattern, "{id}", identifier)
-	default:
-		return "", false
 	}
-	if identifier == "" {
+	if strings.Contains(pattern, "{slug}") || strings.Contains(pattern, "{id}") {
+		t.Errorf("%s %s addresses an object under a key of a kind crossProjectPath sends none of: seed one (seedTwoProjects) and name its place there",
+			route.Method, route.Pattern)
 		return "", false
 	}
 	switch {
@@ -944,6 +991,28 @@ func crossProjectPath(route apiRoute, owned crossProject) (string, bool) {
 		return "", false
 	}
 	return pattern, true
+}
+
+// crossProjectRequest sends one route its cross-project path (crossProjectPath) as a caller the
+// route's own checks admit, with a body that passes what the route checks before it reads the
+// object, so what refuses it is the object and not the caller or the body. Every route is sent
+// as alice, a person, with its probe body (routeProbeBody), but two:
+//
+//   - the step write records a run only for the session of the Legion daemon of the key's project
+//     and refuses any other writer 403 STEP_WRITER before it reads the id (putIssueStep), so it is
+//     sent over the deployment's shared agent credential, which proves no session, naming the
+//     session of the other project's daemon;
+//   - a named version requires a summary and refuses a body without one 400 INVALID_VERSION before
+//     it reads the slug (createNamedVersion), so its body carries one.
+func crossProjectRequest(t *testing.T, handler http.Handler, route apiRoute, target string, owned crossProject) *httptest.ResponseRecorder {
+	t.Helper()
+	switch route.Method + " " + route.Pattern {
+	case "PUT /api/v1/issues/{key}/steps/{id}":
+		return sessionRequest(t, handler, route.Method, target, map[string]any{"actor": daemonSessionOf(owned.otherKey)})
+	case "POST /api/v1/issues/{key}/artifacts/{slug}/versions", "POST /api/v1/projects/{key}/artifacts/{slug}/versions":
+		return dispatchRequest(t, handler, route.Method, target, map[string]any{"summary": "A version under another project's key."}, "alice")
+	}
+	return dispatchRequest(t, handler, route.Method, target, routeProbeBodyValue(route), "alice")
 }
 
 // answerShape renders an answer as what it answered rather than what it said: an object as its
