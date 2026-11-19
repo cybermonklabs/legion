@@ -283,22 +283,29 @@ async function endGroup(child: Subprocess, asked: string, ask: () => void): Prom
 
 /**
  * Serves every request with `answer`, recording each first. `answer` gets the request's parsed JSON
- * body, empty for a GET. Returns the recorded requests and the server's base URL.
+ * body, empty for a GET, and `arrivedAt`, when the request reached the server (`performance.now()`)
+ * before its body was read, so a case that times one request against another times neither body's
+ * read. Returns the recorded requests and the server's base URL.
  */
 export function serveStandin(
   cleanup: Cleanup,
-  answer: (url: URL, body: Record<string, unknown>) => Response | Promise<Response>
+  answer: (
+    url: URL,
+    body: Record<string, unknown>,
+    arrivedAt: number
+  ) => Response | Promise<Response>
 ): { readonly requests: Request[]; readonly base: string } {
   const requests: Request[] = [];
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     async fetch(request) {
+      const arrivedAt = performance.now();
       const url = new URL(request.url);
       const text = request.method === "POST" ? await request.text() : "";
       const body = text === "" ? {} : (JSON.parse(text) as Record<string, unknown>);
       requests.push({ path: url.pathname, body });
-      return answer(url, body);
+      return answer(url, body, arrivedAt);
     },
   });
   cleanup.push(async () => {
