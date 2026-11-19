@@ -200,6 +200,67 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   });
 
+  // The two reads of the origin take their bounds from OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS and
+  // OUTSIDE_PATH_ORIGIN_READ_SECONDS, and from the script's own 3 s and 10 s when both are empty,
+  // as on a device that sets neither. The row's own curl answers the origin as Dispatch and logs
+  // what each read asked of curl, so no stand-in's speed decides the row.
+  probingRow(withoutTools)(
+    "bounds each read of the origin by its two settings, and by 3 s to connect and 10 s in all when neither is set",
+    async () => {
+      const port = await closedPort();
+      const origin = `127.0.0.1:${port}`;
+      const answered = async (connect: string, read: string) => {
+        const log = written("");
+        const run = await drive(
+          {
+            OUTSIDE_ORIGIN: `http://${origin}`,
+            OUTSIDE_PATH_TARGETS: await list(),
+            OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS: connect,
+            OUTSIDE_PATH_ORIGIN_READ_SECONDS: read,
+          },
+          {
+            path: pathWithCurl(
+              'case "$*" in\n' +
+                `  *http://${origin}/*) printf '%s\\n' "$*" >>${log} ;;\n` +
+                "esac\n" +
+                'case "$*" in\n' +
+                `  *http://${origin}/healthz) printf 200; exit 0 ;;\n` +
+                `  *http://${origin}/api/v1/projects) printf '%s401' '{"code":"NO_IDENTITY"}'; exit 0 ;;\n` +
+                `  *telnet://${origin}) printf '0.000010 0.000100'; exit 28 ;;\n` +
+                "esac"
+            ),
+          }
+        );
+        const reads = readFileSync(log, "utf8")
+          .trimEnd()
+          .split("\n")
+          .map((call) => {
+            const words = call.split(" ");
+            return {
+              path: (words.at(-1) ?? "").replace(`http://${origin}`, ""),
+              connect: words[words.indexOf("--connect-timeout") + 1],
+              read: words[words.indexOf("--max-time") + 1],
+            };
+          });
+        return { reads, verdict: verdict(run), code: run.code };
+      };
+      const [unset, given] = await Promise.all([answered("", ""), answered("7", "0.5")]);
+      expect(unset).toEqual({
+        reads: [
+          { path: "/healthz", connect: "3", read: "10" },
+          { path: "/api/v1/projects", connect: "3", read: "10" },
+        ],
+        verdict: `PASS: every target is unreachable from this device, and http://${origin} answered as Dispatch`,
+        code: 0,
+      });
+      expect(given.reads).toEqual([
+        { path: "/healthz", connect: "7", read: "0.5" },
+        { path: "/api/v1/projects", connect: "7", read: "0.5" },
+      ]);
+      expect(given.code).toBe(0);
+    }
+  );
+
   // Answers only a broken network gives, from a curl that names them: an exit no rule classifies,
   // a probe that printed no times, a name lookup that timed out, and one that took so long the
   // connect had too little of its three seconds left to say anything.

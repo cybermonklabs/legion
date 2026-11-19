@@ -653,6 +653,14 @@ bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash`
   the device's `TMOUT` unset, since bash's `read` takes it as a timeout; a read that stops before
   the end refuses the run.
 
+Two settings bound the two reads of the origin, each as curl's `--connect-timeout` and
+`--max-time`: `OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS` (3 s when unset or empty) and
+`OUTSIDE_PATH_ORIGIN_READ_SECONDS` (10 s). Each must be a positive number of seconds, digits with
+an optional fraction (`0.5`, `30`); any other value refuses the run, naming the setting. They do
+not bound the probes, whose 3 s to connect and 5 s in all the classifier's rules count on. The
+script's tests set both to twice their longest row's timeout, so a fake Dispatch that a loaded
+host keeps off the CPU makes a read late, never a verdict wrong.
+
 ```bash
 OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
   bash outside-path-reach.sh

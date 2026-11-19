@@ -13,7 +13,9 @@
  *  answers with the status `projects`: for 302, a redirect to a sign-in page; for 200, an empty
  *  list; for any other status, `refusal` as the body. Every other path answers 404. Like any HTTP
  *  server, it holds a connection that sends nothing, so the script's probe of its port reads
- *  REACHED through curl's exit 28. It records every request it answers:
+ *  REACHED through curl's exit 28; it holds one for as long as its client waits (`idleTimeout`
+ *  0, where Bun's own 10 s would drop a read this host was kept from answering under load, before
+ *  the script's own bound for it ends). It records every request it answers:
  *  `GET /<port>/seen` answers that record, in the order it answered them, and `DELETE /<port>`
  *  stops that fake and closes its connections.
  *
@@ -50,6 +52,7 @@ function serveFake({ health, projects, refusal }: Answers): Fake {
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
+    idleTimeout: 0,
     fetch(request) {
       const { pathname } = new URL(request.url);
       const credential = request.headers.get("authorization") ?? request.headers.get("cookie");

@@ -43,6 +43,11 @@
 # alone on one recorded probe and prints its class; five of them separated by `;` are judged as
 # one target's five rounds, in order, and the target's class is printed. Either way it exits 4,
 # never PASS's 0, and refuses an empty value with exit 2.
+# OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS and OUTSIDE_PATH_ORIGIN_READ_SECONDS bound each of the two
+# reads of the origin, as curl's --connect-timeout and --max-time: 3 and 10 s when unset or empty.
+# Each must be a positive number of seconds, digits with an optional fraction (0.5, 30), and any
+# other value refuses the run, naming the setting. They do not bound the probes, whose 3 s to
+# connect and 5 s in all the classifier's rules count on.
 #
 # It prints the origin, this device's name and the UTC time, a line for the origin's positive
 # control and one per target, then its verdict:
@@ -73,6 +78,7 @@
 # See `classify` for the classes and `judge` for a target's rounds.
 #
 # Usage: OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
+#          [OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS=3] [OUTSIDE_PATH_ORIGIN_READ_SECONDS=10] \
 #          bash outside-path-reach.sh
 
 # A shell other than bash stops here, before it reads a line it would take another way.
@@ -325,6 +331,24 @@ fi
 [ -n "${OUTSIDE_PATH_TARGETS:-}" ] ||
   unknown "OUTSIDE_PATH_TARGETS is unset: set it to the file of 'name host port' lines naming every internal target"
 
+# check_seconds NAME VALUE: refuses the run, naming NAME, unless VALUE is a positive number of
+# seconds, digits with an optional fraction, which curl's --connect-timeout and --max-time take.
+check_seconds() {
+  case $2 in
+    '' | *[!0-9.]* | .* | *. | *.*.*)
+      unknown "$1 must be a positive number of seconds, digits with an optional fraction, not $2"
+      ;;
+  esac
+  case $2 in *[1-9]*) ;; *)
+    unknown "$1 must be a positive number of seconds, digits with an optional fraction, not $2"
+    ;;
+  esac
+}
+origin_connect=${OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS:-3}
+origin_read=${OUTSIDE_PATH_ORIGIN_READ_SECONDS:-10}
+check_seconds OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS "$origin_connect"
+check_seconds OUTSIDE_PATH_ORIGIN_READ_SECONDS "$origin_read"
+
 origin=${OUTSIDE_ORIGIN%/}
 case $origin in
   https://*)
@@ -509,8 +533,8 @@ printf 'outside-path-reach: targets %s (%s)\n' "$targets" "$count"
 # status, 000 when none came.
 fetch() {
   local answer
-  answer=$(curl -q --noproxy '*' -g -sS -o - --connect-timeout 3 --max-time 10 \
-    -w '%{http_code}' "$origin$1" </dev/null 2>/dev/null)
+  answer=$(curl -q --noproxy '*' -g -sS -o - --connect-timeout "$origin_connect" \
+    --max-time "$origin_read" -w '%{http_code}' "$origin$1" </dev/null 2>/dev/null)
   [ "${#answer}" -ge 3 ] || answer=000
   printf '%s' "$answer"
 }

@@ -189,6 +189,42 @@ describe.concurrent("outside-path-reach.sh", () => {
   );
 
   row(withoutTools)(
+    "refuses an origin-read bound that is not a positive number of seconds, naming the setting, before going on the network",
+    async () => {
+      const origin = await fakeDispatch();
+      try {
+        const path = await list();
+        const settings = [
+          "OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS",
+          "OUTSIDE_PATH_ORIGIN_READ_SECONDS",
+        ] as const;
+        const values = ["abc", "0", "0.0", "-1", ".5", "5.", "1e3", "5s", "1.2.3", " 3"];
+        const cases = settings.flatMap((setting) => values.map((value) => ({ setting, value })));
+        const runs = await driveEach(
+          cases.map(({ setting, value }) => ({
+            OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+            OUTSIDE_PATH_TARGETS: path,
+            [setting]: value,
+          }))
+        );
+        expect(
+          runs.map((run, n) => ({ ...cases[n], verdict: verdict(run), code: run.code }))
+        ).toEqual(
+          cases.map(({ setting, value }) => ({
+            setting,
+            value,
+            verdict: `UNKNOWN: ${setting} must be a positive number of seconds, digits with an optional fraction, not ${value}`,
+            code: 2,
+          }))
+        );
+        expect(await origin.seen()).toEqual([]);
+      } finally {
+        await origin.stop();
+      }
+    }
+  );
+
+  row(withoutTools)(
     "classifies each recorded triple by whether TCP connected, and by whether the lookup did, exiting 4, never PASS's 0",
     async () => {
       const path = pathOf("bash");

@@ -51,20 +51,32 @@ export function row(skip: boolean) {
   return (name: string, body: () => Promise<void>) => test.skipIf(skip)(name, body, 60_000);
 }
 
-/** One row that reaches the probes, as `row` with a timeout of its own. It only stops a run that
- *  hangs: no row reads how long a run took. A run takes about 29 s (five rounds 6 s apart, the last
- *  up to curl's 5 s), and the script's own timers allow it 49 s (two reads of the origin of up to
- *  10 s each, four sleeps of 6 s and a last probe of 5 s). A hang guard is at least twice the
- *  longest correct run, read on the machines that run it. In CI's dispatch-ui job on 2026-11-17,
- *  the one run of these rows took 29.7 s for the holding-targets row and at most 33.1 s for any
- *  such row (a TMOUT=3 row), so twice that is 66.2 s, past the package's 60 s; 14 runs of the rows
- *  they replaced took at most 31.5 s. The guard is 435 s, three times the slowest such row of an
- *  earlier version, 144.9 s, in 12 runs on two CPUs shared with eight busy loops and five other runs
- *  of the four files (these rows' slowest in 12 such runs: 91.0 s), so a loaded dev box does not
- *  stop a correct run. */
+/** The timeout of a row that reaches the probes. It only stops a run that hangs: no row reads how
+ *  long a run took. A run takes about 29 s (five rounds 6 s apart, the last up to curl's 5 s), and
+ *  the script's own timers, at their defaults, allow it 49 s (two reads of the origin of up to 10 s
+ *  each, four sleeps of 6 s and a last probe of 5 s). A hang guard is at least twice the longest
+ *  correct run, read on the machines that run it. In CI's dispatch-ui job on 2026-11-17, the one
+ *  run of these rows took 29.7 s for the holding-targets row and at most 33.1 s for any such row (a
+ *  TMOUT=3 row), so twice that is 66.2 s, past the package's 60 s; 14 runs of the rows they
+ *  replaced took at most 31.5 s. The guard is 435 s, three times the slowest such row of an earlier
+ *  version, 144.9 s, in 12 runs on two CPUs shared with eight busy loops and five other runs of the
+ *  four files (these rows' slowest in 12 such runs: 91.0 s), so a loaded dev box does not stop a
+ *  correct run. */
+const probingRowTimeout = 435_000;
+
+/** One row that reaches the probes, as `row` with `probingRowTimeout`. */
 export function probingRow(skip: boolean) {
-  return (name: string, body: () => Promise<void>) => test.skipIf(skip)(name, body, 435_000);
+  return (name: string, body: () => Promise<void>) =>
+    test.skipIf(skip)(name, body, probingRowTimeout);
 }
+
+/** The bound every run here gives each of the script's two reads of its origin, to connect and in
+ *  all (`OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS` and `OUTSIDE_PATH_ORIGIN_READ_SECONDS`): twice the
+ *  longest row's timeout. The fake Dispatch answers from a process of its own, which a loaded host
+ *  can keep off the CPU past the script's own 3 s and 10 s; under this bound such a read is late,
+ *  and only the row's own timeout ends a run whose fake never answers. A row that reads the
+ *  script's own defaults sets both empty. */
+const originSeconds = String((2 * probingRowTimeout) / 1000);
 
 /** A bash loop that waits until `file` exists, with no limit but this test process's life: once
  *  this process has gone it ends the waiting shell with status 70, so no waiter outlives this test
@@ -393,15 +405,18 @@ export function reachFixtures() {
   const scratch = temporaryDirectory("outside-path-reach", { root: memoryRoot() });
 
   /** The environment every run of the script starts with, whether `drive` or `driveEach` starts
-   *  it: HOME `home`, PATH the host's unless `path` names another, TMPDIR this process's, and the
-   *  flag that lets the script take the harness's http origin. A change to how a run is started
-   *  goes here, so the two helpers cannot drift apart. */
+   *  it: HOME `home`, PATH the host's unless `path` names another, TMPDIR this process's, the
+   *  flag that lets the script take the harness's http origin, and `originSeconds` for the two
+   *  reads of the origin. A change to how a run is started goes here, so the two helpers cannot
+   *  drift apart. */
   function runEnvironment(home: string, path: string | undefined): Record<string, string> {
     return {
       HOME: home,
       PATH: path ?? process.env.PATH ?? "",
       TMPDIR: tmpdir(),
       OUTSIDE_PATH_ALLOW_HTTP: "1",
+      OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS: originSeconds,
+      OUTSIDE_PATH_ORIGIN_READ_SECONDS: originSeconds,
     };
   }
 
