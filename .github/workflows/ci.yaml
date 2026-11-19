@@ -2466,7 +2466,7 @@ jobs:
               # web, e2e and server-side tests import.
               - 'packages/test-fixtures/src/**'
               # The contracts modules this job's two tsc programs compile and no other (the
-              # web/vite.config.ts:117-126 aliases point at the same sources): not legion-api.ts.
+              # web/vite.config.ts:117-123 aliases point at the same sources): not legion-api.ts.
               # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
               # tsc programs compile. An edit by hand is refused by that check, which writes these.
               - 'packages/contracts/src/actor-label.ts'

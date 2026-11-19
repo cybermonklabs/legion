@@ -180,7 +180,7 @@ jobs:
       # dispatch-browser.yaml's shard job's step of this name, for the reason it gives: Playwright's
       # Node runner reads `@legion/contracts` out of a build this checkout has to make before the
       # config loads, and the entries Dispatch imports are all it needs. `build:dispatch` bundles
-      # those four and so compiles no module outside the set this job's filter lists - not
+      # those three and so compiles no module outside the set this job's filter lists - not
       # ./legion-api, which nothing of this job loads. `bun run e2e:multiprocess` below makes the
       # same build again (packages/dispatch's build:contracts).
       - name: Build contracts for dispatch e2e
