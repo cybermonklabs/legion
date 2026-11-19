@@ -29,12 +29,12 @@ async function inboxCardsReady(page: Page): Promise<void> {
   await expect(page.getByRole("button", { name: /^Later \(1\)/ })).toBeVisible();
 }
 
-/** The row of the spec's decision block, which both Inbox shots are of. */
+/** The row of the spec's ask block, which both Inbox shots are of. */
 function signInRow(page: Page): Locator {
   return page.locator("[data-inbox-row]").filter({ hasText: "Which sign-in path?" });
 }
 
-/** The spec is live in the editor with its decision block hosted and the margin filled. */
+/** The spec is live in the editor with its ask block hosted and the margin filled. */
 async function specReady(page: Page, seeded: DispatchWorkspace): Promise<void> {
   const editor = page.getByRole("textbox", { name: "Document editor" });
   await expect(editor).toContainText("Local testing workflow");
@@ -55,7 +55,7 @@ const dispatch: ShotSet<DispatchWorkspace> = {
   shots: [
     {
       id: "inbox",
-      alt: "The Dispatch Inbox in two columns: the list of open questions and unread threads on the left, grouped by priority, and the selected question, a decision block, open in its own document on the right.",
+      alt: "The Dispatch Inbox in two columns: the list of open questions and unread threads on the left, grouped by priority, and the selected question, an ask block, open in its own document on the right.",
       route: "/",
       viewport: "desktop",
       theme: "light",
@@ -89,7 +89,7 @@ const dispatch: ShotSet<DispatchWorkspace> = {
     },
     {
       id: "issue-spec",
-      alt: "An issue's spec in the editor, with a decision block in the document and a comment thread in the margin.",
+      alt: "An issue's spec in the editor, with an ask block in the document and a comment thread in the margin.",
       route: spec,
       viewport: "desktop",
       theme: "light",

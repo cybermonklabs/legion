@@ -194,14 +194,16 @@ func (p *PgVersioned) Head(ctx context.Context, room string) (persistence.Versio
 	return p.head(ctx, rooms, room)
 }
 
-// DocumentStamp is the room's DocumentStamp now, read through the pool that owns loads, as Head
-// reads the head.
-func (p *PgVersioned) DocumentStamp(ctx context.Context, room string) (DocumentStamp, error) {
+// DocumentStamp is, read through the pool that owns loads as Head reads the head, the room
+// artifactID's document is edited in and the DocumentStamp of that room's stored history now, in
+// one round trip (readDocumentStamp): a document converted into an issue room is read at its
+// room's stamp, and a read of an issue room asks it by the room's own id.
+func (p *PgVersioned) DocumentStamp(ctx context.Context, artifactID string) (string, DocumentStamp, error) {
 	rooms, err := p.store.Pool.Rooms()
 	if err != nil {
-		return DocumentStamp{}, err
+		return "", DocumentStamp{}, err
 	}
-	return readDocumentStamp(ctx, rooms, room)
+	return readDocumentStamp(ctx, rooms, artifactID)
 }
 
 // AppendUpdate validates and stores one incremental V1 update as content: a batch of one
@@ -233,11 +235,18 @@ func (p *PgVersioned) AppendParkedUpdate(ctx context.Context, room string, updat
 // that allocation is what the garbage collector then charged the writes after it on a two-core
 // pod (sjawhar/legion#2519). Bytes a caller sends, which no document encoded, are decoded as
 // they were (PgVersioned.AppendUpdatesWithCredit).
-func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool) (persistence.Version, error) {
+//
+// It is a room entry point that takes a document's id: it resolves and locks the room that
+// document is edited in, in one statement (lockArtifactRoom), and appends only where that room is
+// artifactID itself. An update its caller built on a document's own Yjs document - a settlement's
+// repair of the document's room, a live write, a seed - is refused once the document moved into
+// its issue's room (ErrRoomMoved, dispatch://INFRA-1253 R5), and a write to the issue's room
+// addresses it by its tree artifact's own id.
+func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, artifactID string, update []byte, contentChanged bool) (persistence.Version, error) {
 	if err := refuseUpdateItemCap(update); err != nil {
 		return 0, err
 	}
-	return p.appendUpdateTxClass(ctx, tx, room, update, contentChanged, appendDerived)
+	return p.appendUpdateTxClass(ctx, tx, artifactID, update, contentChanged, appendDerived)
 }
 
 // lockDocumentRoom serializes every durable mutation of one document, which holds because one
@@ -292,6 +301,14 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 // both, such as an upload appending its event after writing the document, still deadlocks
 // against a settlement if it takes them the other way round: two exclusive holds of one owner's
 // advisory lock conflict with each other.
+//
+// Room. It locks the room its caller names, and resolves nothing: every caller here works on one
+// room whose name it holds - a room instance's appends, its compaction, a prune, a rebuild, a
+// deletion - and a room a document's conversion left behind (document_rooms) is still that room,
+// whose rows stay where they are. Resolving here would take such a caller's work to the issue's
+// room: a deletion or a prune of the old room would delete the issue room's history. The append
+// gate refuses what such a room would store (ErrRoomMoved). An entry point that takes a document's
+// id from outside resolves it first instead (lockArtifactRoom, roomOf).
 func lockDocumentRoom(ctx context.Context, tx pgx.Tx, room string) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1))`, room); err != nil {
 		return fmt.Errorf("lock document room: %w", err)
@@ -299,15 +316,34 @@ func lockDocumentRoom(ctx context.Context, tx pgx.Tx, room string) error {
 	return nil
 }
 
-// LockDocumentRoom takes the room's lock of the document artifactID inside tx, for a transaction
-// of another package that must hold it before it reads live state. It is lockDocumentRoom under
-// a name outside this package, as AnnounceDocumentRemoved is for a removal's notification: a
-// package function taking the caller's transaction, needing no room and no state of this process.
+// lockArtifactRoomStatement resolves the room the document $1 (text) is edited in, as
+// DocumentRoomOfStatement does, and takes that room's lock, in one statement.
+var lockArtifactRoomStatement = `
+	select resolved.room
+	from (` + DocumentRoomOfStatement + `) resolved
+	cross join lateral (select pg_advisory_xact_lock(hashtext(resolved.room))) locked`
+
+// lockArtifactRoom is lockDocumentRoom for an entry point that takes a document's id: it locks the
+// room the document is edited in, its document_rooms row's room or the document itself, and
+// answers that room, in one round trip.
+func lockArtifactRoom(ctx context.Context, tx pgx.Tx, artifactID string) (string, error) {
+	var room string
+	if err := tx.QueryRow(ctx, lockArtifactRoomStatement, artifactID).Scan(&room); err != nil {
+		return "", fmt.Errorf("lock document room: %w", err)
+	}
+	return room, nil
+}
+
+// LockDocumentRoom takes the lock of the room the document artifactID is edited in inside tx
+// (lockArtifactRoom), for a transaction of another package that must hold it before it reads live
+// state. It is a package function taking the caller's transaction, as AnnounceDocumentRemoved is
+// for a removal's notification, needing no room and no state of this process.
 //
 // A caller outside this package takes the owner's lock before this lock, which is the order the
 // rule above requires.
 func LockDocumentRoom(ctx context.Context, tx pgx.Tx, artifactID string) error {
-	return lockDocumentRoom(ctx, tx, artifactID)
+	_, err := lockArtifactRoom(ctx, tx, artifactID)
+	return err
 }
 
 // headUnderDocumentLock takes the document's advisory lock in tx (lockDocumentRoom) and reads the
@@ -748,15 +784,21 @@ func (p *PgVersioned) Delete(ctx context.Context, room string) error {
 	})
 }
 
-// headVersion is the SQL expression for the version a room's stored history stands at, for the room
-// $1 names: a prune's checkpoint ceiling while one stands, otherwise the greatest stored version, 0
-// for none. Every query that reads the head builds on it (head, readDocumentStamp, ListVersions,
-// GetUpdate), so what counts as the head cannot change for one of them and not the others.
-const headVersion = `coalesce(
-	(select ceiling from doc_checkpoints where artifact_id = $1),
-	(select max(version) from doc_updates where artifact_id = $1),
+// headVersionOf is the SQL expression for the version a room's stored history stands at, for the
+// room the uuid SQL expression room names: a prune's checkpoint ceiling while one stands, otherwise
+// the greatest stored version, 0 for none. Every query that reads the head builds on it (head,
+// readDocumentStamp, ListVersions, GetUpdate), so what counts as the head cannot change for one of
+// them and not the others.
+func headVersionOf(room string) string {
+	return `coalesce(
+	(select ceiling from doc_checkpoints where artifact_id = ` + room + `),
+	(select max(version) from doc_updates where artifact_id = ` + room + `),
 	0
 )`
+}
+
+// headVersion is the head of the room $1 names (headVersionOf).
+var headVersion = headVersionOf("$1")
 
 func (p *PgVersioned) head(ctx context.Context, q Queryer, room string) (persistence.Version, error) {
 	var version int64

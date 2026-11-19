@@ -871,6 +871,42 @@ func TestMeaningSearchFindsACommentByItsBestBlock(t *testing.T) {
 	}
 }
 
+// TestMeaningSearchFindsADocumentOfAnIssueRoomByItsBestBlock: the spec of an issue born converted
+// is a document of its issue's room, whose index keeps the texts of the spec's blocks under the
+// room's tree artifact. Its three paragraphs are embedded as one window, and a hit on that window
+// names the paragraph whose own text ranks highest for the query, its text read where the index
+// keeps it (refs.DocumentRoomTextsSQL), not the window's first paragraph.
+func TestMeaningSearchFindsADocumentOfAnIssueRoomByItsBestBlock(t *testing.T) {
+	const query = "theodolite recalibration"
+	const best = "The theodolite needs recalibration before the survey."
+	embedder := &fakeEmbedder{vectors: map[string][]float32{query: queryVector()}}
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, "RBEST", "Survey gear",
+		"Alpha notes on the mounting bracket.\n\nBeta notes on the tripod legs.\n\n"+best+"\n")
+	if spec := readDecisionDocument(t, database, issue.Key, "spec"); spec.room == spec.id {
+		t.Fatalf("the spec of %s is its own room, want it converted into its issue's room", issue.Key)
+	}
+	block := blockIDsByText(t, handler, issue.PrimaryArtifactID)[best]
+	if block == "" {
+		t.Fatalf("the spec of %s lists no block holding %q", issue.Key, best)
+	}
+	windowOwedOwners(t, deps)
+	if windows := windowTexts(t, database, "document_block", issue.PrimaryArtifactID); len(windows) != 1 {
+		t.Fatalf("the spec's windows = %v, want one window over its three paragraphs", windows)
+	}
+	embedWindowsAs(t, database, embedder, "document_block", issue.PrimaryArtifactID, angledVector(0.9, 2))
+	processAllPending(t, database, embedder)
+
+	response := searchResponse(t, handler, "q="+url.QueryEscape(query))
+	if response.Degraded != "" {
+		t.Fatalf("Degraded = %q, want empty", response.Degraded)
+	}
+	hit := searchHit(t, response, "document", issue.PrimaryArtifactID)
+	if hit.BlockID == nil || *hit.BlockID != block {
+		t.Fatalf("block_id = %v, want %q, the paragraph holding the query's words", hit.BlockID, block)
+	}
+}
+
 // TestALongBlocksTailIsFoundByMeaning is what windows are for: one document block longer than
 // embed.MaxInputRunes, whose only distinctive passage is at its end. The whole-text row this
 // replaced carried the document's first MaxInputRunes runes, so that passage had no vector and

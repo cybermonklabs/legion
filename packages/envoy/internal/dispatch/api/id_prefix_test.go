@@ -85,6 +85,24 @@ func seedAsk(t *testing.T, database *store.Store, issueKey, id, question string)
 	seedAskOpenedEvent(t, database, issueKey, id)
 }
 
+// seedQuestionBlockAsk writes the ask a settlement writes for the question block q1 of document,
+// with a chosen id and its opened event, keyed as the room's settlement keys it: its row names the
+// room the document is edited in as its block_artifact_id, and on a converted issue the room's
+// issue_room_blocks row names the document whose fragment holds q1 (refs.AsksOfDocumentSQL).
+func seedQuestionBlockAsk(t *testing.T, database *store.Store, issueKey, id, document string) {
+	t.Helper()
+	seedExec(t, database, "the question block's place in the room", `
+		insert into issue_room_blocks (tree_artifact_id, block_id, document_id)
+		select room, 'q1', $1::uuid from (select `+refs.DocumentRoomSQL("$1::uuid")+` as room) placed
+		where room <> $1::uuid
+	`, document)
+	seedExec(t, database, "the ask settled for the question block", `
+		insert into asks (id, issue_key, author, question, block_artifact_id, block_id)
+		values ($1::uuid, $2, $3::jsonb, 'Which way?', `+refs.DocumentRoomSQL("$4::uuid")+`, 'q1')
+	`, id, issueKey, idPrefixAuthor, document)
+	seedAskOpenedEvent(t, database, issueKey, id)
+}
+
 // newIDPrefixFixture seeds PRE-1 with three asks, three comments, three issue messages and
 // three documents: one of each under the prefix its kind's test resolves, and two under the
 // prefix that names two. The ids are written here, not drawn, so "a0000001" names exactly one
@@ -642,11 +660,7 @@ func TestTheQuestionMapRouteAnswersEverySourceKind(t *testing.T) {
 	`, issue.PrimaryArtifactID, "# Spec\n\n:::ask{#q1}\nWhich way?\n:::\n")
 
 	blockAsk := chosenID("ba000001", 1)
-	seedExec(t, database, "the ask settled for the question block", `
-		insert into asks (id, issue_key, author, question, block_artifact_id, block_id)
-		values ($1::uuid, $2, $3::jsonb, 'Which way?', $4::uuid, 'q1')
-	`, blockAsk, issue.Key, idPrefixAuthor, issue.PrimaryArtifactID)
-	seedAskOpenedEvent(t, database, issue.Key, blockAsk)
+	seedQuestionBlockAsk(t, database, issue.Key, blockAsk, issue.PrimaryArtifactID)
 	comment := chosenID("bc000001", 1)
 	seedExec(t, database, "a comment of the issue", `
 		insert into comments (id, issue_key, author, body) values ($1::uuid, $2, $3::jsonb, 'A remark.')
@@ -730,11 +744,7 @@ func TestTheQuestionMapRouteReadsEveryUuidSpellingAsTheCanonicalID(t *testing.T)
 		values ($1::uuid, (select coalesce(max(number), 0) + 1 from artifact_versions where artifact_id = $1::uuid), $2)
 	`, issue.PrimaryArtifactID, "# Spec\n\n:::ask{#q1}\nWhich way?\n:::\n")
 	blockAsk := chosenID("ca000001", 1)
-	seedExec(t, database, "the ask settled for the question block", `
-		insert into asks (id, issue_key, author, question, block_artifact_id, block_id)
-		values ($1::uuid, $2, $3::jsonb, 'Which way?', $4::uuid, 'q1')
-	`, blockAsk, issue.Key, idPrefixAuthor, issue.PrimaryArtifactID)
-	seedAskOpenedEvent(t, database, issue.Key, blockAsk)
+	seedQuestionBlockAsk(t, database, issue.Key, blockAsk, issue.PrimaryArtifactID)
 
 	type questionsAnswer struct {
 		Document  string `json:"document"`

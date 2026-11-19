@@ -345,6 +345,12 @@ func readGates(value *yaml.Node, key string) (*Gates, error) {
 // A step named twice is refused rather than collapsed, as a repeated merge rule is
 // (readPathPatterns): one gate record is kept for each step, so the second name is either a
 // mistake or an order the daemon cannot keep.
+//
+// The `decisions` step is refused by name (removedDecisionsStep), since a file written for a
+// release that gated it means a step that is gone rather than a word nobody ever meant: the
+// refusal says where a person's decisions are now and which step to gate for them. It is refused
+// because it is not one of record.DesignSteps, the list every step is checked against, and the
+// name only chooses the words.
 func readDesignSteps(value *yaml.Node, key string) ([]record.DesignStep, error) {
 	names := record.StepWords()
 	refusal := fmt.Errorf("%s must be a list of %s, or 'root-issues' for the single step 'spec', or 'off' for no step", key, names)
@@ -367,6 +373,10 @@ func readDesignSteps(value *yaml.Node, key string) ([]record.DesignStep, error) 
 		}
 		step := record.DesignStep(entry.Value)
 		if !step.Valid() {
+			if entry.Value == removedDecisionsStep {
+				return nil, fmt.Errorf("%s[%d] names the 'decisions' step, which is gone: decisions are nodes of the spec, "+
+					"so gate 'spec' to have a person approve them; %s[%d] must be %s", key, index, key, index, names)
+			}
 			return nil, fmt.Errorf("%s[%d] must be %s", key, index, names)
 		}
 		if slices.Contains(steps, step) {
@@ -376,6 +386,11 @@ func readDesignSteps(value *yaml.Node, key string) ([]record.DesignStep, error) 
 	}
 	return steps, nil
 }
+
+// removedDecisionsStep is the `gates.design` step an earlier release gated on the root issue's
+// decisions document, which is gone: a person's decisions are nodes of the spec, and the spec
+// step's approval covers them (readDesignSteps).
+const removedDecisionsStep = "decisions"
 
 func readGitHubApps(value *yaml.Node, key string) (*GitHubApps, error) {
 	if value.Tag == "!!null" || value.Kind != yaml.MappingNode {

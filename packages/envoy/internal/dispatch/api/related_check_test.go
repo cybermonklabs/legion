@@ -617,7 +617,7 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 	}
 }
 
-// An edit's decision blocks are all checked under one allowance of the edit's own, and that
+// An edit's ask blocks are all checked under one allowance of the edit's own, and that
 // context ends with the check's own cause (relatedBounds): a keyword stage held past it answers
 // every block that its check was not made for time, and records each as timeout. Were the cause
 // left off, each block's check would read its context's end as the request that ran it going away
@@ -654,7 +654,7 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 		t.Fatalf("release the lock: %v", err)
 	}
 	if len(checks) != len(blocks) {
-		t.Fatalf("decision block checks = %+v, want one per block", checks)
+		t.Fatalf("ask block checks = %+v, want one per block", checks)
 	}
 	for index, check := range checks {
 		suggestions := check.Suggestions
@@ -675,7 +675,7 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 		rows[row.BlockID] = row
 	}
 	if len(rows) != len(blocks) {
-		t.Fatalf("decision block related_checks rows = %+v, want one per block", rows)
+		t.Fatalf("ask block related_checks rows = %+v, want one per block", rows)
 	}
 	for _, block := range blocks {
 		row := rows[block.ID]

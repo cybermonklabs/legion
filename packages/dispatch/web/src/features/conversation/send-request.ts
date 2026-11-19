@@ -289,9 +289,15 @@ function attempt(
   const targets = survivingMentions(body, mentions).map((mention) => mention.target);
   const baseBody = kind === "suggestion" && body.trim() === "" ? "Suggested replacement." : body;
   const plan = deliveryPlan(baseBody, targets.length === 0 ? undefined : plainDelivery);
+  // A reply under an ask names the ask (`ask_id`), and a reply to a comment names the comment
+  // (`reply_to`): the server reads `reply_to` as a comment's id alone.
   const comment: CreateCommentInput = {
     body: plan.body,
-    ...(replyTo === null ? {} : { reply_to: replyTo.id }),
+    ...(replyTo === null
+      ? {}
+      : replyTo.parentKind === "ask"
+        ? { ask_id: replyTo.id }
+        : { reply_to: replyTo.id }),
     ...(kind === "suggestion" ? { suggestion: { replace_with: replacement } } : {}),
     ...(targets.length === 0
       ? {}

@@ -17,10 +17,15 @@ import (
 )
 
 // InjectSchemaInvalidForTest writes the malformed element a crafted client can persist. It is
-// mounted only through Dispatch's test-hook route.
+// mounted only through Dispatch's test-hook route. A document of an issue room is written through
+// its room, into its own fragment of it (targetOf).
 func (s *Service) InjectSchemaInvalidForTest(ctx context.Context, artifactID string) error {
-	return s.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
-		fragment := doc.GetXmlFragment(fragmentName)
+	target, err := s.targetOf(ctx, artifactID)
+	if err != nil {
+		return err
+	}
+	return s.srv.Apply(ctx, target.room, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
+		fragment := doc.GetXmlFragment(target.fragment)
 		transact(func(transaction *crdt.Transaction) {
 			fragment.InsertElement(transaction, 0, crdt.NewYXmlElement("callout"))
 		})
@@ -35,10 +40,15 @@ const UnknownElementForTest = "test_newer_block"
 // this build does not know (UnknownElementForTest), holding one paragraph. Two builds serve one
 // database during a release, and a newer build writes such an element where it creates an element
 // this build lacks. The element is well formed, so the document is newer content
-// (ErrDocNewerContent), not a tree outside the schema.
+// (ErrDocNewerContent), not a tree outside the schema. A document of an issue room is written
+// through its room, into its own fragment of it (targetOf).
 func (s *Service) InjectUnknownElementForTest(ctx context.Context, artifactID string) error {
-	return s.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
-		fragment := doc.GetXmlFragment(fragmentName)
+	target, err := s.targetOf(ctx, artifactID)
+	if err != nil {
+		return err
+	}
+	return s.srv.Apply(ctx, target.room, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
+		fragment := doc.GetXmlFragment(target.fragment)
 		transact(func(transaction *crdt.Transaction) {
 			element := crdt.NewYXmlElement(UnknownElementForTest)
 			fragment.InsertElement(transaction, len(fragment.Children()), element)
@@ -68,13 +78,18 @@ func (s *Service) ResumeOwedSettlementsForTest(ctx context.Context, age time.Dur
 	return s.resumeOwedSettlements(ctx, age)
 }
 
-// AppendRenderOnlySchemaViolationForTest appends to artifactID's stored history a tree the
-// validator reads and the renderer refuses: a checked task whose empty first paragraph precedes a
-// heading has no markdown the browser reads back as a task. Tests here and in package api build
+// AppendRenderOnlySchemaViolationForTest appends to the stored history of the room artifactID's
+// document is edited in (roomOf) a tree the validator reads and the renderer refuses, in the
+// document's own fragment of it (fragmentOf): a checked task whose empty first paragraph precedes
+// a heading has no markdown the browser reads back as a task. Tests here and in package api build
 // that history with it, while no room holds the document.
 func AppendRenderOnlySchemaViolationForTest(ctx context.Context, database *store.Store, artifactID string) error {
+	room, err := roomOf(ctx, database.Pool, artifactID)
+	if err != nil {
+		return err
+	}
 	doc := crdt.New()
-	fragment := doc.GetXmlFragment(fragmentName)
+	fragment := doc.GetXmlFragment(fragmentOf(room, artifactID))
 	tree := &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{{
 		Type: "bullet_list",
 		Children: []*pmdoc.Node{{
@@ -91,7 +106,7 @@ func AppendRenderOnlySchemaViolationForTest(ctx context.Context, database *store
 	}); err != nil {
 		return fmt.Errorf("write render-only violation: %w", err)
 	}
-	if _, err := NewPgVersioned(database).AppendUpdate(ctx, artifactID, crdt.EncodeStateAsUpdateV1(doc, nil)); err != nil {
+	if _, err := NewPgVersioned(database).AppendUpdate(ctx, room, crdt.EncodeStateAsUpdateV1(doc, nil)); err != nil {
 		return fmt.Errorf("persist render-only violation: %w", err)
 	}
 	return nil
@@ -133,12 +148,17 @@ var OutsideSchemaCorruptionsForTest = []OutsideSchemaCorruptionForTest{
 		Refusal: `mark "strong" attributes: want object, got bool`},
 }
 
-// AppendStoredChangeForTest appends to artifactID's stored history the update change makes to
-// its stored document: the update a crafted document websocket client can send, written below
-// pmdoc.Update's validation while no room holds the document.
+// AppendStoredChangeForTest appends to the stored history of the room artifactID's document is
+// edited in (roomOf) the update change makes to the document's own fragment of it (fragmentOf):
+// the update a crafted document websocket client can send, written below pmdoc.Update's
+// validation while no room holds the document.
 func AppendStoredChangeForTest(ctx context.Context, database *store.Store, artifactID string, change func(*crdt.Transaction, *crdt.YXmlFragment) error) error {
+	room, err := roomOf(ctx, database.Pool, artifactID)
+	if err != nil {
+		return err
+	}
 	versioned := NewPgVersioned(database)
-	loaded, err := versioned.Load(ctx, artifactID)
+	loaded, err := versioned.Load(ctx, room)
 	if err != nil {
 		return fmt.Errorf("load document before crafted update: %w", err)
 	}
@@ -147,14 +167,34 @@ func AppendStoredChangeForTest(ctx context.Context, database *store.Store, artif
 		return fmt.Errorf("decode document before crafted update: %w", err)
 	}
 	before := doc.StateVector()
-	fragment := doc.GetXmlFragment(fragmentName)
+	fragment := doc.GetXmlFragment(fragmentOf(room, artifactID))
 	if err := doc.TransactE(func(transaction *crdt.Transaction) error { return change(transaction, fragment) }); err != nil {
 		return err
 	}
-	if _, err := versioned.AppendUpdate(ctx, artifactID, crdt.EncodeStateAsUpdateV1(doc, before)); err != nil {
+	if _, err := versioned.AppendUpdate(ctx, room, crdt.EncodeStateAsUpdateV1(doc, before)); err != nil {
 		return fmt.Errorf("append crafted update: %w", err)
 	}
 	return nil
+}
+
+// StoredTreeForTest is artifactID's document tree as its stored history holds it now: its own
+// fragment (fragmentOf) of the room it is edited in (roomOf), the state a room loads, which every
+// update a settlement wrote into the live document is part of once it commits. Tests in package
+// api read a settlement's repairs of the live tree through it.
+func StoredTreeForTest(ctx context.Context, database *store.Store, artifactID string) (*pmdoc.Node, error) {
+	room, err := roomOf(ctx, database.Pool, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	loaded, err := NewPgVersioned(database).Load(ctx, room)
+	if err != nil {
+		return nil, fmt.Errorf("load the stored document: %w", err)
+	}
+	doc := crdt.New()
+	if err := decodeStoredState(doc, loaded.Update); err != nil {
+		return nil, fmt.Errorf("decode the stored document: %w", err)
+	}
+	return pmdoc.Read(doc.GetXmlFragment(fragmentOf(room, artifactID)))
 }
 
 // appendTextMark persists attrs, one mark, over the whole of the document's first text, so that
@@ -187,24 +227,34 @@ func appendMarkedCodeBlock(ctx context.Context, database *store.Store, artifactI
 }
 
 // appendSchemaInvalidUpdate persists the element a crafted client can write, which the tree
-// reader refuses.
+// reader refuses, into the document's own fragment (fragmentOf) of the room it is edited in
+// (roomOf).
 func appendSchemaInvalidUpdate(ctx context.Context, database *store.Store, artifactID string) error {
+	room, err := roomOf(ctx, database.Pool, artifactID)
+	if err != nil {
+		return err
+	}
 	doc := crdt.New()
-	fragment := doc.GetXmlFragment(fragmentName)
+	fragment := doc.GetXmlFragment(fragmentOf(room, artifactID))
 	doc.Transact(func(transaction *crdt.Transaction) {
 		fragment.InsertElement(transaction, 0, crdt.NewYXmlElement("callout"))
 	})
-	if _, err := NewPgVersioned(database).AppendUpdate(ctx, artifactID, crdt.EncodeStateAsUpdateV1(doc, nil)); err != nil {
+	if _, err := NewPgVersioned(database).AppendUpdate(ctx, room, crdt.EncodeStateAsUpdateV1(doc, nil)); err != nil {
 		return fmt.Errorf("append crafted document update: %w", err)
 	}
 	return nil
 }
 
 // appendTextEmbed persists the update a crafted document websocket client can send: an embed in
-// the first paragraph's text, which the tree reader refuses and pmdoc.Update cannot diff against.
+// the first paragraph's text, which the tree reader refuses and pmdoc.Update cannot diff against,
+// in the document's own fragment (fragmentOf) of the room it is edited in (roomOf).
 func appendTextEmbed(ctx context.Context, database *store.Store, artifactID string) error {
+	room, err := roomOf(ctx, database.Pool, artifactID)
+	if err != nil {
+		return err
+	}
 	versioned := NewPgVersioned(database)
-	loaded, err := versioned.Load(ctx, artifactID)
+	loaded, err := versioned.Load(ctx, room)
 	if err != nil {
 		return fmt.Errorf("load document before crafted embed: %w", err)
 	}
@@ -214,7 +264,7 @@ func appendTextEmbed(ctx context.Context, database *store.Store, artifactID stri
 	}
 	before := doc.StateVector()
 	var text *crdt.YXmlText
-	for _, block := range doc.GetXmlFragment(fragmentName).Children() {
+	for _, block := range doc.GetXmlFragment(fragmentOf(room, artifactID)).Children() {
 		if paragraph, ok := block.(*crdt.YXmlElement); ok && paragraph.NodeName == "paragraph" {
 			for _, child := range paragraph.Children() {
 				if found, ok := child.(*crdt.YXmlText); ok {
@@ -229,7 +279,7 @@ func appendTextEmbed(ctx context.Context, database *store.Store, artifactID stri
 	doc.Transact(func(transaction *crdt.Transaction) {
 		text.InsertEmbed(transaction, 0, map[string]any{"image": "crafted"}, nil)
 	})
-	if _, err := versioned.AppendUpdate(ctx, artifactID, crdt.EncodeStateAsUpdateV1(doc, before)); err != nil {
+	if _, err := versioned.AppendUpdate(ctx, room, crdt.EncodeStateAsUpdateV1(doc, before)); err != nil {
 		return fmt.Errorf("append crafted embed: %w", err)
 	}
 	return nil
@@ -238,10 +288,15 @@ func appendTextEmbed(ctx context.Context, database *store.Store, artifactID stri
 // AppendNestedLinkForTest persists a link over the first text whose value is the string "x" inside
 // 100 nested arrays, one level more than a mark's attribute may: the update a crafted document
 // websocket client can send, and what a server whose bound did not count the map ygo stores a mark
-// as could write.
+// as could write. It is written into the document's own fragment (fragmentOf) of the room it is
+// edited in (roomOf).
 func AppendNestedLinkForTest(ctx context.Context, database *store.Store, artifactID string) error {
+	room, err := roomOf(ctx, database.Pool, artifactID)
+	if err != nil {
+		return err
+	}
 	versioned := NewPgVersioned(database)
-	loaded, err := versioned.Load(ctx, artifactID)
+	loaded, err := versioned.Load(ctx, room)
 	if err != nil {
 		return fmt.Errorf("load document before crafted link: %w", err)
 	}
@@ -249,11 +304,11 @@ func AppendNestedLinkForTest(ctx context.Context, database *store.Store, artifac
 	if err := decodeStoredState(doc, loaded.Update); err != nil {
 		return fmt.Errorf("decode document before crafted link: %w", err)
 	}
-	update, err := crafted.NestedLinkUpdate(doc, crafted.NestedValue(100))
+	update, err := crafted.NestedLinkUpdate(doc, fragmentOf(room, artifactID), crafted.NestedValue(100))
 	if err != nil {
 		return err
 	}
-	if _, err := versioned.AppendUpdate(ctx, artifactID, update); err != nil {
+	if _, err := versioned.AppendUpdate(ctx, room, update); err != nil {
 		return fmt.Errorf("append crafted link: %w", err)
 	}
 	return nil
@@ -315,8 +370,8 @@ func (r *renderRecord) rendered() []string {
 // the render answered - the empty string for a render that failed, which is a rendering made all
 // the same. Every rendering of a whole document goes through one of its callers, so what a read
 // or a write costs in renderings is what it records. A rendering of a tree derived from a
-// document - the copy without ask blocks an approval carry compares (renderWithoutAskBlocks), a
-// single block (renderBlock) - is not one of them.
+// document - the versions an approval carry compares with their ask attributes taken off
+// (carryVerdict), a single block (renderBlock) - is not one of them.
 func countDocumentRender(markdown string) {
 	if record := documentRenders.Load(); record != nil {
 		record.record(markdown)

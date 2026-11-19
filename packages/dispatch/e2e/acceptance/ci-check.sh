@@ -413,10 +413,14 @@ unconcluded() {
   no_line "$1" "$3 prints no fail either" "- $3 (before_merge): fail at"
 }
 
-# no_rows SECTION WHAT ARTIFACT BLOCK: check_results holds no row for block BLOCK of ARTIFACT.
+# no_rows SECTION WHAT ARTIFACT BLOCK: check_results holds no row for block BLOCK of ARTIFACT. A
+# result's row is keyed by the artifact its check's block row is keyed by: the document itself, or
+# the tree artifact of the issue room the document is edited in, whose block ids are unique.
 no_rows() {
   sql "$1" "$2" -v artifact="$3" -v block="$4" <<'SQL'
-select count(*) from check_results where check_artifact_id = :'artifact' and check_block_id = :'block';
+select count(*) from check_results
+where check_block_id = :'block'
+  and check_artifact_id in (:'artifact', coalesce((select room from document_rooms where artifact_id = :'artifact'), :'artifact'));
 SQL
   [[ "$(<"$work/sql")" == 0 ]] || fail "$1" "$2" "check_results holds $(<"$work/sql") rows for $4"
   pass "$1" "$2"
@@ -479,7 +483,8 @@ line k1 "a check carrying neither ci_check nor run is stored as it is today" \
 
 run k1 "record a tester's pass for c-held" result --issue "$k1" --check c-held --role tester \
   --verdict pass --commit "$held_commit" --surface cli --run "bash e2e/acceptance/ci-check.sh" \
-  --observed "the ci-check acceptance run recorded it"
+  --observed "the ci-check acceptance run recorded it" \
+  --negative-control "Deleted the check and the requirement read uncovered."
 pass k1 "recorded a tester's pass for c-held at $held_commit"
 version_of k1 "$k1"
 readonly k1_version="$version"
@@ -758,6 +763,7 @@ derived k3 "the run of the higher id decides: a fail, where the first listed pas
 readonly proved_refusal='check c-fresh is proved by CI run "contracts": dispatch results reads its result from that run, and no role records one'
 for role in tester implementer; do
   cli result --issue "$k1" --check c-fresh --role "$role" --verdict pass --commit "$plain_commit" \
+    --negative-control "Deleted the check and the requirement read uncovered." \
     >"$work/out" 2>&1 && fail k4 "the $role's result for c-fresh is refused" "it was recorded: $(<"$work/out")"
   line k4 "the $role's result for c-fresh is refused CHECK_PROVED_BY_CI, naming the block and the run" \
     "CHECK_PROVED_BY_CI: $proved_refusal"
@@ -765,7 +771,8 @@ done
 no_rows k4 "nothing is stored for c-fresh" "$k1_artifact" c-fresh
 run k4 "record a tester's pass for c-plain" result --issue "$k1" --check c-plain --role tester \
   --verdict pass --commit "$plain_commit" --surface cli --run "bash e2e/acceptance/ci-check.sh" \
-  --observed "the ci-check acceptance run recorded it"
+  --observed "the ci-check acceptance run recorded it" \
+  --negative-control "Deleted the check and the requirement read uncovered."
 pass k4 "the same call against c-plain, which carries no ci_check, is recorded"
 results k4 "$k1"
 grep -A3 -F -- "- c-plain (before_merge). " "$work/out" |

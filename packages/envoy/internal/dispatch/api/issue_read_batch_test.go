@@ -148,7 +148,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the artifacts: %v", err)
 	}
-	asks, replies, err := served.queryOwnerAsks(ctx, pool, issueOwner(issue.Key), "open")
+	asks, replies, err := served.queryOwnerAsks(ctx, pool, model.Actor{}, issueOwner(issue.Key), "open")
 	if err != nil {
 		t.Fatalf("load the open asks: %v", err)
 	}
@@ -170,7 +170,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the design gates: %v", err)
 	}
-	counts, err := refs.BacklinkCounts(ctx, pool, "issue", []string{issue.Key}, nil)
+	counts, err := refs.BacklinkCounts(ctx, pool, model.Actor{}, "issue", []string{issue.Key}, nil)
 	if err != nil {
 		t.Fatalf("count the issue's backlinks: %v", err)
 	}
@@ -353,13 +353,19 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 	// Every issue is created with its empty spec, and the route that removes a document is not
 	// one the API serves, so the issue whose read needs no second batch is made by taking its
 	// artifacts out from under it - once the document service has closed its rooms, so nothing
-	// settles what is no longer there. The delete runs on the untraced pool, outside the count.
+	// settles what is no longer there - with the rows of its issue room that name them: an issue
+	// born converted holds its tree in issue_trees, each document's room in document_rooms and
+	// the room's blocks in issue_room_blocks. The delete runs on the untraced pool, outside the
+	// count.
 	if err := deps.Docs.Quiesce(context.Background()); err != nil {
 		t.Fatalf("quiesce the documents: %v", err)
 	}
 	for _, statement := range []string{
 		`delete from artifact_versions where artifact_id in (select id from artifacts where issue_key = $1)`,
 		`delete from doc_updates where artifact_id in (select id from artifacts where issue_key = $1)`,
+		`delete from issue_room_blocks where tree_artifact_id in (select id from artifacts where issue_key = $1)`,
+		`delete from document_rooms where artifact_id in (select id from artifacts where issue_key = $1)`,
+		`delete from issue_trees where issue_key = $1`,
 		`delete from artifacts where issue_key = $1`,
 	} {
 		if _, err := database.Pool.Exec(context.Background(), statement, bareKey); err != nil {
@@ -406,7 +412,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 	served := directServer(deps)
 	ctx := context.Background()
 
-	if _, err := served.readIssue(ctx, fixture.key, false); err != nil {
+	if _, err := served.readIssue(ctx, model.Actor{}, fixture.key, false); err != nil {
 		t.Fatalf("read the issue: %v", err)
 	}
 	prepared := preparedStatementNames(t, deps.Store)
@@ -414,7 +420,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 		t.Fatal("the read prepared no statement, so a deallocation would not show here")
 	}
 
-	if _, err := served.readIssue(ctx, "NOPE-1", false); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := served.readIssue(ctx, model.Actor{}, "NOPE-1", false); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("read a missing issue: %v, want pgx.ErrNoRows", err)
 	}
 	after := preparedStatementNames(t, deps.Store)
@@ -423,7 +429,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 			t.Fatalf("the missing key's read left %s deallocated: %v are prepared, %v were", name, after, prepared)
 		}
 	}
-	if _, err := served.readIssue(ctx, fixture.key, false); err != nil {
+	if _, err := served.readIssue(ctx, model.Actor{}, fixture.key, false); err != nil {
 		t.Fatalf("read the issue after the missing key: %v", err)
 	}
 	if again := preparedStatementNames(t, deps.Store); len(again) != len(after) {

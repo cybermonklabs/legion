@@ -11,6 +11,7 @@ import type {
   WriteSuggestion,
 } from "@legion/contracts";
 import { bearerCredential } from "../bearer";
+import { documentPlaysPlan } from "../dispatch-commands/document-targets";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
 
@@ -1044,7 +1045,7 @@ describe("the related-item check", () => {
   });
 });
 
-describe("dispatch_doc_edit's decision block checks", () => {
+describe("dispatch_doc_edit's ask block checks", () => {
   const askBlock =
     ':::ask{urgency="med"}\nShould webhook deliveries back off exponentially?\n:::\n';
   const editArgs = {
@@ -1077,7 +1078,7 @@ describe("dispatch_doc_edit's decision block checks", () => {
             suggestions: {
               outcome: "not_made",
               related: [],
-              missing: "more than five new decision blocks in one edit",
+              missing: "more than five new ask blocks in one edit",
             },
           },
         ],
@@ -1087,11 +1088,11 @@ describe("dispatch_doc_edit's decision block checks", () => {
     expect(result.text).toBe(
       [
         appliedLine,
-        "Decision block ask-block-1:",
+        "Ask block ask-block-1:",
         "Related items (searched by keywords only: meaning search is off on this server):",
         "- DSP-7 [backlog] Webhook retries → http://dispatch.test/issues/DSP-7",
-        "Decision block ask-block-2:",
-        "No related-item check was made: more than five new decision blocks in one edit. Search before you rely on this being new: dispatch search --project DSP --query 'Which queue holds'",
+        "Ask block ask-block-2:",
+        "No related-item check was made: more than five new ask blocks in one edit. Search before you rely on this being new: dispatch search --project DSP --query 'Which queue holds'",
         "Document token: sha256:edited",
       ].join("\n")
     );
@@ -1107,7 +1108,7 @@ describe("dispatch_doc_edit's decision block checks", () => {
     expect(result.text).toBe(
       [
         appliedLine,
-        "1 new decision block:",
+        "1 new ask block:",
         "No related-item check was made: the server sent no check result. Search before you rely on this being new: dispatch search --project DSP --query 'Should webhook deliveries'",
         "Document token: sha256:edited",
       ].join("\n")
@@ -1138,7 +1139,7 @@ describe("dispatch_doc_edit's decision block checks", () => {
     expect(result.text).toBe(
       [
         appliedLine,
-        "1 new decision block:",
+        "1 new ask block:",
         "No related-item check was made: the server sent no check result. Search before you rely on this being new: dispatch search --project DSP --query 'Should webhook deliveries'",
         "Document token: sha256:edited",
       ].join("\n")
@@ -1160,7 +1161,7 @@ describe("dispatch_doc_edit's decision block checks", () => {
 // version, so the line is about that one write: what it stored, whose approval it staled, how that
 // approval comes back, and what the reader does next. The negative is the ordinary case - a write
 // on a document nobody approved, one whose approval was already stale, and one whose version
-// carried that approval forward (an answer to a decision block, or text the approved version held
+// carried that approval forward (an answer to an ask block, or text the approved version held
 // exactly, an undo among them) all arrive here with the field absent, and print nothing.
 //
 // The gate clause between the two is printed from `design_gates` alone, the issues whose design
@@ -1168,7 +1169,7 @@ describe("dispatch_doc_edit's decision block checks", () => {
 // a list that did not read as one all print the line without it.
 describe("a document write that superseded a person's approval", () => {
   const stored =
-    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no decision block in it decided since.";
+    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no ask block in it decided since.";
   const nextStep =
     "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the issue's architect, and keep the next one in a comment or in the plan.";
   const supersededLine = `${stored} ${nextStep}`;
@@ -1351,13 +1352,15 @@ describe("a document write that superseded a person's approval", () => {
   // with no role is still a plan and names `dispatch plan-approve`, while a project document named
   // plan.md is a plain document: a person's approval of it comes back through a request, which
   // Dispatch then accepts, and `dispatch plan-approve`, which takes an issue alone, cannot reach
-  // it. Each document is answered as Dispatch answers it: no role key on either.
+  // it. Each document is answered as Dispatch answers it: a markdown document, with no role key on
+  // either.
   const roleLessPlan = {
     id: "artifact-43",
     issue_key: "DSP-42",
     project: "DSP",
     name: "plan.md",
     slug: "plan-md",
+    kind: "doc",
     primary: false,
   };
   const projectPlan = {
@@ -1366,8 +1369,19 @@ describe("a document write that superseded a person's approval", () => {
     project: "DSP",
     name: "plan.md",
     slug: "plan-md",
+    kind: "doc",
     primary: false,
   };
+  // The slug fallback is Dispatch's own rule (documentPlays, api/artifacts.go): it names a
+  // role-less issue row a plan by its slug only when that row is a markdown document, the row a
+  // rolling deploy leaves, and never a file uploaded as plan.md, whose bytes are not markdown.
+  test.each([
+    ["a role-less doc with the slug plan-md", true, { ...roleLessPlan, kind: "doc" }],
+    ["a role-less file with the slug plan-md", false, { ...roleLessPlan, kind: "file" }],
+  ])("documentPlaysPlan of %s is %p", (_which, plays, document) => {
+    expect(documentPlaysPlan(document)).toBe(plays);
+  });
+
   test.each([
     ["dispatch_artifact", "an issue's plan.md with no role", planUpload, roleLessPlan, true],
     ["dispatch_doc_edit", "an issue's plan.md with no role", planEdit, roleLessPlan, true],
@@ -1990,7 +2004,7 @@ describe("the answered questions of other projects", () => {
     expect(result.text).toBe(
       [
         `Applied 1 ops (no new version) ${issueSuffix}`,
-        "Decision block ask-block-1:",
+        "Ask block ask-block-1:",
         "Related items (searched by meaning and keywords):",
         "- DSP-7 [backlog] Webhook retries → http://dispatch.test/issues/DSP-7",
         "Answered questions in other projects:",

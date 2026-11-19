@@ -1,6 +1,6 @@
 ---
 title: Documents
-description: Specs and other documents, versions, margin comments, suggestions, decision blocks, approvals, block links, and search.
+description: Specs and other documents, versions, margin comments, suggestions, ask blocks, approvals, block links, and search.
 sidebar:
   order: 3
 ---
@@ -79,17 +79,23 @@ A suggestion shows the text it would remove and the text it would add. A person 
 Anyone can propose a suggestion, with **Suggest** or through an agent's tools. Only a person can
 accept or reject one.
 
-## Decision blocks
+## Ask blocks
 
-A decision block is a question written into the document itself, at the end of the section it is
+An ask block is a question written into the document itself, at the end of the section it is
 about. It shows as a card with its urgency and the word **Decision**, and its options as rows you
 can pick. It is an ask like any other: it appears in your Inbox too, and an answer or **Ask back**
-made in either place shows in both.
+made in either place shows in both. Your answer is kept on the ask, not in the document's text,
+so answering writes no new version of the document.
 
-To edit a decision's options, click into its question. The option list appears for that block,
+To edit an ask block's options, click into its question. The option list appears for that block,
 and folds away again when you click elsewhere.
 
-When a document has open decisions, a link under the tab row jumps to the next one.
+When a document has open ask blocks, a link under the tab row, such as **2 open decisions**, jumps
+to the next one.
+
+A decision an agent made is a `decision` block in the spec's `## Decisions` part. It asks nothing.
+The issue's Decisions tab lists it for your review
+([Issues and projects](/legion/dispatch/issues-and-projects/#the-tabs)).
 
 ## Approvals
 
@@ -101,7 +107,7 @@ with the approval state:
 | --- | --- |
 | `Awaiting approval` | Approval was requested and nobody has reviewed this version yet. |
 | `Approved v12` | Version 12 is approved, and it is the latest version. |
-| `Approved v12 · changed since` | Version 12 was approved, then the document changed, other than by your own answer to a decision block (below). |
+| `Approved v12 · changed since` | Version 12 was approved, then a later version changed the document, and Dispatch did not carry the approval to it (below). |
 | `Changes requested` | A reviewer asked for changes. |
 
 Choose the chip to see the review history. Beside it:
@@ -113,18 +119,25 @@ Choose the chip to see the review history. Beside it:
 The request also reaches your Inbox as an **Approval requested** card. Answering either one is the
 same review. When you approved an earlier version of the document, the card puts
 `Approved at version N on <date> by <who>.` under the question, with a **Show diff** control that
-shows what changed between that version and the one you are asked to approve, with every decision
-block left out of both, so you read what changed outside the decisions you already made; the
+shows what changed between that version and the one you are asked to approve, with every ask
+block left out of both, so you read what changed outside the questions you already answered; the
 agent's summary names it in a sentence.
 
-Your own answer to a decision block in a document you approved carries your approval forward when
-that answer is the whole change since the version you approved: Dispatch records an approval in
-your name at the version your answer writes, the chip reads `Approved` at that version, and the
-review history shows it, so nobody asks you to approve again what you just decided. A change
-outside the decision blocks, a block added or answered since your approval without your own answer
-(someone else's answer, or a block waived), a decided block whose question or options were
-changed, a removed block, or a request for changes newer than your approval leaves the document
-`changed since`, and the next request shows you the diff.
+Your answer to an ask block writes no version, so it leaves your approval as it stands, and it
+carries no approval. Dispatch carries your approval to a later version only when that version's
+text is the text you approved, such as an edit undone exactly, or when every change in it is one
+of these, none of which changes a decision:
+
+- a reading an agent wrote, changed or removed inside a decision or an answered ask;
+- an attribute of an ask block that the server owns, which holds no answer;
+- what Dispatch's decisions step wrote when it moved answered asks and decisions into the spec's
+  `## Decisions` part.
+
+Dispatch then records an approval in your name at that version, with a reason that begins
+`Carried forward from the approval of version`. The chip reads `Approved` at that version, and
+the review history shows it. Any other change leaves the document `changed since`: other text, or
+an ask block added, removed or reworded. So does a request for changes newer than your approval.
+The next request shows you the diff.
 
 When Legion's design gate is on, Legion waits for this approval before it builds what a root
 issue's spec describes.

@@ -3,9 +3,10 @@ import { expect, test } from "bun:test";
 import type { DisplayTree } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
-import { filterSignals, presetView } from "./presets";
+import { filterSignals, presetView, rowKindsOf } from "./presets";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
+import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The page with no filter on and the four filters as views of the one tree: with no filter on
@@ -229,10 +230,11 @@ test("a waiting decision outside the review list is not counted as to review", (
   });
 });
 
-// R2, R9: the Decisions filter draws a person's answer as the decision and the section of
-// decisions.md that restates it as no entry, so its count holds the answer and not the section.
-// A decision under a question nobody answered restates nothing, and is counted.
-test("the Decisions count leaves out a section that restates a person's answer", () => {
+// R2, R9: a person's decision is the answered question itself, so no decision node restates it,
+// and a decision under an answered question is an agent's own that settles it: the Decisions
+// count holds the answer and that decision each as an entry, as it holds a decision under a
+// question nobody answered and one under the issue.
+test("the Decisions count holds an agent's decision under an answered question as its own entry", () => {
   const answer = {
     at: "2026-11-14T08:00:00Z",
     by: { id: "alice", kind: "user" as const },
@@ -244,7 +246,7 @@ test("the Decisions count leaves out a section that restates a person's answer",
     node("ask-2", "ask", [node("decision-2", "decision")], { question: true, state: "open" }),
     node("decision-3", "decision"),
   ]);
-  expect(filterSignals(root, "").decisions).toEqual({ count: 4 });
+  expect(filterSignals(root, "").decisions).toEqual({ count: 5 });
 });
 
 // R26, R18: the parent a filter draws as no row is one line on its child's row, and carries the
@@ -372,4 +374,201 @@ test("the words filter matches the words a node draws, never its stored source",
   const markup = presetView(root, "conversation", "**");
   expect(markup.matches).toBe(0);
   expect(markup.root.children).toEqual([]);
+});
+
+/** One node of a view read, marked as the query's or as context. */
+function viewNode(
+  id: string,
+  supertag: string,
+  mark: NonNullable<TreeAnswerNode["mark"]>,
+  extra: Partial<TreeAnswerNode> = {}
+): TreeAnswerNode {
+  return {
+    attributes: {},
+    author: [],
+    id,
+    made_at: "2026-11-05T00:00:00Z",
+    mark,
+    parent: "CORE-1",
+    rank: null,
+    state: "live",
+    supertag,
+    text: id,
+    visibility: "project",
+    ...extra,
+  };
+}
+
+// Once the Spec view read is held on the issue's node, Spec draws the nodes its query took of
+// R2's kinds, each as the tree's node of that id. The memo callout the
+// view answers first is no row, and a decision and a constraint the view answers as context are
+// never rows: each is a line of the row its tie names, a decision by its `shaped` tuple and a
+// constraint by the row's `constrained_by` tuple. The control counts the view's own statements.
+test("a view answer's decisions and constraints are lines, never rows", () => {
+  const spec: TreeAnswer = {
+    converted: true,
+    cursor: null,
+    nodes: [
+      viewNode("summary", "callout", "query"),
+      viewNode("r1", "requirement", "query"),
+      viewNode("r2", "requirement", "query"),
+      viewNode("d1", "decision", "context", { text: "Keep the model pure." }),
+      viewNode("k1", "constraint", "context", { text: "Ship on Fridays only." }),
+    ],
+    tree: "artifact-tree",
+    tuples: [
+      { from: "d1", kind: "shaped", to: "r1" },
+      { from: "r1", kind: "constrained_by", to: "k1" },
+    ],
+    view_of: null,
+  };
+  const root = node(
+    "CORE-1",
+    "issue",
+    [
+      node("spec#b-summary", "callout", [], { readId: "summary" }),
+      node("spec#b-r1", "requirement", [], { readId: "r1" }),
+      node("spec#b-r2", "requirement", [], { readId: "r2" }),
+      node("decisions-md#b-d1", "decision", [], { readId: "d1" }),
+    ],
+    { views: { spec } }
+  );
+
+  expect(drawn(root, "spec")).toEqual(["spec#b-r1", "spec#b-r2"]);
+  expect([...presetView(root, "spec", "").lines]).toEqual([
+    [
+      "spec#b-r1",
+      [
+        { id: "d1", text: "Keep the model pure.", type: "decision" },
+        { id: "k1", text: "Ship on Fridays only.", type: "constraint" },
+      ],
+    ],
+  ]);
+  expect(filterSignals(root, "").spec.count).toBe(2);
+});
+
+// Two documents of an issue that has not converted can hold one block id, and each block is a row
+// of its own document's id: a filter draws the view's node as the tree's node of that same
+// document, never as the other document's block that shares its read id, though the tree holds
+// that one first.
+test("a view draws its own document's block where two documents share a block id", () => {
+  const view = (supertag: string, slug: string): TreeAnswer => ({
+    converted: false,
+    cursor: null,
+    nodes: [
+      viewNode("a1", supertag, "query", {
+        document: { artifact_id: `artifact-${slug}`, position: 0, slug },
+      }),
+    ],
+    tree: null,
+    tuples: [],
+    view_of: null,
+  });
+  const tree = (views: TreeNode["views"]) =>
+    node(
+      "CORE-1",
+      "issue",
+      [
+        node("plan-md#b-a1", "plan_task", [], { readId: "a1", text: "The plan's step." }),
+        node("spec#b-a1", "requirement", [], { readId: "a1", text: "The spec's statement." }),
+      ],
+      { views }
+    );
+
+  expect(drawn(tree({ spec: view("requirement", "spec") }), "spec")).toEqual(["spec#b-a1"]);
+  expect(drawn(tree({ plan: view("plan_task", "plan-md") }), "plan")).toEqual(["plan-md#b-a1"]);
+});
+
+// Two documents share the block id a1: a plan task t1 hangs under the spec's statement a1, and
+// the plan holds a task a1 of its own. The Plan view names t1's parent by that bare id, beside
+// the parent's kind (`parent_line`), so Plan draws t1 as a row of its own with the statement as
+// its line, as the outline places it, never nested under the plan's task a1.
+test("a view places a node by the parent kind its view names where two documents share the parent's id", () => {
+  const plan: TreeAnswer = {
+    converted: false,
+    cursor: null,
+    nodes: [
+      viewNode("a1", "plan_task", "query", {
+        document: { artifact_id: "artifact-plan-md", position: 0, slug: "plan-md" },
+      }),
+      viewNode("t1", "plan_task", "query", {
+        document: { artifact_id: "artifact-plan-md", position: 1, slug: "plan-md" },
+        parent: "a1",
+        parent_line: { id: "a1", line: "The spec's statement.", supertag: "requirement" },
+      }),
+    ],
+    tree: null,
+    tuples: [],
+    view_of: null,
+  };
+  const root = node(
+    "CORE-1",
+    "issue",
+    [
+      node(
+        "spec#b-a1",
+        "requirement",
+        [node("plan-md#b-t1", "plan_task", [], { readId: "t1", text: "The second step." })],
+        { readId: "a1", text: "The spec's statement." }
+      ),
+      node("plan-md#b-a1", "plan_task", [], { readId: "a1", text: "The plan's step." }),
+    ],
+    { views: { plan } }
+  );
+
+  const rows = presetView(root, "plan", "").root.children;
+  expect({
+    line: rows.find((row) => row.id === "plan-md#b-t1")?.parentLine?.type,
+    rows: rows.map((row) => [row.id, row.children.map((child) => child.id)]),
+  }).toEqual({
+    line: "requirement",
+    rows: [
+      ["plan-md#b-a1", []],
+      ["plan-md#b-t1", []],
+    ],
+  });
+});
+
+// The Plan view holds no node of t1's parent's id a1, and the tree holds the plan's task a1
+// before the spec's statement a1, which t1 hangs under. The view names that parent's kind
+// beside its id (`parent_line`), so t1's row carries the statement's line, never the line of the
+// plan's task the tree holds first.
+test("a view's row carries the line of the parent of the kind its view names where the tree holds another node of its id first", () => {
+  const plan: TreeAnswer = {
+    converted: false,
+    cursor: null,
+    nodes: [
+      viewNode("t1", "plan_task", "query", {
+        document: { artifact_id: "artifact-plan-md", position: 1, slug: "plan-md" },
+        parent: "a1",
+        parent_line: { id: "a1", line: "The spec's statement.", supertag: "requirement" },
+      }),
+    ],
+    tree: null,
+    tuples: [],
+    view_of: null,
+  };
+  const root = node(
+    "CORE-1",
+    "issue",
+    [
+      node("plan-md#b-a1", "plan_task", [], { readId: "a1", text: "The plan's step." }),
+      node(
+        "spec#b-a1",
+        "requirement",
+        [node("plan-md#b-t1", "plan_task", [], { readId: "t1", text: "The second step." })],
+        { readId: "a1", text: "The spec's statement." }
+      ),
+    ],
+    { views: { plan } }
+  );
+
+  expect(
+    presetView(root, "plan", "").root.children.map((row) => [row.id, row.parentLine?.id])
+  ).toEqual([["plan-md#b-t1", "spec#b-a1"]]);
+});
+
+// Another part draws the Decisions filter's rows itself and reads its kinds from here.
+test("the Decisions filter's row kinds are the asks and the decisions", () => {
+  expect(rowKindsOf("decisions")).toEqual(["ask", "decision"]);
 });

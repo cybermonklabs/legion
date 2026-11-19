@@ -426,7 +426,7 @@ func TestAskAskedOf(t *testing.T) {
 		issue, askID := seedBlockAsk(t, handler, "A block ask handed on", "decision", transportAsk, "Which transport?")
 		handAskOn(t, handler, askID, "bob", "alice")
 
-		removeBlockAsABrowserDoes(t, documentService, issue.PrimaryArtifactID, "decision")
+		removeBlockAsABrowserDoes(t, handler, documentService, issue.PrimaryArtifactID, "decision")
 		settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-delete")
 		if retracted := readBlockAsk(t, handler, askID); retracted.State != "resolved" {
 			t.Fatalf("the ask whose block was deleted is %q, want the settlement to have retracted it", retracted.State)

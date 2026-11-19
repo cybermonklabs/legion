@@ -776,13 +776,14 @@ func TestReferenceWritesNameTheDocumentsTheyCite(t *testing.T) {
 // document's panel, which lists the edges at its blocks, move when a citation of the block is added
 // or removed and when a version of its document changes or deletes the block. Each of those writes
 // names the block by its node id, its reference and its document's uuid; a version that changes
-// only a block nothing cites names nothing.
+// only a block nothing cites names nothing. The spec is a document of its issue's room, whose tree
+// keys the block's node.
 func TestReferenceWritesNameTheBlocksTheyCite(t *testing.T) {
-	handler, _ := blockIndexHandler(t)
+	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue, blockRef := createShipItSpec(t, handler, "CORE")
 	spec := issue.PrimaryArtifactID
-	blockNamed := model.ChangedReference{Kind: "block", ID: issue.Key + "/spec#ship_it", ArtifactID: &spec, Ref: blockRef}
+	blockNamed := model.ChangedReference{Kind: "block", ID: readDecisionDocument(t, database, issue.Key, "spec").address("ship_it"), ArtifactID: &spec, Ref: blockRef}
 
 	// The entry matches the read it moves: its reference reads the block's node, whose id is the
 	// entry's.

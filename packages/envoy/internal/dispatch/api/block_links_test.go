@@ -74,76 +74,80 @@ func compareBlockLinks(t *testing.T, stage string, got []model.BlockLink, want [
 	}
 }
 
-// A4: decisions.md has two blocks citing blocks of the spec, written in two versions, and the
-// spec has one block citing decisions.md's first block. The links from decisions.md to the spec
+// A4: rollout.md has two blocks citing blocks of the spec, written in two versions, and the
+// spec has one block citing rollout.md's first block. The links from rollout.md to the spec
 // are exactly its two, newest first, each dated by the version that wrote it; the links back are
-// exactly the spec's one.
+// exactly the spec's one. The spec is a fragment of its issue's room, whose tree keys its blocks'
+// nodes; rollout.md plays no role, so it is a room of its own, whose ref_key keys its blocks' nodes
+// (R5 of this branch's spec).
 func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	holdIt := ":::callout{#hold-it kind=\"note\" title=\"\"}\nHold it.\n:::"
 	issue := createSpecIssue(t, handler, "CORE", shipIt("Ship it.")+"\n\n"+holdIt+"\n\nOther paragraph.\n")
 	specRef := "dispatch://" + issue.Key + "/spec"
-	specKey := issue.Key + "/spec"
+	// The room's node of a block of the spec (refs.DocumentRoomSQL).
+	node := readDecisionDocument(t, database, issue.Key, "spec").address
 
 	shipParagraph := "Ship per " + specRef + "#b-ship%5Fit."
-	decisions := uploadIssueDocument(t, handler, issue.Key, "decisions.md",
+	rollout := uploadIssueDocument(t, handler, issue.Key, "rollout.md",
 		":::callout{#first_call kind=\"note\" title=\"\"}\nDecided.\n:::\n\n"+shipParagraph+"\n")
-	decisionsRef := "dispatch://" + issue.Key + "/artifact/" + decisions.Slug
-	decisionsKey := decisions.RefKey
-	decisionsV1 := latestVersion(t, database, decisions.ID)
+	rolloutRef := "dispatch://" + issue.Key + "/artifact/" + rollout.Slug
+	rolloutKey := rollout.RefKey
+	rolloutV1 := latestVersion(t, database, rollout.ID)
 	holdParagraph := "Hold per " + specRef + "#b-hold-it."
-	editIssueDocument(t, handler, issue.Key, decisions.Slug, []map[string]any{{"op": "insert", "after": "end", "markdown": holdParagraph}})
-	decisionsV2 := latestVersion(t, database, decisions.ID)
-	if decisionsV1.Number != 1 || decisionsV2.Number != 2 {
-		t.Fatalf("decisions.md versions = %d, %d, want 1, 2", decisionsV1.Number, decisionsV2.Number)
+	editIssueDocument(t, handler, issue.Key, rollout.Slug, []map[string]any{{"op": "insert", "after": "end", "markdown": holdParagraph}})
+	rolloutV2 := latestVersion(t, database, rollout.ID)
+	if rolloutV1.Number != 1 || rolloutV2.Number != 2 {
+		t.Fatalf("rollout.md versions = %d, %d, want 1, 2", rolloutV1.Number, rolloutV2.Number)
 	}
 
-	citeParagraph := "Spec cites " + decisionsRef + "#b-first%5Fcall."
+	citeParagraph := "Spec cites " + rolloutRef + "#b-first%5Fcall."
 	editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "markdown": citeParagraph, "before": "Other paragraph."}})
 	specV2 := latestVersion(t, database, issue.PrimaryArtifactID)
 
-	decisionsBlocks := blockIDsByText(t, handler, decisions.ID)
-	shipFrom, holdFrom := decisionsBlocks[shipParagraph], decisionsBlocks[holdParagraph]
+	rolloutBlocks := blockIDsByText(t, handler, rollout.ID)
+	shipFrom, holdFrom := rolloutBlocks[shipParagraph], rolloutBlocks[holdParagraph]
 	citeFrom := blockIDsByText(t, handler, issue.PrimaryArtifactID)[citeParagraph]
 	if shipFrom == "" || holdFrom == "" || citeFrom == "" {
 		t.Fatalf("citing paragraphs' ids = %q, %q, %q, want each listed by GET …/blocks", shipFrom, holdFrom, citeFrom)
 	}
 
-	forward := readBlockLinks(t, handler, decisionsRef, specRef)
-	if forward.From.Kind != "artifact" || forward.From.ID != decisions.ID || forward.From.Ref != decisionsRef ||
+	forward := readBlockLinks(t, handler, rolloutRef, specRef)
+	if forward.From.Kind != "artifact" || forward.From.ID != rollout.ID || forward.From.Ref != rolloutRef ||
 		forward.To.Kind != "artifact" || forward.To.ID != issue.PrimaryArtifactID || forward.To.Ref != specRef {
-		t.Fatalf("documents = %#v, %#v, want decisions.md then the spec", forward.From, forward.To)
+		t.Fatalf("documents = %#v, %#v, want rollout.md then the spec", forward.From, forward.To)
 	}
-	compareBlockLinks(t, "decisions.md to the spec", forward.Links, []blockLink{
+	compareBlockLinks(t, "rollout.md to the spec", forward.Links, []blockLink{
 		{
 			Kind:         "mentions",
-			FromDocument: decisionsRef, FromID: decisionsKey + "#" + holdFrom, FromKind: "block", FromBlockID: holdFrom,
-			ToDocument: specRef, ToID: specKey + "#hold-it", ToKind: "block", ToBlockID: "hold-it",
-			CreatedVersion: 2, CreatedAt: decisionsV2.CreatedAt,
+			FromDocument: rolloutRef, FromID: rolloutKey + "#" + holdFrom, FromKind: "block", FromBlockID: holdFrom,
+			ToDocument: specRef, ToID: node("hold-it"), ToKind: "block", ToBlockID: "hold-it",
+			CreatedVersion: 2, CreatedAt: rolloutV2.CreatedAt,
 		},
 		{
 			Kind:         "mentions",
-			FromDocument: decisionsRef, FromID: decisionsKey + "#" + shipFrom, FromKind: "block", FromBlockID: shipFrom,
-			ToDocument: specRef, ToID: specKey + "#ship_it", ToKind: "block", ToBlockID: "ship_it",
-			CreatedVersion: 1, CreatedAt: decisionsV1.CreatedAt,
+			FromDocument: rolloutRef, FromID: rolloutKey + "#" + shipFrom, FromKind: "block", FromBlockID: shipFrom,
+			ToDocument: specRef, ToID: node("ship_it"), ToKind: "block", ToBlockID: "ship_it",
+			CreatedVersion: 1, CreatedAt: rolloutV1.CreatedAt,
 		},
 	})
 
-	backward := readBlockLinks(t, handler, specRef, decisionsRef)
-	if backward.From.ID != issue.PrimaryArtifactID || backward.To.ID != decisions.ID {
-		t.Fatalf("documents = %#v, %#v, want the spec then decisions.md", backward.From, backward.To)
+	backward := readBlockLinks(t, handler, specRef, rolloutRef)
+	if backward.From.ID != issue.PrimaryArtifactID || backward.To.ID != rollout.ID {
+		t.Fatalf("documents = %#v, %#v, want the spec then rollout.md", backward.From, backward.To)
 	}
-	compareBlockLinks(t, "the spec to decisions.md", backward.Links, []blockLink{{
+	compareBlockLinks(t, "the spec to rollout.md", backward.Links, []blockLink{{
 		Kind:         "mentions",
-		FromDocument: specRef, FromID: specKey + "#" + citeFrom, FromKind: "block", FromBlockID: citeFrom,
-		ToDocument: decisionsRef, ToID: decisionsKey + "#first_call", ToKind: "block", ToBlockID: "first_call",
+		FromDocument: specRef, FromID: node(citeFrom), FromKind: "block", FromBlockID: citeFrom,
+		ToDocument: rolloutRef, ToID: rolloutKey + "#first_call", ToKind: "block", ToBlockID: "first_call",
 		CreatedVersion: 2, CreatedAt: specV2.CreatedAt,
 	}})
 }
 
 // A document's blocks can link to one another: the links from a document to itself are those.
-// A document with none answers an empty list, never null.
+// A document with none answers an empty list, never null. The spec is a fragment of its issue's
+// room, whose tree keys its blocks' nodes.
 func TestBlockLinksListALinkWithinOneDocument(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -169,8 +173,8 @@ func TestBlockLinksListALinkWithinOneDocument(t *testing.T) {
 	}
 	compareBlockLinks(t, "the spec to itself", readBlockLinks(t, handler, specRef, specRef).Links, []blockLink{{
 		Kind:         "mentions",
-		FromDocument: specRef, FromID: issue.Key + "/spec#" + paragraphID, FromKind: "block", FromBlockID: paragraphID,
-		ToDocument: specRef, ToID: issue.Key + "/spec#ship_it", ToKind: "block", ToBlockID: "ship_it",
+		FromDocument: specRef, FromID: readDecisionDocument(t, database, issue.Key, "spec").address(paragraphID), FromKind: "block", FromBlockID: paragraphID,
+		ToDocument: specRef, ToID: readDecisionDocument(t, database, issue.Key, "spec").address("ship_it"), ToKind: "block", ToBlockID: "ship_it",
 		CreatedVersion: version.Number, CreatedAt: version.CreatedAt,
 	}})
 }

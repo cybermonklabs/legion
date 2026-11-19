@@ -152,6 +152,9 @@ func TestCommentAndAskReadsStandWhenTheAnchorDocumentCannotBeRead(t *testing.T) 
 	comment := created("/api/v1/issues/"+issue.Key+"/comments", map[string]any{"anchor": anchor, "body": "I want this done today"})
 	ask := created("/api/v1/issues/"+issue.Key+"/asks", map[string]any{"anchor": anchor, "question": "Which day is meant?"})
 	floating := created("/api/v1/issues/"+issue.Key+"/comments", map[string]any{"body": "No anchor."})
+	// The fragment of the issue's room the spec is read from, as the artifact read answers it: the
+	// outside-schema stores write their element there.
+	fragment := artifactFragment(t, writer, issue.PrimaryArtifactID)
 
 	for _, test := range []struct {
 		name  string
@@ -159,8 +162,8 @@ func TestCommentAndAskReadsStandWhenTheAnchorDocumentCannotBeRead(t *testing.T) 
 		want  string
 	}{
 		{"the store cannot load the document", failingLoadStore{VersionedStore: docs.NewPgVersioned(database)}, codeDocServiceUnavailable},
-		{"the live tree leaves the schema", outsideSchemaStore{VersionedStore: docs.NewPgVersioned(database)}, codeDocSchema},
-		{"the live tree holds an element this build does not know", outsideSchemaStore{VersionedStore: docs.NewPgVersioned(database), element: docs.UnknownElementForTest}, codeDocNewerContent},
+		{"the live tree leaves the schema", outsideSchemaStore{VersionedStore: docs.NewPgVersioned(database), fragment: fragment}, codeDocSchema},
+		{"the live tree holds an element this build does not know", outsideSchemaStore{VersionedStore: docs.NewPgVersioned(database), element: docs.UnknownElementForTest, fragment: fragment}, codeDocNewerContent},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			reader := readingServer(t, database, test.store, nil)
@@ -379,10 +382,12 @@ func readingServer(t *testing.T, database *store.Store, persist docs.VersionedSt
 
 // outsideSchemaStore loads every document, for a room or a cold read, as a live tree the Proof
 // schema refuses: element alone, which is an empty callout, needing at least one block, when it is
-// empty, and an element this build does not know otherwise.
+// empty, and an element this build does not know otherwise, at the top of fragment, the fragment
+// the document is read from (the artifact read's, model.ArtifactFragmentOwn where it names none).
 type outsideSchemaStore struct {
 	docs.VersionedStore
-	element string
+	element  string
+	fragment string
 }
 
 func (s outsideSchemaStore) document() *crdt.Doc {
@@ -390,8 +395,12 @@ func (s outsideSchemaStore) document() *crdt.Doc {
 	if element == "" {
 		element = "callout"
 	}
+	name := s.fragment
+	if name == "" {
+		name = model.ArtifactFragmentOwn
+	}
 	doc := crdt.New()
-	fragment := doc.GetXmlFragment("prosemirror")
+	fragment := doc.GetXmlFragment(name)
 	doc.Transact(func(txn *crdt.Transaction) {
 		fragment.InsertElement(txn, 0, crdt.NewYXmlElement(element))
 	})

@@ -11,6 +11,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
@@ -62,6 +64,15 @@ func (s documentSearchStatement) oracleArgs() []any {
 		return s.oracleArguments
 	}
 	return s.arguments
+}
+
+// documentSearchSeen is the acting credential every statement of this build binds last
+// (refs.VisibilityArg): these reads act for a credential that proves no author, which is what a
+// read of a corpus holding no author-private node answers for anyone. Search's own two
+// statements take it from searchQueryArguments; the related-item check's four are bound by
+// hand here, as the check binds them.
+func documentSearchSeen() []any {
+	return []any{refs.VisibilityArg(model.Actor{})}
 }
 
 // documentSearchFixture is the corpus of R1's plan and equality tests: one project whose
@@ -207,17 +218,18 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 			holds:     documents,
 		},
 		{
-			name:      "the related-item check's keyword stage",
-			statement: relatedKeywordQuery,
-			oracle:    mainRelatedKeywordQuery,
-			arguments: relatedKeyword,
-			holds:     documents,
+			name:            "the related-item check's keyword stage",
+			statement:       relatedKeywordQuery,
+			oracle:          mainRelatedKeywordQuery,
+			arguments:       slices.Concat(relatedKeyword, documentSearchSeen()),
+			oracleArguments: relatedKeyword,
+			holds:           documents,
 		},
 		{
 			name:      "the related-item check's meaning stage",
 			statement: relatedMeaningScopedQuery,
 			oracle:    relatedMeaningQueryOverMainsDocumentArm,
-			arguments: relatedMeaning,
+			arguments: slices.Concat(relatedMeaning, documentSearchSeen()),
 			holds:     documents,
 		},
 		{
@@ -261,7 +273,7 @@ func (f documentSearchFixture) relatedArguments() (keyword, meaning []any) {
 // the same text with relatedExcludedOwners in its kinds CTE, over one further parameter holding
 // the owners the check leaves out. relatedSearch runs that shape whenever a check excludes
 // anything, and every recording source names an owner - a new issue's key, an ask's id, the
-// document a block sits on - so a create, an ask and a decision block all run these two, and
+// document a block sits on - so a create, an ask and an ask block all run these two, and
 // the plain pair above is the no-write route's alone (INFRA-1160).
 //
 // The owners are the fixture's own issue, as an issue create leaves its own issue out, and the
@@ -274,14 +286,14 @@ func (f documentSearchFixture) excludingStatements() []documentSearchStatement {
 		{
 			name:      "the related-item check's keyword stage, excluding its own issue",
 			statement: relatedKeywordExcludingQuery,
-			arguments: slices.Concat(keyword, owners),
+			arguments: slices.Concat(keyword, owners, documentSearchSeen()),
 		},
 		{
 			// The scoped shape, as the plain pair above is: these arguments bind the fixture's
 			// project (relatedMeaningStatementFor).
 			name:      "the related-item check's meaning stage, excluding its own issue",
 			statement: relatedMeaningScopedExcludingQuery,
-			arguments: slices.Concat(meaning, owners),
+			arguments: slices.Concat(meaning, owners, documentSearchSeen()),
 		},
 	}
 }

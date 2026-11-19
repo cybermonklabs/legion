@@ -336,6 +336,26 @@ if [ "$stacks" -gt 1 ]; then
   gomaxprocs_env=(GOMAXPROCS="$gomaxprocs")
 fi
 
+# The events outbox publishes through NATS, and this rig has none, so the server runs with
+# DISPATCH_NATS_DISABLED=1 by default: no spec here wants a bus, and a server that kept trying to
+# reach one would log a reconnect loop for every run. The publisher is the only writer of what a
+# delivery states in the node and tuple store - `delivered_to`, a role's `held_by`, a session's
+# and a page's `part_of`, and the role, session and page nodes themselves (outbox.recordBatch) -
+# so a driver that proves those writes starts a NATS of its own (`go build
+# github.com/nats-io/nats-server/v2`, a direct dependency of packages/envoy) and names it in
+# DISPATCH_E2E_NATS_URLS, which this script hands the server as its NATS_URLS and which turns the
+# publisher on. It is a variable of this rig's own rather than NATS_URLS itself because a
+# developer's shell exports NATS_URLS for the Envoy listener, and a server that took it would
+# publish test notifications to the bus that listener delivers to real sessions. Every NATS_*
+# variable a shell exported is still swept below, and a caller that names none gets exactly the
+# server every spec has always run against.
+nats_urls="${DISPATCH_E2E_NATS_URLS:-}"
+if [ -n "$nats_urls" ]; then
+  nats_env=(NATS_URLS="$nats_urls")
+else
+  nats_env=(DISPATCH_NATS_DISABLED=1)
+fi
+
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
@@ -390,7 +410,7 @@ exec "${listen[@]}" env \
   DISPATCH_IDENTITY=cookie \
   DISPATCH_INSECURE_COOKIE=1 \
   DISPATCH_LISTEN_HOST=127.0.0.1 \
-  DISPATCH_NATS_DISABLED=1 \
+  "${nats_env[@]}" \
   "${port_env[@]}" \
   "${delivery_reconcile_env[@]}" \
   DISPATCH_TEST_EMBEDDER_OFF="$embedder_off" \

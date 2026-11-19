@@ -307,10 +307,10 @@ func eventOwnerKey(e model.Event) (string, error) {
 		return "", fmt.Errorf("event requires at most one owner")
 	}
 	if e.IssueKey != nil {
-		return "issue:" + *e.IssueKey, nil
+		return issueOwnerPrefix + *e.IssueKey, nil
 	}
 	if e.ArtifactID != nil {
-		return "artifact:" + *e.ArtifactID, nil
+		return artifactOwnerPrefix + *e.ArtifactID, nil
 	}
 	return "project:" + *e.ProjectKey, nil
 }

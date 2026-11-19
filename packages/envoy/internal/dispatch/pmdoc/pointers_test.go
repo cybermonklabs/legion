@@ -24,10 +24,10 @@ func blockPointerTestSchema(attributes BlockAttributes) BlockSchema {
 		attributes = oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList, Targets: []string{"requirement"}})
 	}
 	return BlockSchema{
-		Version: active.schema.Version,
-		Nodes:   active.schema.Nodes,
-		Marks:   active.schema.Marks,
-		Types: append(slices.Clone(active.schema.Types),
+		Version: active.Load().schema.Version,
+		Nodes:   active.Load().schema.Nodes,
+		Marks:   active.Load().schema.Marks,
+		Types: append(slices.Clone(active.Load().schema.Types),
 			BlockTypeSchema{Name: "claim", Content: BlockContentParagraphs, Render: "host", Attributes: attributes},
 		),
 	}
@@ -51,11 +51,13 @@ func useTestBlockSchema(t testing.TB, value BlockSchema) {
 
 // A block[] attribute's name is the kind of the links it makes, so it is one `?kind=` can name and
 // never a structural edge kind; its targets are types whose blocks the link graph holds; only it
-// carries targets. The shipped schema declares two: a plan task's serves and needs, the first of
-// which a check shares.
+// carries targets or items, each item kind one of ask, comment, message and issue, named once; and
+// an attribute named parent is one. The shipped schema declares four: a plan task's serves and
+// needs, the first of which a check and a requirement share, the shaped a decision and an ask
+// share, and the parent of a criterion, a requirement, a check and a plan task.
 func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
-	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "serves"}) {
-		t.Fatalf("the shipped schema's link kinds = %v, want needs and serves", kinds)
+	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "parent", "serves", "shaped"}) {
+		t.Fatalf("the shipped schema's link kinds = %v, want needs, parent, serves and shaped", kinds)
 	}
 	if err := validateBlockSchema(blockPointerTestSchema(nil)); err != nil {
 		t.Fatalf("validate the test schema: %v", err)
@@ -79,6 +81,10 @@ func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
 		"a default pointing at a block":            oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList, Default: []string{"dispatch://CORE-1/spec#b-x"}}),
 		"a default that is not a block reference":  oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList, Default: []string{"x"}}),
 		"a default that is not an array of string": oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList, Default: "dispatch://CORE-1/spec#b-x"}),
+		"items on a string":                        oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeString, Items: []BlockItemKind{BlockItemComment}}),
+		"an item kind that is none":                oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList, Items: []BlockItemKind{"artifact"}}),
+		"an item kind named twice":                 oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList, Items: []BlockItemKind{BlockItemAsk, BlockItemAsk}}),
+		"a parent that is no block[]":              oneAttribute(ParentAttribute, BlockAttributeSchema{Kind: BlockAttributeString}),
 	}
 	for name, attributes := range refused {
 		if err := validateBlockSchema(blockPointerTestSchema(attributes)); err == nil {
@@ -95,8 +101,8 @@ func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
 		{Name: "note", BlockAttributeSchema: BlockAttributeSchema{Kind: BlockAttributeString}},
 	}})
 	useTestBlockSchema(t, twice)
-	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "serves"}) {
-		t.Fatalf("link kinds of the types declaring serves = %v, want [needs serves]", kinds)
+	if kinds := LinkKinds(); !slices.Equal(kinds, []string{"needs", "parent", "serves", "shaped"}) {
+		t.Fatalf("link kinds of the types declaring serves = %v, want [needs parent serves shaped]", kinds)
 	}
 	var served BlockSchema
 	if err := json.Unmarshal(SchemaJSON(), &served); err != nil || len(served.Types) != len(twice.Types) {
@@ -108,17 +114,19 @@ func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
 // read from markdown or checked in a tree, and a refused one with the reason its row's problem
 // names, where it names one: `testdata/block-pointer-values.json` is generated from
 // DISPATCH_BLOCK_POINTER_VALUES, which `packages/contracts/src/dispatch-block-ref.test.ts` holds
-// this file to.
+// this file to. A row's items are the item kinds the attribute declares; a row naming none is read
+// under an attribute that declares none.
 func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 	raw, err := os.ReadFile("testdata/block-pointer-values.json")
 	if err != nil {
 		t.Fatalf("read table: %v", err)
 	}
 	var rows []struct {
-		Value   string `json:"value"`
-		OK      bool   `json:"ok"`
-		Why     string `json:"why"`
-		Problem string `json:"problem"`
+		Value   string          `json:"value"`
+		Items   []BlockItemKind `json:"items"`
+		OK      bool            `json:"ok"`
+		Why     string          `json:"why"`
+		Problem string          `json:"problem"`
 	}
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		t.Fatalf("parse table: %v", err)
@@ -126,11 +134,11 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 	if len(rows) == 0 {
 		t.Fatal("the shared block pointer table is empty")
 	}
-	attr := BlockAttributeSchema{Kind: "block[]", Targets: []string{"requirement"}}
 	for _, row := range rows {
-		parsed, err := ParseBlockPointerValue(row.Value)
+		attr := BlockAttributeSchema{Kind: "block[]", Targets: []string{"requirement"}, Items: row.Items}
+		parsed, err := ParseBlockPointerValue(row.Value, row.Items)
 		if (err == nil) != row.OK {
-			t.Errorf("ParseBlockPointerValue(%q) (%s) = %v, want accepted %t", row.Value, row.Why, err, row.OK)
+			t.Errorf("ParseBlockPointerValue(%q, %v) (%s) = %v, want accepted %t", row.Value, row.Items, row.Why, err, row.OK)
 		}
 		if err != nil {
 			// The refusal names what is wrong: the whole value, or the reference in it that is.
@@ -139,17 +147,17 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 				named = named || part != "" && strings.Contains(err.Error(), strconv.Quote(part))
 			}
 			if !named {
-				t.Errorf("ParseBlockPointerValue(%q) (%s) = %v, want the refusal to name the value", row.Value, row.Why, err)
+				t.Errorf("ParseBlockPointerValue(%q, %v) (%s) = %v, want the refusal to name the value", row.Value, row.Items, row.Why, err)
 			}
 			if !strings.Contains(err.Error(), row.Problem) {
-				t.Errorf("ParseBlockPointerValue(%q) (%s) = %v, want the refusal to say %q", row.Value, row.Why, err, row.Problem)
+				t.Errorf("ParseBlockPointerValue(%q, %v) (%s) = %v, want the refusal to say %q", row.Value, row.Items, row.Why, err, row.Problem)
 			}
 		}
 		if row.OK && strings.Join(parsed, " ") != row.Value {
-			t.Errorf("ParseBlockPointerValue(%q) = %q, want the references as written", row.Value, parsed)
+			t.Errorf("ParseBlockPointerValue(%q, %v) = %q, want the references as written", row.Value, row.Items, parsed)
 		}
-		if _, err := parseTypedAttributeValue(attr, row.Value); (err == nil) != row.OK {
-			t.Errorf("parseTypedAttributeValue(%q) (%s) = %v, want accepted %t", row.Value, row.Why, err, row.OK)
+		if _, err := parseTypedAttributeValue("serves", attr, row.Value); (err == nil) != row.OK {
+			t.Errorf("parseTypedAttributeValue(%q, %v) (%s) = %v, want accepted %t", row.Value, row.Items, row.Why, err, row.OK)
 		}
 		// A tree holds the value as the array Yjs gives back.
 		items := []any{}
@@ -158,8 +166,8 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 				items = append(items, item)
 			}
 		}
-		if err := validateAttributeValue(attr, items); (err == nil) != row.OK {
-			t.Errorf("validateAttributeValue(%q) (%s) = %v, want accepted %t", items, row.Why, err, row.OK)
+		if err := validateAttributeValue("serves", attr, items); (err == nil) != row.OK {
+			t.Errorf("validateAttributeValue(%q, %v) (%s) = %v, want accepted %t", items, row.Items, row.Why, err, row.OK)
 		}
 	}
 }
@@ -198,12 +206,12 @@ func TestBuiltInBlockTargetsAreTheBlocksTheBlockListHolds(t *testing.T) {
 		}
 	}
 	for nodeType := range listed {
-		if !builtInBlockNode(active.schema, nodeType) {
+		if !builtInBlockNode(active.Load().schema, nodeType) {
 			t.Errorf("the block list holds %s, which a block[] attribute cannot target", nodeType)
 		}
 	}
 	for _, nodeType := range []string{"list_item", "table_header_row", "table_row", "table_cell", "table_header", "doc", "text", "nope"} {
-		if builtInBlockNode(active.schema, nodeType) {
+		if builtInBlockNode(active.Load().schema, nodeType) {
 			t.Errorf("a block[] attribute can target %s, which no block list holds", nodeType)
 		}
 	}
@@ -265,18 +273,23 @@ func TestABlockPointerAttributeRoundTripsThroughMarkdownAndYjs(t *testing.T) {
 
 // A pointer a write introduces is refused, naming what is wrong, when it names a block of a type
 // its attribute does not allow, a block no document holds, a block of an issue neither the
-// writing document's own nor above it, or, under needs, a block of another document; one at an
-// allowed block of its own issue or of an issue above it is accepted, and one the tree before the
-// write already held is never refused, whatever its target has become.
+// writing document's own nor above it, or, under an attribute scoped to its own document, a block
+// of another document; one at an allowed block of its own issue or of an issue above it is
+// accepted, a plan task's needs at a task of another document of its issue or of an issue above
+// it among them, and one the tree before the write already held is never refused, whatever its
+// target has become.
 func TestCheckBlockPointersRefusesATargetItMayNotName(t *testing.T) {
 	value := blockPointerTestSchema(nil)
 	// A draft holds the same attribute name as text, which a retype into a claim makes a pointer;
-	// a loose block holds it as a pointer to any block, which a retype into a claim narrows.
+	// a loose block holds it as a pointer to any block, which a retype into a claim narrows; a
+	// local block's serves points only inside its own document.
 	value.Types = append(value.Types,
 		BlockTypeSchema{Name: "draft", Content: BlockContentParagraphs, Render: "host",
 			Attributes: oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeString})},
 		BlockTypeSchema{Name: "loose", Content: BlockContentParagraphs, Render: "host",
 			Attributes: oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList})},
+		BlockTypeSchema{Name: "local", Content: BlockContentParagraphs, Render: "host",
+			Attributes: oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList, Targets: []string{"requirement"}, Scope: BlockAttributeScopeDocument})},
 	)
 	anyBlock := blockPointerTestSchema(oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList}))
 	useTestBlockSchema(t, value)
@@ -292,6 +305,9 @@ func TestCheckBlockPointersRefusesATargetItMayNotName(t *testing.T) {
 		handbook    = "dispatch://CORE/artifact/handbook-md#b-h1"
 		ourTask     = "dispatch://CORE-1/artifact/checks-md#b-t1"
 		theirTask   = "dispatch://CORE-1/spec#b-t9"
+		aboveTask   = "dispatch://CORE-7/artifact/plan-md#b-a9"
+		siblingTask = "dispatch://CORE-8/artifact/plan-md#b-s9"
+		ourClaim    = "dispatch://CORE-1/artifact/checks-md#b-r2"
 	)
 	writing := BlockWriting{Document: "CORE-1/checks-md", Issue: "CORE-1", Ancestors: []string{"CORE-7"}}
 	blocks := map[string]BlockTarget{
@@ -302,7 +318,10 @@ func TestCheckBlockPointersRefusesATargetItMayNotName(t *testing.T) {
 		"CORE-8/spec#s1":      {Types: []string{"requirement"}, Document: "CORE-8/spec", Issue: "CORE-8"},
 		"CORE/handbook-md#h1": {Types: []string{"requirement"}, Document: "CORE/handbook-md"},
 		"CORE-1/checks-md#t1": {Types: []string{"plan_task"}, Document: "CORE-1/checks-md", Issue: "CORE-1"},
+		"CORE-1/checks-md#r2": {Types: []string{"requirement"}, Document: "CORE-1/checks-md", Issue: "CORE-1"},
 		"CORE-1/spec#t9":      {Types: []string{"plan_task"}, Document: "CORE-1/spec", Issue: "CORE-1"},
+		"CORE-7/plan-md#a9":   {Types: []string{"plan_task"}, Document: "CORE-7/plan-md", Issue: "CORE-7"},
+		"CORE-8/plan-md#s9":   {Types: []string{"plan_task"}, Document: "CORE-8/plan-md", Issue: "CORE-8"},
 	}
 	// resolve answers where the write lands and the blocks it is asked for, by node id, and
 	// counts its calls: a check looks its targets up at most once.
@@ -346,7 +365,11 @@ func TestCheckBlockPointersRefusesATargetItMayNotName(t *testing.T) {
 		{name: "a requirement of a sibling tree", tree: claim(sibling), refusal: []string{`"serves"`, sibling, "CORE-8", "CORE-1"}},
 		{name: "a requirement of a document a project holds", tree: claim(handbook), refusal: []string{`"serves"`, handbook, "CORE/handbook-md", "CORE-1"}},
 		{name: "a plan task of the writing document", tree: task(ourTask)},
-		{name: "a plan task of another document", tree: task(theirTask), refusal: []string{`"needs"`, theirTask, "CORE-1/spec", "its own document"}},
+		{name: "a plan task of another document of its issue", tree: task(theirTask)},
+		{name: "a plan task of the issue above", tree: task(aboveTask)},
+		{name: "a plan task of a sibling tree", tree: task(siblingTask), refusal: []string{`"needs"`, siblingTask, "CORE-8", "CORE-1"}},
+		{name: "a requirement of its own document under a scoped attribute", tree: parse(":::local{#l1 serves=\"" + ourClaim + "\"}\nIt holds.\n:::\n")},
+		{name: "a requirement of another document under a scoped attribute", tree: parse(":::local{#l1 serves=\"" + requirement + "\"}\nIt holds.\n:::\n"), refusal: []string{`"serves"`, requirement, "CORE-1/spec", "its own document"}},
 		{name: "a callout the tree before already pointed at", tree: claim(callout), prior: claim(callout)},
 		{name: "a callout replacing a requirement", tree: claim(callout), prior: claim(requirement), refusal: []string{`"serves"`, callout, `"callout"`}},
 		{name: "a callout after a pointer of another block", tree: parse(":::claim{#c2 serves=\"" + callout + "\"}\nIt holds.\n:::\n"), prior: claim(callout), refusal: []string{`"serves"`, callout, `"callout"`}},

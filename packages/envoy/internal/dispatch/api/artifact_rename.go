@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // renameArtifactInput is the body of PATCH /api/v1/artifacts/{id}.
@@ -80,6 +81,13 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 	slug := artifactSlug(name)
 	if role := documentRole(target, artifact.Kind, slug); role != nil && !documentPlays(artifact, *role) {
 		s.writeHandlerError(w, renameRoleNameRefusal(name, slug, *role))
+		return
+	}
+	// A name a decisions document would take is refused as an upload of it is, unless the
+	// document already is one: a later upload of that name would find this document and be stored
+	// where nothing reads a decision (decisionsAreNodes).
+	if refusal := decisionsAreNodes(target, name); refusal != nil && artifact.Slug != refs.RetiredDecisionsSlug {
+		s.writeHandlerError(w, refusal)
 		return
 	}
 	renamed, err := scanArtifact(tx.QueryRow(r.Context(), `

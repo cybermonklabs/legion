@@ -528,7 +528,7 @@ func displayHTMLOf(block *ast.HTMLBlock, source []byte) *displayHTML {
 // (proof-editor's block-schema.ts), which knows the name and reads every attribute the type
 // declares. Unlike typedDirectiveRefusal it asks nothing of where the directive stands, since a
 // reader is shown the block a browser draws, and that engine draws an unclosed directive as the
-// typed block it opened.
+// typed block it opened. An attribute the markdown never carries is dropped, as there.
 func displayTypedValues(directive *typedDirective) (Attrs, bool) {
 	typ, known := typedBlock(directive.Name)
 	if !known {
@@ -543,7 +543,11 @@ func displayTypedValues(directive *typedDirective) (Attrs, bool) {
 			values[name] = raw
 			continue
 		}
-		value, err := parseTypedAttributeValue(typ.Attributes.Get(name), raw)
+		definition := typ.Attributes.Get(name)
+		if !definition.InMarkdown() {
+			continue
+		}
+		value, err := parseTypedAttributeValue(name, definition, raw)
 		if err != nil {
 			return nil, false
 		}
@@ -599,29 +603,36 @@ func displayNodeType(block ast.Node) string {
 // NodeType.createAndFill, a null there being the block drawn as its fence lines instead. That
 // call fills what the rule wants before the content as well as after it, so an ask written with
 // its list alone keeps the empty paragraph the rule wants ahead of it (emptyParagraphFirst reads
-// displayFillAttr), while one written with a heading fits nowhere and is drawn.
+// displayFillAttr), while one written with a heading fits nowhere and is drawn. The blocks the
+// type admits after its content (TypedContent) close it, so the rule reads what stands before
+// them, and a block holding them alone is filled with a paragraph ahead of them.
 func displayContentFit(name string, children []string) (fill, fits bool) {
 	typ, known := typedBlock(name)
 	if !known {
 		return false, false
 	}
+	content := children
+	for len(content) > 0 && AdmitsAfterContent(name, content[len(content)-1]) {
+		content = content[:len(content)-1]
+	}
+	empty := len(content) == 0 && len(children) > 0
 	switch typ.Content {
 	case BlockContentBlocks:
-		for _, child := range children {
+		for _, child := range content {
 			if !isBlockNodeType(child) {
 				return false, false
 			}
 		}
-		return false, true
+		return empty, true
 	case BlockContentParagraphs:
-		for _, child := range children {
+		for _, child := range content {
 			if child != "paragraph" {
 				return false, false
 			}
 		}
-		return false, true
+		return empty, true
 	case BlockContentParagraphsOptionalBulletList:
-		rest := children
+		rest := content
 		for len(rest) > 0 && rest[0] == "paragraph" {
 			rest = rest[1:]
 		}

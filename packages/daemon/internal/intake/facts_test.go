@@ -167,9 +167,9 @@ func TestLegionEntryReadsTheEntryTheReviewSaysItIsOf(t *testing.T) {
 	}
 }
 
-// A carried approval is the review Dispatch writes in a person's name when their answer to a
-// decision block was the whole change since the version they approved; its reason opens with
-// CarriedApprovalReasonPrefix, mirrored from Dispatch's carryReason
+// A carried approval is the review Dispatch writes in a person's name at a later version that
+// holds nothing they have not agreed to, such as one whose text is the approved version's; its
+// reason opens with CarriedApprovalReasonPrefix, mirrored from Dispatch's carried reasons
 // (packages/envoy/internal/dispatch/docs/approval_carry.go). It is not a person's new act, so the
 // workflow queues no parked root for it. An approval given with no reason, and a review with any
 // other reason, are not carries.
@@ -179,7 +179,7 @@ func TestCarriedApprovalReadsTheReasonsPrefix(t *testing.T) {
 		reason string
 		want   bool
 	}{
-		{"Dispatch's carried reason", "Carried forward from the approval of version 3: the answer to a decision block was the whole change since it.", true},
+		{"Dispatch's carried reason", "Carried forward from the approval of version 3: this version's text is that version's, unchanged.", true},
 		{"the prefix alone", CarriedApprovalReasonPrefix, true},
 		{"no reason", "", false},
 		{"a reviewer's own reason", "Looks right; the rollback path is named.", false},

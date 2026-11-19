@@ -316,7 +316,10 @@ func (s *server) replayThrough(ctx context.Context, from, published int64, compl
 	if behind > maxLiveReplay {
 		return eventReplay{start: published, after: published}, nil
 	}
-	missed, err := s.readEventsAfterID(ctx, from, published, maxLiveReplay)
+	// The replay serves whoever subscribed, and this read resolves no credential of theirs, so it
+	// reads as one that proves no author: an ask reserved for its author carries no detail here
+	// (refs' visibility registry).
+	missed, err := s.readEventsAfterID(ctx, model.Actor{}, from, published, maxLiveReplay)
 	if err != nil {
 		return eventReplay{}, err
 	}

@@ -928,3 +928,15 @@ span[data-dispatch="ask"] {
   vertical-align: bottom;
   cursor: pointer;
 }
+
+/*
+ * A collaborator's caret label that would pass the end of the box it scrolls in hangs back from
+ * the caret toward the line's start (see ../collab-cursor-plugin.ts). Upstream's rule puts the
+ * label's start at the middle of the caret's 2 px bar (`left: -1px`); this one puts its end
+ * there, and changes nothing else of its look. Two classes, so it wins over upstream's rule,
+ * whose sheet the editor appends to the page's head after this one.
+ */
+.proof-collab-cursor__label.proof-collab-cursor__label--inward {
+  left: auto;
+  right: 1px;
+}

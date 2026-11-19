@@ -82,11 +82,11 @@ import type { PendingState } from "./pending-sync";
 import { createPendingWaiter } from "./pending-waiter";
 import { quoteAnchor } from "./quote-anchor";
 import { refocusWhenSettled } from "./refocus-when-settled";
-import { FRAGMENT_NAME } from "./roots";
+import { carriesFragment, fragmentOf } from "./roots";
 import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
-import type { AskBlockHost } from "./typed-block-drawing";
+import { type AskBlockHost, liveAskOf, type ServedAsk, servedAskOf } from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
 
 /** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
@@ -190,6 +190,8 @@ export interface ProofDocumentProps {
     readonly children: ReactNode;
     readonly markId: string | null;
   };
+  /** The document, as the read that listed it answers it: where that answer carries `fragment`,
+   *  the page connects at once; otherwise it waits for its own artifact read. */
   artifact: Artifact;
   highlight: Highlight | undefined;
   highlightTerm?: string;
@@ -199,6 +201,12 @@ export interface ProofDocumentProps {
   /** Called beside the document's own refresh once the server has recorded an answer written in
    *  one of its decision blocks, so a host that selected the question learns it was answered. */
   onAskAnswered?(askId: string): void;
+  /** Called with this document's live editor as the document makes it, and with `undefined` as
+   *  it tears that editor down: a host that acts on the editor's view itself - a row of an
+   *  issue's outline holds every edit of it to the row's own block (`issue-page/node-caret.ts`) -
+   *  takes it here, in the task the editor is made in, which has drawn the document by then
+   *  where the room already held it. */
+  onEditorHandle?(handle: EditorHandle | undefined): void;
   onToolbarChange?(toolbar: DocumentToolbar | undefined): void;
   /** Called in `pane` only, with the server's reason, when the document cannot be opened: a tree
    *  outside the Proof schema, a history that cannot load, or any other failed admission. The
@@ -258,6 +266,7 @@ export function ProofDocument({
   isClosed,
   owner,
   onAskAnswered,
+  onEditorHandle,
   onToolbarChange,
   onUnavailable,
   onVersionChange,
@@ -289,6 +298,10 @@ export function ProofDocument({
   const activeMarkId = anchoredThread?.markId ?? undefined;
   const activeMarkIdRef = useRef(activeMarkId);
   activeMarkIdRef.current = activeMarkId;
+  // The host's hold on the editor, read through a ref like the mark above, so a host that
+  // re-renders reopens nothing.
+  const onEditorHandleRef = useRef(onEditorHandle);
+  onEditorHandleRef.current = onEditorHandle;
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pending, setPending] = useState<PendingState | undefined>(undefined);
   // Whoever waits for this browser's edits of this document to reach the server
@@ -332,7 +345,24 @@ export function ProofDocument({
     queryKey: ["artifact", artifact.id],
     queryFn: () => api.getArtifact(artifact.id),
   });
-  const liveTextQuery = useQuery(liveTextQueryOptions(artifact.id));
+  // The editor's tree: the fragment of its room an answer about this artifact names. An issue's
+  // room holds one fragment per document, so the page connects only once it knows which: at once
+  // where the artifact it was handed carries `fragment`, else once its own artifact read answers,
+  // taking that answer's (`prosemirror` from a server that names none). Until then nothing
+  // connects, so nothing typed lands in a fragment that is not this document's; a read that
+  // fails is the document's load failure.
+  const fragmentName = carriesFragment(artifact)
+    ? fragmentOf(artifact)
+    : artifactQuery.data === undefined
+      ? undefined
+      : fragmentOf(artifactQuery.data);
+  const fragmentReadError = fragmentName === undefined ? artifactQuery.error : null;
+  // The text is read once the page knows its fragment, beside the admission's own fresh read of
+  // it (`admit`), so the two are one request; read before it, the admission would read it again.
+  const liveTextQuery = useQuery({
+    ...liveTextQueryOptions(artifact.id),
+    enabled: fragmentName !== undefined,
+  });
   // The repair replaces this document, so it uploads under the document's own name whatever the
   // picked file is called; a closed issue takes none.
   const repairUpload = useArtifactUpload(
@@ -410,6 +440,33 @@ export function ProofDocument({
   );
   const blocksReadOnly = isClosed || schemaReadOnly;
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
+  // The server's read of the ask the block `blockId` shows: its row among the owner's asks, else
+  // what the live text answers for the block in its asks, which is the one read of a copy's
+  // source on a project document: the document's own asks hold no row of another document's.
+  const servedAsk = (blockId: string): ServedAsk | undefined =>
+    servedAskOf(
+      asksQuery.data ?? [],
+      artifact.id,
+      blockId,
+      owner.kind === "issue" ? undefined : owner.project
+    ) ?? liveAskOf(liveTextQuery.data, blockId);
+  // The server's read of the ask each mounted block shows, by block id, read once per render for
+  // the cards below and for the editor's refusal of a reading in an open ask, which reads the
+  // answer states at each edit: a ref, so the editor made once reads the latest asks read.
+  const servedAsks = new Map(
+    askBlockHosts.map((host) => {
+      const blockId = String(host.node.attrs.blockId);
+      return [blockId, servedAsk(blockId)] as const;
+    })
+  );
+  const askStates = useRef<ReadonlyMap<string, string>>(new Map());
+  askStates.current = new Map(
+    [...servedAsks].flatMap(([blockId, served]) =>
+      served === undefined
+        ? []
+        : [[blockId, "ask" in served ? served.ask.state : served.rendered.state] as const]
+    )
+  );
   const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
   // Naming a version is the name dialog's form, which shows a refusal itself; a rebuild shows
   // its own beside its button.
@@ -481,8 +538,9 @@ export function ProofDocument({
     setIsNameDialogOpen(true);
   }, []);
   // The answer itself goes through the shared ask card; the document's own reads (text, blocks,
-  // versions) refresh once it lands, since the server writes the outcome into the block, and a
-  // host that selected the question hears of its answer too.
+  // versions) refresh once it lands, since the server's ask node now holds the outcome the block
+  // shows, though the answer writes no version, and a host that selected the question hears of
+  // its answer too.
   const blockAnswered = useCallback(
     (askId: string) => {
       void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
@@ -702,6 +760,14 @@ export function ProofDocument({
       setConnection("failed");
       setLoadError(error instanceof Error ? error.message : String(error));
     };
+    if (fragmentName === undefined) {
+      if (fragmentReadError !== null) {
+        reportLoadFailure(fragmentReadError);
+      }
+      return () => {
+        mounted = false;
+      };
+    }
     const teardown = () => {
       disposeEditorBindings?.();
       editor?.destroy();
@@ -713,6 +779,7 @@ export function ProofDocument({
         connectionRef.current = undefined;
       }
       setEditorHandle((current) => (current === editor ? undefined : current));
+      if (editor !== undefined) onEditorHandleRef.current?.(undefined);
       disposeEditorBindings = undefined;
       editor = undefined;
       document = undefined;
@@ -760,7 +827,7 @@ export function ProofDocument({
         });
       }
       const unbindRemoteMarks = bindRemoteMarks(connection.doc, handle);
-      const fragment = connection.doc.getXmlFragment(FRAGMENT_NAME);
+      const fragment = connection.doc.getXmlFragment(fragmentName);
       let searchFrame = 0;
       const refreshSearchHighlights = () => {
         cancelAnimationFrame(searchFrame);
@@ -875,6 +942,7 @@ export function ProofDocument({
           newerReads = 0;
           setAdmission(undefined);
           const connection = connect(artifact.id, {
+            fragment: fragmentName,
             schemaCreatable: compiledSchemaCreatable,
             schemaVersion: compiledBlockSchema.version,
             onAdmission: (readOnly) => {
@@ -925,6 +993,7 @@ export function ProofDocument({
                     globalThis.document.documentElement.clientWidth < 1280)
                     ? null
                     : connection.awareness,
+                askStateOf: (blockId) => askStates.current.get(blockId),
                 heatMapMode: "hidden",
                 onAskBlockHosts: setAskBlockHosts,
                 onMarkAction: (action) => {
@@ -991,6 +1060,7 @@ export function ProofDocument({
                 // of the document by it, so the editor refuses one to a block of a type the
                 // pointer's attribute does not allow.
                 documentRef,
+                fragment: fragmentName,
                 ydoc: connection.doc,
               })
                 .then((handle) => {
@@ -1003,6 +1073,7 @@ export function ProofDocument({
                   editor = handle;
                   editorRef.current = handle;
                   setEditorHandle(handle);
+                  onEditorHandleRef.current?.(handle);
                   disposeEditorBindings = bindEditor(handle, connection);
                 })
                 .catch(reportLoadFailure);
@@ -1028,6 +1099,8 @@ export function ProofDocument({
     documentRef,
     focusInEditor,
     followBlockHash,
+    fragmentName,
+    fragmentReadError,
     loadTransport,
     page,
     pendingWaiter,
@@ -1237,6 +1310,7 @@ export function ProofDocument({
               owner={owner.kind === "document" ? owner : undefined}
               readOnly={blocksReadOnly}
               rowResolution={isClosed}
+              served={servedAsks.get(blockId)}
             />
           );
         })}
@@ -1255,6 +1329,7 @@ export function ProofDocument({
                   <button
                     aria-label={`${count} references on block`}
                     className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
+                    data-block-references={block.id}
                     key={block.id}
                     onClick={() => {
                       marginRef.current.filterToBlock(block.id);
@@ -1307,6 +1382,7 @@ export function ProofDocument({
             createdAt={versions.find((item) => item.number === version)?.created_at}
             highlight={highlight}
             owner={owner.kind === "document" ? owner : undefined}
+            servedAsk={servedAsk}
             version={version}
           />
         </div>

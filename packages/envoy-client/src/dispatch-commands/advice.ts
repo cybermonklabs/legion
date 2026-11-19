@@ -232,7 +232,7 @@ export function renderAdvice(
   if (superseded !== undefined && (tool === "dispatch_doc_edit" || tool === "dispatch_artifact")) {
     const gates = Array.isArray(superseded.design_gates) ? superseded.design_gates : [];
     const parts = [
-      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no decision block in it decided since.`,
+      `Stored version ${superseded.version}, superseding version ${superseded.approved_version}, which ${superseded.approved_by} approved. That approval is stale until someone approves version ${superseded.version} or a later write stores the text of version ${superseded.approved_version} again exactly, with no ask block in it decided since.`,
     ];
     if (gates.length > 0) {
       const named = gates.map((gate) => `${gate.issue}, step ${gate.step}`).join("; ");

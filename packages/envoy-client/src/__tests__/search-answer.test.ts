@@ -232,7 +232,7 @@ describe("searchAnswer: where an ask hit stands", () => {
   test("a closing reason's later lines are indented under the hit, as an answer's are", () => {
     const resolution = {
       kind: "resolved" as const,
-      reason: "Settled in the spec.\r\nSee the decision block.\n\nNo further work.",
+      reason: "Settled in the spec.\r\nSee the ask block.\n\nNo further work.",
       actor: { kind: "user" as const, id: "ada@example.com" },
       at: "t3",
     };
@@ -241,7 +241,7 @@ describe("searchAnswer: where an ask hit stands", () => {
       askHeader,
       askLine,
       "  Closed with no answer: resolved by user ada@example.com at t3: Settled in the spec.",
-      "    See the decision block.",
+      "    See the ask block.",
       "    ",
       "    No further work.",
     ]);
@@ -257,7 +257,7 @@ describe("searchAnswer: where an ask hit stands", () => {
       askHeader,
       askLine,
       "  Closed after an answer: resolved by user ada@example.com at t3: Settled in the spec.",
-      "    See the decision block.",
+      "    See the ask block.",
       "    ",
       "    No further work.",
       "  Last answer by ada@example.com at t1 · options chosen: none",

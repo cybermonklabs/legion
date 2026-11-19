@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -128,6 +129,70 @@ func closeRefusedSocket(w http.ResponseWriter, r *http.Request, code int, reason
 	}
 }
 
+// schemaSwitchClose is what a document socket's context is cancelled with when the schema this
+// process serves moves under it (CloseDocumentSockets). ygo's ServeHTTP reads CloseCode off the
+// cancel cause and sends that close frame before it closes the socket, so the browser reads the
+// code it already reads for a room outside the schema: read the document's text again and
+// connect again, where admission decides afresh.
+type schemaSwitchClose struct{ reason string }
+
+func (c schemaSwitchClose) Error() string { return c.reason }
+
+func (c schemaSwitchClose) CloseCode() (int, string) {
+	return documentSchemaCloseCode, contracts.DocumentSchemaCloseReason
+}
+
+// holdDocumentSocket records a live document socket, so the schema switch can close it, and
+// returns what the socket's end runs to forget it. The key is the record's own address, so two
+// sockets of one room are two records.
+func (s *Service) holdDocumentSocket(close context.CancelCauseFunc) (release func()) {
+	held := &close
+	s.documentSockets.Store(held, close)
+	return func() { s.documentSockets.Delete(held) }
+}
+
+// refuseSwitchedAdmission closes a socket whose admission a schema switch overtook: the switch
+// came after its admission read the document against the installed schema and before the socket
+// was held where the switch closes it (ServeHTTP), so the switch's own close missed it. It is the
+// close the switch gives the sockets it holds, so the browser reads it the one way it reads that
+// code: it admits the document again, against the schema installed now.
+func refuseSwitchedAdmission(w http.ResponseWriter, r *http.Request, room string) {
+	slog.Info("dispatch: close a document socket whose admission a schema switch overtook; the provider reconnects", "room", room)
+	closeRefusedSocket(w, r, documentSchemaCloseCode, contracts.DocumentSchemaCloseReason)
+}
+
+// CloseDocumentSockets closes every document socket this process holds, with the close code the
+// browser reads as "the schema moved" (documentSchemaCloseCode), and answers how many it closed.
+// The server runs it after an install that moved the schema it serves: a socket was admitted on
+// the schema version its browser presented, against the schema this process served as it
+// connected, and the fleet's re-check (RunSchemaAdmission) closes only a writable socket the live
+// processes no longer admit, a live window later, so a socket kept open across a switch would be
+// writing against types this process no longer holds. The browser reads the close, reads the
+// document's text again and connects again presenting the schema it was built with, and that
+// connection's admission (schemaFleet.admits) decides against the schema this process now serves.
+//
+// It counts the switch (schemaSwitches) before it closes anything, so a socket whose admission
+// ran before the switch and which is held only after this has passed it sees the count move and
+// is closed by its own ServeHTTP instead (refuseSwitchedAdmission). It runs on the installer's
+// own goroutine and closes each socket by cancelling the socket's context, the one a re-check
+// cancels too, which is the one way a close reaches a peer with a code of its own; the socket's
+// own goroutine tears it down and forgets it.
+func (s *Service) CloseDocumentSockets() int {
+	s.schemaSwitches.Add(1)
+	reason := fmt.Sprintf("the installed block schema is version %d", pmdoc.SchemaVersion())
+	closed := 0
+	s.documentSockets.Range(func(_, value any) bool {
+		// holdDocumentSocket is the one writer of this map and stores a
+		// context.CancelCauseFunc every time, so the value is one.
+		value.(context.CancelCauseFunc)(schemaSwitchClose{reason: reason})
+		closed++
+		return true
+	})
+	slog.Info("dispatch: closed the document sockets of a schema this process no longer serves",
+		"sockets", closed, "reason", reason)
+	return closed
+}
+
 // socketRoom is the document a socket request names: its route's room, else its path's last
 // segment.
 func socketRoom(r *http.Request) string {
@@ -157,24 +222,37 @@ func socketRoom(r *http.Request) string {
 // load failed or panicked - gives it back. The room's place the socket gives back however it ends,
 // and a room ygo loaded keeps a place of its own until it unloads (releaseUnloadedRoom).
 //
-// The room's name has to be the document's id as Dispatch writes it, lower case and hyphenated,
-// and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free run of hex,
-// urn:uuid:<id> - is refused below rather than rewritten. That is what makes one document one
-// room, and therefore one lock: a durable write takes its lock on the room's own name
-// (lockDocumentRoom) while the stream it appends to is keyed by the document's uuid
+// A schema switch closes every socket this process holds (CloseDocumentSockets), and one that
+// comes after a socket's admission read its document and before the socket is held is caught as
+// the socket is held: the admission reads the count of switches first and again once the socket
+// is held, and a count that moved closes it the same way (refuseSwitchedAdmission).
+//
+// The server decides the room (R5 of dispatch://INFRA-1253): the one statement that reads the
+// document's issue reads its room beside it (issueOpen), the document_rooms row's room for a
+// document converted into its issue's room, else the document itself. Everything of the socket
+// from there is the room's - its place under the room cap, its admission, its load, its lock - so
+// two sockets through two documents of one issue are one room, and one place under the cap. The
+// socket keeps the name it asked for: its client routes every frame by that name, so a socket
+// answered under another name would sync nothing. ygo is handed the request under the room's
+// name, and the socket's frames are renamed between the two on their way in and out
+// (roomAliasWriter).
+//
+// The name asked for has to be the document's id as Dispatch writes it, lower case and
+// hyphenated, and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free
+// run of hex, urn:uuid:<id> - is refused below rather than rewritten. That is what makes one
+// document one room, and therefore one lock: a durable write takes its lock on the room's own name
+// (lockDocumentRoom) while the stream it appends to is keyed by the room's uuid
 // (doc_updates.artifact_id), so two rooms of one id would be two editor states writing one
 // stream, neither browser seeing the other's typing and the stored markdown ending as text that
-// matched neither. Rewriting the name instead would admit a browser that cannot use what it was
-// given: its client routes every frame by the name it asked for, so a connection answered under
-// another name syncs nothing while holding a room's place. The rule holds for this endpoint
-// alone - another transport, or another handler that reaches a room name by a path of its own,
-// opens a room under whatever name it passes, and no code here can stop that.
+// matched neither. The rule holds for this endpoint alone - another transport, or another handler
+// that reaches a room name by a path of its own, opens a room under whatever name it passes, and
+// no code here can stop that.
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.hostname != "" {
 		w.Header().Set(ProcessHeader, s.hostname)
 		w = &processHeaderWriter{ResponseWriter: w, line: []byte(ProcessHeader + ": " + s.hostname + "\r\n")}
 	}
-	room := socketRoom(r)
+	asked := socketRoom(r)
 	actor, err := s.requestActor(r)
 	if err != nil {
 		if errors.Is(err, identity.ErrSignInUnavailable) {
@@ -184,18 +262,35 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	id, err := uuid.Parse(room)
+	id, err := uuid.Parse(asked)
 	if err != nil {
 		http.Error(w, "document not found", http.StatusNotFound)
 		return
 	}
-	if id.String() != room {
+	if id.String() != asked {
 		http.Error(w, "document not found: a document's address is its id as Dispatch writes it, lower case with dashes, here "+id.String(), http.StatusNotFound)
 		return
 	}
-	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room)
+	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), asked)
 	if err != nil {
 		http.Error(w, "document not found", http.StatusNotFound)
+		return
+	}
+	room := issue.room
+	// A retired document takes no new text (RetireDocument), so no socket opens on it: its
+	// retirement closed every room of it, and a browser that comes back is refused here, before
+	// anything reserves a room for it. The issue's decisions query is no document a socket edits
+	// (refs.DecisionsQuerySQL): no fragment of any room holds it.
+	retired, query, err := refusedDocument(r.Context(), s.queryFrom(r.Context()), asked)
+	switch {
+	case err != nil:
+		http.Error(w, "document not found", http.StatusNotFound)
+		return
+	case retired:
+		http.Error(w, "DOCUMENT_RETIRED: the document was retired; it takes no new text, and its versions stay readable", http.StatusConflict)
+		return
+	case query:
+		http.Error(w, "DECISIONS_QUERY: the issue's decisions query renders the issue's decisions and takes no text; write a decision as a `decision` block of the issue's spec", http.StatusConflict)
 		return
 	}
 	if err := s.awaitRoomRecovery(r.Context(), room); err != nil {
@@ -236,7 +331,8 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.afterSocketIssueRead != nil {
 		s.afterSocketIssueRead(room)
 	}
-	withdraw, documentSince, err := s.admitDocument(ctx, room)
+	switches := s.schemaSwitches.Load()
+	withdraw, documentSince, err := s.admitDocument(ctx, room, issue.layout)
 	if errors.Is(err, ErrDocNewerContent) {
 		refuseNewerContent(w, r, room, err)
 		return
@@ -252,9 +348,31 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer withdraw()
 	connection.admission.documentSince = documentSince
 	ctx = context.WithValue(ctx, connectionContextKey{}, connection)
+	if s.afterSocketAdmitted != nil {
+		s.afterSocketAdmitted(room)
+	}
+	// The schema switch ends every socket this process holds on a schema it no longer serves
+	// through the same context a re-check closes it by, with a cause of its own
+	// (CloseDocumentSockets). ygo closes the peer when this context ends, with the close code
+	// the cause names.
+	defer s.holdDocumentSocket(cancel)()
+	// A switch counted since the admission read the document was decided against a schema this
+	// process may no longer serve, and its close ran before this socket was held, or ran while
+	// it was being held: either way this socket is closed here, before ygo sends any of it.
+	if s.schemaSwitches.Load() != switches {
+		refuseSwitchedAdmission(w, r, room)
+		return
+	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
-	// frames (awareness_limit.go).
-	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))
+	// frames (awareness_limit.go). ygo serves the socket under the room's name, which its peer's
+	// frames are renamed to and from where the socket asked for another (room_alias.go).
+	var served http.ResponseWriter = &awarenessLimitWriter{ResponseWriter: w, room: room}
+	if asked != room {
+		served = &roomAliasWriter{ResponseWriter: served, asked: asked, room: room}
+	}
+	routed := r.Clone(ctx)
+	routed.SetPathValue("room", room)
+	s.srv.ServeHTTP(served, routed)
 }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above
@@ -342,13 +460,15 @@ func (c *processHeaderConn) Write(p []byte) (int, error) {
 // read off it and no rendering records it; for a resident room that read holds the room's own
 // document and makes no query of the stored history (heldTree). A cold socket offers the state it
 // read, and what it rendered of it, to the room's load (offerPreload), and withdraw is what the
-// socket's end runs to take that offer back.
-func (s *Service) admitDocument(ctx context.Context, room string) (withdraw func(), documentSince int, err error) {
+// socket's end runs to take that offer back. layout is the room's layout, which the socket's
+// read of its document read beside its issue (readIssue): an issue room is read and rendered over
+// every fragment it holds, as its replica renders it.
+func (s *Service) admitDocument(ctx context.Context, room string, layout roomLayout) (withdraw func(), documentSince int, err error) {
 	verdict := s.residentVerdict(room)
 	if verdict == verdictOutsideSchema {
 		return nil, 0, ErrDocOutsideSchema
 	}
-	tree, loaded, err := s.loadTree(ctx, room)
+	tree, loaded, err := s.loadTree(ctx, room, layout.fragments())
 	rendered := admissionRendering{tree: tree}
 	if err == nil && tree != nil && verdict != verdictInsideSchema {
 		if s.admissionRendered != nil {

@@ -137,7 +137,7 @@ func TestADocumentHoldingABlockIDPastTheBoundTakesUnrelatedWrites(t *testing.T) 
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Held long block id", "Context paragraph.\n")
 	long := randomBlockID(t, 3200)
-	writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, boundCallout(long)+"\nContext paragraph.\n")
+	writeBrowserDocument(t, handler, documentService, issue.PrimaryArtifactID, boundCallout(long)+"\nContext paragraph.\n")
 	versions := func() int {
 		var count int
 		if err := database.Pool.QueryRow(context.Background(),
@@ -194,7 +194,7 @@ func TestARebuildFromMarkdownHoldingABlockIDPastTheBoundIsWritten(t *testing.T) 
 		Artifact model.Artifact `json:"artifact"`
 	}](t, created).Artifact
 	long := randomBlockID(t, 3200)
-	broken.failNextLoad(artifact.ID)
+	broken.failNextLoad(t, artifact.ID)
 
 	rebuilt := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifact.ID+"/rebuild", map[string]any{
 		"markdown": boundCallout(long) + "\nAfter the note.\n",
@@ -372,8 +372,10 @@ func TestACommentCitingATargetPastTheBoundPosts(t *testing.T) {
 // comment anchored in it and, asked for by kind, its block's part_of edge, ?from= its attached_to
 // edge to its issue, its block is read by its block reference, and block-links reads it either
 // side. A comment no one wrote, its id past the bound, is 404 NOT_FOUND as any missing node is.
+// The document's address is past the store's bound, so it stays its own room, as on main, and its
+// block is no node of the store (documentJoinsIssueRoom).
 func TestALongNamedDocumentIsReadByItsOwnReference(t *testing.T) {
-	_, handler, _ := browserDocumentService(t)
+	_, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reads long targets", "Context paragraph.\n")
 	// The slug of `<hex>.md` is `<hex>-md`, so the reference key `<key>/<hex>-md` is 2600 bytes.
 	name := randomBlockID(t, 2600-len(issue.Key+"/-md")) + ".md"
@@ -397,6 +399,7 @@ func TestALongNamedDocumentIsReadByItsOwnReference(t *testing.T) {
 	}
 	comment := decodeBody[model.Comment](t, commented)
 	document := "dispatch://" + issue.Key + "/artifact/" + artifact.Slug
+	blockNode := readDecisionDocument(t, database, issue.Key, artifact.Slug).address("x")
 
 	hasEdge := func(edges []model.GraphEdge, kind, nodeKind, nodeID string) bool {
 		for _, edge := range edges {
@@ -410,13 +413,13 @@ func TestALongNamedDocumentIsReadByItsOwnReference(t *testing.T) {
 	if in.Node.Kind != "artifact" || in.Node.ID != artifact.ID || !hasEdge(in.Edges, "anchored_to", "comment", comment.ID) {
 		t.Fatalf("?to= the long-named document = node %s %.60q… edges %#v, want it with the comment anchored in it", in.Node.Kind, in.Node.ID, in.Edges)
 	}
-	if parts := graphEdges(t, handler, url.Values{"to": {document}, "kind": {"part_of"}}); !hasEdge(parts.Edges, "part_of", "block", artifact.RefKey+"#x") {
+	if parts := graphEdges(t, handler, url.Values{"to": {document}, "kind": {"part_of"}}); !hasEdge(parts.Edges, "part_of", "block", blockNode) {
 		t.Fatalf("?to= the long-named document's part_of edges = %#v, want its block x", parts.Edges)
 	}
 	if out := graphEdges(t, handler, url.Values{"from": {document}}); !hasEdge(out.Edges, "attached_to", "issue", issue.Key) {
 		t.Fatalf("?from= the long-named document = %#v, want its attached_to edge to %s", out.Edges, issue.Key)
 	}
-	if block := graphEdges(t, handler, url.Values{"to": {document + "#b-x"}}); block.Node.Kind != "block" || block.Node.ID != artifact.RefKey+"#x" {
+	if block := graphEdges(t, handler, url.Values{"to": {document + "#b-x"}}); block.Node.Kind != "block" || block.Node.ID != blockNode {
 		t.Fatalf("?to= a block of the long-named document = node %s %.60q…, want block x", block.Node.Kind, block.Node.ID)
 	}
 	spec := "dispatch://" + issue.Key + "/spec"
@@ -434,6 +437,49 @@ func TestALongNamedDocumentIsReadByItsOwnReference(t *testing.T) {
 	}
 }
 
+// A converted issue's document whose reference key is past the store's address bound - 2600 bytes,
+// which the head's uploads still create - stays its own room, as every document is on main, and so
+// does a short-named document no role names, while a role document of the same issue, its plan,
+// joins the issue's room (documentJoinsIssueRoom, R5 of this branch's spec): what keeps a document
+// out of the room is the part it plays, never the length of its name.
+func TestALongNamedDocumentStaysItsOwnRoomWhileARoleDocumentJoinsTheIssues(t *testing.T) {
+	_, handler, database := browserDocumentService(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Long and short names", "Context paragraph.\n")
+	var tree string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select id::text from artifacts where issue_key = $1 and kind = 'tree'`, issue.Key).Scan(&tree); err != nil {
+		t.Fatalf("read the issue's tree: %v", err)
+	}
+	long := randomBlockID(t, 2600-len(issue.Key+"/-md")) + ".md"
+	for _, test := range []struct {
+		what, name string
+		joins      bool
+	}{{"the issue's plan", "plan.md", true}, {"a short-named document", "notes.md", false}, {"a long-named document", long, false}} {
+		uploaded := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+			"name": test.name, "content": "A paragraph of the document.\n",
+		}, "alice")
+		if uploaded.Code != http.StatusCreated {
+			t.Fatalf("upload %s: status=%d body=%.400s", test.what, uploaded.Code, uploaded.Body.String())
+		}
+		artifact := decodeBody[struct {
+			Artifact model.Artifact `json:"artifact"`
+		}](t, uploaded).Artifact
+		var room *string
+		if err := database.Pool.QueryRow(context.Background(),
+			`select (select room::text from document_rooms where artifact_id = $1)`, artifact.ID).Scan(&room); err != nil {
+			t.Fatalf("read the document_rooms row of %s: %v", test.what, err)
+		}
+		if test.joins && (room == nil || *room != tree || artifact.Room != tree || artifact.Fragment != artifact.ID) {
+			t.Fatalf("%s's document_rooms row = %v and its answer's room = %q fragment %q, want both the issue's tree %s and its own fragment %s",
+				test.what, room, artifact.Room, artifact.Fragment, tree, artifact.ID)
+		}
+		if !test.joins && (room != nil || artifact.Room != artifact.ID || artifact.Fragment != model.ArtifactFragmentOwn) {
+			t.Fatalf("%s's document_rooms row = %v and its answer's room = %q fragment %q, want no row, the document's own room %s and that room's own fragment %s",
+				test.what, room, artifact.Room, artifact.Fragment, artifact.ID, model.ArtifactFragmentOwn)
+		}
+	}
+}
+
 // A comment and an ask anchored by a quote inside a block whose id is 3200 random hex characters -
 // which a browser's edit writes, and which no Postgres B-tree key holds - are written as any
 // anchor is, each anchored to that block, and the document's blocks count both against it. No
@@ -446,7 +492,7 @@ func TestAnAnchorInsideABlockWhoseIDIsPastTheBoundIsWritten(t *testing.T) {
 	long := randomBlockID(t, 3200)
 	// A quote across the callout's two paragraphs lies in no block below the callout, so its
 	// anchor's block is the callout and its long id.
-	writeBrowserDocument(t, documentService, issue.PrimaryArtifactID,
+	writeBrowserDocument(t, handler, documentService, issue.PrimaryArtifactID,
 		":::callout{#"+long+" kind=\"note\" title=\"\"}\nOne line.\n\nTwo line.\n:::\n\nContext paragraph.\n")
 
 	for _, write := range []struct{ name, path, field, text, quote string }{

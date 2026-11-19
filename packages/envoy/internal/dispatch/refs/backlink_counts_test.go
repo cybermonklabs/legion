@@ -9,17 +9,21 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // backlinkFixture is one graph that fills every arm of graph_edges: each of the view's 27 arms
-// emits at least one edge over it, and every node kind nodeLoaders resolves has a node with an
+// emits at least one edge over it, and every node kind nodeRegistry resolves has a node with an
 // inbound edge. Every item kind holds a block that is no longer current, carrying a link of its
 // own and pointed at by a mention, an ask's part and a message's block by a reply as well, so
 // each place the view filters a removed block out is a place a count that kept it answers high.
@@ -144,6 +148,37 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		insert into ask_followers (ask_id, session_id) values ($1::uuid, 'session-backlink')
 	`, anchoredAsk)
 
+	// The same three relations as the store holds them for an ask whose row names its node: an
+	// ask on the notes document, anchored on it and owned by it, and a
+	// session that follows it, each stated on the ask's node, the rows marked. graph_edges' old
+	// arms leave these rows to the tuple arm, and the count reads the store's tuples for them.
+	// The answered ask's tie to a block, its shaped, is the store's alone: a block_refs row of the
+	// spec's block marked with the ask's node, as the writer of an ask block's links marks it.
+	storedAsk := scanFixture(t, tx, "create the ask the store holds", `
+		insert into asks (artifact_id, author, question, anchor)
+		values ($1::uuid, '{"kind":"user","id":"alice"}', 'held by the store?', jsonb_build_object('artifact_id', $1::text))
+		returning id::text
+	`, notesID)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	stated := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	nodes, tuples, _ := graphstore.AskFacts(storedAsk, "CORE", nil, alice, stated, graphstore.NoEvent,
+		graphstore.AskPlaces{Anchor: notesRef, Owner: notesRef})
+	nodes = append(nodes, graphstore.SessionNode("session-stored", alice, stated, graphstore.NoEvent))
+	tuples = append(tuples,
+		graphstore.Tuple{FromKind: graphstore.KindAsk, FromID: storedAsk, Kind: graphstore.TupleFollowedBy,
+			ToKind: graphstore.KindSession, ToID: "session-stored", At: stated, Who: alice, Asserted: true},
+		graphstore.Tuple{FromKind: graphstore.KindAsk, FromID: storedAsk, Kind: "shaped",
+			ToKind: BlockNodeKind, ToID: notesRef + "#b1", At: stated, Who: alice, Asserted: true})
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		t.Fatalf("state the ask the store holds: %v", err)
+	}
+	execFixture(t, tx, "mark the ask the store holds", `
+		update asks set node_kind = 'ask', node_address = id::text where id = $1::uuid
+	`, storedAsk)
+	execFixture(t, tx, "follow the ask the store holds", `
+		insert into ask_followers (ask_id, session_id, node_kind, node_address) values ($1::uuid, 'session-stored', 'ask', $1)
+	`, storedAsk)
+
 	// components: part_of, depends_on; issue_component_members: affects.
 	sourceID := scanFixture(t, tx, "create the architecture source", `
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
@@ -183,6 +218,10 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
 		values ($1::uuid, 'b1', $2, 'block', $3, 'mentions', 1)
 	`, specID, specBlock, notesBlock)
+	execFixture(t, tx, "tie the ask the store holds to the notes block", `
+		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version, node_kind, node_address)
+		values ($1::uuid, 'b1', $2, 'block', $3, 'shaped', 1, 'ask', $4)
+	`, specID, specBlock, notesBlock, storedAsk)
 
 	// comment_blocks: a comment block's part_of; comment_block_refs: its mentions. b3 is the
 	// block a later revision removed, which keeps its row with no position and its reference.
@@ -313,6 +352,12 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		{"message", rootMessage},
 		{"component", "CORE/core"},
 		{"session", "session-backlink"},
+		// The three kinds the store holds that no structural arm points at, as the view's
+		// mention arm reaches them: a person by their canonical login, a role by its topic,
+		// and the page of that role.
+		{"person", "person-backlink@example.com"},
+		{"role", "role-backlink"},
+		{"page", "role/role-backlink"},
 		{"block", notesBlock},
 		{"comment_block", commentBlock},
 		{"comment_block", removedCommentBlock},
@@ -320,14 +365,79 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		{"message_block", removedMessageBlock},
 		{"ask_block", askPart},
 		{"ask_block", removedAskPart},
+		// The two kinds of the lens catalogue, which the seed holds (migration 20261116123354):
+		// a kind and the constraint that is its source, each named by a mention as any node is.
+		{"lens_kind", "pre-mortem"},
+		{"constraint", "5eed0000-1e45-4000-8000-000000000001"},
+		// A lens, a finding of it and a risk under it (writeBacklinkReasoning), and a run of the
+		// command bar (its node is written below), each named by a mention as any node is.
+		{"lens", backlinkLens},
+		{"lens_block", backlinkFinding},
+		{"risk", backlinkRisk},
+		{"interaction", "22222222-2222-4222-8222-222222222222"},
 	} {
 		insertReference(t, tx, "comment", citingComment, target[0], target[1])
 	}
 	insertReference(t, tx, "artifact", specID, "block", notesBlock)
+	// The references of a document whose row names its node, which the store answers
+	// (store.GraphEdgesArtifactRefs): the notes document, marked, cites CORE-1 through a row and
+	// the tuple its version index states beside it, which the tuple arm answers; cites the spec
+	// through a row whose tuple a process of the release before never stated, which no arm
+	// answers; and states a mention of the component CORE/core whose row that release deleted with
+	// no retraction, which no arm answers either.
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{graphstore.ArtifactNode(notesRef, "CORE", "", alice, stated)}, []graphstore.Tuple{
+		graphstore.ArtifactMentions(notesRef, "issue", "CORE-1", true, alice, stated),
+		graphstore.ArtifactMentions(notesRef, "component", "CORE/core", true, alice, stated),
+	}); err != nil {
+		t.Fatalf("state the notes document and its mentions: %v", err)
+	}
+	execFixture(t, tx, "mark the notes document", `
+		update artifacts set node_kind = 'artifact', node_address = ref_key where id = $1::uuid
+	`, notesID)
+	insertReference(t, tx, "artifact", notesID, "issue", "CORE-1")
+	insertReference(t, tx, "artifact", notesID, "artifact", specRef)
 	insertReference(t, tx, "message", rootMessage, "artifact", notesRef)
 	// A source of a node kind this build cannot address, written straight into refs as a newer
 	// build would leave it: the mention arm's from_kind filter is what keeps it out of a count.
 	insertReference(t, tx, "future", "x#y", "issue", "CORE-1")
+	// graph_tuples, the view's store class: an authored_by out of a lens to the person and out of
+	// an interaction to the session, which the view answers from the tuples alone. Both are kinds
+	// this build resolves, so each edge counts on its author (authoredByReasoning). The interaction
+	// is written project-visible, as no run is, because the oracle reads the view with no
+	// predicate: a run reserved for its author would be in the view's count and in no reader's.
+	for _, authored := range []struct{ fromKind, fromID, toKind, toID string }{
+		{"lens", backlinkLens, "person", "person-backlink@example.com"},
+		{"interaction", "22222222-2222-4222-8222-222222222222", "session", "session-backlink"},
+	} {
+		execFixture(t, tx, "write the "+authored.fromKind+" node", `
+			insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
+			values ($1, $2, $1, 'project', 'live', now(), '{"kind":"user","id":"alice"}', 0)
+		`, authored.fromKind, authored.fromID)
+		execFixture(t, tx, "write the "+authored.fromKind+"'s authored_by", `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+			values ($1, $2, 'authored_by', $3, $4, now(), '{"kind":"user","id":"alice"}', 0)
+		`, authored.fromKind, authored.fromID, authored.toKind, authored.toID)
+	}
+	// A has_kind out of the same lens to a kind of the catalogue, which the view answers from the
+	// tuples alone, as it answers the seed's constrained_by from each kind to its source: a lens
+	// kind's count holds the lens, and a constraint's count holds the lens kind whose source it is.
+	execFixture(t, tx, "write the lens's has_kind", `
+		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+		values ('lens', $1, 'has_kind', 'lens_kind', 'pre-mortem', now(), '{"kind":"user","id":"alice"}', 0)
+	`, backlinkLens)
+	writeBacklinkReasoning(t, tx, specRef, specBlock, commentBlock)
+	// The changed_by_run of what a write made for that run changed: a lens, a finding of it and a
+	// risk under it, each answered from the tuples alone and counted on the run's node
+	// (changedByRun), the finding as the lens_block its own arm writes it as; and one out of the
+	// lens the store holds gone, which neither reading counts.
+	for _, changed := range []struct{ fromKind, fromID string }{
+		{"lens", backlinkLens}, {"block", backlinkFinding}, {"risk", backlinkRisk}, {"lens", backlinkGoneLens},
+	} {
+		execFixture(t, tx, "write the changed_by_run of "+changed.fromKind+" "+changed.fromID, `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+			values ($1, $2, 'changed_by_run', 'interaction', '22222222-2222-4222-8222-222222222222', now(), '{"kind":"user","id":"alice"}', 0)
+		`, changed.fromKind, changed.fromID)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
@@ -340,6 +450,69 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		removedBlock: "CORE-4",
 		askPart:      askPart,
 		commentBlock: commentBlock,
+	}
+}
+
+// The reasoning nodes of the backlink fixture (writeBacklinkReasoning): a pre-mortem lens on the
+// issue, its finding and its risk, a lens on the spec it triggered, a lens on that finding, a lens
+// on a comment's block, a constraint under the issue, and a lens on the issue the store holds gone.
+const (
+	backlinkLens         = "11111111-1111-4111-8111-111111111111"
+	backlinkDocumentLens = "11111111-1111-4111-8111-111111111112"
+	backlinkFindingLens  = "11111111-1111-4111-8111-111111111113"
+	backlinkBlockLens    = "11111111-1111-4111-8111-111111111114"
+	backlinkGoneLens     = "11111111-1111-4111-8111-111111111115"
+	backlinkFinding      = "lens/" + backlinkLens + "#f1"
+	backlinkRisk         = "33333333-3333-4333-8333-333333333331"
+	backlinkConstraint   = "44444444-4444-4444-8444-444444444441"
+)
+
+// writeBacklinkReasoning writes what stands on the fixture's nodes and under its lens, as rows of
+// the store, which the view's tuple arms answer from the tuples alone: the lens backlinkLens
+// (written already, with its authored_by and its has_kind) on CORE-1; its finding, with its own
+// authored_by, and its risk, which a check of the spec - its first block, here - prevents; a lens
+// on the spec that the first lens triggered; a lens on the finding; a lens on a current block of a
+// comment, which counts on the block and on the comment that holds it; and a constraint under
+// CORE-1. Beside them are two rows no reading may count: a lens on CORE-1 the store holds gone, and
+// a part_of of the constraint to CORE-2 that a later tuple retracts.
+func writeBacklinkReasoning(t *testing.T, tx pgx.Tx, spec, specBlock, commentBlock string) {
+	t.Helper()
+	for _, node := range []struct{ kind, id, supertag, state string }{
+		{"lens", backlinkDocumentLens, "lens", "live"},
+		{"lens", backlinkFindingLens, "lens", "live"},
+		{"lens", backlinkBlockLens, "lens", "live"},
+		{"lens", backlinkGoneLens, "lens", "gone"},
+		{"block", backlinkFinding, "block", "live"},
+		{"risk", backlinkRisk, "risk", "live"},
+		{"constraint", backlinkConstraint, "constraint", "live"},
+	} {
+		execFixture(t, tx, "write the "+node.kind+" "+node.id, `
+			insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
+			values ($1, $2, $3, 'project', $4, now(), '{"kind":"user","id":"alice"}', 0)
+		`, node.kind, node.id, node.supertag, node.state)
+	}
+	for _, tuple := range []struct {
+		fromKind, fromID, kind, toKind, toID string
+		asserted                             bool
+	}{
+		{"lens", backlinkLens, "part_of", "issue", "CORE-1", true},
+		{"block", backlinkFinding, "part_of", "lens", backlinkLens, true},
+		{"block", backlinkFinding, "authored_by", "person", "person-backlink@example.com", true},
+		{"risk", backlinkRisk, "part_of", "lens", backlinkLens, true},
+		{"risk", backlinkRisk, "prevented_by", "block", specBlock, true},
+		{"lens", backlinkDocumentLens, "part_of", "artifact", spec, true},
+		{"lens", backlinkDocumentLens, "triggered_by", "lens", backlinkLens, true},
+		{"lens", backlinkFindingLens, "part_of", "lens_block", backlinkFinding, true},
+		{"lens", backlinkBlockLens, "part_of", "comment_block", commentBlock, true},
+		{"constraint", backlinkConstraint, "part_of", "issue", "CORE-1", true},
+		{"lens", backlinkGoneLens, "part_of", "issue", "CORE-1", true},
+		{"constraint", backlinkConstraint, "part_of", "issue", "CORE-2", true},
+		{"constraint", backlinkConstraint, "part_of", "issue", "CORE-2", false},
+	} {
+		execFixture(t, tx, "write "+tuple.fromKind+" "+tuple.fromID+" -"+tuple.kind+"-> "+tuple.toKind+" "+tuple.toID, `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+			values ($1, $2, $3, $4, $5, now(), '{"kind":"user","id":"alice"}', 0, $6)
+		`, tuple.fromKind, tuple.fromID, tuple.kind, tuple.toKind, tuple.toID, tuple.asserted)
 	}
 }
 
@@ -357,91 +530,6 @@ func scanFixture(t *testing.T, tx pgx.Tx, what, statement string, args ...any) s
 		t.Fatalf("%s: %v", what, err)
 	}
 	return id
-}
-
-// backlinkCountOracle is the first arm of the count the release before this change runs over the
-// whole graph_edges view, the reading the arms of this package's count must add up to: the view,
-// filtered and grouped. It is held here as a literal, copied from that release rather than built
-// from this package's helpers, on purpose - built from the helpers, a change to the count's own
-// builders would move the oracle and the count together and the comparison would pass whatever
-// either said. $1 is the target kind, $2 the ids, $3 the node kinds this build reads; $4, when the
-// statement carries backlinkCountOracleExcluded, is the excluded edge kinds.
-const backlinkCountOracle = `select g.to_id from graph_edges g
-where g.to_kind = $1 and g.to_id = any($2)`
-
-// backlinkCountOracleAtItsBlocks is the oracle's second arm for each item kind: an edge at one
-// of the item's current blocks, counted as the item's own, since the item's own read lists it.
-// The block kind and the item's tables are written out per kind for the reason the first arm is.
-var backlinkCountOracleAtItsBlocks = map[string]string{
-	"comment": `select part.comment_id::text from graph_edges g
-	join comment_blocks part on part.node_id = g.to_id and part.position is not null
-	where g.to_kind = 'comment_block' and part.comment_id::text = any($2)`,
-	"message": `select part.message_id::text from graph_edges g
-	join message_blocks part on part.node_id = g.to_id and part.position is not null
-	where g.to_kind = 'message_block' and part.message_id::text = any($2)`,
-	"ask": `select part.ask_id::text from graph_edges g
-	join ask_blocks part on part.node_id = g.to_id and part.position is not null
-	where g.to_kind = 'ask_block' and part.ask_id::text = any($2)`,
-}
-
-// backlinkCountOracleNarrow is what each arm of the oracle carries: the source-kind filter and
-// the probe that keeps an item's own mention out of the count where one of its blocks holds a
-// link of any kind to the same target, written out as the rest of the oracle is.
-const backlinkCountOracleNarrow = `
-  and g.from_kind = any($3)
-  and not (g.kind = 'mentions' and (
-    (g.from_kind = 'artifact' and exists (select 1 from block_refs b where b.to_kind = g.to_kind and b.to_id = g.to_id and b.artifact_id::text = g.from_id))
-    or (g.from_kind = 'comment' and exists (select 1 from comment_block_refs b where b.to_kind = g.to_kind and b.to_id = g.to_id and b.comment_id::text = g.from_id))
-    or (g.from_kind = 'message' and exists (select 1 from message_block_refs b where b.to_kind = g.to_kind and b.to_id = g.to_id and b.message_id::text = g.from_id))
-    or (g.from_kind = 'ask' and exists (select 1 from ask_block_refs b where b.to_kind = g.to_kind and b.to_id = g.to_id and b.ask_id::text = g.from_id))))`
-
-// backlinkCountOracleExcluded is the oracle's exclusion predicate, the one part of the statement
-// a caller's exclusions add.
-const backlinkCountOracleExcluded = `
-  and not (g.kind = any($4))`
-
-// oracleBacklinkCountSQL is the release before this change's whole statement for toKind: the view's own arm, the arm over
-// the item's current blocks where the kind has one, and the group. excluded says whether the
-// caller binds excluded edge kinds as $4. The timing harness measures this text as the before
-// side of the backlink pair, so it is built in one place rather than assembled twice.
-func oracleBacklinkCountSQL(toKind string, excluded bool) string {
-	narrow := backlinkCountOracleNarrow
-	if excluded {
-		narrow += backlinkCountOracleExcluded
-	}
-	arms := backlinkCountOracle + narrow
-	if atBlocks, ok := backlinkCountOracleAtItsBlocks[toKind]; ok {
-		arms += "\nunion all\n" + atBlocks + narrow
-	}
-	return `select id, count(*)::int from (` + arms + `) e (id) group by id`
-}
-
-// oracleBacklinkCounts counts the inbound edges of ids over the whole view (backlinkCountOracle),
-// with the edges at a counted item's own current blocks (backlinkCountOracleAtItsBlocks).
-func oracleBacklinkCounts(t *testing.T, q Queryer, toKind string, ids, excludeKinds []string) map[string]int {
-	t.Helper()
-	args := []any{toKind, ids, nodeKinds}
-	if len(excludeKinds) > 0 {
-		args = append(args, excludeKinds)
-	}
-	rows, err := q.Query(context.Background(), oracleBacklinkCountSQL(toKind, len(excludeKinds) > 0), args...)
-	if err != nil {
-		t.Fatalf("count %s backlinks over the view: %v", toKind, err)
-	}
-	defer rows.Close()
-	counts := map[string]int{}
-	for rows.Next() {
-		var id string
-		var count int
-		if err := rows.Scan(&id, &count); err != nil {
-			t.Fatalf("scan a %s backlink count over the view: %v", toKind, err)
-		}
-		counts[id] = count
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the %s backlink counts over the view: %v", toKind, err)
-	}
-	return counts
 }
 
 // viewBacklinkTargets is every node of toKind the view points at, read from the view itself so
@@ -490,7 +578,7 @@ func backlinkExclusionCases(toKind string) [][]string {
 
 // A count read arm by arm is the view's count. For every node kind this build resolves, under no
 // exclusion and under each exclusion the kind's arms carry, BacklinkCounts answers exactly what
-// the whole view answers over the same addresses (backlinkCountOracle).
+// the whole view answers over the same addresses (docstest.ViewBacklinkCountSQL over graph_edges).
 //
 // The fixture's rows make the comparison able to fail rather than merely agree: one node is
 // pointed at through several arms, so a dropped arm shows as a lower count; the issue cited
@@ -534,11 +622,11 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 			ids = append(ids, fixture.commentBlock)
 		}
 		for _, exclusions := range backlinkExclusionCases(toKind) {
-			counts, err := BacklinkCounts(ctx, pool, toKind, ids, exclusions)
+			counts, err := BacklinkCounts(ctx, pool, model.Actor{}, toKind, ids, exclusions)
 			if err != nil {
 				t.Fatalf("count %s backlinks excluding %v: %v", toKind, exclusions, err)
 			}
-			want := oracleBacklinkCounts(t, pool, toKind, ids, exclusions)
+			want := docstest.ViewBacklinkCounts(t, pool, "graph_edges", toKind, ids, nodeKinds, exclusions)
 			if !maps.Equal(counts, want) {
 				t.Errorf("%s backlink counts excluding %v = %v; the view says %v", toKind, exclusions, counts, want)
 			}
@@ -549,7 +637,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 		}
 	}
 
-	counts, err := BacklinkCounts(ctx, pool, "issue", []string{fixture.heldOnce, fixture.heldTwice, fixture.removedBlock}, nil)
+	counts, err := BacklinkCounts(ctx, pool, model.Actor{}, "issue", []string{fixture.heldOnce, fixture.heldTwice, fixture.removedBlock}, nil)
 	if err != nil {
 		t.Fatalf("count the block-held issues' backlinks: %v", err)
 	}
@@ -564,12 +652,12 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 func TestBacklinkCountsRefuseANodeKindWithNoDeclaredArms(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	if _, err := BacklinkCounts(ctx, database.Pool, "pull_request", []string{"x"}, nil); err == nil {
+	if _, err := BacklinkCounts(ctx, database.Pool, model.Actor{}, "pull_request", []string{"x"}, nil); err == nil {
 		t.Fatal("counting the backlinks of a node kind with no declared arms answered without an error")
 	}
 	for _, kind := range nodeKinds {
 		if _, ok := backlinkArms[kind]; !ok {
-			t.Errorf("nodeLoaders resolves %q but backlinkArms declares no arms for it, so every count of that kind is refused", kind)
+			t.Errorf("nodeRegistry resolves %q but backlinkArms declares no arms for it, so every count of that kind is refused", kind)
 		}
 	}
 }
@@ -605,40 +693,72 @@ func TestBacklinkCountStatementReadsEveryArmThroughAnIndex(t *testing.T) {
 	for _, toKind := range nodeKinds {
 		ids := viewBacklinkTargets(t, fixture.database.Pool, toKind)
 		for _, exclusions := range backlinkExclusionCases(toKind) {
-			statement, ok := backlinkCountSQL(toKind, exclusions)
-			if !ok {
-				t.Fatalf("no arms declared for %s, the kind nodeLoaders resolves", toKind)
-			}
-			args := []any{ids, nodeKinds}
-			literals := []string{textArrayLiteral(ids), textArrayLiteral(nodeKinds)}
-			if len(exclusions) > 0 {
-				args = append(args, exclusions)
-				literals = append(literals, textArrayLiteral(exclusions))
-			}
-			prepared++
-			name := fmt.Sprintf("backlink_count_%d", prepared)
-			for mode, plan := range map[string]json.RawMessage{
-				"custom": customPlan(t, connection, statement, args),
-				"generic": explaintest.GenericPlan(t, ctx, connection, name, statement,
-					slices.Repeat([]string{"text[]"}, len(literals)), literals, planSettings...),
-			} {
-				if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
-					t.Errorf("the %s backlink count excluding %v reads %s under its %s plan, which no index serves:\n%s",
-						toKind, exclusions, strings.Join(unkeyed, ", "), mode, plan)
+			// Both shapes the count binds its addresses in: the array of every address, and
+			// the one address a read of a single node's page counts, which is a statement of
+			// its own (backlinkCountStatement). An arm that lost its index in one of them
+			// would be unkeyed for half the counts Dispatch runs.
+			for _, shape := range backlinkAddressShapes(ids) {
+				statement, ok := backlinkCountSQL(toKind, exclusions, shape.one)
+				if !ok {
+					t.Fatalf("no arms declared for %s, the kind nodeRegistry resolves", toKind)
 				}
-				// Carrying an index condition is not the same as being served by the index: a
-				// scan whose qual names a column the index does not lead with reads the whole
-				// index and filters it. Take the index off ask_followers.session_id and the
-				// check above still passes, because the planner then reads the table through
-				// ask_followers_pkey, (ask_id, session_id), as a full index scan with the
-				// session_id qual in its Index Cond. So every scan is held to its index's own
-				// first key column, the one column an index narrows on; a scan carrying no
-				// condition at all is the check above's to name.
-				firstKeys.RequireIndexKeyed(t, plan, explaintest.AnyIndex,
-					fmt.Sprintf("the %s backlink count excluding %v under its %s plan", toKind, exclusions, mode),
-					explaintest.CondOptional)
+				// The acting credential rides as $3, as backlinkCountStatement binds it: an
+				// author who proves none, so every arm's predicate is the shape a reader of
+				// the project runs, and the plan is the one every count pays for.
+				seen := VisibilityArg(model.Actor{})
+				args := []any{shape.addresses, nodeKinds, seen}
+				types := []string{shape.sqlType, "text[]", "jsonb"}
+				literals := []string{shape.literal, textArrayLiteral(nodeKinds), "null"}
+				if len(exclusions) > 0 {
+					args = append(args, exclusions)
+					types = append(types, "text[]")
+					literals = append(literals, textArrayLiteral(exclusions))
+				}
+				prepared++
+				name := fmt.Sprintf("backlink_count_%d", prepared)
+				for mode, plan := range map[string]json.RawMessage{
+					"custom": customPlan(t, connection, statement, args),
+					"generic": explaintest.GenericPlan(t, ctx, connection, name, statement,
+						types, literals, planSettings...),
+				} {
+					if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
+						t.Errorf("the %s backlink count over %s excluding %v reads %s under its %s plan, which no index serves:\n%s",
+							toKind, shape.name, exclusions, strings.Join(unkeyed, ", "), mode, plan)
+					}
+					// Carrying an index condition is not the same as being served by the index: a
+					// scan whose qual names a column the index does not lead with reads the whole
+					// index and filters it. Take the index off ask_followers.session_id and the
+					// check above still passes, because the planner then reads the table through
+					// ask_followers_pkey, (ask_id, session_id), as a full index scan with the
+					// session_id qual in its Index Cond. So every scan is held to its index's own
+					// first key column, the one column an index narrows on; a scan carrying no
+					// condition at all is the check above's to name.
+					firstKeys.RequireIndexKeyed(t, plan, explaintest.AnyIndex,
+						fmt.Sprintf("the %s backlink count over %s excluding %v under its %s plan", toKind, shape.name, exclusions, mode),
+						explaintest.CondOptional)
+				}
 			}
 		}
+	}
+}
+
+// backlinkAddressShape is one way the count binds the addresses it counts for, as
+// backlinkCountStatement binds them: the argument, the type a prepared statement declares for
+// it and the literal a generic plan is read under.
+type backlinkAddressShape struct {
+	name      string
+	one       bool
+	addresses any
+	sqlType   string
+	literal   string
+}
+
+// backlinkAddressShapes are both of them, over the addresses a fixture holds.
+func backlinkAddressShapes(ids []string) []backlinkAddressShape {
+	return []backlinkAddressShape{
+		{name: "every address", addresses: ids, sqlType: "text[]", literal: textArrayLiteral(ids)},
+		{name: "one address", one: true, addresses: ids[0], sqlType: "text",
+			literal: `'` + strings.ReplaceAll(ids[0], `'`, `''`) + `'::text`},
 	}
 }
 
@@ -700,6 +820,9 @@ var graphViewArms = []graphViewArm{
 	{table: "issues", fromKind: "issue", kind: "child_of", toKind: "issue"},
 	{table: "issue_links", fromKind: "issue", kind: "blocked_by", toKind: "issue"},
 	{table: "artifacts", fromKind: "artifact", kind: "attached_to", toKind: "issue"},
+	// The arm over the artifacts that carry their node, answering each one's attached_to from its
+	// part_of tuple (migration 20261117140000).
+	{table: "artifacts", fromKind: "artifact", kind: "attached_to", toKind: "issue"},
 	{table: "asks", fromKind: "ask", kind: "anchored_to", toKind: "artifact"},
 	{table: "comments", fromKind: "comment", kind: "anchored_to", toKind: "artifact"},
 	{table: "asks", fromKind: "ask", kind: "owned_by", toKind: "artifact"},
@@ -713,6 +836,14 @@ var graphViewArms = []graphViewArm{
 	{table: "component_depends", fromKind: "component", kind: "depends_on", toKind: "component"},
 	{table: "issue_component_members", fromKind: "issue", kind: "affects", toKind: "component"},
 	{table: "block_refs", fromKind: "block"},
+	// The store's own arm, which answers each kind it carries once that kind's cutover row
+	// reads true: every select item of it is a column, so it is a mention arm to this test, and
+	// mentionBacklinkArms reads graph_tuples for exactly that reason.
+	{table: "graph_tuples"},
+	// The store's arm over the relations out of a finding of a lens, which writes its from_kind,
+	// lens_block, as a literal and every other item as a column (migration 20261117020856): its
+	// edges are counted by the arms of the store alone (storedFrom) that name a lens_block.
+	{table: "graph_tuples", fromKind: "lens_block"},
 	{table: "document_blocks", fromKind: "block", kind: "part_of", toKind: "artifact"},
 	{table: "comment_blocks", fromKind: "comment_block", kind: "part_of", toKind: "comment"},
 	{table: "message_blocks", fromKind: "message_block", kind: "part_of", toKind: "message"},
@@ -729,7 +860,7 @@ var graphViewArms = []graphViewArm{
 // one descriptor per arm and held to graphViewArms, and graphViewArms is held to the count's
 // declarations: every literal-kind arm to an entry of backlinkArms, every column-kind arm to one
 // of the five tables mentionBacklinkArms reads, and every literal source kind to a kind
-// nodeLoaders resolves, which is what makes BacklinkCounts' source filter on the refs arm alone
+// nodeRegistry resolves, which is what makes BacklinkCounts' source filter on the refs arm alone
 // exact.
 func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
 	fixture := newBacklinkFixture(t)
@@ -751,10 +882,14 @@ func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
 	// An arm whose to_kind is a literal is a structural arm, and backlinkArms must declare it
 	// under that kind with that edge kind. They are compared as multisets because one kind can
 	// hold the same edge kind twice: an artifact is anchored_to and owned_by from both asks and
-	// comments.
+	// comments. An arm of the store alone (storedFrom) counts rows of the view's tuple arm, whose
+	// to_kind is a column and which graphViewArms holds as graph_tuples, so it is none of them.
 	var declared, viewed []string
 	for kind, arms := range backlinkArms {
 		for _, arm := range arms {
+			if len(arm.storedFrom) > 0 {
+				continue
+			}
 			declared = append(declared, kind+"/"+arm.kind)
 		}
 	}
@@ -775,7 +910,7 @@ func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
 			mentionTables[arm.table] = true
 		}
 		if arm.fromKind != "" && !slices.Contains(nodeKinds, arm.fromKind) {
-			t.Errorf("the view's arm over %s writes from_kind %q, which nodeLoaders does not resolve: "+
+			t.Errorf("the view's arm over %s writes from_kind %q, which nodeRegistry does not resolve: "+
 				"BacklinkCounts filters the source kind on the refs arm alone, which is exact only while every other arm's source kind is one this build reads",
 				arm.table, arm.fromKind)
 		}
@@ -813,7 +948,9 @@ var (
 // per arm. That form puts each top-level UNION ALL on a line of its own with no indentation, and
 // no arm of this view holds a union of its own, so splitting on such a line splits the arms; each
 // arm then opens with ` SELECT <item>,` and one four-space-indented line per further select item,
-// and its `   FROM ` line names the relation it reads first.
+// and its `   FROM ` line names the relation it reads first. An arm whose FROM opens a sub-select
+// is named by the first relation inside it, which is the relation that arm reads first too: the
+// store's own arm reads graph_tuples under a `distinct on`, so the list declares it as that.
 func parseGraphViewArms(t *testing.T, definition string) []graphViewArm {
 	t.Helper()
 	body := strings.TrimSuffix(strings.TrimRight(definition, "\n"), ";")
@@ -833,6 +970,9 @@ func parseGraphViewArms(t *testing.T, definition string) []graphViewArm {
 					t.Fatalf("%s names no relation after its FROM: %q", where, line)
 				}
 				table = fields[0]
+				if table == "(" {
+					table = subSelectRelation(t, where, lines)
+				}
 				break
 			}
 			if !strings.HasPrefix(line, "    ") {
@@ -861,6 +1001,26 @@ func parseGraphViewArms(t *testing.T, definition string) []graphViewArm {
 		})
 	}
 	return arms
+}
+
+// subSelectRelation is the first relation a sub-select arm reads: the first FROM inside it,
+// which the catalogue prints indented past the arm's own. An arm whose sub-select names no
+// relation at all fails the parse rather than being read as a table named "(".
+func subSelectRelation(t *testing.T, where string, lines []string) string {
+	t.Helper()
+	for _, line := range lines {
+		trimmed := strings.TrimLeft(line, " ")
+		if len(line)-len(trimmed) <= len("   ") {
+			continue
+		}
+		if rest, found := strings.CutPrefix(trimmed, "FROM "); found {
+			if fields := strings.Fields(rest); len(fields) > 0 && fields[0] != "(" {
+				return fields[0]
+			}
+		}
+	}
+	t.Fatalf("%s opens a sub-select that names no relation:\n%s", where, strings.Join(lines, "\n"))
+	return ""
 }
 
 // armLiteral is the value a select item writes as a literal, or "" when it selects a column. The

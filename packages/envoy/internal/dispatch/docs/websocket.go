@@ -617,6 +617,13 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 			return err
 		}
 	}
+	// The room renders the fragments its layout names. A room the read resolved elsewhere is a
+	// document's room from before its conversion, loaded by its own name: it holds its own fragment
+	// alone, and the append gate refuses everything it would store (gateAppend).
+	layout := issue.layout
+	if issue.room != room {
+		layout = nil
+	}
 	// The load takes no advisory lock, which a durable writer can hold for as long as its
 	// transaction runs: the row it reads is written whole by each writer's transaction, so a
 	// plain read sees one writer's commit or the one before it. What the record has recorded by
@@ -642,7 +649,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	}
 	var renderErr error
 	if rendered.tree == nil || rendered.rendering == nil {
-		rendered.tree, renderErr = treeOf(doc)
+		rendered.tree, _, renderErr = treeOfFragments(doc, layout.fragments())
 		if renderErr == nil {
 			if s.admissionRendered != nil {
 				s.admissionRendered(room)
@@ -730,11 +737,11 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// (above), so it holds every transaction the room commits from here on, in commit order. The
 	// replica's verdict starts as this load's rendering said, and the observer's renders move it
 	// on from the first update (renderedReplica.verdict).
-	replica := s.keepReplica(doc, doc.OpenUpdateLog(), rendered.rendering)
+	replica := s.keepReplica(doc, doc.OpenUpdateLog(), rendered.rendering, layout)
 	replica.recordVerdict(renderErr)
-	instance := s.keepInstance(room, doc, counted)
-	replica.classify = func(logged crdt.LoggedUpdate, seq uint64, contentChanged bool, asks func() map[string]struct{}) (bool, bool, bool) {
-		return s.classifyDrained(room, instance, logged, seq, contentChanged, asks)
+	instance := s.keepInstance(room, doc, counted, layout)
+	replica.classify = func(logged crdt.LoggedUpdate, seq uint64, contentChanged bool, asks func() map[string]struct{}, documents []string) (bool, bool, bool) {
+		return s.classifyDrained(room, instance, logged, seq, contentChanged, asks, documents)
 	}
 	doc.OnUpdate(func(update []byte, origin any) {
 		// A published write's update is already durable, and so is a catch-up's batch of another
@@ -905,8 +912,9 @@ func (s *Service) storeParked(room string) {
 // token is taken with it, so the update's bytes count against the load that committed it
 // (queueUpdateClass). An update only the room holds is listed on the instance as unstored
 // (roomInstance.unstored) as it is classified, so a room query of another process can answer with
-// it (unstoredShare).
-func (s *Service) classifyDrained(room string, instance *roomInstance, logged crdt.LoggedUpdate, seq uint64, contentChanged bool, asks func() map[string]struct{}) (settles, changed, local bool) {
+// it (unstoredShare). documents is, for an issue room, the documents whose fragments the update
+// changed (drainClassifier), which its credit counts toward.
+func (s *Service) classifyDrained(room string, instance *roomInstance, logged crdt.LoggedUpdate, seq uint64, contentChanged bool, asks func() map[string]struct{}, documents []string) (settles, changed, local bool) {
 	origin, published := logged.Origin.(*liveWriteOrigin)
 	_, remote := logged.Origin.(*remoteUpdateOrigin)
 	if len(logged.Parked) > 0 && !published && !remote {
@@ -945,9 +953,9 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 		// only for a content change, so a browser's update that names an author always carries
 		// a credit. A published live write carries none; its commit recorded its blocks'
 		// authors (Ledger.recordSettlementCredit).
-		class.credit = s.creditContentChange(room, logged.Origin, &instance.hold, attributed)
+		class.credit = s.creditContentChange(room, logged.Origin, &instance.hold, attributed, documents)
 	} else {
-		class.roomCredit = s.unchangedCredit(room, logged.Origin, &instance.hold)
+		class.roomCredit = s.unchangedCredit(room, logged.Origin, &instance.hold, documents)
 	}
 	// A published write's update was stored by the transaction that wrote it, before the room
 	// took it, and a catch-up's is the stored row itself. Every other update only the room holds,
@@ -1066,14 +1074,16 @@ func (s *Service) originCreditsNoOne(origin any) bool {
 // (AppendUpdatesWithCredit): the returned UpdateCredit is how that append reaches it, and how
 // askAuthors, the authors of the ask blocks the edit's render first showed (observeAskBlocks),
 // reach the durable record in the same append. This takes no advisory lock and touches no
-// database: nothing reads F without holding state.mu.
-func (s *Service) creditContentChange(room string, origin any, hold *roomHold, askAuthors map[string]model.Actor) *UpdateCredit {
+// database: nothing reads F without holding state.mu. documents is, for an issue room, the
+// documents whose fragments the edit changed (drainClassifier): the credit counts toward their
+// versions alone, in F and in the rows its append writes (pendingAuthorsIn).
+func (s *Service) creditContentChange(room string, origin any, hold *roomHold, askAuthors map[string]model.Actor, documents []string) *UpdateCredit {
 	if s.originCreditsNoOne(origin) {
 		return nil
 	}
 	state := s.lockState(room)
 	defer s.unlockState(room, state)
-	record := connectedCreditLocked(state)
+	record := connectedCreditLocked(state, documents)
 	record.seq = state.creditSeq.Add(1)
 	state.inflight[record.seq] = record
 	state.lastActor = record.lastActor
@@ -1083,15 +1093,15 @@ func (s *Service) creditContentChange(room string, origin any, hold *roomHold, a
 
 // unchangedCredit is the credit a browser update the room's update observer measured as no change
 // carries for the room's shadow (documentUpdateClass.roomCredit): the peers connected as the room
-// took it, the authors creditContentChange would credit the same commit to, recorded only while a
-// live write is open, whose shadow may measure the update a change once the write is stored before
-// it. It is not in F and takes no credit sequence: no version lists an update recorded as no
-// change, and its append writes these authors only when it stores the update as a change. It
-// weighs the origin by the same rule that path does (originCreditsNoOne), so a service repair, a
-// published live write Ledger.Commit credited already and a commit with no origin at all - ygo's
-// own cleanup, which nobody typed - carry no authors for a shadow to store them with either. Nil
-// too while no write is open.
-func (s *Service) unchangedCredit(room string, origin any, hold *roomHold) *UpdateCredit {
+// took it, the authors creditContentChange would credit the same commit to, toward the same
+// documents, recorded only while a live write is open, whose shadow may measure the update a
+// change once the write is stored before it. It is not in F and takes no credit sequence: no
+// version lists an update recorded as no change, and its append writes these authors only when it
+// stores the update as a change. It weighs the origin by the same rule that path does
+// (originCreditsNoOne), so a service repair, a published live write Ledger.Commit credited already
+// and a commit with no origin at all - ygo's own cleanup, which nobody typed - carry no authors for
+// a shadow to store them with either. Nil too while no write is open.
+func (s *Service) unchangedCredit(room string, origin any, hold *roomHold, documents []string) *UpdateCredit {
 	if s.originCreditsNoOne(origin) {
 		return nil
 	}
@@ -1100,13 +1110,14 @@ func (s *Service) unchangedCredit(room string, origin any, hold *roomHold) *Upda
 	if state.liveWriter == nil {
 		return nil
 	}
-	return &UpdateCredit{service: s, room: room, state: state, record: connectedCreditLocked(state), hold: hold}
+	return &UpdateCredit{service: s, room: room, state: state, record: connectedCreditLocked(state, documents), hold: hold}
 }
 
 // connectedCreditLocked is a credit record naming the peers connected to state, and the one of
-// them it pins the edit on, if one. The caller holds state.mu.
-func connectedCreditLocked(state *roomState) *inflightCredit {
-	record := &inflightCredit{authors: make(map[string]model.Actor, len(state.connected))}
+// them it pins the edit on, if one, for an edit of documents' fragments of an issue room (nil for a
+// room that is its own document). The caller holds state.mu.
+func connectedCreditLocked(state *roomState, documents []string) *inflightCredit {
+	record := &inflightCredit{authors: make(map[string]model.Actor, len(state.connected)), documents: documents}
 	for _, actor := range state.connected {
 		mergeAuthor(record.authors, actor)
 	}
