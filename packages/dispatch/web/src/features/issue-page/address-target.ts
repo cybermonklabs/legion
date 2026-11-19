@@ -226,8 +226,11 @@ interface Following {
   readonly found: boolean;
   /** The following: the location's own key (`useLocation().key`). */
   readonly key: string;
-  /** The last landing the old page's landing settled on during this following, which it draws
-   *  again while the read runs again. */
+  /** The landing the old page's landing settled on during this following, as last stored here,
+   *  which the following draws again while the read runs again. A new one is stored only when
+   *  its kind changes (or another field of the following does), so a later answer of the same
+   *  kind - a second list of matches - is not stored, and this can be an earlier answer than
+   *  the last one drawn. */
   readonly settled: Exclude<ItemLanding, { kind: "pending" }> | undefined;
 }
 
@@ -253,11 +256,11 @@ interface Following {
  * document, whose page is the outline - draws the outline as it stands, which lands on the node
  * once a read draws it. A read that runs again holds no answer, so its landing is pending again
  * until that run ends - a Retry's, or window focus reading a read in error again - and the
- * following keeps drawing the landing it last settled on meanwhile: an item found missing keeps
- * its line, and a failed read its line, busy, with its Retry and the focus. The failures are
- * counted from the following's start, so an item whose read failed before the address was
- * followed again draws no failure of its own until its read fails again. A block or the
- * children is `absent`, as no read is left to draw it.
+ * following keeps drawing the kind of landing it last settled on meanwhile (`Following.settled`):
+ * an item found missing keeps its line, and a failed read its line, busy, with its Retry and the
+ * focus. The failures are counted from the following's start, so an item whose read failed
+ * before the address was followed again draws no failure of its own until its read fails again.
+ * A block or the children is `absent`, as no read is left to draw it.
  */
 export function useAddressFallback({
   address,

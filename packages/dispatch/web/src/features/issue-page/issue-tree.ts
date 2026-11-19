@@ -17,15 +17,14 @@ import type {
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import type { GapKind, NodeState, NodeType } from "./page-words";
+import { storedReading } from "./stored-reading";
 import {
-  addressesAsShortForms,
-  BLANK_LINE,
   type Draft,
-  plainWords,
-  plainWordsRaw,
   type TreeContext,
+  titleReading,
   treeContext,
   treeDrafts,
+  withShortAddresses,
 } from "./tree-drafts";
 
 /**
@@ -97,7 +96,7 @@ export interface NodeChip {
    *  reference names: two or more carry the id it writes short, and the read answers it gone and
    *  ambiguous (`ReferenceTarget.ambiguous`). The chip draws the reference as written, and the
    *  page publishes the reference as ambiguous for every link beside the tree to draw so too
-   *  (`ambiguousTargets`). Absent for every other reference. */
+   *  (`targetNaming`). Absent for every other reference. */
   readonly ambiguous?: true;
   /** Whether the batched reference read has answered for this reference. A target it answered
    *  with no text of its own (`name` empty, or `gone`) is told apart from one whose answer is
@@ -115,10 +114,11 @@ export interface NodeChip {
    *  read answered with no reading or one that holds no words, the page's word for the block's
    *  kind (`NODE_TYPE_NAMES`) for a block of this issue whose document the tree read, and `""`
    *  for another issue's block; a whole document's word on the page, `Spec` and not `spec.md`;
-   *  an ask's, a comment's and a message's stored text read to plain words (`plainWords`); and
-   *  anything else's name as that read answers it. `""` for a block and for anything else
-   *  until the read answers, and for a target that is gone. The page publishes this same name
-   *  for every link beside the tree to draw (`targetNames`). */
+   *  an ask's, a comment's and a message's stored text read to plain words (`plainWords`); an
+   *  issue's title as its own row's line reads it (`titleWords`); and anything else's name as
+   *  that read answers it. `""` for a block and for anything else until the read answers, and
+   *  for a target that is gone. The page publishes this same name for every link beside the tree
+   *  to draw (`targetNaming`). */
   readonly name: string;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -266,8 +266,12 @@ export interface TreeNode {
    *  a check's on the results read (`text_tree`), else the one its block carried, and every other
    *  block's on the batched reference read (`ReferenceTarget.text_tree`). The row draws the node's
    *  words from it, so stored markdown is drawn as what it says and the browser parses none of it
-   *  (R20). A result's read sends none, and neither the issue nor a child issue carries one: such
-   *  a node draws `text` as stored. */
+   *  (R20). A result's is the reading of its observed text (`observed_tree`), which a server of
+   *  the build before sends none of; a result whose read sent none draws its stored `text` read
+   *  as markdown (`storedReading`). Neither the issue nor a child issue carries one: its `text`
+   *  names it by its title, which is no markdown, so such a node draws `text` as written, and its
+   *  one line is that text with each run of white space one space and each bare address written
+   *  short (`lineWords`). */
   readonly tree?: DisplayTree;
   /** Whether this placement is a transclusion rather than the node's edited place. */
   readonly transcluded: boolean;
@@ -430,27 +434,45 @@ export function nodeWords(node: TreeNode): string {
 /**
  * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`): the words of
  * the first top-level block of its reading that holds any, a heading or a paragraph, and where
- * the node has no reading the first block of its stored text that holds any, to its blank line
- * (`BLANK_LINE`), a heading ending at its own line, as markdown ends one, and its one marker
- * (`#` to `######` and a space) left out as `plainWords` leaves it out, so `## # 1 rule` reads
- * `# 1 rule`. A block that holds no words - a horizontal rule, a paragraph that is only an
- * image - is passed over, or the line would be empty while the node has words. A decision's
- * reading opens with its own `##` heading, and `wordsOf` joins a heading and the paragraph after
- * it with one space, so a line cut from the whole reading ran the heading into its body: "Keep it
- * Keep the model pure.".
+ * the node has no reading the same of its stored text's reading (`storedReading`), in the shape
+ * of the server's reading. A heading so ends at its own line and its marker is no word of it, so
+ * `## # 1 rule` reads `# 1 rule`, and a list that follows a paragraph with no blank line ends
+ * that paragraph, so the paragraph alone is the first block. A block that holds no words - a
+ * horizontal rule, a paragraph that is only an image or a piece of HTML - is passed over, or the
+ * line would be empty while the node has words. A decision's reading opens with its own `##`
+ * heading, and `wordsOf` joins a heading and the paragraph after it with one space, so a line cut
+ * from the whole reading ran the heading into its body: "Keep it Keep the model pure.".
  *
- * A stored block is markdown, and its marks are no word of it, so it is read to plain words
- * (`plainWords`) as the server's reading holds them: a plan task stored as
- * `**1\. Stand the harness up.** Run it.` reads `1. Stand the harness up. Run it.`, whose label
- * `firstLineOf` reads as no sentence end, and whose sentence end is no longer
- * hidden behind the `**` that followed it.
+ * A stored text is markdown, and its marks are no word of it, so its first block reads as that
+ * parse holds it: a plan task stored as `**1\. Stand the harness up.** Run it.` reads
+ * `1. Stand the harness up. Run it.`, whose label `firstLineOf` reads as no sentence end, and
+ * whose sentence end is no longer hidden behind the `**` that followed it. Those are the words
+ * the server's reading holds for every text that holds none of three things: a container
+ * directive, a Proof mark span and a bare address holding markup (`STORED_TEXT_PARSE`). Its
+ * white space - a code block's line feeds among it - collapses to single spaces.
  *
  * A bare `dispatch://` address in these words reads as its target's short form, as a link to it
  * draws it (`addressesAsShortForms`): the server's reading keeps one as a plain
- * text run, which is no link, a stored text holds it as written, and no one-line view draws a
- * raw address (R22). An address in code stays as its author wrote it, as a rendered body draws
- * it. The first block of a reading is written short here, text run by text run
- * (`firstBlockWords`), and a stored block as it is read to plain words (`plainWords`).
+ * text run, which is no link, a stored text and a title hold it as written, and no one-line view
+ * draws a raw address (R22). An address in code stays as its author wrote it, as a rendered body
+ * draws it. The first block is written short text run by text run (`firstBlockWords`), from a
+ * reading, from a stored text's reading and from a title's alike.
+ *
+ * A title is read as written, but for its addresses. The `text` of the issue, its key and
+ * title, and of a child issue, its title, is no markdown and carries no reading, and the places
+ * that draw a whole title draw it as written: the header (`slots/header.tsx`) and the list of an
+ * issue's children (`ChildrenTab.tsx`). Its line is read from that text as a reading of one
+ * paragraph holding one text run (`tree-drafts.ts`'s `titleReading`), so nothing in it is
+ * parsed, each run of white space is one space and the ends are trimmed, and a bare address in
+ * it is written short as on every other node's line. So `1. Migrate the table` keeps its label,
+ * ``Add `x` flag`` its backticks and `Fix <script> handling` its tag, where a parse would read
+ * the first as a list item with no label and leave out the marks of the other two, and the
+ * address of ``Fix `x` for dispatch://CORE-3`` is written short beside the backticks it keeps:
+ * ``Fix `x` for CORE-3``. A chip naming a child of the issue, and the name the page publishes
+ * for it, are these words too (`titleWords`), read from the whole title the issue read holds, so
+ * a link to a child draws the title its row draws. A chip naming the issue itself is its title's
+ * words by the same rule, without the key its own line opens with; another issue is named by the
+ * head of its title the names read gives, its first 240 characters.
  *
  * Every place that draws one line for a node cuts it from these words: a parent's line under a
  * filter (`presets.ts`) and a chip naming a block (`buildIssueTree`) here, and a row's first
@@ -459,38 +481,39 @@ export function nodeWords(node: TreeNode): string {
  * from.
  */
 export function lineWords(node: TreeNode): string {
-  return lineWordsBy(node, firstBlockWords, plainWords);
+  return lineWordsBy(node, firstBlockWords);
 }
 
 /** The words a node's one line is cut from, as `lineWords` walks them but with no address
- *  written short: the first block of a reading read by `firstBlockWordsRaw` and a stored block by
- *  `plainWordsRaw`, so a bare address stays as written. A caller that names each reference
+ *  written short: the first block of a reading, or of a stored text's reading, read by
+ *  `firstBlockWordsRaw`, so a bare address stays as written. A caller that names each reference
  *  itself reads these, since a short form leaves it no address to name. A `TreeNode` passes as
- *  it is, and a decision as `{ text, tree: text_tree }`. */
-export function lineWordsRaw(node: { readonly text: string; readonly tree?: DisplayTree }): string {
-  return lineWordsBy(node, firstBlockWordsRaw, plainWordsRaw);
+ *  it is, and a decision as `{ text, tree: text_tree }`; a title node's line is its text as
+ *  `lineWords` reads it, its addresses as written. */
+export function lineWordsRaw(node: {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+  readonly type?: NodeType;
+}): string {
+  return lineWordsBy(node, firstBlockWordsRaw);
 }
 
-/** `lineWords`' walk, the one both `lineWords` and `lineWordsRaw` read by: the first block of a
- *  reading read to words by `firstBlock`, and a stored block read to plain words by `plain`. */
+/** `lineWords`' walk, the one both `lineWords` and `lineWordsRaw` read by: a title node's text
+ *  read as a reading of one paragraph holding one text run (`titleReading`; `lineWords`' doc
+ *  says why), else the first block of the node's reading, and where the node has none the first
+ *  block of its stored text's reading (`storedReading`), each read to words by `firstBlock`, the
+ *  white space of a title and of a stored text collapsed. The node holds its stored text's
+ *  reading, so it is remembered while the node lives. */
 function lineWordsBy(
-  node: { readonly text: string; readonly tree?: DisplayTree },
-  firstBlock: (reading: DisplayTree) => string,
-  plain: (markdown: string) => string
+  node: { readonly text: string; readonly tree?: DisplayTree; readonly type?: NodeType },
+  firstBlock: (reading: DisplayTree) => string
 ): string {
-  if (node.tree !== undefined) return firstBlock(node.tree);
-  for (const stored of node.text.split(BLANK_LINE)) {
-    const block = stored.trimStart();
-    const words = plain(/^#{1,6} +.*/u.exec(block)?.[0] ?? block);
-    if (!NO_WORDS.test(words)) return words;
+  if (node.type === "issue" || node.type === "child_issue") {
+    return firstBlock(titleReading(node.text)).replace(/\s+/gu, " ").trim();
   }
-  return "";
+  if (node.tree !== undefined) return firstBlock(node.tree);
+  return firstBlock(storedReading(node.text, node)).replace(/\s+/gu, " ").trim();
 }
-
-/** A stored block that holds no words once read to plain words (`plainWords`, which leaves an
- *  image out): nothing but white space and the marks of a horizontal rule (`---`, `***`,
- *  `___`). */
-const NO_WORDS = /^[\s*_-]*$/u;
 
 /** The words of the first top-level block of a reading that holds any (`lineWords`), each bare
  *  address outside code in them written as its target's short form (`withShortAddresses`); `""`
@@ -518,29 +541,6 @@ function firstBlockRead(reading: DisplayTree, read: (block: DisplayTree) => stri
   return "";
 }
 
-/**
- * A copy of `node` with each bare address in each of its text runs written as its target's short
- * form (`addressesAsShortForms`), one run at a time before their words are joined, so the words
- * of the copy are spaced as the node's are. A run marked as inline code, or inside a code block,
- * stays as its author wrote it, as a rendered body's one line keeps it (`markdown-engine.ts`'s
- * `shortenReferences`). `node` itself is left as it was.
- */
-function withShortAddresses(node: DisplayTree, inCode = false): DisplayTree {
-  if (typeof node.text === "string") {
-    const marks = Array.isArray(node.marks) ? (node.marks as DisplayTree[]) : [];
-    return inCode || marks.some((mark) => mark.type === "inlineCode")
-      ? node
-      : { ...node, text: addressesAsShortForms(node.text) };
-  }
-  const content = node.content;
-  if (!Array.isArray(content)) return node;
-  const code = inCode || node.type === "code_block";
-  return {
-    ...node,
-    content: (content as DisplayTree[]).map((child) => withShortAddresses(child, code)),
-  };
-}
-
 /** The line a chip names a block by, and the page publishes as the block's name: the line a row
  *  draws for it (`drawnLine`), cut from the first block of the block's reading as `lineWords`
  *  cuts a node's, which `tree-drafts.ts` is handed rather than imports, since this module
@@ -563,42 +563,38 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
 }
 
 /**
- * The name of each target of the batched reference read (`reads.targets`) that something answers
- * to now, by its address: the name a chip naming it draws (`NodeChip.name`), by the same rule
- * (`namingContext`), which the page publishes for every link beside the tree to draw
- * (`reference-names.tsx`). A link and a chip naming one target so never disagree. A target whose
- * name is `""` is left out: a target that is gone, which its chip names by `""` (`treeContext`),
- * and another issue's block the read sent no reading for, where a link that finds no name reads
- * its own (`useKnownReferenceName`), and an ambiguous short reference, which its chip names by
- * `""` too and the page publishes among its ambiguous references instead (`ambiguousTargets`).
+ * What the page publishes from the targets of the batched reference read (`reads.targets`) for
+ * every link beside the tree to draw (`reference-names.tsx`), each read by the rule a chip naming
+ * the target draws by (`namingContext`), so a link and a chip naming one target never disagree.
+ * Both are read from one context in one walk over the targets, so they cannot disagree either.
+ *
+ * - **`names`**: the name of each target that something answers to now, by its address: the
+ *   name a chip naming it draws (`NodeChip.name`). A target whose name is `""` is left out: a
+ *   target that is gone, which its chip names by `""` (`treeContext`), and another issue's block
+ *   the read sent no reading for, where a link that finds no name reads its own
+ *   (`useKnownReferenceName`), and an ambiguous short reference, which its chip names by `""`
+ *   too and the page publishes in `ambiguous` instead.
+ * - **`ambiguous`**: the references the read answered ambiguous: each writes short an id two or
+ *   more targets carry, so it names none of them, and a chip naming it says so
+ *   (`NodeChip.ambiguous`). The page publishes them beside its names, so a link tells an
+ *   ambiguous reference from a gone one, which has no name either: it draws the first as its
+ *   author wrote it and links nothing, where it reads the second's own.
+ *
+ * No reference is in both: an ambiguous chip's name is `""`.
  */
-export function targetNames(reads: IssueTreeReads): ReadonlyMap<string, string> {
-  const context = namingContext(reads);
-  const names = new Map<string, string>();
-  for (const target of reads.targets ?? []) {
-    const name = context.chipOf(target.ref).name;
-    if (name !== "") names.set(target.ref, name);
-  }
-  return names;
-}
-
-/**
- * The references of the batched reference read's targets (`reads.targets`) the read answered
- * ambiguous: each writes short an id two or more targets carry, so it names none of them, and a
- * chip naming it says so (`NodeChip.ambiguous`). The page publishes them beside its names
- * (`reference-names.tsx`), so a link tells an ambiguous reference from a gone one, which has no
- * name either: it draws the first as its author wrote it and links nothing, where it reads the
- * second's own. They are read by the chip's rule (`namingContext`), as `targetNames` reads
- * the names, so the two cannot disagree, and no reference is in both: an ambiguous chip's
- * name is `""`.
- */
-export function ambiguousTargets(reads: IssueTreeReads): ReadonlySet<string> {
+export function targetNaming(reads: IssueTreeReads): {
+  readonly ambiguous: ReadonlySet<string>;
+  readonly names: ReadonlyMap<string, string>;
+} {
   const context = namingContext(reads);
   const ambiguous = new Set<string>();
+  const names = new Map<string, string>();
   for (const target of reads.targets ?? []) {
-    if (context.chipOf(target.ref).ambiguous === true) ambiguous.add(target.ref);
+    const chip = context.chipOf(target.ref);
+    if (chip.ambiguous === true) ambiguous.add(target.ref);
+    if (chip.name !== "") names.set(target.ref, chip.name);
   }
-  return ambiguous;
+  return { ambiguous, names };
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */

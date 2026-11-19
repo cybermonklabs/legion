@@ -851,3 +851,42 @@ export async function seedPlanOrder(): Promise<PlanOrderSeed> {
     specArtifactId: issue.primary_artifact_id ?? "",
   };
 }
+
+/** What `seedWideCode` wrote: the issue, the comment whose words hold a wide code block and a
+ *  wide table, and the comment of words alone after it. */
+export interface WideCodeSeed {
+  readonly key: string;
+  readonly plain: string;
+  readonly wide: string;
+}
+
+/**
+ * One issue whose conversation is two comments of the reader's. The first one's body holds a
+ * code block of one line and a table of sixteen columns, each far wider than a row's words at
+ * 1440 px, so each scrolls sideways inside the row; the second's holds words alone. The reader's
+ * own words are never cut, so the first row draws both blocks whole. It is an issue of its own,
+ * so no seed another row reads changes.
+ */
+export async function seedWideCode(): Promise<WideCodeSeed> {
+  await createProject({ key: PROJECT, name: "Issue layout" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    title: "A comment holds a code block wider than its row",
+  });
+  const flags = Array.from({ length: 60 }, (_unused, at) => `--flag${at + 1}`).join(" ");
+  const line = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;
+  const columns = Array.from({ length: 16 }, (_unused, at) => at + 1);
+  const table = [
+    line(columns.map((column) => `columnheading${column}`)),
+    line(columns.map(() => "---")),
+    line(columns.map((column) => `value${column}`)),
+  ].join("\n");
+  const wide = await createComment(issue.key, {
+    body: `Run it so:\n\n\`\`\`sh\nbun run e2e ${flags}\n\`\`\`\n\n${table}\n`,
+  });
+  const plain = await createComment(issue.key, {
+    body: "A comment of words alone, which hold no code block and no table.",
+  });
+  return { key: issue.key, plain: plain.id, wide: wide.id };
+}

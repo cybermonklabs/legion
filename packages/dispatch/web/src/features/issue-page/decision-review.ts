@@ -3,6 +3,7 @@ import { compareTimestamps } from "../../lib/timestamps";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { DocumentBlocks } from "./issue-tree";
+import { storedReading } from "./stored-reading";
 
 /**
  * Which of an issue's decisions wait for the reader's review, and which a reader asked to
@@ -47,7 +48,9 @@ type ChangedDecision = Pick<
  * person's review - neither kept as it reads now nor replaced, which is the server's
  * `waiting_review` - that a link ties to a statement of this issue, and that the reader has not
  * asked to change since it last changed (`changed`).
- * `isStatement` answers whether an address names a statement.
+ * `isCoverageStatement` answers whether an address names a statement as the list reads one, a
+ * requirement the coverage read holds: a caller passes `coverageStatements(issue, coverage)`
+ * (`tree-drafts.ts`), not the rows' `isStatement` (`issue-tree.ts`).
  *
  * It is the one rule that decides the list, so the count of what waits on the reader (R13), the
  * filter's "to review" signal and the node's own `waiting` read it too and cannot disagree with
@@ -55,13 +58,15 @@ type ChangedDecision = Pick<
  */
 export function inReviewList(
   decision: Pick<Decision, "links" | "waiting_review">,
-  isStatement: (reference: string) => boolean,
+  isCoverageStatement: (reference: string) => boolean,
   changed = false
 ): boolean {
   return (
     !changed &&
     decision.waiting_review &&
-    (decision.links ?? []).some((link) => link.to.ref !== undefined && isStatement(link.to.ref))
+    (decision.links ?? []).some(
+      (link) => link.to.ref !== undefined && isCoverageStatement(link.to.ref)
+    )
   );
 }
 
@@ -87,8 +92,8 @@ export function decisionsDocumentId(
  * section holds the anchor's block (`sectionsOf`), made after the decision last changed and
  * after it was last kept. A decision that was replaced takes no change: nothing waits on it any
  * longer. A quote is matched against the decision's words as the server matches quotes
- * (`pmdoc.FindQuote`), on its text and not its markdown, where the read carried its text's
- * reading (`decisionWords`).
+ * (`pmdoc.FindQuote`), on its text and not its markdown: the words of its text's reading
+ * (`decisionWords`).
  *
  * The section is read from `documents`, the blocks of the issue's documents the page has read.
  * Only where the anchor stores no block, or the decisions document's blocks are not read or do not
@@ -185,18 +190,18 @@ export function decisionChanges(
  * The words of the decision's first block below its heading, which is what a change is anchored
  * to: the server matches an anchor quote against the document's own text (`pmdoc.FindQuote`),
  * never its markdown, so a list or a hard break quoted as markdown would anchor on nothing. They
- * are read from the tree Go read the decision's text into (`Decision.text_tree`), whose
- * top-level blocks are the paragraphs the markdown would have been split into; an answer that
- * carried no reading - a pod of the build before during a rolling deploy - or a reading that
- * holds no blocks leaves the first paragraph's own markdown, which is all the browser has
- * (`decisionWords`' rule). Undefined for a decision whose heading is all it holds.
+ * are read from the decision's reading (`readingOf`), whose top-level blocks are the paragraphs
+ * the markdown would have been split into: the tree Go read the decision's text into
+ * (`Decision.text_tree`), and where the read carried none that holds blocks - a pod of the build
+ * before during a rolling deploy - the reading of its stored text (`storedReading`), so a
+ * decision's quote is the words of its text either way, never its markdown. Undefined for a
+ * decision whose heading is all it holds.
  */
 export function anchorQuote(decision: Pick<Decision, "text" | "text_tree">): string | undefined {
-  const tree = decision.text_tree;
-  if (tree === undefined || !Array.isArray(tree.content)) {
-    return firstParagraph(decision.text);
-  }
-  const block = (tree.content as DisplayTree[]).find((node) => node.type !== "heading");
+  const blocks = readingOf(decision).content;
+  const block = Array.isArray(blocks)
+    ? (blocks as DisplayTree[]).find((node) => node.type !== "heading")
+    : undefined;
   return block === undefined ? undefined : wordsOf(block);
 }
 
@@ -251,8 +256,7 @@ const REPLACED_HEADING = "Replaced";
  * where that heading's words are the decision's heading, and the node right after it is a block,
  * no heading, whose words are the quote. Otherwise, and where `document` is undefined, the anchor
  * carries no occurrence (`ChangeAnchor`). That is so for a heading the server reads with markup
- * or closing hashes, for a sub-heading right below the decision's heading, and for a decision
- * read with no reading whose first paragraph holds markup.
+ * or closing hashes, and for a sub-heading right below the decision's heading.
  *
  * One assumption remains: the reading's text runs are the stored document's, which the server
  * makes its display reading from.
@@ -315,24 +319,20 @@ function headingLevel(node: DisplayTree): number {
   return typeof level === "number" ? level : 0;
 }
 
-/** A decision's whole words, as a Change's quote is matched against them: the words of the
- *  server's reading of its text (`Decision.text_tree`) where the read carried a reading that holds
- *  blocks, and its stored markdown otherwise - the one rule this module reads a decision by, which
- *  `anchorQuote` reads its first block by too. */
+/** A decision's whole words, as a Change's quote is matched against them: the words of its
+ *  reading (`readingOf`), which `anchorQuote` reads its first block from too. */
 function decisionWords(row: Pick<Decision, "text" | "text_tree">): string {
-  const tree = row.text_tree;
-  return tree !== undefined && Array.isArray(tree.content) ? wordsOf(tree) : row.text;
+  return wordsOf(readingOf(row));
 }
 
-/** The decision's first paragraph below its heading, as markdown: the block of a decision read
- *  with no reading (`decisionWords`). Undefined for a decision whose heading is all it holds. */
-function firstParagraph(text: string): string | undefined {
-  // A blank line holds nothing once trimmed, so it is never the paragraph.
-  for (const piece of text.split(/\n\s*\n/)) {
-    const paragraph = piece.trim();
-    if (paragraph !== "" && !paragraph.startsWith("#")) return paragraph;
-  }
-  return undefined;
+/** The reading a decision is read by, the one rule this module reads a decision by: the server's
+ *  reading of its text (`Decision.text_tree`) where the read carried one that holds blocks, and
+ *  otherwise the reading of its stored text (`storedReading`), which the row holds, so it is
+ *  remembered while the row lives. A reading with no `content` holds no blocks and is none, so a
+ *  decision whose read sent one is read by its stored text. */
+function readingOf(row: Pick<Decision, "text" | "text_tree">): DisplayTree {
+  const tree = row.text_tree;
+  return tree !== undefined && Array.isArray(tree.content) ? tree : storedReading(row.text, row);
 }
 
 /** How many places of `text` hold `quote` and start before `end`, overlapping ones included, as

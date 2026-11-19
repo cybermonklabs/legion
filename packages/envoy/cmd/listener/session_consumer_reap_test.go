@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // sessionConsumerReapRig is the listener's /v1 routes over the in-process server, with the
@@ -82,7 +83,7 @@ func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
 // register posts sessionID's registration as its plugin's heartbeat does, so the listener creates
 // the session's consumer and writes its record, and returns the answer the session reads, whose
 // delivery field names what it is delivered to through.
-func (rig *sessionConsumerReapRig) register(t *testing.T, sessionID string) subscribeResponse {
+func (rig *sessionConsumerReapRig) register(t *testing.T, sessionID string) listenerwire.SubscribeResponse {
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	body := strings.NewReader(consumerRegistration(sessionID, "e"))
@@ -90,7 +91,7 @@ func (rig *sessionConsumerReapRig) register(t *testing.T, sessionID string) subs
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("register %s: status %d: %s", sessionID, recorder.Code, recorder.Body.String())
 	}
-	var answer subscribeResponse
+	var answer listenerwire.SubscribeResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the answer to %s's registration: %v: %s", sessionID, err, recorder.Body.String())
 	}

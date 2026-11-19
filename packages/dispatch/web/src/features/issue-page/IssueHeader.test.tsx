@@ -1,6 +1,9 @@
 import { beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), a blur of the window and its focus as the reader comes back, and a key pressed during an IME composition or, as Safari sends it, just after one.
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
 import type { ReactNode } from "react";
@@ -13,7 +16,7 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import type {
   ArtifactReview,
@@ -28,6 +31,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { ACTION_WORDS } from "./approval-chip-box";
 import { CONTROL_LABELS } from "./page-words";
+import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
 
 /**
@@ -500,6 +504,80 @@ test("the header keeps the primary document's chip when no gated step reviews it
   }
 });
 
+// The page's typeface holds only the characters of `subset.sh`'s UNICODES, which the face's
+// `unicode-range` in styles.css repeats: a character outside them is drawn in a face of the
+// reader's own machine, at that face's width, so the header draws such a shape as an inline svg -
+// the navigation's three strokes, the actions' three dots, the status's shape. Of the status's
+// three shapes only ◐, the shape of a status that moves, is outside the typeface (✓ and ○ are in
+// it), so the stub issue is in progress. Its title, key, project and names are ASCII, so the case
+// reads every text node the header draws, author text among them, with the navigation's control
+// drawn as the shell gives it below the phone's width, and once every read the header made has
+// answered.
+test("the header draws no character the page's typeface lacks", async () => {
+  const subsetSh = readFileSync(
+    join(import.meta.dir, "..", "..", "fonts", "inter", "subset.sh"),
+    "utf8"
+  );
+  const unicodes = /^UNICODES=(\S+)$/m.exec(subsetSh)?.[1];
+  if (unicodes === undefined) throw new Error("subset.sh has no UNICODES= line");
+  const ranges = unicodes.split(",").map((entry) => {
+    const match = /^U\+([0-9A-F]{4,6})(?:-([0-9A-F]{4,6}))?$/i.exec(entry.trim());
+    if (match === null) throw new Error(`${entry} in subset.sh's UNICODES is no U+ entry`);
+    const first = Number.parseInt(match[1], 16);
+    return [first, match[2] === undefined ? first : Number.parseInt(match[2], 16)] as const;
+  });
+  const restore = stubHeader({ ...issue, status: "in_progress" });
+  const queryClient = headerClient();
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(
+    <ShellNavigationContext.Provider value={{ onOpen: () => {}, open: false }}>
+      {headerTree("/issues/CORE-1/conversation", queryClient)}
+    </ShellNavigationContext.Provider>
+  );
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    const header = screen.getByTestId("issue-header");
+    // The three controls that draw a shape in place of a character are all in the header read,
+    // the status's pill with a status that moves.
+    expect(within(header).getByRole("button", { name: "Open navigation" })).toBeInTheDocument();
+    expect(
+      within(header).getByRole("button", { name: CONTROL_LABELS.issue_actions })
+    ).toBeInTheDocument();
+    expect(within(header).getByRole("combobox", { name: "Status" })).toHaveValue("in_progress");
+    const offenders: string[] = [];
+    let read = 0;
+    const walker = document.createTreeWalker(header, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const text = node.textContent ?? "";
+      for (const character of text) {
+        read += 1;
+        const point = character.codePointAt(0) ?? 0;
+        if (ranges.some(([first, last]) => point >= first && point <= last)) continue;
+        // The element that drew it, and the part of the header around it, by the name a reader
+        // hears, its test id or its words.
+        const drawer = node.parentElement;
+        const part = drawer?.closest("a, button, h1, select, [data-testid]");
+        const partName =
+          part?.getAttribute("aria-label") ??
+          part?.getAttribute("data-testid") ??
+          part?.textContent;
+        const code = point.toString(16).toUpperCase().padStart(4, "0");
+        offenders.push(
+          `U+${code} ${character} in "${text}", drawn by <${drawer?.tagName.toLowerCase()}> in ${part?.tagName.toLowerCase()} "${partName}"`
+        );
+      }
+    }
+    expect(offenders).toEqual([]);
+    // A walk that read no character would pass with nothing read.
+    expect(read).toBeGreaterThan(0);
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
 test("the header marks the issue pin when it is pinned", async () => {
   const restore = stubHeader(issue, {
     dismissed: [],
@@ -755,16 +833,17 @@ test("the approval chip's keys press its own actions, and only while those take 
 });
 
 // The header's focus keeper gives a control of the Request changes dialog, lost as the dialog
-// shuts, to the document's chip, as it gives one of the chip's two actions (`chipOfLostAction`).
-// The dialog gives the focus back to the header's Request changes as it shuts; once the request is
-// answered the header draws neither action, so the focus falls from the dialog's own control: its
-// submit, which reads "Submitting…" while the change request is written, its text box, which
-// holds the reader's reason, or its Cancel. No action draws the words of any of them, so only
-// their place inside the dialog sends the focus to the chip rather than to "Issue actions". Where
-// the reader sent a change request, the chip also hands the focus to itself once the read after
-// it removes Request changes (`ApprovalChip`), so the first three rows below hold where the focus
-// ends, whichever of the two moves it; the rows after them, where nothing was sent, are the
-// keeper's alone.
+// shuts, to the document's chip (`chipOfLostAction`). The dialog gives the focus back to the
+// header's Request changes as it shuts; once the request is answered the header draws neither
+// action, so the focus falls from the dialog's own control: its submit, which reads "Submitting…"
+// while the change request is written, its text box, which holds the reader's reason, or its
+// Cancel. The keeper reads only where the lost control stood, never its words: a control that
+// stood inside the box `ApprovalChip` draws the chip in - its two actions, and its dialogs'
+// submit, text box and Cancel - goes to that chip, whatever it reads, rather than to "Issue
+// actions". Where the reader sent a change request, the chip also hands the focus to itself once
+// the read after it removes Request changes (`ApprovalChip`), so the first three rows below hold
+// where the focus ends, whichever of the two moves it; the rows after them, where nothing was
+// sent, are the keeper's alone.
 
 /** The reason each case types into the dialog: no action of the chip draws these words. */
 const CHANGE_REASON = "Name the rollback path.";
@@ -1054,6 +1133,1309 @@ test.each([
     await waitFor(() => expect(issueActions).toHaveFocus());
     expect(chip).toBeInTheDocument();
     expect(chip).not.toHaveFocus();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+/** Opens the title's editor by a click on the heading, which reads `title`, as a reader does, and
+ *  answers the heading and the editor, which holds the focus. */
+async function openTitleEditor(
+  user: UserEvent,
+  title = issue.title
+): Promise<{ editor: HTMLElement; heading: HTMLElement }> {
+  const heading = await screen.findByRole("heading", { level: 1, name: title });
+  await user.click(heading);
+  const editor = await screen.findByRole("textbox", { name: "Issue title" });
+  await waitFor(() => expect(editor).toHaveFocus());
+  return { editor, heading };
+}
+
+// A press of the primary button that the browser turns into a drag, as when the reader drags the
+// words they selected in the editor, sends no mouseup: Chromium sends dragstart, pointercancel and
+// dragend, and no mouseup and no click. Nothing waits on such a press, so an edit a key then ends
+// draws the title clamped to two lines again at once, not whole until the reader next releases a
+// mouse button somewhere.
+test("a press a drag takes leaves the title clamped once Enter ends the edit", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    expect(heading.className).toContain("line-clamp-2");
+    const { editor } = await openTitleEditor(user);
+    // The press goes down on the editor's selected words and becomes a drag: the events Chromium
+    // sends for it, in its order, with no mouseup.
+    fireEvent.pointerDown(editor, { button: 0, isPrimary: true, pointerType: "mouse" });
+    fireEvent.mouseDown(editor, { button: 0 });
+    fireEvent.dragStart(editor);
+    fireEvent.pointerCancel(editor, { button: 0, isPrimary: true, pointerType: "mouse" });
+    fireEvent.dragEnd(editor);
+    expect(editor).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading.className).toContain("line-clamp-2");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The same drag from a press that ends the edit: the reader presses a link outside the title, whose
+// mousedown takes the focus and so ends the edit while the button is down, and drags the link. The
+// blur holds the title whole until the press is released, but a drag sends no mouseup, so the
+// press is over at its pointercancel, as the drag starts, and the title is clamped to two lines
+// again then.
+test("a press that ends the edit and turns into a drag leaves the title clamped once the drag ends", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+  const link = document.createElement("a");
+  link.href = "/elsewhere";
+  link.textContent = "Elsewhere";
+  document.body.append(link);
+
+  try {
+    const { heading } = await openTitleEditor(user);
+    // The press goes down on the link, which takes the focus inside its mousedown, and becomes a
+    // drag: the events Chromium sends for it, in its order, with no mouseup.
+    fireEvent.pointerDown(link, { button: 0, isPrimary: true, pointerType: "mouse" });
+    fireEvent.mouseDown(link, { button: 0 });
+    act(() => link.focus());
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
+    // The press is down, so the title is held whole for now.
+    expect(heading.className).not.toContain("line-clamp-2");
+    fireEvent.dragStart(link);
+    fireEvent.pointerCancel(link, { button: 0, isPrimary: true, pointerType: "mouse" });
+    fireEvent.dragEnd(link);
+    await waitFor(() => expect(heading.className).toContain("line-clamp-2"));
+  } finally {
+    link.remove();
+    view.unmount();
+    restore();
+  }
+});
+
+// A right press as Chromium sends it where the context menu opens as the button goes down: its
+// pointerdown, its mousedown and its contextmenu, and no release, which the menu takes. The press
+// is over at its contextmenu, so an edit a key then ends draws the title clamped to two lines again
+// at once, not whole until the reader next presses and releases somewhere.
+test("a right press whose context menu takes its release leaves the title clamped once Enter ends the edit", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    expect(heading.className).toContain("line-clamp-2");
+    const { editor } = await openTitleEditor(user);
+    // The press goes down with the focus still in the editor. user-event sends no contextmenu
+    // without a pointerup, and moves the focus as its pointer goes down.
+    fireEvent.pointerDown(document.body, { button: 2, isPrimary: true, pointerType: "mouse" });
+    fireEvent.mouseDown(document.body, { button: 2 });
+    fireEvent.contextMenu(document.body, { button: 2 });
+    expect(editor).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading.className).toContain("line-clamp-2");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// A tap on a control outside the title: its pointer goes down and comes up with the focus still in
+// the editor, and only the mousedown the browser sends after that moves the focus and so ends the
+// edit. The tap's press is under way until its click, so that blur holds the title whole, and the
+// title is clamped to two lines again once the click has been dispatched.
+test("a tap that ends the edit holds the title whole until its click", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+  const outside = document.createElement("button");
+  outside.type = "button";
+  outside.textContent = "Elsewhere";
+  document.body.append(outside);
+
+  try {
+    const { heading } = await openTitleEditor(user);
+    // A tap's order, its pointer up before the mousedown that takes the focus: user-event moves
+    // the focus as its pointer goes down.
+    fireEvent.pointerDown(outside, { button: 0, isPrimary: true, pointerType: "touch" });
+    fireEvent.pointerUp(outside, { button: 0, isPrimary: true, pointerType: "touch" });
+    fireEvent.mouseDown(outside, { button: 0 });
+    act(() => outside.focus());
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
+    // The tap is under way, so the title is held whole for now.
+    expect(heading.className).not.toContain("line-clamp-2");
+    // The tap's mouseup and click, which the browser sends after its mousedown.
+    fireEvent.mouseUp(outside, { button: 0 });
+    fireEvent.click(outside);
+    await waitFor(() => expect(heading.className).toContain("line-clamp-2"));
+  } finally {
+    outside.remove();
+    view.unmount();
+    restore();
+  }
+});
+
+/** Opens the title's editor (`openTitleEditor`) and writes `draft` in it in place of the title,
+ *  with the editor keeping the focus. An empty draft is the title cleared: user-event types no
+ *  empty text. */
+async function editTitle(user: UserEvent, draft: string) {
+  const { editor, heading } = await openTitleEditor(user);
+  await user.clear(editor);
+  if (draft !== "") await user.keyboard(draft);
+  expect(editor).toHaveValue(draft);
+  return { editor, heading };
+}
+
+/** Takes the page's focus away as a switch to another window does: `focused` loses the focus
+ *  with no element to go to and stays the document's active element, and the document has no
+ *  focus until the reader comes back by the function this answers. A write the blur sends goes on
+ *  in the case's next wait (`waitFor` or user-event), which keeps its updates inside React's act
+ *  scope, so a case waits through nothing else before it. */
+function leaveWindow(focused: HTMLElement): () => void {
+  const hasFocus = spyOn(document, "hasFocus").mockReturnValue(false);
+  // What a browser sends as its window loses the focus, with no relatedTarget and the focus left
+  // where it was: user-event has no form for a window's blur. testing-library's `fireEvent.blur`
+  // also sends the focusout that React's `onBlur` hears.
+  fireEvent.blur(focused, { relatedTarget: null });
+  fireEvent.blur(window);
+  return () => hasFocus.mockRestore();
+}
+
+/** Brings the reader back to the window a switch left (`leaveWindow`), once the function that
+ *  answers has given the document its focus again. */
+function returnToWindow(): void {
+  // The window's focus as the reader comes back: user-event has no form for it.
+  fireEvent.focus(window);
+}
+
+/** Takes the page's focus away as a switch to another window does (`leaveWindow`), and runs
+ *  `whileAway` before the reader comes back. */
+function blurWindow(focused: HTMLElement, whileAway?: () => void): void {
+  const comeBack = leaveWindow(focused);
+  try {
+    whileAway?.();
+  } finally {
+    comeBack();
+  }
+}
+
+/** Waits until the write of `title` has landed: the issue's read holds Dispatch's answer. */
+async function titleLanded(queryClient: QueryClient, title: string): Promise<void> {
+  await waitFor(() =>
+    expect(queryClient.getQueryData<IssueDetails>(["issue", "CORE-1"])?.title).toBe(title)
+  );
+}
+
+/** Ends the title's edit by a press elsewhere on the page, and waits for the editor to be gone. */
+async function endTitleEditByPress(user: UserEvent): Promise<void> {
+  await user.click(document.body);
+  await waitFor(() =>
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+  );
+}
+
+/** Another reader's write of the issue's title, which reaches the page as an event's refresh
+ *  does. */
+function titleWrittenElsewhere(queryClient: QueryClient, title: string): void {
+  act(() => {
+    queryClient.setQueryData<IssueDetails>(
+      ["issue", "CORE-1"],
+      (current) => current && { ...current, title }
+    );
+  });
+}
+
+// A switch to another window or tab blurs the editor with no element for the focus to go to, and
+// the editor stays the page's focused element, which the browser focuses again as the reader comes
+// back. The reader has not left the editor, so it stays open with their draft, and the draft is
+// sent all the same, as today's page sends it as the window loses the focus (decision 295). The
+// title a switch sends is the draft trimmed, as every title is, and its write lands with the edit
+// still open: the draft then takes the trimmed title, and the editor keeps the reader's place -
+// their text, with the space they typed before their next word, and their caret. The reader's
+// return sends nothing more, and neither does the press that later ends the edit: the draft went
+// once.
+test("a switch to another window sends the title's changed draft once and keeps the reader's text and caret as its write lands", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor } = await editTitle(user, "Review the plan ");
+    const place = editor as HTMLTextAreaElement;
+    // The reader's caret, put back after "Review".
+    place.setSelectionRange(6, 6);
+    blurWindow(editor);
+    expect(editor).toHaveValue("Review the plan ");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    expect(editor).toBeInTheDocument();
+    expect(editor).toHaveFocus();
+    await titleLanded(queryClient, "Review the plan");
+
+    returnToWindow();
+    await waitFor(() => expect(editor).toHaveFocus());
+    expect(editor).toHaveValue("Review the plan ");
+    expect([place.selectionStart, place.selectionEnd]).toEqual([6, 6]);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await endTitleEditByPress(user);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The issue can be closed elsewhere before a switch's write reaches Dispatch, which then refuses
+// the title, and the page may not have drawn the close yet. Dispatch refuses that title every
+// time, and the draft went once, so neither another switch, nor the reader's return, nor the press
+// that later ends the edit sends it again, though it is still not the issue's title: only a change
+// of it sends again.
+test("a title a switch sent and Dispatch refused is not sent again by another switch, the reader's return or the end of the edit", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const refusal = "CORE-1 is closed; reopen it first";
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(409, { code: "ISSUE_CLOSED", error: refusal })
+  );
+  const view = renderHeader();
+
+  try {
+    const { editor } = await editTitle(user, "Review the plan");
+    blurWindow(editor);
+    await screen.findByText(refusal);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+
+    returnToWindow();
+    blurWindow(editor);
+    returnToWindow();
+    await waitFor(() => expect(editor).toHaveFocus());
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await endTitleEditByPress(user);
+    expect(screen.getByText(refusal)).toBeInTheDocument();
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A draft goes once only until the reader changes it. Once a switch's write of the draft has
+// landed, another reader's write can change the title, and the draft, not changed, takes that
+// title. A reader who then writes back the title the switch sent wants it to be the issue's title
+// again, so the end of the edit sends it.
+test("a title a switch sent and the reader writes back after another write changed it is sent again as the edit ends", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor } = await editTitle(user, "Review the plan");
+    blurWindow(editor);
+    await titleLanded(queryClient, "Review the plan");
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+    returnToWindow();
+    titleWrittenElsewhere(queryClient, "Plan the review");
+    await waitFor(() => expect(editor).toHaveValue("Plan the review"));
+
+    await user.clear(editor);
+    await user.keyboard("Review the plan");
+    await endTitleEditByPress(user);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Review the plan" },
+      keyedAttempt
+    );
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A switch while a write of the title is out queues the draft behind that write: one write of the
+// issue's fields goes at a time, so the draft has not gone. Dispatch then refuses the write out,
+// and nothing drains the draft, which is still the reader's to send, so the end of the edit sends
+// it. Taken for a draft that went, it was never sent, and the heading read a title Dispatch did
+// not have.
+test("a draft a switch queued behind a title's write that Dispatch then refuses is sent as the edit ends", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => landing.promise)
+    .mockImplementationOnce(async () => ({ ...issue, title: "Plan the review" }));
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    const { editor } = await openTitleEditor(user, "Review the plan");
+    await user.clear(editor);
+    await user.keyboard("Plan the review");
+    blurWindow(editor);
+    expect(editor).toHaveValue("Plan the review");
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      landing.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" }));
+      await landing.promise.catch(() => undefined);
+    });
+    await screen.findByText("Could not update this issue.");
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    returnToWindow();
+    await waitFor(() => expect(editor).toHaveFocus());
+    await endTitleEditByPress(user);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Plan the review" },
+      keyedAttempt
+    );
+    await titleLanded(queryClient, "Plan the review");
+    expect(heading).toHaveTextContent(/^Plan the review$/);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A draft a switch queued goes as the write ahead of it lands, and Dispatch then refuses it. It
+// went once, as a draft a switch sent goes once, so the end of the edit sends it no second time,
+// though it is not the issue's title.
+test("a draft a switch queued that went as the write ahead of it landed, and that Dispatch refused, is not sent again as the edit ends", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const first = Promise.withResolvers<IssueDetails>();
+  const second = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    const { editor } = await openTitleEditor(user, "Review the plan");
+    await user.clear(editor);
+    await user.keyboard("Plan the review");
+    blurWindow(editor);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.resolve({ ...issue, title: "Review the plan" });
+      await first.promise;
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Plan the review" },
+      keyedAttempt
+    );
+    await act(async () => {
+      second.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" }));
+      await second.promise.catch(() => undefined);
+    });
+    await screen.findByText("Could not update this issue.");
+
+    returnToWindow();
+    await waitFor(() => expect(editor).toHaveFocus());
+    await endTitleEditByPress(user);
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(patchIssue).toHaveBeenCalledTimes(2);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A draft a switch queued waits behind the write out, so it has not gone. Dispatch then refuses
+// that write, and nothing drains a draft after a refusal: it is still the reader's to send, and a
+// hide of the page sends it, as a page hidden before the tab is closed must. Taken for a draft
+// that went, it was sent by neither a hide nor a second switch, and a closed tab lost it.
+test("a draft a switch queued behind a title's write that Dispatch then refuses is sent as the page is hidden", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => landing.promise)
+    .mockImplementationOnce(async () => ({ ...issue, title: "Plan the review" }));
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    const { editor } = await openTitleEditor(user, "Review the plan");
+    await user.clear(editor);
+    await user.keyboard("Plan the review");
+    blurWindow(editor);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      landing.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" }));
+      await landing.promise.catch(() => undefined);
+    });
+    await screen.findByText("Could not update this issue.");
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    try {
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+    }
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Plan the review" },
+      keyedAttempt
+    );
+    expect(editor).toHaveValue("Plan the review");
+    await titleLanded(queryClient, "Plan the review");
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A draft goes once in the edit that sent it. A new edit is the reader's own: one opened on the
+// title a switch sent and Dispatch refused, and ended with nothing typed, sends that title again,
+// as any edit ended on a title the issue does not hold does.
+test("a title a switch sent and Dispatch refused is sent again as a new edit opened on it ends", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches()
+    .mockRejectedValueOnce(
+      new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" })
+    )
+    .mockResolvedValueOnce({ ...issue, title: "Review the plan" });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor } = await editTitle(user, "Review the plan");
+    blurWindow(editor);
+    await screen.findByText("Could not update this issue.");
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    returnToWindow();
+    await waitFor(() => expect(editor).toHaveFocus());
+    await endTitleEditByPress(user);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await openTitleEditor(user, "Review the plan");
+    await endTitleEditByPress(user);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Review the plan" },
+      keyedAttempt
+    );
+    await titleLanded(queryClient, "Review the plan");
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The reader can come back while a switch's write is out and type more, which makes the draft
+// theirs to send again, then press Escape, which drops what they typed and puts back the title the
+// switch sent, the title the issue is about to hold (decision 316). The write's landing then
+// leaves the heading on the title it lands with (decision 304), and no edit sends a title again.
+test("an Escape after the reader typed more while a switch's write of the title was out leaves the heading on the title that write lands with, and nothing sends a title again", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => landing.promise);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    blurWindow(editor);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    returnToWindow();
+    await waitFor(() => expect(editor).toHaveFocus());
+    await user.keyboard(" today");
+    expect(editor).toHaveValue("Review the plan today");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+
+    await act(async () => {
+      landing.resolve({ ...issue, title: "Review the plan" });
+      await landing.promise;
+    });
+    await titleLanded(queryClient, "Review the plan");
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    const { editor: reopened } = await openTitleEditor(user, "Review the plan");
+    expect(reopened).toHaveValue("Review the plan");
+    await endTitleEditByPress(user);
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// Escape after a switch's write landed and another reader's write then changed the title, which
+// the draft, not changed, took: what the reader typed after that is all the Escape drops, so the
+// heading reads the issue's title as it now stands, not the one the switch sent, and nothing sends
+// a title again.
+test("an Escape after a switch's write landed, another write changed the title and the reader typed more leaves the heading on that title", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    blurWindow(editor);
+    await titleLanded(queryClient, "Review the plan");
+    returnToWindow();
+    titleWrittenElsewhere(queryClient, "Plan the review");
+    await waitFor(() => expect(editor).toHaveValue("Plan the review"));
+    await user.keyboard(" today");
+    expect(editor).toHaveValue("Plan the review today");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading).toHaveTextContent(/^Plan the review$/);
+
+    await openTitleEditor(user, "Plan the review");
+    await endTitleEditByPress(user);
+    expect(heading).toHaveTextContent(/^Plan the review$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A switch with a draft that is not changed sends nothing and leaves the edit open as the reader
+// left it: the title as it stands; the title with a space typed after it, which is the title once
+// trimmed, and which the switch leaves as typed; and an empty draft, which says nothing while the
+// reader is away, its "Title is required." waiting for the end of the edit.
+test.each([
+  ["the title as it stands", issue.title],
+  ["the title with a space after it", `${issue.title} `],
+  ["an empty draft", ""],
+])("a switch to another window with %s sends no write and keeps the title's editor open", async (_draftName, draft) => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue(issue);
+  const view = renderHeader();
+
+  try {
+    const { editor } = await editTitle(user, draft);
+    blurWindow(editor);
+    expect(editor).toBeInTheDocument();
+    expect(editor).toHaveValue(draft);
+    expect(editor).toHaveFocus();
+
+    returnToWindow();
+    await waitFor(() => expect(editor).toHaveFocus());
+    expect(editor).toHaveValue(draft);
+    expect(screen.queryByText("Title is required.")).not.toBeInTheDocument();
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The reader saves a new title, and while its write is out opens the edit again and types the
+// issue's title back, to undo the change. The draft then equals the title the issue still has, so
+// it reads as unchanged; but the reader typed it, and the write's landing must not put the title
+// they took out back into the editor under them. The end of the edit then sends the title they
+// typed back.
+test("a title typed back to the issue's title while a write of another is out stays in the editor as that write lands, and is sent as the edit ends", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => landing.promise)
+    .mockImplementationOnce(async () => ({ ...issue, title: issue.title }));
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    // The write is out. The reader opens the edit again and types the issue's title back.
+    await user.click(heading);
+    const reopened = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(reopened).toHaveFocus());
+    await user.clear(reopened);
+    await user.keyboard(issue.title);
+    expect(reopened).toHaveValue(issue.title);
+
+    await act(async () => {
+      landing.resolve({ ...issue, title: "Review the plan" });
+      await landing.promise;
+    });
+    await titleLanded(queryClient, "Review the plan");
+    expect(reopened).toHaveValue(issue.title);
+
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: issue.title }, keyedAttempt);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The same undo, ended before the write lands: the reader saves a new title, opens the edit again
+// while its write is out, types the issue's title back and presses Enter. The issue still has
+// that title, but the write out is about to replace it, so the title typed back is a change to
+// send. It waits for the write out, goes once that write lands, and the heading ends on it.
+test("a title typed back to the issue's title and ended while a write of another is out is sent once that write lands", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => landing.promise)
+    .mockImplementationOnce(async () => ({ ...issue, title: issue.title }));
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    // The write is out. The reader opens the edit again, types the issue's title back and ends
+    // the edit.
+    const { editor: reopened } = await openTitleEditor(user, "Review the plan");
+    await user.clear(reopened);
+    await user.keyboard(issue.title);
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    // One write of the issue's fields at a time: the title typed back waits for the first.
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      landing.resolve({ ...issue, title: "Review the plan" });
+      await landing.promise;
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: issue.title }, keyedAttempt);
+    await titleLanded(queryClient, issue.title);
+    expect(heading).toHaveTextContent(/^Review the spec$/);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The reader saves a new title, opens the edit again while its write is out and ends it with
+// nothing typed. The draft is the title of that write, so nothing is sent, and the heading keeps
+// it: the issue's old title is not put back while the write is out. Dispatch then refuses the
+// write, and the draft is still the reader's title, so Retry sends it.
+test("an edit ended with nothing typed while a title's write is out leaves the heading on that title, and Retry sends it once that write is refused", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => landing.promise)
+    .mockImplementationOnce(async () => ({ ...issue, title: "Review the plan" }));
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    // The write is out. The reader opens the edit again and ends it with nothing typed.
+    const { editor: reopened } = await openTitleEditor(user, "Review the plan");
+    expect(reopened).toHaveValue("Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      landing.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" }));
+      await landing.promise.catch(() => undefined);
+    });
+    await screen.findByText("Could not update this issue.");
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Review the plan" },
+      keyedAttempt
+    );
+    await titleLanded(queryClient, "Review the plan");
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The same edit ended with nothing typed, and the write Dispatch then refuses: the issue keeps its
+// old title, so the draft is a change again, and the reader's. A status pick's write then lands
+// with the old title, and the heading keeps the reader's: marked not changed, the draft would take
+// the old title, and Retry would have nothing to send.
+test("a title an edit ended with nothing typed while its write was out stays the reader's after that write is refused and a status pick lands, and Retry sends it", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => landing.promise)
+    .mockImplementationOnce(async () => ({ ...issue, status: "in_progress" }))
+    .mockImplementationOnce(async () => ({
+      ...issue,
+      status: "in_progress",
+      title: "Review the plan",
+    }));
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(heading).toHaveFocus());
+    await openTitleEditor(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    await act(async () => {
+      landing.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" }));
+      await landing.promise.catch(() => undefined);
+    });
+    await screen.findByText("Could not update this issue.");
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+
+    await user.selectOptions(screen.getByLabelText("Status"), "in_progress");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
+    );
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(["issue", "CORE-1"])?.status).toBe(
+        "in_progress"
+      )
+    );
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(3));
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Review the plan" },
+      keyedAttempt
+    );
+    await titleLanded(queryClient, "Review the plan");
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// Another reader can change the title while a write of another field is out, and that write
+// lands with the issue as Dispatch then holds it. A title draft the reader never touched takes
+// the title it lands with: left on the old title it would read as changed, and the end of the
+// next edit would send the old title over the other reader's.
+test("a title draft the reader never touched takes the title a status pick's write lands with, and an edit ended with nothing typed sends no title", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    status: "in_progress",
+    title: "Plan the review",
+  });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    await user.selectOptions(await screen.findByLabelText("Status"), "in_progress");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
+    );
+    await titleLanded(queryClient, "Plan the review");
+    expect(heading).toHaveTextContent(/^Plan the review$/);
+
+    const { editor } = await openTitleEditor(user, "Plan the review");
+    expect(editor).toHaveValue("Plan the review");
+    await endTitleEditByPress(user);
+    expect(heading).toHaveTextContent(/^Plan the review$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A status pick and a title saved after it go in the issue's line one after the other, so the
+// title's write is out, waiting, as the pick lands, and the pick's answer still carries the old
+// title. The reader has the edit open again on the title they saved, and has typed a character
+// and taken it back out: the pick's landing leaves the editor on the title of the write out
+// rather than putting the old title back under them, and nothing sends a title again.
+test("a status pick that lands while a title saved after it waits behind it leaves the reopened editor on that title, and nothing sends a title again", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const pick = Promise.withResolvers<IssueDetails>();
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => pick.promise)
+    .mockImplementationOnce(() => landing.promise);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    await user.selectOptions(await screen.findByLabelText("Status"), "in_progress");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
+    );
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    // The title's write waits behind the pick in the issue's line.
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    const { editor: reopened } = await openTitleEditor(user, "Review the plan");
+    await user.keyboard("s{Backspace}");
+    expect(reopened).toHaveValue("Review the plan");
+
+    await act(async () => {
+      pick.resolve({ ...issue, status: "in_progress" });
+      await pick.promise;
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue).toHaveBeenLastCalledWith(
+      "CORE-1",
+      { title: "Review the plan" },
+      keyedAttempt
+    );
+    expect(reopened).toHaveValue("Review the plan");
+    await endTitleEditByPress(user);
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+
+    await act(async () => {
+      landing.resolve({ ...issue, status: "in_progress", title: "Review the plan" });
+      await landing.promise;
+    });
+    await titleLanded(queryClient, "Review the plan");
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+    expect(patchIssue).toHaveBeenCalledTimes(2);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A phone that hides the page may send the editor no blur, so a page hidden with the edit open
+// sends a changed draft as a switch does (decision 295), and keeps the edit open. Dispatch refuses
+// that write here, so the draft is still not the issue's title, and only its having gone once
+// keeps the blur of the window that can follow, and the press that later ends the edit, from
+// sending it again: a write that landed would have made it the issue's title, which sends nothing.
+test("a page hidden with the title's editor open sends its changed draft once, and neither a window blur after it nor the end of the edit sends it again", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const refusal = "CORE-1 is closed; reopen it first";
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(409, { code: "ISSUE_CLOSED", error: refusal })
+  );
+  const view = renderHeader();
+
+  try {
+    const { editor } = await editTitle(user, "Review the plan");
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    try {
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await screen.findByText(refusal);
+      expect(patchIssue).toHaveBeenCalledTimes(1);
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+      expect(editor).toBeInTheDocument();
+      expect(editor).toHaveValue("Review the plan");
+      expect(editor).toHaveFocus();
+
+      blurWindow(editor);
+      expect(editor).toHaveValue("Review the plan");
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+    }
+    returnToWindow();
+    await waitFor(() => expect(editor).toHaveFocus());
+    await endTitleEditByPress(user);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// While the reader is away in another window the page's own code can move the focus, with no blur
+// reaching the editor: Chromium sends none while the page has no focus. The page can draw again
+// meanwhile, as an event's refresh draws it. Back in the window the editor no longer holds the
+// focus, so the edit ends as its blur would have ended it, and the draft, which the switch sent,
+// is not sent again.
+test("a focus moved while the window is away ends the title's edit as the reader comes back and sends the draft once", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor } = await editTitle(user, "Review the plan");
+    const control = screen.getByRole("button", { name: "Issue actions" });
+    blurWindow(editor, () => {
+      act(() => control.focus());
+      // An event's refresh of the issue, which draws the header again.
+      act(() => {
+        queryClient.setQueryData<IssueDetails>(
+          ["issue", "CORE-1"],
+          (current) => current && { ...current, updated_at: "2026-09-12T10:00:00Z" }
+        );
+      });
+    });
+    expect(control).toHaveFocus();
+    expect(editor).toBeInTheDocument();
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+
+    returnToWindow();
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// An event's refresh can close the issue while the reader is away in another window, which
+// disables the editor they left open. A closed issue takes no title, so the edit ends and drops
+// its draft, and the heading reads the issue's title: no disabled editor is left holding a draft
+// that nothing can end. The switch sent the draft before the close, and its write went, so the
+// issue's title is the reader's: what the close drops is only a change made after that send, here
+// the words the reader typed once back in the window, before the close reached the page.
+test.each([
+  ["while the window is away", false],
+  ["after the reader came back and typed more", true],
+] as const)("an issue closed %s ends the title's edit and keeps only the draft the switch sent", async (_when, typedMore) => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+  // The issue as Dispatch has it once the switch's write went and the issue was closed elsewhere.
+  const closeIssue = () =>
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...issue,
+        closed_at: "2026-09-12T10:00:00Z",
+        status: "done",
+        title: "Review the plan",
+      });
+    });
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    const comeBack = leaveWindow(editor);
+    try {
+      await titleLanded(queryClient, "Review the plan");
+      if (!typedMore) closeIssue();
+    } finally {
+      comeBack();
+    }
+    if (typedMore) {
+      returnToWindow();
+      await user.keyboard(" today");
+      expect(editor).toHaveValue("Review the plan today");
+      closeIssue();
+    }
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The issue can be closed elsewhere while a switch's write of the title is out, and Dispatch then
+// refuses that title. The close ends the edit, and while the write is out the heading reads its
+// title, the title the issue is about to hold (decision 316); once the write is refused the issue
+// never got it, and nothing will send it to a closed issue, so the heading reads the issue's title.
+test("a title a switch sent that Dispatch refuses because the issue was closed meanwhile leaves the heading on the issue's title", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const refusal = "CORE-1 is closed; reopen it first";
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => landing.promise);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    blurWindow(editor, () => {
+      // The issue as Dispatch has it once it was closed elsewhere, before the switch's write.
+      act(() => {
+        queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+          ...issue,
+          closed_at: "2026-09-12T10:00:00Z",
+          status: "done",
+        });
+      });
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument()
+    );
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+
+    await act(async () => {
+      landing.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: refusal }));
+      await landing.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(heading).toHaveTextContent(/^Review the spec$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The Escape that cancels an IME composition and the Enter that confirms one are the input
+// method's keys: the editor stays open with the reader's draft and sends nothing, where an Enter
+// would write the title mid-word. Chromium and Firefox mark such a key `isComposing`; Safari sends
+// it after the composition's end, unmarked, with keyCode 229. A plain key after it still ends the
+// edit and gives the focus back to the heading: Escape restores the title and sends nothing, and
+// Enter writes the title, once.
+test.each([
+  ["Escape", "isComposing"],
+  ["Enter", "isComposing"],
+  ["Escape", "keyCode 229"],
+  ["Enter", "keyCode 229"],
+] as const)("an %s that ends an IME composition, marked by %s, leaves the title's editor open with its draft and sends no write", async (key, mark) => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, title: "Review the plan" });
+  const view = renderHeader();
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(
+      editor,
+      mark === "isComposing"
+        ? { isComposing: true, key }
+        : { isComposing: false, key, keyCode: 229 }
+    );
+    expect(editor).toBeInTheDocument();
+    expect(editor).toHaveValue("Review the plan");
+    expect(editor).toHaveFocus();
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await user.keyboard(`{${key}}`);
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
+    if (key === "Escape") {
+      expect(heading).toHaveTextContent(issue.title);
+      expect(patchIssue).not.toHaveBeenCalled();
+    } else {
+      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    }
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The open actions group hangs over the header's first rows, and at 390 px it covers the title
+// and the properties line whole. A reader who Tabs on past its last action puts the focus on a
+// control under it, which they then cannot see (WCAG 2.4.11), so the group closes as the focus
+// leaves it by Tab, as it does at a press outside it and at Escape: the ARIA menu-button pattern
+// closes the menu at a Tab too.
+test("the actions group closes once Tab takes the focus out of it", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const control = await screen.findByRole("button", { name: "Issue actions" });
+    act(() => control.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "true"));
+    const group = document.getElementById(control.getAttribute("aria-controls") ?? "");
+    if (group === null) throw new Error("the actions control names no group");
+    const actions = within(group).getAllByRole("button");
+    expect(actions.length).toBeGreaterThan(0);
+    for (const action of actions) {
+      await user.tab();
+      expect(action).toHaveFocus();
+      expect(control).toHaveAttribute("aria-expanded", "true");
+    }
+    // One Tab more takes the focus out of the group, to the control after it in the header.
+    await user.tab();
+    expect(group.contains(document.activeElement)).toBe(false);
+    await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+/** Opens the header's actions group from the keyboard, as a reader does: the focus on its control,
+ *  then Enter, then one Tab onto the group's first action. Answers that first action, the control
+ *  and the group it names. */
+async function openIssueActionsByKey(user: UserEvent): Promise<{
+  control: HTMLElement;
+  first: HTMLElement;
+  group: HTMLElement;
+}> {
+  const control = await screen.findByRole("button", { name: "Issue actions" });
+  act(() => control.focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "true"));
+  const group = document.getElementById(control.getAttribute("aria-controls") ?? "");
+  if (group === null) throw new Error("the actions control names no group");
+  const [first] = within(group).getAllByRole("button");
+  if (first === undefined) throw new Error("the actions group holds no action");
+  await user.tab();
+  expect(first).toHaveFocus();
+  return { control, first, group };
+}
+
+// Shift+Tab from the group's first action takes the focus back to the group's control, which
+// is inside the box the group closes on leaving: the reader is still in the menu, so it stays
+// open.
+test("the actions group stays open as Shift+Tab takes the focus from its first action back to its control", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const { control } = await openIssueActionsByKey(user);
+    await user.tab({ shift: true });
+    expect(control).toHaveFocus();
+    expect(control).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The window losing the focus - the reader switching to another window - blurs the focused action
+// with no element for the focus to go to, and the action stays the document's active element.
+// The reader has not moved on in the page, so the group stays open for their return.
+test("the actions group stays open as the window loses the focus from one of its actions", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const { control, first: action } = await openIssueActionsByKey(user);
+    blurWindow(action);
+    expect(action).toHaveFocus();
+    expect(control).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// A focus the page moves by code to a control outside the group leaves it as a Tab does, so the
+// group closes there too and leaves that control uncovered.
+test("the actions group closes once a focus moved by code goes to a control outside it", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const { control, group } = await openIssueActionsByKey(user);
+    const status = within(screen.getByTestId("issue-state-actions")).getByRole("combobox", {
+      name: "Status",
+    });
+    act(() => status.focus());
+    expect(status).toHaveFocus();
+    expect(group.contains(document.activeElement)).toBe(false);
+    await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
   } finally {
     view.unmount();
     restore();

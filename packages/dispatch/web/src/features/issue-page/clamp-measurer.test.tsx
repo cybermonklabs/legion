@@ -115,10 +115,13 @@ function drawRows({
     if (own === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
     else Object.defineProperty(HTMLElement.prototype, "scrollHeight", own);
   });
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
+  // On Element, which owns the method: a spy on HTMLElement leaves an own property behind once
+  // restored, which hides every later spy on Element (Margin.landing.test.tsx's `stubRects`).
+  // Any other element keeps the empty box the DOM gives it.
+  const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
   ) {
-    return box(this);
+    return this instanceof HTMLElement ? box(this) : new DOMRect();
   });
   restores.push(() => boxes.mockRestore());
   const view = render(

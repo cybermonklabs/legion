@@ -137,6 +137,31 @@ func TestReadRequestWaitEndsPending(t *testing.T) {
 	t.Logf("GET /v1/requests/{id}?wait=2 answered pending after %s", took)
 }
 
+// TestReadRequestWaitEndsAtTheJudgesHandOver: a read with ?wait=4 of a request the model judge
+// holds (judge_until about a second ahead) answers once the hold runs out, still pending and no
+// longer judge_deciding, well before its wait ends: the request is its person's now, and the
+// agent learns so at once rather than at the end of its wait.
+func TestReadRequestWaitEndsAtTheJudgesHandOver(t *testing.T) {
+	ts := newTestServer(t)
+	enrollmentID, key, asked := ts.pendingRequest(t)
+	if _, err := ts.Store.Pool.Exec(context.Background(), `update requests set judge_until = now() + interval '1 second' where id=$1`, asked.RequestID); err != nil {
+		t.Fatalf("hold the request for the judge: %v", err)
+	}
+	start := time.Now()
+	status, body := ts.session(t, key, enrollmentID, http.MethodGet, "/v1/requests/"+asked.RequestID+"?wait=4", nil)
+	took := time.Since(start)
+	if status != http.StatusOK {
+		t.Fatalf("GET /v1/requests/{id}?wait=4 = %d: %s", status, body)
+	}
+	if read := decode[wireRequestStatus](t, body); read.State != "pending" || strings.Contains(string(body), `"judge_deciding":true`) {
+		t.Fatalf("GET /v1/requests/{id}?wait=4 = %s, want pending and no longer judge_deciding: the judge's hold ran out", body)
+	}
+	if took < 500*time.Millisecond || took >= 3*time.Second {
+		t.Fatalf("GET /v1/requests/{id}?wait=4 answered after %s, want once the hold ran out (about 1 s), not at the wait's end (4 s)", took)
+	}
+	t.Logf("GET /v1/requests/{id}?wait=4 answered at the hand-over after %s", took)
+}
+
 // TestReadRequestWaitRefusesBadInput: a wait that is not a whole number of seconds from 1 to
 // record.MaxRequestWaitSeconds is refused 400 REQUEST_WAIT_INPUT, at once, for a request that is
 // pending.
@@ -196,8 +221,8 @@ func TestReadRequestWaitAnswersAFailedStoreUnavailable(t *testing.T) {
 	}
 }
 
-// TestReadRequestWaitEndsWhenTheRequestMoves: a held read whose request moves to another
-// enrollment while it waits, as adopt moves a predecessor's requests to its successor, is
+// TestReadRequestWaitEndsWhenTheRequestMoves: a held read whose request moves to an enrollment of
+// another owner while it waits (the successor here records no owner, so it is its own) is
 // answered 403 NOT_YOURS at the next step, as a new read of it is, and not the request's state
 // for the rest of the wait.
 func TestReadRequestWaitEndsWhenTheRequestMoves(t *testing.T) {

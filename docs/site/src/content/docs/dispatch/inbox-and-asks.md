@@ -118,11 +118,13 @@ in to the broker ([approve a request](/legion/broker/guides/approve-a-request/))
 decides no secret request. A **Machine login** links to Dispatch's machine-login page, where you
 type the code the machine shows and approve or deny it
 ([log a machine in](/legion/broker/guides/log-a-machine-in/)). They count toward the sidebar's
-**Inbox** number and the banner like an ask that waits on you. The Inbox says `Nothing needs you`
-only when your own list holds no ask and no credential request; with the filter on someone else it
-says `Nothing matches this filter`, and with the filter cleared, `Nothing needs anyone`. An open
-Inbox picks up a new request, or one that is no longer pending, within moments on its own - no
-reload needed.
+**Inbox** number and the banner like an ask that waits on you. A request whose deadline passed
+before anybody decided it stays in the list, marked **Expired** with its deadline, with no link,
+until you click **Dismiss**; nobody can decide it, so it counts toward neither number. The Inbox
+says `Nothing needs you` only when your own list holds no ask and no credential request still
+waiting on a decision; with the filter on someone else it says `Nothing matches this filter`, and
+with the filter cleared, `Nothing needs anyone`. An open Inbox picks up a new request, or one that
+is no longer pending, within moments on its own - no reload needed.
 
 The list does not move under a moving pointer. If the Inbox refreshes while your pointer travels
 across it, the rows stay put until the pointer rests, leaves the list, or you click.

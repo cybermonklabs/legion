@@ -211,7 +211,7 @@ export function IssueHeader({
           onRetry={() => writes.pinGuard.retryLast(writes.pin)}
           pending={writes.pin.isPending}
         />
-        {issueRefused && writes.titleRefusal !== null ? (
+        {writes.titleRefusal !== null ? (
           <p className={`text-sm ${pageFailedText}`} id="issue-title-error" role="alert">
             {writes.titleRefusal}
           </p>

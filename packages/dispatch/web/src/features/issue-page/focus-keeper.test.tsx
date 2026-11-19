@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: the press case needs a press, a blur and a removal inside one task, and user-event's press awaits between its events; the tap cases need a tap's order, its pointer up before the blur its mousedown makes, and user-event moves the focus as its pointer goes down.
+import { expect, mock, test } from "bun:test";
+// biome-ignore lint/style/noRestrictedImports: the press case needs a press, a blur and a removal inside one task, and user-event's press awaits between its events; the tap cases need a tap's order, its pointer up before the blur its mousedown makes, and user-event moves the focus as its pointer goes down; the cancelled, right-button, clickless and window-blur press cases need a pointercancel, a press of another button that moves no focus, a contextmenu with no pointerup, a pointerup with no click after it, and a blur of the window with a press under way; the press reader's own cases need each way a press ends, a dragend and the window's blur among them, alone after a bare pointerdown, which user-event has no form for.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useRef, useState } from "react";
@@ -8,7 +8,7 @@ import { createPortal } from "react-dom";
 import { jump, onFakeClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
-import { type FocusFallback, useFocusKeeper } from "./focus-keeper";
+import { type FocusFallback, hearPresses, useFocusKeeper } from "./focus-keeper";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 
 /** What has become of the region's Save control: drawn, disabled, removed, or drawn anew under
@@ -223,6 +223,84 @@ test("a press that moves no focus is no move of the reader's when a write then d
   }
 });
 
+test("a touch the browser cancels is no move of the reader's when a write then disables the control", async () => {
+  const stopFixup = emulateChromiumFocusFixup();
+  const view = render(<Region />);
+  try {
+    act(() => button("Save").focus());
+    // A touch on the page that the browser turns into a scroll: its pointer goes down and the
+    // browser cancels it, with no pointerup and no click, and the focus stays on Save. Another
+    // reader's write then disables Save. user-event has no form for a cancelled pointer.
+    fireEvent.pointerDown(document.body, { button: 0, pointerType: "touch" });
+    fireEvent.pointerCancel(document.body, { pointerType: "touch" });
+    expect(button("Save")).toHaveFocus();
+    view.rerender(<Region save="disabled" />);
+    await waitFor(() => expect(button("First fallback")).toHaveFocus());
+  } finally {
+    view.unmount();
+    stopFixup();
+  }
+});
+
+test("a right press that moves no focus is no move of the reader's when a write then disables the control", async () => {
+  const stopFixup = emulateChromiumFocusFixup();
+  const view = render(<Region />);
+  try {
+    act(() => button("Save").focus());
+    // A press of the right button on the page goes down and up with the focus still on Save,
+    // and no click follows a press of any button but the primary one. Another reader's write
+    // then disables Save. user-event moves the focus as its pointer goes down.
+    fireEvent.pointerDown(document.body, { button: 2 });
+    fireEvent.pointerUp(document.body, { button: 2 });
+    expect(button("Save")).toHaveFocus();
+    view.rerender(<Region save="disabled" />);
+    await waitFor(() => expect(button("First fallback")).toHaveFocus());
+  } finally {
+    view.unmount();
+    stopFixup();
+  }
+});
+
+test("a right press whose context menu takes its pointerup is no move of the reader's when a write then disables the control", async () => {
+  const stopFixup = emulateChromiumFocusFixup();
+  const view = render(<Region />);
+  try {
+    act(() => button("Save").focus());
+    // Where the context menu opens as the right button goes down, the menu takes the pointerup,
+    // so the page hears the press go down and the contextmenu and nothing after them, with the
+    // focus still on Save. Another reader's write then disables Save. user-event sends no
+    // contextmenu without a pointerup.
+    fireEvent.pointerDown(document.body, { button: 2 });
+    fireEvent.contextMenu(document.body, { button: 2 });
+    expect(button("Save")).toHaveFocus();
+    view.rerender(<Region save="disabled" />);
+    await waitFor(() => expect(button("First fallback")).toHaveFocus());
+  } finally {
+    view.unmount();
+    stopFixup();
+  }
+});
+
+test("a press under way as the window blurs is no move of the reader's when a write then disables the control", async () => {
+  const stopFixup = emulateChromiumFocusFixup();
+  const view = render(<Region />);
+  try {
+    act(() => button("Save").focus());
+    // A press goes down on the page with the focus still on Save, and the reader leaves the window
+    // before its release, which the page may then never hear. The window keeps Save as its focused
+    // element as it blurs. Another reader's write then disables Save. user-event has no form for
+    // a blur of the window.
+    fireEvent.pointerDown(document.body);
+    fireEvent.blur(window);
+    expect(button("Save")).toHaveFocus();
+    view.rerender(<Region save="disabled" />);
+    await waitFor(() => expect(button("First fallback")).toHaveFocus());
+  } finally {
+    view.unmount();
+    stopFixup();
+  }
+});
+
 test("a tap on the page is the reader's move, even when the control then goes", async () => {
   const view = render(<Region />);
   try {
@@ -244,6 +322,95 @@ test("a tap on the page is the reader's move, even when the control then goes", 
     });
   } finally {
     view.unmount();
+  }
+});
+
+/**
+ * Hears the reader's presses on the page with spies for what `hearPresses` tells, on a page whose
+ * Before holds the focus as each press begins and whose After is where a press that moves the
+ * focus moves it. Returns the spies and what ends the hearing and takes the page away.
+ */
+function hearOnPage() {
+  const view = render(
+    <>
+      <button type="button">Before</button>
+      <button type="button">After</button>
+    </>
+  );
+  act(() => button("Before").focus());
+  const begin = mock(() => "begun");
+  const done = mock(() => undefined);
+  const stopHearing = hearPresses(document, begin, done);
+  return {
+    begin,
+    done,
+    stop: () => {
+      stopHearing();
+      view.unmount();
+    },
+  };
+}
+
+// Each way a press is over, after its pointerdown on a blank part of the page with the focus on
+// Before: `done` hears of it once, with where the focus was as it began and what `begin` answered.
+test.each([
+  [
+    "its pointerup once it has moved the focus",
+    0,
+    () => {
+      act(() => button("After").focus());
+      // A mouse press has moved the focus by its pointerup; user-event moves it as it goes down.
+      fireEvent.pointerUp(document.body);
+    },
+  ],
+  // A press of another button sends no click, so its pointerup alone ends it.
+  ["the pointerup of a right press", 2, () => fireEvent.pointerUp(document.body, { button: 2 })],
+  // A click with no pointerup before it, so that the click alone is what ends the press.
+  ["its click", 0, () => fireEvent.click(document.body)],
+  // A press the browser cancels, as a touch it turns into a scroll; user-event cancels none.
+  ["its pointercancel", 0, () => fireEvent.pointerCancel(document.body)],
+  // A press that becomes a drag with no pointercancel; user-event has no form for a drag.
+  ["its dragend", 0, () => fireEvent.dragEnd(document.body)],
+  // A right press whose context menu takes its pointerup; user-event sends none without one.
+  ["the contextmenu of a right press", 2, () => fireEvent.contextMenu(document.body)],
+  // The reader leaves the window mid-press; user-event has no form for a blur of the window.
+  ["the window's blur", 0, () => fireEvent.blur(window)],
+] as const)("a press is over at %s, and done hears where the focus was as it began", (_ending, pressed, end) => {
+  const { begin, done, stop } = hearOnPage();
+  try {
+    // A bare pointerdown, so that the ending alone is what ends the press.
+    fireEvent.pointerDown(document.body, { button: pressed });
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(done).not.toHaveBeenCalled();
+    end();
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(done).toHaveBeenCalledWith(button("Before"), "begun");
+  } finally {
+    stop();
+  }
+});
+
+// A press with no ending yet: `done` hears nothing of it, and its click then ends it as one press.
+test.each([
+  ["its pointerdown alone", (): void => undefined],
+  // A tap moves the focus only after its pointer is up, from the mousedown the browser sends it.
+  ["the pointerup of a tap that has moved no focus yet", () => fireEvent.pointerUp(document.body)],
+  // A mouse press blurs the focused control as its button goes down: an element's blur, not the
+  // window's.
+  ["the blur of the control that held the focus", () => act(() => button("Before").blur())],
+] as const)("a press is still under way after %s", (_step, step) => {
+  const { done, stop } = hearOnPage();
+  try {
+    // A bare pointerdown of the primary button, which user-event follows with its own events.
+    fireEvent.pointerDown(document.body, { button: 0 });
+    step();
+    expect(done).not.toHaveBeenCalled();
+    // The press's click, which user-event sends only after a pointerdown of its own.
+    fireEvent.click(document.body);
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(done).toHaveBeenCalledWith(button("Before"), "begun");
+  } finally {
+    stop();
   }
 });
 
@@ -445,23 +612,27 @@ function Popover({ onDismiss, onDone }: { onDismiss: () => void; onDone: () => v
 
 /**
  * A region holding an Opener, a Details control and the two fallback buttons, and beside it,
- * outside the region, a Load more of the page and a layer: Details' `aside`, holding a Close as
- * Details holds its own, an Edit labels that opens a popover, and inside it a dialog of its own
- * drawn as an `aside`, holding a Field. The Details control hides the layer, and cancels its
- * mousedown so a press of it leaves the focus where it is, as the header's own does. The props
- * remove the Opener, as a write does while the layer is open; draw the Load more; remove the
- * Close, the layer's own control; and close the layer.
+ * outside the region, a Load more of the page, a search palette and a layer: Details' `aside`,
+ * holding a Close as Details holds its own, an Edit labels that opens a popover, and inside it a
+ * dialog of its own drawn as an `aside`, holding a Field. The palette is a dialog the app draws
+ * in its root, as the layer and the region are drawn, which takes the focus as it opens and gives
+ * it back as it shuts. The Details control hides the layer, and cancels its mousedown so a press
+ * of it leaves the focus where it is, as the header's own does. The props remove the Opener, as a
+ * write does while the layer is open; draw the Load more; draw the palette; remove the Close, the
+ * layer's own control; and close the layer.
  */
 function LayerRegion({
   close = true,
   layer = "open",
   loadMore = false,
   opener = true,
+  palette = false,
 }: {
   close?: boolean;
   layer?: LayerState;
   loadMore?: boolean;
   opener?: boolean;
+  palette?: boolean;
 }) {
   const region = useRef<HTMLDivElement>(null);
   const editLabels = useRef<HTMLButtonElement>(null);
@@ -510,6 +681,11 @@ function LayerRegion({
           </aside>
         </aside>
       )}
+      {palette ? (
+        <div aria-label="Search" role="dialog">
+          <button type="button">Search</button>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -819,6 +995,32 @@ test("a tap on the page before the layer closes is the reader's move, though its
   }
 });
 
+test("a press on the page that moved the focus by its pointerup is the reader's move with no click after it, though its opener is gone", async () => {
+  const view = render(<LayerRegion />);
+  try {
+    await onFakeClock(async () => {
+      await openLayer();
+      view.rerender(<LayerRegion opener={false} />);
+      await jump(1);
+      const region = button("Details").parentElement;
+      if (region === null) throw new Error("the region is not drawn");
+      // A mouse press on a blank part of the page, outside the layer, blurs the layer's Close to
+      // the body as its button goes down, and its pointer comes up on another element with no
+      // click after it, as a browser may send none for a press released off where it began.
+      // user-event moves the focus as its pointer goes down, and sends a click on release.
+      fireEvent.pointerDown(document.body);
+      act(() => button("Close").blur());
+      fireEvent.pointerUp(region);
+      expect(document.body).toHaveFocus();
+      view.rerender(<LayerRegion layer="removed" opener={false} />);
+      await jump(1);
+      expect(document.body).toHaveFocus();
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
 test("a layer that closes after the focus came back into the region moves no focus, though its opener is gone", async () => {
   const view = render(<LayerRegion />);
   try {
@@ -857,6 +1059,32 @@ test("a layer that closes after the reader went on to the page moves no focus, t
       view.rerender(<LayerRegion layer="hidden" opener={false} />);
       await jump(1);
       expect(document.body).toHaveFocus();
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a layer that closes after a dialog the app drew gave the focus back into it hands the focus to the first fallback", async () => {
+  const view = render(<LayerRegion />);
+  try {
+    await onFakeClock(async () => {
+      await openLayer();
+      view.rerender(<LayerRegion opener={false} />);
+      await jump(1);
+      // The search palette opens in the app's root, beside the layer and the region, and takes
+      // the focus: it is another layer, not the page.
+      view.rerender(<LayerRegion opener={false} palette />);
+      act(() => button("Search").focus());
+      // Escape shuts the palette, which gives the focus back to the layer's Close, which held it.
+      view.rerender(<LayerRegion opener={false} />);
+      act(() => button("Close").focus());
+      await jump(1);
+      expect(button("Close")).toHaveFocus();
+      // Details closes by hiding its aside, with the focus still on its Close.
+      view.rerender(<LayerRegion layer="hidden" opener={false} />);
+      await jump(1);
+      expect(button("First fallback")).toHaveFocus();
     });
   } finally {
     view.unmount();

@@ -34,17 +34,21 @@ import { ViewVerificationSlot } from "./view-verification";
  */
 export function StageSlot({
   filled = SLOT_FILLED,
+  views = VIEW_SLOTS,
   ...props
 }: SlotProps & {
   /** Whether each slot's own part has filled it: `SLOT_FILLED` where none is given, and a
    *  view's slot set filled in a test, as that view's part will set it. */
   readonly filled?: SlotsFilled;
+  /** The slot each view draws in place of the outline: `VIEW_SLOTS` where none is given, and a
+   *  stand-in view in a test, which reads the stage's rule apart from what each view draws. */
+  readonly views?: ViewSlots;
 }): ReactNode {
   const { hash, search } = useLocation();
   const address = issueAddress(props.route, search, hash, primarySpec(props.issue)?.slug);
   const { preset } = address;
   const outline = !filled[preset] && address.target !== undefined && address.document === undefined;
-  const View = outline ? undefined : VIEW_SLOTS[preset];
+  const View = outline ? undefined : views[preset];
   return (
     <DocumentStages>
       {View === undefined ? (
@@ -58,9 +62,12 @@ export function StageSlot({
   );
 }
 
+/** The slot each view draws in place of the outline, by preset. */
+export type ViewSlots = Readonly<Record<Preset, ((props: SlotProps) => ReactNode) | undefined>>;
+
 /** The slot each view draws in place of the outline; none for Conversation, which is the
  *  outline itself. */
-const VIEW_SLOTS: Readonly<Record<Preset, ((props: SlotProps) => ReactNode) | undefined>> = {
+export const VIEW_SLOTS: ViewSlots = {
   conversation: undefined,
   decisions: ViewDecisionsSlot,
   plan: ViewPlanSlot,

@@ -34,8 +34,8 @@ function usableControl(selector: string): HTMLElement | null {
  * The `action` of the approval chip that holds the focus, or `null` when the focus is on no chip
  * of the header and on neither of a chip's two actions, when the chip draws no such action - no
  * request of its document waits on the reader, or the document is approved, which draws no
- * Approve - or when the action refuses a press while its review is written: both are
- * `aria-disabled` then inside `NoTooltips`, which holds the header, and `disabled` outside it.
+ * Approve - or when the action refuses a press while its review is written: inside `NoTooltips`,
+ * which holds the header, both are `aria-disabled` then and never `disabled`.
  * Like `usableControl`, the one fact a key's `run` and its `when` both read.
  */
 function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonElement | null {
@@ -59,7 +59,7 @@ function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonEle
   if (button === undefined) {
     return null;
   }
-  return button.disabled || button.getAttribute("aria-disabled") === "true" ? null : button;
+  return button.getAttribute("aria-disabled") === "true" ? null : button;
 }
 
 /**

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { issuePriority } from "../../issue/issue-priority";
 import { stateForIssue } from "../../issue/pins";
 import { useIssueDetail } from "../../issue/useIssueDetail";
 import { useIssuePriority } from "../../issue/useIssuePriority";
@@ -24,7 +25,7 @@ export function HeaderSlot({ issue, route }: SlotProps): ReactNode {
   const { primaryArtifact, state } = useIssueDetail(route);
   const issueState = stateForIssue(state.data, issue.key);
   const writes = useIssueHeaderWrites(issue, issueState);
-  const priorityWrite = useIssuePriority(issue.key);
+  const priorityWrite = useIssuePriority(issue.key, issuePriority(issue.priority));
   useHeaderKeys(priorityWrite);
   const openDetailsAt = useOpenDetailsAt();
   return (

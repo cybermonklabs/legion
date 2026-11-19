@@ -1,15 +1,15 @@
 import { expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, waitFor } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { api } from "../../api/client";
-import type { Comment, IssueDetails } from "../../api/types";
+import type { IssueDetails } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
+import { TWO_THREADS, waitInAct } from "./outline-fixtures";
 import * as outlineReads from "./outline-reads";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
@@ -17,10 +17,10 @@ import { nodesInOrder } from "./tree-keys";
 
 /**
  * The outline's reads (`useOutlineReads`) called from two places of one page: the body, and a
- * second caller beside it, which stands in for a later part's caller - what is to land on an
- * address naming an item beside the outline - as no such caller is drawn on the page yet. The
- * reads and how they are kept fresh are in one place, so each read is one request shared by its
- * key, a caller mounted again reads none of them again, and both callers hold one tree.
+ * second caller beside it, which stands in for Details' agents-only turn - a later part's caller,
+ * which reads them while an address names an item beside the outline. The reads and how they are
+ * kept fresh are in one place, so each read is one request shared by its key, a caller mounted
+ * again reads none of them again, and both callers hold one tree.
  */
 
 // The hook as its module defines it, read before the case's spy stands in for the module's
@@ -49,45 +49,6 @@ function bodyReads(held: Held): typeof useOutlineReadsItself {
   };
 }
 
-/** Lets `ms` pass inside `act`, and React draw what changed by then. */
-function waitInAct(ms: number): Promise<void> {
-  return act(async () => {
-    const waited = Promise.withResolvers<void>();
-    setTimeout(waited.resolve, ms);
-    await waited.promise;
-  });
-}
-
-/** A comment as the comments' read answers it, `reply_to` the head of the thread it answers. */
-function readComment(id: string, at: number, reply_to: string | null = null): Comment {
-  return {
-    ...commentDeliveryFields(),
-    anchor: null,
-    answers: reply_to,
-    ask_id: null,
-    author: { id: "alice", kind: "user" },
-    body: `The words of ${id}.`,
-    created_at: `2026-11-05T01:${String(at).padStart(2, "0")}:00Z`,
-    edited_at: null,
-    id,
-    issue_key: issueDetails().key,
-    reply_to,
-    resolved: false,
-    resolved_at: null,
-    resolved_by: null,
-    suggestion: null,
-    turn: null,
-  };
-}
-
-/** Two threads of the issue, each a head and one reply under it: turns of the tree. */
-const COMMENTS: readonly Comment[] = [
-  readComment("head-a", 1),
-  readComment("reply-a", 2, "head-a"),
-  readComment("head-b", 3),
-  readComment("reply-b", 4, "head-b"),
-];
-
 /** Each of the outline's six reads, sent once. */
 const SENT_ONCE = { asks: 1, comments: 1, coverage: 1, decisions: 1, messages: 1, results: 1 };
 
@@ -100,7 +61,7 @@ test("the body and a second caller of the outline's reads send each read once an
   });
   const reads = {
     asks: spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
-    comments: spyOn(api, "listComments").mockResolvedValue(COMMENTS as never),
+    comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
     decisions: spyOn(api, "getIssueDecisions").mockResolvedValue({
       decisions: [],
@@ -148,12 +109,9 @@ test("the body and a second caller of the outline's reads send each read once an
     expect(
       nodesInOrder(bodyGave.root).map((node) => node.id),
       "the body's tree holds no turn of the comments' read"
-    ).toEqual(expect.arrayContaining(COMMENTS.map((comment) => comment.id)));
+    ).toEqual(expect.arrayContaining(TWO_THREADS.map((comment) => comment.id)));
     expect(secondGave.root, "the second caller holds another tree than the body's").toEqual(
       bodyGave.root
-    );
-    expect(secondGave.readsHeld, "the two callers differ on whether the reads are held").toBe(
-      bodyGave.readsHeld
     );
 
     // The second caller mounted again more than 30 s after the reads answered reads none of

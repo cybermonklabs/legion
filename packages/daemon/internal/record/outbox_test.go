@@ -221,14 +221,21 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 
 // Every kind the outbox stores runs on exactly one lane, and LaneOf names the lane whose kinds
 // list it: a kind on neither lane would be queued and never run, one on both would run twice over.
+// The kinds and the lanes named here are this test's own, the oracle, and the kinds are read from
+// the outbox's own lanes (OutboxLanes): a lane added there with its kinds and not named here fails
+// both the count of lanes and the count of kinds.
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish}
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord}
+	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
+	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
+		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
+	}
 	lanes := map[OutboxKind][]OutboxLane{}
-	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim} {
+	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
 			lanes[kind] = append(lanes[kind], lane)
 		}
@@ -873,6 +880,15 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
+			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
+			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
+				UsedBytes: 48 << 30, FreeBytes: 2 << 30, FreedBytes: 1 << 30,
+				StopReason: "nothing left older than the minimum age", RefusedReads: []string{"pid 42"},
+				Sizes: []VolumeSize{{Path: "caches/uv", Bytes: 12 << 30, BytesOverHour: 11 << 30, BytesOverDay: 9 << 30,
+					Refused: "caches/uv/.../locked (depth 2)", Refusals: 3}},
+				SizesAt: answered, SizesPartial: true, SizesMissing: []VolumeMissing{{Path: "workspaces/LEGION-209", Reason: "openat: permission denied"}},
+				Faults: []string{"read the volume: panic: runtime error\nmain.go:1"}}},
 	}
 
 	byKind := make(map[NoticeKind]Notice, len(every))

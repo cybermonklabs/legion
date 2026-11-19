@@ -694,7 +694,7 @@ test("the five controls are toggles with an address each, one line at every widt
         ).toBeGreaterThanOrEqual(24);
       }
       // A control's words are the text it shows less what it hides from assistive technology,
-      // such as the menu control's `▾`, a glyph that names nothing (WCAG 2.5.3 reads words).
+      // such as a glyph that names nothing (WCAG 2.5.3 reads words).
       const named = filterRow(page).locator("button:visible");
       // The poll above waited for the row to draw at this width and its controls were measured
       // since, with no press between, so one count lists the buttons it shows.

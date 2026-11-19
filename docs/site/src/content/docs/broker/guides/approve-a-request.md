@@ -8,19 +8,23 @@ sidebar:
 When an agent asks for a secret a person must approve, that person decides it on the secrets
 broker's own page, signed in to the broker. Only the approver the request names can decide it: the
 secret's owner, for a person's secret, or anyone who signs in to the broker, for a shared secret. A
-shared secret's request waits in every person's Inbox at once, and the first person to decide it
-decides it for everyone: it then leaves every Inbox.
+shared secret's request waits in the Inbox of the person responsible for the agent that asked: the
+person whose session it is (their own `agent-secrets login`, or the machine login they approved),
+the person a fleet machine's `BROKER_VM_EXCHANGE_ACCOUNTS` entry names, or the assignee of the
+Dispatch issue a Legion worker pod works on. Where none of these names a person, it waits in every
+person's Inbox, so no request waits where nobody sees it. Anyone signed in may still decide it from
+its page whether or not their Inbox lists it, and the first person to decide it decides it for
+everyone: it then leaves every Inbox.
 [Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret) explains which
 requests need whom.
 
-Some requests are decided before you see them. Where the deployment configures a model judge, it
-takes one narrow class of the requests that would wait for you — one secret, 15 minutes at most
-and no more than the secret's airlock rules let the judge decide, and a reason naming a Dispatch
-issue that is not done — and approves such a request or leaves it here for you. It never denies.
-A request it approved is gone from your Inbox, and its page's **State** line reads
-`approved by the model judge judge:<model id> at <time>`, with no person beside it. Click
-**Approve** on a page you opened before the judge decided and you read
-`already decided: granted (approved by judge:<model id> at <time>)`: your click changed nothing.
+Some requests never reach you. Where the deployment configures a model judge, a request for keys
+whose airlock rules entry gives the judge seconds, none of them an administrator's, is the judge's
+to decide: it grants or refuses it, each key against the guidance you gave in the rules file, and
+while it decides the request is on no list. A request the judge cannot decide comes to you once,
+as an ordinary card. If you open such a request's page while the judge holds it, the page is
+read-only and says the judge is deciding it. A judged grant's **State** line reads
+`approved by the model judge judge:<model id> at <time>`, with no person beside it.
 The grant is still yours to end: it records you as its
 approver, or anyone for a shared secret, so it is on your Settings page, where the row reads
 **Approved by** `judge:<model id>`, and `agent-secrets grant revoke` ends it
@@ -32,12 +36,12 @@ model anything.
 
 ## Find it
 
-Pending requests you decide appear at the top of your Dispatch **Inbox**, under **Credential
+Pending requests you are asked to decide appear at the top of your Dispatch **Inbox**, under **Credential
 requests**, one row per request: **Secret request** with the secrets' names, or **Machine login**
 with a machine's host name ([log a machine in](/legion/broker/guides/log-a-machine-in/) covers
-those). The section is absent when nothing waits on you, and hidden entirely when the deployment
-has no broker connected. The agent's own output names the same page: `waiting for <you> to approve
-it on the secrets broker: <url>`.
+those). The section is absent when nothing is listed for you, and hidden entirely when the
+deployment has no broker connected. The agent's own output names the same page: `waiting for <you>
+to approve it on the secrets broker: <url>`.
 
 A **Secret request** row is a link to the request's page on the broker,
 `<broker>/approve/<record>`. Click it. When you signed in to the broker within the last day (a
@@ -46,6 +50,13 @@ broker sends you to sign in with your Workspace account, which asks nothing when
 signed in to it, and brings you back to the same request.
 A **Secret request** row that is not a link, with nothing to open, comes from a broker older than
 that page; ask whoever runs that broker to upgrade it.
+
+A row marked **Expired** is a request or a machine login whose deadline passed before anybody
+decided it. Nobody can approve or deny it now, so it is not a link and it is not counted in
+**Needs you**; the line under it says when its deadline passed. It stays until you click
+**Dismiss**, which takes it out of the Inbox for good, and out of everyone's Inbox for a shared
+request. The agent asks again with a new request if it still needs the secret, and that request is
+a row of its own.
 
 ## Check it
 
@@ -111,13 +122,14 @@ the request. `agent-secrets-devrelay` stands in for Dispatch only for a machine 
 (`machine-approve`, with its code): the broker refuses every route a service calls to decide a
 secret request.
 
-The list Dispatch reads names each request's page as `approve_url`. `curl -H @-` reads the header
-from standard input, so the token is in no command line another process can read:
+The list Dispatch reads names each request's page as `approve_url`, and each row's `state`,
+`pending` or `expired`, with its deadline as `expires_at`. `curl -H @-` reads the header from
+standard input, so the token is in no command line another process can read:
 
 ```sh
 printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" |
-  curl -s -H @- "$AGENT_SECRETS_URL/v1/pending?approver=$AGENT_SECRETS_APPROVER" |
-  jq '.pending[] | {record_id, kind, approve_url}'
+  curl -s -H @- "$AGENT_SECRETS_URL/v1/pending?approver=$AGENT_SECRETS_APPROVER&state=pending&state=expired" |
+  jq '.pending[] | {record_id, kind, state, expires_at, approve_url}'
 ```
 
 The [HTTP API reference](/legion/broker/reference/api/) documents the page's routes and that list.

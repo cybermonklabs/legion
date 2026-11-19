@@ -83,13 +83,16 @@ type Guard struct {
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base
 	// environment's PATH.
 	noAnswer string
+	// curl is the curl the visibility read after a failure of gh's connection runs: curlProgram,
+	// which this package's tests alone point at a stand-in (Guard.curlVisibility).
+	curl string
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a
 // guard that resolved one at start would keep running a copy the current rules have moved past, so
 // every call resolves it again.
 func New(opts Options) *Guard {
-	g := &Guard{opts: opts}
+	g := &Guard{opts: opts, curl: curlProgram}
 	g.noAnswer = noAnswer(g.base())
 	return g
 }

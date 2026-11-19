@@ -5,6 +5,8 @@
 // and `DeviceFlow.Refresh` (`packages/envoy/internal/brokerclient/device.go`), with
 // `openid-client` in the place of x/oauth2.
 
+import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
+import { errorClass, urlForText } from "@legion/contracts/log-text";
 import {
   allowInsecureRequests,
   ClientSecretPost,
@@ -17,10 +19,11 @@ import {
   type ServerMetadata,
   type TokenEndpointResponse,
 } from "openid-client";
-import { messageOf } from "./error-text";
-import { SIGNIN_COMMAND, type SignInFlow, type SignInRecord } from "./signins";
+import { REFUSAL_TEXT_WITHHELD, shownOAuthCode } from "./refusal-text";
+import { SIGNIN_COMMAND, SIGNIN_ISSUER_VAR, type SignInFlow, type SignInRecord } from "./signins";
 import type { SubjectToken, TokenSource } from "./source";
-import { requestInit, SignInEndedError, statusOf } from "./token-client";
+import { requestInit, statusOf } from "./token-client";
+import { SignInEndedError } from "./token-errors";
 import { SUBJECT_TOKEN_TYPE_PERSON } from "./wire";
 
 /** Bounds each call to the issuer, as the Go client's `HTTPClient` bounds each of its calls
@@ -39,21 +42,27 @@ export interface PersonIdentityOptions {
 }
 
 /**
- * What the issuer said in `error`: the OAuth error it answered, or the status and message of a
- * failure that is none. `openid-client` reports a request that never got an answer as "something
- * went wrong" and hangs the reason off `cause`, so the direct cause's message is named too, and
- * no deeper one: a parser's message further down can quote the answer's body.
+ * What the issuer said in `error`: the status and OAuth code it answered, its description
+ * withheld (`REFUSAL_TEXT_WITHHELD`), since an issuer, or anything at
+ * AGENT_SECRETS_SIGNIN_ISSUER, can put the refresh token or the client secret it was sent there;
+ * or the status and class of a failure that is none. `openid-client` reports a request that never
+ * got an answer as "something went wrong" and hangs the reason off `cause`, so the direct cause's
+ * class is named too, and no deeper one. A class, never a message: the library's and the
+ * runtime's messages repeat what they were handed (a resolver's names the host, a parser's the
+ * URL, a parser further down the body).
  */
 function issuerSaid(error: unknown): string {
   if (error instanceof ResponseBodyError) {
-    const description = error.error_description ?? "";
-    return `HTTP ${error.status} ${error.error}${description === "" ? "" : `: ${description}`}`;
+    const shown = shownOAuthCode(error.error);
+    const code = shown === "" ? "" : ` ${shown}`;
+    const withheld = (error.error_description ?? "") === "" ? "" : `: ${REFUSAL_TEXT_WITHHELD}`;
+    return `HTTP ${error.status}${code}${withheld}`;
   }
-  let message = messageOf(error);
+  let said = errorClass(error);
   const cause = error instanceof Error ? error.cause : undefined;
-  if (cause instanceof Error && cause.message !== message) message += `: ${cause.message}`;
+  if (cause instanceof Error) said += `: ${errorClass(cause)}`;
   const status = statusOf(error);
-  return status === 0 ? message : `HTTP ${status}: ${message}`;
+  return status === 0 ? said : `HTTP ${status}: ${said}`;
 }
 
 /**
@@ -81,13 +90,19 @@ export function personIdentity(
   options: PersonIdentityOptions = {}
 ): TokenSource {
   const { person, refresh_token: refreshToken, client_id: clientId } = record;
+  // Held, so every line this process prints is scrubbed of them: an issuer at the wrong URL can
+  // echo what it was sent (`@legion/contracts/held-secrets`).
+  holdSecret(refreshToken);
+  holdSecret(flow.clientSecret);
   if (clientId !== "" && clientId !== flow.clientId) {
     throw new Error(
       `${person} signed in with another client than this machine now has (${clientId}), so their sign-in cannot be renewed; run: ${SIGNIN_COMMAND}`
     );
   }
   const send = options.fetch ?? fetch;
-  const insecure = flow.issuer.startsWith("http:");
+  const insecure = holdUrlUserinfo(flow.issuer).startsWith("http:");
+  // Named as every client names a URL (`urlForText`); requests go to the issuer as configured.
+  const issuer = urlForText(flow.issuer, SIGNIN_ISSUER_VAR);
   let discovered: Promise<ServerMetadata> | null = null;
 
   /** The fetch `openid-client` calls, bounded by its own timeout and by the caller's signal. */
@@ -106,9 +121,9 @@ export function personIdentity(
       });
       return config.serverMetadata();
     } catch (error) {
-      throw new Error(`read the sign-in issuer ${flow.issuer}: ${issuerSaid(error)}`, {
-        cause: error,
-      });
+      // No `cause`: the library's error for an issuer that is not the one asked for holds the
+      // issuer as configured, its user info included.
+      throw new Error(`read the sign-in issuer ${issuer}: ${issuerSaid(error)}`);
     }
   };
 
@@ -137,21 +152,22 @@ export function personIdentity(
         config[customFetch] = through(signal);
         answered = await refreshTokenGrant(config, refreshToken);
       } catch (error) {
+        // No `cause` on either: an answer the library refused hangs off its error, and that answer
+        // can hold the person's fresh ID token, which no log of this error may carry.
         if (error instanceof ResponseBodyError && error.error === INVALID_GRANT) {
-          throw new SignInEndedError(flow.issuer, person, { cause: error });
+          throw new SignInEndedError(issuer, person);
         }
-        // No `cause`: an answer the library refused hangs off its error, and that answer can hold
-        // the person's fresh ID token, which no log of this error may carry.
-        throw new Error(`renew ${person}'s sign-in at ${flow.issuer}: ${issuerSaid(error)}`);
+        throw new Error(`renew ${person}'s sign-in at ${issuer}: ${issuerSaid(error)}`);
       }
       const idToken = answered.id_token ?? "";
       if (idToken === "") {
         throw new Error(
-          `${flow.issuer} answered no id_token: the sign-in asked for the "openid" scope and must be answered one`
+          `${issuer} answered no id_token: the sign-in asked for the "openid" scope and must be answered one`
         );
       }
       return { token: idToken, tokenType: SUBJECT_TOKEN_TYPE_PERSON };
     },
     describe: () => `${person}'s sign-in on this machine`,
+    person,
   };
 }

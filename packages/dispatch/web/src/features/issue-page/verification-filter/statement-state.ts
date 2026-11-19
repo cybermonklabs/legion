@@ -1,7 +1,7 @@
 import type { CheckBlock } from "../../../api/types";
 import { isCheck, isStatement, type TreeNode } from "../issue-tree";
 import type { CheckState, StatementState } from "../page-words";
-import { checkStanding, newestFirst, standingResults } from "../tree-drafts";
+import { checkStanding, newestFirst, standingResults, standsAtBasis } from "../tree-drafts";
 
 /**
  * How each statement of the issue stands, and the one commit the page names for its results.
@@ -53,7 +53,9 @@ export const STATEMENT_STATES: readonly StatementState[] = ["met", "not_met", "u
 export interface CheckReading {
   /** Whether the result its state stands on stands for something at the commit the server names
    *  for the check: at the basis the check compares with (`commit_stands` is `at_basis`) and
-   *  recorded against the check's words now, as the server's `standingCommit` reads it. */
+   *  recorded against the check's words now, as the server's `standingCommit` reads it. It is
+   *  `tree-drafts.ts`'s `standsAtBasis`, which `checkStanding` reads too, so this mark and the
+   *  check's state never disagree. */
   readonly atBasis: boolean;
   /** Every other result of the check, newest first, which the body folds into one line with
    *  their count under the latest (a check with 431 results drew a page 149,936 px tall). */
@@ -259,10 +261,7 @@ function checkReading(node: TreeNode, block: CheckBlock | undefined): CheckReadi
   );
   const drawnResult = latest === undefined ? undefined : resultNodes.get(latest.id);
   return {
-    atBasis:
-      stands !== undefined &&
-      stands.check_words_moved !== true &&
-      stands.commit_stands?.answer === "at_basis",
+    atBasis: stands !== undefined && standsAtBasis(stands),
     earlier: results.flatMap((result) => {
       const held = resultNodes.get(result.id);
       return held === undefined || result.id === latest?.id ? [] : [held];

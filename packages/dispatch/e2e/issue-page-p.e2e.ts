@@ -63,6 +63,7 @@ import {
   waitingPressInHistory,
 } from "./issue-page-p";
 import { leaveFocus, onBody } from "./keyboard-issue";
+import { boxesApart } from "./layout";
 import { answeredPost, holdPosts, navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type Request, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
@@ -190,8 +191,8 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
     // The header's list, each part of the header by what it is: nothing else may be drawn there.
     // Its one link is the parent's, named exactly. The words it draws outside a control are in it:
-    // the project, the crumbs' separators, the key, the status's mark, the priority and the
-    // assignee each drawn under its select, and the one chip's "Not requested".
+    // the project, the crumbs' separators, the key, the priority and the assignee each drawn under
+    // its select, and the one chip's "Not requested". The status's shape is an svg with no words.
     const named = [
       new RegExp(`^a ${seeded.parentKey}$`),
       /^button Open navigation$/,
@@ -216,7 +217,6 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       exactly(`text ${HEADER_PROJECT}`),
       exactly("text ›"),
       exactly(`text ${seeded.key}`),
-      exactly(`text ${statusGlyph("in_progress")}`),
       exactly("text P1"),
       exactly("text alice"),
       exactly(`text ${CONTROL_LABELS.not_requested}`),
@@ -315,11 +315,11 @@ test("the header holds its list and its limits at every width @phone", async ({ 
         await header.getByRole("combobox", { name: "Status" }).inputValue(),
         `the status reads otherwise at ${width} px`
       ).toBe("in_progress");
-      // The status draws its mark beside its word.
+      // The status draws its shape beside its word, as an svg that names the shape it draws.
       await expect(
-        header.locator('label:has(> select[aria-label="Status"]) > [aria-hidden="true"]'),
-        `the status draws another mark at ${width} px`
-      ).toHaveText(statusGlyph("in_progress"));
+        header.locator('label:has(> select[aria-label="Status"]) svg[data-status-glyph]'),
+        `the status draws another shape, or none, at ${width} px`
+      ).toHaveAttribute("data-status-glyph", statusGlyph("in_progress"));
       // Approve is filled with the page's ink, its words the paper's (row 17).
       expect(
         await header
@@ -1254,10 +1254,13 @@ test("the press that ends a title edit reaches the control under it @phone", asy
 
         // An edit the keyboard opens and ends after the one that press ended: the press is
         // over, so nothing holds the heading at the editor's height, and at 1440 px the title
-        // of three lines is clamped to two again.
+        // of three lines is clamped to two again. The edit is opened with Enter on the focused
+        // heading, which sends no click: `e` opens it by clicking the heading, and that click
+        // would end a press still under way before the edit opened.
         if (width === DESKTOP.width && lines === 3) {
-          await leaveFocus(page);
-          await page.keyboard.press("e");
+          await heading.focus();
+          await expect(heading).toBeFocused();
+          await page.keyboard.press("Enter");
           await expect(editor).toBeFocused();
           await page.keyboard.press("Enter");
           await expect(editor).toHaveCount(0);
@@ -1270,6 +1273,77 @@ test("the press that ends a title edit reaches the control under it @phone", asy
         }
       }
     }
+  });
+});
+
+// A press the browser turns into a drag, as it does a press on words the reader selected in the
+// title's editor, sends no mouseup and no click: Chromium ends it with a pointercancel as the drag
+// starts and a dragend as the drop lands. The title row holds the heading at the editor's height
+// while a press that ended the edit is under way, so it must read that press as over by the
+// drag's end (`hearPresses` ends it at the pointercancel, as the drag starts); else the next edit
+// a key ends finds the press under way, and a title of three lines stays drawn whole at 1440 px
+// instead of clamped to two. A drag of selected words is a press of the mouse, so the row runs at
+// the desktop width and on no phone.
+test("the title is clamped again after a key ends an edit whose words the reader dragged", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await page.setViewportSize(viewportAt(DESKTOP.width));
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const title = await titleOfLines(page, 3);
+    await patchIssue(seeded.key, { title });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const heading = issueHeader(page).getByRole("heading", { level: 1 });
+    const editor = issueHeader(page).getByRole("textbox", { name: "Issue title" });
+    await expect(heading).toHaveText(title);
+    await heading.click();
+    await expect(editor).toBeFocused();
+
+    // Every word of the title is selected, and the middle of the editor is on the second of its
+    // three lines, which words fill: a press there is a press on selected words, which the
+    // browser drags once the pointer moves.
+    await editor.selectText();
+    // The editor is focused above, so it is drawn here; a null box only throws.
+    const box = await editor.boundingBox();
+    if (box === null) throw new Error("the title's editor is not drawn while it is focused");
+    const from = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    // What the page hears of the press, which says whether the mouse made a native drag.
+    const heard = await page.evaluateHandle(() => {
+      const events: string[] = [];
+      for (const type of ["dragstart", "pointercancel", "dragend", "mouseup", "click"]) {
+        window.addEventListener(type, () => events.push(type), true);
+      }
+      return events;
+    });
+    // The drop lands on the page's column under the header, where no field takes the words.
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x, from.y + 240, { steps: 8 });
+    await page.mouse.up();
+    await expect
+      .poll(() => heard.jsonValue(), { message: "the press on the selected words made no drag" })
+      .toContain("dragend");
+    // After its dragend the drag sends nothing more, so one read holds every event of its press.
+    const events = await heard.jsonValue();
+    for (const release of ["mouseup", "click"]) {
+      expect(events, `the drag of the selected words sent its press's ${release}`).not.toContain(
+        release
+      );
+    }
+
+    // The drag leaves the focus in the editor, so the key ends the edit the drag was made in.
+    await expect(editor, "the drag of the title's words moved the focus").toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(editor).toHaveCount(0);
+    await expect(heading, "the drop of the title's words changed the title").toHaveText(title);
+    await expect
+      .poll(() => heading.evaluate((element) => getComputedStyle(element).webkitLineClamp), {
+        message: "the title stayed unclamped after a key ended an edit whose words were dragged",
+      })
+      .toBe("2");
   });
 });
 
@@ -2211,6 +2285,112 @@ test("the header's menu gives the focus back to its control on Escape and after 
   });
 });
 
+/** Waits for the focused element to be in a reader's sight against the header's actions menu, the
+ *  element whose id is `menuId`: the focus off the page's body and outside the menu, the menu's
+ *  box apart from the focused element's, and the focused element itself drawn at its centre. A
+ *  hidden menu covers nothing. `message` names the press that moved the focus there. */
+async function expectFocusInSight(page: Page, menuId: string, message: string): Promise<void> {
+  /** What keeps the focused element from sight: nothing, or each check above that fails. */
+  const keptFromSight = async (): Promise<string[]> => {
+    // Each read is inside the poll below, which reads again until this answers nothing, so one
+    // instant's answer is safe here.
+    const read = await page.evaluate((id) => {
+      const menu = document.getElementById(id);
+      if (menu === null) throw new Error(`no element carries the actions menu's id ${id}`);
+      const focused = document.activeElement;
+      if (focused === null || focused === document.body) return null;
+      const boxOf = (element: Element) => {
+        const { height, width, x, y } = element.getBoundingClientRect();
+        return { height, width, x, y };
+      };
+      const box = boxOf(focused);
+      const drawn = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      const onTop = drawn !== null && focused.contains(drawn);
+      const name = focused.getAttribute("aria-label") ?? focused.textContent ?? "";
+      return {
+        box,
+        drawn: onTop ? "" : (drawn?.outerHTML.slice(0, 120) ?? "nothing"),
+        inMenu: menu.contains(focused),
+        menu: menu.checkVisibility() ? boxOf(menu) : null,
+        onTop,
+        what: `${focused.tagName.toLowerCase()} "${name.trim()}"`,
+      };
+    }, menuId);
+    if (read === null) return ["the focus is on the page's body"];
+    const unseen: string[] = [];
+    if (read.inMenu) unseen.push(`the focus is on ${read.what}, inside the menu`);
+    if (read.menu !== null && !boxesApart(read.box, read.menu)) {
+      unseen.push(
+        `the menu at ${JSON.stringify(read.menu)} covers ${read.what} at ${JSON.stringify(read.box)}`
+      );
+    }
+    if (!read.onTop) unseen.push(`${read.drawn} is drawn at the centre of ${read.what}`);
+    return unseen;
+  };
+  await expect.poll(keptFromSight, { message }).toEqual([]);
+}
+
+// The header's ⋯ menu closes once Tab takes the focus on out of it, as the ARIA menu-button
+// pattern closes a menu the focus leaves. At 390 px the open menu is a panel across the screen
+// over the title and the properties line, and it stayed open as Tab took the focus on past its
+// last action, so the focus went on to controls under it that the reader could not see (WCAG
+// 2.4.11). The row opens the menu by Enter from its control, Tabs once per action and once
+// more, and reads the menu closed. It then Tabs on to the title's heading and then the Status,
+// the two the open menu covers at 390 px, and reads the focus in sight at every control it stops
+// on. It sets 390 px for every project before it reads anything, so the phone project would only
+// repeat it.
+test("the header's menu closes once Tab takes the focus out of it, leaving the focus in sight", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await page.setViewportSize(IPHONE_13);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const trigger = header.getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions });
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    // The control names its menu from its first render, so a missing name only throws.
+    const menuId = await trigger.getAttribute("aria-controls");
+    if (menuId === null) throw new Error("the actions control names no menu");
+    const actions = page.locator(`[id="${menuId}"] button:enabled`);
+    // The control read expanded above, and the open menu draws its actions with it.
+    const reachable = await actions.count();
+    expect(reachable, "the open menu holds no action a Tab reaches at 390 px").toBeGreaterThan(0);
+    for (let at = 0; at < reachable; at += 1) {
+      await page.keyboard.press("Tab");
+      await expect(actions.nth(at), `Tab ${at + 1} did not reach the menu's action`).toBeFocused();
+      await expect(trigger, `Tab ${at + 1} closed the menu inside it`).toHaveAttribute(
+        "aria-expanded",
+        "true"
+      );
+    }
+    // One Tab more takes the focus out of the menu, to the header's next control.
+    await page.keyboard.press("Tab");
+    await expect(
+      trigger,
+      "the menu stayed open once Tab took the focus out of it at 390 px"
+    ).toHaveAttribute("aria-expanded", "false");
+    await expectFocusInSight(page, menuId, "the first Tab out of the menu left the focus unseen");
+    // On from there to the title's heading and then the Status, each found by its role and name.
+    for (const [what, target] of [
+      ["the title's heading", header.getByRole("heading", { level: 1 })],
+      ["the Status select", header.getByRole("combobox", { name: "Status" })],
+    ] as const) {
+      let reached = false;
+      for (let press = 1; press <= 6 && !reached; press += 1) {
+        await page.keyboard.press("Tab");
+        await expectFocusInSight(page, menuId, `Tab ${press} toward ${what} left the focus unseen`);
+        // Each Tab moves the focus before its press resolves, so one read says where it went.
+        reached = await target.evaluate((element) => element === document.activeElement);
+      }
+      expect(reached, `six Tabs did not take the focus on to ${what} at 390 px`).toBe(true);
+    }
+  });
+});
+
 /** What `focusNow` reads with the focus on the header's "Issue actions", the first place the
  *  header's keeper puts a focus whose control has gone. */
 const ON_ISSUE_ACTIONS = {
@@ -2219,11 +2399,15 @@ const ON_ISSUE_ACTIONS = {
   what: `button ${CONTROL_LABELS.issue_actions}`,
 } as const;
 
-/** Waits for Details, just opened, to hold the focus, as it takes the focus as it opens. */
-async function expectFocusInDetails(page: Page): Promise<void> {
+/** Waits for Details to hold the focus: just opened, as it takes the focus as it opens, or after a
+ *  dialog opened from it gave the focus back as it closed, which `message` then names. */
+async function expectFocusInDetails(
+  page: Page,
+  message = "Details took no focus as it opened"
+): Promise<void> {
   await expect
     .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
-      message: "Details took no focus as it opened",
+      message,
     })
     .toBe(true);
 }
@@ -2265,6 +2449,48 @@ test("Details closed after a write removed the labels' count leaves the focus in
     expect(
       await focusNow(page),
       "Details, closed after its labels' count went, left the focus off Issue actions"
+    ).toEqual(ON_ISSUE_ACTIONS);
+  });
+});
+
+// The same with the search palette opened by Control+K from inside Details before the write. The
+// palette is a dialog the app draws in its own root, beside Details rather than inside it, and it
+// gives the focus back into Details as it closes. The keeper stopped watching Details once the
+// focus went into the palette, so the count's removal and Details' close then left the focus on
+// the page's body. A focus in another layer now keeps the watch going, since that layer gives the
+// focus back, and the focus ends on "Issue actions" as in the row above.
+test("Details closed after a write removed the labels' count while the palette was open leaves the focus in the header", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await patchIssue(seeded.key, { labels: [...TWENTY_LABELS] });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const count = labelsLeft(page);
+    await expect(count, "twenty labels draw no labels' count").toBeVisible();
+    await count.focus();
+    await page.keyboard.press("Enter");
+    await expect(details(page), "Enter on the labels' count opened no Details").toBeVisible();
+    await expectFocusInDetails(page);
+    await page.keyboard.press("Control+k");
+    const palette = page.getByRole("dialog", { name: "Search" });
+    await expect(palette, "Control+k in Details did not open the palette").toBeVisible();
+    await expect
+      .poll(() => palette.evaluate((dialog) => dialog.contains(document.activeElement)), {
+        message: "the palette took no focus as it opened",
+      })
+      .toBe(true);
+    await patchIssue(seeded.key, { labels: ["dispatch"] });
+    await expect(count, "one label still draws the labels' count").toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(palette, "Escape did not close the palette").toHaveCount(0);
+    await expect(details(page), "Escape in the palette closed Details too").toBeVisible();
+    await expectFocusInDetails(page, "the palette did not give the focus back into Details");
+    await escapeDetails(page);
+    expect(
+      await focusNow(page),
+      "Details, closed after the palette and after its labels' count went, left the focus off Issue actions"
     ).toEqual(ON_ISSUE_ACTIONS);
   });
 });

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# packages/envoy/scripts/daemon-release-gate.sh [--listeners] <commit>
+# packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> [--listeners] <commit>
 #
 # Says whether every production reader of a message name runs a build at or after <commit> of
 # cybermonklabs/legion, the reading a pull request quotes before it moves a producer onto the new
@@ -8,12 +8,21 @@
 # another project's and acknowledges it with no fact, so moving a producer early stops the fleet's
 # workflow in silence.
 #
-# Without --listeners it reads the image that runs each Legion daemon: for each entry of the
-# `agent-infra-legion:projects` list of theorem-labs/agent-infra legion/Pulumi.prod.yaml, its
-# `daemonImage` when set, else its `image` (legion/README.md's `daemonImage` row). An entry that runs
+# The deployment repository, the one whose Pulumi stacks pin these images, is the operator's to
+# name with --deployment: the gate compiles in no deployment's name. Each stack's config keys are
+# under its Pulumi project's name, which the gate reads from that stack's own Pulumi.yaml (`name:`)
+# and never guesses: a stack whose Pulumi.yaml is missing or declares no name is UNKNOWN, by name.
+#
+# The deployment's Legion projects are the files of legion/projects/ (`<nn>-<KEY>.yaml`, one mapping
+# of a project's settings each, read in file-name order), as the deployment's legion program reads
+# them. Only a deployment with no such directory still declares them in legion/Pulumi.prod.yaml's
+# projects list, as that program did before the files (load_entries).
+#
+# Without --listeners it reads the image that runs each Legion daemon: for each project, its
+# `daemonImage` when set, else its `image` (legion/README.md's `daemonImage` row). A project that runs
 # no daemon (`replicas: 0`, or `daemon: false`) is printed SKIPPED, by name. An entry at `runtime:
 # tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from its
-# `image` (agent-infra legion/host.go, checkHost), and the gate reads no image for it: it is UNKNOWN
+# `image` (deployment legion/host.go, checkHost), and the gate reads no image for it: it is UNKNOWN
 # by name, and so is an entry on any runtime but `kubernetes`, the default. With --listeners it
 # reads the three listener pins instead: envoy/Pulumi.prod.yaml `listenerImage`,
 # envoy-cluster/Pulumi.prod.yaml `envoyImage`, and dispatch/Pulumi.prod.yaml `listenerImage`, which
@@ -26,8 +35,8 @@
 # config of its own (its `.Image.Config.Labels` reads `null`), is read one platform at a time, the
 # `unknown/unknown` attestation entries left out, and every platform must name the same source and
 # revision. A pin built from https://github.com/cybermonklabs/legion, or from a name the deployment
-# records as the same repository (the repositoryRenames pairs of legion/Pulumi.prod.yaml's project
-# entries, which the daemon reads as `repository_renames`: sjawhar/legion is this repository under
+# records as the same repository (the repositoryRenames pairs of its Legion projects, which the
+# daemon reads as `repository_renames`: sjawhar/legion is this repository under
 # its name before the transfer), is compared with `gh api
 # repos/cybermonklabs/legion/compare/<commit>...<revision>`, and passes when GitHub answers `ahead`
 # or `identical` with `behind_by` 0; its line names the rename it was read by. A pin built from any
@@ -41,9 +50,10 @@
 # (a label, a stack file or a comparison it could not read, a revision that is no commit id, or a
 # daemon whose image it does not read) or `SKIPPED`; then the verdict, alone on
 # the last line: `GATE OPEN` (exit 0) only when every pin it read passed and it read at least one,
-# `GATE SHUT` (exit 1) when any pin shut it, and `UNKNOWN` (exit 3) otherwise. A usage error exits 2.
+# `GATE SHUT` (exit 1) when any pin shut it, and `UNKNOWN` (exit 3) otherwise. A usage error, a
+# missing --deployment among them, exits 2 and reads nothing.
 #
-# It needs bash, gh (signed in with read access to theorem-labs/agent-infra and cybermonklabs/legion),
+# It needs bash, gh (signed in with read access to the deployment repository and cybermonklabs/legion),
 # docker with buildx, jq, base64 and python3 with PyYAML. Docker must be able to read each pin's
 # registry: for ghcr.io, a login with a token holding read:packages, made into a config directory of
 # your own so the shared one is untouched:
@@ -53,18 +63,29 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: daemon-release-gate.sh [--listeners] <commit>" >&2
+  [ -z "${1:-}" ] || echo "daemon-release-gate.sh: $1" >&2
+  echo "usage: daemon-release-gate.sh --deployment <owner/repo> [--listeners] <commit>" >&2
+  echo "  <owner/repo> is the deployment repository whose Pulumi stacks pin the readers' images" >&2
   echo "  <commit> is the cybermonklabs/legion commit, 7 to 40 hex digits, every reader must run at or after" >&2
   exit 2
 }
 
 mode=daemons
-if [ "${1:-}" = --listeners ]; then
-  mode=listeners
-  shift
-fi
+deployment=""
+while [ "$#" -gt 1 ]; do
+  case "$1" in
+    --listeners) mode=listeners; shift ;;
+    --deployment) deployment=$2; shift 2 ;;
+    --deployment=*) deployment=${1#--deployment=}; shift ;;
+    *) break ;;
+  esac
+done
+# A `--deployment` with its value left out takes the commit as the deployment and leaves no commit.
+[ "$#" -gt 0 ] || usage "no <commit> follows the flags${deployment:+; --deployment took ${deployment} as its <owner/repo>}"
 [ "$#" -eq 1 ] && [[ $1 =~ ^[0-9a-f]{7,40}$ ]] || usage
-readonly commit=$1
+[ -n "$deployment" ] || usage "--deployment <owner/repo> is required: the deployment repository whose stacks the gate reads"
+[[ $deployment =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || usage "--deployment ${deployment} is not <owner>/<repo>"
+readonly commit=$1 deployment
 readonly legion_source="https://github.com/cybermonklabs/legion"
 
 work=$(mktemp -d)
@@ -77,37 +98,183 @@ compared=0
 
 first_line() { head -n 1 "$1"; }
 
-# stack_file <path>: the text of <path> in theorem-labs/agent-infra on its default branch, into
-# $work/stack.yaml. An unreadable file is UNKNOWN, named with GitHub's answer.
-stack_file() {
+# fetch <path> <dest>: the text of <path> in the deployment repository on its default branch, into
+# <dest>; on failure sets $fetch_error to what could not be done and GitHub's or base64's first
+# line, and returns 1.
+fetch() {
   local encoded
-  if ! encoded=$(gh api "repos/theorem-labs/agent-infra/contents/$1" --jq .content 2>"$work/err"); then
-    printf 'UNKNOWN: cannot read theorem-labs/agent-infra %s: %s\n' "$1" "$(first_line "$work/err")"
+  fetch_error=""
+  if ! encoded=$(gh api "repos/${deployment}/contents/$1" --jq .content 2>"$work/err"); then
+    fetch_error="cannot read ${deployment} $1: $(first_line "$work/err")"
     return 1
   fi
-  if ! printf '%s' "$encoded" | base64 -d >"$work/stack.yaml" 2>"$work/err"; then
-    printf 'UNKNOWN: cannot decode theorem-labs/agent-infra %s: %s\n' "$1" "$(first_line "$work/err")"
+  if ! printf '%s' "$encoded" | base64 -d >"$2" 2>"$work/err"; then
+    fetch_error="cannot decode ${deployment} $1: $(first_line "$work/err")"
     return 1
   fi
 }
 
-# daemon_pins: one line per entry of $work/stack.yaml's projects list, tab-separated: the entry's
-# key, then READ and the image that runs its daemon, SKIP and why it runs none, HOST for an entry
-# whose daemon runs on a tmux host, RUNTIME and a runtime the gate does not know, or NOIMAGE. A file
-# with no such list prints ERROR and why.
-daemon_pins() {
-  python3 - "$work/stack.yaml" <<'PY'
+# stack_file <path>: fetch <path> into $work/stack.yaml. An unreadable file is UNKNOWN, named with
+# GitHub's answer.
+stack_file() {
+  if ! fetch "$1" "$work/stack.yaml"; then
+    printf 'UNKNOWN: %s\n' "$fetch_error"
+    return 1
+  fi
+}
+
+# project_of <stack>: sets $project to the name <stack>/Pulumi.yaml declares, the Pulumi project
+# whose own config keys <stack>/Pulumi.prod.yaml holds under `<name>:`. A file that cannot be read,
+# or that declares no name, sets $project_error naming it and returns 1: the gate guesses no
+# project's name, since a key under a guessed one would be read as the stack's own.
+project_of() {
+  project=""
+  project_error=""
+  if ! fetch "$1/Pulumi.yaml" "$work/project.yaml"; then
+    project_error=$fetch_error
+    return 1
+  fi
+  if ! project=$(python3 - "$work/project.yaml" 2>"$work/err" <<'PY'
 import sys
 
 import yaml
 
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        document = yaml.safe_load(handle)
+except UnicodeDecodeError:
+    sys.exit("it is not UTF-8 text")
+except yaml.YAMLError as error:
+    sys.exit(f"it is not YAML: {str(error).splitlines()[0]}")
+name = document.get("name") if isinstance(document, dict) else None
+if isinstance(name, str) and name.strip():
+    print(name.strip())
+PY
+  ); then
+    project_error="cannot read ${deployment} $1/Pulumi.yaml: $(first_line "$work/err")"
+    return 1
+  fi
+  if [ -z "$project" ]; then
+    project_error="${deployment} $1/Pulumi.yaml declares no project name, so no key of $1/Pulumi.prod.yaml is known to be its own"
+    return 1
+  fi
+}
+
+# entries_state is unread, read or failed; load_entries reads the deployment's Legion projects once.
+entries_state=unread
+entries_error=""
+
+# load_entries writes into $work/entries.json every Legion project the deployment declares, as one
+# JSON object: "entries", the projects; "found", whether any are declared; and "missing", where it
+# looked when none are. It reads what it needs itself, once for the whole run: legion/Pulumi.yaml's
+# project name, and legion/Pulumi.prod.yaml ($work/legion.yaml). A deployment with legion/projects/
+# declares its projects there alone, one mapping of a project's settings a file, read in file-name
+# order, as the deployment's legion program reads them. Only a deployment with no such directory
+# still declares them in the list under <project>:projects of legion/Pulumi.prod.yaml, as that
+# program did before the files. A Pulumi.yaml or stack file it cannot read, a listing that fails
+# other than as a missing directory, a file it cannot read, or one that is not one mapping leaves
+# entries_state failed, with entries_error naming it.
+load_entries() {
+  [ "$entries_state" = unread ] || return 0
+  local names name directory=1 legion_project
+  entries_state=failed
+  if ! project_of legion; then
+    entries_error=$project_error
+    return 0
+  fi
+  legion_project=$project
+  if ! fetch legion/Pulumi.prod.yaml "$work/legion.yaml"; then
+    entries_error=$fetch_error
+    return 0
+  fi
+  entries_state=unread
+  mkdir -p "$work/projects"
+  if ! names=$(gh api "repos/${deployment}/contents/legion/projects" --jq '.[] | select(.type == "file") | .name' 2>"$work/err"); then
+    if ! grep -qF 'HTTP 404' "$work/err"; then
+      entries_state=failed
+      entries_error="cannot list ${deployment} legion/projects: $(first_line "$work/err")"
+      return 0
+    fi
+    names=""
+    directory=0
+  fi
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if ! fetch "legion/projects/$name" "$work/projects/$name"; then
+      entries_state=failed
+      entries_error=$fetch_error
+      return 0
+    fi
+  done <<<"$names"
+  if ! python3 - "$work/legion.yaml" "${legion_project}:projects" "$work/projects" "$directory" >"$work/entries.json" 2>"$work/err" <<'PY'; then
+import json
+import os
+import sys
+
+import yaml
+
+legion, key, directory, has_directory = sys.argv[1:5]
+entries = []
+if has_directory == "1":
+    for name in sorted(os.listdir(directory)):
+        try:
+            with open(os.path.join(directory, name), encoding="utf-8") as handle:
+                documents = list(yaml.safe_load_all(handle))
+        except UnicodeDecodeError:
+            sys.exit(f"legion/projects/{name} is not UTF-8 text")
+        except yaml.YAMLError as error:
+            sys.exit(f"legion/projects/{name} is not YAML: {str(error).splitlines()[0]}")
+        if len(documents) != 1 or not isinstance(documents[0], dict):
+            sys.exit(f"legion/projects/{name} is not one mapping of a project's settings")
+        entries.append(documents[0])
+    found, missing = bool(entries), "legion/projects/ holds no file"
+else:
+    listed = None
+    if os.path.exists(legion):
+        try:
+            with open(legion, encoding="utf-8") as handle:
+                document = yaml.safe_load(handle) or {}
+        except UnicodeDecodeError:
+            sys.exit("legion/Pulumi.prod.yaml is not UTF-8 text")
+        except yaml.YAMLError as error:
+            sys.exit(f"legion/Pulumi.prod.yaml is not YAML: {str(error).splitlines()[0]}")
+        if not isinstance(document, dict) or not isinstance(document.get("config") or {}, dict):
+            sys.exit("legion/Pulumi.prod.yaml is not a mapping with a config mapping")
+        listed = (document.get("config") or {}).get(key)
+    entries = listed if isinstance(listed, list) else []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            sys.exit(f"legion/Pulumi.prod.yaml's {key} list holds an entry that is not a mapping (entry {index + 1})")
+    found = bool(entries)
+    if isinstance(listed, list):
+        missing = f"legion/projects/ does not exist, and legion/Pulumi.prod.yaml's {key} list is empty"
+    else:
+        missing = f"legion/projects/ does not exist, and legion/Pulumi.prod.yaml holds no {key} list"
+# default=str writes a value YAML reads and JSON has no type for (a date) as its text.
+json.dump({"entries": entries, "found": found, "missing": missing}, sys.stdout, default=str)
+PY
+    entries_state=failed
+    entries_error="${deployment} $(first_line "$work/err")"
+    return 0
+  fi
+  entries_state="read"
+}
+
+# daemon_pins: one line per project of $work/entries.json, tab-separated: the project's key, then
+# READ and the image that runs its daemon, SKIP and why it runs none, HOST for a project whose
+# daemon runs on a tmux host, RUNTIME and a runtime the gate does not know, or NOIMAGE. When the
+# deployment declares no project it prints ERROR and where it looked.
+daemon_pins() {
+  python3 - "$work/entries.json" <<'PY'
+import json
+import sys
+
 with open(sys.argv[1]) as handle:
-    document = yaml.safe_load(handle) or {}
-projects = (document.get("config") or {}).get("agent-infra-legion:projects")
-if not isinstance(projects, list):
-    print("ERROR\tit holds no agent-infra-legion:projects list")
+    loaded = json.load(handle)
+if not loaded["found"]:
+    print(f"ERROR\tdeclares no project: {loaded['missing']}")
     sys.exit(0)
-for entry in projects:
+for entry in loaded["entries"]:
     key = entry.get("key") or "<an entry with no key>"
     if entry.get("replicas") == 0:
         print(f"{key}\tSKIP\treplicas: 0")
@@ -131,8 +298,18 @@ import sys
 
 import yaml
 
-with open(sys.argv[1]) as handle:
-    config = (yaml.safe_load(handle) or {}).get("config") or {}
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        document = yaml.safe_load(handle) or {}
+except UnicodeDecodeError:
+    sys.exit("it is not UTF-8 text")
+except yaml.YAMLError as error:
+    sys.exit(f"it is not YAML: {str(error).splitlines()[0]}")
+if not isinstance(document, dict):
+    sys.exit("it is not a mapping")
+config = document.get("config") or {}
+if not isinstance(config, dict):
+    sys.exit("its config is not a mapping")
 for key in sys.argv[2:]:
     if config.get(key):
         print(config[key])
@@ -225,33 +402,32 @@ aliases_state=unread
 aliases_error=""
 
 # load_aliases writes into $work/aliases, lowercased and one per line, every name a recorded
-# rename makes one repository with cybermonklabs/legion. The record is the deployment's own:
-# the repositoryRenames pairs of the project entries of theorem-labs/agent-infra
-# legion/Pulumi.prod.yaml, which render as each daemon's `repository_renames` and which the
-# daemon's ghrepo.Renames reads (packages/daemon/internal/ghrepo/renames.go). It is the one place
-# the transfer of sjawhar/legion to cybermonklabs/legion is recorded, so the gate keeps no copy of
-# the pair. Without the list mode has read that file already ($work/legion.yaml); --listeners
-# reads it here. A record it cannot read leaves aliases_state failed, with GitHub's or the
-# parser's first line in aliases_error.
+# rename makes one repository with cybermonklabs/legion. The record is the deployment's own: the
+# repositoryRenames pairs of its Legion projects (load_entries), which render as each daemon's
+# `repository_renames` and which the daemon's ghrepo.Renames reads
+# (packages/daemon/internal/ghrepo/renames.go). They are the one place the transfer of
+# sjawhar/legion to cybermonklabs/legion is recorded, so the gate keeps no copy of the pair.
+# Both modes read the projects through load_entries, which reads each file once for the run. A
+# record it cannot read, and a deployment that declares no project, leave aliases_state failed with
+# the reason in aliases_error: an empty record would shut a build of this repository as built
+# elsewhere.
 load_aliases() {
   [ "$aliases_state" = unread ] || return 0
-  local encoded
-  if [ ! -s "$work/legion.yaml" ]; then
-    if ! encoded=$(gh api repos/theorem-labs/agent-infra/contents/legion/Pulumi.prod.yaml --jq .content 2>"$work/err") ||
-      ! printf '%s' "$encoded" | base64 -d >"$work/legion.yaml" 2>"$work/err"; then
-      aliases_state=failed
-      aliases_error=$(first_line "$work/err")
-      return 0
-    fi
+  load_entries
+  if [ "$entries_state" = failed ]; then
+    aliases_state=failed
+    aliases_error=$entries_error
+    return 0
   fi
-  if ! python3 - "$work/legion.yaml" >"$work/aliases" 2>"$work/err" <<'PY'; then
+  if ! python3 - "$work/entries.json" >"$work/aliases" 2>"$work/err" <<'PY'; then
+import json
 import sys
 
-import yaml
-
 with open(sys.argv[1]) as handle:
-    document = yaml.safe_load(handle) or {}
-projects = (document.get("config") or {}).get("agent-infra-legion:projects") or []
+    loaded = json.load(handle)
+if not loaded["found"]:
+    sys.exit(f"declares no project: {loaded['missing']}")
+projects = loaded["entries"]
 home = "cybermonklabs/legion"
 for entry in projects:
     for pair in entry.get("repositoryRenames") or []:
@@ -261,7 +437,7 @@ for entry in projects:
                 print(name)
 PY
     aliases_state=failed
-    aliases_error=$(first_line "$work/err")
+    aliases_error="${deployment} $(first_line "$work/err")"
     return 0
   fi
   aliases_state="read"
@@ -285,7 +461,7 @@ judge() {
   if [ "$repo" != cybermonklabs/legion ]; then
     load_aliases
     if [ "$aliases_state" = failed ]; then
-      printf 'UNKNOWN: %s: built from %s, and the repository renames of theorem-labs/agent-infra legion/Pulumi.prod.yaml could not be read: %s\n' "$key" "$source" "$aliases_error"
+      printf "UNKNOWN: %s: built from %s, and the repository renames of %s's Legion projects could not be read: %s\n" "$key" "$source" "$deployment" "$aliases_error"
       unknown=$((unknown + 1))
       return
     fi
@@ -294,7 +470,7 @@ judge() {
       shut=$((shut + 1))
       return
     fi
-    via="; built as $source, which legion/Pulumi.prod.yaml's repositoryRenames makes one repository with $legion_source"
+    via="; built as $source, which the repositoryRenames of the deployment's Legion projects make one repository with $legion_source"
   fi
   if ! [[ $revision =~ ^[0-9a-f]{7,40}$ ]]; then
     printf 'UNKNOWN: %s: %s names revision %s, which is no commit id\n' "$key" "$ref" "$revision"
@@ -329,22 +505,28 @@ judge() {
   esac
 }
 
-# listener <key> <stack> <config key>...: judges the listener pin of <stack> (envoy, envoy-cluster or
-# dispatch), the first of the config keys its Pulumi.prod.yaml sets.
+# listener <key> <stack> <setting>: judges the listener pin of <stack> (envoy, envoy-cluster or
+# dispatch), the value its Pulumi.prod.yaml sets for <setting> under the project name its
+# Pulumi.yaml declares (`<project>:<setting>`).
 listener() {
-  local key=$1 stack=$2 ref
-  shift 2
+  local key=$1 stack=$2 setting=$3 ref
+  if ! project_of "$stack"; then
+    printf 'UNKNOWN: %s: %s\n' "$key" "$project_error"
+    unknown=$((unknown + 1))
+    return
+  fi
+  setting="${project}:${setting}"
   if ! stack_file "$stack/Pulumi.prod.yaml"; then
     unknown=$((unknown + 1))
     return
   fi
-  if ! ref=$(config_value "$@" 2>"$work/err"); then
+  if ! ref=$(config_value "$setting" 2>"$work/err"); then
     printf 'UNKNOWN: %s: cannot read %s/Pulumi.prod.yaml: %s\n' "$key" "$stack" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
     return
   fi
   if [ -z "$ref" ]; then
-    printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets no %s\n' "$key" "$stack" "$*"
+    printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets no %s\n' "$key" "$stack" "$setting"
     unknown=$((unknown + 1))
     return
   fi
@@ -352,18 +534,21 @@ listener() {
 }
 
 if [ "$mode" = listeners ]; then
-  listener envoy envoy agent-infra-envoy:listenerImage
-  listener envoy-cluster envoy-cluster agent-infra-envoy-cluster:envoyImage
-  # dispatch's listener runs listenerImage and nothing else: agent-infra dispatch/main.go requires
+  listener envoy envoy listenerImage
+  listener envoy-cluster envoy-cluster envoyImage
+  # dispatch's listener runs listenerImage and nothing else: the deployment's dispatch/main.go requires
   # that key (loadSettings) and pinListenerImage sets the listener's container from it, leaving
   # envoyImage to the Dispatch server. A stack that sets none runs no listener this gate can read,
   # so it is UNKNOWN rather than a reading of the server's image.
-  listener dispatch dispatch agent-infra-dispatch:listenerImage
-elif stack_file legion/Pulumi.prod.yaml; then
-  # The same file records the repository renames (load_aliases), so it is read once.
-  cp "$work/stack.yaml" "$work/legion.yaml"
-  if ! daemon_pins >"$work/pins" 2>"$work/err"; then
-    printf 'UNKNOWN: cannot read theorem-labs/agent-infra legion/Pulumi.prod.yaml: %s\n' "$(first_line "$work/err")"
+  listener dispatch dispatch listenerImage
+else
+  load_entries
+  if [ "$entries_state" = failed ]; then
+    printf 'UNKNOWN: %s\n' "$entries_error"
+    unknown=$((unknown + 1))
+    : >"$work/pins"
+  elif ! daemon_pins >"$work/pins" 2>"$work/err"; then
+    printf 'UNKNOWN: cannot read %s legion projects: %s\n' "$deployment" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
   fi
   while IFS=$'\t' read -r key what detail; do
@@ -383,17 +568,15 @@ elif stack_file legion/Pulumi.prod.yaml; then
         unknown=$((unknown + 1))
         ;;
       *)
-        printf 'UNKNOWN: theorem-labs/agent-infra legion/Pulumi.prod.yaml: %s\n' "$what"
+        printf 'UNKNOWN: %s %s\n' "$deployment" "$what"
         unknown=$((unknown + 1))
         ;;
     esac
   done <"$work/pins"
   if [ "$compared" -eq 0 ] && [ "$unknown" -eq 0 ]; then
-    echo "UNKNOWN: legion/Pulumi.prod.yaml lists no running daemon, so no pin was read"
+    echo "UNKNOWN: the deployment's Legion projects run no daemon, so no pin was read"
     unknown=1
   fi
-else
-  unknown=$((unknown + 1))
 fi
 
 if [ "$shut" -gt 0 ]; then

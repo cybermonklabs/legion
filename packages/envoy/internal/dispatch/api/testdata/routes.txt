@@ -60,6 +60,7 @@ GET /api/v1/credential-requests any
 POST /api/v1/credential-requests/machine-lookup any
 POST /api/v1/credential-requests/{id}/approve any
 POST /api/v1/credential-requests/{id}/deny any
+POST /api/v1/credential-requests/{id}/dismiss any
 GET /api/v1/credentials/capabilities any
 GET /api/v1/dashboard/builds any
 GET /api/v1/delivery/measures any
@@ -112,6 +113,8 @@ GET /api/v1/issues/{key}/results any
 POST /api/v1/issues/{key}/results any
 GET /api/v1/issues/{key}/role-holders any
 PUT /api/v1/issues/{key}/role-holders any
+GET /api/v1/issues/{key}/steps any
+PUT /api/v1/issues/{key}/steps/{id} any
 GET /api/v1/issues/{key}/subscribers any
 DELETE /api/v1/issues/{key}/subscribers/{session_id} any
 GET /api/v1/issues/{key}/summary any

@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -195,6 +196,9 @@ func (d *outboxDispatch) PutGatedSteps(_ context.Context, project string, steps 
 	d.gatedStepsOf = append(d.gatedStepsOf, project)
 	d.gatedSteps = append(d.gatedSteps, append(make([]string, 0, len(steps)), steps...))
 	return d.gatedStepsErr
+}
+func (d *outboxDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
 }
 func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
@@ -2770,6 +2774,9 @@ type outboxClaimStore struct {
 	mu         sync.Mutex
 	claims     map[claim.Token]supervise.Claim
 	deliveries map[claim.Token]supervise.Delivery
+	// Holds holds each session name for the first claim that records it, as the store's
+	// claim_sessions table does (supervise.Store.HoldSessions).
+	supervisetest.Holds
 	// refused is the error every claim write answers while it is set, which is how a case drives
 	// a decision the store would not take (the stall backstop's own relaunch).
 	refused error
@@ -2793,6 +2800,10 @@ func (s *outboxClaimStore) PutClaim(_ context.Context, c supervise.Claim) error 
 	}
 	s.claims[c.Token] = c
 	return nil
+}
+
+func (s *outboxClaimStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.Holds.ReleaseWith(ctx, s.PutClaim, c, holds)
 }
 
 func (s *outboxClaimStore) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {

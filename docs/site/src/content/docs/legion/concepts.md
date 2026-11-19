@@ -388,13 +388,15 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **CI** on the pull request's head is information, not a verdict. When GitHub's checks settle, the
   daemon names every check GitHub reported, with the conclusion GitHub gave it, and judges none of
   them: it sends one message each to the architect that owns the issue, the worker of the issue's
-  current phase and the implementer whose code the checks ran on, and moves the issue nowhere. A
-  red is for those roles to decide on — re-run a check that failed on itself, fix code that is at
-  fault, or wait — and for GitHub to hold the merge over, under the base branch's own required
-  checks, which Legion neither reads nor re-implements. The reviewer reads the head's checks on
-  GitHub itself before it approves, and the architect before it accepts; those reads are the ones
-  that decide anything. Two settlements of the same head that name the same checks tell nobody
-  twice, and a lingering tree is told nothing at all.
+  current phase and the implementer whose code the checks ran on, and moves the issue nowhere. The
+  message names the head's commit statuses too, each with its state: Dispatch reads them from
+  GitHub for each open head where its GitHub App holds Commit statuses, since GitHub's status event
+  names no pull request. A red is for those roles to decide on — re-run a check that failed on
+  itself, fix code that is at fault, or wait — and for GitHub to hold the merge over, under the base
+  branch's own required checks, which Legion neither reads nor re-implements. The reviewer reads the
+  head's checks on GitHub itself before it approves, and the architect before it accepts; those
+  reads are the ones that decide anything. Two settlements of the same head that name the same
+  checks tell nobody twice, and a lingering tree is told nothing at all.
 - **A head that conflicts with its base** does move the issue. GitHub computes no merge ref for
   such a head and runs no check on it, so no CI result would ever arrive: the daemon takes the
   issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging`,

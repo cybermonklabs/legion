@@ -315,8 +315,9 @@ export async function postSlackReply(
   }
   const override = env[SLACK_POST_API_URL_VARIABLE];
   if (override !== undefined && override !== "" && !allowedAPIURL(override)) {
+    // Its value is not quoted: a URL can carry user info or a token in its query.
     throw new Error(
-      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host (got ${override}); nothing was posted`
+      `${SLACK_POST_API_URL_VARIABLE} must be an https URL, or http on a loopback host; nothing was posted`
     );
   }
   const { PATH: searchPath = "" } = env;

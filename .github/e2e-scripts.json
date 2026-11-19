@@ -73,6 +73,16 @@
       "jj": true
     },
     {
+      "script": "nats-callout-sessions.sh",
+      "go_version_file": "packages/envoy/go.mod",
+      "apt": ["postgresql-client"],
+      "bun": true,
+      "evidence_variable": "NATS_CALLOUT_SESSIONS_EVIDENCE_DIR",
+      "timeout_minutes": 35,
+      "why_hosted": "Run it from a checkout on a Linux host with go, bun (and bun install), psql, curl, jq and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/nats-callout-sessions.sh; CI's service is the Postgres server dev-stack.sh --callout creates its two databases on, the two sessions are this checkout's plugins in processes of their own with no model, and the script starts no container. Its --real-hosts mode, the pinned Oh My Pi and Claude Code on a model route, is run by hand on a Legion pod or a box given the pins and a route",
+      "jj": false
+    },
+    {
       "script": "phase-entry-converge.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
@@ -101,6 +111,16 @@
       "timeout_minutes": 20,
       "why_hosted": "The daemon refuses to start without tmux on PATH, and CI's tmux is the runner's apt binary; with LEGION_E2E_PG_DSN set the script starts no container of its own, which is how ci.yaml's daemon-go job already runs it",
       "jj": false
+    },
+    {
+      "script": "step-records.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "evidence_variable": "STEP_RECORDS_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, bun (after bun install) and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/step-records.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to five minutes",
+      "jj": true
     },
     {
       "script": "sub-architect.sh",
@@ -240,6 +260,10 @@
     {
       "script": "stage4b-sandbox-tree.sh",
       "needs": "the production cluster from the devbox, against production Dispatch, the production Envoy listener and production NATS, with real agents in the smoke repository"
+    },
+    {
+      "script": "step-records-read.sh",
+      "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, and the key of one issue a deployed Legion ran to done after the release that records each step; it reads that issue's step records and starts nothing"
     },
     {
       "script": "verifiers-staging-token.sh",

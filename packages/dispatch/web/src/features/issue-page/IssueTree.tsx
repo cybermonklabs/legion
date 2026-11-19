@@ -42,7 +42,7 @@ import {
 } from "./tree-fold";
 import { everythingOpened, nodesInOrder, rowKeyOf } from "./tree-keys";
 import { abortOnReaderAct, type OnEditing, useNodeEditing } from "./useNodeEditing";
-import { useTreeKeymap } from "./useTreeKeymap";
+import { moveToRow, useTreeKeymap } from "./useTreeKeymap";
 
 /**
  * The issue's body: one folded tree of its nodes.
@@ -98,9 +98,10 @@ export function IssueTree({
 }: {
   /** The reader's acts since they followed the address (`addressKey`): a controller the page
    *  starts as each following is drawn and the reader's first act since aborts
-   *  (`slots/body.tsx`). A landing whose following saw an act before the address's row drew
-   *  brings the row on screen and gives it no focus, so the focus stays where the reader put
-   *  it. Left out, the landing reads the reader's acts from the moment its row is drawn. */
+   *  (`slots/body.tsx`). A landing whose following saw an act before the address's row drew does
+   *  nothing to the page: the row takes no focus and the page does not scroll to it, so the
+   *  focus and the page stay where the reader put them. Left out, the landing reads the reader's
+   *  acts from the moment its row is drawn. */
   addressActs?: RefObject<AbortController | undefined>;
   /** Which following of the address `reveal` comes from: the location's own key
    *  (`useLocation().key`), a new one at each navigation - a link followed again to the address
@@ -600,22 +601,25 @@ export function IssueTree({
   // back whenever nothing holds it (`focusIsLoose`: the page itself, or the element the app
   // focuses at a page change, which holds the tree), until the reader's first act since they
   // followed the address (`addressActs`; `READER_ACTS`, which end `acts`). A reader who acted
-  // before the row drew - the reads still out, a press on another control - keeps the focus
-  // where they put it, and the row is brought on screen alone (`placeOnScreen`): watched only
-  // from the row's drawing, a row that drew late took the focus from the control they had moved
-  // to. Whatever else holds the focus keeps it, and from the reader's first act the focus is
-  // theirs wherever they put it, nowhere included - a second Escape, a press on blank space: the
-  // effect takes it no more until the address is followed again (`landingKey`: the following
-  // and the node), to this node or another. Keyed on the node alone, a link to the node the
-  // reader had moved away from, followed again, landed nowhere; a tree drawn again at the same
-  // following lands nowhere again. A tree drawn before the landing's frame comes - a read
-  // answering - leaves that landing waiting (`landingAsked`): asked again, it was put off by a
-  // frame at each render. The issue itself is no row: an address lands on it for a turn of a
-  // thread only agents wrote in whose nearest drawn ancestor is the issue (`slots/body.tsx`),
-  // and the row it lands on is then the tree's tab stop, where the tree says what has no row of
-  // its own. What the landing says (`landingReport`) is said at the row once it holds the focus:
-  // the focus moving there lets go of what was said before. The page's own opening on its first
-  // row or its question (below) keeps its own rule.
+  // before the row drew - the reads still out, a press on another control, a key, a turn of the
+  // wheel - keeps the focus where they put it and the page where they had it: the landing does
+  // nothing to the page - no focus, no scroll, no row's hold ended, no report - and the row is
+  // drawn where it stands, the branches the address opens opened. Watched only from the row's
+  // drawing, a row that drew late took the focus from the control they had moved to; brought on
+  // screen alone, it took the page away from the place they had scrolled to or the row they had
+  // moved to, and ended that row's hold. Whatever else holds the focus keeps it, and from the
+  // reader's first act the focus is theirs wherever they put it, nowhere included - a second
+  // Escape, a press on blank space: the effect takes it no more until the address is followed
+  // again (`landingKey`: the following and the node), to this node or another. Keyed on the node
+  // alone, a link to the node the reader had moved away from, followed again, landed nowhere; a
+  // tree drawn again at the same following lands nowhere again. A tree drawn before the landing's
+  // frame comes - a read answering - leaves that landing waiting (`landingAsked`): asked again, it
+  // was put off by a frame at each render. The issue itself is no row: an address lands on it for
+  // a turn of a thread only agents wrote in whose nearest drawn ancestor is the issue
+  // (`slots/body.tsx`), and the row it lands on is then the tree's tab stop, where the tree says
+  // what has no row of its own. What the landing says (`landingReport`) is said at the row once it
+  // holds the focus: the focus moving there lets go of what was said before. The page's own
+  // opening on its first row or its question (below) keeps its own rule.
   const taken = useRef<{ readonly acts: AbortController; readonly key: string } | undefined>(
     undefined
   );
@@ -641,12 +645,11 @@ export function IssueTree({
     if (row === null || row === undefined) return;
     if (held === undefined) {
       taken.current?.acts.abort();
-      if (addressActs?.current?.signal.aborted === true) {
-        // The landing ends as it starts: the reader has acted since the following.
-        const ended = new AbortController();
-        ended.abort();
-        taken.current = { acts: ended, key: landingKey };
-        placeOnScreen(row, onScreenHold);
+      const acted = addressActs?.current;
+      if (acted?.signal.aborted === true) {
+        // The landing ends as it starts: the reader has acted since the following, and the page
+        // stays as they left it.
+        taken.current = { acts: acted, key: landingKey };
         return;
       }
       taken.current = { acts: abortOnReaderAct(), key: landingKey };
@@ -801,6 +804,53 @@ export function IssueTree({
     held.next = { frame, row };
   }, [goToNode, root, rootRow, rows, targetId, unfoldTo]);
 
+  // A read can answer without the node whose row holds the focus - a comment deleted - and the
+  // row then leaves the tree with the focus, which the browser drops to the page's body: the
+  // reader's place in the outline was lost, and no row held the focus. So where a render no
+  // longer draws the row that held the focus as the tree was last drawn, and nothing holds the
+  // focus now (`focusIsLoose`), the nearest row still drawn takes it as a key's move gives it
+  // (`moveToRow`): the tab stop and the row's body go with it, and the row brings itself on screen
+  // clear of the band. Whatever holds the focus by then keeps it - a control, the editor, another
+  // row - and so does the page's own placing of it, which runs first: the opening, which gives a
+  // row it focused back where a read drew that row again (`opening`), and an address's landing
+  // still waiting for its frame (`landingAsked`). The row is noted at every render, by its key and
+  // its place among the rows the focus can take, as the focus stands once that render is drawn:
+  // the render that drops the row no longer draws it, so where it stood is the render before's to
+  // tell. Its key is that of the row the focus is in, not `focused`, which names the row a press
+  // took the focus from until the press is over (`usePressFocus`). Nothing has let the dropped
+  // row go by the time this runs: the blur Chromium sends as React takes the focused row out comes
+  // during React's commit, where React hears no event, so `leave` never runs for it.
+  //
+  // A row being edited takes the editor's focus out with it, and its editing ends as Escape ends
+  // it (`stopEditing`), the page's editor of the document and its box with it, before the focus
+  // moves and wherever the focus is. Left on, the editing waited for a row no read draws
+  // (`useNodeEditing.ts`), and the tree held every row the focus came to as the one being edited
+  // (`useReleaseFocus`): a Tab out of the tree kept that row's body and its facts in Details.
+  const heldRow = useRef<{ readonly index: number; readonly key: string } | undefined>(undefined);
+  const editingRow = editing?.row;
+  useEffect(() => {
+    const tree = body.current;
+    const order = rows.flatMap((row) => (row.kind === "node" ? [rowKeyOf(row)] : []));
+    const held = heldRow.current;
+    if (held !== undefined && !order.includes(held.key)) {
+      if (held.key === editingRow) stopEditing();
+      if (
+        focusIsLoose(tree) &&
+        opening.current.done &&
+        landingAsked.current?.signal.aborted !== false
+      ) {
+        // The nearest row is the one now at the dropped row's place, or the last where none is.
+        const key = order[Math.min(held.index, order.length - 1)];
+        const nearest =
+          key === undefined ? null : tree?.querySelector<HTMLElement>(rowSelectorOf(key));
+        if (nearest !== null && nearest !== undefined) moveToRow(nearest);
+      }
+    }
+    const focusedKey = focusedRowIn(tree)?.dataset.rowKey;
+    heldRow.current =
+      focusedKey === undefined ? undefined : { index: order.indexOf(focusedKey), key: focusedKey };
+  }, [editingRow, rows, stopEditing]);
+
   // A write from the line at the foot takes the reader to what they wrote: their newest
   // node under what the write answered - the reply, the comment, the question - its branch
   // unfolded, inside the viewport and focused, or, for an answer, the question's own row. The
@@ -886,22 +936,31 @@ export function IssueTree({
               // `[data-issue-header]`, `[data-node-row]`), none of which holds the crumb line:
               // `min-h-0!` and `min-w-0!` take the floor off, since a layered utility wins over
               // an unlayered rule only with `!`. A 44 px crumb was a third of the head the first
-              // open question needs on a phone. Its box is 28 px tall instead, its 16 px line and
-              // the 6 px of padding above and below that `dispatch-inline-link` gives it, over
-              // WCAG 2.2's 24 px (2.5.8). Measured in Chromium at 390 by 664 and 1024 by 768 px,
-              // on crumbs of one line of words each: each crumb 28 px tall (a
-              // five-character key's 34 px wide) and the line 28 px, one crumb tall, where the
-              // floor made each crumb at least 44 by 44 px and the line 44 px; on a copy of a long
-              // real issue at 390 by 664 px, the line one zoom draws is 28 px where it was 44, and
-              // the one a second zoom draws 96 px where it was 112. Its display is left to the
-              // floor's `inline-flex`: the line is a flex box, which makes each crumb a block box
+              // open question needs on a phone. Its box is 28 px tall instead below 1280 px, its
+              // 16 px line and the 6 px of padding above and below that `dispatch-inline-link`
+              // gives it there, and 24 px from 1280 px up, where that class gives none and `py-1`
+              // gives 4 px: WCAG 2.2's 24 px (2.5.8) at every width. `py-1` is a layered utility,
+              // so below 1280 px the unlayered 6 px still wins. A crumb is pressed to zoom out, so
+              // it is a target whatever its tab index, and axe's `target-size` rule leaves a
+              // target outside the tab order for review rather than failing it: with no padding
+              // of its own, at 1440 by 900 px each crumb was its 16 px line alone, 34 by 16 and
+              // 125 by 16 px on a zoom two levels deep, which axe left for review with a safe
+              // space 16 px across. Measured in Chromium on that zoom with `py-1`: 34 by 24 and
+              // 125 by 24 px at 1440 by 900 px, and 34 by 28 and 125 by 28 px at 390 by 664 px,
+              // axe passing every crumb at both. Measured at 390 by 664 and 1024 by 768 px, on
+              // crumbs of one line of words each: each crumb 28 px tall (a five-character key's
+              // 34 px wide) and the line 28 px, one crumb tall, where the floor made each crumb
+              // at least 44 by 44 px and the line 44 px; on a copy of a long real issue at 390 by
+              // 664 px, the line one zoom draws is 28 px where it was 44, and the one a second
+              // zoom draws 96 px where it was 112. Its display is left to the floor's
+              // `inline-flex`: the line is a flex box, which makes each crumb a block box
               // whatever its display, and `inline-block`, `inline` and `block` drew the same box.
               // It draws one line for a node, so it is the node's first line (`firstLineOf`),
               // cut at a word from the words every one-line drawing of a node is cut from
               // (`lineWords`), and it wraps rather than being cut again mid-word by its box; the
               // issue is named by its key, since the header above draws its title, and a node
               // with no words by its kind's word, never its id, which is no name a reader reads.
-              className="dispatch-inline-link min-h-0! min-w-0! max-w-full text-left underline [overflow-wrap:anywhere]"
+              className="dispatch-inline-link min-h-0! min-w-0! max-w-full py-1 text-left underline [overflow-wrap:anywhere]"
               data-crumb={above.id}
               key={above.id}
               onClick={() => zoomTo(above.id)}
@@ -1043,24 +1102,6 @@ export function landOnRow(
   });
   landing.signal.addEventListener("abort", () => cancelAnimationFrame(frame));
   return landing;
-}
-
-/**
- * Brings `row` on screen in the next frame by the page's one rule (`bringOnScreen`) and gives it
- * no focus: the landing on an address's row that drew after the reader acted
- * (`IssueTree`'s `addressActs`), which leaves the focus where they put it. Until the frame it is
- * what `held` holds, as a landing is (`landOnRow`), so a later landing or hold ends it, and so
- * does the reader's next act.
- */
-function placeOnScreen(row: HTMLElement, held: RefObject<AbortController | undefined>): void {
-  held.current?.abort();
-  const placing = abortOnReaderAct();
-  held.current = placing;
-  const frame = requestAnimationFrame(() => {
-    placing.abort();
-    if (row.isConnected) bringOnScreen(row);
-  });
-  placing.signal.addEventListener("abort", () => cancelAnimationFrame(frame));
 }
 
 /** Holds `row` on screen (`holdOnScreen`) and ends the hold of the row `held` held before, so

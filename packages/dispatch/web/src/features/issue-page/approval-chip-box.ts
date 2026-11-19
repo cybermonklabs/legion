@@ -2,10 +2,15 @@ import type { FocusLoss } from "./focus-keeper";
 
 /**
  * The box `ApprovalChip` draws a document's approval chip in on the header: the chip, its two
- * actions beside it, and the dialogs it opens, deeper in the same box. The header's keys
- * (`useHeaderKeys.ts`), its focus keeper (`IssueHeader.tsx`), its count of what waits
- * (`IssuePropertiesRow.tsx`) and the header's browser rows (`e2e/issue-page-p.ts`) all read the
- * chip and its actions from here, so what one of them takes for an action the others do too.
+ * actions beside it, and the dialogs it opens, deeper in the same box. Each reader of the header
+ * takes what it reads of that box from here. The header's keys (`useHeaderKeys.ts`) find the box
+ * (`chipBox`) and its actions in it, by their place (`CHIP_ACTIONS`) and their words
+ * (`ACTION_WORDS`). Its focus keeper (`IssueHeader.tsx`) reads only the box around where the lost
+ * control stood (`chipOfLostAction`, through `chipBox`) and takes nothing for an action. Its count
+ * of what waits (`IssuePropertiesRow.tsx`) finds the chips (`APPROVAL_CHIP`). The header's browser
+ * rows (`e2e/issue-page-p.ts`, `e2e/issue-page-p.e2e.ts`) find the actions by their words
+ * (`ACTION_WORDS`), the same words the keys read, so what a row takes for an action the keys do
+ * too.
  */
 
 /** A document's approval chip (`ApprovalChip`'s `data-approval-artifact`). The header draws it on

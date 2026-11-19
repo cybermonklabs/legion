@@ -72,8 +72,11 @@ the App is installed on a repository from that owner's installation's repository
 A read-only token holds what the command's read-only release gives: the broker's holds
 `contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, and the first three
 alone where the App's installation has not been granted Actions.
-A configured key asks for that set and `issues: read` besides, so a role reads an issue through a
-key-minted read-only token and not through the broker's.
+A configured key asks for a set that differs from the broker's: `contents`, `metadata`,
+`pull_requests`, `issues`, `actions`, `checks`, `statuses` and `attestations`, each at `read`
+(`readPermissions` in `packages/daemon/internal/appauth`), so a controller reads an issue, a check
+run, a commit status or an attestation through a key-minted read-only token and not through the
+broker's.
 A configured key reads what the installation is granted before each mint and asks for its set
 cut down to it.
 The daemon passes the command's stderr through as it runs, with every GitHub token in it redacted,
@@ -140,9 +143,9 @@ each repository routed on its own and an owner the command names alone routed to
 directory, the targets read as gh reads them, with pflag's rules, from the real gh's own help of
 each command down to its leaf (`-R`/`--repo` before or after the command, a repository or owner
 argument, before `--` or as a clone's or fork's first after it, a `github.com` URL argument — for a
-`pr` command or `agent-task view` only a pull request's, since gh reads any other as a branch of
-the command's own repository — every one of a slot gh's usage takes several of, `agent-task view`'s
-`OWNER/REPO#N`, a `repos/<owner>/…` endpoint of `gh api` or a search endpoint's `q`, a search
+`pr` command only a pull request's, since gh reads any other as a branch of the command's own
+repository — every one of a slot gh's usage takes several of, a `repos/<owner>/…` endpoint of
+`gh api` or a search endpoint's `q`, a search
 query's plain `repo:`/`owner:`, the options naming a repository, an owner, a team or an issue by
 URL). The command's own repository counts too whenever gh resolves it, because no argument names
 it, and for `repo set-default`, which reads every remote's network, whatever names it: `GH_REPO`
@@ -168,8 +171,36 @@ Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing.
+It refuses the same way, before gh runs: `--editor`/`-e` on any command, because gh runs the
+editor after the leak guard has read the call and posts what it wrote; `gh gist edit`, which opens
+an editor unless a file is named; `gh agent-task`, which sends the token to the Copilot API host
+GitHub names; `gh auth login`, `logout`, `refresh` and `switch`, which write the gh directory the
+daemon alone writes; `gh auth setup-git`, which writes git's global configuration, a file the git
+`legion gh` runs never reads; `--recurse-submodules` on any command (`gh pr checkout`'s), which
+runs `git submodule update`, whose fetch reads each submodule's own configuration; and any git
+flag `gh repo clone`, `gh repo fork` or `gh gist clone` would hand git clone after `--` but a
+directory and these, spelled exactly: `--quiet`/`-q`, `--verbose`/`-v`, `--progress`,
+`--no-progress`, `--depth`, `--shallow-since`, `--shallow-exclude`, `--single-branch`,
+`--no-single-branch`, `--no-tags`, `--branch`/`-b`, `--origin`/`-o`, `--filter`, `--sparse`,
+`--no-checkout`/`-n`, `--bare` and `--mirror`. A clone's other flags set its configuration
+(`-c`/`--config`, which git also takes abbreviated, and a URL-scoped `sslVerify=false` given so
+sent the token to a proxy), its hooks (`--template`), its submodules or where its objects come
+from (`--reference`, `--separate-git-dir`, `--upload-pack`). It refuses as well a gh directory
+whose `hosts.yml` or `config.yml` is no regular file
+(a named pipe, a symbolic link, a directory) or is larger than any the daemon writes, which it
+reads without following a link or waiting on a pipe, or names `api_host` or `http_unix_socket`
+anywhere gh would read it as a key, a list's items among them; a `config.yml` that holds a `hosts`
+block or an alias named `help`, which gh would run on `legion gh help`; and a working directory
+whose repository configuration sets an `http` ssl or proxy key, generic or for a URL, but an
+`sslVerify` that is true, or a credential helper other than `legion git-credential`, since git
+reads it before the command line and a URL-scoped `sslVerify=false` there beats every entry the
+command line forces; or any include (`include.path`, `includeIf.<condition>.path`, whatever its
+condition and whether or not its file is there), or `extensions.worktreeConfig` on, since a git
+gh runs later, after a checkout or in another worktree (`pr checkout --worktree`, `pr merge
+--delete-branch`), would read a configuration the check did not. With no `git` on `PATH` that
+check reads nothing, since gh then runs no git either.
 `legion gh` starts the real gh for a command's help only the first time:
-it keeps each help in `$XDG_STATE_HOME/legion-gh/help`, one file for each command path and each set of values of the `GH_*`, `CLICOLOR`, `CLICOLOR_FORCE`, `NO_COLOR`, `TERM` and `COLORTERM` variables, which nothing removes.
+it keeps each help in `$XDG_STATE_HOME/legion-gh/help`, one file for each command path and each set of values of the `GH_*`, `CLICOLOR`, `CLICOLOR_FORCE`, `NO_COLOR`, `TERM` and `COLORTERM` variables gh is handed, which nothing removes.
 It writes each copy as a file of mode 0600 in a directory of mode 0700, and reads a copy only where neither it nor its directory is a link and the role's user owns both, with no permission for their group or for others.
 In a pod every role runs as one user, so this keeps out another user and not another role.
 It reads the help from gh again when one of these changes: the gh binary, the file the `LEGION_GH_PATH` path's links end at (its path, device, inode, size, modification time, change time or mode); `config.yml` or `hosts.yml` in `GH_CONFIG_DIR` (gh lists its aliases in its help, and prints no help when either file does not parse); gh's extensions directory; or one of those variables.
@@ -182,11 +213,35 @@ the exact `gh api rate_limit`;
 and `gh auth git-credential`, which answers from the bundle.
 The guard's reads use the caller's token because a push made with the token writes the repository they read,
 and the bundle may hold no directory for that repository's owner.
+Without such a token, the leak guard's own REST read of a repository whose owner the bundle holds no directory for is refused with the line that names that owner,
+`legion gh: the role's GitHub App is not installed on "<owner>": <LEGION_GH_OWNERS_DIR> holds no gh directory for it`, exit 2,
+and the guard then reads that repository's visibility with an unauthenticated `git ls-remote`, which makes no API request:
+its exit 0 alone reads public, and any other outcome refuses the write as a setup error naming both reads.
+The guard makes no unauthenticated REST read of it, because GitHub allows 60 of those an hour to one address.
+The shared check's own visibility read of such a repository, which `legion gh` answers with the guard's read, reads it the same way, so the check counts a public one's advertised commits as published.
+The refusal of a repository a configured rename moved to an owner the bundle holds no directory for names the pair around that line, and stays a setup error.
 The real gh runs with `GH_PATH`
 naming the pane's wrapper, so the git gh runs itself (a clone, the fetch of a fork's parent, `pr
 checkout`) authenticates through the helper gh names after it, `legion gh auth git-credential`,
 which answers as `legion git-credential` does, with `credential.useHttpPath` on for `github.com`;
-and with gh's update check and prompts off. The saved help its tests read is the image's gh's,
+and with gh's update check, prompts and telemetry off and its editor a program that fails
+(`/bin/false`), whatever the caller names. Its environment is built from an allowlist of the
+caller's (`ghChildEnviron` and `ghChildKeeps`, `packages/daemon/cmd/legion/gh.go`): the paths,
+the terminal, the locale, the proxy variables, gh's state directories, `GH_REPO`, how gh prints,
+git's identity, and Legion's wrapper variables, each kept for a read gh or go-gh makes of it. No
+trust store, editor, browser or pager variable of the caller's reaches gh: a proxy sees only the
+TLS tunnel gh opens through it, and cannot read the token. A deployment whose proxy inspects TLS
+with a CA of its own must install that CA in the system's trust store, which gh, git and curl read
+by default; naming it in `SSL_CERT_FILE` or `SSL_CERT_DIR` reaches a pane, but not the gh `legion
+gh` runs, and gh's requests then fail certificate verification. The git gh runs reads no global
+or system configuration file (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), takes of
+the caller's `GIT_CONFIG_*` pairs only those the runtime sets, and gets `http.sslVerify=true` and
+submodule recursion off (`submodule.recurse=false`, `fetch.recurseSubmodules=false`,
+`push.recurseSubmodules=no`): git's default fetch recurses on demand into a submodule whose
+gitlink the fetched commits move, with that submodule's own configuration, which no check reads.
+With the global and system files out, a clone of a Git LFS repository through `legion gh` gets no
+`filter.lfs` (git-lfs registers it there) and leaves pointer files; no Legion caller clones one.
+The saved help its tests read is the image's gh's,
 with that gh's whole command reference, every argument and every repository-naming option of
 which the wrapper's tables know (`packages/daemon/cmd/legion/testdata`, with the script that
 regenerates it when that pin moves; `.github/scripts/check-gh-version.sh` fails the build until
@@ -196,7 +251,14 @@ on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the r
 path git asks about — of the owner a configured rename moved that repository to where a pair
 names it — and nothing else.
 
-Oh My Pi itself holds that `PATH` when `omp_invocation` runs it through mise. `mise x` rewrites the
+In a pod, the sweep that knives runs after each write to a fork's shared ledger (`knives ledger
+sweep`) pushes this machine's own ref, `refs/knives/<machine>`, to the fork's ledger repository
+with plain git, from a directory that is no clone. The git configuration entries every role is
+given (`gitConfigPairs`, [Anatomy of a Sandbox pod](kubernetes.md#anatomy-of-a-sandbox-pod)) name
+`!legion git-credential` there too, so it answers that push as it answers the shared clone's, and
+no person's token is used.
+
+Oh My Pi holds a pane's `PATH` when `omp_invocation` runs it through mise. `mise x` rewrites the
 `PATH` of the program it starts: it puts the tool's own directories and each `_.path` entry of the
 mise config it reads ahead of the rest, and such an entry, a dotfiles `shims` directory for example,
 can hold a `gh`, `git` or `jj` of its own. So the daemon has `mise x` start `/bin/sh` in place of

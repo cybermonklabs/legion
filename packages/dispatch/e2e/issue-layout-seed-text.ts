@@ -13,7 +13,7 @@
  * They hold characters outside ASCII, so a cut made over bytes rather than runes would show in
  * what c-three-things reads back. A summary written longer than that excerpt loses its last
  * sentence to the cut, and the head draws the whole sentences it has rather than a fragment,
- * which is the rule `IssueThreeThings.test.tsx` reads.
+ * which is the rule a later part's unit test of the head reads.
  */
 export const SUMMARY_SENTENCES = [
   "The issue page draws one ordered body in place of nine tabs.",

@@ -12,6 +12,7 @@ import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
 import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
+import { resetTimestampTick } from "../features/refs/Timestamp";
 import { resetWriteStorage } from "../features/writes/write-storage";
 import { type Writes, watchWriteStores } from "../features/writes/write-store";
 import {
@@ -47,32 +48,46 @@ expect.extend(reportableJestDomMatchers());
 // flag of `package.json`'s test scripts rather than a line of this file, and both are explained
 // here, since this file is what every `web/src` test loads.
 //
-// The per-test deadline is `--timeout 60000`, carried by both command lines that run tests: the
-// `test:web` script for `web/src`, and the `bun test --parallel e2e/__tests__` run beside it.
-// Bun's own default is 5000 ms, which the lane test of `e2e/__tests__/harness-lanes.test.ts`
-// ("the Playwright config refuses a --workers that is not the lane count") fails on a 2-core
-// pod, where it reads 4.45 s idle and 6.55 s loaded; the suite's slowest test,
-// `row-configurations.test.ts`'s "no row runs twice in one configuration", reads 13.83 s loaded.
+// The per-test deadline is `--timeout 60000`, carried by each of package.json's scripts that run
+// tests: `test:web` for `web/src`, which `test:web:cold` runs with one more preload, and
+// `test:harness` for `e2e/__tests__`.
+// Bun's own default is 5000 ms, which a lane test failed on a 2-core pod, where it read 4.45 s
+// idle and 6.55 s loaded: "the Playwright config refuses a --workers that is not the lane count",
+// of `e2e/__tests__/harness-lanes.test.ts`, a file pull request #3435 later deleted. The suite's
+// slowest test, `row-configurations.test.ts`'s "no row runs twice in one configuration", read
+// 13.83 s loaded.
 // The number is twice the slowest loaded test, and it is sized on the slower of the two pod
 // shapes this suite runs in rather than on the one that measured 13.83 s: at code that does not
 // differ, dispatch://INFRA-983's pod reads 335 s for the whole suite where this one reads 156 s,
-// a factor of 2.15, which puts that same test at about 29.7 s there - inside a 30 s deadline by
-// 0.3 s, which is the failure this issue exists to remove rather than a margin. Twice 29.7 s is
-// 59.4 s, so 60 s, and it is kept as small as that rule allows, because every hung test costs
-// the whole budget on CI as well as in a pod. The flag carries it rather than a
-// `jest.setTimeout` here, for two measured reasons: a preload's deadline is not dependable,
-// since a 6 s probe in a directory run started by hand ended "this test timed out after 5000ms"
-// three times of three with two scratch files beside it and passed with one, and what file of a
-// run kept it and what file lost it did not reproduce the same way twice; and the
-// `e2e/__tests__` lane loads no preload at all, so there the flag is the only deadline those
-// files get. It cuts no deadline a row sets for itself, measured rather than assumed: a row
-// carrying `}, 5_000)` slept 1.2 s and passed under `bun test --timeout 200`, so a row's own
-// number wins over the flag whichever is larger. Rows that set one today are
-// `e2e/__tests__/compare-recordings-refusal.test.ts:28`, `stub-web-server.test.ts:43` and
-// `psql-session.test.ts:61,70` at 60 s, equal to the flag, and `MarkdownBody.test.tsx`'s 40 s,
-// above the 25 s wait that row must let run out. The list is not a superlative and is not
-// checked by anything: a row added tomorrow may set more, as dispatch://INFRA-1571 does with
-// a 90 s limit of its own. What lowering the flag would cut is every row that sets none.
+// a factor of 2.15. That puts the same test at about 29.7 s there - a figure derived as the
+// 13.83 s measured here times 2.15, and not read on that pod - inside a 30 s deadline by 0.3 s,
+// which is the failure this issue exists to remove rather than a margin. Twice 29.7 s is 59.4 s,
+// so 60 s, and it is kept as small as that rule allows, because every hung test costs the whole
+// budget on CI as well as in a pod. The flag carries it rather than a `jest.setTimeout` here, for
+// two measured reasons: a preload's deadline is not dependable, since a 6 s probe in a directory
+// run started by hand ended "this test timed out after 5000ms" three times of three with two
+// scratch files beside it and passed with one, and what file of a run kept it and what file lost
+// it did not reproduce the same way twice; and the `e2e/__tests__` lane loads no preload at all,
+// so there the flag is the only deadline a row gets unless it sets its own. The flag neither
+// cuts nor raises a deadline a row sets for itself, measured in both directions rather than
+// assumed: a row carrying `}, 500)` that slept 1.2 s failed at 500 ms under
+// `bun test --timeout 60000`, and a row carrying `}, 5_000)` that slept 1.2 s passed under
+// `bun test --timeout 200`. So a row's own deadline takes the flag's place whether it is larger
+// or smaller. In `e2e/__tests__` a row's or a hook's own limit is a call of `rowLimit` of
+// `e2e/__tests__/bounded-subprocess.ts`, read from the bounds of the children and the polls it
+// waits for, or a number with its reason on the line directly above it: `e2e/row-limits.ts`
+// holds every test file of that directory to that rule, and `e2e/__tests__/row-limits.test.ts`
+// runs it on that lane, so a limit there is checked rather than listed here. `web/src` has no
+// such rule, and its rows that set less than the flag are the ones the flag does not protect. A
+// grep of its test files and a parse of them with the TypeScript parser find three rows that
+// set a limit, all of them less: `web/src/features/refs/MarkdownBody.test.tsx`'s "ends formatted
+// on the page's own thread when the worker misses its deadline" sets 40 s, above the 25 s wait
+// that row must let run out, and `web/src/features/refs/fixture-table-readings.test.ts` sets
+// 30 s, as `WHOLE_TABLE_TIMEOUT_MS`, on "every document of the table reads in a DOM as the table
+// says it reads" and "no mark element stands between an inline leaf and its paragraph, in any
+// document of the table". The list is checked by nothing: a row added tomorrow may set any
+// number. What lowering the flag would cut is every row that sets none, and what raising it
+// would not reach is every row that sets one.
 //
 // The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
 // which a loaded run of this suite passes while a page is still rendering: it failed
@@ -103,16 +118,6 @@ configure({ asyncUtilTimeout: 10_000 });
 // the next test answers its own.
 afterEach(resetRouteAnswers);
 afterEach(forgetTestAnswers);
-
-// A request answered by nothing fails its test (`network.ts`), even one a page swallowed in a
-// `catch`; one made after the file's last test - a write loop's retry, which no test is left to
-// fail - fails the file, through the `afterAll` at the end of this file.
-const reportReachedNetwork = () => {
-  const reached = requestsThatReachedNetwork();
-  if (reached.length === 0) return;
-  throw new Error(`requests reached the network, answered by nothing: ${reached.join(", ")}`);
-};
-afterEach(reportReachedNetwork);
 
 class WebSocketStub {
   binaryType = "arraybuffer";
@@ -182,19 +187,28 @@ afterEach(resetPinState);
 // Whether Dispatch could be reached is the page's to learn afresh: a request one test failed would
 // otherwise make the next test's first answer start every waiting write's backoff over.
 afterEach(resetReachability);
+// Every `<Timestamp>` shares one tick (`Timestamp.tsx`) that outlives the row that armed it, and a
+// tick a row did not start must not land in another row as an update outside act. One armed on a
+// fake clock the row put back never fires and would leave the tick marked as armed, so no later
+// `<Timestamp>` would tick. `clearTimeout` clears a timer of either clock (measured on Bun 1.4.4),
+// so this reset needs no place relative to the clock restore below.
+afterEach(resetTimestampTick);
 
 // A fake clock a test installed is put back here as well as in that test's own `finally` or its
 // file's `afterEach`, because Bun keeps it across files: a test that installs it and then fails
 // before its `try` - an awaited helper of its own, say - would otherwise leave every later test
 // in the process, and every later file, with timers that never fire, so one regression reads as
-// timeouts everywhere and the real failure is buried. This runs after the hooks above, and
+// timeouts everywhere and the real failure is buried. This runs after the resets above it and
+// before the checks at the end of this file, which stand last for the reason given there, and
 // `useRealTimers` on a test that installed nothing does nothing.
 afterEach(() => {
   jest.useRealTimers();
 });
+
 // A spy of `quietConsoleError` a row did not restore itself is put back here, as a fake clock is
 // just above: one left in place would keep `console.error` quiet for the hooks that run before
-// the next row. It runs before the act check below, whose throw would otherwise skip it.
+// the next row. It runs before the network report and the act check below, either of whose throws
+// would otherwise skip it.
 afterEach(restoreQuietConsoleError);
 
 // A row in which React printed an act message fails with what React printed (`act-warnings.ts`).
@@ -204,32 +218,42 @@ afterEach(restoreQuietConsoleError);
 // preload `afterAll` that throws is reported as `(fail) (unnamed)` under the file and skips every
 // preload `afterAll` after it.
 //
-// So the `afterEach` below, the preload's last, charges a message to the row that printed it,
-// that row's earlier `afterEach` hooks included. A message printed between two rows, or in a row
-// whose check was skipped because an earlier `afterEach` threw - the file's own, or
-// `reportReachedNetwork` - is charged to the next row, hence "in or before this row"; the
-// failure's test frames still point at the code that printed it. A message printed after the
-// last row's check, or in a last row whose check was skipped, fails the file through the
-// `afterAll` below, hence "in or after this file's last row".
+// So the `afterEach` below, the preload's last, runs the network report and then the act check,
+// and throws what failed, as one error when both did: as two `afterEach` hooks, the first to throw
+// would skip the other. Placed earlier, a check that throws would leave the next row what every
+// reset above clears, the fake clock and the quiet spy. That hook charges an act message to the
+// row that printed it, that row's earlier `afterEach` hooks included. A message printed between
+// two rows, or in a row whose check was skipped because one of the file's own `afterEach` hooks
+// threw first, is charged to the next row, hence "in or before this row"; the failure's test
+// frames still point at the code that printed it. A message printed after the last row's check,
+// or in a last row whose check was skipped, fails the file through the `afterAll` below, hence
+// "in or after this file's last row".
 //
-// That `afterAll` runs the network report and then the act check, and throws what failed, as one
-// error when both did: as two `afterAll` hooks, the first to throw would skip the other. It runs
-// once per file under `--parallel`, which `test:web` passes; a plain `bun test` over several files
-// runs it once, at the end of the run. Keep this block the last of the file, so its throws skip
-// no other hook and its checks run after every other: a hook added later goes above it.
+// That `afterAll` runs the same checks, once per file under `--parallel`, which `test:web` passes;
+// a plain `bun test` over several files runs it once, at the end of the run. Keep this block the
+// last of the file, so its throws skip no other hook and its checks run after every other: a hook
+// added later goes above it.
 //
 // The `beforeEach` puts back a spy of `quietConsoleError` that the row before left in place
-// because one of that row's `afterEach` hooks threw before the one beside the clock restore ran.
+// because one of that row's own `afterEach` hooks threw before the one beside the clock restore
+// ran.
 installActMessageRecorder();
 beforeEach(restoreQuietConsoleError);
-afterEach(() => failOnActMessages("in or before this row"));
-afterAll(() => {
+
+// A request answered by nothing fails its test (`network.ts`), even one a page swallowed in a
+// `catch`, through the `afterEach` below; one made after the file's last test - a write loop's
+// retry, which no test is left to fail - fails the file, through the `afterAll` beside it.
+const reportReachedNetwork = () => {
+  const reached = requestsThatReachedNetwork();
+  if (reached.length === 0) return;
+  throw new Error(`requests reached the network, answered by nothing: ${reached.join(", ")}`);
+};
+
+/** Runs the network report and then the act check, which charges what it found to `where`, and
+ *  throws what failed: one error when both did. */
+function runChecks(where: string): void {
   const failures: Error[] = [];
-  const checks = [
-    reportReachedNetwork,
-    () => failOnActMessages("in or after this file's last row"),
-  ];
-  for (const check of checks) {
+  for (const check of [reportReachedNetwork, () => failOnActMessages(where)]) {
     try {
       check();
     } catch (failure) {
@@ -238,4 +262,6 @@ afterAll(() => {
   }
   if (failures.length > 1) throw new Error(failures.map((failure) => failure.message).join("\n"));
   if (failures.length === 1) throw failures[0];
-});
+}
+afterEach(() => runChecks("in or before this row"));
+afterAll(() => runChecks("in or after this file's last row"));

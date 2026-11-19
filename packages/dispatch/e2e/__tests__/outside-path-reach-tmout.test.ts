@@ -61,8 +61,8 @@ describe.concurrent("outside-path-reach.sh under an inherited TMOUT", () => {
         `was seen reading it, with ${tmout === undefined ? "no TMOUT" : `TMOUT=${tmout}`}, ` +
         `the ${path} PATH and a ${kind} hub`,
       async () => {
-        const origin = fakeDispatch();
         const hub = kind === "holding" ? holdingTarget() : closingTarget();
+        const origin = await fakeDispatch();
         try {
           const run = await drive(
             {
@@ -82,8 +82,8 @@ describe.concurrent("outside-path-reach.sh under an inherited TMOUT", () => {
           expect(verdict(run)).toBe("FAIL: reached hub");
           expect(run.code).toBe(1);
         } finally {
-          origin.stop(true);
           hub.stop(true);
+          await origin.stop();
         }
       }
     );
