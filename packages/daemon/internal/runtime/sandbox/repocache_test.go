@@ -994,25 +994,28 @@ func TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes(t *testing.T) {
 }
 
 // A cache the sweep of a release before INFRA-4401 marked under the old annotation
-// (annotationCacheOldUnusedAt) is marked again by this one, as INFRA-4401's A4 requires. Outside
-// the cache set it gets annotationCacheUnusedAt at the time of the first sweep that finds it and
-// loses the old annotation in the same patch, so it is kept one retention from that sweep and
-// retired at the first sweep past it; back in the set it loses the old annotation, as it would
-// the new one.
+// (annotationCacheOldUnusedAt) is judged by that mark, its first, at the first sweep of this
+// release, as INFRA-4401's A4 requires. Outside the cache set, a cache whose old mark is less
+// than one retention old has that mark's time written under annotationCacheUnusedAt, in the patch
+// that removes the old annotation, so it is kept until one retention after its first mark and
+// retired at the first sweep then; one whose old mark is one retention old is retired at that
+// first sweep, as a cache whose new mark is that old is. A cache in the set loses the old
+// annotation at that sweep, as it would the new one.
 //
-// The old mark is two retentions old and is written as its literal, so the test fails both ways
-// the sweep could misread it. Read as the new one, the first sweep would retire the cache at
-// once, the old mark's retention long passed: the control is the Sandbox still stored after that
-// sweep, marked at its time. Ignored, the cache would be marked under the new name all the same,
-// since it carries no mark the sweep reads, and retire on time, but it would keep the old
-// annotation for its whole retention, and a cache back in the set would keep it for good: the
-// control is the old annotation gone from the Sandbox after the sweep, in and outside the set.
-func TestACacheMarkedUnderTheOldAnnotationRetiresOneRetentionLater(t *testing.T) {
+// The old mark is written as its literal, as an earlier release left it. The controls, each run
+// in a copy of the tree: the old annotation left in place (markUnused's patch without
+// annotationCacheOldUnusedAt), which fails the case marked a day ago and the case in the set, each
+// cache still carrying it after the first sweep; and the old mark ignored, which is now written in
+// its place (the sweep never reading annotationCacheOldUnusedAt as the cache's mark, as before
+// this rule), which fails the case marked a day ago, marked at the sweep's time and not at its
+// first mark's, and the case marked one retention ago, kept for a retention and not retired.
+func TestTheFirstSweepReadsACachesOldMarkAsItsFirstMark(t *testing.T) {
 	const oldAnnotation = "legion.dev/cache-unmapped-at"
 	name := CacheSandboxName(testProject, cacheRepo)
-	// markedBefore is a rig holding cacheRepo's cache, marked under the old annotation two
-	// retentions before the rig's clock, whose cache set holds cacheRepo when cached is set.
-	markedBefore := func(t *testing.T, cached bool) (*rig, *logBuffer) {
+	// markedBefore is a rig holding cacheRepo's cache, marked under the old annotation age(the
+	// rig's retention) before the rig's clock, whose cache set holds cacheRepo when cached is set.
+	// It answers the rig, its log and the old mark's time.
+	markedBefore := func(t *testing.T, cached bool, age func(retain time.Duration) time.Duration) (*rig, *logBuffer, time.Time) {
 		t.Helper()
 		logs := &logBuffer{}
 		g := newRig(t, nil, withLog(logs), withOptions(func(o *Options) {
@@ -1031,7 +1034,8 @@ func TestACacheMarkedUnderTheOldAnnotationRetiresOneRetentionLater(t *testing.T)
 		if s == nil {
 			t.Fatalf("the cache Sandbox %s is absent", name)
 		}
-		s.Annotations[oldAnnotation] = rigNow.Add(-2 * g.r.cacheConfig.Retain).UTC().Format(time.RFC3339)
+		firstMark := rigNow.Add(-age(g.r.cacheConfig.Retain))
+		s.Annotations[oldAnnotation] = firstMark.UTC().Format(time.RFC3339)
 		u, err := encodeSandbox(*s)
 		if err != nil {
 			t.Fatal(err)
@@ -1043,7 +1047,7 @@ func TestACacheMarkedUnderTheOldAnnotationRetiresOneRetentionLater(t *testing.T)
 			stored, _ := g.r.storedSandbox(name)
 			return stored != nil && stored.Annotations[oldAnnotation] != ""
 		})
-		return g, logs
+		return g, logs, firstMark
 	}
 	sweep := func(t *testing.T, g *rig, what string) {
 		t.Helper()
@@ -1051,20 +1055,24 @@ func TestACacheMarkedUnderTheOldAnnotationRetiresOneRetentionLater(t *testing.T)
 			t.Fatalf("ReconcileOrphans %s: %v", what, err)
 		}
 	}
+	const day = 24 * time.Hour
 
-	t.Run("outside the set", func(t *testing.T) {
-		g, logs := markedBefore(t, false)
-		sweep(t, g, "of a cache outside the set marked under the old annotation")
+	t.Run("outside the set, marked a day ago", func(t *testing.T) {
+		g, logs, firstMark := markedBefore(t, false, func(time.Duration) time.Duration { return day })
+		sweep(t, g, "of a cache outside the set marked under the old annotation a day ago")
 		s := g.sandbox(name)
 		if s == nil {
-			t.Fatal("the first sweep retired the cache, want it kept one retention from that sweep: it read the old mark, two retentions old, as its own")
+			t.Fatal("the first sweep retired a cache marked a day ago, want it kept for the rest of its retention")
 		}
-		if at, err := time.Parse(time.RFC3339, s.Annotations[annotationCacheUnusedAt]); err != nil || !at.Equal(rigNow) {
-			t.Fatalf("the cache is marked %q under %s, want the sweep's time %s", s.Annotations[annotationCacheUnusedAt], annotationCacheUnusedAt, rigNow)
+		if at, err := time.Parse(time.RFC3339, s.Annotations[annotationCacheUnusedAt]); err != nil || !at.Equal(firstMark) {
+			t.Fatalf("the cache is marked %q under %s, want its first mark's time %s: the sweep ignored the old mark",
+				s.Annotations[annotationCacheUnusedAt], annotationCacheUnusedAt, firstMark)
 		}
 		if old, held := s.Annotations[oldAnnotation]; held {
-			t.Fatalf("the cache still carries %s=%q, want it removed by the patch that marks it under %s: the sweep ignored the old annotation",
-				oldAnnotation, old, annotationCacheUnusedAt)
+			t.Fatalf("the cache still carries %s=%q, want it removed by the patch that marks it under %s", oldAnnotation, old, annotationCacheUnusedAt)
+		}
+		if !strings.Contains(logs.String(), "repository cache marked under the old annotation") {
+			t.Errorf("the move of the old mark was not logged:\n%s", logs)
 		}
 		g.eventually("the new mark in the store", func() bool {
 			stored, _ := g.r.storedSandbox(name)
@@ -1075,30 +1083,41 @@ func TestACacheMarkedUnderTheOldAnnotationRetiresOneRetentionLater(t *testing.T)
 			return stored.Annotations[annotationCacheUnusedAt] != "" && !old
 		})
 
-		g.advance(g.r.cacheConfig.Retain - time.Second)
-		sweep(t, g, "a second short of one retention from the new mark")
+		g.advance(g.r.cacheConfig.Retain - day - time.Second)
+		sweep(t, g, "a second short of one retention from the first mark")
 		if g.sandbox(name) == nil {
-			t.Fatal("the cache was retired before one retention had passed from the sweep that marked it again")
+			t.Fatal("the cache was retired before one retention had passed from its first mark")
 		}
 		g.advance(time.Second)
-		sweep(t, g, "one retention from the new mark")
+		sweep(t, g, "one retention from the first mark")
 		if g.sandbox(name) != nil {
-			t.Fatal("the cache one retention from the sweep that marked it again is kept, want it retired")
+			t.Fatal("the cache one retention from its first mark is kept, want it retired")
 		}
 		if logged := logs.String(); !strings.Contains(logged, "retired a repository cache no longer in the cache set") || !strings.Contains(logged, "kept="+g.r.cacheConfig.Retain.String()) {
-			t.Errorf("the retirement was not logged with how long the cache was kept, one retention:\n%s", logged)
+			t.Errorf("the retirement was not logged with how long the cache was kept, one retention from its first mark:\n%s", logged)
 		}
 	})
 
-	t.Run("back in the set", func(t *testing.T) {
-		g, logs := markedBefore(t, true)
+	t.Run("outside the set, marked one retention ago", func(t *testing.T) {
+		g, logs, _ := markedBefore(t, false, func(retain time.Duration) time.Duration { return retain })
+		sweep(t, g, "of a cache outside the set marked under the old annotation one retention ago")
+		if s := g.sandbox(name); s != nil {
+			t.Fatalf("the cache marked one retention ago is %+v after the first sweep, want it retired at that sweep: the sweep ignored the old mark", s.Annotations)
+		}
+		if logged := logs.String(); !strings.Contains(logged, "retired a repository cache no longer in the cache set") || !strings.Contains(logged, "kept="+g.r.cacheConfig.Retain.String()) {
+			t.Errorf("the retirement was not logged with how long the cache was kept, one retention from its first mark:\n%s", logged)
+		}
+	})
+
+	t.Run("in the set", func(t *testing.T) {
+		g, logs, _ := markedBefore(t, true, func(retain time.Duration) time.Duration { return 2 * retain })
 		sweep(t, g, "of a cache in the set marked under the old annotation")
 		s := g.sandbox(name)
 		if s == nil {
 			t.Fatal("the sweep retired a cache of the set")
 		}
 		if old, held := s.Annotations[oldAnnotation]; held {
-			t.Fatalf("the cache in the set still carries %s=%q, want it removed: the sweep ignored the old annotation", oldAnnotation, old)
+			t.Fatalf("the cache in the set still carries %s=%q, want it removed at the first sweep", oldAnnotation, old)
 		}
 		if got, held := s.Annotations[annotationCacheUnusedAt]; held {
 			t.Fatalf("the cache in the set is marked %q under %s, want no mark", got, annotationCacheUnusedAt)

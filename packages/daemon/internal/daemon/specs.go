@@ -406,13 +406,14 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 // controllerSpawnSpec is the daemon's controller's launch (`controller: daemon`): its role part and
 // the headless part; as its addressing the design-gate steps the project gates, then the reach
 // its GitHub App gives it as a sentence of its own (RepositoriesSentence, which also says when
-// its App is installed on no owner) and, when it names any, its Slack channels; then the
-// deployment instructions and the launch secrets. The operator's controller (`legion controller
-// start`) is told the steps and the reach the same way, never channels, since only the daemon's may
-// have channels (config.checkSlackChannels). The channels reach its environment as
-// LEGION_SLACK_CHANNELS from the runtime (sandbox.Options.ControllerSlackChannels), which
-// compares them with the list a running controller was launched under and relaunches it when
-// they change; a spec cannot set that variable.
+// its App is installed on no owner, so that it has no GitHub owner) and, when it names any, its
+// Slack channels; then the deployment instructions and the launch secrets. The operator's
+// controller (`legion controller start`) is told the steps and the reach the same way, never
+// channels, since only the daemon's may have channels (config.checkSlackChannels). The channels
+// reach its environment as LEGION_SLACK_CHANNELS from the runtime
+// (sandbox.Options.ControllerSlackChannels), which compares them with the list a running
+// controller was launched under and relaunches it when they change; a spec cannot set that
+// variable.
 // It has no repository and no git identity: the controller works Dispatch, never a checkout, and
 // commits nothing, so it stamps no issue key into one either (runtime.SpawnSpec.IssueTrailer,
 // which validateControllerShape refuses on a controller's spec). It runs in no experiment and is
@@ -533,10 +534,13 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 // bundle holds a directory per owner.
 //
 // An App installed on no owner, which a deployment with no installation has, is told so
-// plainly: a clause that named nothing would read as one the daemon failed to fill.
+// plainly, with the GitHub owner the role has, none: a clause that named nothing would read as one
+// the daemon failed to fill, and a controller whose review App is installed on no account is
+// launched on an empty gh bundle (runtime.ErrNoGitHubOwner), so this clause is what tells it that
+// its gh acts as nobody (dispatch://INFRA-4401 A3).
 func RepositoriesClause(owners []string) string {
 	if len(owners) == 0 {
-		return "your role's GitHub App is installed on no owner, so its token reaches no repository."
+		return "your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
 	}
 	if len(owners) == 1 {
 		return "your role's GitHub App is installed on the owner " + owners[0] + ", and its token reaches every repository of that owner."

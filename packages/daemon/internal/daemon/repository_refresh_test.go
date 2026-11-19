@@ -1647,12 +1647,16 @@ func TestARecoveryWhoseNoticeFailsPastItsBoundWaitsItsBackoff(t *testing.T) {
 
 // The boot hears every repository a record of the project names and each configured rename's
 // partner of those (heardAtBoot, heardRepositories), and caches each repository a live record
-// names, with no partner (refreshCacheRepositories): here a live record on acme/widgets, a pair
-// from acme/widgets to cybermonklabs/widgets, and a done record on orbit/gadgets, against a
-// Dispatch whose repository settings name zeta/extra for the project as well. zeta/extra is in
-// neither set, and the boot asks Dispatch nothing under /api/v1/settings/repo-projects. Control
+// names, with no partner (refreshCacheRepositories): here a live record on acme/widgets, the
+// `from` of a pair from acme/widgets to cybermonklabs/widgets, and a done record on
+// orbit/gadgets, against a Dispatch whose repository settings name zeta/extra for the project as
+// well. The partner cybermonklabs/widgets is heard and not cached, zeta/extra is in neither set,
+// and the boot asks Dispatch nothing under /api/v1/settings/repo-projects. Controls
 // (dispatch://INFRA-4401 check a-go, item 3): with the boot's sets read from those settings
-// again, zeta/extra is heard and cached, and the count of requests under the route is not 0.
+// again, zeta/extra is heard and cached, and the count of requests under the route is not 0; with
+// each pair's partner added to the cache set (refreshCacheRepositories storing the live
+// repositories with the partner of each pair whose `from` they hold), cybermonklabs/widgets is
+// cached.
 func TestTheBootHearsTheRecordsRepositoriesAndCachesTheLiveOnes(t *testing.T) {
 	ctx := context.Background()
 	var settings atomic.Int64

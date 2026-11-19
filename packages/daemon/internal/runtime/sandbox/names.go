@@ -365,10 +365,10 @@ const issueVolume = "issue"
 //
 // annotationCacheOldUnusedAt is the annotation the sweep of a release before INFRA-4401 marked such
 // a cache with. The sweep reads it because INFRA-4401's A4 requires a cache marked under it to be
-// marked again: one outside the set gets annotationCacheUnusedAt at that sweep's time and loses
-// the old one, so it retires one retention later, and one back in the set loses both. It can go
-// once no cache carries it, one runtime.kubernetes.repository_cache.retain_hours after this release
-// is deployed.
+// marked again: one outside the set has its old mark, its first, read as its mark, so it retires
+// one retention after that mark, written under annotationCacheUnusedAt with the old one removed
+// while it is kept, and one back in the set loses both. It can go once no cache carries it, one
+// runtime.kubernetes.repository_cache.retain_hours after this release is deployed.
 const (
 	labelCache                 = "legion.dev/cache"
 	cacheMarker                = "true"

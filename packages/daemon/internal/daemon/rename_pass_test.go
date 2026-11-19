@@ -692,6 +692,33 @@ func TestAPairWhoseReadsDoNotAnswerIsLeft(t *testing.T) {
 	}
 }
 
+// A pair whose `to` a role App is not installed on is left as it is, and one WARN line names the
+// App: GitHub answers neither role App installed on the pair's `from`, the transfer done, and the
+// implement App installed on its `to` but not the review App, so a record written under the `to`
+// would work a repository its reviewer cannot reach. The boot's pass writes no row, and each
+// table's line counts the rows left on the `from` (dispatch://INFRA-4401 check a-go, item 10).
+// Control: with the gate taken out (run writing every configured pair, as though renameTransfer
+// left none), the boot writes the pair.
+func TestAPairWhoseNewNameARoleAppIsNotInstalledOnIsLeft(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	seedRenameRecords(t, pool, "LEGION", renameSeed{key: "LEGION-1", repo: renameFrom, note: true})
+	installs := &installations{missing: map[string]bool{"implement " + renameFrom: true, "review " + renameFrom: true, "review " + renameTo: true}}
+	var logged syncBuffer
+	renameRuntime(t, pool, installs, newNamedGitHub(t, map[string]string{renameTo: renameTo + "@main"}).url, &logged).
+		renameAtBoot(context.Background(), fake.NewRuntime())
+	if names := storedRepositoryNames(t, pool, "LEGION-1"); !namedAll(names, renameFrom) {
+		t.Fatalf("LEGION-1's stored names = %v, want them left on %s: the review App is not installed on %s", names, renameFrom, renameTo)
+	}
+	left := renameLines(t, logged.String(), renameLeftLine)
+	if want := "the review App is not installed on " + renameTo; len(left) != 1 || left[0].Level != "WARN" ||
+		left[0].From != renameFrom || left[0].To != renameTo || left[0].Reason != want {
+		t.Fatalf("lines of a pair left = %+v, want one WARN line naming %s, %s and %q", left, renameFrom, renameTo, want)
+	}
+	if got := renameTables(t, logged.String()); got["issues"] != (renameTableTally{left: 1}) || got["repo_notes"] != (renameTableTally{left: 1}) {
+		t.Fatalf("the boot's table lines = %+v, want nothing written and every row left", got)
+	}
+}
+
 // A GitHub that answers the installation read of the pair's old name as it answers a moved
 // repository's — GET /repos/sjawhar/legion/installation with a 301 to where the repository is now,
 // which answers installed under the App's JWT — and installed for the new name shows the transfer:

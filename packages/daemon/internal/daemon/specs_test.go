@@ -208,7 +208,7 @@ func TestAWorkersAddressingNamesItsRepositoryAndItsAppsReach(t *testing.T) {
 			[]string{"acme"},
 			own + "your role's GitHub App is installed on the owner acme, and its token reaches every repository of that owner.",
 		},
-		{"no installation", nil, own + "your role's GitHub App is installed on no owner, so its token reaches no repository."},
+		{"no installation", nil, own + "your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s.appOwners = func(claim.Role) []string { return tc.owners }
@@ -273,7 +273,7 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 	if !slices.Equal(spec.Prompt.RolePromptPaths, want) {
 		t.Errorf("role prompts = %q, want %q", spec.Prompt.RolePromptPaths, want)
 	}
-	if want := "Design gate steps: none. Your role's GitHub App is installed on no owner, so its token reaches no repository."; spec.Prompt.Addressing != want {
+	if want := "Design gate steps: none. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."; spec.Prompt.Addressing != want {
 		t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 	}
 	if spec.Prompt.DeploymentInstructionsPath != s.instructions {
@@ -315,13 +315,13 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 	if _, set := spec.Env["LEGION_SLACK_CHANNELS"]; set {
 		t.Errorf("the spec sets LEGION_SLACK_CHANNELS (%v), the runtime's variable", spec.Env)
 	}
-	want := "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so its token reaches no repository. Slack channels: `C00000000`, `G00000001`: " +
+	want := "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository. Slack channels: `C00000000`, `G00000001`: " +
 		"your session hears each one's app mentions while it holds the controller role; answer each in its thread, " +
 		"and nothing from any other channel (skill://legion-controller/references/slack-mentions.md)."
 	if spec.Prompt.Addressing != want {
 		t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 	}
-	if none := launch(nil); none.Prompt.Addressing != "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so its token reaches no repository." {
+	if none := launch(nil); none.Prompt.Addressing != "Design gate steps: `spec`. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository." {
 		t.Errorf("with no channel: addressing %q, want no Slack line", none.Prompt.Addressing)
 	}
 }
@@ -355,7 +355,7 @@ func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 		},
 		// A deployment with no installation is a state a running project reaches, never a
 		// refusal to launch.
-		{"no installation", nil, "Your role's GitHub App is installed on no owner, so its token reaches no repository."},
+		{"no installation", nil, "Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var asked []claim.Role

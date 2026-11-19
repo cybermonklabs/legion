@@ -806,9 +806,10 @@ func (r *Runtime) refreshCacheTokens(ctx context.Context) {
 // the last read names it — is marked with now once, kept while now minus the mark is under the
 // retention, and deleted after it (deleteFenced, in the foreground, so its volume and Secret go
 // with it), logged with the repository and how long it was kept. A cache an earlier release
-// marked under annotationCacheOldUnusedAt alone is marked with now as one marked by no release
-// is, and loses the old annotation in the same patch: that mark is never read as this one's, so
-// such a cache is kept one retention from this sweep. Then every member's cache is ensured
+// marked under annotationCacheOldUnusedAt alone has that mark read as its first mark: under the
+// retention, it is written under annotationCacheUnusedAt in the patch that removes the old
+// annotation, so the cache retires one retention after its first mark; at or past it, the cache
+// is retired at this sweep, as one whose new mark is that old. Then every member's cache is ensured
 // (EnsureRepositoryCache): one missing is made — at boot, whose reconciliation runs this, and
 // after a launch's own ensure failed — and a drifted or dead cache pod is replaced, all on the
 // sweep's schedule. Each runs under the cache's launch turn, fenced to the Sandbox as the store
@@ -831,7 +832,11 @@ func (r *Runtime) sweepCaches(ctx context.Context) {
 }
 
 // sweepCache is sweepCaches' judgement of one stored cache Sandbox, u, against cached, the cache
-// set.
+// set. Outside the set, a cache's mark is its annotationCacheUnusedAt or, on a cache an earlier
+// release marked under annotationCacheOldUnusedAt alone, that old mark, the cache's first: a cache
+// the old mark keeps has it written under annotationCacheUnusedAt, in the patch that removes the
+// old annotation, and an old mark that is not a time is logged and the cache kept, as a new mark
+// that is not one is and as that release did.
 func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, cached []ghrepo.Repository) error {
 	repo, err := cacheRepository(u.GetAnnotations())
 	if err != nil {
@@ -850,7 +855,7 @@ func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, 
 		return err
 	}
 	marked := s.Annotations[annotationCacheUnusedAt]
-	_, markedBefore := s.Annotations[annotationCacheOldUnusedAt]
+	old, markedBefore := s.Annotations[annotationCacheOldUnusedAt]
 	if slices.ContainsFunc(cached, func(m ghrepo.Repository) bool { return sameRepository(m, repo) }) {
 		if marked != "" || markedBefore {
 			if _, err := r.markUnused(ctx, s, nil); err != nil {
@@ -861,6 +866,10 @@ func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, 
 		return nil
 	}
 	now := r.now()
+	under := annotationCacheUnusedAt
+	if marked == "" && old != "" {
+		marked, under = old, annotationCacheOldUnusedAt
+	}
 	if marked == "" {
 		stamp := now.UTC().Format(time.RFC3339)
 		if _, err := r.markUnused(ctx, s, &stamp); err != nil {
@@ -871,13 +880,20 @@ func (r *Runtime) sweepCache(ctx context.Context, u *unstructured.Unstructured, 
 	}
 	at, err := time.Parse(time.RFC3339, marked)
 	if err != nil {
-		return fmt.Errorf("%s is %q, not a time: %w; kept", annotationCacheUnusedAt, marked, err)
+		return fmt.Errorf("%s is %q, not a time: %w; kept", under, marked, err)
 	}
-	if kept := now.Sub(at); kept < r.cacheConfig.Retain {
-		return nil
+	if kept := now.Sub(at); kept >= r.cacheConfig.Retain {
+		return r.deleteFenced(ctx, s,
+			"sandbox runtime: retired a repository cache no longer in the cache set", "repo", repo.String(), "kept", kept.Truncate(time.Second).String())
 	}
-	return r.deleteFenced(ctx, s,
-		"sandbox runtime: retired a repository cache no longer in the cache set", "repo", repo.String(), "kept", now.Sub(at).Truncate(time.Second).String())
+	if under == annotationCacheOldUnusedAt {
+		if _, err := r.markUnused(ctx, s, &marked); err != nil {
+			return err
+		}
+		r.log.Info("sandbox runtime: repository cache marked under the old annotation; marked under the new one at its first mark, kept for the rest of its retention",
+			"sandbox", s.Name, "repo", repo.String(), "marked", marked, "retain", r.cacheConfig.Retain.String())
+	}
+	return nil
 }
 
 // markUnused sets s's annotationCacheUnusedAt to stamp, or removes it when stamp is nil, and

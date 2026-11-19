@@ -551,6 +551,13 @@ func (t installedTokens) InstalledOwners(context.Context, appauth.AppRole) ([]st
 	return t.installed, nil
 }
 
+// The bundle holds a directory for every account the review App is installed on, whatever the
+// project's records name (dispatch://INFRA-4401 A3, check a-go, item 12): installed on acme and
+// globex, of which no record names a repository — the rule serves none and no rename is
+// configured — it answers each account's directory with that account's own lease, and both in
+// `installed`. Control: with the bundle's accounts narrowed to the ones the records name, none
+// here (installedLayout reading no owner), the route answers GITHUB_OWNER_UNCONFIGURED.
+//
 // The answer's `installed` is the installations the bundle's own build read, and not the
 // bundle's directories, which is what `legion controller start` tells its controller its App is
 // installed on. The two differ both ways. A resolving rename puts a directory in the bundle for
@@ -561,6 +568,28 @@ func (t installedTokens) InstalledOwners(context.Context, appauth.AppRole) ([]st
 // sorted, and an array on the wire.
 func TestControllerGitHubCredentialAnswersTheOwnersTheReviewAppIsInstalledOn(t *testing.T) {
 	h := newHarness(t)
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Grants: credential.New(nil),
+		Tokens: installedTokens{installed: []string{"acme", "globex"}}, Served: servesOneOf(),
+	}).Handler
+	every := h.controllerGitHubCredential(h.mintedSecret())
+	if every.Code != http.StatusOK {
+		t.Fatalf("controller github credential of a review App installed on two accounts no record names = %d, want 200; body %s", every.Code, every.Body)
+	}
+	var each ControllerCredentialResponse
+	decodeInto(t, every, &each)
+	if want := map[string]ControllerOwnerCredential{
+		"acme":   {Hosts: ghconfig.Hosts("review-token-for-acme-read"), Config: ghconfig.Config},
+		"globex": {Hosts: ghconfig.Hosts("review-token-for-globex-read"), Config: ghconfig.Config},
+	}; !maps.Equal(each.Owners, want) {
+		t.Fatalf("the answer's owners = %+v, want %+v: a directory for each account the review App is installed on, though no record names either", each.Owners, want)
+	}
+	if want := []string{"acme", "globex"}; !slices.Equal(each.Installed, want) {
+		t.Errorf("the answer's installed = %q, want %q", each.Installed, want)
+	}
+
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
@@ -598,8 +627,10 @@ func TestControllerGitHubCredentialAnswersTheOwnersTheReviewAppIsInstalledOn(t *
 // GITHUB_OWNER_UNCONFIGURED, which legion controller start reads as a daemon with nothing to
 // act as: the bundle's directories are the App's installations, so an App installed nowhere is
 // a bundle with no directory to serve (appauth.ControllerCredential). The code keeps its name for
-// the clients already deployed, and the sentence says what is true: the App is installed on no
-// account, and no configuration names an owner.
+// the clients already deployed, and the sentence says what is true, that the App is installed on
+// no account, so the controller has no GitHub owner, and names no configuration
+// (dispatch://INFRA-4401 A3, check a-go, item 12). Control: with contract 152's text put back
+// (`no repository owner is configured for GitHub App tokens`), the answer's text is refused.
 func TestControllerGitHubCredentialWithoutAnOwner(t *testing.T) {
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{

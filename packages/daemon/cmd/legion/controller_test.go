@@ -739,7 +739,7 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 		t.Fatalf("the prompt file is %s, want legion-demo-controller-<run>-system-prompt.md under %s", promptFile, filepath.Join(c.defaultDir, "secrets"))
 	}
 	// Each file's trailing newlines are dropped where the parts join.
-	wantPrompt := strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. Your role's GitHub App is installed on no owner, so its token reaches no repository.\n\n" +
+	wantPrompt := strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository.\n\n" +
 		strings.TrimRight(string(instructions), "\n")
 	if got := c.systemPrompt(); got != wantPrompt {
 		t.Fatalf("the controller's prompt file held %q\nwant %q", got, wantPrompt)
@@ -945,7 +945,7 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 			if code, _, errb := c.run(); code != 0 {
 				t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 			}
-			want := "\n\n" + tc.line + " Your role's GitHub App is installed on no owner, so its token reaches no repository.\n\n"
+			want := "\n\n" + tc.line + " Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository.\n\n"
 			if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
 				t.Fatalf("Oh My Pi's system prompt = %q; want it to carry %q", prompt, want)
 			}
@@ -1133,7 +1133,7 @@ func TestControllerStartLaunchesWithNoLiveRepository(t *testing.T) {
 	if code, _, errb := c.run(); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
-	want := "Your role's GitHub App is installed on no owner, so its token reaches no repository.\n\n"
+	want := "Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository.\n\n"
 	if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
 		t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}

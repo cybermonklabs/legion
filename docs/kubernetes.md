@@ -4931,7 +4931,9 @@ A cache of an earlier release answers no `streams`, and one whose `/healthz` can
 A launch whose cache cannot be made fails, naming why.
 The cache of a repository no live record names, and no launch worked since the last read of the live records, is annotated `legion.dev/cache-unused-at` at the sweep that finds it so, kept for `runtime.kubernetes.repository_cache.retain_hours` (168 by default), and then deleted with its volume and Secret;
 named by a live record again before that, it loses the annotation and stays.
-A cache that an earlier release marked under the annotation's old name is marked again under `legion.dev/cache-unused-at` at the first sweep after the upgrade, so it retires one retention later, and the old annotation is removed.
+A cache that an earlier release marked under the annotation's old name keeps the time of that first mark:
+at the first sweep after the upgrade, one whose first mark is less than one retention old has that time written under `legion.dev/cache-unused-at` and the old annotation removed, so it retires one retention after its first mark, and one whose first mark is one retention old or more is deleted at that sweep;
+a cache that a live record names loses the old annotation at that sweep.
 A cache the sweep cannot make or repair — its owner's token cannot be minted, say — is a warning naming it, tried again at the next sweep.
 The boot census refuses a Sandbox labelled `legion.dev/cache` that is not one this runtime builds (no repository annotation, or another container or claim template), by name.
 
@@ -7952,8 +7954,8 @@ its session is a row in the session database like every other, not anything on t
 It provisions no workspace: no `workspace-fetch`, no provisioning token.
 Its `gh` bundle, projected read-only at `/var/run/legion/gh` by a `gh-controller` volume, acts as the review App, refreshed every minute as every role's is;
 a failed review-App mint fails the launch naming the role, and the keeper relaunches it.
-A project with no GitHub owner to mint for (none of its repositories has an App) starts the controller anyway with `gh` acting as nobody, as `legion
-controller start` does there: its role Secret records an empty `github-default`, its `gh-controller` volume is an empty directory, and it holds owners from its next pod on.
+A project whose review App is installed on no account has no GitHub owner to mint for, and starts the controller anyway with `gh` acting as nobody, as `legion controller start` does there, its addressing telling it so (`Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository.`):
+its role Secret records an empty `github-default`, its `gh-controller` volume is an empty directory, and it holds owners from its next pod on.
 It runs no init container (`controllerPod.initContainers`): nothing on its volume needs preparing before the launcher starts.
 The pod carries `legion.dev/project` and `legion.dev/role=controller` and no tree or issue label, so no tree's cleanup lists it, and the boot census holds it to exactly the one launcher those labels name and to the volume it owns.
 Under `runtime.kubernetes.agent_secrets` it is enrolled with the secrets broker as an issue pod's roles are:
@@ -8080,7 +8082,7 @@ In order, and keeping nothing until the daemon has answered, the command:
    then a `dispatch_url` whose file names neither Dispatch credential, a blank or unreadable Envoy or Dispatch token file, a secrets broker that refuses this machine under `dispatch_token_broker` (which also refuses a machine proving no identity and a deployment naming no broker), a `nats_nkey_seed_file` that is blank, unreadable, readable by its group or others, or holds no nkey user seed, a missing or blank instructions file, and an Oh My Pi invocation that does not resolve;
 
 2. reads the `repositories` block of the daemon's unauthenticated `GET /legion/v1/state`, and refuses a daemon that does not answer, a body with no `repositories` object, and a `live` entry that is not `owner/name`;
-   an empty `live` list, or one whose every repository a role App is missing from, launches the controller all the same, its addressing naming the owners the review App is installed on, or saying it is installed on no owner, while `legion state` names each repository a role App cannot work and why.
+   an empty `live` list, or one whose every repository a role App is missing from, launches the controller all the same, its addressing naming the owners the review App is installed on, or saying it is installed on no owner, so the controller has no GitHub owner, while `legion state` names each repository a role App cannot work and why.
    Then it probes that Oh My Pi as the controller will run it, with `omp models`, which starts no session, and refuses a pi-legion it does not load, or one speaking another daemon API contract, loaded without pi-envoy or with a pi-envoy at another plugin interface version, or loaded beside the pre-split package;
 
 3. asks `POST /legion/v1/controller/secret` with the operator token as `Authorization: Bearer` and the contract step 2 held the plugin to (`{"pluginContract": <N>}`).
