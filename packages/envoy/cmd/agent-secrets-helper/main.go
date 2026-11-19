@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/buildversion"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 type config struct {
@@ -232,14 +233,15 @@ func main() {
 // ever been installed. It refuses to start while another helper holds or answers on its socket
 // (claimSocket) or holds its machine file (claimMachineFile). It then resumes the machine login
 // kept at MachineFile, if there is one, refreshing it before it installs it and then at least
-// daily (Broker.Start); a machine file that is there but does not parse stops it,
-// naming the file. There is no startup gate on OperatorFile: a login is a separate ceremony
-// (`agent-secrets machine login`) run against the already-listening socket, and a missing or
-// empty OperatorFile only surfaces later, informatively, the first time Login actually needs it
-// for its login_hint. SIGINT or SIGTERM stops it, from systemd or from anything else that signals
-// it, and it exits 0, as a requested stop does, after a WARN line naming the signal, how many
-// sessions it had registered and whether it held a launcher credential: the journal says why it
-// stopped even when the unit's own log says only that it ended.
+// daily (Broker.Start); a machine file that is there but does not parse stops it, naming the
+// file by its setting, never its path. There is no startup gate on OperatorFile: a login is a
+// separate ceremony (`agent-secrets machine login`) run against the already-listening socket,
+// and a missing or empty OperatorFile only surfaces later, informatively, the first time Login
+// actually needs it for its login_hint. SIGINT or SIGTERM stops it, from systemd or from
+// anything else that signals it, and it exits 0, as a requested stop does, after a WARN line
+// naming the signal, how many sessions it had registered and whether it held a launcher
+// credential: the journal says why it stopped even when the unit's own log says only that it
+// ended.
 func serve(cfg config) error {
 	if strings.TrimSpace(cfg.URL.Raw()) == "" {
 		return errors.New("AGENT_SECRETS_URL is required (the secrets broker, e.g. https://secrets.internal.example)")
@@ -310,13 +312,7 @@ func serve(cfg config) error {
 		case <-ctx.Done():
 		}
 	}()
-	// Before Recover reads them: a helper upgraded in place finds its records at the old
-	// runtime-directory path and keeps the sessions they name. A failure costs those sessions
-	// their continuity, never this start, so it is logged and nothing else.
-	if err := helper.MigrateStateFile(cfg.LegacyStatePath, cfg.StatePath); err != nil {
-		log.Warn("could not move the session records to their durable path; the sessions they name enrol afresh",
-			"from", cfg.LegacyStatePath, "to", cfg.StatePath, "error", err)
-	}
+	migrateRecords(cfg, log)
 	srv.Recover(ctx)
 	// Sessions parked when their process went away are revoked once DormantGrace passes without
 	// them coming back. A minute's tick: the grace is minutes, and nothing waits on it.
@@ -326,6 +322,23 @@ func serve(cfg config) error {
 	// broker's URL is an Address, which logs without a credential it may carry.
 	log.Info("agent-secrets-helper listening", "socket", cfg.Socket, "broker", cfg.URL, "version", buildversion.String())
 	return srv.Serve(ctx, ln)
+}
+
+// legacyRecordsNamed is how a message names the records file at its old path, beside the
+// helper's socket: by where it was, never by its path, since it holds named sessions' signing
+// keys as the durable one does (helper.RecordsNamed).
+const legacyRecordsNamed = "the session records beside the socket AGENT_SECRETS_HELPER_SOCK names, where they used to live"
+
+// migrateRecords moves the session records from their old runtime-directory path to their
+// durable one (helper.MigrateStateFile), before Recover reads them: a helper upgraded in place
+// finds its records at the old path and keeps the sessions they name. A failure costs those
+// sessions their continuity, never this start, so it is logged and nothing else, naming both
+// files by their settings and the failure by its operation and reason (redact.File).
+func migrateRecords(cfg config, log *slog.Logger) {
+	if err := helper.MigrateStateFile(cfg.LegacyStatePath, cfg.StatePath); err != nil {
+		log.Warn("could not move the session records to their durable path; the sessions they name enrol afresh",
+			"from", legacyRecordsNamed, "to", helper.RecordsNamed, "error", redact.File(err))
+	}
 }
 
 // identityClient is the token client for the identity this machine proves, or nil where it
@@ -350,7 +363,7 @@ func identityClient(cfg config, log *slog.Logger) (*brokerclient.Client, error) 
 	if err != nil {
 		return nil, err
 	}
-	log.Info("this machine's identity key", "file", cfg.IdentityKeyFile, "thumbprint", thumbprint, "made", made)
+	log.Info("this machine's identity key", "file", helper.IdentityKeyNamed, "thumbprint", thumbprint, "made", made)
 	return brokerclient.New(brokerclient.Config{
 		BrokerURL: cfg.URL, Key: key, Subject: cfg.Identity, Session: cfg.Session,
 		HTTP: brokerclient.HTTPClient(), Log: log,
@@ -386,7 +399,8 @@ func signInAuthority(cfg config, log *slog.Logger) helper.SignIns {
 // (one started before helpers took the claim) is refused the same way, since unlinking it would
 // leave that helper's sessions on a helper nobody reaches; and a socket that refuses connections
 // (a helper that died) is stale and removed. Any other dial failure (a timeout, a full accept
-// queue) refuses too: only a definite refusal proves nothing listens.
+// queue) refuses too: only a definite refusal proves nothing listens. serve exits 2 on any of
+// these refusals, before it resumes or refreshes the kept machine login.
 func claimSocket(sock string) (*os.File, error) {
 	lock, err := os.OpenFile(sock+".lock", os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -409,21 +423,23 @@ func claimSocket(sock string) (*os.File, error) {
 // claimMachineFile takes the helper's claim on the machine login at path: an exclusive flock on
 // path+".lock" (0600, beside it, its directory created 0700 if absent), which the returned file
 // holds until it is closed or the process exits. Another helper holding it, whatever its socket,
-// refuses the start, naming the machine file.
+// refuses the start, naming the machine file by its setting (helper.MachineFileNamed): the lock's
+// path is the machine file's own with ".lock" after it, so no error here holds either path. serve
+// exits 2 on that refusal, before it resumes or refreshes the kept machine login.
 func claimMachineFile(path string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("make the directory of %s: %w", helper.MachineFileNamed, redact.File(err))
 	}
 	lock, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open the lock beside %s: %w", helper.MachineFileNamed, redact.File(err))
 	}
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		lock.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, fmt.Errorf("another agent-secrets-helper already holds the machine login %s; stop it first", path)
+			return nil, fmt.Errorf("another agent-secrets-helper already holds the machine login, %s; stop it first", helper.MachineFileNamed)
 		}
-		return nil, fmt.Errorf("claiming %s: %w", path, err)
+		return nil, fmt.Errorf("claiming %s: %w", helper.MachineFileNamed, err)
 	}
 	return lock, nil
 }

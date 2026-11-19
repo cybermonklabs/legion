@@ -82,7 +82,7 @@ func (s *shim) sinceCommandsEnded() time.Duration {
 // terminate ends the commands and then the agent has its whole grace, which this wait would
 // otherwise follow with a span the command has already spent. Counting the difference into
 // MinStopGrace instead would raise the smallest `worker_stop_timeout_seconds` the daemon accepts
-// (internal/config refuses one under it, and AGENTS.md names the number), which is a change to
+// (internal/config refuses one under it, and its refusal names the number), which is a change to
 // which deployments are accepted and not this wait's to make. A command still running past the
 // bound has escaped its group — a descendant of its own that called setsid, which neither signal
 // reaches — so no further waiting would end it: it is logged and left, and the shim's exit reaches

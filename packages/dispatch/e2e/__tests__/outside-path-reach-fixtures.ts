@@ -10,10 +10,11 @@
  *
  *  Every row runs the script itself against real listeners: a fake Dispatch (`Bun.serve`, which
  *  holds a connection that sends nothing, as any HTTP server does) for the origin, and
- *  `Bun.listen` for a target, each on a port the kernel picks and held for the whole run. A closed
- *  port is one taken from below the kernel's ephemeral range and found refusing: a port a listener
- *  held and gave back can be handed by the kernel to the next listener any concurrent row, or any
- *  other test file, starts, and the closed target would then read REACHED.
+ *  `Bun.listen` for a target, each on a port the kernel picks and held for the whole run. The fake
+ *  Dispatch answers from a process beside this one, as `fakeDispatch` says. A closed port is one
+ *  taken from below the kernel's ephemeral range and found refusing: a port a listener held and
+ *  gave back can be handed by the kernel to the next listener any concurrent row, or any other
+ *  test file, starts, and the closed target would then read REACHED.
  *  The script lets `http` through only with `OUTSIDE_PATH_ALLOW_HTTP=1` and a `127.0.0.1` origin,
  *  which these rows set. HOME is a directory of the run's own, so no `~/.curlrc` of the host's
  *  reaches the script's curl unless a row writes one.
@@ -31,7 +32,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import type { udp } from "bun";
+import type { Subprocess, udp } from "bun";
+import type { Answers, Seen } from "./outside-path-reach-origin";
 
 export const script = fileURLToPath(
   new URL("../acceptance/outside-path-reach.sh", import.meta.url)
@@ -109,40 +111,100 @@ export function byteRefusal(where: string, offset: number): string {
   );
 }
 
-/** One request the fake Dispatch answered. */
-interface Seen {
-  method: string;
-  path: string;
-  credential: string | null;
+/** The fake Dispatch host's own program, which `fakeDispatch` runs. */
+const hostProgram = fileURLToPath(new URL("./outside-path-reach-origin.ts", import.meta.url));
+
+/** A fake Dispatch host: its control server's URL, and its process. */
+interface Host {
+  url: string;
+  child: Subprocess;
 }
 
-/** A fake Dispatch: `/healthz` answers `health`, and `/api/v1/projects` answers 200 to a request
- *  carrying a credential (an `Authorization` or a `Cookie`), as Dispatch would, and `projects` to
- *  one carrying none, with Dispatch's own refusal body unless `refusal` names another. `seen` lists
- *  every request it answered. */
-export function fakeDispatch(
+/** This module's fake Dispatch host, which the first `fakeDispatch` starts, so one process serves
+ *  every fake Dispatch of a test file rather than a Bun runtime of its own for each. It is kept
+ *  here so the pipe to its stdin, whose closing ends it, is never collected. */
+let host: Promise<Host> | undefined;
+
+async function startHost(): Promise<Host> {
+  const child = Bun.spawn([process.execPath, hostProgram], {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  // Its first line on stdout is its control server's port, and it prints nothing after it.
+  const reader = child.stdout.getReader();
+  const decoder = new TextDecoder();
+  let printed = "";
+  while (!printed.includes("\n")) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    printed += decoder.decode(value, { stream: true });
+  }
+  reader.releaseLock();
+  const port = Number(printed.split("\n")[0]);
+  if (!(port > 0)) {
+    child.stdin.end();
+    const code = await child.exited;
+    throw new Error(
+      `the fake Dispatch host exited ${code} with no port printed: ${JSON.stringify(printed)}`
+    );
+  }
+  return { url: `http://127.0.0.1:${port}`, child };
+}
+
+/** One request to the fake Dispatch host's control server, at `path`. */
+async function control(path: string, init?: RequestInit): Promise<Response> {
+  host ??= startHost();
+  const { url } = await host;
+  const call = `${init?.method ?? "GET"} ${path}`;
+  let response: Response;
+  try {
+    response = await fetch(`${url}${path}`, init);
+  } catch (error) {
+    // A host that has died or refuses: Bun's own error names neither the host nor the call, and
+    // the test runner prints it beneath this one as the cause.
+    throw new Error(`the fake Dispatch host did not answer ${call}`, { cause: error });
+  }
+  if (!response.ok) {
+    throw new Error(
+      `the fake Dispatch host answered ${call} with ${response.status}: ${await response.text()}`
+    );
+  }
+  return response;
+}
+
+/** A fake Dispatch, served by the fake Dispatch host, whose head in `outside-path-reach-origin.ts`
+ *  says what it answers for `health`, `projects` and `refusal`. `seen()` reads the list of every
+ *  request it answered, in the order it answered them, and `stop()` stops it and closes its
+ *  connections.
+ *
+ *  It answers from a process of its own, whose event loop does nothing but answer, because a
+ *  server in the test process answers only while the test process's event loop runs, and the
+ *  script gives each of its reads of the origin 10 s (`curl --max-time 10`). With the fake
+ *  Dispatch in the test process, the row "fails naming an origin that serves a read with no
+ *  credential" read "did not answer as Dispatch" (UNKNOWN) in place of FAIL 2 times in 320 runs of
+ *  its file under the e2e lane's load, and once in 47 ordinary runs of the lane. In four runs that
+ *  each ran the harness lane 20 times (`bun run test:repeat --lane harness --reruns 20`), a 50 ms
+ *  interval timer in that file measured the test process's longest stall at 5,850, 12,681, 6,080
+ *  and 1,557 ms, and its longest stall during that row's run of the script at 1,517, 12,631, 6,030
+ *  and 757 ms: a stall past 10 s leaves the script's read of `/api/v1/projects` unanswered. */
+export async function fakeDispatch(
   health = 200,
   projects = 401,
   refusal: object = { code: "NO_IDENTITY" }
 ) {
-  const seen: Seen[] = [];
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch(request) {
-      const { pathname } = new URL(request.url);
-      const credential = request.headers.get("authorization") ?? request.headers.get("cookie");
-      seen.push({ method: request.method, path: pathname, credential });
-      if (pathname === "/healthz") return Response.json({ ok: health === 200 }, { status: health });
-      if (pathname === "/api/v1/projects") {
-        const status = credential === null ? projects : 200;
-        if (status === 302) return Response.redirect("https://accounts.example/signin", 302);
-        return Response.json(status === 200 ? [] : refusal, { status });
-      }
-      return Response.json({ code: "NOT_FOUND" }, { status: 404 });
+  const answers: Answers = { health, projects, refusal };
+  const started = await control("/", { method: "POST", body: JSON.stringify(answers) });
+  const { port } = (await started.json()) as { port: number };
+  return {
+    port,
+    async seen(): Promise<Seen[]> {
+      return (await (await control(`/${port}/seen`)).json()) as Seen[];
     },
-  });
-  return Object.assign(server, { seen });
+    async stop(): Promise<void> {
+      await control(`/${port}`, { method: "DELETE" });
+    },
+  };
 }
 
 /** The lowest port the kernel hands out for `port: 0` here: Linux's `ip_local_port_range`, else

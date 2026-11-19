@@ -452,9 +452,11 @@ type commentRoute struct {
 // commentResolution is what the Envoy listener said about a comment before its transaction
 // opened: the session each mention names, and the owner's route with the session it names.
 // takeovers is each mention's take-over pacing (resolveThroughTakeover), which its sender carries
-// on in after the commit. decidesRoutes is set when the comment reaches sessions beyond its
-// mentions, so the mentions were resolved through a take-over and the comment's other routes are
-// decided on them; the comment.created event records it (mentions_decide_routes).
+// on in after the commit, unless the send waits on a held lane first, which starts a window of its
+// own at its delivery (mentionSend.takeover). decidesRoutes is set when the comment reaches
+// sessions beyond its mentions, so the mentions were resolved through a take-over and the
+// comment's other routes are decided on them; the comment.created event records it
+// (mentions_decide_routes).
 type commentResolution struct {
 	mentions      []ResolvedMention
 	takeovers     []takeoverRetry
@@ -1087,7 +1089,8 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// Each send carries the take-over pacing its mention's resolution started
 	// (resolveCommentDeliveries), so a comment waits about one listener take-over window in all,
 	// here as it did when the request itself sent: a resolution that already waited that window
-	// out settles with its outcome on the lane's first try.
+	// out settles with its outcome on the lane's first try. A send that waits on a held lane
+	// first starts a window of its own at its delivery (mentionSend.takeover).
 	sending := context.WithoutCancel(r.Context())
 	for i, mention := range resolvedMentions {
 		s.mentions.enqueue(sending, mentionSend{

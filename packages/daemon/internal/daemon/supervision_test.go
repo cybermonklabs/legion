@@ -1382,10 +1382,12 @@ func TestAnAgentsRequestWaitsForTheAnswerItsClaimsMachineHasNotHandled(t *testin
 	sup.deps.Store = held
 	t.Cleanup(held.open)
 	tester := mustClaimToken(t, "LEGION-208", claim.RoleTester)
-	if _, _, err := sup.Create(ctx, supervise.Claim{Token: tester, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
-		Role: claim.RoleTester, State: supervise.StateWorking, Session: "ses_tester", Generation: 3}, ""); err != nil {
+	machine, _, err := sup.Create(ctx, supervise.Claim{Token: tester, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
+		Role: claim.RoleTester, State: supervise.StateWorking, Session: "ses_tester", Generation: 3}, "")
+	if err != nil {
 		t.Fatalf("create the tester's claim: %v", err)
 	}
+	admitted(t, machine)
 	listening, stop := context.WithCancel(ctx)
 	t.Cleanup(stop)
 	listener, err := stream.Listen(listening, "tcp://127.0.0.1:0",
@@ -1409,7 +1411,7 @@ func TestAnAgentsRequestWaitsForTheAnswerItsClaimsMachineHasNotHandled(t *testin
 		}
 	})
 	sup.post(tester, supervise.StreamAnswered{Claim: tester, Model: "second/tester-model", Generation: 3})
-	if got := w.stepAgent(tester); got.Model != "" {
+	if got := w.stepAgent(ctx, nil, tester); got.Model != "" {
 		t.Fatalf("the agent read while its answer waits behind the machine = %+v, want no model yet", got)
 	}
 	s.awaitStreamWithin(ctx, tester, 50*time.Millisecond)
@@ -1423,7 +1425,7 @@ func TestAnAgentsRequestWaitsForTheAnswerItsClaimsMachineHasNotHandled(t *testin
 	if logs.Len() != 0 {
 		t.Fatalf("the wait once the machine was free logged %q, want it ended by the machine's mark, not its bound", logs.String())
 	}
-	if got := w.stepAgent(tester); got != (workflow.StepAgent{Session: "ses_tester", Model: "second/tester-model"}) {
+	if got := w.stepAgent(ctx, nil, tester); got != (workflow.StepAgent{Session: "ses_tester", Model: "second/tester-model"}) {
 		t.Fatalf("the agent read after the wait = %+v, want its session and the model that answered", got)
 	}
 	s.awaitStreamWithin(ctx, mustClaimToken(t, "LEGION-208", claim.RoleReviewer), 50*time.Millisecond)

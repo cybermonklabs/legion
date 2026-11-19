@@ -30,7 +30,7 @@ After every push that answers a review, and before you complete, answer and reso
 
 ## Forward merges
 
-For the unchanged-diff fingerprint and the forward-merge procedure, follow `skill://legion-worker/references/conflicts-and-rewrites.md`, then push the merge as the daemon part below says — it is a genuine fast-forward and a code push like any other.
+For the forward-merge procedure, and the merge-forward message the daemon sends you, follow `skill://legion-worker/references/conflicts-and-rewrites.md`, then push the merge as the daemon part below says — it is a genuine fast-forward and a code push like any other.
 
 ## Workspace restrictions
 
@@ -39,10 +39,11 @@ When it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; otherwise `@` hol
 resumed edits, so run `jj -R "$LEGION_WORKSPACE" new`. Never `jj describe` or `jj split` the
 working-copy commit you found at the turn's start. Do not replace another phase's
 commit. Create reviewable commits only with
-`jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`. Before a push, inspect
-`jj -R "$LEGION_WORKSPACE" log -r 'ancestors(@, 5)'`; push only the existing issue branch, as the
-daemon part below says.
+`jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`. Before a push, read every commit ahead
+of the base, `jj -R "$LEGION_WORKSPACE" log -r '<base branch>@origin..@'` as
+`skill://legion-worker/references/default-branch-check.md` lists them, since a branch can hold
+more than five commits; push only the existing issue branch, as the daemon part below says.
 
 ## Implementation handoff
 
-Every implementing round records an `implement` handoff on the Dispatch issue, as the daemon part below says: a JSON object with `schemaVersion: 1`, `phase: "implement"`, `issue: "<issue>"`, `head` (the 40-character lower-case commit you pushed as `@-`, as `jj -R "$LEGION_WORKSPACE" log -r @- --no-graph -T commit_id` prints it once the push succeeded), and any of `filesChanged`, `trickyParts`, `deviations`, `openQuestions` and `discoveredComplexity` you record, each a list of strings; and `classSearch`, one entry per finding of every earlier review round, each `{finding, class, command, result}`, required from the first round that follows a review round and `[]` while no review round has happened yet. Nothing stamps any field for you. The handoff carries no evidence: your results are on the issue's checks, where `dispatch results --issue <issue>` reads them. Push the round's code first. Then record the body with `dispatch handoff-write --issue <issue> --phase implement --body-file - <<'EOF'`, the JSON on the lines after it and `EOF` alone on the last line, and report completion: `handoff_complete` reports the record and the head it names, and refuses while that record names no head, while the commit the workspace stands on (`@-`) is not on `legion/<issue>@origin`, and while the head the record names is not that pushed commit. Your completion carries that `head` to the daemon, which takes a completion of an earlier `implement` entry only at the head the record holds. Retro writes no handoff, commits nothing and completes with `handoff_complete` alone.
+Every implementing round records an `implement` handoff on the Dispatch issue, as the daemon part below says: a JSON object with `schemaVersion: 1`, `phase: "implement"`, `issue: "<issue>"`, `head` (the 40-character lower-case commit you pushed as `@-`, as `jj -R "$LEGION_WORKSPACE" log -r @- --no-graph -T commit_id` prints it once the push succeeded), and any of `filesChanged`, `trickyParts`, `deviations`, `openQuestions` and `discoveredComplexity` you record, each a list of strings; and `classSearch`, one entry per finding of every earlier review round, each `{finding, class, command, result}`, required from the first round that follows a review round and `[]` while no review round has happened yet. Nothing stamps any field for you. The handoff carries no evidence: your results are on the issue's checks, where `dispatch results --issue <issue>` reads them. Push the round's code first. Then record the body with `dispatch handoff-write --issue <issue> --phase implement --body-file - <<'EOF'`, the JSON on the lines after it and `EOF` alone on the last line, and report completion: `handoff_complete` reports the record and the head it names, and refuses while that record names no head, while the commit the workspace stands on (`@-`) is not on `legion/<issue>@origin`, and while the head the record names is not that pushed commit. Your completion carries that `head` to the daemon, which takes a completion of an earlier `implement` entry only at the head the record holds. Retro writes no handoff and commits nothing, and its `handoff_complete` carries the rating of the plan where your tool takes one, as the daemon part below says.

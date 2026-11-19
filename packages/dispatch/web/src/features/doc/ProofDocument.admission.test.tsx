@@ -18,7 +18,7 @@ import {
 import { ApiError, api } from "../../api/client";
 import type { ArtifactText } from "../../api/types";
 import { plainWrite, writesOf } from "../writes/write-store";
-import { openPendingEdits } from "./pending-edits";
+import { deletePendingEdits, openPendingEdits } from "./pending-edits";
 import { compiledSchemaCreatable } from "./schema";
 
 // Whether the live editor may connect, and what the page shows when it may not or cannot: the
@@ -138,6 +138,9 @@ test("ProofDocument keeps locally saved edits when another 404 blocks admission"
     view.unmount();
   } finally {
     getArtifactText.mockRestore();
+    // The edit this row kept stays in the process's one IndexedDB, where a rerun of this file
+    // would count it beside its own.
+    await deletePendingEdits(document.id);
   }
 });
 

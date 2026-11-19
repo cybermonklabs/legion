@@ -310,8 +310,8 @@ func New(cfg Config) (*Client, error) {
 	case cfg.Subject == nil:
 		return nil, errors.New("brokerclient: no subject token source: nothing names the identity to trade")
 	}
-	if err := oauthwire.ValidProjects(cfg.Projects); err != nil {
-		return nil, fmt.Errorf("brokerclient: the projects to trade for: %w", err)
+	if oauthwire.ValidProjects(cfg.Projects) != nil {
+		return nil, fmt.Errorf("brokerclient: the projects to trade for are not at most %d project keys, sorted and each named once", oauthwire.MaxProjects)
 	}
 	client := &Client{
 		wake:                 make(chan struct{}, 1),
@@ -407,6 +407,11 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		c.mu.Unlock()
 		switch {
 		case err == nil:
+			if !since.IsZero() {
+				// The wait was said; so is its end, once, as the TypeScript client says it.
+				c.logf(ctx, "the secrets broker answered this pod's session once it was registered",
+					"session", c.session, "waited", c.now().Sub(since))
+			}
 			wait = defaultRetryWait
 			since, logged = time.Time{}, time.Time{}
 			if err := onToken(ctx, token); err != nil {

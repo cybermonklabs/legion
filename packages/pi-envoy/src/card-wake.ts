@@ -393,8 +393,7 @@ export class CardWake {
     // wake for one would start a turn main never started. A startup targeted Aside does get one:
     // in the startup phase every idle card goes as a follow-up with no turn, where main's idle
     // aside started a turn outside the latch and plan mode, and a fresh process has no latch. Plan
-    // mode at startup is the one case where that wake starts a turn main did not, which
-    // `AGENTS.md` states.
+    // mode at startup is the one case where that wake starts a turn main did not.
     const setup = handOver === "prompt-setup";
     const wake = startup ? "startup" : setup || targetedAside ? undefined : "fold";
     const details: EnvoyCardMarker = {

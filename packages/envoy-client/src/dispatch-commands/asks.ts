@@ -341,7 +341,7 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
   const checkLines = relatedCheckLines(ask.advice?.suggestions, {
     project: resolved?.artifact.project ?? (ask.issue_key ?? "").replace(/-[0-9]+$/, ""),
     text: stringArg(args, "question"),
-    configUrl: linkBase,
+    linkBase,
   });
   // An ask on a project document stands on no issue, and the server sends declined asks only
   // for a write that does, so there is nothing to print there.

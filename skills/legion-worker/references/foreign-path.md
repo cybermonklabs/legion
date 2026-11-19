@@ -1,27 +1,19 @@
 # A path you did not write
 
-Your workspace is shared with the issue's other roles. Read this before the `jj new` your
-role prompt has you run at the turn's start, and so before your first commit:
+Read this when step 2 of `skill://legion-worker` lists a path you did not write. Before this branch's first push, read the second list against your default branch at origin instead of `legion/<issue>@origin`.
 
-    cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" diff -r @ --name-only
-    jj -R "$LEGION_WORKSPACE" diff --from "legion/<issue>@origin" --to @ --name-only
+- The path is only in the second list, or already inside a commit of yours: split nothing, and tell the architect.
+- The path is in the first list (the working copy `@`): take your own paths out of `@`, without `jj new` first:
 
-(Read the second against your default branch at origin before this branch's first push.)
-Every path yours: commit and push as your role prompt says. A path you did not write that is
-only in the second list, or already inside a commit of yours: split nothing, tell the architect.
-A path you did not write in the first list:
+```bash
+cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" split -m '<issue>: <what you did>' <your paths…>
+jj -R "$LEGION_WORKSPACE" metaedit -r @- --update-author
+jj -R "$LEGION_WORKSPACE" bookmark set legion/<issue> -r @-
+jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<issue>
+```
 
-    cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" split -m '<issue>: <what you did>' <your paths…>
-    jj -R "$LEGION_WORKSPACE" metaedit -r @- --update-author
-    jj -R "$LEGION_WORKSPACE" bookmark set legion/<issue> -r @-
-    jj -R "$LEGION_WORKSPACE" git push --bookmark legion/<issue>
-
-No `jj new` first: the push carries that path unless its parent has no description. This split is
-the one exception to "Never `jj describe` or `jj split` the working-copy commit you found at the
-turn's start", because its `-m` writes your trailers on the commit that holds your paths. The
-metaedit fills the author when the found commit has none: `jj git push` refuses a commit with no
-author. Always `-m`, or your commit has no message of yours.
-The remainder keeps that path, and the push above moves the bookmark's commit alone, so it stays
-out of the branch. Never put the bookmark on the remainder, described or not: that
-pushes the other role's file. Read the first list again, then tell the architect what it held.
-Recover forward (`jj new`, `jj restore <paths>`), never `jj undo`, `jj abandon` or `jj op restore`.
+1. Always pass `-m`: it writes your trailers on the commit that holds your paths. This split is the one exception to never splitting the working copy you found.
+2. The metaedit fills an empty author, which `jj git push` refuses.
+3. The other role's path stays in the remainder `@`. Never put the bookmark on the remainder: that pushes the other role's file.
+4. Read the first list again, then tell the architect what it held.
+5. Recover forward (`jj new`, `jj restore <paths>`), never with `jj undo`, `jj abandon` or `jj op restore`.

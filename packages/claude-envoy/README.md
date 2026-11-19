@@ -170,17 +170,33 @@ message from Dispatch's Agents page as that person's own turn.
   summary (the same shape as OMP on fork). `ENVOY_SESSION_ID` (QA override) disables the handoff.
 - `envoy_inbox` is local recovery state: the most recent 50 event summaries, with no envelope
   body, ordered newest first.
-- `bin/envoy-send.ts` sends direct messages through `@legion/envoy-client`'s `send`, the
-  transport every other client uses, to the listener and with the bearer a command resolves:
-  `envoySettings` over the envoy.json `envoyConfigPath("command")` chooses (the `ENVOY_CONFIG_FILE`
-  the `open-asks` hook hands the session's Bash first), with `ENVOY_URL` and `ENVOY_TOKEN_FILE` or
-  `ENVOY_TOKEN` over its `envoy` section. It sends the session its shell names
-  (`ENVOY_SESSION_ID`, else `CLAUDE_CODE_SESSION_ID`) as `source_session`, so the listener's limit
-  on each session's sending counts its messages. After no answer or a 5xx it sends the message
-  once more under the same idempotency key, and Envoy drops that copy as a repeat. A refusal, one
-  for the sender's rate among them, prints the listener's own sentence after
-  `Claude Envoy send failed: `, exits 1 and is not sent again. With Envoy off it sends nothing and
-  exits 1, saying why.
+- `bin/envoy-send.ts` sends direct messages through the Envoy listener's HTTP API, to the listener
+  and with the bearer a command resolves: `envoySettings` over the envoy.json
+  `envoyConfigPath("command")` chooses (the `ENVOY_CONFIG_FILE` the `open-asks` hook hands the
+  session's Bash first), with `ENVOY_URL` and `ENVOY_TOKEN_FILE` or `ENVOY_TOKEN` over its `envoy`
+  section. With Envoy off it sends nothing and exits 1, saying why. It sends through envoy-client's
+  own send (`createEnvoyClient().send`), the transport every other client uses: one idempotency key
+  on every attempt, so the listener stores the message at most once; an attempt with no answer or a
+  5xx sent again under that key; and the listener's URL named only as `urlForText` names it, never
+  its user info. It sends the session its shell names (`ENVOY_SESSION_ID`, else
+  `CLAUDE_CODE_SESSION_ID`) as `source_session`, so the listener's limit on each session's sending
+  counts its messages. A send the listener stored without this machine's credential (a listener
+  that asks for none takes one whose broker trade failed) prints its `Sent` line, exits 0, and
+  writes one line to stderr naming why it went without the credential, and where the refusal is
+  final (a revoked sign-in) that it is, with its remedy. A send that may have arrived is not a
+  failure: it exits 75 (`EX_TEMPFAIL`), names the key, and prints the command that sends it again
+  under that key, which the listener drops as a repeat if the first copy arrived: `cd <dir> &&
+  [ENVOY_CONFIG_FILE=<file>] [ENVOY_URL=…] [ENVOY_TOKEN_FILE=…] [ENVOY_SESSION_ID=…] bun <the
+  envoy-send.ts it ran> --idempotency-key <key> <target> <message>`, which carries what chose the
+  listener so it goes there from any shell (`ENVOY_CONFIG_FILE` where an envoy.json was read, the
+  others where set), each word quoted so bash and zsh read it alike. Where that command would
+  hold a secret this process withholds (the message names one, say), a printed copy would send a
+  different message under the same key, and where its `ENVOY_URL` is not a plain http(s) URL (one
+  with user info of any length, say) the URL is never printed; either way only the key is printed,
+  with how to resend the original. A resend under a key exits 75 on any failure, since the send
+  before it may have arrived. Any other refusal, one for the sender's rate among them, prints the
+  listener's own sentence after `Claude Envoy send failed: `, exits 1 and is not sent again; so
+  does a listener that refused the connection or whose name did not resolve.
 
 ## What a delivered line carries
 
@@ -399,8 +415,7 @@ every third-party package they inline, written from Bun's metafile by
   dereferenced, with a fresh `dist/` and `legion/`), which is how to run an unmerged tree.
 - `bun run verify-build <tar>` (`scripts/verify-build.sh`) is that job's build step: it builds
   the plugin twice into a scratch directory outside the repository and says so when the two builds
-  differ, runs the private-name check over the first build's `dist/` and `legion/`,
-  packs the two directories into `<tar>`, which must be outside the repository, and runs
+  differ, packs the two directories into `<tar>`, which must be outside the repository, and runs
   `release-push.sh check-built` over it, the member checks a build must pass before the job
   extracts it into the checkout it packs. It writes no file of the checkout, so running it on a
   pull request's tree changes
@@ -408,7 +423,9 @@ every third-party package they inline, written from Bun's metafile by
   run it are named in its header, and the jobs that extract the checked tar into their own CI
   checkout in `release-push.sh`'s `extract-built` paragraph. Pull-request CI runs it, so a skill
   file that is executable, a symlink or named with a space, or a bundle `BUNDLE_ENTRYPOINTS` no
-  longer names, fails there instead of failing every release on main.
+  longer names, fails there instead of failing every release on main. The private-name check of
+  the build runs in a job of its own after the pack (`verify-build.sh`'s header names both), since
+  it reads the deployment's term list, which no job that runs dependency code holds.
 - The build is `Bun.build`, target `bun`, `minify: false`, no sourcemap, notices included. Minification is off entirely, not case by case: the partial-disable form (`{whitespace: false, identifiers: false, syntax: false}`) still routes through Bun 1.3.14's minifying code-generation path, which picks a non-deterministic CJS/ESM interop check on repeated builds of this exact module graph — on top of the syntax minifier's own separate bug, truncating constant-folded multi-operand string concatenation in CI builds, that made the partial form necessary before this. A plain `false` bypasses that whole path; whitespace and identifiers stay readable as a side effect, so independent changes still merge at line level.
 - The build runs only on the Bun version pinned in the repo-root `.bun-version`, because
   the bundler's own output depends on the exact Bun build, not only the declared version. Two
@@ -502,12 +519,15 @@ token beside it, and its token only beside its own server. An `envoy` section in
 file is not read, which the channel server's notice says, and a checkout's file that is not valid
 refuses Dispatch alone, only while `DISPATCH_URL` is unset. The chosen file's `dispatch` section
 (`enabled`, `serverUrl`, `token`) and `envoy` section (`enabled`, `url`, `natsUrls`, `token`,
-`natsSeed`) are resolved each on its own; `enabled: false` turns one off, a missing file
+`natsSeed`, `natsAuth`) are resolved each on its own; `enabled: false` turns one off, a missing file
 contributes nothing (each section is then on only when its variables name it), and a `token` or
 `natsSeed` starting with `!` is a command whose trimmed output is the value. `DISPATCH_URL`,
 `DISPATCH_TOKEN_FILE`, `DISPATCH_TOKEN`, `ENVOY_URL`, `ENVOY_NATS_URL`, `ENVOY_TOKEN_FILE`,
-`ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE` and `NATS_NKEY_SEED` each override their own field; a file's
-token or seed goes with a variable's server only when it is the file's own. The `open-asks` hook
+`ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE`, `NATS_NKEY_SEED` and `NATS_AUTH` each override their own
+field; a file's token or seed goes with a variable's server only when it is the file's own. With
+`NATS_AUTH=broker` and no seed the NATS connection presents the session's own broker token, which
+a hub's NATS auth service admits to that session's subjects alone, and a `/clear` moves it to the
+new id's token before the new id's relay subject is subscribed. The `open-asks` hook
 hands the file on to the session's Bash as `ENVOY_CONFIG_FILE` beside `DISPATCH_HOST=claude`, and
 the `dispatch` command reads the file `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set; a
 Bash with neither, as a subagent's can be, has `CLAUDE_CODE_CHILD_SESSION=1` and takes this plugin's

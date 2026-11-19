@@ -137,7 +137,8 @@ func TestEnrollAndUnenrollSayTheOutcomeIsUnknownWhenTheHelperGivesNoAnswer(t *te
 
 // TestEnrollNamesTheEnrollmentWhenItCannotRecordIt: the helper answers that the broker made
 // enr-13, and the key directory's enrollment path is a directory, so the command cannot record
-// it. `enroll --helper` exits 1 naming enr-13 and the path it could not write, and prints no id.
+// it. `enroll --helper` exits 1 naming enr-13 and the key directory by its variable - never its
+// path, since it holds key.pem - and prints no id.
 func TestEnrollNamesTheEnrollmentWhenItCannotRecordIt(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, EnrollmentID: "enr-13", LeaseExpires: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
@@ -149,17 +150,18 @@ func TestEnrollNamesTheEnrollmentWhenItCannotRecordIt(t *testing.T) {
 
 	stdout, stderr, exit := runAgentSecrets(t, binary, "http://unused", keyDir, []string{"AGENT_SECRETS_HELPER_SOCK=" + sock},
 		"enroll", "--helper", "--runtime-id", "box-13", "--thumbprint", "tp-13")
-	if exit != 1 || stdout != "" || !strings.Contains(stderr, "enr-13") || !strings.Contains(stderr, path) {
-		t.Fatalf("enroll --helper with the enrollment path a directory: exit %d, stdout %q, stderr %q; want 1 naming enr-13 and %s", exit, stdout, stderr, path)
+	if exit != 1 || stdout != "" || !strings.Contains(stderr, "enr-13") || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR") || strings.Contains(stderr, keyDir) {
+		t.Fatalf("enroll --helper with the enrollment path a directory: exit %d, stdout %q, stderr %q; want 1 naming enr-13 and AGENT_SECRETS_KEY_DIR, not %s", exit, stdout, stderr, keyDir)
 	}
 }
 
 // TestEnrollMakesItsKeyDirectoryBeforeItAsksTheHelper holds plan D4: `enroll --helper` makes
 // AGENT_SECRETS_KEY_DIR before it asks the helper, so a key directory it cannot make fails before
 // the broker could enroll. The key dir is a path under an existing regular file, so MkdirAll cannot
-// make it and names the file; the command exits 1 naming that path, and the fake helper — which
-// would answer OK — receives no request. If the order went back, a key dir that cannot be made
-// would exit 1 after the broker enrolled, with no id: an R2 violation.
+// make it; the command exits 1 naming AGENT_SECRETS_KEY_DIR and not the path (the directory holds
+// key.pem), and the fake helper — which would answer OK — receives no request. If the order went
+// back, a key dir that cannot be made would exit 1 after the broker enrolled, with no id: an R2
+// violation.
 func TestEnrollMakesItsKeyDirectoryBeforeItAsksTheHelper(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, EnrollmentID: "enr-should-not-happen",
@@ -172,8 +174,8 @@ func TestEnrollMakesItsKeyDirectoryBeforeItAsksTheHelper(t *testing.T) {
 
 	stdout, stderr, exit := runAgentSecrets(t, binary, "http://unused", keyDir, []string{"AGENT_SECRETS_HELPER_SOCK=" + sock},
 		"enroll", "--helper", "--runtime-id", "box-d4", "--thumbprint", "tp-d4")
-	if exit != 1 || stdout != "" || !strings.Contains(stderr, file) {
-		t.Fatalf("enroll --helper with a key dir that cannot be made: exit %d, stdout %q, stderr %q; want 1 naming %s", exit, stdout, stderr, file)
+	if exit != 1 || stdout != "" || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR") || strings.Contains(stderr, file) {
+		t.Fatalf("enroll --helper with a key dir that cannot be made: exit %d, stdout %q, stderr %q; want 1 naming AGENT_SECRETS_KEY_DIR, not %s", exit, stdout, stderr, file)
 	}
 	if n := len(reqs); n != 0 {
 		t.Fatalf("the fake helper received %d requests; want none, since the key dir must be made before the helper is asked", n)

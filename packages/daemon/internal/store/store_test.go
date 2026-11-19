@@ -800,19 +800,23 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // `jj diff --from main@origin --to @ --name-only packages/daemon/internal/store/migrations`
 // named on dispatch://INFRA-714's branch. A migration a later branch adds that rewrites
 // outbox_kind_check with a kind of its own belongs in it too, as dispatch://INFRA-3274's
-// 20261114031356 and the role-holders publication's 20261116165926 do: the case of a database main
+// 20261114031356, the role-holders publication's 20261116165926 and dispatch://INFRA-4374's
+// 20261119003157 (conflict_confirm and merge_forward) do: the case of a database main
 // migrated applies a version left out of the list before the list's own rewrites of that check,
-// which do not name the later kind, so the row seeded of that kind fails the upgrade. Any other
-// version left out makes the cases below weaker, never red, which is why the comment says where
-// the list comes from.
+// which do not name the later kind, so the row seeded of that kind fails the upgrade. So does one
+// that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
+// claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
+// column. Any other version left out makes the cases below weaker, never red, which is why the
+// comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
 	20261029120900: true, 20261029121000: true, 20261029121100: true, 20261029121200: true,
 	20261102003600: true, 20261105081500: true, 20261105183200: true, 20261107095842: true,
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
-	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116165926: true,
-	20261117000528: true, 20261117004117: true, 20261117064152: true,
+	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
+	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
+	20261117064152: true, 20261119003157: true,
 }
 
 const idleRelease = 20261101222956
@@ -840,7 +844,8 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 	}
 	// Every kind the daemon runs, read from the lanes rather than listed here: a kind added to a
 	// lane and forgotten in a hand-kept list is exactly the omission this case exists to catch,
-	// and it is how phase_ended came to be missing from two of this release's rewrites.
+	// and it is how a kind of the role-message lane came to be missing from two rewrites of an
+	// earlier release.
 	var kinds []record.OutboxKind
 	for _, lane := range record.OutboxLanes() {
 		kinds = append(kinds, record.LaneKinds(lane)...)

@@ -833,7 +833,7 @@ primary_issue() {
   begin primary-architect-posts-and-registers-spec
   # Every root's architect registers a closed gate on its own and its root then waits on the
   # person, keeping the admission slot it took at its admission: a root in awaiting_person keeps
-  # its slot (root AGENTS.md, "Admission").
+  # its slot (docs/site/src/content/docs/legion/concepts.md, "Admission and the `legion` label").
   # So the human's approval resumes this root on the next pass whatever the cap says, and the 1800 s
   # bound below is slack: nothing has to give a row back first. admission_cap stays 2, which is the
   # peak this lane needs under that rule: the two roots the daemon starts here hold both rows while
