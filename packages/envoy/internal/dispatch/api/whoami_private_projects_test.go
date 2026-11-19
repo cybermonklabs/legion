@@ -4,78 +4,78 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// TestWhoamiAnswersAListedCredentialsProjectsAndWhichArePrivate (plan t-a-16, KF4 and KF4-F;
-// c-a-private): GET /api/v1/whoami answers a credential that lists projects its projects, sorted,
-// and private_projects, the keys of that list the caller must treat as private: a private project,
-// and one the credential no longer sees whatever its visibility. A credential that lists nothing
-// answers neither field (R9).
+// TestWhoamiAnswersAListedCredentialsProjectsAndWhichArePrivate (plan t-a-16, KF4; c-a-private):
+// GET /api/v1/whoami answers a credential that lists projects, a person's dsp_ token among them,
+// in the agent shape with its owner, its projects, sorted, and private_projects, the keys of that
+// list the caller must treat as private: a private project, and one the credential no longer sees
+// whatever its visibility. A dsp_ token that lists nothing answers exactly the bytes it answered
+// before the list existed (R9).
+//
+// Controls, each run on its own: personalTokenActor without its read of the token's projects, and
+// carol's row answers no projects; private_projects computed from visibility alone, and bob's row
+// answers no private_projects.
 func TestWhoamiAnswersAListedCredentialsProjectsAndWhichArePrivate(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{})
-	seedCredentialProjects(t, handler, database)
-	seedPeople(t, database, accessErin)
-	markRestricted(t, database, accessErin)
-	makePrivate(t, database, privateProject)
-
-	whoami := func(token string) map[string]json.RawMessage {
+	seed := seedPrivateProject(t)
+	whoami := func(who, token string) (string, map[string]json.RawMessage) {
 		t.Helper()
-		response := agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, token)
+		response := agentRequest(t, seed.handler, http.MethodGet, "/api/v1/whoami", nil, token)
 		if response.Code != http.StatusOK {
-			t.Fatalf("GET /api/v1/whoami = %d %s", response.Code, response.Body.String())
+			t.Fatalf("%s: GET /api/v1/whoami = %d %s", who, response.Code, response.Body.String())
 		}
-		return decodeBody[map[string]json.RawMessage](t, response)
+		return strings.TrimSpace(response.Body.String()), decodeBody[map[string]json.RawMessage](t, response)
 	}
-	list := func(answer map[string]json.RawMessage, field string) []string {
+	field := func(answer map[string]json.RawMessage, name string, into any) bool {
 		t.Helper()
-		raw, present := answer[field]
+		raw, present := answer[name]
 		if !present {
-			return nil
+			return false
 		}
-		var keys []string
-		if err := json.Unmarshal(raw, &keys); err != nil {
-			t.Fatalf("%s is not a list of keys: %s", field, raw)
+		if err := json.Unmarshal(raw, into); err != nil {
+			t.Fatalf("%s is %s, which does not decode: %v", name, raw, err)
 		}
-		return keys
+		return true
+	}
+	lists := func(who string, raw string, answer map[string]json.RawMessage, projects, private []string) {
+		t.Helper()
+		var got []string
+		if !field(answer, "projects", &got) || !slices.Equal(got, projects) {
+			t.Errorf("%s: projects = %q, want %q: the answer was %s", who, got, projects, raw)
+		}
+		got = nil
+		if !field(answer, "private_projects", &got) || !slices.Equal(got, private) {
+			t.Errorf("%s: private_projects = %q, want %q: the answer was %s", who, got, private, raw)
+		}
 	}
 
-	// carol, PRIV's owner, lists both projects out of order.
-	carols := mintListed(t, handler, accessCarol, "carol-both", []string{publicProject, privateProject})
-	answer := whoami(carols.Token)
-	if got := list(answer, "projects"); !slices.Equal(got, []string{privateProject, publicProject}) {
-		t.Errorf("carol's token listing PUB and PRIV: projects = %q, want [PRIV PUB]", got)
+	// carol, on PRIV's list, mints a dsp_ token listing the two keys out of order.
+	const carolsToken = "carol's token listing PUB and PRIV"
+	carols := mintListed(t, seed.handler, seedCarol, "carol-both", []string{seedPublic, seedPrivate})
+	raw, answer := whoami(carolsToken, carols.Token)
+	var kind, owner string
+	if !field(answer, "kind", &kind) || kind != "agent" || !field(answer, "owner", &owner) || owner != seedCarol {
+		t.Errorf("%s: kind %q owner %q, want the agent shape with owner %s: %s", carolsToken, kind, owner, seedCarol, raw)
 	}
-	if got := list(answer, "private_projects"); !slices.Equal(got, []string{privateProject}) {
-		t.Errorf("carol's token listing PUB and PRIV: private_projects = %q, want [PRIV]: the answer was %s", got, mustJSON(t, answer))
-	}
+	lists(carolsToken, raw, answer, []string{seedPrivate, seedPublic}, []string{seedPrivate})
 
-	// erin, a restricted member PRIV's list names, lists PRIV; PRIV then turns public and erin is
-	// taken off its list, so erin no longer sees PRIV, and her token's PRIV answers private.
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/PRIV/access/people/"+accessErin, nil, accessCarol); response.Code != http.StatusOK {
-		t.Fatalf("carol names erin on PRIV's list: %d %s", response.Code, response.Body.String())
-	}
-	erins := mintListed(t, handler, accessErin, "erin-priv", []string{privateProject})
-	if _, err := database.Pool.Exec(t.Context(), `update projects set visibility = 'public' where key = $1`, privateProject); err != nil {
-		t.Fatalf("make PRIV public: %v", err)
-	}
-	if response := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/projects/PRIV/access/people/"+accessErin, nil, accessCarol); response.Code != http.StatusOK {
-		t.Fatalf("carol takes erin off PRIV's list: %d %s", response.Code, response.Body.String())
-	}
-	answer = whoami(erins.Token)
-	if got := list(answer, "projects"); !slices.Equal(got, []string{privateProject}) {
-		t.Errorf("erin's token listing PRIV: projects = %q, want [PRIV]", got)
-	}
-	if got := list(answer, "private_projects"); !slices.Equal(got, []string{privateProject}) {
-		t.Errorf("erin's token listing PRIV, which erin no longer sees: private_projects = %q, want [PRIV]: the answer was %s", got, mustJSON(t, answer))
-	}
+	// bob, restricted and on PRIV's list, mints a token listing PRIV. PRIV then turns public and
+	// bob is taken off its list, so bob no longer sees PRIV: his token's PRIV answers private.
+	const bobsToken = "bob's token listing PRIV"
+	bobs := mintListed(t, seed.handler, seedBob, "bob-priv", []string{seedPrivate})
+	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
+	seed.mustRequest(t, callerCarol, http.MethodDelete, "/api/v1/projects/"+seedPrivate+"/access/people/"+seedBob, nil, http.StatusOK)
+	raw, answer = whoami(bobsToken, bobs.Token)
+	lists(bobsToken, raw, answer, []string{seedPrivate}, []string{seedPrivate})
 
-	// R9: a token that lists nothing answers neither field.
-	alices := mintListed(t, handler, "alice", "alice-none", nil)
-	answer = whoami(alices.Token)
-	for _, field := range []string{"projects", "private_projects"} {
-		if _, present := answer[field]; present {
-			t.Errorf("alice's token that lists nothing answers %s: %s", field, mustJSON(t, answer))
-		}
+	// R9: alice's dsp_ token with no list answers the bytes the answer had before the list.
+	alices := mintListed(t, seed.handler, seedAlice, "alice-none", nil)
+	const before = `{"kind":"agent","owner":"alice","project":null,"scopes":["person","approve"],"service":null,"session":null}`
+	if raw, _ := whoami("alice's token that lists nothing", alices.Token); raw != before {
+		t.Errorf("alice's token that lists nothing: GET /api/v1/whoami = %s, want %s", raw, before)
 	}
 }

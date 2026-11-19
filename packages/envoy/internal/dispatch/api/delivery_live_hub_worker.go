@@ -132,8 +132,6 @@ func (h *deliveryHub) nextWakeLocked(g *hubGeneration, now time.Time) (time.Time
 type deliveryViewRead struct {
 	seq               int64
 	changedAt         *time.Time
-	shownSeq          int64
-	shownAt           *time.Time
 	settings          delivery.DeliverySettings
 	pop               deliveryPopulation
 	pipe              pipelinePopulation
@@ -193,11 +191,10 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 	default:
 		if g.epoch != epoch {
 			// The change log was reset while it read, so its position names nothing in the new one.
-			read.seq, read.shownSeq = 0, 0
+			read.seq = 0
 		}
 		view.settings, view.pop, view.pipe, view.readFrom = read.settings, read.pop, read.pipe, read.from
 		view.body, view.seq, view.changedAt = &read.body, read.seq, read.changedAt
-		view.shownSeq, view.shownAt = read.shownSeq, read.shownAt
 		view.from, view.at, view.expiry = read.from, read.at, read.expiry
 		view.issues, view.ancestors, view.sessions = read.issues, read.ancestors, read.sessions
 		sent = h.sendLocked(g, view)
@@ -259,9 +256,6 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 		if read.changedAt, err = delivery.ChangeAt(ctx, pool, read.seq); err != nil {
 			return read, err
 		}
-	}
-	if read.shownSeq, read.shownAt, err = deliveryShownChange(ctx, pool, spec.reader, read.seq, read.changedAt); err != nil {
-		return read, err
 	}
 	now := h.clock.Now()
 	body, err := spec.classes().read(h, ctx, spec, now, &read)
@@ -455,7 +449,7 @@ func (h *deliveryHub) answerBodyLocked(sub *deliverySub) bool {
 	view := sub.view
 	sub.told = false
 	if sub.needsSnapshot {
-		sub.conn.Send(view.body.snapshot(sub.id, view.shownSeq, view.shownAt))
+		sub.conn.Send(view.body.snapshot(sub.id, view.seq, view.changedAt))
 		sub.revs, sub.needsSnapshot = view.body.revs, false
 		return true
 	}
@@ -463,7 +457,7 @@ func (h *deliveryHub) answerBodyLocked(sub *deliverySub) bool {
 	if !changed {
 		return false
 	}
-	delta.Sub, delta.Seq, delta.ChangedAt = sub.id, strconv.FormatInt(view.shownSeq, 10), view.shownAt
+	delta.Sub, delta.Seq, delta.ChangedAt = sub.id, strconv.FormatInt(view.seq, 10), view.changedAt
 	sub.conn.Send(delta)
 	sub.revs = view.body.revs
 	return true

@@ -113,9 +113,8 @@ type LiveUnsubscribe struct {
 }
 
 // DeliveryLiveSnapshot is a subscription's first answer: exactly the matching GET route's body
-// for the resolved window, the change position it reflects, the newest change of a repository its
-// reader sees, when that change was recorded (nil while there is none: deliveryShownChange), and
-// the revision of every key the body holds.
+// for the resolved window, the change position it reflects, when that change was recorded (nil
+// while the log is empty), and the revision of every key the body holds.
 type DeliveryLiveSnapshot struct {
 	Type      string           `json:"type"`
 	Sub       string           `json:"sub"`

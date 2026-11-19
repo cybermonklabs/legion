@@ -61,24 +61,48 @@ func (s *server) agentOpenAskCounts(ctx context.Context, viewer any, sessionIDs 
 }
 
 // visibleRosterSessions is the one place that decides which of the roster's sessions a reader
-// reads (K6), in their order: a session passes when SessionClause passes on its id, which is the
-// reader's own session, a session with history in a project the reader sees (session_projects),
-// or, for an open viewer, any session with no history in a project it does not see. A session
-// with no history therefore reaches an open viewer alone. A reader that sees every object
-// (seesEveryObject) passes every session, so listAgents does not ask (R9).
-func (s *server) visibleRosterSessions(ctx context.Context, viewer any, sessions []envoy.Session) ([]envoy.Session, error) {
-	ids := make([]string, len(sessions))
-	for index, session := range sessions {
-		ids[index] = session.SessionID
+// reads (K6), in their order: a session passes when the projects the listener names for it
+// (envoy.Session.Projects, its token's list) meet what the reader sees, or when SessionClause
+// passes on its id, which is the reader's own session, a session with history in a project the
+// reader sees (session_projects), or, for an open viewer, any session with no history in a project
+// it does not see. A session whose list is empty and that has no history therefore reaches an open
+// viewer alone. The list decides a row and is served on none (agentResponse). A reader that sees
+// every object (seesEveryObject) passes every session, so listAgents does not ask (R9).
+func (s *server) visibleRosterSessions(ctx context.Context, reader model.Actor, sessions []envoy.Session) ([]envoy.Session, error) {
+	var sees []string
+	if reader.Viewer != nil {
+		sees = reader.Viewer.Sees
+	}
+	listed := func(session envoy.Session) bool {
+		return slices.ContainsFunc(session.Projects, func(key string) bool { return slices.Contains(sees, key) })
+	}
+	asked := []string{}
+	for _, session := range sessions {
+		if !listed(session) {
+			asked = append(asked, session.SessionID)
+		}
+	}
+	seen, err := s.sessionsSeen(ctx, refs.VisibilityArg(reader), asked)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(sessions, func(session envoy.Session) bool { return !listed(session) && !seen[session.SessionID] }), nil
+}
+
+// sessionsSeen is which of ids pass SessionClause for the reader whose visibility argument is
+// viewer, in one read.
+func (s *server) sessionsSeen(ctx context.Context, viewer any, ids []string) (map[string]bool, error) {
+	seen := map[string]bool{}
+	if len(ids) == 0 {
+		return seen, nil
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select roster.id from unnest($1::text[]) roster(id)
-		where `+access.SessionClause("roster.id", "$2"), ids, viewer)
+		select candidate.id from unnest($1::text[]) candidate(id)
+		where `+access.SessionClause("candidate.id", "$2"), ids, viewer)
 	if err != nil {
 		return nil, fmt.Errorf("read which sessions the caller sees: %w", err)
 	}
 	defer rows.Close()
-	seen := map[string]bool{}
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
@@ -89,7 +113,7 @@ func (s *server) visibleRosterSessions(ctx context.Context, viewer any, sessions
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read which sessions the caller sees: %w", err)
 	}
-	return slices.DeleteFunc(sessions, func(session envoy.Session) bool { return !seen[session.SessionID] }), nil
+	return seen, nil
 }
 
 // agentLastActivityQuery reads one session's newest event through
@@ -209,7 +233,7 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 	// A reader that sees every object passes SessionClause on every id, so the read would cut
 	// nothing (R9).
 	if !seesEveryObject(reader) {
-		if sessions, err = s.visibleRosterSessions(r.Context(), viewer, sessions); err != nil {
+		if sessions, err = s.visibleRosterSessions(r.Context(), reader, sessions); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

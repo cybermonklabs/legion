@@ -394,11 +394,10 @@ type WaitingPullRequest struct {
 // finished before at had shipped by then, and every one merged at or after it had not: that
 // creation, read through delivery_runs_kind_created newest first, is the one bound this needs. The
 // shipping run is read here rather than from the window's own runs, which start at the window and
-// so can miss a run created before it. viewer is the visibility argument (refs.VisibilityArg) the
-// deploy repository is held to (access.RepositoryClause), as ListPullRequestsInWindow holds every
-// pull request's. Every row is of that one repository (pr.repo = $1), so the clause is asked of
-// the parameter, once, rather than of each row.
-func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, viewer any, deployRepo string, production Production, at time.Time) ([]WaitingPullRequest, error) {
+// so can miss a run created before it. It reads every waiting pull request, whoever reads the
+// answer: which pull requests a run shipped is known only over all of them, and the caller holds
+// the answer to its reader after that (api: readDeliveryRows).
+func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) ([]WaitingPullRequest, error) {
 	rows, err := pool.Query(ctx, `
 		select `+PullRequestColumns+`, ship.run_id, ship.completed_at
 		from delivery_pull_requests pr
@@ -412,10 +411,10 @@ func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, viewer any
 				and j.completed_at < $3
 			order by `+runCreatedAt+` desc
 			limit 1
-		), '-infinity') and `+access.RepositoryClause("$1", "$6")+`
+		), '-infinity')
 		order by pr.merged_at, (pr.repo || '#' || pr.number) collate "C"
 		limit $4
-	`, deployRepo, production.JobNames, at, maxPullRequestsPerWindow, production.ApplyStep, viewer)
+	`, deployRepo, production.JobNames, at, maxPullRequestsPerWindow, production.ApplyStep)
 	if err != nil {
 		return nil, err
 	}
@@ -488,16 +487,56 @@ func MarkPullRequestUnfetchable(ctx context.Context, pool *store.Pool, repo stri
 	return err
 }
 
-// CountUnfetchablePullRequests counts every row MarkPullRequestUnfetchable has marked whose
-// repository the viewer sees (access.RepositoryClause over the visibility argument viewer,
-// refs.VisibilityArg), for the freshness row's "N pull requests can no longer be fetched from
-// GitHub".
+// pullRequestShownSQL is the timeline's rule for one pull request (api: readDeliveryRows) in SQL,
+// over the issues row issueAlias left joined on the pull request's issue_key: a pull request whose
+// issue the viewer bound at viewerParam sees (access.ProjectClause), and one that names no issue,
+// or a key no issue row holds, for an open viewer alone (access.OpenClause).
+func pullRequestShownSQL(issueAlias, viewerParam string) string {
+	return `case when ` + issueAlias + `.key is null then ` + access.OpenClause(viewerParam) +
+		` else ` + access.ProjectClause(issueAlias+`.project_key`, viewerParam) + ` end`
+}
+
+// CountUnfetchablePullRequests counts every row MarkPullRequestUnfetchable has marked that the
+// viewer, the visibility argument (refs.VisibilityArg), is shown (pullRequestShownSQL), for the
+// freshness row's "N pull requests can no longer be fetched from GitHub". A count attributes no
+// shipping, so the rule is applied in the statement.
 func CountUnfetchablePullRequests(ctx context.Context, pool *store.Pool, viewer any) (int, error) {
 	var count int
 	err := pool.QueryRow(ctx, `
 		select count(*) from delivery_pull_requests pr
-		where pr.unfetchable_at is not null and `+access.RepositoryClause("pr.repo", "$1"), viewer).Scan(&count)
+		left join issues i on i.key = pr.issue_key
+		where pr.unfetchable_at is not null and `+pullRequestShownSQL("i", "$1"), viewer).Scan(&count)
 	return count, err
+}
+
+// PullRequestNumbersShown answers, for each of numbers that a stored pull request of repo holds,
+// whether the viewer, the visibility argument (refs.VisibilityArg), is shown it
+// (pullRequestShownSQL): what decides a run that names its pull request by number, a PR-checks
+// run, and the pull requests a deploy run shipped. A number no row holds is not in the answer.
+func PullRequestNumbersShown(ctx context.Context, pool *store.Pool, repo string, numbers []int, viewer any) (map[int]bool, error) {
+	shown := make(map[int]bool, len(numbers))
+	if len(numbers) == 0 {
+		return shown, nil
+	}
+	rows, err := pool.Query(ctx, `
+		select pr.number, `+pullRequestShownSQL("i", "$3")+`
+		from delivery_pull_requests pr
+		left join issues i on i.key = pr.issue_key
+		where pr.repo = $1 and pr.number = any($2)
+	`, repo, numbers, viewer)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var number int
+		var visible bool
+		if err := rows.Scan(&number, &visible); err != nil {
+			return nil, err
+		}
+		shown[number] = visible
+	}
+	return shown, rows.Err()
 }
 
 // ListPartialPullRequests lists every partial=true row, oldest merge first: the reconcile's cheap
@@ -1013,23 +1052,22 @@ func ListRunsWithJobsStartedIn(ctx context.Context, pool *store.Pool, repo strin
 // a tight production ceiling.
 const maxPullRequestsPerWindow = 50_000
 
-// ListPullRequestsInWindow lists every population pull request merged in [from, to) whose
-// repository the viewer sees, oldest merge first and those merged in one instant by id
-// ("owner/repo#N" in byte order, the order the page's live merge keeps: applyDelta.ts's
-// ORDERS.prs), up to maxPullRequestsPerWindow: the API's timeline window and the facet
-// computations that run over it. A partial row (merged_at still null) is never in range and so
-// never appears here — exactly right, since its lead time and shipped status are not yet
-// knowable. viewer is the visibility argument (refs.VisibilityArg) a pull request's repository is
-// held to (access.RepositoryClause): one mapped to a project the viewer does not see is not in
-// the window, and one no project maps is there for an open viewer alone.
-func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, viewer any, from, to time.Time) ([]DeliveryPullRequest, error) {
+// ListPullRequestsInWindow lists every population pull request merged in [from, to), oldest
+// merge first and those merged in one instant by id ("owner/repo#N" in byte order, the order the
+// page's live merge keeps: applyDelta.ts's ORDERS.prs), up to maxPullRequestsPerWindow: the API's
+// timeline window and the facet computations that run over it. A partial row (merged_at still
+// null) is never in range and so never appears here — exactly right, since its lead time and
+// shipped status are not yet knowable. It reads every one, whoever reads the answer: a run's
+// shipped pull requests are found over all of them, and the caller holds the answer to its reader
+// after that (api: readDeliveryRows).
+func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, from, to time.Time) ([]DeliveryPullRequest, error) {
 	rows, err := pool.Query(ctx, `
 		select `+PullRequestColumns+`
-		from delivery_pull_requests pr
-		where merged_at >= $1 and merged_at < $2 and `+access.RepositoryClause("pr.repo", "$4")+`
+		from delivery_pull_requests
+		where merged_at >= $1 and merged_at < $2
 		order by merged_at, (repo || '#' || number) collate "C"
 		limit $3
-	`, from, to, maxPullRequestsPerWindow, viewer)
+	`, from, to, maxPullRequestsPerWindow)
 	if err != nil {
 		return nil, err
 	}
