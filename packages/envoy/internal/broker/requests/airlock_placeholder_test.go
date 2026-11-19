@@ -86,8 +86,8 @@ func placeholderRows(t *testing.T, m *Machine, grantID string) map[string]string
 func wellFormed(t *testing.T, what, placeholder string) {
 	t.Helper()
 	rest, ok := strings.CutPrefix(placeholder, PlaceholderPrefix)
-	if !ok || len(rest) != PlaceholderLength || strings.ContainsFunc(rest, func(r rune) bool { return !strings.ContainsRune(placeholderAlphabet, r) }) {
-		t.Errorf("%s = %q; want %s and %d characters of %s", what, placeholder, PlaceholderPrefix, PlaceholderLength, placeholderAlphabet)
+	if !ok || len(rest) != PlaceholderLength || strings.ContainsFunc(rest, func(r rune) bool { return !strings.ContainsRune(PlaceholderAlphabet, r) }) {
+		t.Errorf("%s = %q; want %s and %d characters of %s", what, placeholder, PlaceholderPrefix, PlaceholderLength, PlaceholderAlphabet)
 	}
 }
 

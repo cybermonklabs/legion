@@ -1262,9 +1262,10 @@ writes again each string whose decoded text holds a placeholder, with each place
 by `[placeholder]`, and leaves every other byte as the handler wrote it. A placeholder is
 `agent-secrets-placeholder-`, in any case, and the letters and digits after it, at most the 32
 the broker mints and up to where another placeholder starts, so two placeholders written
-together are two. A line of one JSON object that holds no escape, no byte past ASCII and no
+together are two. A line of one JSON object that holds no `\u` escape, no byte past ASCII and no
 `agent-secrets-placeholder-` in any ASCII case cannot hold a placeholder, and is handed on as it
-came. So a value is masked in the one form the line holds it, and a name a command chose
+came: every other escape JSON has decodes to a character no placeholder holds. So a value is
+masked in the one form the line holds it, and a name a command chose
 changes no other field of its line, whatever bytes it holds. That holds for every line the
 broker writes through slog or Go's `log`
 package: every line of the airlock's proxy port, a refusal line and net/http's and httputil's own
@@ -1311,9 +1312,10 @@ endpoint's answer failed. The whole rest of the line goes, not only the quoted r
 quotation mark before a run would otherwise pair with the run's opening one and leave the run in
 clear. A service's text a library writes without quotes is written as it came, but for the names
 a certificate holds: crypto/x509's error for a certificate that names other hosts than the one
-asked for lists every name in it, so the `error` of `airlock proxy: upstream` and the `502` write
-`tls: the service's certificate is not valid for this host; the names it holds are not shown` in
-its place. The API port's refusal line takes its `correlation_id` from the caller's
+asked for lists every name in it, so the `error` of `airlock proxy: upstream`, the `502`, and the
+reason, line and answer of an Azure exchange whose token endpoint's certificate names other hosts
+write `tls: the service's certificate is not valid for this host; the names it holds are not shown`
+in its place. The API port's refusal line takes its `correlation_id` from the caller's
 `X-Correlation-Id` too; its line holds no message text, and names the code. Each
 answer, a refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is
 the one record of the API port's `429` and of a device grant's poll answers.

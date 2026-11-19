@@ -71,11 +71,12 @@ const (
 // recognizable for what it is: a string that stands for a secret rather than a secret.
 const PlaceholderPrefix = "agent-secrets-placeholder-"
 
-// placeholderAlphabet and PlaceholderLength are what follows the prefix: 32 characters of 62, so
+// PlaceholderAlphabet and PlaceholderLength are what follows the prefix: 32 characters of 62, so
 // about 190 bits, which nobody guesses and no birthday collision reaches. The broker's log mask
-// reads a placeholder as the prefix and at most PlaceholderLength characters after it.
+// reads a placeholder as the prefix and at most PlaceholderLength characters of PlaceholderAlphabet
+// after it.
 const (
-	placeholderAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	PlaceholderAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 	PlaceholderLength   = 32
 )
 
@@ -95,7 +96,7 @@ func mintPlaceholder() (string, error) {
 	out := make([]byte, 0, len(PlaceholderPrefix)+PlaceholderLength)
 	out = append(out, PlaceholderPrefix...)
 	for i := range PlaceholderLength {
-		out = append(out, placeholderAlphabet[binary.BigEndian.Uint64(draws[8*i:])%uint64(len(placeholderAlphabet))])
+		out = append(out, PlaceholderAlphabet[binary.BigEndian.Uint64(draws[8*i:])%uint64(len(PlaceholderAlphabet))])
 	}
 	return string(out), nil
 }

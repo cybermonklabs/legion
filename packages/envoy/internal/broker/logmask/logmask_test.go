@@ -36,21 +36,66 @@ var (
 // mask's own reading.
 func holdsPlaceholder(text string) bool {
 	for i := range text {
-		if opensWithFold(text[i:], requests.PlaceholderPrefix) {
+		if _, ok := prefixAt(text[i:]); ok {
 			return true
 		}
 	}
 	return false
 }
 
-// opensWithFold is whether text opens with prefix, rune by rune, in any case.
-func opensWithFold(text, prefix string) bool {
-	for _, want := range prefix {
-		r, size := utf8.DecodeRuneInString(text)
+// prefixAt is how many bytes of text the prefix it opens with takes, read rune by rune in any
+// case, and false where text opens with no prefix.
+func prefixAt(text string) (int, bool) {
+	n := 0
+	for _, want := range requests.PlaceholderPrefix {
+		r, size := utf8.DecodeRuneInString(text[n:])
 		if size == 0 || !strings.EqualFold(string(r), string(want)) {
+			return 0, false
+		}
+		n += size
+	}
+	return n, true
+}
+
+// tailsAfterPrefix is each run of requests.PlaceholderLength characters of the alphabet the broker
+// mints from (requests.PlaceholderAlphabet) that text writes right after a prefix, with how many
+// times it is written there: what follows the prefix of a placeholder written whole.
+func tailsAfterPrefix(text string) map[string]int {
+	tails := map[string]int{}
+	for i := range text {
+		n, ok := prefixAt(text[i:])
+		if !ok || len(text)-i-n < requests.PlaceholderLength {
+			continue
+		}
+		tail := text[i+n : i+n+requests.PlaceholderLength]
+		if !strings.ContainsFunc(tail, func(r rune) bool { return !strings.ContainsRune(requests.PlaceholderAlphabet, r) }) {
+			tails[tail]++
+		}
+	}
+	return tails
+}
+
+// countOverlapping is how many times s holds sub, counting each place it starts.
+func countOverlapping(s, sub string) int {
+	n := 0
+	for i := 0; ; i++ {
+		next := strings.Index(s[i:], sub)
+		if next < 0 {
+			return n
+		}
+		n++
+		i += next
+	}
+}
+
+// isSubsequence is whether every byte of sub is in s, in the same order.
+func isSubsequence(sub, s string) bool {
+	for i := range len(sub) {
+		at := strings.IndexByte(s, sub[i])
+		if at < 0 {
 			return false
 		}
-		text = text[size:]
+		s = s[at+1:]
 	}
 	return true
 }
@@ -129,10 +174,15 @@ func tokensOf(line string) ([]span, error) {
 // maskedAsClaimed is the mask's claim for one line, against the line that came in, each read as
 // its tokens (tokensOf): the masked line is one JSON object of as many tokens; each token whose
 // decoded text holds no placeholder (holdsPlaceholder) is written byte for byte as it came, with
-// what comes before it; each string that held one is a string, after the same separator, that
-// holds none and holds Mark where it was; and a line that held none is written as it came. So a
-// caller's text changes no token but its own. It answers how many strings the mask wrote again,
-// or why the masked line breaks the claim.
+// what comes before it; and a line that held none is written as it came. Each string that held one
+// is a string, after the same separator, that holds no prefix and holds Mark where a placeholder
+// was; with each Mark taken out it is a subsequence of the string that came in, shorter by at most
+// a prefix and requests.PlaceholderLength characters for each Mark; and no run of the minted
+// alphabet the string wrote right after a prefix (tailsAfterPrefix) is written more often than the
+// string wrote it with no prefix before it. So a caller's text changes no token but its own, the
+// mask takes out no more than the placeholders, and no placeholder's characters are left in clear.
+// It reads no pattern of the mask's. It answers how many strings the mask wrote again, or why the
+// masked line breaks the claim.
 func maskedAsClaimed(plain, masked string) (int, error) {
 	before, err := tokensOf(plain)
 	if err != nil {
@@ -157,6 +207,19 @@ func maskedAsClaimed(plain, masked string) (int, error) {
 		sep := before[i].raw[:strings.IndexByte(before[i].raw, '"')]
 		if !after[i].isString || !strings.HasPrefix(after[i].raw, sep+`"`) || holdsPlaceholder(after[i].text) || !strings.Contains(after[i].text, Mark) {
 			return 0, fmt.Errorf("the masked line writes %q where %q came; want a string after the same %q that holds %s and no placeholder", after[i].raw, before[i].raw, sep, Mark)
+		}
+		marks, rest := strings.Count(after[i].text, Mark), strings.ReplaceAll(after[i].text, Mark, "")
+		if !isSubsequence(rest, before[i].text) {
+			return 0, fmt.Errorf("the masked string %q, with each %s taken out, is no subsequence of %q: the mask wrote text the string did not hold", after[i].text, Mark, before[i].text)
+		}
+		most := marks * (utf8.RuneCountInString(requests.PlaceholderPrefix) + requests.PlaceholderLength)
+		if removed := utf8.RuneCountInString(before[i].text) - utf8.RuneCountInString(rest); removed > most {
+			return 0, fmt.Errorf("the mask took %d characters out of %q for %d marks; want at most %d, a prefix and %d characters for each: %q", removed, before[i].text, marks, most, requests.PlaceholderLength, after[i].text)
+		}
+		for tail, afterPrefix := range tailsAfterPrefix(before[i].text) {
+			if written, own := countOverlapping(after[i].text, tail), countOverlapping(before[i].text, tail)-afterPrefix; written > own {
+				return 0, fmt.Errorf("the masked string %q writes %q %d times, which %q writes right after a prefix; want at most %d, the times it is written with no prefix before it", after[i].text, tail, written, before[i].text, own)
+			}
 		}
 	}
 	if rewritten == 0 && masked != plain {
@@ -399,6 +462,8 @@ func TestTheMaskMasksEachPlaceholderOfARun(t *testing.T) {
 		{"the prefix written twice before a placeholder", prefix + prefix + held, Mark + Mark + Mark},
 		{"a placeholder and letters past the minted length", held + "QqRr", Mark + "QqRr"},
 		{"a placeholder between words", "from " + held + "/" + other + " on", "from " + Mark + "/" + Mark + " on"},
+		// Go's case folding reads ſ as s and the Kelvin sign as k, as the prefix is read.
+		{"a placeholder whose letters hold ſ and the Kelvin sign", prefix + "AaBb\u017fCc\u212aDd" + strings.Repeat("Ee", 11), Mark},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			plain, masked := brokerLines(t, nil, "a line", "v", c.text)
@@ -409,6 +474,14 @@ func TestTheMaskMasksEachPlaceholderOfARun(t *testing.T) {
 			}
 		})
 	}
+	// The string the mask writes again is JSON as slog's handler writes a string, HTML left as it
+	// came, so a reader of the line reads the caller's own characters.
+	t.Run("a string holding HTML, written as slog's handler writes one", func(t *testing.T) {
+		_, masked := brokerLines(t, nil, "a line", "v", "<b>&"+held)
+		if want := `"v":"<b>&` + Mark + `"`; !strings.Contains(masked, want) {
+			t.Fatalf("the mask wrote %q; want %s in it", masked, want)
+		}
+	})
 }
 
 // TestTheMaskReadsTheLineAReplaceAttrWrote: a handler's ReplaceAttr can change a value after the
@@ -635,12 +708,14 @@ func TestStandardLogCutsSplitsAndMasksALibrarysLine(t *testing.T) {
 
 // BenchmarkWriter is the mask's cost for one line of the shape the broker writes most, a call
 // line of the airlock's proxy port with twelve fields: with no placeholder, with one in its path,
-// and with a byte the JSON handler escapes in its path.
+// with a quotation mark in its path, which the JSON handler writes as \", as it writes every
+// quoted error, and with a control byte, which it writes as a \u escape.
 func BenchmarkWriter(b *testing.B) {
 	for _, c := range []struct{ name, path string }{
 		{"a clean call line", "/v1/things"},
 		{"a call line with a placeholder", "/v1/" + held},
-		{"a call line with an escape", "/v1/\x01things"},
+		{"a call line with a quotation mark", `/v1/"things"`},
+		{"a call line with a \\u escape", "/v1/\x01things"},
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			var line bytes.Buffer

@@ -138,14 +138,17 @@ func maskLine(line []byte) ([]byte, bool) {
 }
 
 // mayHoldPlaceholder is false only for a line no string of which can hold a placeholder once
-// decoded: one of ASCII alone, with no escape, that holds the prefix in no ASCII case. A line
-// with an escape or a byte past ASCII is read string by string, so an escape is decoded and a
-// letter Go's case folding reads as one of the prefix's, such as ſ, is read as that letter.
+// decoded: one of ASCII alone, with no \u escape, that holds the prefix in no ASCII case. Every
+// other escape JSON has (\" \\ \/ \b \f \n \r \t) decodes to a character that is neither one of the
+// prefix's nor one of a placeholder's after it, so a placeholder the decoded text holds is written
+// in the line's own bytes too. A line with a \u escape or a byte past ASCII is read string by
+// string, so the escape is decoded and a letter Go's case folding reads as one of the prefix's,
+// such as ſ, is read as that letter.
 func mayHoldPlaceholder(line []byte) bool {
 	opening := requests.PlaceholderPrefix
 	for i, b := range line {
 		switch {
-		case b == '\\' || b >= utf8.RuneSelf:
+		case b == '\\' && i+1 < len(line) && line[i+1] == 'u', b >= utf8.RuneSelf:
 			return true
 		case b|0x20 == opening[0] && len(line)-i >= len(opening) && opensWithASCIIFold(line[i:], opening):
 			return true
@@ -242,10 +245,11 @@ func maskText(text []byte) ([]byte, bool) {
 	return append(out, text[kept:]...), true
 }
 
-// minted is whether r is a letter or digit of a placeholder, in any case as Go's case folding
-// reads one: an ASCII letter or digit, ſ (s) or the Kelvin sign (k).
+// minted is whether r is a character of a placeholder after its prefix: one of the alphabet the
+// broker mints from (requests.PlaceholderAlphabet, both cases), or a letter Go's case folding
+// reads as one of it, ſ (s) and the Kelvin sign (k).
 func minted(r rune) bool {
-	return '0' <= r && r <= '9' || 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || r == 'ſ' || r == '\u212a'
+	return strings.ContainsRune(requests.PlaceholderAlphabet, r) || r == 'ſ' || r == '\u212a'
 }
 
 // SetDefault makes handler the process's default logger and points the log package at it

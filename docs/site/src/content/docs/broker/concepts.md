@@ -941,8 +941,8 @@ of the broker's, no file and no variable: the proxy swaps the placeholder for it
 the entry names, inside the connection it carries to the bound host, and an answer of the proxy's
 own that quotes what a service sent — the `502` for a status line it could not read, a failed
 Azure exchange's refusal — writes each run the transport quotes as
-`"[service bytes not shown]"`, and the `502` for a certificate that names other hosts writes a
-fixed phrase in place of the names, so a service that sent the value back there does not hand it
+`"[service bytes not shown]"`, and the same answers for a certificate that names other hosts write
+a fixed phrase in place of the names, so a service that sent the value back there does not hand it
 on.
 
 The proxy reads the grant behind the password on every connection, and the entry decides each

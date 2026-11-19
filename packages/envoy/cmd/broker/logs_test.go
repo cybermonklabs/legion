@@ -45,16 +45,16 @@ func isolateAWS(t *testing.T) {
 // sets up first, is what every line of slog, the log package, the AWS SDK, grpc and
 // OpenTelemetry goes through, one subtest for each route, each reading the lines written while
 // it ran. A placeholder written through any of them is written masked, in a value, a key and a
-// group's name alike; the log package's line has no date of its own; the AWS SDK's line is a
-// WARNING of the broker's own shape, cut as a call line's fields are, and its debug line is not
-// written; grpc's error is an ERROR, cut as a call line's fields are and with no newline at its
-// end, its info and its warning are not written, and its V is true at level 0 and false past it;
-// and OpenTelemetry's error is an ERROR. What the mask, the log package's lines and the bytes a
-// library quotes from a peer are written as is logmask's to test; here each route reaches it.
+// group's name alike; a line of the log package is a library's (logmask.StandardLog): the bytes it
+// quotes from a peer hidden, its first line cut to 256 bytes with no date before it, and the rest
+// of the write its stack; the AWS SDK's line is a WARNING of the broker's own shape, cut as a call
+// line's fields are, and its debug line is not written; grpc's error is an ERROR, cut as a call
+// line's fields are and with no newline at its end, its info and its warning are not written, and
+// its V is true at level 0 and false past it; and OpenTelemetry's error is an ERROR.
 func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 	placeholder := requests.PlaceholderPrefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
 	out := &logtest.Buffer{}
-	logtest.Swap(t, slog.NewJSONHandler(io.Discard, nil))
+	logtest.Keep(t)
 	// setUpLogging points grpc's and OpenTelemetry's global loggers at the broker's, and neither
 	// library hands back the logger it held, so the test cannot put back what it found. It puts
 	// back each library's own default for an environment with no GRPC_GO_LOG_* variable, built as
@@ -120,10 +120,29 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 		}
 	})
 
+	// The log package's route is the one net/http's transport writes what a service sent on an
+	// idle connection on, with log.Printf, and a bound service is sent the real value the swap put
+	// in. slog.SetDefault alone points the log package at a writer of its own, which writes each
+	// write as one INFO line of the same masked handler; only logmask.StandardLog hides the bytes a
+	// line quotes from a peer, cuts its first line and keeps the rest as its stack, so the rows
+	// read those three.
 	t.Run("the log package", func(t *testing.T) {
-		written, lines := during(t, func() { log.Print("a line of the log package naming " + placeholder) })
-		if want := "a line of the log package naming " + logmask.Mark; len(lines) != 1 || lines[0]["message"] != want || lines[0]["severity"] != "INFO" {
-			t.Errorf("the log package's line is %v; want one line at INFO, %q, masked and with no date before it (log: %q)", lines, want, written)
+		value := strings.Join([]string{"sk", "live", "REAL", "VALUE"}, "-") + strings.Repeat("Q", 300)
+		long := "a library's first line naming " + placeholder + " " + strings.Repeat("x", 300)
+		written, lines := during(t, func() {
+			log.Printf("Unsolicited response received on idle HTTP channel starting with %q; err=%v", value, nil)
+			log.Print(long + "\nsecond line " + placeholder)
+		})
+		if strings.Contains(written, "REAL-VALUE") {
+			t.Errorf("the broker's log holds the value a service sent: %q", written)
+		}
+		unsolicited := "Unsolicited response received on idle HTTP channel starting with " + logmask.PeerBytesShown
+		if len(lines) != 2 || lines[0]["message"] != unsolicited || lines[0]["severity"] != "INFO" || lines[0]["stack"] != nil {
+			t.Errorf("the transport's line is %v; want one line at INFO, %q, with no date before it and no stack (log: %q)", lines, unsolicited, written)
+		}
+		cut := strings.Replace(answer.Clip(long), placeholder, logmask.Mark, 1)
+		if len(lines) != 2 || lines[1]["message"] != cut || lines[1]["stack"] != "second line "+logmask.Mark {
+			t.Errorf("the write of two lines is %v; want its first line cut to %d bytes and masked, %q, and the second, masked, as its stack (log: %q)", lines, answer.FieldBytes, cut, written)
 		}
 	})
 

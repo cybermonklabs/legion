@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -94,8 +95,11 @@ func TestSetDefaultLeavesTheLogPackageAloneForSlogsOwnHandler(t *testing.T) {
 }
 
 // TestSetDefaultPointsTheLogPackageAtTheHandler: given any other handler, SetDefault makes it the
-// default logger's and points the log package at it with no flags (StandardLog), so a log.Print
-// is one line of that handler's, with no date of the log package's own before its text.
+// default logger's and points the log package at it with no flags through StandardLog. slog's own
+// writer for the log package, which slog.SetDefault alone installs, writes each write as one INFO
+// line of the same handler too, so the rows read what only StandardLog does: the bytes a line
+// quotes from a peer hidden, a first line cut to answer.FieldBytes, and the rest of a write its
+// stack, each with no date of the log package's own before its text.
 func TestSetDefaultPointsTheLogPackageAtTheHandler(t *testing.T) {
 	keepTheDefaults(t)
 	var out logtest.Buffer
@@ -106,9 +110,13 @@ func TestSetDefaultPointsTheLogPackageAtTheHandler(t *testing.T) {
 		}
 		return a
 	}}))
-	log.Print("a line of the log package")
+	log.Printf("starting with %q", realValue)
+	log.Print(strings.Repeat("y", 300) + "\nsecond line")
 	slog.Info("a line of slog")
-	if want := `{"level":"INFO","msg":"a line of the log package"}` + "\n" + `{"level":"INFO","msg":"a line of slog"}` + "\n"; out.String() != want {
+	want := `{"level":"INFO","msg":"starting with \"[service bytes not shown]\""}` + "\n" +
+		`{"level":"INFO","msg":"` + strings.Repeat("y", answer.FieldBytes) + `","stack":"second line"}` + "\n" +
+		`{"level":"INFO","msg":"a line of slog"}` + "\n"
+	if out.String() != want {
 		t.Fatalf("the handler wrote %q; want %q", out.String(), want)
 	}
 }

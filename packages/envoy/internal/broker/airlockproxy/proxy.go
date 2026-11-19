@@ -918,26 +918,34 @@ const upstreamMessage = "airlock proxy: upstream"
 // service whose certificate names other hosts than the one asked for (x509.HostnameError). That
 // error lists the names the certificate holds with no quotation mark for logmask.HidePeerBytes to
 // find, and a service chooses them: a bound service, which is sent the real value the swap put
-// in, could name its certificate with it.
+// in, could name its certificate with it, and a token endpoint, which is sent the real federated
+// token, with that.
 const certificateNotForHost = "tls: the service's certificate is not valid for this host; the names it holds are not shown"
 
+// upstreamReason is how the error of a call the proxy made to a service reads in a line and in the
+// answer the command is given, for every such call: one the proxy carried (badGateway) and an
+// Azure exchange the proxy makes itself (exchangeAt). The error is the transport's own and carries
+// no header of the request, so nothing of the grant is in it, but it can quote what the service
+// sent - a status line it could not read, which a bound service may write with the real value the
+// swap sent it - so its text from the first quotation mark of each of its lines on, where %q's runs
+// of the service's bytes start, is written as logmask.PeerBytesShown (logmask.HidePeerBytes); and
+// the error for a certificate that names other hosts, whose names stand in no quotation marks, is
+// certificateNotForHost.
+func upstreamReason(err error) string {
+	if names := (x509.HostnameError{}); errors.As(err, &names) {
+		return certificateNotForHost
+	}
+	return logmask.HidePeerBytes(err.Error())
+}
+
 // badGateway answers a service that could not be reached or did not answer: a failure, which it
-// logs and counts, and no refusal. The error is the transport's own and carries no header of the
-// request, so nothing of the grant is in it, but it can quote what the service sent - a status
-// line it could not read, which a bound service may write with the real value the swap sent it -
-// so its text from the first quotation mark of each of its lines on, where %q's runs of the
-// service's bytes start, is written as logmask.PeerBytesShown (logmask.HidePeerBytes), and an
-// error for a certificate that names other hosts, whose names stand in no quotation marks, as
-// certificateNotForHost, in the line and in the answer the command is given alike. The path,
-// and on a plain request the host, are the caller's, and the error may quote the host, so the
-// line passes answer.ClipFields as a call's line does, and stays one Cloud Logging entry whatever
-// the caller sent.
+// logs and counts, and no refusal, with the error as upstreamReason writes it in the line and in
+// the answer the command is given alike. The path, and on a plain request the host, are the
+// caller's, and the error may quote the host, so the line passes answer.ClipFields as a call's
+// line does, and stays one Cloud Logging entry whatever the caller sent.
 func (s *Server) badGateway(host, path string) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, _ *http.Request, err error) {
-		reason := logmask.HidePeerBytes(err.Error())
-		if names := (x509.HostnameError{}); errors.As(err, &names) {
-			reason = certificateNotForHost
-		}
+		reason := upstreamReason(err)
 		s.log.Warn(upstreamMessage, answer.ClipFields([]any{"host", host, "path", path, "error", reason})...)
 		fail(w, http.StatusBadGateway, codeUpstream, host+": "+reason)
 	}

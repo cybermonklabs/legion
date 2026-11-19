@@ -86,30 +86,79 @@ func holdsARunOf(text, secret string) bool {
 }
 
 // noFederatedToken fails t when the answer or any line the proxy wrote holds a run of the real
-// federated token, and unless a line gives as its reason that the endpoint's bytes were not
-// shown: the refusal line of a refusal, or the call line of a 502, which is no refusal and names
-// no code.
-func noFederatedToken(t *testing.T, r *rig, answer string) {
+// federated token, and unless the answer and a line's reason hold shown, what is written in place
+// of the endpoint's bytes: the refusal line of a refusal, or the call line of a 502, which is no
+// refusal and names no code.
+func noFederatedToken(t *testing.T, r *rig, answer, shown string) {
 	t.Helper()
 	if holdsARunOf(answer, azureRealFederated) {
 		t.Errorf("the answer the command was given holds the real federated token: %q", answer)
 	}
-	if !strings.Contains(answer, logmask.PeerBytesShown) {
-		t.Errorf("the answer the command was given is %q; want %s where the endpoint's bytes were", answer, logmask.PeerBytesShown)
+	if !strings.Contains(answer, shown) {
+		t.Errorf("the answer the command was given is %q; want %s where the endpoint's bytes were", answer, shown)
 	}
-	shown := false
+	reasoned := false
 	for _, record := range r.logs.Records() {
 		if text := recordText(record); holdsARunOf(text, azureRealFederated) {
 			t.Errorf("a line the proxy wrote holds the real federated token: %q", text)
 		}
 		record.Attrs(func(a slog.Attr) bool {
-			shown = shown || a.Key == "reason" && strings.Contains(a.Value.String(), logmask.PeerBytesShown)
+			reasoned = reasoned || a.Key == "reason" && strings.Contains(a.Value.String(), shown)
 			return true
 		})
 	}
-	if !shown {
-		t.Errorf("no line gives as its reason that the endpoint's answer was %s: %v", logmask.PeerBytesShown, r.logs.Records())
+	if !reasoned {
+		t.Errorf("no line gives as its reason that the endpoint's answer was %s: %v", shown, r.logs.Records())
 	}
+}
+
+// tokenEndpointNamed is a token endpoint of the row's own at azureEchoAddress, whose certificate,
+// signed by the authority the proxy trusts, names the hosts names and not the bound host: the
+// proxy's transport refuses it in the handshake, before any request is sent.
+func tokenEndpointNamed(t *testing.T, r *rig, names ...string) {
+	t.Helper()
+	leaf, _, err := r.service.Authority().Leaf(names)
+	if err != nil {
+		t.Fatalf("the endpoint's certificate: %v", err)
+	}
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{*leaf}})
+	if err != nil {
+		t.Fatalf("bind the endpoint: %v", err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				conn.SetDeadline(time.Now().Add(20 * time.Second))
+				conn.(*tls.Conn).Handshake()
+			}()
+		}
+	}()
+	r.dialTo[net.JoinHostPort(azureEchoAddress.String(), "443")] = listener.Addr().String()
+}
+
+// TestAnExchangeWhoseEndpointsCertificateNamesTheTokenWritesNoneOfIt: the command's exchange goes
+// to a token endpoint whose certificate names other hosts than the bound one, the real federated
+// token among them. crypto/x509's error lists every name it holds, with no quotation mark for
+// logmask.HidePeerBytes to find, so the refusal of the exchange and its line write
+// certificateNotForHost in its place (upstreamReason), as an upstream failure's line does, and
+// hold none of the token.
+func TestAnExchangeWhoseEndpointsCertificateNamesTheTokenWritesNoneOfIt(t *testing.T) {
+	r, _ := newAzureRig(t, Options{})
+	tokenEndpointNamed(t, r, azureRealFederated, "other.example.net")
+	r.answersMu.Lock()
+	r.answers[boundHost] = [][]netip.Addr{r.addresses[boundHost], {azureEchoAddress}}
+	r.answersMu.Unlock()
+	answer, body := tokenRequest(t, r, r.client(azureFederatedPlaceholder), azureFederatedPlaceholder)
+	if answer.StatusCode != http.StatusBadGateway {
+		t.Fatalf("the exchange answered %d %q; want 502", answer.StatusCode, body)
+	}
+	noFederatedToken(t, r, body, certificateNotForHost)
 }
 
 // TestAnExchangeWhoseEndpointEchoesTheTokenWritesNoneOfIt: the command's exchange, which this pod
@@ -129,7 +178,7 @@ func TestAnExchangeWhoseEndpointEchoesTheTokenWritesNoneOfIt(t *testing.T) {
 	if answer.StatusCode != http.StatusBadGateway {
 		t.Fatalf("the exchange answered %d %q; want 502", answer.StatusCode, body)
 	}
-	noFederatedToken(t, r, body)
+	noFederatedToken(t, r, body, logmask.PeerBytesShown)
 }
 
 // TestASecondPodsExchangeWhoseEndpointEchoesTheTokenWritesNoneOfIt: the exchange a pod makes for
@@ -174,5 +223,5 @@ func TestASecondPodsExchangeWhoseEndpointEchoesTheTokenWritesNoneOfIt(t *testing
 		t.Fatalf("the call whose exchange was answered with the token answered %v, %v; want a refusal", served, err)
 	}
 	refused, _ := io.ReadAll(served.Body)
-	noFederatedToken(t, r, string(refused))
+	noFederatedToken(t, r, string(refused), logmask.PeerBytesShown)
 }

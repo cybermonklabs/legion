@@ -44,7 +44,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
-	"github.com/sjawhar/envoy/internal/broker/logmask"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/fold"
@@ -402,29 +401,26 @@ func (s *Server) azureAccess(ctx context.Context, info connInfo, chosen pair, se
 // exchangeAt makes one exchange: the broker's own POST to the token endpoint, on the transport
 // every upstream call of this proxy goes out on, and the endpoint's status and whole answer. The
 // endpoint was sent the real federated token, and the transport's error can quote what it sent
-// back, so an error is answered with each run of the endpoint's bytes it quotes written as
-// logmask.PeerBytesShown (peerHidden): the refusal line and the answer the command is given
-// repeat it.
+// back or list the names its certificate holds, so an error is answered as upstreamReason writes
+// it, as an upstream failure's is: the refusal line and the answer the command is given repeat
+// it.
 func (s *Server) exchangeAt(ctx context.Context, endpoint string, form url.Values) (int, []byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return 0, nil, peerHidden(err)
+		return 0, nil, errors.New(upstreamReason(err))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	answer, err := s.upstream.RoundTrip(request)
 	if err != nil {
-		return 0, nil, peerHidden(err)
+		return 0, nil, errors.New(upstreamReason(err))
 	}
 	defer answer.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(answer.Body, maxTokenAnswer))
 	if err != nil {
-		return answer.StatusCode, nil, peerHidden(err)
+		return answer.StatusCode, nil, errors.New(upstreamReason(err))
 	}
 	return answer.StatusCode, body, nil
 }
-
-// peerHidden is err with the bytes it quotes from a peer hidden (logmask.HidePeerBytes).
-func peerHidden(err error) error { return errors.New(logmask.HidePeerBytes(err.Error())) }
 
 // azureAnswerOf takes the endpoint's answer apart once, keeping every field's own bytes, so the
 // command is answered the shape Microsoft wrote and not one rebuilt from the fields this code
