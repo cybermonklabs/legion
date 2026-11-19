@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import type { Artifact, Ask, Comment, IssueDetails } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
+import { KEEPS_DETAILS_ATTRIBUTE } from "./Margin";
 import { type DocumentBridge, useMargin } from "./margin-context";
 
 export const specArtifact: Artifact = {
@@ -118,6 +119,16 @@ export const anchoredAsk: Ask = {
   urgency: "med",
 };
 
+/** The address a margin landing starts from beside its document on the new issue page: the
+ *  address of the document the comment is anchored in, with the comment named by `?mark=`
+ *  (`issue-page/issue-address.ts`'s `documentItem`). Every other address of the issue that names
+ *  the comment - its own route (`/issues/KEY/comments/<id>`), `?comment=` - opens the new page's
+ *  outline on the comment's node, and the margin in Details only marks its card there
+ *  (`useMarginSheet.ts`'s `routeItemBesideDocument`, R20). */
+export function markedCommentPath(id: string): string {
+  return `${buildIssuePath({ key: "CORE-1", kind: "artifact", slug: "spec" })}?mark=${id}`;
+}
+
 export function CommentLink(): ReactNode {
   const navigate = useNavigate();
 
@@ -144,6 +155,25 @@ export function SameCommentLink(): ReactNode {
     >
       Open the same comment
     </button>
+  );
+}
+
+/** Two links that keep the phone's Details open when followed in it (`Margin.tsx`'s
+ *  `KEEPS_DETAILS_ATTRIBUTE`): one that carries the attribute, as a history turn's time link
+ *  does, and one inside an element that carries it. Neither leaves the page. */
+export function KeptDetailsLinks(): ReactNode {
+  const keeps = { [KEEPS_DETAILS_ATTRIBUTE]: "" };
+  return (
+    <>
+      <a href="/issues/CORE-3" onClick={(event) => event.preventDefault()} {...keeps}>
+        a turn's time
+      </a>
+      <span {...keeps}>
+        <a href="/issues/CORE-4" onClick={(event) => event.preventDefault()}>
+          a link inside a turn
+        </a>
+      </span>
+    </>
   );
 }
 

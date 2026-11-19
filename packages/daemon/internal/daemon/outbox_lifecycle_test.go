@@ -403,20 +403,19 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 	}
 }
 
-// The head starting to conflict with its base while the tester is in a turn — running a tool, its
-// phase not completed — takes the phase back to implementing with nobody's completion. The
-// implementer's start runs at once, as at every other phase change: it waits for no turn to end,
-// and hands the implementer the conflict's task while the tester is still working. The tester's
-// turn is its own — nothing interrupts it and nothing stops it — and it keeps its launch, its
-// session and its capability.
-func TestAConflictStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) {
+// The tester's own backward move while it is in a turn — running a tool, its phase not completed —
+// takes the phase back to implementing with nobody's completion. The implementer's start runs at
+// once, as at every other phase change: it waits for no turn to end, and hands the implementer the
+// move's task while the tester is still working. The tester's turn is its own — nothing interrupts
+// it and nothing stops it — and it keeps its launch, its session and its capability.
+func TestABackwardMoveStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
-	// The issue is at work in testing and at work in implementing after the red, so it holds its
-	// admission slot throughout: the implementer's task is delivered rather than held for one.
+	// The issue is at work in testing and at work in implementing after the move back, so it holds
+	// its admission slot throughout: the implementer's task is delivered rather than held for one.
 	holdSlot(t, pool, issue.Key)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue.Key, Repo: "acme/widgets", Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1",
@@ -482,23 +481,24 @@ func TestAConflictStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.
 		}
 		implementer.Wait()
 	}
-	conflictTasks := func() int {
+	const reason = "the fix does not cover the empty list"
+	moveBackTasks := func() int {
 		t.Helper()
 		count := 0
 		for _, prompt := range implementerConn.Prompts() {
-			if strings.Contains(prompt.Message, "Phase: implementing.") && strings.Contains(prompt.Message, "the head conflicts with main") {
+			if strings.Contains(prompt.Message, "Phase: implementing.") && strings.Contains(prompt.Message, reason) {
 				count++
 			}
 		}
 		return count
 	}
 
-	if result, err := intake.ApplyFact(ctx, pool, "github", "conflict", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 86, HeadSHA: "sha-1",
-		Base: "main", Mergeable: record.MergeabilityConflicting}, engine); err != nil || result.Refusal != nil {
-		t.Fatalf("apply the conflicting head = %+v, %v", result, err)
+	if result, err := intake.ApplyFact(ctx, pool, "api", "move-back", intake.BackwardMove{Issue: issue.Key, Requester: claim.RoleTester,
+		To: phase.Implementing, Reason: reason}, engine); err != nil || result.Refusal != nil {
+		t.Fatalf("apply the tester's move back = %+v, %v", result, err)
 	}
 	run("the send-back's effects")
-	testwait.Eventually(t, "the implementer to be handed its conflict task", func() bool { return conflictTasks() == 1 })
+	testwait.Eventually(t, "the implementer to be handed its task of the move back", func() bool { return moveBackTasks() == 1 })
 	during := tester.Claim()
 	if during.State != supervise.StateWorking {
 		t.Fatalf("while the implementer started the tester is %s, want working: its turn is its own", during.State)
@@ -511,8 +511,8 @@ func TestAConflictStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.
 		*after.Locator != *before.Locator || !bytes.Equal(after.CapabilityHash, before.CapabilityHash) {
 		t.Fatalf("after the send-back the tester is %+v, want idle on its launch, session and capability", after)
 	}
-	if conflictTasks() != 1 {
-		t.Fatalf("the implementer was handed %d conflict tasks, want the one the start delivered", conflictTasks())
+	if moveBackTasks() != 1 {
+		t.Fatalf("the implementer was handed %d tasks of the move back, want the one the start delivered", moveBackTasks())
 	}
 	for _, method := range []string{"Suspend", "Release"} {
 		for _, call := range rt.CallsOf(method) {

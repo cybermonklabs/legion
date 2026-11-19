@@ -15,6 +15,7 @@ import { composerNameOf, keptForOtherWords, stoppedOfferOf } from "../conversati
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
+import { useMarginDrawer } from "../issue-page/margin-slot";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { COMPACT_VIEWPORT_QUERY, PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
 import type { MarginComposer } from "./CommentsTab";
@@ -95,19 +96,34 @@ export function useMarginSheet(): MarginSheetModel {
   } = useMargin();
   const store = useHeldSends();
   const queryClient = useQueryClient();
-  const { key: locationKey, pathname, search } = useLocation();
+  const { hash, key: locationKey, pathname, search } = useLocation();
   const issueRoute = parseIssuePath(pathname, search);
   const projectRoute = parseProjectPath(pathname, search);
   const documentRoute = projectRoute?.kind === "document" ? projectRoute : undefined;
   const owner = useMarginOwner();
+  // The new issue page's Details, where the shell draws that page's frame; undefined elsewhere.
+  const drawer = useMarginDrawer();
   const issueKey = owner?.kind === "issue" ? owner.key : undefined;
   const documentArtifact = useProjectArtifact(documentRoute);
   const routeArtifactSlug = issueRoute?.kind === "artifact" ? issueRoute.slug : documentRoute?.slug;
   const queryItem = itemFromSearch(search);
+  // In Details the item the address names, and whether the margin is its landing, are the new
+  // page's rule (`MarginDrawer.page.routeItem`): an item stands beside the document the address
+  // opens - `?mark=`, which "View in document" builds, or an item at a pinned version - only
+  // where the address opens one at it. Every other item an issue's address names - by its own
+  // route or by `?comment=` and `?ask=` - is a node of the outline, which the page opens on that
+  // node: the margin marks its own copy of that item and lands on nothing, since an expanded
+  // thread's reply box takes the focus off the node and a hold scrolls the drawer off the entry
+  // the address named (R20). Before the page has set its rule the margin
+  // names no item. With no drawer an item is landed on as it always was.
+  const drawerItem = drawer?.page?.routeItem({ hash, pathname, search });
   const routeItemId =
-    issueRoute?.kind === "ask" || issueRoute?.kind === "comment"
-      ? issueRoute.id
-      : (documentRoute?.item?.id ?? queryItem?.id);
+    drawer !== undefined
+      ? drawerItem?.id
+      : issueRoute?.kind === "ask" || issueRoute?.kind === "comment"
+        ? issueRoute.id
+        : (documentRoute?.item?.id ?? queryItem?.id);
+  const routeItemBesideDocument = drawer === undefined || drawerItem?.besideDocument === true;
   // Each navigation is its own request for the item it names, even when it names the one the
   // reader is already on: following a link back to the card you moved off has to bring you back.
   // `useLocation().key` changes on a same-URL push, which an item id alone cannot see.
@@ -593,9 +609,12 @@ export function useMarginSheet(): MarginSheetModel {
     }
     // The selection is applied once per link; the quote is still brought into view the first
     // time the open document can be asked, which is often a later pass than this one.
+    // An item that is a node of the new page's outline is marked and no more
+    // (`routeItemBesideDocument`).
     if (appliedRouteItem.current !== routeItemKey) {
       appliedRouteItem.current = routeItemKey;
-      selectMarginItem(routeItemId, false);
+      if (routeItemBesideDocument) selectMarginItem(routeItemId, false);
+      else selectItem(routeItemId);
     }
     const markId = marginItemMarkId(item);
     // Only once the open document has reported that mark. `focusMark` is a one-shot scroll into
@@ -603,6 +622,7 @@ export function useMarginSheet(): MarginSheetModel {
     // is where a client-side navigation lands - it silently does nothing and the reader never
     // sees the quote. A published placement is the document saying the span is rendered.
     if (
+      !routeItemBesideDocument ||
       markId === undefined ||
       !markPlacements.has(markId) ||
       focusedRouteMark.current === `${routeItemKey}:${markId}` ||
@@ -612,7 +632,26 @@ export function useMarginSheet(): MarginSheetModel {
     }
     focusedRouteMark.current = `${routeItemKey}:${markId}`;
     documentBridge.focusMark(markId);
-  }, [documentBridge, marginItems, markPlacements, routeItemId, routeItemKey, selectMarginItem]);
+  }, [
+    documentBridge,
+    marginItems,
+    markPlacements,
+    routeItemBesideDocument,
+    routeItemId,
+    routeItemKey,
+    selectItem,
+    selectMarginItem,
+  ]);
+  // The address's landing on a card beside its document, one per navigation, once the margin
+  // holds that card: the card is what a reader who followed the link asked to see, so a closed
+  // Details opens for it (`Margin.tsx`), as it does for a compose and a picked card. An item that
+  // is a node of the new page's outline lands on that node instead and opens nothing.
+  const landedCard =
+    routeItemBesideDocument &&
+    routeItemKey !== undefined &&
+    marginItems.some((candidate) => marginItemId(candidate) === routeItemId)
+      ? routeItemKey
+      : undefined;
 
   useMarginListeners({
     composer: shownComposer,
@@ -624,11 +663,15 @@ export function useMarginSheet(): MarginSheetModel {
     // page mounted, hidden, until the new page's code has arrived and its throttled reveal
     // commits - and its report would read a press there as the reader working a placed document.
     placementsPublished,
+    routeItemBesideDocument,
     routeItemId,
     routeItemKey,
     setHoveredItemId,
     setTab,
-    sheetExpanded,
+    // Below `xl` the margin's scrollport is laid out only while the compact sheet is expanded;
+    // in Details it is laid out while the drawer is open, at every width, so a linked card and
+    // an opened composer are held in view there once the drawer opens (R14).
+    sheetExpanded: drawer === undefined ? sheetExpanded : drawer.open,
     tab,
     visibleArtifact,
   });
@@ -692,6 +735,8 @@ export function useMarginSheet(): MarginSheetModel {
       savingCommentEditId,
       hoveredItemId,
       hoveredMarkId,
+      landedCard,
+      routeMarkedItemId: routeItemBesideDocument ? undefined : routeItemId,
       selectedItemId: displayedSelectedItemId,
       showResolved,
     },

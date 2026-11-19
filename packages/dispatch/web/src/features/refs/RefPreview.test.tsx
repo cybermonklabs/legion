@@ -18,6 +18,7 @@ import type {
   IssueReferenceSummary,
 } from "../../api/types";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
+import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { shortForm } from "./routes";
 
@@ -291,6 +292,117 @@ test("a hover that ends before the delay, a touch pointer, or a held button neve
   }
 });
 
+/** The mark the new issue page's frame carries (`app.tsx`'s `<main>` and `Margin.tsx`'s Details
+ *  there): the references inside it open no card on hover. */
+const NO_HOVER_FRAME = { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" };
+
+// R6: the issue page opens nothing on hover, a reference included, because
+// its reader works it from the keyboard. Its frame carries the mark the host reads, so a
+// reference inside it opens no card for a resting pointer, the keyboard still opens that
+// reference's card, and a reference on any other page keeps its hover card.
+test("a reference on the issue page opens no card on hover, its keyboard focus does, and another page's hover still does", () => {
+  const getIssue = mockIssues();
+  jest.useFakeTimers();
+  const view = render(
+    <Harness>
+      <div {...NO_HOVER_FRAME}>
+        <Link to="/issues/CORE-2" {...referenceTriggerProps({ key: "CORE-2", kind: "issue" })}>
+          on the issue page
+        </Link>
+      </div>
+    </Harness>
+  );
+  try {
+    const inside = screen.getByRole("link", { name: "on the issue page" });
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(inside, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS + 100);
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    // Leaving it: user-event's unhover names no pointerType either.
+    fireEvent.pointerOut(inside, { pointerType: "mouse" });
+
+    act(() => {
+      inside.focus();
+    });
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-2");
+    act(() => {
+      inside.blur();
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    const elsewhere = screen.getByRole("link", { name: "first" });
+    // A hover-intent pointer on a reference outside the issue page's frame.
+    fireEvent.pointerOver(elsewhere, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1");
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+/** A stand-in for the issue page's live document editor: an editable root whose link mark the
+ *  caret can stand in, which takes no focus of its own. */
+function EditableBody(): ReactNode {
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = root.current;
+    if (element === null) {
+      throw new Error("missing root");
+    }
+    element.innerHTML =
+      'See <a data-dispatch-href="dispatch://CORE-1" href="">the other issue</a> for context.';
+  }, []);
+  return <div contentEditable ref={root} suppressContentEditableWarning />;
+}
+
+// R6: a link inside the issue page's live editor takes no focus of its
+// own, so the keyboard reaches it by putting the caret in it - which opens its card, as focus
+// opens a card on any other link - and the caret leaving the link closes it again.
+test("on the issue page, the caret in an editor's link opens its card, and leaving the link closes it", () => {
+  const getIssue = mockIssues();
+  const view = render(
+    <Harness>
+      <div {...NO_HOVER_FRAME}>
+        <EditableBody />
+      </div>
+    </Harness>
+  );
+  try {
+    const link = view.container.querySelector<HTMLElement>("[data-dispatch-href]");
+    if (link === null) throw new Error("the editable body drew no link mark");
+    const caretAt = (node: Node, offset: number) => {
+      // One move of the caret, as a browser reports it: emptying the selection first would report
+      // a caret outside every link in between.
+      document.getSelection()?.collapse(node, offset);
+      // user-event has no form that moves the caret inside an editable root.
+      fireEvent(document, new Event("selectionchange"));
+    };
+    act(() => {
+      caretAt(link.firstChild as Node, 3);
+    });
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1");
+    // Escape closes it, and the caret moving on inside the same link opens it no more.
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    act(() => {
+      caretAt(link.firstChild as Node, 4);
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    act(() => {
+      caretAt(link.parentElement?.lastChild as Node, 2);
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
 test("Escape closes the open card", async () => {
   const getIssue = mockIssues();
   jest.useFakeTimers();
@@ -308,6 +420,54 @@ test("Escape closes the open card", async () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   } finally {
     view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+// The Escape that ends an IME composition is the composition's (decision 325): the open card stays
+// open and the key goes on to the page, which the card's capture listener on `document` would
+// stop. An Escape after the composition closes the card and stops there.
+test("an Escape that ends an IME composition leaves the open card open", () => {
+  const getIssue = mockIssues();
+  jest.useFakeTimers();
+  const behind: KeyboardEvent[] = [];
+  const hearBehind = (event: KeyboardEvent) => behind.push(event);
+  window.addEventListener("keydown", hearBehind);
+  const view = render(<Harness />);
+  try {
+    const first = screen.getByRole("link", { name: "first" });
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(first, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    // user-event has no form for a key that ends a composition, so the event is made by hand.
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          isComposing: true,
+          key: "Escape",
+        })
+      );
+    });
+    expect(
+      screen.queryByRole("tooltip"),
+      "the Escape that ended a composition closed the card"
+    ).toBeInTheDocument();
+    expect(behind.length, "the Escape that ended a composition stopped short of the page").toBe(1);
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
+      );
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(behind.length, "the card's Escape reached the page").toBe(1);
+  } finally {
+    view.unmount();
+    window.removeEventListener("keydown", hearBehind);
     getIssue.mockRestore();
   }
 });
