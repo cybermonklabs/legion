@@ -22,10 +22,11 @@ export interface HostModel {
 /** The host's `ModelRegistry`, as far as this package reads it: the two members a retry fallback
  * chain's resolution needs as its `RetryFallbackModelLookup`
  * (`packages/coding-agent/src/session/retry-fallback-chains.ts:37-41` at the pinned tag), and the
- * suppression the host's own turn recovery reads before it picks a fallback
- * (`session/turn-recovery.ts:2047-2049`), so an extension stepping down the same chain skips what
- * the host already skips. Each is a method of the live registry, which reads private state of its
- * own, so a caller calls it on the registry rather than handing it over detached. */
+ * suppression the host's own turn recovery reads before it picks a fallback, by the entry's own
+ * selector and by the key of the model it resolves to (`isRetryFallbackEntrySuppressed`,
+ * `session/turn-recovery.ts:2189-2194` at the pinned tag), so an extension stepping down the same
+ * chain can skip what the host skips. Each is a method of the live registry, which reads private
+ * state of its own, so a caller calls it on the registry rather than handing it over detached. */
 export interface HostModelRegistry {
   /** The model one provider and id name, or undefined when this deployment disables the provider
    * or holds no such model. */

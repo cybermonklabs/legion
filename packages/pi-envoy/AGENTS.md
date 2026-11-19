@@ -80,7 +80,7 @@ the pin this rule was written against, the host settled every extension send of 
 it returned from `initializeExtensions`, and RPC mode read no command until then, while an idle
 card with `triggerTurn` is a send that lasts its whole run, so such a card held the daemon's
 `get_state` and task back until that turn ended. 18.16.0 and the pinned build
-(18.18.6-sami.20261118-112021) both skip that drain in RPC mode (`drainSends: false`). 18.16.0
+(18.18.6-sami.20261119-075528) both skip that drain in RPC mode (`drainSends: false`). 18.16.0
 still held every command but `set_ask_dialog` until its startup was over; the pinned build reads
 commands while it starts, answers `get_state` and every other command that starts no turn at once,
 and holds one that starts a turn or changes the session (`rpc-mode.ts` `waitsForStartup`) until
@@ -146,7 +146,7 @@ compaction that fails or is cancelled after aborting the run, or a switch that f
 abort and its `session_switch`, then a prompt sent while the host is busy, or one that reaches it
 with no `input` event (another extension's `sendUserMessage` or triggered message, an ACP prompt,
 a wake of the host's own); or a run another sender starts with no wait while a manual compaction
-has the agent disconnected (`agent-session.ts` `#promptAgentInitiatedMessage`, 11398-11438 at the
+has the agent disconnected (`agent-session.ts` `#promptAgentInitiatedMessage`, 11400-11440 at the
 pinned tag), which leaves the host busy at that `session_compact`. Another extension's startup send
 still loading its pictures on an idle host can let the startup wake join the host's startup drain;
 the drain of `/reload-plugins` is not covered; a startup targeted Aside in plan mode gets a wake an

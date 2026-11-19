@@ -629,7 +629,7 @@ export interface Refusal {
   readonly explanation?: string;
   /** Text the model streamed before the refusal, committed by the time it came. The host walks
    * its own fallback chain for a refusal that follows no output and ends the turn where it is for
-   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1641-1675` and `:2715-2725`
+   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1777-1811` and `:3127-3137`
    * at the pinned tag: committed text is replay-unsafe), so this is the one thing that decides
    * which of the two walks a case proves. */
   readonly text?: string;
