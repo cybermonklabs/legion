@@ -1,0 +1,27 @@
+kind: Changed
+body: |-
+    A pull request whose head conflicts with its base no longer sends its issue back to
+    `implementing`. The daemon reads the pull request's mergeability twice, at least a minute
+    apart (a `conflict_confirm` outbox row makes the second read), and acts only on a conflict both
+    reads report. It acts only when the next step needs a mergeable head: the issue stands in
+    `accepting`, `retro` or `merging`; a check the base requires has no green result on the head,
+    since GitHub runs no check on a conflicting head; the base requires a pull request to be current
+    with it; or the daemon could not read the base's rules, which it now reads (rulesets and the
+    branch's classic protection) on a conflicting read alone. Otherwise it records the conflict, and
+    the tester and the reviewer go on at that head; an approval of that head ends the review round.
+    When it acts, the issue keeps its phase and takes no admission slot: the implementer gets a
+    merge-forward message (a `merge_forward` outbox row) to merge the base forward in the issue
+    workspace and push, the tester, the reviewer or the merger holding the phase is told to stop
+    writing the workspace and then the new head, the architect gets one `checks-red` notice naming
+    the phase the issue stays in, and past review the reviewer is asked to read the merge and
+    approve the new head. A completion that names the head the merge replaced is refused
+    `HANDOFF_HEAD_MERGED_FORWARD`. The daemon also reads the merge state on a head push of an issue
+    in `implementing` through `merging` and on a base push for each issue in `testing` through
+    `merging`, and reads again with a wait that doubles to ten minutes after a ladder whose reads
+    all answered `unknown`. The `phase_ended` message is gone; migration
+    `20261119003157_conflict_reads_and_merge_forward` deletes its queued rows and keeps the kind in
+    the outbox's check for a rollback (`docs/kubernetes.md`, "Rolling back the release that merges a
+    conflicting head forward in its phase").
+time: 2026-11-19T01:57:34Z
+custom:
+    Issue: pr4464

@@ -137,12 +137,15 @@ commit statuses and attestations (`appauth.readPermissions`), cut down the same 
 itself reads GitHub with the implement App too, at these moments and at no other: as the workflow
 runtime starts, which covers what arrived while the daemon was down; once an agent's handoff has
 been recorded, the moment the daemon next decides on that pull request's state; in the merge-state
-ladder, at most five reads half a minute apart, which a review round whose approval waits on
-GitHub asks for, a push to the head of an issue in `implementing` through `merging` asks for, and
-a push to the base asks for each issue standing past its review; a minute after a read found the
-head conflicting with its base, to read it once more before it acts on the conflict; and once
-after GitHub reports the pull request out of the merge queue. It runs on no timer, and it reads
-one issue's own pull request rather than a listing of every open one. A read that finds the head
+ladder, five reads half a minute apart, which a review round whose approval waits on GitHub asks
+for, a push to the head of an issue in `implementing` through `merging` asks for, and a push to
+the base asks for each issue standing in `testing` through `merging`; after a ladder whose five
+reads all answered `unknown`, again and again with a wait that doubles from half a minute to ten
+minutes, until GitHub answers a state, the head moves or the pull request is no longer open, each
+read logged with its wait; a minute after a read found the head conflicting with its base, to
+read it once more before it acts on the conflict; and once after GitHub reports the pull request
+out of the merge queue. Nothing else runs on a timer, and it reads one issue's own pull request
+rather than a listing of every open one. A read that finds the head
 conflicting also reads the base branch's rules, its rulesets and its classic branch protection,
 for the checks the base requires and whether it requires a current branch, since that decides
 whether the conflict needs the implementer's merge forward now. It reads no check run and no
