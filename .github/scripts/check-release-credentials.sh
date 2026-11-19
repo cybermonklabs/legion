@@ -355,47 +355,49 @@ def local_action_code(uses: str, seen: tuple) -> str | None:
     any other kind of action, or one this check cannot read, as dependency code itself."""
     if uses in seen:
         return None
-    directory = Path(uses)
-    files = [directory / name for name in ("action.yml", "action.yaml") if (directory / name).is_file()]
-    if not files:
-        return "has no action.yml in the checkout for this check to read"
-    try:
-        action = yaml.load(files[0].read_text(), Loader=LineLoader)
-    except yaml.YAMLError:
-        return f"has a {files[0].name} that is not valid YAML"
-    runs = action.get("runs") if isinstance(action, Mapping) else None
-    using = runs.get("using") if isinstance(runs, Mapping) else None
-    if using != "composite":
-        return f"runs '{using}', a program this check cannot read"
+    steps, unread = composite_steps(uses)
+    if unread:
+        return unread
     found = []
-    for index, step in enumerate(runs.get("steps") or []):
+    for index, step in enumerate(steps):
         if isinstance(step, Mapping):
             if what := dependency_code(step, NO_SCOPE, NO_SCOPE, seen + (uses,)):
                 found.append(f"{describe(step, index)} {what}")
     return "; ".join(found) or None
 
 
+def composite_steps(uses: str) -> tuple[list, str | None]:
+    """A local action's steps, read off its action.yml in the checkout, or none and why it cannot
+    be read as a composite action's (no action.yml, YAML that does not parse, another kind of
+    action). The one reader local_action_code and action_uses share."""
+    directory = Path(uses)
+    files = [directory / name for name in ("action.yml", "action.yaml") if (directory / name).is_file()]
+    if not files:
+        return [], "has no action.yml in the checkout for this check to read"
+    try:
+        action = yaml.load(files[0].read_text(), Loader=LineLoader)
+    except yaml.YAMLError:
+        return [], f"has a {files[0].name} that is not valid YAML"
+    runs = action.get("runs") if isinstance(action, Mapping) else None
+    using = runs.get("using") if isinstance(runs, Mapping) else None
+    if using != "composite":
+        return [], f"runs '{using}', a program this check cannot read"
+    return list(runs.get("steps") or []), None
+
+
 def action_uses(uses: str, seen: tuple = ()) -> list[str]:
     """The remote actions a step's `uses:` brings into its job: itself, or, for a local composite
     action, every remote `uses:` of its steps at any depth. A local action this check cannot read
-    brings one entry that names it as such, which no allow-list holds."""
+    brings one entry that names it and why, which no allow-list holds."""
     if not uses.startswith("./"):
         return [uses]
     if uses in seen:
         return []
-    directory = Path(uses)
-    files = [directory / name for name in ("action.yml", "action.yaml") if (directory / name).is_file()]
-    if not files:
-        return [f"{uses} (no action.yml in the checkout to read)"]
-    try:
-        action = yaml.load(files[0].read_text(), Loader=LineLoader)
-    except yaml.YAMLError:
-        return [f"{uses} (an action.yml this check cannot parse)"]
-    runs = action.get("runs") if isinstance(action, Mapping) else None
-    if not isinstance(runs, Mapping) or runs.get("using") != "composite":
-        return [f"{uses} (not a composite action)"]
+    steps, unread = composite_steps(uses)
+    if unread:
+        return [f"{uses} ({unread})"]
     found = []
-    for step in runs.get("steps") or []:
+    for step in steps:
         if isinstance(step, Mapping) and isinstance(step.get("uses"), str):
             found += action_uses(step["uses"], seen + (uses,))
     return found

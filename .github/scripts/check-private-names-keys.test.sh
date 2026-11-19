@@ -695,6 +695,16 @@ check "names the merge's message" "$(contains "$out" "commit:merge-sha:1: $key_r
 forward_merge "Merge main into legion/$key_project-""12" "legion/$key_project-""12"
 key_run
 check "the same head's own forward merge still passes" "$(is "$status" 0)"
+# Only a merge's message has its branches replaced: a branch named exactly a key does not hide that
+# key in a message a person wrote.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order" "$planted_key"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+commits new-sha 2026-11-21T01:00:00Z "fix: close the order, as $planted_key asked"
+commit_file new-sha modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text'
+key_run
+check "head named exactly the key, a commit (no merge) naming it: fails" "$(is "$status" 1)"
+check "names that commit's message" "$(contains "$out" "commit:new-sha:1: $key_refused")"
 merge_branch
 pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text' modified docs/big.md -
 jq -c '.[1].additions = 5 | .[1].changes = 5' "$work/pr-files" > "$work/pr-files.next"
