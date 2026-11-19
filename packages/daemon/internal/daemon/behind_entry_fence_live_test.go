@@ -35,9 +35,10 @@
 // implementer's task waits for that turn to end; the tester's completions come instead from a
 // turn of its own, begun while the implementer works and so before the new entry's task could
 // reach it. Neither a CI red nor a conflict with the base serves here, since neither moves an
-// issue: the daemon judges no check, so the proof publishes no settlement, and a head that
-// conflicts with its base is merged forward in the phase the issue stands in
-// (dispatch://INFRA-4374 R1). The move back into testing is the reviewer's own
+// issue: the daemon judges no check, so the proof publishes no settlement, and for a head that
+// conflicts with its base the daemon makes no move at all: the issue keeps its phase, and the
+// implementer is asked to merge the base forward when the next step needs a head that merges
+// (dispatch://INFRA-4374 R0, R1). The move back into testing is the reviewer's own
 // request over POST /legion/v1/phase/backward, from reviewing, under a grant its registered
 // session minted, because the engine takes a backward move from no role but the one running the
 // issue's phase (workflow's Engine.backward, BACKWARD_REFUSED).
