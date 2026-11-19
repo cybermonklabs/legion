@@ -348,24 +348,30 @@ func (k *reachKeeper) clearNoLive(ctx context.Context) {
 // the minute sweep resends are no reading of the list and are kept apart (lockOutNotices.resend).
 //
 // R6's writer loads the lines the store holds open at the boot, and every sweep, the first after
-// that load included, closes each line whose case does not hold now: the lines of a case this
-// configuration does not judge (closeUnjudgedLines), and once every claim is judged, the
-// controller's lines whose case the judgement found ended (closeEndedControllerLines). A line the
-// daemon before this one wrote is open in the store until its case ends, and that daemon may have
-// run in another configuration, or been a release that writes no such line and so closes none.
-// Left open, such a line would silence the next line of its case.
+// that load included, closes each line whose case does not hold now: the list's lines where no
+// list is read, and at the sweep's end the controller's lines whose case does not hold
+// (closeEndedControllerLines). A line the daemon before this one wrote is open in the store until
+// its case ends, and that daemon may have run in another configuration, or been a release that
+// writes no such line and so closes none. Left open, such a line would silence the next line of
+// its case.
 func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 	k.mu.Lock()
 	k.forgetGone(claims)
-	k.closeUnjudgedLines()
-	k.mu.Unlock()
 	if k.list == nil {
+		// No list is read, so nothing judges the list's cases, nor any claim's.
+		k.alerts.Close(fleetalert.NoLiveSession, "")
+		k.alerts.Close(fleetalert.SessionListUnreadable, "")
+		k.closeEndedControllerLines(claims)
+		k.mu.Unlock()
 		return
 	}
+	k.mu.Unlock()
 	sessions, err := k.list(ctx)
 	now := k.now()
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	// Run last, under mu, whether the read failed or every claim was judged.
+	defer k.closeEndedControllerLines(claims)
 	if err != nil {
 		if k.failingSince.IsZero() {
 			k.failingSince = now
@@ -443,29 +449,13 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 	for token := range k.dirty {
 		k.storeEach(ctx, token, k.records[token])
 	}
-	k.closeEndedControllerLines(claims)
 }
 
-// closeUnjudgedLines closes the lines of every case this configuration does not judge: the
-// controller's two where the daemon does not run its controller, and every line of a case the
-// list's reads judge where no list is read (a deployment with no Envoy URL), the controller's
-// among them, since the controller is judged at those reads alone. The caller holds mu.
-func (k *reachKeeper) closeUnjudgedLines() {
-	none := func(string) bool { return false }
-	if k.list == nil {
-		k.alerts.CloseEnded(fleetalert.NoLiveSession, none)
-		k.alerts.CloseEnded(fleetalert.SessionListUnreadable, none)
-	}
-	if k.list == nil || !k.daemonController {
-		k.alerts.CloseEnded(fleetalert.ControllerUnreachable, none)
-		k.alerts.CloseEnded(fleetalert.ControllerRelaunchRefused, none)
-	}
-}
-
-// closeEndedControllerLines closes each controller line whose case this sweep's judgement found
-// ended, once the sweep has judged every claim: either line holds only while its controller's
-// claim is one the keeper watches and its record is marked out of reach. A controller back in
-// reach, or gone from the claims, holds neither. The list's own lines need no such pass: every
+// closeEndedControllerLines closes each controller line whose case does not hold once this sweep
+// is over: either line holds only while its controller's claim is one the keeper watches and its
+// record is marked out of reach. So a controller back in reach, or gone from the claims, holds
+// neither; nor does any under an operator's controller, which the keeper does not watch, nor
+// where no list is read, since no read marks one. The list's own lines need no such pass: every
 // read that answers closes the unreadable list's line, and every list with a live session the
 // no-live line. The caller holds mu.
 func (k *reachKeeper) closeEndedControllerLines(claims []supervise.Claim) {
