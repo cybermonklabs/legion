@@ -809,7 +809,13 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 			}
 			err = errors.Join(err, readErr)
 		}
-		current, holderErr := r.RoleClaim(ctx, req.Role)
+		// The claim's context can have ended in the write it abandoned, or before that write
+		// started: the read that decides the rollback and the rollback itself still run, under
+		// claimCleanupWindow, as rollBackClaimTopic's do. Every branch below returns, so the
+		// cleanup context is the loop's last.
+		cleanup, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), claimCleanupWindow)
+		defer cancelCleanup()
+		current, holderErr := r.RoleClaim(cleanup, req.Role)
 		holder := current.HolderSessionID
 		// A conditional claim that lost the write's own compare-and-swap (nats.ErrKeyExists)
 		// lost it to a claim that landed after the read this call weighed its precondition on:
@@ -843,7 +849,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		// names none - leaves that record alone. It carries the lane topic of the role that
 		// session now holds, the interest half of the claim that stands.
 		if !heldBySession {
-			if rollbackErr := r.removeInterestTopics(ctx, req.SessionID, []string{roleTopic}); rollbackErr != nil {
+			if rollbackErr := r.removeInterestTopics(cleanup, req.SessionID, []string{roleTopic}); rollbackErr != nil {
 				return Interest{}, errors.Join(err, holderErr, rollbackErr)
 			}
 		}
