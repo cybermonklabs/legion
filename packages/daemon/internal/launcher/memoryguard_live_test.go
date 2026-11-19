@@ -1895,13 +1895,13 @@ func (r *controllerLiveRun) logSizes(asks <-chan controllerLiveSizesAsk, stop <-
 			r.watch.mu.Lock()
 			dropped := r.watch.sizesDropped
 			r.watch.mu.Unlock()
-			r.out.printf("live: sizes readings=%d dropped=%d", read, dropped)
+			r.out.printf("sizes readings=%d dropped=%d", read, dropped)
 			return
 		case a := <-asks:
 			began := time.Now()
 			sizes := controllerLiveProcSizes()
 			took := time.Since(began)
-			r.out.printf("live: sizes reading=%d reading_at=%s read_after=%.1fms took=%.1fms %s", a.reading,
+			r.out.printf("sizes reading=%d reading_at=%s read_after=%.1fms took=%.1fms %s", a.reading,
 				controllerLiveTime(a.at), float64(began.Sub(a.at).Microseconds())/1000, float64(took.Microseconds())/1000, sizes)
 			read++
 		}
