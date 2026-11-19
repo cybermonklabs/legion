@@ -1280,7 +1280,8 @@ func TestABootOverARecordOnARepositoryAnAppIsNotInstalledOnNamesTheApp(t *testin
 // API answers, and its state names the repository with the App and GitHub's failure as its read
 // error, for the refresher to read again (rereadBadAnswers), where a boot once exited into its
 // supervisor's restart and the same failure. The daemon writes no ERROR line: the failure is one
-// repository's, said once at WARN.
+// repository's, said once at WARN, which says a live record names it and when the refresher reads
+// it again.
 func TestABootOverARecordWhoseInstallationReadFailsAnswersItsState(t *testing.T) {
 	failure := errors.New("read whether the implement App is installed on acme/widgets failed (403)")
 	tokens := &workflowTokenRecorder{failing: map[string]error{"implement acme/widgets": failure}}
@@ -1293,7 +1294,7 @@ func TestABootOverARecordWhoseInstallationReadFailsAnswersItsState(t *testing.T)
 	if failed := errorLines(logged.String()); len(failed) != 0 {
 		t.Fatalf("ERROR lines = %q, want none: one repository's failed read refuses no boot", failed)
 	}
-	if warned := warnLinesNaming(logged.String(), "leaves it unworkable for now", `"repo":"acme/widgets"`, failure.Error()); len(warned) != 1 {
+	if warned := warnLinesNaming(logged.String(), "leaves it unworkable for now", `"repo":"acme/widgets"`, failure.Error(), `"live":true`, `"retryIn":"30s"`); len(warned) != 1 {
 		t.Fatalf("WARN lines naming the failed read = %q, want one", warned)
 	}
 }

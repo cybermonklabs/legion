@@ -122,8 +122,9 @@ func (i *installations) asks() []string {
 // error for a key it names, and the embedded issue for any other, each key it is asked recorded in
 // detailAsked, and whose webhook App check answers not installed for each repository
 // webhookMissing names, by its "<owner>/<name>" without case, and installed for every other (the
-// embedded Dispatch's answer). webhookAsked is each repository it was asked the check for: GitHub's
-// name of each repository a preparation read (prepareLive, prepareRead, refreshLive).
+// embedded Dispatch's answer). webhookAsked is each repository it was asked the check for: the
+// name each preparation read a repository under, in GitHub's spelling (prepareName), and each
+// repository a read of the live records added (refreshLive).
 type repositoryDispatch struct {
 	outboxDispatch
 	mu             sync.Mutex
@@ -242,11 +243,11 @@ func TestEachInstallationReadIsBoundedOnItsOwn(t *testing.T) {
 }
 
 // A read of a repository's default branch that GitHub never answers is bounded by
-// installReadAttempt, as every other read of a preparation is (prepareLive), so it holds up neither
+// installReadAttempt, as every other read of a preparation is (prepareName), so it holds up neither
 // the refresher's first job nor any job after it. Here GitHub holds zeta/tools' read open until its
 // reader goes: the first job keeps the read's deadline as zeta/tools' read error and records on
 // acme/widgets, and the refresher's loop then runs its sixth job at the close of zeta/tools'
-// tree, which takes the repository out of the cache set. Control: with prepareLive's read made on
+// tree, which takes the repository out of the cache set. Control: with prepareName's read made on
 // the caller's context, the first job never returns and zeta/tools keeps no answer.
 func TestADefaultBranchReadGitHubNeverAnswersHoldsUpNoJobOfTheRefresher(t *testing.T) {
 	attempt := installReadAttempt
@@ -283,11 +284,47 @@ func TestADefaultBranchReadGitHubNeverAnswersHoldsUpNoJobOfTheRefresher(t *testi
 	})
 }
 
+// An admission's read of the name and default branch of a repository no entry records issues on
+// is bounded by installReadAttempt, as the refresher's and a launch's are: all three run the one
+// preparation step (prepareName). Here GitHub holds zeta/tools' read open until its reader goes,
+// and the preparation of a todo issue on it answers within the bound, leaving the repository unread
+// with the read's deadline as its reason, kept once as its entry's read error, for the recovery to
+// read again. Before the one step, an admission's read waited for as long as its caller's context
+// allowed. Control: with prepareName's read made on the caller's context, the preparation waits
+// until the test's own deadline and names that.
+func TestAnAdmissionsReadOfANameGitHubNeverAnswersIsBounded(t *testing.T) {
+	attempt := installReadAttempt
+	installReadAttempt = 300 * time.Millisecond
+	t.Cleanup(func() { installReadAttempt = attempt })
+	silent := githubtest.Server(t, githubtest.Spec{Handle: func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }})
+	w := &workflowRuntime{dispatch: &repositoryDispatch{}, installs: &installations{}, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
+		defaultBranches: newDefaultBranches(roleTokens{}, nil, silent, defaultBranchTTL, time.Now)}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	started := time.Now()
+	if _, err := w.prepareUnrecorded(ctx, intake.DispatchIssue{Key: "LEGION-2", Seq: 1, Status: "todo", HandedOver: true, ResolvedRepo: "zeta/tools"}, false); err != nil {
+		t.Fatalf("prepare a todo issue on zeta/tools = %v, want it prepared to be applied and acknowledged", err)
+	}
+	if took := time.Since(started); took > 10*time.Second {
+		t.Fatalf("the preparation took %s, want it bounded by installReadAttempt", took)
+	}
+	if waiting := strings.Join(w.unreadReasons(), "\n"); !strings.Contains(waiting, "the name and default branch of zeta/tools could not be read") ||
+		!strings.Contains(waiting, context.DeadlineExceeded.Error()) {
+		t.Fatalf("the daemon waits on %q, want zeta/tools unread for the bounded read's deadline", waiting)
+	}
+	if entry := w.repositories.entryOf("zeta/tools"); !entry.answered() || !strings.Contains(entry.readError, "the name and default branch of zeta/tools could not be read") {
+		t.Fatalf("zeta/tools' entry = %+v, want both Apps answered and the bounded read's failure as its read error", entry)
+	}
+}
+
 // The refresher's first job, the boot's preparation of the repositories the records name, records
 // on each repository whose installation reads GitHub answered and keeps, for one whose read failed,
 // transient or not, the App, the repository and the failure as its read error, which legion state
-// shows: no boot waits on it or is refused for it, and the refresher reads it again. It says so at
-// WARN, never at ERROR.
+// shows once a live record names it: no boot waits on it or is refused for it. It says so at WARN,
+// never at ERROR, and the line is true of a repository only finished records name, as both are
+// here: it says no live record names it and names no retry, since neither legion state nor the
+// refresher's second job reads such a repository (view, badLive). Control: with the line logged
+// as a live repository's whatever the live set holds, naming a retry, it fails.
 func TestTheBootsPreparationRecordsOnTheRepositoriesWhoseInstallationReadsAnswer(t *testing.T) {
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "acme/gadgets": "acme/gadgets@main"})
@@ -324,6 +361,16 @@ func TestTheBootsPreparationRecordsOnTheRepositoriesWhoseInstallationReadsAnswer
 		}
 		if !strings.Contains(logged.String(), "level=WARN") || strings.Contains(logged.String(), "level=ERROR") {
 			t.Fatalf("log = %s, want one warning and no error while acme/widgets is worked", logged.String())
+		}
+		var warned []string
+		for line := range strings.SplitSeq(logged.String(), "\n") {
+			if strings.Contains(line, "level=WARN") && strings.Contains(line, "leaves it unworkable for now") {
+				warned = append(warned, line)
+			}
+		}
+		if len(warned) != 1 || !strings.Contains(warned[0], "repo=acme/gadgets") || !strings.Contains(warned[0], "while a live record names it") ||
+			!strings.Contains(warned[0], "live=false") || strings.Contains(warned[0], "retryIn=") {
+			t.Fatalf("WARN lines for acme/gadgets = %q, want one saying no live record names it, with no retry", warned)
 		}
 	}
 }
@@ -448,9 +495,12 @@ func notInstalledWebhookApp(repo string) string {
 
 // A repository a record names that Dispatch's GitHub App is not installed on is one GitHub sends
 // Legion no event of: the daemon works it all the same, recording issues on it, and the state names
-// it with why; a repository a role App is missing on is named with the App too. Both are bad
-// answers the refresher reads again (rereadBadAnswers), so once the App is installed the state
-// names nothing more, with no restart.
+// it with why; a repository a role App is missing on is named with the App too, and Dispatch is
+// asked nothing of it, since a preparation checks Dispatch's webhook App only once both role Apps
+// answered installed (prepareName). Both are bad answers the refresher reads again
+// (rereadBadAnswers), so once the App is installed the state names nothing more, with no restart.
+// Control: with the webhook App checked whatever the role Apps answered, Dispatch is asked of
+// zeta/tools.
 func TestARepositoryWithoutTheWebhookAppIsWorkedAndNamed(t *testing.T) {
 	quickInstallReads(t)
 	standIn := newWebhookDispatch(t, true, map[string]bool{"acme/widgets": false, "zeta/tools": false})
@@ -470,6 +520,9 @@ func TestARepositoryWithoutTheWebhookAppIsWorkedAndNamed(t *testing.T) {
 		entry, _ := liveEntry(w, "acme/widgets")
 		return entry.WebhookApp == ""
 	})
+	if asked := standIn.checks("zeta/tools"); asked != 0 {
+		t.Fatalf("Dispatch was asked %d times of its webhook App on zeta/tools, want never: the review App is not installed there", asked)
+	}
 }
 
 // A webhook App check Dispatch fails is no answer: the state names the repository with the
@@ -694,7 +747,7 @@ func TestTheStatesViewCarriesTheRepositoryCaches(t *testing.T) {
 func TestTheStatesRepositoriesAreTheOnesTheLiveRecordsName(t *testing.T) {
 	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.fill(ghrepo.MustParse("Acme/Widgets"))
-	repos.keepRead(ghrepo.MustParse("zeta/tools"), nameRead{installed: []bool{true, false}, failed: make([]error, len(appauth.Roles))})
+	repos.keepRead(ghrepo.MustParse("zeta/tools"), appInstallations{implement: appInstallation{answered: true, installed: true}, review: appInstallation{answered: true}}, "")
 	repos.recordRepository("stranger/tools", ghbranch.Repository{Name: ghrepo.MustParse("Stranger/Tools"), DefaultBranch: "trunk"})
 	view := repos.view(liveOf(t, "Acme/Widgets", "acme/widgets", "zeta/tools", "orbit/gadgets"), nil)
 	want := []api.LiveRepositoryView{
@@ -878,8 +931,7 @@ func TestAReleaseWaitIsHeldOnlyWhileItsRepositoryIsUnread(t *testing.T) {
 			w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
 			switch tc.entry {
 			case "unanswered":
-				failed := slices.Repeat([]error{errors.New("GitHub answered 502")}, len(appauth.Roles))
-				w.repositories.keepRead(ghrepo.MustParse(repo), nameRead{installed: make([]bool, len(appauth.Roles)), failed: failed, readError: "GitHub answered 502"})
+				w.repositories.keepRead(ghrepo.MustParse(repo), appInstallations{}, "GitHub answered 502")
 			case "recorded":
 				w.repositories.fill(ghrepo.MustParse("Stranger/Tools"))
 			}
@@ -1001,6 +1053,46 @@ func TestAnUnrecordedIssuesLaunchWorksItsResolvedRepository(t *testing.T) {
 	}
 	if repo, _, err := w.launchRepository(ctx, "LEGION-14"); err != nil || repo.String() != "Acme/Widgets" {
 		t.Fatalf("LEGION-14's launch after the refusals works %s, %v; want Acme/Widgets: one launch's refusal stops nothing else", repo, err)
+	}
+}
+
+// A later launch of an issue the workflow does not record puts the repository kept for the issue
+// back in the cache set once a read of the live records has replaced the set (INFRA-4401 D8:
+// "unless a later launch names it again"): no record of the issue names the repository there, and
+// a repository out of the set is stamped at the sweep and retired after retain_hours while the
+// issue's pod still works in it. The launch answers from what is kept for the issue
+// (keptRepository), reading neither Dispatch nor GitHub again. Control: with workLaunched deleted
+// from unrecordedRepository's kept path, the cache set stays without Acme/Widgets after the second
+// launch.
+func TestALaterLaunchOfAKeptIssuePutsItsRepositoryBackInTheCacheSet(t *testing.T) {
+	ctx := context.Background()
+	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@main"})
+	client := &repositoryDispatch{issues: map[string]dispatch.Issue{"LEGION-9": {Key: "LEGION-9", Project: "LEGION", ResolvedRepo: "acme/widgets"}}}
+	installs := &installations{}
+	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: installs,
+		repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
+		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now),
+		workspaceHeld:   func(string, ghrepo.Repository) bool { return true }}
+	cached := func() []string { return repositoryNames(w.cacheRepositories()) }
+
+	if _, _, err := w.launchRepository(ctx, "LEGION-9"); err != nil || !slices.Equal(cached(), []string{"Acme/Widgets"}) {
+		t.Fatalf("LEGION-9's first launch = %v with the cache set %v, want Acme/Widgets in it", err, cached())
+	}
+	if err := w.refreshLive(ctx); err != nil {
+		t.Fatalf("read the live records again: %v", err)
+	}
+	if got := cached(); len(got) != 0 {
+		t.Fatalf("the cache set after the read of the live records = %v, want none: no live record names Acme/Widgets", got)
+	}
+	repo, branch, err := w.launchRepository(ctx, "LEGION-9")
+	if err != nil || repo.String() != "Acme/Widgets" || branch != "main" {
+		t.Fatalf("LEGION-9's second launch works %s@%s, %v; want the kept Acme/Widgets@main", repo, branch, err)
+	}
+	if reads, asked := client.detailReads("LEGION-9"), installs.reads("implement acme/widgets"); reads != 1 || asked != 1 {
+		t.Fatalf("Dispatch was read %d times and GitHub's installation %d times for LEGION-9, want once each: the second launch answers from what is kept", reads, asked)
+	}
+	if got := cached(); !slices.Equal(got, []string{"Acme/Widgets"}) {
+		t.Fatalf("the cache set after LEGION-9's second launch = %v, want Acme/Widgets back in it", got)
 	}
 }
 

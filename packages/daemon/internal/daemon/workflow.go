@@ -166,7 +166,7 @@ type workflowRuntime struct {
 	defaultBranches *defaultBranches
 	// repositories is the repository state: what GitHub answered for each repository the daemon
 	// prepared, and the repositories the live records name. installs answers each App's
-	// installation on a repository (prepareLive, prepareRead). recovering is each repository,
+	// installation on a repository (prepareName). recovering is each repository,
 	// lowercased, GitHub answered for again whose issues are still to recover from Dispatch's
 	// listing (recoverRepositories): one a preparation left unread and whose reads a later
 	// preparation got answered (readAnswered), under recoveringMu. silenced is, by the same
@@ -202,11 +202,12 @@ type workflowRuntime struct {
 	heldReads                                              map[string]limitedRead
 	backfillPending                                        atomic.Bool
 	// heard is what GitHub intake hears (heardRepositories): the boot's set (heardAtBoot), each
-	// repository a record first names or a launch works added to it with no read of the records
-	// (hearRepository), and the whole set published again after JetStream refused an addition
-	// (republishHeard). Every write holds heardMu, and publishes a set that holds every repository
-	// the one before it held; a recording reads it with no lock at all, so one whose repository it
-	// names waits on nothing (hearRepository, which says why reading it without the lock is sound).
+	// repository a record first names, a launch works or the refresher's backfill writes on a
+	// record added to it with no read of the records (hearOrPend, hearRepository), and the whole set
+	// published again after JetStream refused an addition (republishHeard). Every write holds
+	// heardMu, and publishes a set that holds every repository the one before it held; a recording
+	// reads it with no lock at all, so one whose repository it names waits on nothing
+	// (hearRepository, which says why reading it without the lock is sound).
 	// heardPending marks a consumer update JetStream refused, and heardMissed is each repository
 	// whose own addition it refused, under heardMu, which the refresher's next publication adds.
 	// unread is each repository whose GitHub reads a preparation could not make (leaveUnread) or

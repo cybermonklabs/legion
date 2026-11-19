@@ -454,8 +454,12 @@ func TestARecordedDefaultBranchIsHeldOnlyForTheRepositoryTheRecordNames(t *testi
 // whose read GitHub's rate limit refuses, or GitHub does not answer, as it is, saying so in one line
 // that names the issue, the repository and the cause, and the boot goes on (INFRA-4401 D11): it
 // waits on GitHub for no record. Every other record is filled. The refresher's second job then
-// tries the record again (backfillLater) and fills it once GitHub answers, and a filled record asks
-// for the heard set to be published again, so its repository is heard.
+// tries the record again (backfillLater) and fills it once GitHub answers, and GitHub intake hears
+// the filled record's repository as it hears a new record's (hearOrPend), with the heard set left
+// pending for nothing, since nothing refused it; the read of the live records is asked for, so the
+// record joins the live set and the cache set. Control: with the fill heard by marking the heard
+// set pending, as before INFRA-4401's review, the heard set does not name zeta/tools and is left
+// pending.
 func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -490,13 +494,18 @@ func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt
 				return true
 			})
 			logs := &syncBuffer{}
+			var published [][]ghrepo.Repository
 			w := &workflowRuntime{pool: pool, records: projectRecords{Store: record.NewStore(), project: "LEGION"}, repositories: newRepositories("LEGION", ghrepo.Renames{}),
 				dispatch:        &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-7", ResolvedRepo: "zeta/tools"}, {Key: "LEGION-9", ResolvedRepo: "acme/widgets"}}},
-				dispatchProject: "LEGION", stateDir: t.TempDir(), heardWake: make(chan struct{}, 1), log: slog.New(slog.NewJSONHandler(logs, nil)),
-				defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
+				dispatchProject: "LEGION", stateDir: t.TempDir(), heardWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1), log: slog.New(slog.NewJSONHandler(logs, nil)),
+				defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now),
+				setRepositories: func(_ context.Context, repos []ghrepo.Repository) error {
+					published = append(published, repos)
+					return nil
+				}}
 			filled, left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, "LEGION", w.stateDir, w.defaultBranches, ghrepo.Renames{}, w.log)
-			if err != nil || !filled || !left {
-				t.Fatalf("backfill = filled %v, left %v, %v; want LEGION-9 filled, LEGION-7 left and the boot going on", filled, left, err)
+			if err != nil || !slices.Equal(repositoryNames(filled), []string{"acme/widgets"}) || !left {
+				t.Fatalf("backfill = filled %v, left %v, %v; want LEGION-9 filled on acme/widgets, LEGION-7 left and the boot going on", filled, left, err)
 			}
 			if unfilled := unfilledKeys(t, w); !slices.Equal(unfilled, []string{"LEGION-7"}) {
 				t.Fatalf("unfilled after the boot's backfill = %v, want LEGION-7 alone", unfilled)
@@ -518,8 +527,15 @@ func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt
 			if unfilled := unfilledKeys(t, w); len(unfilled) != 0 {
 				t.Fatalf("unfilled after the refresher's backfill = %v, want none", unfilled)
 			}
-			if w.backfillPending.Load() || !w.heardPending.Load() {
-				t.Fatalf("backfill pending %v, heard set pending %v; want nothing left and the heard set to publish again", w.backfillPending.Load(), w.heardPending.Load())
+			if w.backfillPending.Load() || w.heardPending.Load() || len(w.heardWake) != 0 {
+				t.Fatalf("backfill pending %v, heard set pending %v, its job woken %v; want nothing left and nothing pending: JetStream refused no update",
+					w.backfillPending.Load(), w.heardPending.Load(), len(w.heardWake) != 0)
+			}
+			if heard := repositoryNames(*w.heard.Load()); !slices.Equal(heard, []string{"acme/widgets", "zeta/tools"}) || len(published) != 1 {
+				t.Fatalf("GitHub intake hears %v after %d publications, want zeta/tools added to the boot's acme/widgets by one", heard, len(published))
+			}
+			if len(w.liveWake) != 1 {
+				t.Fatal("the read of the live records was not asked for, want it: the filled record joins the live set and the cache set")
 			}
 		})
 	}
@@ -719,6 +735,9 @@ func TestABootThroughASpentRateLimitComesUp(t *testing.T) {
 // limit, the daemon holding no read of the repository, is delivered again after the wait GitHub
 // asked for (an intake.RetryLater), not a second later into the same limit, each delivery reading
 // GitHub again: a 429's Retry-After, and the minute a 403 naming the limit in its body alone waits.
+// The limit is kept in the one write of the repository's entry the preparation makes (prepareName),
+// as the refresher's and a launch's are, so the entry names it as its read error until a read
+// answers; Dispatch is asked nothing of its webhook App, since GitHub named no repository.
 func TestARateLimitedDefaultBranchReadDeliversTheEventAgainAfterGitHubsWait(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -750,6 +769,9 @@ func TestARateLimitedDefaultBranchReadDeliversTheEventAgainAfterGitHubsWait(t *t
 			}
 			if got := len(github.readsOf("zeta/tools")); got != 1 {
 				t.Fatalf("GitHub was read for zeta/tools %d times, want once", got)
+			}
+			if entry := w.repositories.entryOf("zeta/tools"); !entry.served() || !strings.Contains(entry.readError, "the name and default branch of zeta/tools could not be read") {
+				t.Fatalf("zeta/tools' entry = %+v, want both Apps installed and the limit as its read error", entry)
 			}
 		})
 	}

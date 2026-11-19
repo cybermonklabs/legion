@@ -1,10 +1,8 @@
 package daemon
 
 import (
-	"slices"
 	"strings"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -27,7 +25,7 @@ func (r servedRepositories) ResolveRepository(resolved string) (workflow.Resolut
 
 // fill is the tests' seam that fills the repository state with repos, each at main, as a
 // preparation that found both role Apps installed on it and GitHub naming it would leave it
-// (prepareLive, prepareRead), with no read of GitHub: fillRead of each.
+// (prepareName), with no read of GitHub: fillRead of each.
 func (r *repositories) fill(repos ...ghrepo.Repository) {
 	for _, repo := range repos {
 		r.fillRead(ghbranch.Repository{Name: repo, DefaultBranch: "main"})
@@ -47,7 +45,8 @@ func (r *repositories) fillRead(read ghbranch.Repository) {
 // answerInstalled keeps in name's entry GitHub's answer that both role Apps are installed on it,
 // or that neither is, as one preparation's reads of it would (keepRead).
 func answerInstalled(repos *repositories, name string, installed bool) {
-	repos.keepRead(ghrepo.MustParse(name), nameRead{installed: slices.Repeat([]bool{installed}, len(appauth.Roles)), failed: make([]error, len(appauth.Roles))})
+	answer := appInstallation{answered: true, installed: installed}
+	repos.keepRead(ghrepo.MustParse(name), appInstallations{implement: answer, review: answer}, "")
 }
 
 // entryOf is a copy of the entry repo's name holds, compared without case, and the zero entry

@@ -307,8 +307,8 @@ func TestARecordOnAPairsOldNameGetsTheNewOwner(t *testing.T) {
 
 // An issue Dispatch resolves to a configured pair's old name, with nothing read for either name
 // yet, is recorded on the pair's new name (INFRA-4401 D1): GitHub answers that neither role App is
-// installed on the old name, which a transfer leaves, so the preparation reads the pair's other
-// name and both Apps answer installed there (readRecordable). The record takes GitHub's name and
+// installed on the old name, which a transfer leaves, so the preparation prepares the pair's other
+// name too and both Apps answer installed there (prepareRead). The record takes GitHub's name and
 // default branch of the new name, and the read is kept under both names, so the issue's apply
 // finds it under the name it resolves to. Control: with the read of the pair's other name removed,
 // the issue is refused for the Apps the old name lacks.

@@ -103,13 +103,13 @@ type repositories struct {
 // pair's `to` fills the `to`'s entry and never the `from`'s, so whether the rename rule serves
 // the `from` is read from what GitHub answered for the `from` itself (servesRepository).
 //
-// implement and review are each role App's installation on the name, from the last read of it
-// GitHub answered: a later read that does not answer keeps them, so one failed read never turns
-// a served name into an unserved one. readError is why GitHub's last read under the name did not
-// answer for it — a refusal such as a 404 of the read of its name, or a read that did not answer
-// at all — and "" once a preparation's every read answered. webhookApp is why Dispatch's webhook
-// App is not known to be installed on the name (checkWebhookApp), "" when Dispatch answered that
-// it is or was never asked, which webhookChecked tells apart.
+// appInstallations is each role App's installation on the name, from the last read of it GitHub
+// answered: a later read that does not answer keeps them, so one failed read never turns a served
+// name into an unserved one. readError is why GitHub's last read under the name did not answer
+// for it — a refusal such as a 404 of the read of its name, or a read that did not answer at all
+// — and "" once a preparation's every read answered. webhookApp is why Dispatch's webhook App is
+// not known to be installed on the name (checkWebhookApp), "" when Dispatch answered that it is or
+// was never asked, which webhookChecked tells apart.
 //
 // recorded is GitHub's spelling and default branch of the repository an issue that resolves to
 // this name is recorded on, the zero value until a preparation found both role Apps installed and
@@ -117,45 +117,47 @@ type repositories struct {
 // where GitHub renamed it (a 301 the read follows), or a configured pair's other name where both
 // Apps answered not installed on this one and installed on that one (prepareRead).
 type repositoryEntry struct {
-	implement, review appInstallation
-	readError         string
-	webhookApp        string
-	webhookChecked    bool
-	recorded          ghbranch.Repository
+	appInstallations
+	readError      string
+	webhookApp     string
+	webhookChecked bool
+	recorded       ghbranch.Repository
 }
 
-// appInstallation is GitHub's last answer of one role App's installation on one name: answered
-// once a read of it answered, and installed what that read answered.
+// appInstallation is GitHub's answer of one role App's installation on one name: answered once a
+// read of it answered, and installed what that read answered.
 type appInstallation struct{ answered, installed bool }
 
+// appInstallations is each role App's installation on one name, the one shape of GitHub's answer
+// there: what one preparation's reads of the name answered (readInstallations), and what an entry
+// keeps of the last answer of each (repositoryEntry, keepRead).
+type appInstallations struct{ implement, review appInstallation }
+
+// of is role's answer in a.
+func (a *appInstallations) of(role appauth.AppRole) *appInstallation {
+	if role == appauth.Review {
+		return &a.review
+	}
+	return &a.implement
+}
+
 // answered is whether GitHub answered both role Apps' installation reads of the name.
-func (e *repositoryEntry) answered() bool { return e.implement.answered && e.review.answered }
+func (a appInstallations) answered() bool { return a.implement.answered && a.review.answered }
 
 // served is whether GitHub answered that both role Apps are installed on the name.
-func (e *repositoryEntry) served() bool {
-	return e.answered() && e.implement.installed && e.review.installed
+func (a appInstallations) served() bool {
+	return a.answered() && a.implement.installed && a.review.installed
 }
 
 // missing is each role App GitHub answered is not installed on the name, in appauth.Roles order.
-func (e *repositoryEntry) missing() []appauth.AppRole {
+func (a appInstallations) missing() []appauth.AppRole {
 	var missing []appauth.AppRole
-	if e.implement.answered && !e.implement.installed {
-		missing = append(missing, appauth.Implement)
-	}
-	if e.review.answered && !e.review.installed {
-		missing = append(missing, appauth.Review)
+	for _, role := range appauth.Roles {
+		if answer := *a.of(role); answer.answered && !answer.installed {
+			missing = append(missing, role)
+		}
 	}
 	return missing
-}
-
-// nameRead is what one preparation read under one name: each role App's installation, in
-// appauth.Roles order (installed, or failed where the read did not answer; each read sets exactly
-// one of the two), and why the preparation's reads did not answer for the name (readError), ""
-// when every read it made answered.
-type nameRead struct {
-	installed []bool
-	failed    []error
-	readError string
 }
 
 func newRepositories(project string, renames ghrepo.Renames) *repositories {
@@ -287,38 +289,23 @@ func (r *repositories) recordRepository(asked string, read ghbranch.Repository) 
 	}
 }
 
-// keepRead keeps what one preparation read under name (nameRead) in name's entry: each role App's
-// answer where its read answered, and the last answer kept where it did not, and why the reads
-// did not answer for the name (readError). It reports whether what the entry says of the Apps or
-// of the read changed, so a bad answer is logged once and not at every read again.
-func (r *repositories) keepRead(name ghrepo.Repository, read nameRead) bool {
+// keepRead keeps what one preparation read under name in name's entry, in one write (prepareName):
+// each role App's answer in apps where its read answered, the last answer kept where it did not,
+// and why the preparation's reads did not answer for the name (readError, "" once every read it
+// made answered). It reports whether what the entry says of the Apps or of the read changed, so a
+// bad answer is logged once and not at every read again.
+func (r *repositories) keepRead(name ghrepo.Repository, apps appInstallations, readError string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	held := r.entry(name.String())
 	before := *held
-	for index, role := range appauth.Roles {
-		if read.failed[index] != nil {
-			continue
-		}
-		answer := appInstallation{answered: true, installed: read.installed[index]}
-		switch role {
-		case appauth.Implement:
-			held.implement = answer
-		case appauth.Review:
-			held.review = answer
+	for _, role := range appauth.Roles {
+		if answer := *apps.of(role); answer.answered {
+			*held.of(role) = answer
 		}
 	}
-	held.readError = read.readError
-	return held.implement != before.implement || held.review != before.review || held.readError != before.readError
-}
-
-// keepReadError keeps reason as why GitHub's last read under name did not answer for it, where a
-// read after the installation reads, the read of its name and default branch, did not; the Apps'
-// answers stand as kept.
-func (r *repositories) keepReadError(name ghrepo.Repository, reason string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.entry(name.String()).readError = reason
+	held.readError = readError
+	return held.appInstallations != before.appInstallations || held.readError != before.readError
 }
 
 // keepWebhookAnswer keeps gap, Dispatch's answer of its webhook App check (checkWebhookApp) for
@@ -365,6 +352,14 @@ func (r *repositories) liveNames() map[string]ghrepo.Repository {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return maps.Clone(r.live)
+}
+
+// isLive is whether a live record of the project names repo, compared without case (live).
+func (r *repositories) isLive(repo ghrepo.Repository) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, held := r.live[strings.ToLower(repo.String())]
+	return held
 }
 
 // badLive is each repository a live record names whose answer is bad, as the refresher reads it
@@ -498,29 +493,6 @@ func cacheView(cache sandbox.CacheStatus) api.CacheView {
 	return view
 }
 
-// missingApps is each role App installed answers not installed, in appauth.Roles order, of reads
-// that every one answered.
-func missingApps(installed []bool) []appauth.AppRole {
-	var missing []appauth.AppRole
-	for index, role := range appauth.Roles {
-		if !installed[index] {
-			missing = append(missing, role)
-		}
-	}
-	return missing
-}
-
-// unanswered is why the installation reads failed records did not answer for name: the first
-// role App's read that failed, naming it, and "" when every one answered.
-func unanswered(name ghrepo.Repository, failed []error) string {
-	for index, role := range appauth.Roles {
-		if failed[index] != nil {
-			return fmt.Sprintf("the %s App's installation on %s could not be read: %v", role, name, failed[index])
-		}
-	}
-	return ""
-}
-
 // checkWebhookApp is why Dispatch's GitHub App, the one GitHub sends repo's webhook events through
 // to Envoy, is not known to be installed on repo, "" when Dispatch answers that it is: not
 // installed, the check failed, or a Dispatch older than the check answers its route 404.
@@ -564,7 +536,9 @@ var recoveryHoldBound = defaultHoldWarnEvery
 // answered for, while a read GitHub has not answered by then is a read that did not answer, and a
 // repository GitHub hangs on is read again later rather than holding up the rest. It bounds each
 // installation read (readInstallations), each webhook App check (checkWebhookAppOn), each
-// preparation's read of a repository's name and default branch (prepareLive), and each read of a
+// preparation's read of a repository's name and default branch (prepareName, whichever caller
+// prepares: the refresher, a launch or an admission), an admission's read again of the default
+// branch of a repository an entry records issues on (prepareUnrecorded), and each read of a
 // record's repository for its backfill (backfillRead). Nothing bounds a preparation as a whole:
 // repositoryReads repositories are prepared at once, so a preparation of n repositories, four
 // reads each, takes at most ceil(n / repositoryReads) × 4 of these.
@@ -575,101 +549,166 @@ const repositoryReads = 8
 
 // readInstallations reads both role Apps' installations on name (appauth.Installations.InstalledOn,
 // per repository, since an owner's installation may cover only some of its repositories), one after
-// the other, each bounded by installReadAttempt, and keeps every failure rather than stopping at
-// one: installed and failed are in appauth.Roles order, and each read sets exactly one of the two.
-func (w *workflowRuntime) readInstallations(ctx context.Context, name ghrepo.Repository) (installed []bool, failed []error) {
-	installed, failed = make([]bool, len(appauth.Roles)), make([]error, len(appauth.Roles))
-	for index, role := range appauth.Roles {
+// the other, each bounded by installReadAttempt, and reads on past a read that fails: apps holds
+// each read that answered, and unread is why the reads did not answer for name, naming the first
+// role App whose read failed, "" when every one answered.
+func (w *workflowRuntime) readInstallations(ctx context.Context, name ghrepo.Repository) (apps appInstallations, unread string) {
+	for _, role := range appauth.Roles {
 		read, cancel := context.WithTimeout(ctx, installReadAttempt)
-		installed[index], failed[index] = w.installs.InstalledOn(read, role, name)
+		installed, err := w.installs.InstalledOn(read, role, name)
 		cancel()
+		switch {
+		case err == nil:
+			*apps.of(role) = appInstallation{answered: true, installed: installed}
+		case unread == "":
+			unread = fmt.Sprintf("the %s App's installation on %s could not be read: %v", role, name, err)
+		}
 	}
-	return installed, failed
+	return apps, unread
 }
 
-// errNoApps is a preparation's answer on a daemon that reads no App's installations: a test's
-// workflow built with no GitHub Apps.
-var errNoApps = errors.New("the daemon has no GitHub Apps to read the installations of")
+// nameAnswer is what one preparation's reads under one name answered (prepareName): under, the name
+// they were made under; missing, each role App GitHub answered is not installed on it, where both
+// installation reads answered; read, GitHub's name and default branch of the repository read, where
+// that read answered or a record's branch was served in its place; limited, the read GitHub's rate
+// limit refused with no branch served in its place, nil for any other answer; and readError, why
+// the reads did not answer for the name, "" where every read made answered. changed is whether the
+// name's entry changed (keepRead), so a bad answer is logged once and not at every read again.
+type nameAnswer struct {
+	under     ghrepo.Repository
+	missing   []appauth.AppRole
+	read      ghbranch.Repository
+	limited   *limitedRead
+	readError string
+	changed   bool
+}
 
-// prepareLive is the preparation of repo, a repository a record names or a launch works: both role
-// Apps' installations read under the name the rename rule serves repo under (serving), repo's
-// name and default branch as GitHub has them (defaultBranches.Named, which reads that served name
-// too and keeps its TTL), and Dispatch's webhook App on the served name, each read bounded by
-// installReadAttempt, so a read GitHub or Dispatch never answers holds up neither the refresher nor
-// a launch. Every answer is kept in the served name's entry (keepRead, keepWebhookAnswer), where an
-// installation read that did not answer keeps the last answer GitHub gave; and a read GitHub's rate
-// limit refused with no read of repo held is served on the default branch a record of the project
-// holds for it, where one does (holdLimited, from branches, the records read once for the pass or
-// the launch that prepares). Answers ctx's end cut short are the stop's, and none is kept.
-//
-// It answers GitHub's read of repo, and why repo cannot be worked now: a role App GitHub answered
-// is not installed on the served name, naming the App and the name, and otherwise the first read
-// that did not answer, naming the read. A bad answer is logged once at WARN, when it is new
-// (keepRead), wakes the refresher's second job, and changes no record. Where both Apps are
-// installed and GitHub named the repository, the read is what an issue resolving to repo is
-// recorded on (recordRepository), so an admission on it reads GitHub no further. Either answer of
-// the installation reads that GitHub gave begins the repository's recovery where an admission's
-// preparation left it unread (readAnswered).
-func (w *workflowRuntime) prepareLive(ctx context.Context, repo ghrepo.Repository, branches recordBranches) (ghbranch.Repository, error) {
-	if w.installs == nil {
-		return ghbranch.Repository{}, errNoApps
+// refusal is why the name cannot be worked now, "" where it can: each role App GitHub answered is
+// not installed on it, naming the Apps and the name, and otherwise the first read that did not
+// answer, naming the read.
+func (a nameAnswer) refusal() string {
+	if len(a.missing) != 0 {
+		return appauth.NotInstalledOn(a.missing, a.under.String())
 	}
-	served := w.repositories.serving(repo)
-	installed, failed := w.readInstallations(ctx, served)
-	attempt, cancel := context.WithTimeout(ctx, installReadAttempt)
-	named, err := w.defaultBranches.Named(attempt, repo)
-	cancel()
-	if answer, wait, limited := defaultBranchLimit(err); limited {
-		if held, ok, holdErr := w.holdLimited(limitedRead{repo: repo, answer: answer, err: err, wait: wait, until: w.defaultBranches.now().Add(wait)}, branches); holdErr == nil && ok {
-			named, err = held, nil
+	return a.readError
+}
+
+// prepareName is the one step every preparation of a name runs — the refresher's and a launch's
+// (prepareLive), an admission's (prepareRead) and a configured pair's own (readPairs) — so what
+// legion state and the rename rule read of a name is written by one sequence. Every read is made
+// under under, and every answer is kept in under's entry:
+//
+//  1. both role Apps' installations on under (readInstallations);
+//  2. once both reads answered, installed or not, the name and default branch of named as GitHub
+//     has them (defaultBranches.Named, which reads the repository GitHub holds named under and
+//     keeps its read, and its TTL, under named itself), bounded by installReadAttempt. A read
+//     GitHub's rate limit refused is served on the default branch a record of the project holds for
+//     named, where branches is set and a record holds one (holdLimited); one not so served is a
+//     read that did not answer, and is answered as limited for the caller's own rule;
+//  3. once both role Apps answered installed and GitHub named the repository, Dispatch's webhook
+//     App on under (checkWebhookAppOn), spelled as GitHub spells it where GitHub named it under
+//     that name, which is the spelling the record keeps and legion state shows;
+//  4. one write of the entry (keepRead): each installation read that answered, the last answer
+//     kept where one did not, and why the reads did not answer for under — the first installation
+//     read that failed, and otherwise the read of named.
+//
+// A configured pair's own read names no repository (named is the zero value) and reads the
+// installations alone. Answers ctx's end cut short are the stop's: none is kept, and ctx's error
+// is returned.
+func (w *workflowRuntime) prepareName(ctx context.Context, under, named ghrepo.Repository, branches recordBranches) (nameAnswer, error) {
+	apps, unread := w.readInstallations(ctx, under)
+	answer := nameAnswer{under: under, readError: unread}
+	if unread == "" {
+		answer.missing = apps.missing()
+	}
+	if unread == "" && named != (ghrepo.Repository{}) {
+		attempt, cancel := context.WithTimeout(ctx, installReadAttempt)
+		read, err := w.defaultBranches.Named(attempt, named)
+		cancel()
+		if limit, wait, limited := defaultBranchLimit(err); limited {
+			refused := limitedRead{repo: named, answer: limit, err: err, wait: wait, until: w.defaultBranches.now().Add(wait)}
+			answer.limited = &refused
+			if branches != nil {
+				if held, ok, holdErr := w.holdLimited(refused, branches); holdErr == nil && ok {
+					read, err, answer.limited = held, nil, nil
+				}
+			}
+		}
+		if err != nil {
+			answer.readError = fmt.Sprintf("the name and default branch of %s could not be read: %v", named, err)
+		} else {
+			answer.read = read
+			if len(answer.missing) == 0 {
+				checked := under
+				if strings.EqualFold(read.Name.String(), under.String()) {
+					checked = read.Name
+				}
+				w.checkWebhookAppOn(ctx, checked)
+			}
 		}
 	}
-	w.checkWebhookAppOn(ctx, served)
 	if err := ctx.Err(); err != nil {
+		return nameAnswer{}, err
+	}
+	answer.changed = w.repositories.keepRead(under, apps, answer.readError)
+	return answer, nil
+}
+
+// prepareLive is the preparation of repo, a repository a record names or a launch works: the one
+// preparation step (prepareName) — both role Apps' installations, the name and default branch, and
+// Dispatch's webhook App — made under the name the rename rule serves repo under (serving) and
+// kept in that name's entry. The read of the name and default branch is of repo itself, so
+// defaultBranches keeps it under the name the record keeps, and a read of it GitHub's rate limit
+// refused is served on the default branch a record of the project holds for repo, where one does
+// (holdLimited, from branches, the records read once for the pass or the launch that prepares).
+// Each read is bounded by installReadAttempt, so a read GitHub or Dispatch never answers holds up
+// neither the refresher nor a launch.
+//
+// It answers GitHub's read of repo, and why repo cannot be worked now (nameAnswer.refusal): a role
+// App GitHub answered is not installed on the served name, naming the App and the name, and
+// otherwise the first read that did not answer, naming the read. A bad answer wakes the
+// refresher's second job, changes no record, and is logged once at WARN, when it is new
+// (keepRead), saying whether a live record names repo: only such a repository is in legion state
+// and is read again by the refresher (badLive), while one only finished records name, which the
+// refresher's first job prepares too (prepareAtStart), is shown and read again only once a live
+// record names it. Where both Apps are installed and GitHub named the repository, the read is
+// what an issue resolving to repo is recorded on (recordRepository), so an admission on it reads
+// GitHub no further. Either answer of the installation reads that GitHub gave begins the
+// repository's recovery where an admission's preparation left it unread (readAnswered).
+func (w *workflowRuntime) prepareLive(ctx context.Context, repo ghrepo.Repository, branches recordBranches) (ghbranch.Repository, error) {
+	served := w.repositories.serving(repo)
+	answer, err := w.prepareName(ctx, served, repo, branches)
+	if err != nil {
 		return ghbranch.Repository{}, err
 	}
-	unread := unanswered(served, failed)
-	var missing []appauth.AppRole
-	if unread == "" {
-		missing = missingApps(installed)
-	}
-	read := nameRead{installed: installed, failed: failed, readError: unread}
-	if unread == "" && err != nil {
-		read.readError = fmt.Sprintf("the name and default branch of %s could not be read: %v", repo, err)
-	}
-	changed := w.repositories.keepRead(served, read)
-	var refusal error
-	switch {
-	case len(missing) != 0:
-		refusal = errors.New(appauth.NotInstalledOn(missing, served.String()))
-	case read.readError != "":
-		refusal = errors.New(read.readError)
-	}
-	if refusal != nil {
-		if changed {
-			w.log.Warn("workflow: GitHub's answer for a repository leaves it unworkable for now, so legion state shows it and the refresher reads it again; no record changes",
-				"repo", repo.String(), "servedAs", served.String(), "reason", refusal.Error(), "retryIn", installReadRetry.Initial.String())
+	if refusal := answer.refusal(); refusal != "" {
+		if answer.changed {
+			attrs := []any{"repo", repo.String(), "servedAs", served.String(), "reason", refusal}
+			if w.repositories.isLive(repo) {
+				attrs = append(attrs, "live", true, "retryIn", installReadRetry.Initial.String())
+			} else {
+				attrs = append(attrs, "live", false)
+			}
+			w.log.Warn("workflow: GitHub's answer for a repository leaves it unworkable for now; no record changes, and legion state shows it and the refresher reads it again while a live record names it", attrs...)
 		}
 		wake(w.rereadWake)
-		if len(missing) != 0 {
+		if len(answer.missing) != 0 {
 			w.readAnswered(repo)
 		}
-		return ghbranch.Repository{}, refusal
+		return ghbranch.Repository{}, errors.New(refusal)
 	}
-	w.repositories.recordRepository(repo.String(), named)
+	w.repositories.recordRepository(repo.String(), answer.read)
 	w.readAnswered(repo)
-	return named, nil
+	return answer.read, nil
 }
 
 // readPairs reads both role Apps' installations on both names of each configured pair, each under
-// its own name and never through serving, with no webhook App check, and keeps each answer in that
-// name's own entry: what GitHub answers there is what the rename rule reads (servesLocked), and
-// until it answers, the rule serves each pair's `to` and not its `from`. With onlyUnanswered set,
-// only the names GitHub has not answered both reads of yet are read (unansweredPairs).
+// its own name and never through serving, with no read of its name and no webhook App check
+// (prepareName, naming no repository), and keeps each answer in that name's own entry: what GitHub
+// answers there is what the rename rule reads (servesLocked), and until it answers, the rule serves
+// each pair's `to` and not its `from`. With onlyUnanswered set, only the names GitHub has not
+// answered both reads of yet are read (unansweredPairs).
 func (w *workflowRuntime) readPairs(ctx context.Context, onlyUnanswered bool) {
-	if w.installs == nil {
-		return
-	}
 	var names []ghrepo.Repository
 	if onlyUnanswered {
 		names, _ = w.repositories.unansweredPairs()
@@ -679,14 +718,10 @@ func (w *workflowRuntime) readPairs(ctx context.Context, onlyUnanswered bool) {
 		}
 	}
 	eachRepository(names, func(name ghrepo.Repository) {
-		installed, failed := w.readInstallations(ctx, name)
-		if ctx.Err() != nil {
-			return
-		}
-		read := nameRead{installed: installed, failed: failed, readError: unanswered(name, failed)}
-		if w.repositories.keepRead(name, read) && read.readError != "" {
+		answer, err := w.prepareName(ctx, name, ghrepo.Repository{}, nil)
+		if err == nil && answer.changed && answer.readError != "" {
 			w.log.Warn("workflow: GitHub did not answer the installation reads of a configured rename's name, so the rename rule serves the pair as configured until it does",
-				"repo", name.String(), "reason", read.readError, "retryIn", installReadRetry.Initial.String())
+				"repo", name.String(), "reason", answer.readError, "retryIn", installReadRetry.Initial.String())
 		}
 	})
 }
@@ -712,15 +747,13 @@ func eachRepository(repos []ghrepo.Repository, read func(ghrepo.Repository)) {
 // name (readPairs), and then prepares each distinct repository a record of the project names
 // (prepareLive), repositoryReads at a time, with the records' default branches read once for the
 // pass where GitHub's rate limit asks for them (onceRecordedBranches); a record with no GitHub
-// spelling of its repository is passed by. A 404, or a role App that is not installed, is
-// kept in the entry, shown in legion state and logged once; a read that does not answer is kept as
-// such for the refresher's next job to read again (rereadBadAnswers); no record changes. Until it
-// has answered, the state shows each repository with no Apps, and the rename rule serves each
-// pair as configured (servesLocked).
+// spelling of its repository is passed by. A 404, or a role App that is not installed, is kept in
+// the entry and logged once; a read that does not answer is kept as such. Either is shown in
+// legion state, and read again by the refresher's next job (rereadBadAnswers), where a live record
+// names the repository, and not for a repository only finished records name; no record changes.
+// Until it has answered, the state shows each repository with no Apps, and the rename rule serves
+// each pair as configured (servesLocked).
 func (w *workflowRuntime) prepareAtStart(ctx context.Context) {
-	if w.installs == nil {
-		return
-	}
 	w.readPairs(ctx, false)
 	repos, err := w.recordedRepositories(ctx)
 	if err != nil {
@@ -781,12 +814,8 @@ func (w *workflowRuntime) rereadBadAnswers(ctx context.Context) {
 
 // badAnswers is why the refresher's second job reads GitHub again (rereadBadAnswers), one line each:
 // each live repository whose answer is bad (badLive), each pair's name GitHub has not answered
-// (unansweredPairs), and a record still without its repository columns (backfillPending). A daemon
-// that reads no App's installations reads nothing again.
+// (unansweredPairs), and a record still without its repository columns (backfillPending).
 func (w *workflowRuntime) badAnswers() []string {
-	if w.installs == nil {
-		return nil
-	}
 	_, _, reasons := w.repositories.badLive()
 	_, pairs := w.repositories.unansweredPairs()
 	reasons = append(reasons, pairs...)
@@ -2075,10 +2104,17 @@ func repositoriesOf(issues []record.Issue) (map[string]ghrepo.Repository, error)
 }
 
 // cacheRepository adds repo to the cache set, for a record that first names it or a launch that
-// works it: the sweep makes its cache at its next pass, with no restart. Two records committed at
-// once run their commit hooks on two goroutines, so the read and the write are one step
-// (cacheReposMu) and neither loses the other's repository.
+// works it: the sweep makes its cache at its next pass, with no restart. A repository the set
+// already names costs one atomic load of the set and a comparison against each repository in it
+// (heardNames), with no lock and no allocation, since every answer for an issue the workflow does
+// not record adds its repository (unrecordedRepository), a tmux pane's credential refresh at each
+// tick among them. Two records committed at once run their commit hooks on two goroutines, so the
+// read and the write of an addition are one step (cacheReposMu) and neither loses the other's
+// repository.
 func (w *workflowRuntime) cacheRepository(repo ghrepo.Repository) {
+	if heardNames(w.cacheRepos.Load(), repo) {
+		return
+	}
 	w.cacheReposMu.Lock()
 	defer w.cacheReposMu.Unlock()
 	cached := map[string]ghrepo.Repository{}
@@ -2213,13 +2249,17 @@ func (w *workflowRuntime) repositoryOf(ctx context.Context, key string, launch b
 // issue holds its workspace, so every claim of the issue works one repository — its later
 // launches, its working copy's adoption and a tmux pane's credential refresh, which runs at every
 // refresh tick — and a relaunch never restores a workspace saved from one repository into
-// another's. The repository joins the cache set and the heard set (workLaunched).
+// another's. The repository joins the cache set and the heard set (workLaunched) at every answer,
+// the kept one's too: a read of the live records replaces the cache set (refreshLive), and no
+// record of the issue names the repository there, so without it a later launch of the issue would
+// leave its repository's cache to be stamped and retired while the issue's pod works in it.
 //
 // Each refusal fails that one launch, naming its cause, and the daemon stays up: Dispatch not
 // answering, an issue that resolves to no repository, a role App that is not installed on the
 // repository, and a read of GitHub that did not answer.
 func (w *workflowRuntime) unrecordedRepository(ctx context.Context, key string) (ghrepo.Repository, string, error) {
 	if kept, held := w.keptRepository(key); held {
+		w.workLaunched(ctx, kept.Name)
 		return kept.Name, kept.DefaultBranch, nil
 	}
 	issue, err := w.dispatch.GetIssue(ctx, key)
@@ -2612,12 +2652,13 @@ func parentKey(parent *string) string {
 //
 // A repository an entry records issues on (lookup) is read from GitHub no further than its
 // default branch, which defaultBranches.Named reads again once the read Legion holds is older
-// than its TTL, so a branch renamed on GitHub is taken by the issues recorded after the rename;
-// the read is kept as the entry's (recordRepository), and a read that fails, GitHub's rate limit
-// among them, leaves the entry's own read to record the issue on, since one failed read of a
-// repository GitHub answered for is no reason to hold an issue back. Any other repository is read
-// from GitHub here (prepareRead); in the boot's listing (boot) no issue reads it, and the
-// repository is left for the recovery to read (prepareListed says why).
+// than its TTL, bounded by installReadAttempt, so a branch renamed on GitHub is taken by the
+// issues recorded after the rename; the read is kept as the entry's (recordRepository), and a read
+// that fails, GitHub's rate limit and a read GitHub does not answer in time among them, leaves the
+// entry's own read to record the issue on, since one failed read of a repository GitHub answered
+// for is no reason to hold an issue back. Any other repository is read from GitHub here
+// (prepareRead); in the boot's listing (boot) no issue reads it, and the repository is left for
+// the recovery to read (prepareListed says why).
 func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.DispatchIssue, boot bool) (intake.DispatchIssue, error) {
 	if issue.ResolvedRepoMissing {
 		detail, err := w.dispatch.GetIssue(ctx, issue.Key)
@@ -2636,7 +2677,9 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 	if boot {
 		return issue, nil
 	}
-	refreshed, err := w.defaultBranches.Named(ctx, read.Name)
+	attempt, cancel := context.WithTimeout(ctx, installReadAttempt)
+	refreshed, err := w.defaultBranches.Named(attempt, read.Name)
+	cancel()
 	if err != nil {
 		if _, _, limited := defaultBranchLimit(err); !limited && ctx.Err() == nil {
 			w.log.Warn("workflow: the default branch of a repository an issue is recorded on was not read again, so the issue is recorded at the branch last read",
@@ -2650,10 +2693,12 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 
 // prepareRead readies the event of an issue the workflow does not record whose repository no
 // entry records issues on yet: the reads admission asks for, made here because the workflow's own
-// resolution performs no I/O (ResolveRepository). What decides is GitHub, read now: each role
-// App's installation on the repository (readInstallations) and the repository's own name and
-// default branch (defaultBranches.Named). Every answer is kept in the entry of the name it was
-// read under (keepRead).
+// resolution performs no I/O (ResolveRepository). What decides is GitHub, read now, in the one
+// preparation step every preparation runs (prepareName) under the name the issue resolves to:
+// each role App's installation on it, its own name and default branch (defaultBranches.Named),
+// each read bounded by installReadAttempt, and, once both Apps answered installed and GitHub named
+// the repository, Dispatch's webhook App on it. Every answer is kept in the entry of the name it
+// was read under (keepRead, keepWebhookAnswer).
 //
 // It is called only for a repository no entry records issues on and only for an issue admission
 // would record (prepareUnrecorded), so it reads GitHub no second time for one whose read an entry
@@ -2665,32 +2710,34 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 // restart.
 //
 // A repository GitHub answers both role Apps are not installed on, whose name a configured pair
-// holds, has the pair's other name read too, under its own name: a transfer takes the repository
-// out of every installation of the owner it names, both Apps' alike, since an App is installed on
-// an owner, while the name it moved to is covered by the ones that have it. The issue is recorded
-// on the name both Apps answer installed on, and the read is kept under both names
+// holds, has the pair's other name prepared too, under its own name: a transfer takes the
+// repository out of every installation of the owner it names, both Apps' alike, since an App is
+// installed on an owner, while the name it moved to is covered by the ones that have it. The issue
+// is recorded on the name both Apps answer installed on, and the read is kept under both names
 // (recordRepository). A name that holds one of the two Apps and not the other is the operator's
 // own gap rather than a transfer, so the other name is read for neither App there.
 //
 // The three answers. Both Apps installed and GitHub naming the repository: the read is kept and
 // the issue is recorded and admitted on it. A role App that is not installed, on the name and on
-// the other name of its pair, a repository GitHub does not have, and a name that is no
-// <owner>/<name> at all: the event carries the refusal to its own apply
-// (intake.DispatchIssue.RepositoryRefusal), which says it on the issue and decides nothing after
-// it. A read GitHub did not answer: the repository is left unread (leaveUnread), so the event is
-// applied and acknowledged, its apply says nothing and records nothing, and the refresher's
-// recovery takes the issue once a later read answers. The one exception is a read of the default
-// branch GitHub refuses for its rate limit, of a repository the daemon holds no read of
-// (defaultBranches.Named answers every other from what it holds): that is an intake.RetryLater
-// after the wait GitHub asked for (defaultBranchLimit), so the event is delivered again once the
-// limit has passed, not every second into it, each delivery reading GitHub again.
+// the other name of its pair, and a name that is no <owner>/<name> at all: the event carries the
+// refusal to its own apply (intake.DispatchIssue.RepositoryRefusal), which says it on the issue
+// and decides nothing after it; a repository GitHub does not have is refused the same way, since
+// GitHub answers that no App is installed on it. A read GitHub did not answer: the repository is
+// left unread (leaveUnread), so the event is applied and acknowledged, its apply says nothing and
+// records nothing, and the refresher's recovery takes the issue once a later read answers. The
+// one exception is the admission's own rule for a read of the name and default branch GitHub
+// refuses for its rate limit, of a repository the daemon holds no read of (defaultBranches.Named
+// answers every other from what it holds, and an admission serves no record's branch in its
+// place): that is an intake.RetryLater after the wait GitHub asked for (defaultBranchLimit), so
+// the event is delivered again once the limit has passed, not every second into it, each delivery
+// reading GitHub again. The limit is kept as the name's read error until a read answers.
 //
-// Where GitHub named the repository, Dispatch is asked as well whether its GitHub App is installed
-// on it (checkWebhookApp), bounded by installReadAttempt, under GitHub's name, which is the name
-// the record keeps and legion state lists it under, and the answer is kept for the state
-// (repositories.keepWebhookAnswer): the repository is worked from its first record, so its gap is
-// named from that record on. The answer refuses nothing: the issue is recorded whatever Dispatch
-// says, and a check that failed is the gap's reason.
+// Dispatch's webhook App check refuses nothing: the issue is recorded whatever Dispatch says, and
+// a check that failed is the gap's reason. It is made, and its answer kept, under the name the
+// reads were made under, in GitHub's spelling, which is the name the record keeps and legion state
+// lists it under, so the repository's gap is named from its first record on — but for a repository
+// GitHub renamed: there the record keeps GitHub's new name, whose entry holds no installation
+// answer yet, and the refresher's second job prepares it under that name (badLive, prepareLive).
 //
 // GitHub may answer the read under a name other than the one asked: a repository GitHub itself
 // renamed is answered with a 301 to the name it holds it under now, which the read follows,
@@ -2700,11 +2747,6 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 // every later preparation of an issue on it, ask under the name the issue resolves to, which is
 // the one GitHub renamed away from.
 func (w *workflowRuntime) prepareRead(ctx context.Context, issue intake.DispatchIssue, boot bool) (intake.DispatchIssue, error) {
-	if w.installs == nil {
-		// A daemon with no GitHub Apps reads no installation, so nothing is recorded on a
-		// repository no entry records issues on: the issue's apply leaves it as an unread one.
-		return issue, nil
-	}
 	repo, err := ghrepo.Parse("the repository Dispatch resolves "+issue.Key+" to", issue.ResolvedRepo)
 	if err != nil {
 		issue.RepositoryRefusal = err.Error()
@@ -2714,69 +2756,46 @@ func (w *workflowRuntime) prepareRead(ctx context.Context, issue intake.Dispatch
 		w.leaveForRecovery(repo)
 		return issue, nil
 	}
-	// answered is the name both role Apps answer installed on, which the issue is recorded on.
-	answered, refusal, unread := w.readRecordable(ctx, repo)
+	answer, err := w.prepareName(ctx, repo, repo, nil)
+	if err != nil {
+		return issue, err
+	}
+	refusal := answer.refusal()
+	if partner, paired := w.repositories.renames.Partner(repo.String()); paired && len(answer.missing) == len(appauth.Roles) {
+		moved, err := w.prepareName(ctx, partner, partner, nil)
+		if err != nil {
+			return issue, err
+		}
+		if len(moved.missing) != 0 {
+			refusal += "; " + moved.refusal()
+		} else {
+			refusal = moved.refusal()
+		}
+		answer = moved
+	}
+	// answer.under is now the name both role Apps answered installed on, which the issue is
+	// recorded on, unless the answer refuses it.
 	switch {
-	case unread != "":
-		w.leaveUnread(repo, unread+"; Legion reads it again")
-		return issue, nil
-	case refusal != "":
+	case len(answer.missing) != 0:
 		w.readAnswered(repo)
 		issue.RepositoryRefusal = refusal
 		return issue, nil
-	}
-	read, err := w.defaultBranches.Named(ctx, answered)
-	if _, wait, limited := defaultBranchLimit(err); limited {
-		return issue, &intake.RetryLater{After: wait, Err: fmt.Errorf("prepare %s on %s: GitHub's rate limit, retry in %s: %w", issue.Key, answered, wait, err)}
-	}
-	if err != nil {
-		reason := fmt.Sprintf("the name and default branch of %s could not be read: %v", answered, err)
-		w.repositories.keepReadError(answered, reason)
-		w.leaveUnread(repo, reason+"; Legion reads it again")
+	case answer.limited != nil:
+		wait := answer.limited.wait
+		return issue, &intake.RetryLater{After: wait, Err: fmt.Errorf("prepare %s on %s: GitHub's rate limit, retry in %s: %w", issue.Key, answer.under, wait, answer.limited.err)}
+	case refusal != "":
+		w.leaveUnread(repo, refusal+"; Legion reads it again")
 		return issue, nil
 	}
-	w.checkWebhookAppOn(ctx, read.Name)
 	// The read is kept before the marker is dropped: readAnswered starts the recovery of the
 	// issues the repository left, and each of those preparations is to find the read here rather
 	// than read GitHub again, which could fail and leave the repository unread once more.
-	w.repositories.recordRepository(repo.String(), read)
-	if answered != repo {
-		w.repositories.recordRepository(answered.String(), read)
+	w.repositories.recordRepository(repo.String(), answer.read)
+	if answer.under != repo {
+		w.repositories.recordRepository(answer.under.String(), answer.read)
 	}
 	w.readAnswered(repo)
 	return issue, nil
-}
-
-// readRecordable reads both role Apps' installations on repo, and on the other name of the
-// configured pair that holds repo where GitHub answers neither App is installed on repo
-// (prepareRead), each under its own name and kept in its own entry (keepRead). It answers the name
-// both Apps answer installed on; or refusal, naming each App that is not installed on each name
-// read; or unread, naming the first read that did not answer, which leaves the repository unread.
-func (w *workflowRuntime) readRecordable(ctx context.Context, repo ghrepo.Repository) (answered ghrepo.Repository, refusal, unread string) {
-	installed, failed := w.readInstallations(ctx, repo)
-	reason := unanswered(repo, failed)
-	w.repositories.keepRead(repo, nameRead{installed: installed, failed: failed, readError: reason})
-	if reason != "" {
-		return ghrepo.Repository{}, "", reason
-	}
-	missing := missingApps(installed)
-	if len(missing) == 0 {
-		return repo, "", ""
-	}
-	partner, paired := w.repositories.renames.Partner(repo.String())
-	if len(missing) != len(appauth.Roles) || !paired {
-		return ghrepo.Repository{}, appauth.NotInstalledOn(missing, repo.String()), ""
-	}
-	installed, failed = w.readInstallations(ctx, partner)
-	reason = unanswered(partner, failed)
-	w.repositories.keepRead(partner, nameRead{installed: installed, failed: failed, readError: reason})
-	if reason != "" {
-		return ghrepo.Repository{}, "", reason
-	}
-	if moved := missingApps(installed); len(moved) != 0 {
-		return ghrepo.Repository{}, appauth.NotInstalledOn(missing, repo.String()) + "; " + appauth.NotInstalledOn(moved, partner.String()), ""
-	}
-	return partner, "", ""
 }
 
 // ResolveRepository answers the workflow (workflow.Repositories) from memory: the repository

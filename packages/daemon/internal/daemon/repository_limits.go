@@ -100,8 +100,8 @@ func (w *workflowRuntime) heldThroughLimit(read limitedRead, held ghbranch.Repos
 // again as any repository with nothing held is.
 //
 // It answers the branch so served, as the record holds it, and whether one was; one no record holds
-// a branch for is for the caller to keep as a read that did not answer (prepareLive), which the
-// refresher reads again.
+// a branch for is for the caller to keep as a read that did not answer (prepareName), which the
+// refresher reads again while a live record names the repository.
 func (w *workflowRuntime) holdLimited(read limitedRead, recorded recordBranches) (ghbranch.Repository, bool, error) {
 	branches, err := recorded()
 	if err != nil {
