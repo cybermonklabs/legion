@@ -1,4 +1,4 @@
--- packages/envoy/internal/broker/store/migrations/0033_oauth_pod_sessions_registrar.up.sql
+-- packages/envoy/internal/broker/store/migrations/0037_oauth_pod_sessions_registrar.up.sql
 -- Which registrar wrote a pod's registration for a session, and whether that registrar has
 -- released it.
 --
