@@ -8,6 +8,7 @@ import {
   openAgents,
   setListsState,
   setLiveSessions,
+  setSessionLastSeen,
   setSessionState,
   setSessionStopped,
 } from "./agents";
@@ -1141,11 +1142,21 @@ test("a silent session says so in the header and in a line above its messages, i
       ).length;
     await expect.poll(subscribed).toBe(1);
 
-    // The registry holds it as unresponsive, though the relay still has its replay: the header
-    // names that state, with when the session was last seen, in place of a word on the
-    // connection, and the line says what the list says rather than the relay's causes.
+    // The registry holds it as unresponsive, its last heartbeat six minutes old, though the relay
+    // still has its replay: the header names that state, with when the session was last seen, in
+    // place of a word on the connection, and the line says what the list says rather than the
+    // relay's causes. The list carries the heartbeat as epoch milliseconds, which the note writes
+    // with `toISOString`, so its `datetime` is that heartbeat's own spelling.
+    const lastSeen = Date.now() - 6 * 60_000;
+    await setSessionLastSeen(answering.session_id, lastSeen);
     await setSessionState(answering.session_id, "unresponsive");
-    await expect(unresponsive).toHaveText(/^Unresponsive/, { timeout: REGISTRY_POLL_TIMEOUT });
+    await expect(unresponsive).toHaveText(/^Unresponsive · seen \d+ minutes ago$/, {
+      timeout: REGISTRY_POLL_TIMEOUT,
+    });
+    await expect(unresponsive.locator("time")).toHaveAttribute(
+      "datetime",
+      new Date(lastSeen).toISOString()
+    );
     await expect(connection(page)).toHaveCount(0);
     await expect(view.getByTestId("agent-silence-line")).toHaveText(MISSED_HEARTBEATS);
     expect(subscribed()).toBe(1);
@@ -1183,7 +1194,8 @@ test("a silent session says so in the header and in a line above its messages, i
       timeout: REGISTRY_POLL_TIMEOUT,
     });
 
-    // Its heartbeats are back.
+    // Its heartbeats are back, the newest one now.
+    await setSessionLastSeen(answering.session_id, Date.now());
     await setSessionState(answering.session_id, "live");
     await expect(connection(page)).toHaveAttribute("title", CONNECTION_LIVE, {
       timeout: REGISTRY_POLL_TIMEOUT,
