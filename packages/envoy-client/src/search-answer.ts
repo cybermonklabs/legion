@@ -13,6 +13,7 @@ import {
 } from "@legion/contracts";
 import { actorText } from "./actor-text";
 import { dispatchWordsText } from "./ask-answer";
+import { linkFor } from "./dispatch-commands/links";
 import { dispatchDocumentRef } from "./dispatch-owner";
 
 /** The "showing a-b of N" phrasing a paged tool result builds from its offset, row count, and total. */
@@ -20,8 +21,8 @@ export function pageSummaryText(offset: number, count: number, total: number): s
   return `showing ${offset + 1}-${offset + count} of ${total}`;
 }
 
-function searchHitLine(result: SearchResult, baseUrl: string): string {
-  const href = new URL(result.href, baseUrl).toString();
+function searchHitLine(result: SearchResult, linkBase: string | undefined): string {
+  const href = linkFor(result.href, linkBase);
   const { owner } = result;
   if (owner.kind === "document") {
     const reference = dispatchDocumentRef(owner.project ?? "", owner.slug ?? "");
@@ -100,8 +101,8 @@ export function askStateLines(ask: SearchAsk | undefined): string[] {
 }
 
 /** One hit as text: its line, then, for an ask, where the ask stands. */
-function searchResultLine(result: SearchResult, baseUrl: string): string {
-  const line = searchHitLine(result, baseUrl);
+function searchResultLine(result: SearchResult, linkBase: string | undefined): string {
+  const line = searchHitLine(result, linkBase);
   return result.kind === "ask" ? [line, ...askStateLines(result.ask)].join("\n") : line;
 }
 
@@ -125,11 +126,11 @@ export function searchAnswer(
   search: SearchAnswerRead,
   query: string,
   offset: number | undefined,
-  configUrl: string
+  linkBase: string | undefined
 ): { readonly text: string; readonly details: Record<string, unknown> } {
   const results = search.results ?? [];
   const count = results.length;
-  const lines = results.map((result) => searchResultLine(result, configUrl));
+  const lines = results.map((result) => searchResultLine(result, linkBase));
   const noun = count === 1 ? "result" : "results";
   const noResults = `No results for "${query}".`;
   // Meaning search is off for this request (no Bedrock credentials, a timed-out or failing query

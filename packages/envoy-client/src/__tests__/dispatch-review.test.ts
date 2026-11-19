@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { NO_ROUTE_ROLLING_RELEASE_MESSAGE } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
@@ -17,6 +18,9 @@ import { ToolInputError } from "../tool-input-errors";
 // the CLI runs instead, which takes the wait its retries pause with.
 
 const makeDirectory = temporaryDirectories("dispatch-review");
+
+/** The Dispatch bearer each command, and the executor, is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 /** The person the token names, whom Dispatch records every review under. */
 const PERSON = "alice@example.com";
@@ -147,7 +151,7 @@ async function run(argv: readonly string[]): Promise<{
     {
       HOME: stateDir,
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "test-token",
+      DISPATCH_TOKEN: TOKEN,
       DISPATCH_STATE_DIR: stateDir,
       DISPATCH_HOST: "omp",
       DISPATCH_SESSION_ID: "ses-1",
@@ -319,7 +323,7 @@ describe("dispatch review", () => {
       cwd: stateDir,
       host: "omp",
       sessionId: "ses-1",
-      config: { url: base, credential: bearerCredential("test-token") },
+      config: { url: base, credential: bearerCredential(TOKEN) },
       env: {},
       sleep: async (ms) => {
         waits.push(ms);

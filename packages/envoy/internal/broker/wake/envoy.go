@@ -20,14 +20,18 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// Envoy sends a "secret request <state>" notification directly to the target session.
+// Envoy sends a "secret request <state>" notification directly to the target session, presenting
+// the broker's own platform identity (Account, read afresh for each notice) as its bearer: the
+// listener admits the account that token names, as it admits every caller's, so no bearer is
+// shared between the broker and the listener's other callers.
 type Envoy struct {
-	URL   string
-	Token string
-	HTTP  *http.Client
+	URL     string
+	Account brokertoken.Account
+	HTTP    *http.Client
 }
 
 type secretRequestPayload struct {
@@ -68,8 +72,13 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 		slog.Warn("wake envoy: build request", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
+	bearer, err := e.Account.Read()
+	if err != nil {
+		slog.Warn("wake envoy: read the broker's account token", "session", sessionID, "request", requestID, "error", err)
+		return
+	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+e.Token)
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	resp, err := e.HTTP.Do(req)
 	if err != nil {
 		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", err)

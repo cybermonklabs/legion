@@ -691,7 +691,17 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 // agent text to (steprecord.AgentTextHolds), and one outside it is left out of the record rather
 // than sent: Dispatch would refuse the whole record over it, and a space or a newline in it would
 // shift the columns of `dispatch steps` or forge a line of it.
-func (w *workflowRuntime) stepAgent(token claim.Token) workflow.StepAgent {
+//
+// The session is named only while the claim holds it (plan E's t-e-54): a claim the boot could not
+// suspend can record another claim's session, or one no claim holds, and its step's record would
+// show that session as the one at work, as the role-holder publication would (LiveRoleHolders,
+// which leaves it out). The check only reads. It asks the machine first (Machine.Admits: no lock,
+// no store call), and where the machine has not seen the answer, as after a restart, it reads
+// claim_sessions in the fact's own transaction (record.SessionHeld), one select under a
+// savepoint on the connection that already holds the fact lock: no store write, and no wait on
+// another connection while that lock is held, where the store's hold (HoldSessions) would write
+// through the pool. A read that fails names no session, and the record's end then names none.
+func (w *workflowRuntime) stepAgent(ctx context.Context, tx pgx.Tx, token claim.Token) workflow.StepAgent {
 	r := w.outboxWake.Load()
 	if r == nil || r.supervisor == nil {
 		return workflow.StepAgent{}
@@ -700,12 +710,30 @@ func (w *workflowRuntime) stepAgent(token claim.Token) workflow.StepAgent {
 	if !ok {
 		return workflow.StepAgent{}
 	}
-	session := machine.View().Session
+	view := machine.View()
+	session := view.Session
 	model := machine.LastAnswer().Model
 	if machine.View().Session != session {
 		model = ""
 	}
+	if session != "" && !machine.Admits(session, view.SessionFile) && !w.sessionHeld(ctx, tx, view.Claim) {
+		session = ""
+	}
 	return workflow.StepAgent{Session: w.agentText(token, "session", session), Model: w.agentText(token, "model", model)}
+}
+
+// sessionHeld is stepAgent's read of whether c holds the session it records, in the fact's
+// transaction tx (record.SessionHeld); false for no transaction and for a read that failed, which
+// is logged.
+func (w *workflowRuntime) sessionHeld(ctx context.Context, tx pgx.Tx, c supervise.Claim) bool {
+	if tx == nil {
+		return false
+	}
+	held, err := record.SessionHeld(ctx, tx, c.Project, c.Token, c.Session, c.SessionFile)
+	if err != nil {
+		w.log.Warn("legion step record names no session: the read of whether its claim holds it failed", "claim", string(c.Token), "error", err)
+	}
+	return held
 }
 
 // agentText is text when it is in the form of a step's agent text (steprecord.AgentTextHolds), and
@@ -1283,7 +1311,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
-		w.repositories, supervision.plan.tools, w.log)
+		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.readPullRequest = func(ctx context.Context, pr record.PullRequest) (githubPullRequest, error) {
 		_, pull, err := w.readPullRequest(ctx, pr)
 		return pull, err
@@ -1534,7 +1562,12 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 		}
 		fact = ready
 	case supervise.StateFailed:
-		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure,
+		// Everything the claim persists about its end: the sentence the supervisor wrote when it
+		// gave up (Claim.Failure), what the runtime last said of the death and of the start that
+		// never produced an agent (Claim.LastDeathCause, Claim.LastStartFailure), and the pod end
+		// its process was last observed to have died of (Claim.PodEnd), so a notice written after
+		// a daemon restart still names the cause the role never chose — an eviction above all.
+		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, PodEnd: c.PodEnd,
 			Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
 			Cause: c.FailureCause, Budgets: c.Budgets, Limits: w.limits}
 	default:

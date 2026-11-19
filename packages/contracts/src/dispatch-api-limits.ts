@@ -396,16 +396,24 @@ export const SEARCH_OPERATORS = [
 export type SearchOperator = (typeof SEARCH_OPERATORS)[number];
 
 /** What a `SessionAnswer` is to the session Dispatch delivered it to, one snake_case wire value per
- *  relation, each spelling the phrase a reader prints: a person answered the session's ask,
- *  declined to answer it, replied in its ask's thread, replied in a comment thread it wrote in,
- *  commented on a document it wrote, commented on an issue routed to it, mentioned it, sent it a
- *  message (direct, on an issue, or a broadcast's copy), or replied to its message. A decline is
- *  the item of the new kind `declined`, whose `text` is the person's own note and whose
- *  `dispatch_words` is what Dispatch wrote beside it, so a reader draws the two apart. Mirrored in
- *  Go as the `model.SessionAnswerRelation*` constants, in this order. */
+ *  relation, each spelling the phrase a reader prints. A session owns an ask when it asked it or
+ *  follows it, and only an owner reads `answered_your_ask`, `declined_your_ask` or
+ *  `replied_on_your_ask`. In order: a person answered the session's ask; answered an ask the
+ *  session does not own, which reached it for another reason (the issue's route or its claim);
+ *  declined to answer the session's ask; declined to answer an ask the session does not own;
+ *  replied in the thread of the session's ask; replied in a comment thread it wrote in; commented
+ *  on a document it wrote; commented on an issue that reaches it (its route, its claim, or a
+ *  credit on its primary document); mentioned it; sent it a message (direct, on an issue, or a
+ *  broadcast's copy); or replied to its message. A reply in the thread of an ask the session does
+ *  not own carries the relation of the reason that delivered it. A decline is the item of the
+ *  kind `declined`, whose `text` is the person's own note; on `declined_your_ask` alone,
+ *  `dispatch_words` is what Dispatch wrote beside it for the asking agent, so a reader draws the
+ *  two apart. Mirrored in Go as the `model.SessionAnswerRelation*` constants, in this order. */
 export const SESSION_ANSWER_RELATIONS = [
   "answered_your_ask",
+  "answered_an_ask",
   "declined_your_ask",
+  "declined_an_ask",
   "replied_on_your_ask",
   "replied_in_a_comment_thread",
   "commented_on_a_document",

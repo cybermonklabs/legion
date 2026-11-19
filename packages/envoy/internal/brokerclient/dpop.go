@@ -100,12 +100,20 @@ func (d *dpopTransport) send(r *http.Request) (*http.Response, error) {
 
 // proof is one DPoP proof for method on htu, carrying nonce and ath when they are not empty.
 func (d *dpopTransport) proof(method, htu, nonce, ath string) (string, error) {
-	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: d.key},
+	return signProof(d.key, strings.ToUpper(method), htu, nonce, ath)
+}
+
+// signProof is one proof of key (typ dpop+jwt, ES256, the public key embedded) naming a fresh jti,
+// htm, htu and the time (iat), and nonce and ath when they are not empty: the one signer every
+// proof this package makes goes through, an HTTP request's (dpopTransport) and a NATS
+// connection's (ConnectionProof).
+func signProof(key *ecdsa.PrivateKey, htm, htu, nonce, ath string) (string, error) {
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key},
 		(&jose.SignerOptions{EmbedJWK: true}).WithType("dpop+jwt"))
 	if err != nil {
 		return "", err
 	}
-	claims := map[string]any{"jti": uuid.NewString(), "htm": strings.ToUpper(method), "htu": htu, "iat": time.Now().Unix()}
+	claims := map[string]any{"jti": uuid.NewString(), "htm": htm, "htu": htu, "iat": time.Now().Unix()}
 	if nonce != "" {
 		claims["nonce"] = nonce
 	}
@@ -131,6 +139,11 @@ func accessTokenHash(h http.Header) string {
 	if !found || !strings.EqualFold(scheme, "DPoP") || token == "" {
 		return ""
 	}
+	return tokenHash(token)
+}
+
+// tokenHash is the ath claim naming token: the base64url-encoded SHA-256 of its value.
+func tokenHash(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
