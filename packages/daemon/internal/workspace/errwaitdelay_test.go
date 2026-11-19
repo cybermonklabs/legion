@@ -222,16 +222,20 @@ type timesOut struct{ argv []string }
 func (r timesOut) Timeout() time.Duration { return time.Minute }
 
 func (r timesOut) Run(_ context.Context, command Command) (Result, error) {
-	if commandWith(command.Argv, r.argv...) {
+	switch {
+	case commandWith(command.Argv, r.argv...):
 		return Result{ExitCode: -1, TimedOut: true}, nil
+	case slices.Contains(command.Argv, "ls-remote"):
+		return Result{Stdout: "ref: refs/heads/main\tHEAD\n"}, nil
 	}
 	return Result{}, nil
 }
 
 // A read its budget ended answered nothing, so its -1 exit is no answer: the shared clone's
 // rev-parse of the default branch was read as "the feed lacks the branch", which left the branch
-// untracked, and the credential read as a stale key, which rewrote the clone's helpers. Each is now
-// refused as the timeout it is.
+// untracked, the credential read as a stale key, which rewrote the clone's helpers, and the feed's
+// read of its HEAD as a HEAD that names nothing, which rewrote HEAD. Each is now refused as the
+// timeout it is.
 func TestAReadItsBudgetEndedIsRefusedNotReadAsAnAnswer(t *testing.T) {
 	t.Run("the feed clone's rev-parse of the default branch", func(t *testing.T) {
 		dir := t.TempDir()
@@ -246,6 +250,19 @@ func TestAReadItsBudgetEndedIsRefusedNotReadAsAnAnswer(t *testing.T) {
 		rewrote, err := ConfigureRepositoryCredential(context.Background(), timesOut{argv: []string{"git", "--git-dir=" + dir + "/.git", "config", "--get-all"}}, dir)
 		if err == nil || rewrote || !strings.HasPrefix(err.Error(), "read the shared clone's credential.helper: command timed out: ") {
 			t.Errorf("ConfigureRepositoryCredential with its read timed out = %t, %v; want no rewrite and the timeout refused", rewrote, err)
+		}
+	})
+	t.Run("the feed's read of its HEAD", func(t *testing.T) {
+		gitDir := t.TempDir()
+		credential, err := newProvisioningCredential(t.TempDir(), testInstallationToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held := &fetchCredential{remote: credential, env: credential.env, read: staticToken(testInstallationToken), held: []string{testInstallationToken}}
+		run := timesOut{argv: []string{"git", "--git-dir=" + gitDir, "symbolic-ref"}}
+		err = followHead(context.Background(), run, fetchRequest(t), gitDir, map[string]string{"refs/heads/main": strings.Repeat("a", 40)}, held, time.Now().Add(time.Minute))
+		if err == nil || !strings.HasPrefix(err.Error(), "command timed out: git --git-dir="+gitDir+" symbolic-ref --quiet HEAD") {
+			t.Errorf("followHead with its symbolic-ref timed out = %v, want the timeout refused", err)
 		}
 	})
 }

@@ -443,6 +443,10 @@ func followHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 	if err != nil {
 		return runFailure(symbolicRef, current, err)
 	}
+	// A read its budget ended answered nothing: its -1 exit is no "HEAD names nothing".
+	if current.TimedOut {
+		return commandFailure(symbolicRef, current)
+	}
 	was := strings.TrimSpace(current.Stdout)
 	if was == target {
 		return nil
