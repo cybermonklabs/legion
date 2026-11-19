@@ -308,7 +308,9 @@ function scrolls(element: Element): boolean {
 const DIAGRAM_PREVIEW = "dispatch-mermaid-preview";
 
 /** The mark a scroller carries while `useOutOfTabOrder` keeps its tab stop, so that a tree's keys
- *  can tell a kept scroller from the row's other controls. */
+ *  can tell a kept scroller from the row's other controls. Its reader is part I's tree keys,
+ *  which leave a key pressed on a kept scroller, or inside one, to the browser (decision 322);
+ *  nothing in part G reads it. */
 const KEPT_SCROLLER = "data-kept-scroller";
 
 /** The name a scroller carries while it keeps its tab stop, by what it scrolls: a code block; a

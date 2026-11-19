@@ -150,7 +150,9 @@ export function NodeRow({
    *  no block of a document of this issue. */
   document?: Artifact;
   /** Whether the row carries `data-editable`, for a view that lets the reader edit its words in
-   *  place and draws such a row its own way. False unless the view passes it. */
+   *  place and draws such a row its own way: part I's outline passes it, and its styles draw the
+   *  cue that the row takes typing (decision 323); nothing in part G reads it. False unless the
+   *  view passes it. */
   editable?: boolean;
   /** The document this row's own text lives in, while the reader is editing it here: its
    *  editor is drawn in place of the row's words and the caret is in this node's block. */
