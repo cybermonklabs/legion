@@ -1,5 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { expect, jest, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionAnswer } from "@legion/contracts";
@@ -11,6 +11,7 @@ import {
   sessionAnswersFailureLine,
   sessionAnswersWords,
 } from "@legion/envoy-client/session-answers";
+import { removeAfterEachCase } from "@legion/pi-shared/test/scratch-removal";
 import {
   ask,
   branchOf,
@@ -776,12 +777,21 @@ test("a request another copy of the extension read no text for is not read again
 // that read alone. The first copy's read is the one Dispatch answered, not its 800 ms deadline (a
 // platform timer inside `readSessionAnswers`; with no list read before, a read that waited the
 // deadline out carries the failure line), and the second copy, handed the array the first passed
-// on, makes no read, so it has nothing to wait on. The case checks these two facts, not the
-// request's time: a bound on that time measured the box's load as well, and failed under it.
+// on, makes no read, so it has nothing to wait on. The case checks these facts, not the request's
+// time: a bound on that time measured the box's load as well, and failed under it. The second copy
+// runs on Bun's fake clock, which holds every timer it sets: it must have settled by the next turn
+// of the event loop and set no timer, so a copy that waits on a timer of its own fails here
+// whatever the box's load, as a copy that reads again fails on the reads counted below.
 const stateRoots: string[] = [];
-afterEach(() => {
-  for (const root of stateRoots.splice(0)) rmSync(root, { recursive: true, force: true });
-});
+removeAfterEachCase(stateRoots);
+
+/** One macrotask turn, on a `setImmediate` that Bun's fake clock leaves real: it comes only once
+ *  every promise already chained has run as far as it goes. */
+function nextTurn(): Promise<void> {
+  const turn = Promise.withResolvers<void>();
+  setImmediate(turn.resolve);
+  return turn.promise;
+}
 
 test("two copies of the extension and an empty list: one HTTP read, which the second copy does not wait on", async () => {
   const stateRoot = mkdtempSync(join(tmpdir(), "session-answers-context-"));
@@ -815,9 +825,21 @@ test("two copies of the extension and an empty list: one HTTP read, which the se
   };
   const messages = [skill, ask];
 
-  // Copy A's handler, then copy B's on the array A passed on.
+  // Copy A's handler, then copy B's on the array A passed on, with the clock held.
   expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
-  expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
+  jest.useFakeTimers();
+  try {
+    let settled = false;
+    const second = withSessionAnswers(messages, requestOf(read, noBranch)).finally(() => {
+      settled = true;
+    });
+    await nextTurn();
+    expect(settled).toBe(true);
+    expect(jest.getTimerCount()).toBe(0);
+    expect(await second).toBeUndefined();
+  } finally {
+    jest.useRealTimers();
+  }
 
   // One read, the first copy's, which Dispatch answered.
   expect(sources).toEqual(["fresh"]);
