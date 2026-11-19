@@ -246,8 +246,8 @@ type SendInput struct {
 	// that takes the role receives what the holder did not read, and keeps the message for the
 	// role's next holder when the role's claim names another session than the target when the
 	// send arrives (its 202). It takes the mark from Dispatch's own identity alone, so such a send
-	// is made on the account token only (WithAccountTokenFile, Send); a client that presents no
-	// identity sends it unmarked and logs it at Error.
+	// is made on that identity only (WithAccountTokenFile or WithGoogleIdentity, Send); a client
+	// that presents no identity refuses it (ErrNoIdentity) and logs it at Error.
 	Role string
 }
 

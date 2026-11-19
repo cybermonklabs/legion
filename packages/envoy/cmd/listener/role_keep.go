@@ -1584,7 +1584,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 	if holder == "" {
 		return keptCopyVerdict{step: keptCopyWait, item: item}
 	}
-	verdict, report := keptRoleForwardAllowed(cfg, role, holder, entry, item, seen)
+	verdict, report := keptRoleForwardAllowed(cfg, role, holder, entry, item, takenFrameOriginal(item, stored.MsgID, role), seen)
 	switch verdict.kind {
 	case forwardAllowed:
 		return keptCopyVerdict{step: keptCopyForward, item: item}
@@ -1863,13 +1863,17 @@ var keptRoleRefusalLines = roleForwardRefusalLines{
 // lines, which name the copy's sender beside the role. The copy is ended, and the report is the
 // walk's to run once its last cursor write has moved the lane past the copy, so no later walk
 // offers it again and no walk that lost that write reports it.
-func keptRoleForwardAllowed(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, item contracts.Envelope, seen func(key, recipient string) bool) (forwardVerdict, func()) {
+//
+// reported is item as the refusal's exception names it: item itself, or for a takeover's copy the
+// envelope under the message's own dedupe key (takenFrameOriginal), which a reader of the
+// exception, such as the Legion daemon's re-hold, identifies the message by.
+func keptRoleForwardAllowed(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, item, reported contracts.Envelope, seen func(key, recipient string) bool) (forwardVerdict, func()) {
 	verdict := beforeForward(item, holder, entry, seen)
 	if verdict.kind == forwardAllowed {
 		return verdict, nil
 	}
-	outcome := refusedRoleForwardOutcome(verdict, item, holder, keptRoleRefusalLines,
+	outcome := refusedRoleForwardOutcome(verdict, reported, holder, keptRoleRefusalLines,
 		slog.String("role", role),
 		slog.String("source_session", item.SourceSession))
-	return verdict, func() { applyDeliveryOutcome(cfg, item, outcome) }
+	return verdict, func() { applyDeliveryOutcome(cfg, reported, outcome) }
 }

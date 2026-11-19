@@ -88,6 +88,29 @@ func takenFrameDedupeKey(dedupeKey string, seq uint64) string {
 // by it (isOutboxCopy).
 const takenFrameKeyPrefix = "agent.takeover."
 
+// takenFrameOriginal is item as an exception about it names it. A takeover's copy carries a
+// minted dedupe key of its own (takenFrameDedupeKey), and a reader of the exception, such as the
+// Legion daemon's re-hold, identifies the message by the message's own key, which the copy's
+// message id on role's kept lane keeps (takenFrameMsgID: bus.KeptMsgID of that key, then
+// keptFrameMark and the frame's sequence). For such a copy it is item under that key; any other
+// kept copy is item as it is.
+func takenFrameOriginal(item contracts.Envelope, msgID, role string) contracts.Envelope {
+	if !strings.HasPrefix(item.DedupeKey, takenFrameKeyPrefix) {
+		return item
+	}
+	suffix := ":" + bus.KeptRoleSubject(role) + keptFrameMark
+	at := strings.LastIndex(msgID, suffix)
+	if at <= 0 {
+		return item
+	}
+	if _, err := strconv.ParseUint(msgID[at+len(suffix):], 10, 64); err != nil {
+		return item
+	}
+	original := item
+	original.DedupeKey = msgID[:at]
+	return original
+}
+
 // takeoverFaultSet holds the takeover copy's test seams; production runs with none
 // (takeoverFaultHooks). Each names a point a row forces: a crash or a refusal at that point.
 type takeoverFaultSet struct {

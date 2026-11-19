@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
+	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
@@ -268,6 +269,15 @@ func main() {
 	if err != nil {
 		slog.Error("dispatch: resolve boot config", "error", err)
 		os.Exit(1)
+	}
+	// Dispatch's Google Cloud identity at the listener needs a metadata server, decided once here:
+	// a machine with none refuses to start, naming the setting, and a metadata server that does
+	// not answer later fails only the call it was asked for, which its delivery tries again.
+	if boot.EnvoyGoogleAudience != "" {
+		if err := dispatchenvoy.CheckGoogleIdentity(context.Background()); err != nil {
+			slog.Error("dispatch: Envoy listener identity", "error", err)
+			os.Exit(1)
+		}
 	}
 	// The registry's pace, before anything registers or reads what is live. The live window stays
 	// three beats, as processes.LiveWindow is of processes.HeartbeatInterval, so a run cannot give

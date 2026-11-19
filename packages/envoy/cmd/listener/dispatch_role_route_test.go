@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -707,6 +709,50 @@ func TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole(t *testing.T)
 		}
 		if got := message.Deliveries[0]; got.State != "sent" || got.SessionID != holder.id || got.Error != nil {
 			t.Fatalf("the attempt begun before the token file held a token = %+v, want sent to %s once the file held one", got, holder.id)
+		}
+		frames := received(holder, 20*time.Second, text)[text]
+		if len(frames) != 1 || frames[0].item.Role != role {
+			t.Fatalf("the holder received %d copies, the first marked %q; want one copy marked %s", len(frames), roleOf(frames), role)
+		}
+	})
+
+	t.Run("(11) Dispatch on its Google identity whose metadata server does not answer for a moment: the attempt is tried again and sent, marked", func(t *testing.T) {
+		const role, text = "route-metadata-outage", "Message sent once the metadata server answers"
+		holder := rig.register(t, "ses_route_metadata_outage", "Holder")
+		rig.claim(t, holder.id, role)
+		// The metadata server drops its first four connections, as one that restarts does, and
+		// then mints the identity token the rig's listener verifies as Dispatch's principal.
+		token := rig.issuer.token(t, rigDispatchPrincipal)
+		var asked atomic.Int32
+		metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if asked.Add(1) <= 4 {
+				if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+					_ = conn.Close()
+				}
+				return
+			}
+			w.Header().Set("Metadata-Flavor", "Google")
+			switch r.URL.Path {
+			case "/computeMetadata/v1/instance/service-accounts/default/identity":
+				_, _ = w.Write([]byte(token))
+			case "/computeMetadata/v1/instance/service-accounts/default/email":
+				_, _ = w.Write([]byte("dispatch@example-project.iam.gserviceaccount.com"))
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		defer metadata.Close()
+		t.Setenv(googleidentity.MetadataHostVar, strings.TrimPrefix(metadata.URL, "http://"))
+		google := roleRouteDispatchMux(t, rig.database, rig.url, rig.warm.client, func(input *dispatchapi.DepsInput) {
+			input.EnvoyAccountTokenFile = ""
+			input.EnvoyGoogleAudience = "envoy-listener"
+		})
+		message := dispatchRoleMessage(t, google, key, role, text)
+		if got := message.Deliveries[0]; got.State != "sent" || got.SessionID != holder.id || got.Error != nil {
+			t.Fatalf("the attempt begun while the metadata server did not answer = %+v, want sent to %s once it answered", got, holder.id)
+		}
+		if n := asked.Load(); n <= 4 {
+			t.Fatalf("the metadata server was asked %d times, want more than the 4 it dropped", n)
 		}
 		frames := received(holder, 20*time.Second, text)[text]
 		if len(frames) != 1 || frames[0].item.Role != role {

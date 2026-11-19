@@ -38,12 +38,26 @@ func (e accountTokenError) Unwrap() error { return e.error }
 
 // ErrNoIdentity is a send for a role this client refused because Dispatch has no identity to
 // present to the listener, which takes a role mark from Dispatch's own identity alone: neither
-// WithAccountTokenFile nor WithGoogleIdentity is set, or WithGoogleIdentity is set on a machine no
-// Google metadata server answers for. A send for a role is never made unmarked, since the session
-// that takes the role from its holder would not receive it, so it is refused, loudly, and the
-// delivery records this error, which names the setting that gives Dispatch an identity. It is not
-// ErrUnavailable: no try repeats it until an operator sets that identity.
+// WithAccountTokenFile nor WithGoogleIdentity is set. A send for a role is never made unmarked,
+// since the session that takes the role from its holder would not receive it, so it is refused,
+// loudly, and the delivery records this error, which names the setting that gives Dispatch an
+// identity. It is not ErrUnavailable: no try repeats it until an operator sets that identity. A
+// machine with WithGoogleIdentity set and no Google metadata server is refused at Dispatch's start
+// instead (CheckGoogleIdentity), so a metadata server that does not answer at a call is a failure
+// of that call (ErrAccountToken), never this.
 var ErrNoIdentity = errors.New("envoy: this Dispatch presents no identity to the Envoy listener, which takes a send's role mark from Dispatch's own identity alone; set ENVOY_ACCOUNT_TOKEN_FILE to Dispatch's service-account token for the listener's audience, or on Google Cloud ENVOY_ACCOUNT_GOOGLE_AUDIENCE to the listener's ENVOY_OIDC_GOOGLE_AUDIENCE (packages/envoy/deploy/README.md, \"Dispatch's identity at the Envoy listener\")")
+
+// CheckGoogleIdentity is Dispatch's start-time check of ENVOY_ACCOUNT_GOOGLE_AUDIENCE: the machine
+// must have a Google metadata server to mint its identity token (googleidentity.Probe). A machine
+// with none is no Google machine, and Dispatch refuses to start rather than refuse every role
+// route's send later; the error names the setting. A metadata server that answers with a fault is
+// a start like any other: each call's mint is judged on its own (googleIdentity.tokenAt).
+func CheckGoogleIdentity(ctx context.Context) error {
+	if _, err := googleidentity.Probe(ctx); errors.Is(err, googleidentity.ErrNoMetadataServer) {
+		return fmt.Errorf("ENVOY_ACCOUNT_GOOGLE_AUDIENCE gives Dispatch its Google Cloud machine's identity at the Envoy listener, and this machine has no Google metadata server to mint it; set ENVOY_ACCOUNT_TOKEN_FILE off Google Cloud (packages/envoy/deploy/README.md, \"Dispatch's identity at the Envoy listener\"): %w", err)
+	}
+	return nil
+}
 
 // googleIdentity is Dispatch's Google Cloud identity (WithGoogleIdentity): the audience its
 // identity token is minted for, and the token the metadata server last minted, kept until
@@ -57,11 +71,11 @@ type googleIdentity struct {
 }
 
 // tokenAt is the identity token to present at now: the one held while it lives, else one the
-// metadata server mints for the audience (googleidentity.Token). A mint that failed on a machine
-// no Google metadata server answers for (googleidentity.Probe's ErrNoMetadataServer) is no Google
-// identity at all, which fails closed: ErrNoIdentity, so a send for a role is refused and never
-// made unmarked. Any other failure of the mint is ErrAccountToken, which a later call asks again;
-// either way the call is not made on this identity.
+// metadata server mints for the audience (googleidentity.Token). A mint that failed, whatever
+// failed - a metadata server that did not answer for a moment, one that answered with a fault - is
+// ErrAccountToken: the call is not made on this identity, never made unmarked, and a later call,
+// or the delivery's next try, asks again. Whether the machine has a metadata server at all was
+// decided at Dispatch's start (CheckGoogleIdentity).
 func (g *googleIdentity) tokenAt(ctx context.Context, now time.Time) (string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -70,9 +84,6 @@ func (g *googleIdentity) tokenAt(ctx context.Context, now time.Time) (string, er
 	}
 	token, err := googleidentity.Token(ctx, g.audience)
 	if err != nil {
-		if _, probeErr := googleidentity.Probe(ctx); errors.Is(probeErr, googleidentity.ErrNoMetadataServer) {
-			return "", fmt.Errorf("%w: %w", ErrNoIdentity, probeErr)
-		}
 		return "", accountTokenError{fmt.Errorf("%w: mint a Google identity token for %s: %v", ErrAccountToken, g.audience, err)}
 	}
 	expires, ok := tokenExpiry(token)

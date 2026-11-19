@@ -2110,6 +2110,12 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 						slog.String("arm", decideErr.Error()))
 					writeGrantGuardRefusal(w, body.Role, claim.HolderSessionID, decideErr)
 					return
+				case errors.Is(decideErr, store.ErrMalformedRoleClaim):
+					// A stored claim no read can decode is no outage: the 500 the role lookup
+					// gives it (writeRoleClaimUnreadable), so a claimant stops rather than
+					// claim again at every backoff for a record that will not change.
+					writeRoleClaimUnreadable(w, body.Role, decideErr)
+					return
 				case decideErr != nil:
 					writeStoreError(ctx, w, decideErr, http.StatusServiceUnavailable)
 					return

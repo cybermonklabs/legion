@@ -28,10 +28,11 @@ test("a frame without a dedupe key or an event id is never a repeat", () => {
 });
 
 // The listener copies a role message a previous holder did not read to the role's kept lane, for
-// the role's next holder, under a dedupe key of its own - the message's key and the copied frame's
-// sequence - and with the message's own event id. A host that already showed the message, the
-// previous holder taking the role back, drops the copy by that event id. The control is a frame of
-// another publish under the copy's key, which is a new message.
+// the role's next holder, under a minted dedupe key of its own - `agent.takeover.` and 32 hex
+// digits of a hash of the message's key and the copied frame's sequence - and with the message's
+// own event id. A host that already showed the message, the previous holder taking the role back,
+// drops the copy by that event id. The control is a frame of another publish under the copy's
+// key, which is a new message.
 test("a takeover's copy of a message the host already showed is a repeat by its event id, under its own key", () => {
   const dedupe = createDeliveryDedupe();
   const original = {
@@ -39,7 +40,7 @@ test("a takeover's copy of a message the host already showed is a repeat by its 
     source: "agent",
     dedupe_key: "publish.notifications.role.reviewer.k1",
   };
-  const copy = { ...original, dedupe_key: `${original.dedupe_key}:frame:41` };
+  const copy = { ...original, dedupe_key: "agent.takeover.0f1e2d3c4b5a69788796a5b4c3d2e1f0" };
 
   expect(dedupe.claim(original)).toBeDefined();
   expect(dedupe.claim(copy)).toBeUndefined();
