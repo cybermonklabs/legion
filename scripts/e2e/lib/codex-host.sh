@@ -270,22 +270,22 @@ codex_probe() {
     --cwd "$(codex_cwd "$label")" -- "$(command -v natsprobe)" "$@"
 }
 
-# codex_transcripts_in_evidence: with --real-hosts, each Codex session's own transcript, the file
-# its receive checks read, copied into the evidence before the teardown, and one check per session
-# that the evidence holds it: a file whose first line names the session's id. (The stand-in's
-# transcripts reach the evidence at the teardown, in codex_clean.)
+# codex_transcripts_in_evidence: with --real-hosts, one check per Codex session that the evidence
+# holds that session's own transcript, the file its receive checks read: a file of that name in
+# sessions/ whose first line names the session's id. It runs after the teardown and reads only what
+# the teardown left there; it copies nothing itself, so a teardown that removed the Codex homes
+# before it copied their transcripts fails both rows. (The stand-in's transcripts reach the
+# evidence at the teardown, in codex_clean.)
 codex_transcripts_in_evidence() {
   local label file kept
   [ "$hosts" = real ] || return 0
-  mkdir -p "$evidence/sessions"
   for label in "${codex_labels[@]}"; do
     file=${codex_transcript[$label]:-}
     kept=$evidence/sessions/${file##*/}
-    [ -n "$file" ] && [ -f "$file" ] && cp "$file" "$kept"
     if [ -n "$file" ] && [ -s "$kept" ] && head -n 1 "$kept" | grep -qF -- "${codex_session[$label]}"; then
       pass "transcript-in-evidence ($label): $kept, the transcript of Codex session ${codex_session[$label]}"
     else
-      failed "transcript-in-evidence ($label)" "the evidence holds no transcript of Codex session ${codex_session[$label]} (its record named '$file')"
+      failed "transcript-in-evidence ($label)" "the evidence the teardown left holds no transcript of Codex session ${codex_session[$label]} (its record named '$file')"
     fi
   done
 }

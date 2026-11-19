@@ -68,8 +68,9 @@
 #                                      (role-takeover/codex-probe.ts), is served its own channel and
 #                                      refused the Oh My Pi session's, and in the Oh My Pi session's
 #                                      it is refused the Codex session's
-#   transcript-in-evidence             (--real-hosts) a row per Codex session: the evidence holds
-#                                      that session's own transcript, the file its receives read
+#   transcript-in-evidence             (--real-hosts) a row per Codex session, read after the
+#                                      teardown: the evidence it left holds that session's own
+#                                      transcript, the file its receives read
 #
 # Negative controls, NATS_CALLOUT_SESSIONS_CONTROL:
 #   seedless      every session starts with no credential named (neither NATS_AUTH nor natsAuth),
@@ -164,6 +165,24 @@ refuse() {
   echo "nats-callout-sessions: $*" >&2
   exit 2
 }
+# omp_install_refusal PIN OMP: why OMP, an omp binary's resolved path, is not the build PIN names,
+# where OMP is a mise install of PIN's tool; nothing otherwise, a binary from anywhere else
+# included. mise installs `<backend>:<owner>/<repo>@<build>` in a directory named for the tool with
+# its `:` and `/` turned into `-` (github:cybermonklabs/oh-my-pi in github-cybermonklabs-oh-my-pi),
+# one directory per build, so the directory is read from the tool .omp-pin names, never written
+# here: a fork that moves owner moves it with the pin.
+omp_install_refusal() {
+  local tool=${1%@*} build=${1##*@} directory installed
+  directory=${tool//[:\/]/-}
+  case $2 in
+    */"$directory"/*/bin/omp)
+      installed=${2%/bin/omp}
+      installed=${installed##*/}
+      [ "$installed" = "$build" ] ||
+        printf '%s is the mise install of %s at %s; .omp-pin names %s\n' "$2" "$tool" "$installed" "$build"
+      ;;
+  esac
+}
 # ---- the sessions and the controls, decided once ----------------------------------------------
 # The Codex sessions, by label: one for each way a Codex session can be told its credential.
 codex_labels=(codex-env codex-file)
@@ -244,21 +263,16 @@ if [ "$hosts" = real ]; then
   [[ $model_id =~ ^anthropic/[^[:space:]]+$ ]] || refuse "LEGION_E2E_MODEL_ID is '$model_id'; it must be anthropic/<id>"
   [ -n "$claude_model" ] || refuse "LEGION_E2E_CLAUDE_MODEL is required with --real-hosts: the model id Claude Code runs"
   [[ -n "$omp_bin" && -x "$omp_bin" ]] || refuse "LEGION_E2E_OMP_PATH names '$omp_bin', which is no executable omp"
-  # .omp-pin names github:sjawhar/oh-my-pi@<release>-<build>; omp --version prints omp/<release>
-  # alone, so a mise install, whose directory is named for the build, is held to the build too.
+  # .omp-pin names <backend>:<owner>/oh-my-pi@<release>-<build> (github:cybermonklabs/oh-my-pi@…);
+  # omp --version prints omp/<release> alone, so a mise install, whose directory is named for the
+  # build, is held to the build too (omp_install_refusal).
   omp_release=${omp_build%%-*}
   omp_reported=$("$omp_bin" --version 2>/dev/null | head -n 1) || true
   [ "$omp_reported" = "omp/$omp_release" ] ||
     refuse "$omp_bin prints --version '$omp_reported'; .omp-pin names $omp_pin (omp/$omp_release)"
   omp_real=$(realpath -e -- "$omp_bin")
-  case $omp_real in
-    */github-sjawhar-oh-my-pi/*/bin/omp)
-      omp_installed=${omp_real%/bin/omp}
-      omp_installed=${omp_installed##*/}
-      [ "$omp_installed" = "$omp_build" ] ||
-        refuse "$omp_bin is the mise install of oh-my-pi $omp_installed; .omp-pin names $omp_build"
-      ;;
-  esac
+  omp_refusal=$(omp_install_refusal "$omp_pin" "$omp_real")
+  [ -z "$omp_refusal" ] || refuse "$omp_refusal"
   { [ -r "$claude_pin/package.json" ] && [ -r "$claude_pin/package-lock.json" ]; } ||
     refuse "LEGION_E2E_CLAUDE_CODE_PIN names $claude_pin, which holds no package.json and package-lock.json pinning @anthropic-ai/claude-code"
   claude_version=$(jq -er '.dependencies["@anthropic-ai/claude-code"]' "$claude_pin/package.json") ||
@@ -302,8 +316,11 @@ transcripts=()
 # The real Codex sessions' tmux servers, each one session named codex, which the teardown quits.
 codex_tmux_sockets=()
 cleanup_running=false
-cleanup() {
-  local status=$1 pid fd
+# teardown: every process the run started stopped, its evidence kept and its scratch removed. A
+# run that gets to its end calls it itself, before the rows that read the evidence it leaves
+# (transcript-in-evidence); every other way out reaches it through cleanup.
+teardown() {
+  local pid fd
   # Once: a repeated INT or TERM, or the EXIT after one, finds the stop already running. Both are
   # ignored from here on rather than put back on their default, which a repeat would then end the
   # run by, before the stack stopped and dropped its databases.
@@ -361,7 +378,10 @@ cleanup() {
     /tmp/ncs-stack.*) rm -rf -- "$stack_tmp" ;;
   esac
   echo "nats-callout-sessions: evidence kept in $evidence"
-  exit "$status"
+}
+cleanup() {
+  teardown
+  exit "$1"
 }
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
@@ -931,6 +951,8 @@ for label in "${codex_labels[@]}"; do
   fi
 done
 
+# The teardown first: the transcript rows read the evidence it leaves, as a reader of the run does.
+teardown
 codex_transcripts_in_evidence
 
 echo "nats-callout-sessions: $passed of $ran checks passed (hosts: $hosts${control:+, control: $control})"
