@@ -119,7 +119,8 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if err != nil {
 		return err
 	}
-	if check != "" {
+	defer check.remove()
+	if check.path != "" {
 		var lines strings.Builder
 		for _, update := range req.Updates {
 			lines.WriteString(update.Line())
@@ -128,7 +129,7 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 		// bash runs the check rather than the check running itself: that is the shape git's own
 		// pre-push hook calls it in, and the one the check documents for a push.
 		if err := g.shared(ctx, what, child{
-			argv:  []string{"bash", check, req.Remote, req.URL},
+			argv:  []string{"bash", check.path, req.Remote, req.URL},
 			dir:   req.Dir,
 			stdin: strings.NewReader(lines.String()),
 		}); err != nil {

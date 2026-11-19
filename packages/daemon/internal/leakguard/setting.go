@@ -92,10 +92,10 @@ func Manifest(read func(name string) ([]byte, error)) (string, error) {
 const manifestFileLimit = 8 << 20
 
 // runningCheckDir is the directory of the check that runs at check: check with its symbolic links
-// followed, whose name must be the launcher's (checkName), since the launcher finds its program
-// beside itself there (readlink -f) and the manifest covers the launcher by that name. A check that
-// runs a file of another name — a PUBLIC_LEAK_CHECK or pointer naming `other.sh`, or a
-// public-leak-check.sh linked to `pass.sh` beside copies of the real files — runs a file no
+// followed, whose name must be the launcher's (checkName), since the manifest covers the launcher
+// by that name and the launcher finds its program beside itself (readlink -f). A check named as a
+// file of another name — a PUBLIC_LEAK_CHECK or pointer naming `other.sh`, or a
+// public-leak-check.sh linked to `pass.sh` beside copies of the real files — names a file no
 // manifest holds, and is refused.
 func runningCheckDir(check string) (string, error) {
 	followed, err := filepath.EvalSymlinks(check)
@@ -116,12 +116,39 @@ func readManifestFile(dir, name string) ([]byte, error) {
 	return rolefile.Read(filepath.Join(dir, name), manifestFileLimit)
 }
 
+// heldCheck is a check as one read of its four files took them (readHeldCheck): each file's bytes
+// by its name, and their manifest digest. A guard under a deployment's digest runs these bytes and
+// no others (Guard.sharedCheck, privateCopy), and `legion gh`'s checked-only read hashes its
+// program from them (provenCheck), so nothing written to the install after the read reaches the
+// write it was read for.
+type heldCheck struct {
+	files  map[string][]byte
+	digest string
+}
+
+// readHeldCheck reads the four files of the check that runs at check, in its directory
+// (runningCheckDir), each as readManifestFile reads it, and answers them with the manifest digest
+// of the very bytes it holds: the buffers Manifest hashed are the ones kept.
+func readHeldCheck(check string) (heldCheck, error) {
+	dir, err := runningCheckDir(check)
+	if err != nil {
+		return heldCheck{}, err
+	}
+	held := heldCheck{files: make(map[string][]byte, len(ManifestFiles))}
+	held.digest, err = Manifest(func(name string) ([]byte, error) {
+		body, err := readManifestFile(dir, name)
+		held.files[name] = body
+		return body, err
+	})
+	if err != nil {
+		return heldCheck{}, err
+	}
+	return held, nil
+}
+
 // manifestSHA256 is the manifest digest (Manifest) of the check that runs at check: of the four
 // files in its directory (runningCheckDir), each read as readManifestFile reads it.
 func manifestSHA256(check string) (string, error) {
-	dir, err := runningCheckDir(check)
-	if err != nil {
-		return "", err
-	}
-	return Manifest(func(name string) ([]byte, error) { return readManifestFile(dir, name) })
+	held, err := readHeldCheck(check)
+	return held.digest, err
 }

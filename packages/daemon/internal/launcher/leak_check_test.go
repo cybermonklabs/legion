@@ -243,6 +243,17 @@ func tree(t *testing.T, root string) map[string]string {
 	return entries
 }
 
+// A role's guard under the deployment's digest runs its private copy of the shared check under
+// leakguard.PrivateCopyBase, which that package spells itself, since this one imports it: the
+// role's own private directory as role-init binds it back inside the role's namespaces alone, and
+// as the controller's pod mounts its one role's. A layout that moved the directory would leave the
+// guard copying under a root-owned mount point no role can write, or into /tmp.
+func TestTheGuardsPrivateCopyIsMadeInTheRolesOwnPrivateDirectory(t *testing.T) {
+	if want := FixedRoot + "/" + RolePrivateDir; leakguard.PrivateCopyBase != want {
+		t.Fatalf("leakguard.PrivateCopyBase = %s, want the private directory role-init binds for the role alone, %s", leakguard.PrivateCopyBase, want)
+	}
+}
+
 // The launcher names its own pin in every hello, so the daemon knows to push it the check; a
 // launcher whose environment names no pin says nothing of a check at all, and refuses a check
 // pushed to it anyway, writing nothing.

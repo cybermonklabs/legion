@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
@@ -174,49 +175,176 @@ func BrokenAt(err error) (string, bool) {
 	return "", false
 }
 
-// sharedCheck is the shared check a write of what runs (Resolve), or "" and no error where none is
-// named and the environment names no deployment checker (CheckerVar): a deployment that runs no
-// shared leak check of its own (Setting.Configured) refuses no write for the check's absence, and
-// the write gets the rest of the guard, the visibility read and the private-name pass. Under a
-// deployment that names one, and wherever a check is named but cannot be resolved, the answer is
-// the setup failure whyNoCheck, which refuses the write.
+// sharedRun is the shared check one write runs, as sharedCheck answers it. path is what the write's
+// shape runs: the launcher of the private copy under a deployment's manifest digest, the check
+// Resolve found under none, and "" where no shared check runs. program is the
+// public_leak_check.py the digest covered, nil under no digest. dir is the private copy's
+// directory, "" where there is none.
+type sharedRun struct {
+	path    string
+	program []byte
+	dir     string
+}
+
+// remove removes the private copy, where there is one. Every entry point defers it as soon as
+// sharedCheck answers, so the copy goes whatever the check answered: cleared, refused, a setup
+// failure, or a run the caller's bound stopped. A copy a killed process leaves is in the role's
+// own private directory, which the role's launcher clears before it starts the role's next
+// generation (internal/launcher's writeFiles).
+func (r sharedRun) remove() {
+	if r.dir != "" {
+		_ = os.RemoveAll(r.dir)
+	}
+}
+
+// sharedCheck is the shared check a write of what runs (Resolve), or a sharedRun with no path and
+// no error where none is named and the environment names no deployment checker (CheckerVar): a
+// deployment that runs no shared leak check of its own (Setting.Configured) refuses no write for
+// the check's absence, and the write gets the rest of the guard, the visibility read and the
+// private-name pass. Under a deployment that names one, and wherever a check is named but cannot
+// be resolved, the answer is the setup failure whyNoCheck, which refuses the write.
 //
-// Under a deployment's manifest digest the check found must be that check too: its manifest
-// digest (manifestSHA256: the launcher script, the program, the must-pass lines and the README
-// beside it) must be CheckerVar, or the answer is the setup failure whyOtherCheck, naming both
-// digests. So a role runs every write under the one check its deployment named, whatever
+// Under a deployment's manifest digest the check found must be that check too: the manifest digest
+// of its four files (readHeldCheck: the launcher script, the program, the must-pass lines and the
+// README beside it) must be CheckerVar, or the answer is the setup failure whyOtherCheck, naming
+// both digests. The write then runs those very bytes, written into a copy only this role can reach
+// (privateCopy), and never the directory they were read from: a pod's install is on the issue's
+// scratch, which every role of the pod can write, since they all run as one user, so a file
+// replaced there between the read and the run would otherwise be the check that judges the write.
+// So a role runs every write under the one check its deployment named, whatever
 // PUBLIC_LEAK_CHECK, PATH or the pointer file found, and a launcher script edited beside an
 // unchanged program is another check.
-func (g *Guard) sharedCheck(what string) (string, error) {
+//
+// With no digest told there is nothing to hold the check to, and the write runs the check where
+// Resolve found it, as it did before the deployment's setting existed: a tmux pane's check in its
+// operator's own home, or a pod of a deployment that names none.
+func (g *Guard) sharedCheck(what string) (sharedRun, error) {
 	checker := value(g.base(), CheckerVar)
 	check, err := g.Resolve()
 	if err != nil {
 		if NoneNamed(err) && checker == "" {
-			return "", nil
+			return sharedRun{}, nil
 		}
-		return "", &SetupFailure{What: what, Why: whyNoCheck, Err: err}
+		return sharedRun{}, &SetupFailure{What: what, Why: whyNoCheck, Err: err}
 	}
 	if checker == "" {
-		return check, nil
+		return sharedRun{path: check}, nil
 	}
-	held, err := manifestSHA256(check)
+	held, err := readHeldCheck(check)
 	switch {
 	case err != nil:
-		return "", &SetupFailure{What: what, Why: whyOtherCheck,
+		return sharedRun{}, &SetupFailure{What: what, Why: whyOtherCheck,
 			Err: fmt.Errorf("%s=%s, and the manifest of the check at %s could not be read: %w", CheckerVar, checker, check, err)}
-	case !strings.EqualFold(held, checker):
-		return "", &SetupFailure{What: what, Why: whyOtherCheck,
-			Err: fmt.Errorf("%s=%s, and the check at %s has the manifest digest %s", CheckerVar, checker, check, held)}
+	case !strings.EqualFold(held.digest, checker):
+		return sharedRun{}, &SetupFailure{What: what, Why: whyOtherCheck,
+			Err: fmt.Errorf("%s=%s, and the check at %s has the manifest digest %s", CheckerVar, checker, check, held.digest)}
 	}
-	return check, nil
+	dir, err := held.privateCopy()
+	if err != nil {
+		return sharedRun{}, &SetupFailure{What: what, Why: "the shared public leak check could not be copied where only this role can reach it",
+			Err: fmt.Errorf("the check at %s, of the manifest digest %s=%s: %w", check, CheckerVar, checker, err)}
+	}
+	return sharedRun{path: filepath.Join(dir, checkName), program: held.files[checkProgram], dir: dir}, nil
 }
 
-// found is path, once an executable regular file is there: a name taken from a variable, an option
-// or a pointer file is somebody's word for where the check is, and a stale one, or one that names
-// a directory or a file with no execute bit, is better reported as the broken setup it is than as
-// a child process that would not start — and every shape refuses it alike, a push included, which
-// runs the check through bash and would otherwise run a file the others cannot.
+// PrivateCopyBase is where a guard under a deployment's digest makes the copy of the check it runs
+// (privateCopy): in an issue pod, a role's own memory-backed private directory, which
+// `legion launcher role-init` binds back at this path inside that role's own mount namespace alone
+// (internal/launcher's FixedRoot and RolePrivateDir), so no other role of the pod reaches it,
+// though every role runs as one user; the controller's pod mounts its one role's there. It is
+// spelled here because internal/launcher imports this package, and internal/launcher's layout test
+// holds it to the layout's names.
+const PrivateCopyBase = "/var/run/legion/private"
+
+// privateCopyFallback is where the copy is made where PrivateCopyBase does not exist: /tmp itself,
+// which role-init also gives each role of an issue pod as a directory of its own. Neither TMPDIR
+// nor XDG_STATE_HOME is read for it: a pod tells its roles a TMPDIR and a state home on the issue's
+// scratch (internal/runtime/sandbox's roleEnvironment), which every role writes, and which is where
+// the install itself is. On a machine with neither directory of a pod — a tmux pane's — /tmp is
+// shared, and the copy's 0700 directory keeps out every other user, though not another process of
+// the same one.
+const privateCopyFallback = "/tmp"
+
+// copyBase is the directory the private copy is made under: base where a directory is there, and
+// fallback only where nothing is at base at all. Anything else at base, or a base that cannot be
+// read, is an error: a role whose private directory is broken makes no copy where other roles may
+// reach it.
+func copyBase(base, fallback string) (string, error) {
+	info, err := os.Stat(base)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fallback, nil
+	case err != nil:
+		return "", err
+	case !info.IsDir():
+		return "", fmt.Errorf("%s is no directory (%s)", base, info.Mode())
+	}
+	return base, nil
+}
+
+// privateCopy writes the four files h holds into a new directory under copyBase's answer and
+// answers that directory. The directory is made 0700 (os.MkdirTemp), and each file is created anew
+// (writeCopyFile): the launcher, which the guard runs, 0500, and the three it only reads 0400. A
+// failure removes what it made.
+func (h heldCheck) privateCopy() (string, error) {
+	base, err := copyBase(PrivateCopyBase, privateCopyFallback)
+	if err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp(base, "leak-check-")
+	if err != nil {
+		return "", err
+	}
+	for _, name := range ManifestFiles {
+		mode := os.FileMode(0o400)
+		if name == checkName {
+			mode = 0o500
+		}
+		if err := writeCopyFile(filepath.Join(dir, name), h.files[name], mode); err != nil {
+			_ = os.RemoveAll(dir)
+			return "", fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	return dir, nil
+}
+
+// writeCopyFile writes body to path as a new file of mode exactly: O_EXCL and O_NOFOLLOW, so
+// nothing already at path, a link included, is opened or written through, and the mode set again
+// on the open file, since the umask may have taken bits off the create's. syscall.ForkLock is held
+// for reading while the file is open for writing, which keeps every fork of this process out of
+// that span: a child forked then would hold the write descriptor until its own exec closed it, and
+// the kernel refuses to exec a file open for writing (ETXTBSY), which the launcher is the moment
+// this answers.
+func writeCopyFile(path string, body []byte, mode os.FileMode) error {
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, mode)
+	if err != nil {
+		return err
+	}
+	if err := file.Chmod(mode); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if _, err := file.Write(body); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+// found is path, once it is absolute and an executable regular file is there: a name taken from a
+// variable, an option or a pointer file is somebody's word for where the check is. A relative one
+// names no one file: the guard would read it against its own working directory, a bare name is
+// looked up on PATH when it is run, and a push runs it in the repository's directory, so the file
+// the digest held need not be the file that runs. It is refused, as is a stale one, or one that
+// names a directory or a file with no execute bit, each reported as the broken setup it is rather
+// than as a child process that would not start; and every shape refuses it alike, a push included,
+// which runs the check through bash and would otherwise run a file the others cannot.
 func found(path, source string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", brokenCheck{path: path, error: fmt.Errorf("%s names %s, which is no absolute path", source, path)}
+	}
 	info, err := os.Stat(path)
 	switch {
 	case err != nil:

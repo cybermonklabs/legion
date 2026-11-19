@@ -278,8 +278,10 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 	if err := verifyServed(ctx, in.Start, filepath.Join(staging, checkName), parent); err != nil {
 		return err
 	}
-	// 0700 is what MkdirTemp makes. The roles of a pod run as one user, so the mode decides
-	// nothing between them, but the install is read by every role and read-only to all of them.
+	// 0700 is what MkdirTemp makes; 0755 lets every reader in. The roles of a pod run as one user,
+	// which owns the install, so the mode decides nothing between them: every role can write the
+	// install as well as read it. That is why a role's guard under the deployment's digest runs a
+	// private copy of the bytes it hashed rather than the install itself (Guard.sharedCheck).
 	if err := os.Chmod(staging, 0o755); err != nil {
 		return fmt.Errorf("the staged install could not be made readable: %w", err)
 	}

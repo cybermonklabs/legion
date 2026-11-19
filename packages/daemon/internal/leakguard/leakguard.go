@@ -208,9 +208,10 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 	if err != nil {
 		return err
 	}
-	if check != "" {
+	defer check.remove()
+	if check.path != "" {
 		if err := g.shared(ctx, what, child{
-			argv:  []string{check, "check-public-text", "-"},
+			argv:  []string{check.path, "check-public-text", "-"},
 			stdin: strings.NewReader(req.Text),
 		}); err != nil {
 			return err
