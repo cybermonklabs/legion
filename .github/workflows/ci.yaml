@@ -3294,9 +3294,9 @@ jobs:
               - '.github/scripts/go-fetch.sh'
               - 'packages/envoy/scripts/e2e-local.sh'
               - 'packages/envoy/scripts/e2e-local.test.sh'
-              # e2e-local.sh:47,410-441 posts each fixture.
+              # e2e-local.sh:118,1255-1286 posts each fixture.
               - 'packages/envoy/scripts/fixtures/github/**'
-              # e2e-local.sh:445-450 renders with @legion/envoy-client/delivery.
+              # e2e-local.sh:1359-1364 renders with @legion/envoy-client/delivery.
               - 'packages/envoy-client/src/**'
               # And @legion/broker-client with it: the tsc program of envoy-client holds all seven
               # of its modules, and at runtime, which is what this job's bun scripts do,

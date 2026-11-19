@@ -3264,12 +3264,12 @@ GATES = [
     ], reads=reads(
         (f"{ENVOY}/scripts/e2e-local.test.sh", at("envoy-e2e-local", "Refusal test for e2e-local.sh")),
         (f"{ENVOY}/scripts/e2e-local.sh", f"{at('envoy-e2e-local', 'Local end-to-end acceptance')}; e2e-local.test.sh:6,27"),
-        (f"{ENVOY}/scripts/fixtures/github/**", "packages/envoy/scripts/e2e-local.sh:1252-1283 posts each fixture"),
+        (f"{ENVOY}/scripts/fixtures/github/**", "packages/envoy/scripts/e2e-local.sh:118,1255-1286 posts each fixture"),
         (".github/scripts/go-fetch.sh", f"{at('envoy-e2e-local', 'Fetch the modules of the listener and natsd e2e-local.sh builds')} runs it"),
         (GO_BUILD_OFFLINE, "packages/envoy/scripts/e2e-local.sh:300 sources it and builds the listener and natsd through it"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (CONTRACTS_SRC, "packages/envoy-client/src/delivery.ts imports @legion/contracts"),
-    ) + envoy_client_dep("packages/envoy/scripts/e2e-local.sh:1357-1361 and :1758-1766 run bun in packages/envoy-client "
+    ) + envoy_client_dep("packages/envoy/scripts/e2e-local.sh:1359-1364 and :1760-1767 run bun in packages/envoy-client "
                          "importing @legion/envoy-client/delivery and @legion/envoy-client/transport")
       + setup_go("envoy-e2e-local", f"{ENVOY}/go.mod") + bun_job("envoy-e2e-local")),
 
