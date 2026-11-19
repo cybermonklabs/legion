@@ -60,8 +60,8 @@
 --     drop, which the claim update makes under the row's own key. So re-read whether that doc
 --     still says why both tests are needed. Put no time limit on how long such an enrollment
 --     lasts: a pod that keeps renewing one holds it.
---   - the broker's docs (docs/site/src/content/docs/broker/) wherever they describe those two,
---     which must go on saying only what holds on either schema.
+--   - the paragraphs of packages/envoy/AGENTS.md on those two, which must go on saying only
+--     what holds on either schema.
 --   - enroll.Service.IssueTokenLoginTx's conflict target and legacySubjectIndex, which read at
 --     run time which of the two schemas they are on. The drop is what makes that constant, so
 --     the read, the branch it feeds and the prose on both go with it.
