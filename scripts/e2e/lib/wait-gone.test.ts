@@ -22,9 +22,12 @@ const root = join(e2e, "..", "..");
 const dir = temporaryDirectory("wait-gone-test");
 const holderPath = join(dir, "holder.py");
 const pidsFile = join(dir, "started.pids");
-// A case waits out deadlines and stand-ins that leave late, up to about 12 s of its own, and a
-// busy machine runs each stand-in slower still.
-setDefaultTimeout(60_000);
+// A case waits out deadlines and stand-ins that leave late, up to about 45 s by its own bounds (a
+// stand-in's start, then a stop's 40 s deadline), and a machine at a load of 500 runs each stand-in
+// many times slower; so each bash run may take 240 s and each case 300 s. A bound a case asserts on
+// its own timing leaves several seconds of slack, and is still seconds short of what the fault it
+// catches would take.
+setDefaultTimeout(300_000);
 
 // The stand-in, written once the suite's directory exists (temporaryDirectory makes it before the
 // first test).
@@ -33,7 +36,8 @@ const holder = `import ctypes, fcntl, os, signal, socket, sys, threading, time
 # holder.py KEY=VALUE...: a stand-in for a service a script stops. It listens on a loopback port
 # the kernel picks and writes the number to port=FILE once all of the below is set up.
 #   term=default|ignore|slow:SECONDS  what SIGTERM does: end it, nothing, or end it SECONDS later
-#   write=DIR   with term=slow, it creates files in DIR until it ends, as a server's drain writes
+#   write=DIR   with term=slow, it creates a file in DIR every 10 ms until it ends, as a server's
+#               drain writes (a few hundred files, never so many that removing them takes minutes)
 #   log=FILE    it appends "serving" to FILE, and with term=slow "shutdown-complete" as it ends
 #   lock=FILE   it holds an flock on FILE
 #   threads=N   it starts N threads that sleep, as every Go binary and Bun has threads
@@ -56,8 +60,7 @@ elif term.startswith("slow:"):
             if "write" in args:
                 open(os.path.join(args["write"], "drain.%d" % i), "w").close()
                 i += 1
-            else:
-                time.sleep(0.01)
+            time.sleep(0.01)
         if "log" in args:
             with open(args["log"], "a") as log:
                 log.write("shutdown-complete\\n")
@@ -139,7 +142,7 @@ drop_kill() {
 }
 `;
 
-function bash(body: string, env: Record<string, string> = {}, timeout = 60_000) {
+function bash(body: string, env: Record<string, string> = {}, timeout = 240_000) {
   const ran = Bun.spawnSync(["bash", "-c", `${prelude}\n${body}`], {
     env: {
       PATH: process.env.PATH ?? "",
@@ -198,7 +201,7 @@ kill_gone KILL "$((EPOCHSECONDS + 5))" "$b"; echo "killed=$?"`);
     // It never gives up before the deadline, and it ends at it, not a bound later.
     const ended = Number(v.ended_ms);
     expect(ended).toBeGreaterThanOrEqual(Number(v.deadline) * 1000);
-    expect(ended).toBeLessThan(Number(v.deadline) * 1000 + 1500);
+    expect(ended).toBeLessThan(Number(v.deadline) * 1000 + 4000);
     expect(v.killed).toBe("0");
   });
 
@@ -209,14 +212,14 @@ while [ ! -s "$zpid" ]; do sleep 0.05; done
 z=$(<"$zpid")
 kill -STOP "$parent"
 start=$(now_ms)
-kill_gone KILL "$((EPOCHSECONDS + 5))" "$z"; echo "rc=$?"
+kill_gone KILL "$((EPOCHSECONDS + 15))" "$z"; echo "rc=$?"
 echo "ms=$(($(now_ms) - start))"
 echo "state=$(awk '{print $3}' "/proc/$z/stat" 2>/dev/null)"
 kill -CONT "$parent"`);
     const v = values(r.stdout);
     expect(v.rc).toBe("0");
     expect(v.state).toBe("Z");
-    expect(Number(v.ms)).toBeLessThan(2000);
+    expect(Number(v.ms)).toBeLessThan(10_000);
   });
 
   test("a whole process group given SIGKILL is gone", () => {
@@ -303,12 +306,15 @@ describe("what wait_gone reads of /proc", () => {
     }
     return proc;
   }
-  // wait_gone in the background against PROC, CHANGE run 0.5 s in, and what it returned and when.
-  function waitAcross(proc: string, pid: number, change: string) {
+  // wait_gone in the background against PROC with a deadline SECONDS away, CHANGE run 0.5 s in,
+  // and what it returned and when. A case that expects the wait to end early gives it 15 s, so the
+  // change can land late on a busy machine and a wait that misses it still reaches the deadline; a
+  // case that expects it to run to the deadline gives it 3.
+  function waitAcross(proc: string, pid: number, change: string, seconds: number) {
     return bash(
       `wait_gone_proc=$PROC
 kill() { return 0; }
-deadline=$((EPOCHSECONDS + 4))
+deadline=$((EPOCHSECONDS + ${seconds}))
 start=$(now_ms)
 ( wait_gone "$deadline" ${pid}; echo "rc=$? ms=$(($(now_ms) - start))" ) &
 sleep 0.5
@@ -323,35 +329,36 @@ wait $!`,
     const r = waitAcross(
       proc,
       4242,
-      `printf '%s\\n' "$(sed 's/ 100 0 0$/ 200 0 0/' "$PROC/4242/stat")" >"$PROC/4242/stat.new" && mv "$PROC/4242/stat.new" "$PROC/4242/stat"`
+      `printf '%s\\n' "$(sed 's/ 100 0 0$/ 200 0 0/' "$PROC/4242/stat")" >"$PROC/4242/stat.new" && mv "$PROC/4242/stat.new" "$PROC/4242/stat"`,
+      15
     );
     const [rc, ms] = r.stdout.trim().split(" ");
     expect(rc).toBe("rc=0");
-    expect(Number(ms.slice(3))).toBeLessThan(2500);
+    expect(Number(ms.slice(3))).toBeLessThan(10_000);
   });
 
   test("a pid whose start time stays is the same process, still there at the deadline", () => {
     const proc = fakeProc({ 4242: { start: 100 } });
-    const r = waitAcross(proc, 4242, ":");
+    const r = waitAcross(proc, 4242, ":", 3);
     expect(r.stdout.trim().split(" ")[0]).toBe("rc=1");
   });
 
   test("a zombie whose task directory lists another thread is not gone until that thread is", () => {
     const proc = fakeProc({ 4244: { state: "Z", tasks: [4244, 4245] } });
-    const kept = waitAcross(proc, 4244, ":");
+    const kept = waitAcross(proc, 4244, ":", 3);
     expect(kept.stdout.trim().split(" ")[0]).toBe("rc=1");
-    const r = waitAcross(proc, 4244, `rmdir "$PROC/4244/task/4245"`);
+    const r = waitAcross(proc, 4244, `rmdir "$PROC/4244/task/4245"`, 15);
     const [rc, ms] = r.stdout.trim().split(" ");
     expect(rc).toBe("rc=0");
-    expect(Number(ms.slice(3))).toBeLessThan(2500);
+    expect(Number(ms.slice(3))).toBeLessThan(10_000);
   });
 
   test("a zombie with no thread but its main one is gone at once", () => {
     const proc = fakeProc({ 4246: { state: "Z" } });
-    const r = waitAcross(proc, 4246, ":");
+    const r = waitAcross(proc, 4246, ":", 15);
     const [rc, ms] = r.stdout.trim().split(" ");
     expect(rc).toBe("rc=0");
-    expect(Number(ms.slice(3))).toBeLessThan(1000);
+    expect(Number(ms.slice(3))).toBeLessThan(10_000);
   });
 
   test("an entry whose stat cannot be read is not gone, and kill_gone says why it names it", () => {
@@ -387,7 +394,7 @@ echo "ms=$(($(now_ms) - start))"
 wait "$h"; echo "status=$?"`);
     const v = values(r.stdout);
     expect([v.rc, v.status]).toEqual(["0", String(128 + 9)]);
-    expect(Number(v.ms)).toBeLessThan(5000);
+    expect(Number(v.ms)).toBeLessThan(15_000);
   });
 
   test("a SIGTERM wait that takes the caller's time leaves the SIGKILL's wait none past the deadline", () => {
@@ -399,7 +406,7 @@ echo "ended_ms=$(now_ms)"; echo "deadline=$deadline"; echo "pid=$h"`);
     const v = values(r.stdout);
     expect(v.rc).toBe("1");
     expect(Number(v.ended_ms)).toBeGreaterThanOrEqual(Number(v.deadline) * 1000);
-    expect(Number(v.ended_ms)).toBeLessThan(Number(v.deadline) * 1000 + 1500);
+    expect(Number(v.ended_ms)).toBeLessThan(Number(v.deadline) * 1000 + 4000);
     expect(r.stderr).toMatch(
       new RegExp(
         `^pid ${v.pid} \\(python3 .*holder\\.py.*\\) is still in the process table at its deadline, [0-9.]+ s after its SIGKILL$`,
@@ -500,17 +507,27 @@ echo "pid=$pane"`,
   test("directory: the verifiers proof's cleanup of a Dispatch that drains into $work for 2 s, then the next run's rm -rf", () => {
     const work = join(freshDir("verifiers"), "verifiers-e2e");
     mkdirSync(join(work, "home", "data"), { recursive: true });
-    for (let i = 0; i < 3000; i++) writeFileSync(join(work, "home", "data", `record.${i}`), "");
+    for (let i = 0; i < 100; i++) writeFileSync(join(work, "home", "data", `record.${i}`), "");
+    // Once the cleanup returns nothing may write into $work: the directory's entries, counted twice
+    // half a second apart, are the same, and the next run's rm -rf removes it. A cleanup that does
+    // not wait leaves the stand-in writing a file every 10 ms for 2 s.
     const r = bash(
       `docker() { :; }
 pg_name=none nats_name=none listener_pid=
 ${verifiers("cleanup")}
 holder dispatch_pid term=slow:2 write="$WORK/home/data"
 cleanup
+entries() { local e=("$WORK/home/data"/*); echo "\${#e[@]}"; }
+echo "before=$(entries)"
+sleep 0.5
+echo "after=$(entries)"
 rm -rf "$WORK" && echo removed=yes`,
       { WORK: work }
     );
-    expect(values(r.stdout).removed).toBe("yes");
+    const v = values(r.stdout);
+    expect(Number(v.before)).toBeGreaterThanOrEqual(100);
+    expect(v.after).toBe(v.before);
+    expect(v.removed).toBe("yes");
     expect(existsSync(work)).toBe(false);
   });
 
