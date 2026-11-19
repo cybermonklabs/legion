@@ -34,9 +34,11 @@ func lateAutomaticGrants(t *testing.T, m *Machine) int {
 // RevokeGrant, Values and ApplyDecision on a few sessions. No call may fail with a deadlock (40P01)
 // or an error outside the refusals each one answers, including REQUEST_PENDING when another
 // in-flight request already holds one of the secret names. No automatic grant of a withheld name
-// may be written after the withhold that covers it committed.
+// may be written after the withhold that covers it committed. The store's pool holds a connection
+// for each worker, so every worker's call runs at once on any host (newFixtureOfPool).
 func TestCreateAndRevokeByApproverUnderLoadNeverDeadlockOrFail(t *testing.T) {
-	m, enr0, key0, operator := newFixture(t)
+	const workers, rounds = 18, 60
+	m, enr0, key0, operator := newFixtureOfPool(t, workers)
 	withSharedToken(t, m)
 	ctx := context.Background()
 	ids := []string{enr0}
@@ -67,7 +69,6 @@ func TestCreateAndRevokeByApproverUnderLoadNeverDeadlockOrFail(t *testing.T) {
 		}
 	}
 	var wg sync.WaitGroup
-	const workers, rounds = 18, 60
 	for w := range workers {
 		wg.Add(1)
 		go func() {
@@ -160,12 +161,13 @@ func TestReverseLockOrderAgainstRevokeByApproverDeadlocks(t *testing.T) {
 // of an automatic AUTO_TOKEN grant against several requests for {AUTO_TOKEN, SHARED_TOKEN}, a set no
 // live grant matches, so each request evaluates while the withhold lands. None may fail, none may
 // write an automatic AUTO_TOKEN grant after the withhold, and none written before it may be left
-// live: the withhold ends it.
+// live: the withhold ends it. The store's pool holds a connection for each racer and the revoke,
+// so all of them run at once on any host (newFixtureOfPool).
 func TestRequestsRacingTheWithholdOnFreshSessions(t *testing.T) {
-	m, _, _, operator := newFixture(t)
+	const sessions, racers = 120, 6
+	m, _, _, operator := newFixtureOfPool(t, racers+1)
 	withSharedToken(t, m)
 	ctx := context.Background()
-	const sessions, racers = 120, 6
 	var mu sync.Mutex
 	outcomes := map[string]int{}
 	var failures []string

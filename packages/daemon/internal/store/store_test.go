@@ -275,17 +275,19 @@ func TestMigrateAppliesALowerMigrationADatabaseAlreadyPastItLacks(t *testing.T) 
 // returns to the pool (releaseMigrationConn). So after migrate returns, no connection that the pool
 // can give carries the migration's statement_timeout or search_path. The test holds as many
 // connections as the pool can give at once (its MaxConns) and reads each one, because the
-// migration ran on one of them. Each one must read what a new connection reads, and the idle bound
-// too, which the reset must keep (idleBound). The control runs the same SETs in a committed
-// transaction on a connection of its own and reads them back. The SETs survive a commit, so the
-// row shows that the reset clears them.
+// migration ran on one of them. The pool's MaxConns is fixed at 8: left to pgxpool's default, one
+// connection per CPU, it was 288 on a 288-CPU host, past a server's default max_connections of
+// 100. Each one must read what a new connection reads, and the idle bound too, which the reset
+// must keep (idleBound). The control runs the same SETs in a committed transaction on a
+// connection of its own and reads them back. The SETs survive a commit, so the row shows that the
+// reset clears them.
 //
 // Control: remove the discard all and the DeallocateAll from releaseMigrationConn, so the
 // connection returns to the pool as the migration left it, and this fails: a pooled connection
 // reads 77s and the row's schema.
 func TestMigrateResetsTheSessionAMigrationLeftOnItsConnection(t *testing.T) {
 	ctx := context.Background()
-	store := emptyStore(t)
+	store := storeWith(t, map[string]string{"pool_max_conns": "8"})
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
@@ -293,7 +295,8 @@ func TestMigrateResetsTheSessionAMigrationLeftOnItsConnection(t *testing.T) {
 	if all[0].Version != 1 {
 		t.Fatalf("the first embedded migration is %s, want 0001_init, which creates schema_version", all[0].Name)
 	}
-	// The schema is the row's own, in the database of the test's own that emptyStore drops.
+	// The schema is the row's own, in the database of the test's own that storeWith opens and
+	// testdb.Database drops.
 	schema := "migrate_leak_" + randomSuffix(t)
 	leaked := schema + ", public"
 	set := []migrations.Migration{

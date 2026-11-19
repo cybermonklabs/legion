@@ -187,7 +187,9 @@ src=$prefix/src
 build=$prefix/build
 mkdir -p "$bin" "$src" "$build" "$prefix/log" ||
   fail "cannot make the build's directories under $prefix"
-jobs=$(nproc 2>/dev/null || echo 2)
+# Four jobs whatever the host: the build is the same at any count, and one taken from nproc ran a
+# make job, with its compiler processes, for every CPU a host has.
+jobs=4
 say "building tmux $tmux_version under $prefix with $jobs jobs; the logs are in $prefix/log"
 
 # ---- GNU make, bootstrapped by its own build.sh -------------------------------------------------

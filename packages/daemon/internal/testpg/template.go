@@ -21,7 +21,9 @@ package testpg
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -81,11 +83,11 @@ func Clone(t testing.TB, prefix string) string {
 	return clone
 }
 
-// CloneStore is Clone opened, its pool closed when the test ends — before the clone is dropped,
-// since Clone registered that cleanup first.
+// CloneStore is Clone opened, its pool held to PoolConns and closed when the test ends — before
+// the clone is dropped, since Clone registered that cleanup first.
 func CloneStore(t testing.TB, prefix string) *store.Store {
 	t.Helper()
-	st, err := store.Open(context.Background(), Clone(t, prefix))
+	st, err := store.Open(context.Background(), PoolDSN(t, Clone(t, prefix)))
 	if err != nil {
 		t.Fatalf("open the cloned database: %v", err)
 	}
@@ -93,16 +95,40 @@ func CloneStore(t testing.TB, prefix string) *store.Store {
 	return st
 }
 
-// ClonePool is Clone opened as a pool, closed when the test ends — before the clone is dropped,
-// since Clone registered that cleanup first.
+// ClonePool is Clone opened as a pool of at most PoolConns, closed when the test ends — before
+// the clone is dropped, since Clone registered that cleanup first. The bound is in the pool's
+// connection string, so a daemon a test hands that string (pool.Config().ConnString()) gets it
+// too.
 func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	t.Helper()
-	pool, err := pgxpool.New(context.Background(), Clone(t, prefix))
+	pool, err := pgxpool.New(context.Background(), PoolDSN(t, Clone(t, prefix)))
 	if err != nil {
 		t.Fatalf("open a pool on the cloned database: %v", err)
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+// PoolConns is the most connections a pool of a test's own holds (PoolDSN): four, the pool pgxpool
+// gives a 4-CPU CI runner by default. That default is max(4, runtime.NumCPU()), so on a 288-CPU
+// host a test's pool was 288 connections, and a test that runs a hundred goroutines at once on
+// one opened past a server's default max_connections of 100 and failed, where CI's four passed.
+const PoolConns = 4
+
+// PoolDSN is dsn with pool_max_conns set to PoolConns, for a pool of a test's own: pgxpool reads
+// the key, and a store.Open of the string holds its pool to it. A single connection
+// (pgx.Connect) is given dsn itself: pgx sends a key it does not know to the server as a setting,
+// and the server refuses pool_max_conns.
+func PoolDSN(t testing.TB, dsn string) string {
+	t.Helper()
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse the test database's DSN: %v", err)
+	}
+	query := parsed.Query()
+	query.Set("pool_max_conns", strconv.Itoa(PoolConns))
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 // cloneStatement returns the create database that makes name a copy of the template's files rather

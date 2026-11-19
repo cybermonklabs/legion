@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -136,7 +137,20 @@ func insertEnrollment(t *testing.T, st *store.Store, kind, runtimeID string, ope
 // record.Sign), and the login DEEL_API_KEY's records name as approver (its owner, the operator).
 func newFixture(t *testing.T) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
 	t.Helper()
-	st := storetest.Open(t)
+	return newFixtureOfPool(t, 0)
+}
+
+// newFixtureOfPool is newFixture with its store's pool holding conns connections, for a test
+// whose calls run at once: the pool's default is one connection per CPU of the host (pgxpool's
+// max(4, runtime.NumCPU())), so how many of those calls ran side by side, rather than queuing for
+// a connection, was four on a 4-CPU host and all of them on a large one. Zero keeps the default.
+func newFixtureOfPool(t *testing.T, conns int) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
+	t.Helper()
+	var params []string
+	if conns > 0 {
+		params = append(params, "pool_max_conns="+strconv.Itoa(conns))
+	}
+	st := storetest.Open(t, params...)
 	local := secrets.NewLocal(fixtureSecrets()...)
 	enrollmentID, requesterKey = newEnrollment(t, st, "session", "box-a-"+t.Name(), new(fixtureOperator), nil)
 
