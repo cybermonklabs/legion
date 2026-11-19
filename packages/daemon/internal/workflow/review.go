@@ -255,13 +255,24 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 }
 
 // settledChecks is what the CI settlement standing for the pull request's head says: the head it
-// settled on, and each check it reports with the conclusion it reports for it, in name order; ""
-// while no settlement stands. A check the settlement names as failed failed, one it names as
-// cancelled was cancelled, and one it reports as a run and names neither way succeeded - the
-// listener settles a commit once every check it has seen is terminal. Nothing here judges those
-// conclusions: a job GitHub never started reads like any other, and what they mean for the work is
-// the reading worker's (dispatch://INFRA-714/spec R1). The line is the whole of what the daemon
-// knows of that head's CI, so two settlements that leave it the same say nothing new (tellChecks).
+// settled on, and each check it reports with what it came to, in name order; "" while no
+// settlement stands. A check the settlement names as failed failed, one it names as cancelled was
+// cancelled, one whose run GitHub skipped (record.RunSkipped) was skipped, and one it reports as a
+// run and names no other way succeeded - the listener settles a commit once every check it has
+// seen is terminal. Nothing here judges those conclusions: a job GitHub never started reads like
+// any other, and what they mean for the work is the reading worker's (dispatch://INFRA-714/spec
+// R1). The line is the whole of what the daemon knows of that head's CI, so two settlements that
+// leave it the same say nothing new (tellChecks).
+//
+// Each check is named by the word GitHub gave its run (record.AttemptRun.GitHubConclusion) where
+// the settlement carried one, and by the daemon's conclusion where it did not (shownAs). GitHub's
+// word is what tells a check that ran from one that did not, where the daemon's conclusion takes
+// every run that neither failed nor was cancelled as succeeded or skipped. A skipped check ran
+// nothing on the head, and a role that read it as a pass would believe a suite held back for the
+// merge queue passed on a head where it never ran (dispatch://INFRA-4135 R1), so where the line
+// names any check skipped it says once, after the commit statuses, that a skipped check ran
+// nothing (skippedClause). A settlement that carries no word and names no run skipped, as a
+// listener of an earlier release sends, gives the line the daemon gave before it read either.
 //
 // Each name's conclusion is the newest run of it among the settlements of the head the fence
 // stands at, which is what the record holds (classify.SettlementFor): a settlement stands only
@@ -287,6 +298,9 @@ func settledChecks(pr record.PullRequest) string {
 	conclusions := make(map[string]record.RunConclusion, len(pr.CheckRuns)+len(pr.Failing)+len(pr.Cancelled))
 	for _, run := range pr.CheckRuns {
 		conclusions[run.Name] = record.RunSucceeded
+		if run.Conclusion == record.RunSkipped {
+			conclusions[run.Name] = record.RunSkipped
+		}
 	}
 	for _, name := range pr.Cancelled {
 		conclusions[name] = record.RunCancelled
@@ -294,11 +308,19 @@ func settledChecks(pr record.PullRequest) string {
 	for _, name := range pr.Failing {
 		conclusions[name] = record.RunFailed
 	}
+	shown := make(map[string]string, len(conclusions))
+	for name, conclusion := range conclusions {
+		shown[name] = string(conclusion)
+	}
+	// The fence holds one run per name (classify's mergeAttemptSets), the run that decided it.
+	for _, run := range pr.CheckRuns {
+		shown[run.Name] = shownAs(run, conclusions[run.Name])
+	}
 	statuses := namedStatuses(keptStatuses(pr, pr.CheckedHead))
-	if len(conclusions) == 0 {
+	if len(shown) == 0 {
 		return "CI settled at " + pr.CheckedHead + " reporting no check" + statuses
 	}
-	return "CI settled at " + pr.CheckedHead + ": " + namedConclusions(conclusions) + statuses
+	return "CI settled at " + pr.CheckedHead + ": " + namedConclusions(shown) + statuses + skippedClause(shown)
 }
 
 // headChecks is every check run GitHub reported on the pull request's current head with what that
@@ -308,6 +330,12 @@ func settledChecks(pr record.PullRequest) string {
 // whose newest run is there ran on other heads of the tree and not on this one. What GitHub
 // weighs for the merge is the current head, so that is the head whose checks the notice names,
 // and a required check whose run is missing here is the thing its reader looks for.
+//
+// Each run is named by the word GitHub gave it where the settlement carried one, and by its
+// conclusion where it did not (shownAs), and where any run is named skipped the line says once,
+// after the commit statuses, that a skipped check ran nothing on this head (skippedClause), as
+// settledChecks does and for the same reason: a required check GitHub skipped is one that never
+// ran there, and its reader must not take it for a pass (dispatch://INFRA-4135 R1).
 //
 // Each run of the fence carries the head it ran on and its conclusion (record.AttemptRun), so
 // this is a reading of the fence and not of a settlement, through classify.HeadRuns, the one test
@@ -321,32 +349,66 @@ func settledChecks(pr record.PullRequest) string {
 // of another head says nothing of this one.
 func headChecks(pr record.PullRequest) string {
 	runs := classify.HeadRuns(pr)
-	conclusions := make(map[string]record.RunConclusion, len(runs))
+	shown := make(map[string]string, len(runs))
 	for _, run := range runs {
-		conclusions[run.Name] = run.Conclusion
+		shown[run.Name] = shownAs(run, run.Conclusion)
 	}
-	if len(conclusions) == 0 {
+	if len(shown) == 0 {
 		return ""
 	}
 	var statuses []record.CommitStatus
 	if classify.Settled(pr) {
 		statuses = keptStatuses(pr, pr.HeadSHA)
 	}
-	return "GitHub reported on head " + pr.HeadSHA + ": " + namedConclusions(conclusions) + namedStatuses(statuses)
+	return "GitHub reported on head " + pr.HeadSHA + ": " + namedConclusions(shown) + namedStatuses(statuses) + skippedClause(shown)
 }
 
-// namedConclusions is each check name with what it came to, in name order, as both lines above
+// shownAs is what a text names run's check as, conclusion being what the text concludes the check
+// came to: the word GitHub gave the run (record.AttemptRun.GitHubConclusion) where the settlement
+// carried one and the run's own conclusion is that conclusion, and the conclusion otherwise. The
+// word is the run's, so it names the check only where that run is what decided it: a name the
+// settlement's lists give another conclusion than its run's is named by the lists' conclusion, and
+// a run with no word - from a listener that sends none, or a word the decoder refused - by the
+// daemon's conclusion, as before the daemon kept a word. Unlike a check's name, the word is shown
+// unquoted: the decoder keeps only a word of lower-case letters and underscores (intake's
+// conclusionWord), so it can carry nothing else into the agent's prompt the line is read into.
+func shownAs(run record.AttemptRun, conclusion record.RunConclusion) string {
+	if run.GitHubConclusion != "" && run.Conclusion == conclusion {
+		return run.GitHubConclusion
+	}
+	return string(conclusion)
+}
+
+// namedConclusions is each check name with what the line names it as (shownAs: GitHub's word where
+// the settlement carried one, else the daemon's conclusion), in name order, as both lines above
 // spell it.
-func namedConclusions(conclusions map[string]record.RunConclusion) string {
-	names := make([]string, 0, len(conclusions))
-	for name := range conclusions {
+func namedConclusions(shown map[string]string) string {
+	names := make([]string, 0, len(shown))
+	for name := range shown {
 		names = append(names, name)
 	}
 	slices.Sort(names)
 	for i, name := range names {
-		names[i] = strconv.Quote(name) + " " + string(conclusions[name])
+		names[i] = strconv.Quote(name) + " " + shown[name]
 	}
 	return strings.Join(names, ", ")
+}
+
+// skippedRanNothing is what each text the roles read of a head's CI says once where it names a
+// check skipped: GitHub skipped the check, so it ran nothing on the head, and a role must not read
+// it as a pass (dispatch://INFRA-4135 R1).
+const skippedRanNothing = "a skipped check ran nothing on this head"
+
+// skippedClause is what settledChecks and headChecks add after the commit statuses where they name
+// any check skipped, by GitHub's word or by the daemon's conclusion, the two being spelled alike
+// (record.RunSkipped); "" where they name none, so a line with no skipped check reads as before.
+func skippedClause(shown map[string]string) string {
+	for _, word := range shown {
+		if word == string(record.RunSkipped) {
+			return "; " + skippedRanNothing
+		}
+	}
+	return ""
 }
 
 // keptStatuses is every commit status pr keeps for head (record.PullRequest.Statuses), in context

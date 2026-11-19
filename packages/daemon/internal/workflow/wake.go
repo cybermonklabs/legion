@@ -212,6 +212,19 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 // nor a cancelled check run says the head passed every check run and then names the statuses,
 // since the head did not pass every check. With no failed status the text is the one it was before
 // the daemon read statuses.
+//
+// A check whose run GitHub skipped (record.RunSkipped: a run of fact.CheckRuns the settlement's
+// skipped group named and that neither Failing nor Cancelled names) is named skipped, in name
+// order, with the sentence that a skipped check ran nothing on this head, after the failed or the
+// cancelled checks and before the failed statuses. Where the settlement names no check failed or
+// cancelled the text then says the head had none, and never that it passed every check or every
+// check run: a skipped check ran nothing, and a woken role that read it as a pass would believe a
+// suite held back for the merge queue passed on a head where it never ran (dispatch://INFRA-4135
+// R1). A settlement with no skipped run gives the text it gave before the daemon read the skipped
+// group, whatever word GitHub gave each run: the task names each check by the daemon's conclusion,
+// never by GitHub's word, and the word of a check that passed (success or neutral, which R1 counts
+// as passed) adds nothing to `passed every check`. The CI message the roles are told
+// (settledChecks) is where each check is named by its word.
 func settlementDetail(fact intake.PullRequestChecks) string {
 	head := fact.HeadSHA
 	if len(head) > 12 {
@@ -224,16 +237,28 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 		}
 	}
 	slices.Sort(failed)
+	var skipped []string
+	for _, run := range fact.CheckRuns {
+		if run.Conclusion == record.RunSkipped && !slices.Contains(fact.Failing, run.Name) && !slices.Contains(fact.Cancelled, run.Name) {
+			skipped = append(skipped, run.Name)
+		}
+	}
+	slices.Sort(skipped)
 	var detail string
 	switch {
 	case len(fact.Failing) > 0:
 		detail = head + " failed " + strings.Join(fact.Failing, ", ")
 	case len(fact.Cancelled) > 0:
 		detail = head + " had " + strings.Join(fact.Cancelled, ", ") + " cancelled"
+	case len(skipped) > 0:
+		detail = head + " had no failed or cancelled check"
 	case len(failed) > 0:
 		detail = head + " passed every check run"
 	default:
 		return head + " passed every check"
+	}
+	if len(skipped) > 0 {
+		detail += "; skipped " + strings.Join(skipped, ", ") + ": " + skippedRanNothing
 	}
 	switch len(failed) {
 	case 0:
