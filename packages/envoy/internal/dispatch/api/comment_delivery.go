@@ -135,7 +135,7 @@ type sendOutcome struct {
 // guidance is composed at render time against the attempt's age, never frozen into the row here. A
 // row written today would otherwise still promise a safe retry next week.
 //
-// A send for a role the listener kept on the role's kept lane (dispatchenvoy.SendResult.Kept),
+// A send for a role the listener kept on the role's kept lane (its 202, which answers no State),
 // because the role's claim named another session than the one resolved when the send arrived, is
 // recorded sent, with the kept copy's envelope. The listener took the message for the role, and
 // its kept lane hands it to the session that holds the role, live: the role route's recipient,
@@ -1147,16 +1147,16 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// asks the listener whether that session holds the role now with nothing held
 	// (lookUpRoleHolderReply). The mention is the one the request names, else the comment's
 	// first, which is its only one wherever the transaction below takes a reply naming none. A
-	// read that finds nothing, or fails, asks nothing: the transaction below answers that
-	// comment, mention or attempt as it always has.
-	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, `
+	// read that finds nothing asks nothing: the transaction below answers that comment, mention
+	// or attempt as it always has. A read that fails is the route's 500.
+	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
 		select m.target, d.session_id
 		from comment_mentions m
 		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $3
 		where m.comment_id = $1 and m.target = coalesce($2, m.target)
 		order by m.target
 		limit 1
-	`, r.PathValue("id"), input.Target, input.Attempt)
+	`, input.Target, input.Attempt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

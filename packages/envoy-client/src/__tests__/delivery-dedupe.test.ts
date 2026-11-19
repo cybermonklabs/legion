@@ -27,6 +27,21 @@ test("a frame without a dedupe key or an event id is never a repeat", () => {
   expect(dedupe.claim(undefined)).toBeDefined();
 });
 
+// The listener copies a role message a previous holder did not read to the role's kept lane, for
+// the role's next holder, under a dedupe key of its own - the message's key and the copied frame's
+// sequence - and with the message's own event id. A host that already showed the message, the
+// previous holder taking the role back, drops the copy by that event id. The control is a frame of
+// another publish under the copy's key, which is a new message.
+test("a takeover's copy of a message the host already showed is a repeat by its event id, under its own key", () => {
+  const dedupe = createDeliveryDedupe();
+  const original = { event_id: "evt-role-1", source: "agent", dedupe_key: "publish.notifications.role.reviewer.k1" };
+  const copy = { ...original, dedupe_key: `${original.dedupe_key}:frame:41` };
+
+  expect(dedupe.claim(original)).toBeDefined();
+  expect(dedupe.claim(copy)).toBeUndefined();
+  expect(dedupe.claim({ ...copy, event_id: "evt-role-2" })).toBeDefined();
+});
+
 // A frame that follows two overlapping subscriptions (`pr.7.>` and `pr.7.checks`) arrives once
 // per subscription, every copy carrying the one event id its publish minted. A CI settlement's key
 // does not name its event, so only that event id says the second copy is the first again; a later

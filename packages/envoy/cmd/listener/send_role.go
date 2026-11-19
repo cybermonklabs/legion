@@ -4,14 +4,68 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/roles"
+	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
 )
+
+// refuseRoleMark answers a send carrying role, before anything is read, when the mark is not
+// taken: from any caller but Dispatch's own principal it is the 403 naming the field
+// (roleMarkRefusal), and a role no claim can name is the 400 naming it. It reports whether it
+// answered; a send with no role is never answered here.
+func refuseRoleMark(w http.ResponseWriter, r *http.Request, d *listenerDeps, record *requestRecord, role string) bool {
+	if role == "" {
+		return false
+	}
+	if refusal := roleMarkRefusal(r, d.dispatchPrincipal); refusal != "" {
+		record.refuse(w, http.StatusForbidden, outcomeCapabilityRefused, refusal, "role")
+		return true
+	}
+	if !roles.Valid(role) {
+		record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, fmt.Sprintf("role %q is no role a claim can name", role), "role")
+		return true
+	}
+	return false
+}
+
+// answerRoleSend reads the claim of the role a send is marked with (item.Role) before the send's
+// target, from the role bucket under the role routes' own bound (readRoleClaimHolder), never from
+// this listener's watched copy of it, and reports whether it answered the send. A claim naming the
+// target answers nothing, and the send goes on to its target. A claim naming another session, or
+// none, is a role that moved between Dispatch's resolution and this send, and the message is the
+// role's: it is kept for the role's next live holder (keepRoleSend), as a role publish that finds
+// no live holder is - unless the send asked connected_only, for a session running now, which is
+// the 409 a stopped target gives, with nothing kept, since a message kept for the role would reach
+// another session at a later time. A claim read that failed is its 503, or the unreadable claim's
+// answer.
+func answerRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, request listenerwire.SendRequest, target string) bool {
+	if item.Role == "" {
+		return false
+	}
+	holder, err := readRoleClaimHolder(ctx, *d.delivery, item.Role)
+	switch {
+	case errors.Is(err, store.ErrMalformedRoleClaim):
+		record.refuseRoleClaimUnreadable(w, item.Role, err)
+	case err != nil:
+		record.refuseBusUnavailable(w, err)
+	case holder == target:
+		return false
+	case request.ConnectedOnly:
+		record.refuse(w, http.StatusConflict, outcomeSessionStopped,
+			fmt.Sprintf("the session no longer holds role %s, and a send that asks for a running session keeps nothing", item.Role))
+	default:
+		keepRoleSend(w, d, record, charge, item, target, holder, expectsReplyAnswer(request.ExpectsReply))
+	}
+	return true
+}
 
 // roleMarkRefusal is why a send carrying a role mark is refused, or "" for one this listener takes
 // it from: a request whose identity token proved dispatchPrincipal, Dispatch's own

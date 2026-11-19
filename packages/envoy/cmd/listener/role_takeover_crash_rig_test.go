@@ -486,7 +486,7 @@ func (rig *crashRig) renewEveryTry(role string) (*atomic.Int32, *atomic.Pointer[
 		rig.t.Fatalf("open the role bucket: %v", err)
 	}
 	tries, failed := &atomic.Int32{}, &atomic.Pointer[error]{}
-	setTakeoverFaults(rig.t, rig.harness.config, takeoverFaultSet{beforeClaimTry: func(r, _ string, _ int) error {
+	setTakeoverFaults(rig.t, rig.harness.config, takeoverFaultSet{beforeClaimTry: func(r, _ string) error {
 		if r != role {
 			return nil
 		}

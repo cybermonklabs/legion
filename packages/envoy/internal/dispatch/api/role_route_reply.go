@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -25,13 +28,24 @@ func (r roleHolderReply) allows(route string) bool {
 }
 
 // roleHolderReplyOf is lookUpRoleHolderReply for the route and the attempt's session that the one
-// row query names, scanned as (route, session_id). A query that finds no row, or fails, asks
-// nothing and names no holder, so the reply's transaction answers it as it always has.
-func (s *server) roleHolderReplyOf(ctx context.Context, actor model.Actor, query string, args ...any) (roleHolderReply, error) {
+// row query names, scanned as (route, session_id), with id - the message's or the comment's - as
+// the query's $1 and args after it. An id that is no uuid, and one that no row has, asks nothing
+// and names no holder, so the reply's transaction answers it as it always has. A read that failed
+// (a statement timeout, a reset connection) is the error, which the route answers 500: whether the
+// session replying holds the role was not read, and a refusal would end a reply that the role's
+// live holder may make again.
+func (s *server) roleHolderReplyOf(ctx context.Context, actor model.Actor, id, query string, args ...any) (roleHolderReply, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return roleHolderReply{}, nil
+	}
 	var route string
 	var attemptSession *string
-	if s.deps.Store.Pool.QueryRow(ctx, query, args...).Scan(&route, &attemptSession) != nil {
+	err := s.deps.Store.Pool.QueryRow(ctx, query, append([]any{id}, args...)...).Scan(&route, &attemptSession)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return roleHolderReply{}, nil
+	}
+	if err != nil {
+		return roleHolderReply{}, fmt.Errorf("read the route and the attempt that the reply to %s answers: %w", id, err)
 	}
 	return s.lookUpRoleHolderReply(ctx, route, attemptSession, actor)
 }

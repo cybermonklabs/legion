@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -111,8 +113,15 @@ type roleRouteReplies struct {
 
 func newRoleRouteReplies(t *testing.T) *roleRouteReplies {
 	t.Helper()
+	return newRoleRouteRepliesTraced(t, nil)
+}
+
+// newRoleRouteRepliesTraced is newRoleRouteReplies with tracer on every connection of Dispatch's
+// pool (testServerOptions.tracer); nil traces nothing.
+func newRoleRouteRepliesTraced(t *testing.T, tracer pgx.QueryTracer) *roleRouteReplies {
+	t.Helper()
 	listener := newRoleRouteListener(t)
-	handler, database := newTargetedMessageHandler(t, listener.server.URL)
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL, tracer: tracer})
 	issue := createInteractionIssue(t, handler, "TEST", "Replies to a role route", "before")
 	return &roleRouteReplies{listener: listener, handler: handler, database: database, issue: issue.Key}
 }
@@ -371,5 +380,62 @@ func TestAReplyWhoseRoleHolderTheListenerDoesNotNameIsAskedAgain(t *testing.T) {
 	}
 	if answered := rig.replyMessage(t, message, "ses_role_a", map[string]any{"body": "Warm, says A."}, false); answered.Code != http.StatusCreated {
 		t.Fatalf("the attempt's own session's reply with the lookup unanswered: status=%d body=%s, want 201", answered.Code, answered.Body.String())
+	}
+}
+
+// routeReadFault ends the reply routes' read of the route and the attempt a reply answers
+// (roleHolderReplyOf) while armed, as a statement timeout or a reset pooled connection ends it:
+// that one statement is sent with a context already ended, and every other statement runs.
+type routeReadFault struct{ armed atomic.Bool }
+
+func (f *routeReadFault) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	read := strings.Contains(data.SQL, "from messages m left join message_deliveries d") ||
+		strings.Contains(data.SQL, "from comment_mentions m\n\t\tleft join comment_deliveries d")
+	if !f.armed.Load() || !read {
+		return ctx
+	}
+	ended, cancel := context.WithCancel(ctx)
+	cancel()
+	return ended
+}
+
+func (*routeReadFault) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// A reply from the role's live holder, to an attempt that names another session, needs the read of
+// the attempt's route and session before the listener is asked. A read that fails says nothing of
+// who may answer, so the reply is answered 500 and stores nothing, never refused 403
+// REPLY_FORBIDDEN: the holder's host makes the reply again. The control is the same two replies
+// once the read answers, which are accepted, so the 500 comes from the failed read alone.
+func TestAReplyWhoseRouteReadFailsIsNotRefused(t *testing.T) {
+	fault := &routeReadFault{}
+	rig := newRoleRouteRepliesTraced(t, fault)
+	const role = "reply-read-fails"
+	rig.listener.claim(role, "ses_role_a", true)
+	message := rig.message(t, role, "ses_role_a", "Is the index rebuilt?")
+	comment := rig.mention(t, role, "ses_role_a", "Is the backfill done?")
+	rig.listener.claim(role, "ses_role_b", true)
+
+	fault.armed.Store(true)
+	for what, response := range map[string]*httptest.ResponseRecorder{
+		"the message": rig.replyMessage(t, message, "ses_role_b", map[string]any{"body": "Rebuilt."}, false),
+		"the mention": rig.replyComment(t, comment, "ses_role_b", map[string]any{"body": "Done."}),
+	} {
+		if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "REPLY_FORBIDDEN") {
+			t.Fatalf("the role's live holder's reply to %s while the route read fails: status=%d body=%s, want 500 and no refusal", what, response.Code, response.Body.String())
+		}
+	}
+	if _, _, replyID := rig.messageAttempt(t, message); replyID != nil {
+		t.Fatalf("the message's attempt has reply %s after a reply answered 500; want none", *replyID)
+	}
+	if _, _, replyID := rig.commentAttempt(t, comment); replyID != nil {
+		t.Fatalf("the mention's attempt has reply %s after a reply answered 500; want none", *replyID)
+	}
+
+	fault.armed.Store(false)
+	if response := rig.replyMessage(t, message, "ses_role_b", map[string]any{"body": "Rebuilt."}, false); response.Code != http.StatusCreated {
+		t.Fatalf("control: the same reply to the message once the read answers: status=%d body=%s, want 201", response.Code, response.Body.String())
+	}
+	if response := rig.replyComment(t, comment, "ses_role_b", map[string]any{"body": "Done."}); response.Code != http.StatusCreated {
+		t.Fatalf("control: the same reply to the mention once the read answers: status=%d body=%s, want 201", response.Code, response.Body.String())
 	}
 }

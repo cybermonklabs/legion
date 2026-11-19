@@ -971,13 +971,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// The message's target and the session its attempt names are read before the transaction,
 	// so a reply from a session the attempt does not name, to a message sent for a route to a
 	// role, asks the listener whether that session holds the role now with nothing held
-	// (lookUpRoleHolderReply). A read that finds nothing, or fails, asks nothing: the transaction
-	// below answers that message or attempt as it always has.
-	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, `
+	// (lookUpRoleHolderReply). A read that finds nothing asks nothing: the transaction below
+	// answers that message or attempt as it always has. A read that fails is the route's 500.
+	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
 		select coalesce(m.target, ''), d.session_id
 		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
 		where m.id = $1
-	`, r.PathValue("id"), input.Attempt)
+	`, input.Attempt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

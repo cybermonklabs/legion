@@ -16,13 +16,14 @@ import (
 )
 
 // An identity token the listener reaches no verdict on, because its issuer's key set cannot be
-// read, is answered 503 with Retry-After: 1, and not 401: Dispatch's client makes a call refused
-// 401 again on the shared token with no role mark, so a 401 here would send its role-route message
-// unmarked to the old holder, where no takeover copies it for the role's next holder. The real
-// Dispatch client, holding its account token and the shared token, sends a marked message to the
-// role's old holder A after B took the role. With the keys unavailable the send fails as
-// unavailable, to be retried, and neither A nor B receives an unmarked copy. The control is the
-// same send with the keys served: kept for the role, marked, and B receives it.
+// read, is answered 503 with Retry-After: 1, and not 401: a 401 is the listener's refusal of
+// Dispatch's identity, which Dispatch's client meets by a second try and then, for a call that
+// carries no role mark, by the shared token, and a send for a role it refused twice fails for good
+// rather than go out unmarked. The real Dispatch client, holding its account token and the shared
+// token, sends a marked message to the role's old holder A after B took the role. With the keys
+// unavailable the send fails as unavailable, to be retried, after one call, and neither A nor B
+// receives a copy. The control is the same send with the keys served: kept for the role, marked,
+// and B receives it.
 func TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal(t *testing.T) {
 	warm, cold := trailingListeners(t)
 	startListenerDelivery(t, warm)
@@ -77,7 +78,7 @@ func TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal(t *testing.T) {
 			})
 
 			if keysServed {
-				if err != nil || !result.Kept {
+				if err != nil || result.EnvelopeID == "" || result.State != "" {
 					t.Fatalf("control: the send = %+v, %v; want kept for role %s", result, err, role)
 				}
 				frames := received(b, 20*time.Second, text)[text]

@@ -484,11 +484,7 @@ type keptRolePublish func(ctx context.Context, subject string, item contracts.En
 func keepRoleMessage(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), roleKeepPublishWindow)
 	defer cancel()
-	publish := cfg.keepPublish
-	if publish == nil {
-		publish = cfg.client.PublishStoredAck
-	}
-	kept, err := storeKeptRoleCopy(ctx, cfg, role, item, publish)
+	kept, err := storeKeptRoleCopy(ctx, cfg, role, item, cfg.keepPublish)
 	if err != nil {
 		cfg.logger.Error(roleKeepFailedLine,
 			slog.String("role", role),
@@ -536,7 +532,7 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	// have stored the copy, so a keep that then fails says so whatever its last failure was (fail).
 	ownSend := false
 	fail := func(err error) (keptRoleCopy, error) {
-		if ownSend && !errors.Is(err, bus.ErrUnacknowledged) {
+		if ownSend && !mayHaveStored(err) {
 			err = fmt.Errorf("%w: %w", bus.ErrUnacknowledged, err)
 		}
 		return keptRoleCopy{}, err
@@ -1230,16 +1226,7 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 			result.end = roleKeepDrainFailed
 			return result, fmt.Errorf("read role %s's kept lane after %d: %w", role, kept, err)
 		}
-		// A copy a takeover took from a previous holder's own subject (keepTakenRoleFrame) is a
-		// message that holder did not read, so no record of what a holder already took passes it
-		// over: the role's next holder may be that very session, which the role lane's record
-		// says took the message when its forward was stored, and not when it was read.
-		frame, fromFrame := keptFrameSequence(stored.MsgID)
-		copySeen := seen
-		if fromFrame {
-			copySeen = func(string, string) bool { return false }
-		}
-		judged := judgeKeptRoleCopy(cfg, role, holder, entry, stored, keptCopyClaimOf(head.cursor, stored.Sequence), now, copySeen)
+		judged := judgeKeptRoleCopy(cfg, role, holder, entry, stored, keptCopyClaimOf(head.cursor, stored.Sequence), now, seen)
 		switch judged.step {
 		case keptCopyWait:
 			result.end, result.waiting = roleKeepCopyWaits, stored.Sequence
@@ -1286,13 +1273,9 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 		cfg.attemptCache.Record(item.DedupeKey, holder)
 		// The forward is named as the lane's own forward of this message to this holder is
 		// (roleForward.msgID), so the stream keeps one copy of it for this holder however many
-		// walks forward it; a copy a takeover took from a frame is named with that frame's
-		// sequence too, so a holder the frame was forwarded to before, which takes the role back,
-		// is handed the copy rather than having the stream drop it as that earlier forward.
+		// walks forward it; a takeover's copy carries a dedupe key of its own
+		// (takenFrameDedupeKey), so its forward takes no id an earlier forward took.
 		msgID := handed.msgID(subject)
-		if fromFrame {
-			msgID += keptFrameMark + frame
-		}
 		forwarded := cfg.forwardAndWait(subject, forward, msgID, roleForwardTimeout)
 		if forwarded != nil {
 			// This walk is ending with the copy claimed and unforwarded, so it releases the

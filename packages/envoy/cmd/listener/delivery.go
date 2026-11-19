@@ -93,19 +93,13 @@ type listenerDeliveryHandlerConfig struct {
 	// roleKeptUndecodable counts the kept copies a walk ended because no read can decode them
 	// (envoy_role_kept_undecodable_total, judgeKeptRoleCopy).
 	roleKeptUndecodable *metrics.Counter
-	// roleTakeoverUnrecorded counts the role claims that took a role from another session with no
-	// takeover record, because the stream refused the record for want of room
-	// (envoy_role_takeover_unrecorded_total, takeoverTries.landed): each is a takeover whose previous
-	// holder's unread role messages are not copied for the role's next holder. nil in a test that
-	// builds a config without it, which counts nothing.
-	roleTakeoverUnrecorded *metrics.Counter
 	// takeoverFaults holds the takeover copy's test seams (takeoverFaultSet), shared by every copy
 	// of this configuration - its routes, relays and sweep - and nil in main.go, which forces no
 	// fault.
 	takeoverFaults *takeoverFaultHooks
-	// keepPublish, when it is not nil, is the stored publish a keep makes (keepRoleMessage) in
-	// place of client.PublishStoredAck: a test's stand-in for an answer of the stream's. main.go
-	// leaves it nil.
+	// keepPublish is the stored publish a keep makes (keepRoleMessage): main.go sets it to
+	// client.PublishStoredAck, and so does every test that builds a config, while a test that
+	// answers a keep's publish itself replaces it on its copy.
 	keepPublish keptRolePublish
 	// publishDeadLetter stores a dead letter, item, on subject - the agent subject of the session
 	// whose kept copy a walk dropped - under the Nats-Msg-Id msgID, and returns the stream's

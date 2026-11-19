@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { EnvoyApiError } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./claim-first-turn-bound";
 import { createLegionDaemonClient } from "./daemon-client";
@@ -193,6 +194,73 @@ test("a claim the listener refuses is logged naming the claim token and what sto
   ]);
   expect(lines).toEqual([
     `claim boot failed after claims/register registered ${claimToken}; exiting so the daemon launches it again: Envoy role ${claimToken} is held by live session ses_other`,
+  ]);
+});
+
+/** The listener's 503 to a role claim whose takeover record did not store, as envoy-client's
+ * `setRole` rejects with it after its own two tries. */
+function claimAnswered503(): EnvoyApiError {
+  return new EnvoyApiError({
+    method: "POST",
+    url: "http://listener.test/v1/roles/set",
+    status: 503,
+    responseBody: JSON.stringify({
+      error: "envoy: the message bus refused the message because its stream is full",
+    }),
+  });
+}
+
+test("a claim the listener answers 503 is claimed again after a growing wait, and the session is not stopped; the claim lands on the try after the 503s end", async () => {
+  let answered503 = 0;
+  const { host, steps, lines, firstTurn } = claimHost({
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
+        if (answered503 < 3) {
+          answered503++;
+          throw claimAnswered503();
+        }
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(steps).not.toContain("stop");
+  expect(steps.filter((step) => step === `claimRole ${claimToken}`)).toHaveLength(4);
+  expect(lines.map((line) => line.replace(/: .*$/, ""))).toEqual([
+    `claim of Envoy role ${claimToken} was answered 503, so nothing was claimed; claiming it again in 1 ms`,
+    `claim of Envoy role ${claimToken} was answered 503, so nothing was claimed; claiming it again in 2 ms`,
+    `claim of Envoy role ${claimToken} was answered 503, so nothing was claimed; claiming it again in 4 ms`,
+  ]);
+});
+
+test("control: a claim the listener refuses with any other status still stops the session at once, with no retry", async () => {
+  const { host, steps, lines, firstTurn } = claimHost({
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
+        throw new EnvoyApiError({
+          method: "POST",
+          url: "http://listener.test/v1/roles/set",
+          status: 500,
+          responseBody: JSON.stringify({ error: "envoy: the role claim failed" }),
+        });
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(steps.slice(-2)).toEqual([`claimRole ${claimToken}`, "stop"]);
+  expect(lines).toEqual([
+    `claim boot failed after claims/register registered ${claimToken}; exiting so the daemon launches it again: envoy: the role claim failed`,
   ]);
 });
 

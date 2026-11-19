@@ -656,7 +656,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		takeoverAt := oldStored.at.Add(freshStored.at.Sub(oldStored.at) / 2).Add(roleKeepWindow)
 		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{
 			relayCopy: copiesRelayCopyHeld(copiesRole),
-			beforeClaimTry: func(role, _ string, _ int) error {
+			beforeClaimTry: func(role, _ string) error {
 				if role == copiesRole {
 					rig.listenerClock.unpin()
 				}

@@ -40,12 +40,18 @@ const takeoverRecordLife = 71 * time.Hour
 
 // takeoverRecordWindow bounds the write of a takeover record before a try of a claim's write. The
 // claim route writes it inside its own request budget (sendRequestBudget), and a record the stream
-// did not store is a try that writes no claim.
+// did not store is a claim that writes nothing (errTakeoverUnrecorded).
 const takeoverRecordWindow = time.Second
 
-// keptFrameMark separates the kept message id of a role message (bus.KeptMsgID) from the stream
-// sequence of the frame it was copied from, in the message id of the copy (takenFrameMsgID), and
-// the forward id of the walk's forward of that copy (walkKeptRole) from the same sequence.
+// errTakeoverUnrecorded wraps the failure of a claim whose takeover record the stream did not
+// store - a full stream, a write that went unanswered within takeoverRecordWindow, a leader
+// election - so the claim wrote nothing (takeoverTries.beforeTry). The claim route answers it 503
+// with Retry-After: 1, and the client claims again.
+var errTakeoverUnrecorded = errors.New("the takeover record of this claim did not store, so the claim was not written")
+
+// keptFrameMark separates a role message's dedupe key, and the kept message id of the message
+// (bus.KeptMsgID), from the stream sequence of the frame a takeover copied it from, in the copy's
+// own dedupe key (takenFrameDedupeKey) and message id (takenFrameMsgID).
 const keptFrameMark = ":frame:"
 
 // takenFrameMsgID is the message id the copy of the frame stored at seq goes to role's kept lane
@@ -58,28 +64,37 @@ func takenFrameMsgID(dedupeKey, role string, seq uint64) string {
 	return bus.KeptMsgID(dedupeKey, role) + keptFrameMark + strconv.FormatUint(seq, 10)
 }
 
-// keptFrameSequence is the stream sequence of the frame a kept copy was copied from, read from the
-// copy's message id (takenFrameMsgID), and whether the copy is one; a copy the role lane, the
-// publish route or Dispatch's outbox kept names none.
-func keptFrameSequence(msgID string) (string, bool) {
-	at := strings.LastIndex(msgID, keptFrameMark)
+// takenFrameDedupeKey is the dedupe key of the copy of the frame stored at seq, whose own dedupe
+// key without the forward mark is dedupeKey: that key, then keptFrameMark and seq. The kept lane's
+// walk forwards a copy, and records what a holder took, by its dedupe key, so with a key of its own
+// the copy is forwarded under an id no earlier forward of the same message took, and is not passed
+// over as a message its holder already took - by this release's walk and by the walk of the
+// release before alike. A role taken from A by B and back by A so gives A the copy of the frame B
+// did not read, where the role lane's own forward of that message to A would have the stream drop
+// it. The copy keeps the message's event id, by which a host that already showed the message
+// drops it (R4).
+func takenFrameDedupeKey(dedupeKey string, seq uint64) string {
+	return dedupeKey + keptFrameMark + strconv.FormatUint(seq, 10)
+}
+
+// isTakenFrameDedupeKey reports whether key is a takeover copy's own (takenFrameDedupeKey): it
+// ends in keptFrameMark and a stream sequence.
+func isTakenFrameDedupeKey(key string) bool {
+	at := strings.LastIndex(key, keptFrameMark)
 	if at < 0 {
-		return "", false
+		return false
 	}
-	seq := msgID[at+len(keptFrameMark):]
-	if _, err := strconv.ParseUint(seq, 10, 64); err != nil {
-		return "", false
-	}
-	return seq, true
+	_, err := strconv.ParseUint(key[at+len(keptFrameMark):], 10, 64)
+	return err == nil
 }
 
 // takeoverFaultSet holds the takeover copy's test seams; production runs with none
 // (takeoverFaultHooks). Each names a point a row forces: a crash or a refusal at that point.
 type takeoverFaultSet struct {
 	// beforeClaimTry runs after a try's takeover record and before the try's claim write, with
-	// the role, the previous holder the record names and the try's number from 0; an error ends
-	// the claim with nothing written.
-	beforeClaimTry func(role, previous string, try int) error
+	// the role and the previous holder the record names; an error ends the claim with nothing
+	// written.
+	beforeClaimTry func(role, previous string) error
 	// skipClaimHandover, when it reports true for a role, has the claim route start no handover
 	// of the role it granted: the listener stopped after the claim write.
 	skipClaimHandover func(role string) bool
@@ -98,6 +113,10 @@ type takeoverFaultSet struct {
 	// claimRecordWrite, when it returns an error, is the answer of the claim route's write of a
 	// takeover record in place of the write.
 	claimRecordWrite func(role, previous string) error
+	// relayOfReleaseBefore, when it reports true for a session, has that session's relay run as a
+	// listener of the release before this change does: it sends every frame, whoever holds the
+	// frame's role (sessionRelays.takeOverFrame).
+	relayOfReleaseBefore func(sessionID string) bool
 }
 
 // takeoverFaultHooks is one listener's takeover-copy seam set (listenerDeliveryHandlerConfig's
@@ -118,70 +137,31 @@ func (h *takeoverFaultHooks) faults() *takeoverFaultSet {
 }
 
 // takeoverTries is the claim route's hook on each try of one claim's write
-// (store.RoleClaimRequest.BeforeTry, beforeTry) and what it learned, for the route to report once
-// the claim lands (landed).
+// (store.RoleClaimRequest.BeforeTry, beforeTry): the claim of role by claimant.
 type takeoverTries struct {
 	cfg      listenerDeliveryHandlerConfig
 	claimant string
 	role     string
-	try      int
-	// unrecorded is the previous holder named by the last try's read when the stream refused that
-	// try's takeover record because it holds its byte limit, and refused the error it gave; empty
-	// when the last try wrote its record or read no other holder.
-	unrecorded    string
-	unrecordedErr error
-}
-
-// newTakeoverTries is the hook state of one claim of role by claimant.
-func newTakeoverTries(cfg listenerDeliveryHandlerConfig, claimant, role string) *takeoverTries {
-	return &takeoverTries{cfg: cfg, claimant: claimant, role: role}
 }
 
 // beforeTry runs before each try of the claim's write: when the claim record that try read names a
 // holder other than the claimant, it writes a takeover record for that holder first, so a claim
-// that lands has its record. A record the stream refused because it holds its byte limit
-// (bus.ErrStreamFull) lets the try go on with no record, and the claim, if this try is the one
-// that lands, is reported then (landed): a full stream refuses every write until it has room, the
-// copies of the previous holder's messages included, so refusing the claim too would hold the role
-// with a holder that may have stopped for as long as the stream stays full. Every other record that
-// did not store ends the claim with nothing written, which the claim route answers 503, and its
-// client claims again.
-func (t *takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) error {
+// that lands always has its record. A record that did not store, for any reason, ends the claim
+// with nothing written (errTakeoverUnrecorded), which the claim route answers 503, and its client
+// claims again: a full stream refuses the claim for as long as it refuses every other write, and
+// the role stays with the holder the claim read until then.
+func (t takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) error {
 	previous := read.HolderSessionID
-	defer func() { t.try++ }()
-	t.unrecorded, t.unrecordedErr = "", nil
 	if previous == "" || previous == t.claimant {
 		return nil
 	}
 	if err := publishTakeover(ctx, t.cfg, t.role, previous); err != nil {
-		if !errors.Is(err, bus.ErrStreamFull) {
-			return err
-		}
-		t.unrecorded, t.unrecordedErr = previous, err
+		return fmt.Errorf("%w: %w", errTakeoverUnrecorded, err)
 	}
 	if hook := t.cfg.takeoverFaults.faults().beforeClaimTry; hook != nil {
-		return hook(t.role, previous, t.try)
+		return hook(t.role, previous)
 	}
 	return nil
-}
-
-// landed reports a claim that landed on a try whose takeover record the full stream refused: one
-// Error line naming the role, the previous holder and the claimant, counted on
-// envoy_role_takeover_unrecorded_total, since that previous holder's unread role messages are not
-// copied for the role's next holder. A try that met a conflict and a claim that did not land report
-// nothing, so each count is one takeover that happened.
-func (t *takeoverTries) landed() {
-	if t.unrecorded == "" {
-		return
-	}
-	if t.cfg.roleTakeoverUnrecorded != nil {
-		t.cfg.roleTakeoverUnrecorded.Inc()
-	}
-	t.cfg.logger.Error("listener role claim goes on with no takeover record: the stream is full, so the previous holder's unread role messages are not copied for the role's next holder",
-		slog.String("role", t.role),
-		slog.String("previous_session_id", t.unrecorded),
-		slog.String("session_id", t.claimant),
-		slog.String("error", t.unrecordedErr.Error()))
 }
 
 // publishTakeover writes the takeover record of role taken from previous, on a subject of its own
@@ -266,12 +246,15 @@ func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 }
 
 // takeoverRecordRefresh is how old a takeover record's last write may be before a pass that
-// copies nothing, because the record's previous holder holds the role (runTakeoverPass), writes it
-// again with the time it found that holder (bus.TakeoverRecord.HolderSeenAt): well inside the
-// stream's age limit less the record's life, so no record ages out of the stream while a pass may
-// still need it, and short enough that the hour a record copies from once that holder loses the
-// role starts at most this much and one sweep interval (roleWakeInterval) before the hour before it
-// lost it. Such a pass costs no write in two sweeps of three.
+// changed nothing of it writes it again (runTakeoverPass): one that read nothing new on the
+// previous holder's subject, and one that copies nothing because the record's previous holder
+// holds the role, which writes the time it found that holder (bus.TakeoverRecord.HolderSeenAt).
+// It is well inside the stream's age limit less the record's life, so no record ages out of the
+// stream while a pass may still need it for as long as some listener runs a pass at least every
+// 72 hours less this; and short enough that the hour a record copies from once that holder loses
+// the role starts at most this much and one sweep interval (roleWakeInterval) before the hour
+// before it lost it. So a record nothing moves costs one write each time this has passed, whatever
+// the number of listeners whose sweeps run its passes, and no write in the sweeps between.
 const takeoverRecordRefresh = 15 * time.Minute
 
 // runTakeoverPass is one pass of the takeover record stored, and returns the record as it stands
@@ -302,13 +285,16 @@ const takeoverRecordRefresh = 15 * time.Minute
 // holder holding the role again (HolderSeenAt) where that is later, since it read its messages
 // until then. It then reads the previous holder's agent subject from there, at most
 // roleKeepScanMax messages, and copies each role message of the record's role stored roleKeepWindow
-// before that base time or later to the role's kept lane (keepTakenRoleFrame). Every such pass
-// writes the record again with the sequence it reached, so the stream's age limit never removes a
-// record a pass still needs, and the next pass reads only what is new; the first pass that starts
-// more than takeoverRecordLife after the claim's time and reads to the end marks it finished.
+// before that base time or later to the role's kept lane (keepTakenRoleFrame). Such a pass writes
+// the record when it changed it (a new sequence, a missed floor, the record finished), or once
+// the record's last write is takeoverRecordRefresh old (settle), so the stream's age limit never
+// removes a record a pass still needs, and the next pass reads only what is new; the first pass
+// that starts more than takeoverRecordLife after the claim's time and reads to the end marks it
+// finished.
 //
-// A read or a copy that failed ends the pass with the record written at the frame it stopped at;
-// a failed read of where to start ends it with nothing written, and the next pass reads again.
+// A read or a copy that failed ends the pass with the record written at the frame it stopped at,
+// under the same rule; a failed read of where to start ends it with nothing written, and the next
+// pass reads again.
 func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, stored bus.StoredTakeoverRecord) (bus.StoredTakeoverRecord, bool, error) {
 	record := stored.Record
 	started := cfg.now()
@@ -319,6 +305,12 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 			return stored, false, err
 		}
 		return bus.StoredTakeoverRecord{Subject: stored.Subject, Record: record, Written: started}, done, nil
+	}
+	settle := func(record bus.TakeoverRecord, done bool, err error) (bus.StoredTakeoverRecord, bool, error) {
+		if record == stored.Record && started.Sub(stored.Written) < takeoverRecordRefresh {
+			return stored, done && err == nil, err
+		}
+		return written(record, done, err)
 	}
 	holder, err := readRoleClaimHolder(ctx, cfg, record.Role)
 	if err != nil {
@@ -349,20 +341,20 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 			// one: a relay's restart creates the consumer again within moments, and a read
 			// inside them would start from the hour before the claim needlessly.
 			record.FloorMissed = true
-			return written(record, true, nil)
+			return settle(record, true, nil)
 		}
 		if start == 0 {
 			// Nothing on the subject from the hour before the claim on: the end, with nothing
 			// to start from yet.
 			record.Finished = lifeOver
-			return written(record, true, nil)
+			return settle(record, true, nil)
 		}
 		next = start
 	}
 	copied, reachedEnd := 0, false
 	stop := func(err error) (bus.StoredTakeoverRecord, bool, error) {
 		record.Next = next
-		return written(record, false, err)
+		return settle(record, false, err)
 	}
 	for range roleKeepScanMax {
 		message, err := cfg.client.NextStoredMessage(ctx, agent, next)
@@ -398,7 +390,7 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 			slog.Uint64("next", next),
 			slog.Bool("finished", record.Finished))
 	}
-	return written(record, reachedEnd, nil)
+	return settle(record, reachedEnd, nil)
 }
 
 // takeoverStart is where a record's first pass reads the previous holder's subject from: the
@@ -487,18 +479,19 @@ func takenRoleMessage(data []byte, role string) (contracts.Envelope, bool) {
 }
 
 // keepTakenRoleFrame copies item, the frame stored at seq on a session's own subject, to role's
-// kept lane, as its envelope without the forward mark (contracts.RoleForwardDedupePrefix), under
-// takenFrameMsgID. The stream's duplicate answer is a copy already made, which is no error. A
-// clustered stream's refusal of an id still in process under another publish
-// (bus.ErrDuplicateInProcess) is published again roleKeepInProcessPause later, as the keep's own is
-// (storeKeptRoleCopy). A copy of a frame Dispatch's outbox forwarded, which carries no role mark,
-// is an outbox copy to the walk (isOutboxCopy): it raises no wake and gets no dead letter. A copy of
-// a send Dispatch's API marked with its role is the listener's own copy, which the sweep's wake
-// report counts.
+// kept lane, as its envelope without the forward mark (contracts.RoleForwardDedupePrefix) and with
+// a dedupe key of its own (takenFrameDedupeKey), under takenFrameMsgID. The stream's duplicate
+// answer is a copy already made, which is no error. A clustered stream's refusal of an id still in
+// process under another publish (bus.ErrDuplicateInProcess) is published again
+// roleKeepInProcessPause later, as the keep's own is (storeKeptRoleCopy). A copy of a frame
+// Dispatch's outbox forwarded, which carries no role mark, is an outbox copy to the walk
+// (isOutboxCopy): it raises no wake and gets no dead letter. A copy of a send Dispatch's API marked
+// with its role is the listener's own copy, which the sweep's wake report counts.
 func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope, seq uint64) error {
+	key := strings.TrimPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix)
 	kept := item
-	kept.DedupeKey = strings.TrimPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix)
-	msgID := takenFrameMsgID(kept.DedupeKey, role, seq)
+	kept.DedupeKey = takenFrameDedupeKey(key, seq)
+	msgID := takenFrameMsgID(key, role, seq)
 	for {
 		_, err := cfg.client.PublishStoredAck(ctx, bus.KeptRoleSubject(role), kept, msgID)
 		if errors.Is(err, bus.ErrDuplicateInProcess) {
@@ -527,6 +520,9 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // copy that failed has the frame given back to the server with the delay its deliveries earn
 // (relayNakDelayFor), neither sent nor acknowledged, so it is copied or sent once they answer.
 func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg bus.SessionMessage) bool {
+	if before := m.cfg.takeoverFaults.faults().relayOfReleaseBefore; before != nil && before(sessionID) {
+		return false
+	}
 	var mark roleOfMessage
 	if err := json.Unmarshal(msg.Data, &mark); err != nil {
 		return false

@@ -632,6 +632,81 @@ func TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole(t *testing.T)
 		}
 		awaitWake(t, wakes, wakeKindRole, role)
 	})
+
+	t.Run("(9) a send for R that asks connected_only, whose claim names another session, is refused 409 and keeps nothing", func(t *testing.T) {
+		const role = "route-connected-only"
+		holder := rig.register(t, "ses_route_connected_only_a", "Holder A")
+		rig.claim(t, holder.id, role)
+		next := rig.register(t, "ses_route_connected_only_b", "Holder B")
+		rig.claim(t, next.id, role)
+		kept := func() int {
+			t.Helper()
+			stored, err := readStored(context.Background(), rig.warm.client, bus.KeptRoleSubject(role))
+			if err != nil {
+				t.Fatalf("read role %s's kept lane: %v", role, err)
+			}
+			return len(stored)
+		}
+		send := func(key string, connectedOnly bool) *httptest.ResponseRecorder {
+			body := fmt.Sprintf(`{"target_session":%q,"source":"dispatch","message":"from %s","payload":"{}","idempotency_key":%q,"role":%q,"connected_only":%t}`,
+				holder.id, key, key, role, connectedOnly)
+			request := httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(body))
+			request.Host = "127.0.0.1:9020"
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Bearer "+rig.issuer.token(t, rigDispatchPrincipal))
+			recorder := httptest.NewRecorder()
+			rig.listener.ServeHTTP(recorder, request)
+			return recorder
+		}
+
+		refused := send("connected-only-moved", true)
+		if refused.Code != http.StatusConflict {
+			t.Fatalf("a connected_only send to %s for %s, whose claim names %s: status %d body %s, want 409", holder.id, role, next.id, refused.Code, refused.Body.String())
+		}
+		if got := kept(); got != 0 {
+			t.Fatalf("role %s's kept lane holds %d copies after the refused connected_only send; want none", role, got)
+		}
+		if accepted := send("connected-only-control", false); accepted.Code != http.StatusAccepted {
+			t.Fatalf("control: the same send without connected_only: status %d body %s, want 202 kept", accepted.Code, accepted.Body.String())
+		}
+		if got := kept(); got != 1 {
+			t.Fatalf("control: role %s's kept lane holds %d copies after the send without connected_only; want 1", role, got)
+		}
+	})
+
+	t.Run("(10) Dispatch's token file holds no token when a send for R starts and a live one moments later: the attempt is tried again and sent, marked", func(t *testing.T) {
+		const role, text = "route-token-late", "Message sent once the token is there"
+		holder := rig.register(t, "ses_route_token_late", "Holder")
+		rig.claim(t, holder.id, role)
+		path := filepath.Join(t.TempDir(), "dispatch-account-token")
+		late := roleRouteDispatchMux(t, rig.database, rig.url, rig.warm.client, func(input *dispatchapi.DepsInput) {
+			presentAccountToken(input, path)
+		})
+		token := rig.issuer.token(t, rigDispatchPrincipal)
+		written := make(chan error, 1)
+		// The kubelet's first write of the projected token, after the send began: the file is
+		// written whole and renamed into place, as rotateAccountToken does.
+		go func() {
+			time.Sleep(600 * time.Millisecond)
+			next := path + ".next"
+			if err := os.WriteFile(next, []byte(token+"\n"), 0o600); err != nil {
+				written <- err
+				return
+			}
+			written <- os.Rename(next, path)
+		}()
+		message := dispatchRoleMessage(t, late, key, role, text)
+		if err := <-written; err != nil {
+			t.Fatalf("write Dispatch's token: %v", err)
+		}
+		if got := message.Deliveries[0]; got.State != "sent" || got.SessionID != holder.id || got.Error != nil {
+			t.Fatalf("the attempt begun before the token file held a token = %+v, want sent to %s once the file held one", got, holder.id)
+		}
+		frames := received(holder, 20*time.Second, text)[text]
+		if len(frames) != 1 || frames[0].item.Role != role {
+			t.Fatalf("the holder received %d copies, the first marked %q; want one copy marked %s", len(frames), roleOf(frames), role)
+		}
+	})
 }
 
 // roleOf is the role mark of the first of frames, "" when there is none.

@@ -83,13 +83,16 @@ func (f roleForward) forwarded() contracts.Envelope {
 // listener of the machine groups an older grant leaves the lane in, which all forward the same
 // message. A forward whose envelope's own key names its event
 // (contracts.DedupeKeyNamesTheUpstreamEvent, asked of the message as it arrived: the forward's
-// prefix hides a webhook key's shape) is named by the forward's dedupe key and the subject, as
-// the publish route's forwards are (bus.ForwardMsgID). Any other key is its sender's choice and
-// two distinct envelopes can share one, so such a forward is named by its event id and the
-// subject instead: a repeat of one message is still stored once, and two messages under one key
-// are two messages, which the stream stores both of.
+// prefix hides a webhook key's shape), and a takeover's copy, whose key is the listener's own and
+// names the one frame it was copied from (takenFrameDedupeKey), is named by the forward's dedupe
+// key and the subject, as the publish route's forwards are (bus.ForwardMsgID): a copy forwarded to
+// a holder the message itself went to before, which took the role back, is not dropped as that
+// earlier forward. Any other key is its sender's choice and two distinct envelopes can share one,
+// so such a forward is named by its event id and the subject instead: a repeat of one message is
+// still stored once, and two messages under one key are two messages, which the stream stores both
+// of.
 func (f roleForward) msgID(subject string) string {
-	if contracts.DedupeKeyNamesTheUpstreamEvent(f.item) {
+	if contracts.DedupeKeyNamesTheUpstreamEvent(f.item) || isTakenFrameDedupeKey(f.item.DedupeKey) {
 		return bus.ForwardMsgID(f.forwarded().DedupeKey, subject)
 	}
 	return bus.ForwardMsgID(f.item.EventID, subject)

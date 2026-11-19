@@ -33,7 +33,7 @@ func TestATakeoverRecordThatWaitedWhileItsHolderKeptTheRoleCopiesNoOlderHour(t *
 			agent := contracts.LegacyAgentSubject(a)
 			if waiting {
 				rig.gone(b)
-				setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{beforeClaimTry: func(r, previous string, _ int) error {
+				setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{beforeClaimTry: func(r, previous string) error {
 					if r == role && previous == a {
 						return errors.New("the listener stopped after the takeover record and before the claim write")
 					}

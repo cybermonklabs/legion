@@ -303,35 +303,41 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // answered, so the body must not say it did not, but the same message is taken once the stream
 // has room, so the caller's retry is right.
 //
-// A publish that went out and was never acknowledged (bus.ErrUnacknowledged) may be stored, also
-// when the resend after it met a full stream: either 503 then carries listenerwire.CodeMaybeStored,
-// so a sender treats it as a send that may have landed rather than one that stored nothing.
+// A publish that may have stored its message (mayHaveStored) is the 503 with
+// listenerwire.CodeMaybeStored, whichever answer ended it - a full stream's, or a refusal of the
+// resend after a send nothing answered - so a sender treats it as a send that may have landed
+// rather than one that stored nothing.
 func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	if errors.Is(err, bus.ErrPublishDenied) {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
 		return http.StatusForbidden
 	}
-	maybeStored := errors.Is(err, bus.ErrUnacknowledged) && !errors.Is(err, bus.ErrRefused)
+	prefix := busUnansweredPrefix
 	if errors.Is(err, bus.ErrStreamFull) {
-		w.Header().Set("Retry-After", "1")
-		answer := listenerwire.APIError{Error: fmt.Sprintf("%s: %s", streamFullPrefix, err)}
-		if maybeStored {
-			answer.Code = listenerwire.CodeMaybeStored
+		prefix = streamFullPrefix
+	}
+	if !mayHaveStored(err) && !errors.Is(err, bus.ErrStreamFull) {
+		if !errors.Is(err, bus.ErrRefused) {
+			w.Header().Set("Retry-After", "1")
 		}
-		writeJSON(w, http.StatusServiceUnavailable, answer)
-		return http.StatusServiceUnavailable
+		return writeNATSError(w, err, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", prefix, err))
 	}
-	if !errors.Is(err, bus.ErrRefused) {
-		w.Header().Set("Retry-After", "1")
+	w.Header().Set("Retry-After", "1")
+	answer := listenerwire.APIError{Error: fmt.Sprintf("%s: %s", prefix, err)}
+	if mayHaveStored(err) {
+		answer.Code = listenerwire.CodeMaybeStored
 	}
-	if maybeStored {
-		writeJSON(w, http.StatusServiceUnavailable, listenerwire.APIError{
-			Code:  listenerwire.CodeMaybeStored,
-			Error: fmt.Sprintf("%s: %s", busUnansweredPrefix, err),
-		})
-		return http.StatusServiceUnavailable
-	}
-	return writeNATSError(w, err, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", busUnansweredPrefix, err))
+	writeJSON(w, http.StatusServiceUnavailable, answer)
+	return http.StatusServiceUnavailable
+}
+
+// mayHaveStored reports whether a publish that failed with err may still have stored its message:
+// a send of it went out and nothing answered (bus.ErrUnacknowledged), whatever answer ended the
+// publish after it - a full stream, or a refusal of a later send, since the first may have landed.
+// It is the one rule the bus-unavailable answer (writeBusUnavailable), the sender's charge
+// (senderCharge.published) and a keep's failure (storeKeptRoleCopy) read.
+func mayHaveStored(err error) bool {
+	return errors.Is(err, bus.ErrUnacknowledged)
 }
 
 // writeGrantGuardRefusal answers a soft claim the grant guard refused (roleGrantGuarded) as the
@@ -700,12 +706,13 @@ const senderStampReadTimeout = 1 * time.Second
 // wake, if one was reported.
 //
 // A send carrying role, the role a Dispatch send for a route to a role is sent for, is taken only
-// from Dispatch's own verified principal (roleMarkRefusal): any other caller carrying it is the
+// from Dispatch's own verified principal (refuseRoleMark): any other caller carrying it is the
 // 403 naming the field, before anything is read. Taken, the mark rides the envelope, and the
-// role's claim is read before the target: a claim naming the target sends as above, and a claim
-// naming another session, or none, keeps the message for the role's next live holder and answers
-// 202 kept (keepRoleSend), so the role's message never lands on the subject of a session that no
-// longer holds the role. A claim read that did not answer is the bus-unavailable 503.
+// role's claim is read before the target (answerRoleSend): a claim naming the target sends as
+// above, and a claim naming another session, or none, keeps the message for the role's next live
+// holder and answers 202 kept, so the role's message never lands on the subject of a session that
+// no longer holds the role, unless the send asked connected_only, which is the 409 a stopped
+// target gives, with nothing kept. A claim read that did not answer is the bus-unavailable 503.
 func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		record := &requestRecord{logger: logger, line: "listener send", laneKey: "target_session"}
@@ -732,15 +739,8 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusForbidden, outcomeCapabilityRefused, refusal, "source_session")
 			return
 		}
-		if request.Role != "" {
-			if refusal := roleMarkRefusal(r, d.dispatchPrincipal); refusal != "" {
-				record.refuse(w, http.StatusForbidden, outcomeCapabilityRefused, refusal, "role")
-				return
-			}
-			if !roles.Valid(request.Role) {
-				record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, fmt.Sprintf("role %q is no role a claim can name", request.Role), "role")
-				return
-			}
+		if refuseRoleMark(w, r, d, record, request.Role) {
+			return
 		}
 		if targetSession == "" {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "target_session is required", "target_session")
@@ -767,25 +767,8 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		defer charge.settle()
-		// A send for a role goes to its target only while the role's claim names that target: the
-		// claim read from the role bucket under the role routes' own bound (readRoleClaimHolder),
-		// never from this listener's watched copy of it. A claim that names another session, or
-		// none, is a role that moved between Dispatch's resolution and this send, and the message
-		// is the role's, so it is kept for the role's next live holder, as a role publish that
-		// finds no live holder is (keepRoleSend).
-		if item.Role != "" {
-			holder, err := readRoleClaimHolder(ctx, *d.delivery, item.Role)
-			switch {
-			case errors.Is(err, store.ErrMalformedRoleClaim):
-				record.refuseRoleClaimUnreadable(w, item.Role, err)
-				return
-			case err != nil:
-				record.refuseBusUnavailable(w, err)
-				return
-			case holder != targetSession:
-				keepRoleSend(w, d, record, charge, &item, targetSession, holder, expectsReplyAnswer(body.ExpectsReply))
-				return
-			}
+		if answerRoleSend(ctx, w, d, record, charge, &item, request, targetSession) {
+			return
 		}
 		// The cache alone cannot say a session is gone: it trails the bucket it follows, and is
 		// still being refilled after a reconnect, so a miss is read through to the bucket itself.
@@ -2131,7 +2114,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 					ifClaimRevision = &decidedRevision
 				}
 			}
-			tries := newTakeoverTries(*d.delivery, body.SessionID, body.Role)
+			tries := takeoverTries{cfg: *d.delivery, claimant: body.SessionID, role: body.Role}
 			item, err := d.registry.SetRoleWithPrevious(ctx, store.RoleClaimRequest{
 				SessionID:         body.SessionID,
 				MachineID:         machineID,
@@ -2143,7 +2126,9 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				Supersedable:      supersedable,
 				BeforeTry:         tries.beforeTry,
 			})
-			if errors.Is(err, store.ErrRoleClaimContended) {
+			// Neither wrote a claim, and both are the client's to make again: every try met a
+			// conflict until the deadline, or a try's takeover record did not store.
+			if errors.Is(err, store.ErrRoleClaimContended) || errors.Is(err, errTakeoverUnrecorded) {
 				w.Header().Set("Retry-After", "1")
 				writeJSONError(w, http.StatusServiceUnavailable, err.Error())
 				return
@@ -2197,7 +2182,6 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				return
 			}
 			landed = true
-			tries.landed()
 			go runTakenRoleDrain(*d.delivery, body.Role)
 			answer := roleSetResponse{Interest: item}
 			if roleWarning != "" {

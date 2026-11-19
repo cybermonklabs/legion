@@ -229,9 +229,9 @@ type SendInput struct {
 	// The listener stores it on the envelope (contracts.Envelope.Role), so that a different session
 	// that takes the role receives what the holder did not read, and keeps the message for the
 	// role's next holder when the role's claim names another session than the target when the
-	// send arrives (the 202 Kept reads). It takes the mark from Dispatch's own identity alone, so
-	// the send carries it only from a client that presents that identity (WithAccountTokenFile),
-	// and from any other it is left out of the body, as every send before the mark existed was.
+	// send arrives (its 202). It takes the mark from Dispatch's own identity alone, so such a send
+	// is made on the account token only (WithAccountTokenFile, Send); a client that presents no
+	// identity sends it unmarked and logs it at Error.
 	Role string
 }
 
@@ -243,21 +243,15 @@ type SendInput struct {
 //
 // State is what the target was when the listener stored the message, SendStateConnected or
 // SendStateStopped. A listener that predates the field answers none, which reads as a connected
-// target.
-//
-// Kept is a send for a role (SendInput.Role) that the listener kept on the role's kept lane
-// rather than storing it for the target, because the role's claim named another session than the
-// target, or none, when the send arrived: it answers 202 with kept and kept_until, the end of the
-// kept copy's hour, in Unix milliseconds, as the publish route answers a role message it kept.
-// The message reaches the session that holds the role then, live, through the lane's walk, and
-// EnvelopeID names the copy the lane holds.
+// target. A send for a role that the listener kept on the role's kept lane, because the role's
+// claim named another session than the target when the send arrived, answers no State, and
+// EnvelopeID names the copy the lane holds: the message reaches the session that holds the role,
+// live, through the lane's walk, and the delivery records it sent like any other.
 type SendResult struct {
 	EnvelopeID string
 	Recipient  string
 	Duplicate  bool
 	State      string
-	Kept       bool
-	KeptUntil  int64
 }
 
 // Client reads live session metadata from the Envoy listener.
@@ -297,9 +291,11 @@ func WithToken(token string) Option {
 // the file at path for the listener's audience and rewrites before it expires. Each call reads the
 // file when it is made, so the call after a rotation presents the new token, and judges the token
 // by its own exp before presenting it, so a token the kubelet did not rewrite in time is never
-// sent to earn a 401 (accountTokenFromFile). It is presented in WithToken's bearer's place, which
-// is then presented only to a listener that refuses the account token (do), and it is what lets a
-// send carry its role mark (SendInput.Role).
+// sent to earn a 401 (accountTokenFromFile). A call whose token could not be read, or that the
+// listener answered 401, reads the file again and is made once more (do). It is presented in
+// WithToken's bearer's place, which is then presented only on a call that carries no role mark
+// and whose account token the listener did not take on two tries, and it is what lets a send
+// carry its role mark (SendInput.Role).
 func WithAccountTokenFile(path string) Option {
 	return func(c *Client) { c.accountTokenFile = path }
 }
@@ -326,39 +322,79 @@ func New(baseURL string, options ...Option) *Client {
 	return client
 }
 
-// do makes one listener call, the request build makes, authorized by authorize. A call on the
-// account token that the listener answers 401 is made once more on the shared token when the
-// client holds one too (WithToken beside WithAccountTokenFile), built with shared set, so a send
-// leaves its role mark out (Send): a listener that does not verify Dispatch's identity yet - one
-// of the release before it, still serving while a deploy rolls the listener and the app at once -
-// refuses the account token and takes the shared one, and would refuse the mark. A 401 is
-// answered before the listener's route runs (cmd/listener, apiAuth), so the first call did
-// nothing and the second is no repeat. The fallback is logged, since a listener that keeps
-// refusing Dispatch's identity past a roll is a deployment fault that costs every role mark. It
-// is no token refresh: the account token is read anew at every call (authorize) and never
-// because of a 401.
-func (c *Client) do(route string, build func(shared bool) (*http.Request, error)) (*http.Response, error) {
-	request, err := build(false)
-	if err != nil {
-		return nil, err
+// do makes one listener call, the request build makes, and returns the listener's answer or the
+// error that kept it from answering: build's own, an account token that could not be presented
+// (ErrAccountToken), or a failure of the transport, which transport classifies (each caller's
+// ErrUnavailable, and ErrUnreachable where nothing answered).
+//
+// A client that presents Dispatch's identity (WithAccountTokenFile) makes the call on the account
+// token, read from the file at each try. A try whose token could not be read, or that the listener
+// answered 401, is made once more on what the file holds then: the kubelet rewrites a projected
+// token in place, so the second read can give the new token. A call that still has no token the
+// listener takes is made on the shared token (WithToken), with a WARN line, when the client holds
+// one and the call carries no role mark (marked unset): a listener that does not verify Dispatch's
+// identity yet - one of the release before, still serving while a deploy rolls - takes the shared
+// token, and nothing of such a call needs Dispatch's identity. A marked call - a send for a role
+// (Send) - is never made on the shared token, since the listener takes the role mark from
+// Dispatch's identity alone and a send without it is not copied when the role moves: it ends with
+// the second try's answer, logged at Error, and the delivery records that failure. A 401 is
+// answered before the listener's route runs (cmd/listener, apiAuth), so a try it answered did
+// nothing and the next is no repeat.
+func (c *Client) do(route string, marked bool, build func() (*http.Request, error), transport func(error) error) (*http.Response, error) {
+	try := func(shared bool) (*http.Response, error) {
+		request, err := build()
+		if err != nil {
+			return nil, err
+		}
+		if err := c.authorize(request, shared); err != nil {
+			return nil, fmt.Errorf("%s: %w", route, err)
+		}
+		response, err := c.httpClient.Do(request)
+		if err != nil {
+			return nil, transport(err)
+		}
+		return response, nil
 	}
-	if err := c.authorize(request, false); err != nil {
-		return nil, fmt.Errorf("%s: %w", route, err)
-	}
-	response, err := c.httpClient.Do(request)
-	if err != nil || response.StatusCode != http.StatusUnauthorized || !c.presentsIdentity() || c.apiToken == "" {
+	response, err := try(false)
+	if !c.presentsIdentity() || !identityNotTaken(response, err) {
 		return response, err
 	}
-	_ = response.Body.Close()
-	c.logger.Warn("dispatch: the Envoy listener refused Dispatch's account token, so the call is made again on the shared token and carries no role mark",
-		"route", route)
-	if request, err = build(true); err != nil {
-		return nil, err
+	closeBody(response)
+	if response, err = try(false); !identityNotTaken(response, err) {
+		return response, err
 	}
-	if err := c.authorize(request, true); err != nil {
-		return nil, fmt.Errorf("%s: %w", route, err)
+	if marked || c.apiToken == "" {
+		c.logger.Error("dispatch: the Envoy listener did not take Dispatch's account token on two tries, so the call is not made on any other credential",
+			"route", route, "role_mark", marked, "refusal", identityRefusal(response, err))
+		return response, err
 	}
-	return c.httpClient.Do(request)
+	closeBody(response)
+	c.logger.Warn("dispatch: the Envoy listener did not take Dispatch's account token on two tries, so the call is made again on the shared token",
+		"route", route, "refusal", identityRefusal(response, err))
+	return try(true)
+}
+
+// identityNotTaken reports whether a try on Dispatch's account token ended without the listener
+// taking that identity: the token could not be presented (ErrAccountToken), or the listener
+// answered 401.
+func identityNotTaken(response *http.Response, err error) bool {
+	return errors.Is(err, ErrAccountToken) || (err == nil && response.StatusCode == http.StatusUnauthorized)
+}
+
+// identityRefusal is what a log line says of a try identityNotTaken reports: the error, which
+// names the token's file and never the token, or the listener's status.
+func identityRefusal(response *http.Response, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("the listener answered %d", response.StatusCode)
+}
+
+// closeBody closes the body of an answer a try of do leaves unread; an error leaves none.
+func closeBody(response *http.Response) {
+	if response != nil {
+		_ = response.Body.Close()
+	}
 }
 
 // Sessions returns every session the listener holds a registration for, live and unresponsive
@@ -458,21 +494,21 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 	if err != nil {
 		return nil, fmt.Errorf("encode POST /v1/interests/unsubscribe body: %w", err)
 	}
-	response, err := c.do("POST /v1/interests/unsubscribe", func(bool) (*http.Request, error) {
+	const route = "POST /v1/interests/unsubscribe"
+	response, err := c.do(route, false, func() (*http.Request, error) {
 		request, err := http.NewRequestWithContext(
 			ctx, http.MethodPost, c.baseURL+"/v1/interests/unsubscribe", bytes.NewReader(body),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("%w: build POST /v1/interests/unsubscribe request: %v", ErrUnavailable, err)
+			return nil, fmt.Errorf("%w: build %s request: %v", ErrUnavailable, route, err)
 		}
 		request.Header.Set("Content-Type", "application/json")
 		return request, nil
+	}, func(err error) error {
+		return unreachable(fmt.Errorf("%w: %s: %v", ErrUnavailable, route, err))
 	})
-	if errors.Is(err, ErrUnavailable) {
-		return nil, err
-	}
 	if err != nil {
-		return nil, unreachable(fmt.Errorf("%w: POST /v1/interests/unsubscribe: %v", ErrUnavailable, err))
+		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -697,20 +733,15 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 // reads alike however it was asked. A transport failure is ErrUnavailable and ErrUnreachable
 // both: no listener answered it (unreachable).
 func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
-	response, err := c.do("GET "+route, func(bool) (*http.Request, error) {
+	return c.do("GET "+route, false, func() (*http.Request, error) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
 		if err != nil {
 			return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
 		}
 		return request, nil
+	}, func(err error) error {
+		return unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, err))
 	})
-	if errors.Is(err, ErrUnavailable) {
-		return nil, err
-	}
-	if err != nil {
-		return nil, unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, err))
-	}
-	return response, nil
 }
 
 // unavailableGetStatus is ErrUnavailable for a GET of route the listener answered with a status
@@ -752,8 +783,14 @@ func (input SendInput) EnvelopeMessage() contracts.Message {
 // consumer (SendResult). A send that set ConnectedOnly and met a stopped session is refused
 // instead, 409 with the listener's reason "the session is stopped", which arrives here as that
 // reason alone (listenerResponseError). A send for a role (SendInput.Role) that the listener kept
-// for the role's next holder is its 202, read as Kept; a 202 naming no kept copy is no answer a
-// send gets, and is ErrUnavailable.
+// for the role's next holder is its 202, which names the kept copy (keptSend).
+//
+// A send for a role carries its role mark, which the listener takes from Dispatch's own identity
+// alone, so it is made on the account token and never on the shared one (do, marked): a send the
+// listener's authentication refused on two tries fails here, naming the role, and the delivery
+// records it. A client that presents no identity (no WithAccountTokenFile) cannot mark the send:
+// it sends it unmarked, as every send before the mark existed was, and logs each such send at
+// Error, since the session that takes the role from the target will not receive it.
 func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) {
 	message := input.EnvelopeMessage()
 	send := listenerwire.SendRequest{
@@ -776,30 +813,29 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		}
 		send.ExpectsReply = expectsReply
 	}
-	// body is the send's body; shared is a send made again on the shared token (do), which
-	// carries no role mark, since the listener takes the mark from Dispatch's identity alone.
-	body := func(shared bool) ([]byte, error) {
-		marked := send
-		if c.presentsIdentity() && !shared {
-			marked.Role = input.Role
-		}
-		return json.Marshal(marked)
+	marked := input.Role != ""
+	if marked && c.presentsIdentity() {
+		send.Role = input.Role
+	} else if marked {
+		c.logger.Error("dispatch: a send for a role goes to its holder with no role mark, because this Dispatch presents no identity token to the Envoy listener (ENVOY_ACCOUNT_TOKEN_FILE): a session that takes the role from that holder will not receive it",
+			"role", input.Role, "target_session", input.TargetSession)
+		marked = false
+	}
+	encoded, err := json.Marshal(send)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("%w: encode POST /v1/messages/send body: %v", ErrUnavailable, err)
 	}
 	// written records that this client finished putting the request on the wire, which is what
 	// separates a listener that went quiet (the envelope may be published) from a connection
 	// that never came up (nothing was). Both surface as the same client-timeout error. It is
-	// cleared as each request is built, so a retry on the shared token after a 401 is judged by
-	// its own write: the 401 came from the listener's authentication, before any route ran.
+	// cleared as each request is built, so a second try after a 401 is judged by its own write:
+	// the 401 came from the listener's authentication, before any route ran.
 	var written atomic.Bool
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		WroteRequest: func(info httptrace.WroteRequestInfo) { written.Store(info.Err == nil) },
 	})
-	response, err := c.do("POST /v1/messages/send", func(shared bool) (*http.Request, error) {
+	response, err := c.do("POST /v1/messages/send", marked, func() (*http.Request, error) {
 		written.Store(false)
-		encoded, err := body(shared)
-		if err != nil {
-			return nil, fmt.Errorf("%w: encode POST /v1/messages/send body: %v", ErrUnavailable, err)
-		}
 		request, err := http.NewRequestWithContext(
 			ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(encoded),
 		)
@@ -808,21 +844,19 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		}
 		request.Header.Set("Content-Type", "application/json")
 		return request, nil
-	})
-	// A build or an authorization failure made no call (ErrUnavailable, ErrAccountToken); every
-	// other failure is the transport's.
-	if errors.Is(err, ErrUnavailable) {
+	}, func(err error) error { return sendTransportError(err, written.Load()) })
+	if err != nil {
 		return SendResult{}, err
 	}
-	if err != nil {
-		return SendResult{}, sendTransportError(err, written.Load())
-	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
-		return SendResult{}, listenerResponseError(response)
-	}
-	if response.StatusCode == http.StatusAccepted {
+	switch {
+	case response.StatusCode == http.StatusAccepted:
 		return keptSend(response)
+	case marked && response.StatusCode == http.StatusUnauthorized:
+		return SendResult{}, fmt.Errorf("%w: POST /v1/messages/send for role %s: the listener refused Dispatch's account token on two tries, and a send for a role is made on that identity alone: %w",
+			ErrUnavailable, input.Role, listenerResponseError(response))
+	case response.StatusCode != http.StatusOK:
+		return SendResult{}, listenerResponseError(response)
 	}
 	var answer listenerwire.SendResponse
 	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
@@ -835,8 +869,9 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 }
 
 // keptSend reads the send route's 202, a send for a role the listener kept for the role's next
-// holder (listenerwire.KeptSendResponse), as Kept. A 202 naming no kept copy is no answer a send
-// gets, and is ErrUnavailable.
+// holder (listenerwire.KeptSendResponse), as the envelope the role's kept lane holds, whose walk
+// hands it to the session that holds the role, live. A 202 naming no kept copy is no answer a
+// send gets, and is ErrUnavailable.
 func keptSend(response *http.Response) (SendResult, error) {
 	var answer listenerwire.KeptSendResponse
 	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
@@ -845,9 +880,7 @@ func keptSend(response *http.Response) (SendResult, error) {
 	if !answer.Kept {
 		return SendResult{}, fmt.Errorf("%w: POST /v1/messages/send answered 202 naming no kept copy", ErrUnavailable)
 	}
-	return SendResult{
-		EnvelopeID: answer.EventID, Recipient: answer.Recipient, Kept: true, KeptUntil: answer.KeptUntil,
-	}, nil
+	return SendResult{EnvelopeID: answer.EventID, Recipient: answer.Recipient}, nil
 }
 
 // sendTransportError classifies what stopped a send from being answered. Only a request this

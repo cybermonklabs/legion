@@ -13,22 +13,19 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// A publish to a role no session holds keeps the message for the role's next holder. A keep whose
-// publish went out and was never acknowledged may have stored the copy, so the publish route
-// answers it as a send that may have landed - a 503 carrying listenerwire.CodeMaybeStored - and not
-// with the 404 that tells the sender nothing was kept and its own fallback must run. The control is
-// a keep that stored nothing, which keeps today's 404.
-func TestAPublishWhoseKeepWentUnacknowledgedIsAnsweredMaybeStored(t *testing.T) {
+// A publish to a role no session holds keeps the message for the role's next holder. A keep that
+// fails is answered 404 unclaimed, as at main, whether its publish stored nothing or went out and
+// was never acknowledged (and so may have stored the copy): this change keeps what each role route
+// answers. Both rows are controls of main's answer.
+func TestAPublishWhoseKeepFailedIsAnsweredAsAtMain(t *testing.T) {
 	for _, row := range []struct {
 		name string
 		err  error
-		want int
-		code string
 	}{
-		{"the keep's publish went out and was never acknowledged: 503 maybe_stored",
-			fmt.Errorf("%w: %w", bus.ErrUnacknowledged, errors.New("nats: connection closed")), http.StatusServiceUnavailable, listenerwire.CodeMaybeStored},
-		{"control: a keep that stored nothing is the 404 it was",
-			errors.New("nats: no responders available for request"), http.StatusNotFound, ""},
+		{"control: the keep's publish went out and was never acknowledged: 404, as at main",
+			fmt.Errorf("%w: %w", bus.ErrUnacknowledged, errors.New("nats: connection closed"))},
+		{"control: a keep that stored nothing: 404, as at main",
+			errors.New("nats: no responders available for request")},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			harness := newListenerDeliveryHarness(t)
@@ -47,8 +44,8 @@ func TestAPublishWhoseKeepWentUnacknowledgedIsAnsweredMaybeStored(t *testing.T) 
 			}
 			var body listenerwire.APIError
 			_ = json.Unmarshal(recorder.Body.Bytes(), &body)
-			if recorder.Code != row.want || body.Code != row.code {
-				t.Fatalf("answered %d with code %q (%s); want %d with code %q", recorder.Code, body.Code, recorder.Body.String(), row.want, row.code)
+			if recorder.Code != http.StatusNotFound || body.Code != "" {
+				t.Fatalf("answered %d with code %q (%s); want 404 with no code, as at main", recorder.Code, body.Code, recorder.Body.String())
 			}
 		})
 	}
