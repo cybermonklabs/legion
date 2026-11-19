@@ -337,11 +337,12 @@ function scrollerName(scroller: HTMLElement): string {
  * by what it scrolls (`scrollerName`), so a reader on the keyboard can scroll it sideways: the
  * focused row's (decision 317). A scroller whose content fits its box - a one-line code block, a
  * narrow table - has nowhere to scroll and Chromium gives it no tab stop, so it takes none here
- * either: it leaves the tab order, as every scroller does without `keepScrollers`, since a later
- * width can make it overflow and nothing here runs again for a width. A scroller other than a
- * table takes a name only with a role (`region`); a table has its own. When it leaves the tab
- * order again - its content fits, or `keepScrollers` turns off - the name and role it was given
- * go back to what they were.
+ * either: it leaves the tab order, as every scroller does without `keepScrollers`. Each scroller
+ * is judged again on every change of its width (one `ResizeObserver`), which changes no child of
+ * the box, so a block that starts to overflow when the window narrows gains its tab stop, and one
+ * that stops loses it. A scroller other than a table takes a name only with a role (`region`); a
+ * table has its own. When it leaves the tab order again - its content fits, or `keepScrollers`
+ * turns off - the name and role it was given go back to what they were.
  * While it keeps its tab stop, a scroller carries `data-kept-scroller` (`KEPT_SCROLLER`); it
  * loses the mark whenever it leaves the tab order or the hook lets it go.
  */
@@ -409,12 +410,34 @@ export function useOutOfTabOrder(
           scroller.setAttribute("role", "region");
         }
       }
+      // Watches each scroller of the box once, since watching one again reports it again, and
+      // lets go of one that has left the box.
+      if (sizes === undefined) return;
+      for (const scroller of sized) {
+        if (element.contains(scroller)) continue;
+        sizes.unobserve(scroller);
+        sized.delete(scroller);
+      }
+      for (const scroller of scrollers) {
+        if (sized.has(scroller)) continue;
+        sizes.observe(scroller);
+        sized.add(scroller);
+      }
     };
+    // With `keepScrollers` a scroller's tab stop rests on whether its content runs past its box,
+    // which a change of its width can turn either way with no change to the box's children: the
+    // pass runs again when a scroller changes size.
+    const sized = new Set<HTMLElement>();
+    const sizes =
+      keepScrollers && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(untab)
+        : undefined;
     untab();
     const watching = new MutationObserver(untab);
     watching.observe(element, { childList: true, subtree: true });
     return () => {
       watching.disconnect();
+      sizes?.disconnect();
       for (const scroller of named.keys()) giveBack(scroller);
     };
   }, [box, keepScrollers, out]);
