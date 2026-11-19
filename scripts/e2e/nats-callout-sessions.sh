@@ -628,7 +628,11 @@ else
     --no-title -e "$pi_plugin") <"$omp_home/stdin" >"$omp_home/rpc.log" 2>"$omp_home/stderr.log" &
   scenario_pids+=($!)
   printf '%s\n' '{"type":"get_state","id":"ncs-state"}' >&"$omp_fd"
-  rpc_state() { jq -ecnR 'first(inputs | fromjson? | select(.type == "response" and .id == "ncs-state"))' "$omp_home/rpc.log"; }
+  # The first poll can come before the shell made rpc.log, and jq names a missing file on stderr.
+  rpc_state() {
+    [ -f "$omp_home/rpc.log" ] &&
+      jq -ecnR 'first(inputs | fromjson? | select(.type == "response" and .id == "ncs-state"))' "$omp_home/rpc.log"
+  }
   wait_for 120 rpc_state >/dev/null || refuse "Oh My Pi did not answer get_state: $(tail -n 10 "$omp_home/stderr.log")"
   state=$(rpc_state)
   omp_session=$(jq -r '.data.sessionId' <<<"$state")
