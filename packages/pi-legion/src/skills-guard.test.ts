@@ -3,6 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
+} from "@legion/contracts/legion-api";
+import {
   brokenRelativeLinks,
   brokenSkillLinks,
   files,
@@ -849,6 +854,30 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
     retired.filter((phrase) => text.includes(phrase)).map((phrase) => `${file}: ${phrase}`)
   );
   expect(carried).toEqual([]);
+});
+
+// The completion that ends the retro rates the plan, and this skill's step that gives the two
+// fields is the one place the rule of the rating is stated in prose: the implementer prompt sends
+// the agent here (prompts_test.go), and the daemon refuses a completion that breaks the rule
+// (the daemon's planRatingOf and planRatingRefusal). So the step names the two
+// fields, the three codes the daemon refuses with, and the scale and the bound of the reason as the
+// contract holds them: a new scale or bound fails here until the skill states it. The bound is
+// pinned with the space before it, since step 5's "32,000 characters" holds "2,000 characters"
+// without it. This shows the text ships, never that a role follows it.
+test("the retro skill names the rating's fields, its refusals, its scale and its bound", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  for (const token of [
+    "`plan_rating`",
+    "`plan_reason`",
+    "`PLAN_RATING_REQUIRED`",
+    "`PLAN_RATING_UNEXPECTED`",
+    "`PLAN_RATING_INPUT`",
+    `${LEGION_PLAN_RATING_LEAST} (the plan cost the work)`,
+    `${LEGION_PLAN_RATING_MOST} (the plan fit the work)`,
+    ` ${LEGION_PLAN_REASON_MAX.toLocaleString("en-US")} characters`,
+  ]) {
+    expect(retro).toContain(token);
+  }
 });
 
 // dispatch://INFRA-3116's rule, beside the rules above: where a tree builds or changes a surface a

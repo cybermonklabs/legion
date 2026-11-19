@@ -368,7 +368,7 @@ const (
 	parkedTurn = 2 * time.Hour
 	// parkFound is how far ahead of the wall clock the runner's clock reads at the row's attempt
 	// that finds the park: past the backoff the first attempt set, which is never above 64 s
-	// (retryBackoff).
+	// (record.RetryBackoff).
 	parkFound = 2 * time.Minute
 )
 

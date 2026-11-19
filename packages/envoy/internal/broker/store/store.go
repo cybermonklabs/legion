@@ -1,11 +1,15 @@
 // Package store owns the broker's Postgres pool and schema migrations. Its runner shares
 // internal/dispatch/store's rules through internal/pgmigrate: the embedded set is refused whole,
-// before anything is applied, when pgmigrate.Load refuses it, and every lock wait a migration
-// makes is bounded by pgmigrate.LockTimeout. Migrate holds a broker-specific
-// pg_advisory_xact_lock for the whole run, so concurrent callers serialize instead of racing on
-// `create table if not exists`, and applies every pending migration inside one shared
-// transaction, recording each in broker_schema_migrations. Once that transaction ends, it resets
-// the session of the connection it ran on before that connection goes back to the pool.
+// before anything is applied, when pgmigrate.Load refuses it, a database whose version table
+// records a version its file does not accept is refused before anything is applied
+// (pgmigrate.Reconcile), and every lock wait a migration makes is bounded by
+// pgmigrate.LockTimeout. Migrate runs two transactions, each under the broker's
+// pg_advisory_xact_lock, so concurrent callers serialize instead of racing on `create table if
+// not exists`: a short one that gives an earlier runner's broker_schema_migrations the identity
+// columns and commits, and one that judges every recorded row and applies every pending
+// migration, recording each with what pgmigrate.Record records of it, and holds the key until it
+// commits. Once they end, it resets the session of the connection they ran on before that
+// connection goes back to the pool.
 package store
 
 import (
@@ -182,9 +186,36 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
 }
 
+// versionTable is the table this runner records each applied migration in.
+const versionTable = "broker_schema_migrations"
+
 // migrate applies every pending migration of fsys in one transaction, on a connection it takes
 // from the pool for itself (Acquire), and resets that connection's session before it gives it back
 // (releaseMigrationConn).
+//
+// Each of its two transactions takes the broker's migration lock first (lockAndPin). The first
+// gives a broker_schema_migrations an earlier runner created the identity columns
+// (pgmigrate.EnsureIdentityColumns) and commits: its ALTER TABLE takes ACCESS EXCLUSIVE on the
+// table, Pin's lock_timeout bounds its wait at pgmigrate.LockTimeout (5 s), and the lock is held to
+// that short transaction's commit, so a request that reads the table
+// (requests.writtenBeforeMigration13) waits for the catalog change alone. The catalog change
+// commits whether or not the second transaction then refuses the rows: the columns are nullable,
+// and the release before ignores them. Every statement an earlier runner sends on the table names
+// its columns, so a pod of the release before this one serves beside it while the Deployment rolls,
+// and its rows record no name. A lock wait that outlasts its bound rolls that transaction back and
+// tries it again, as a migration is tried (pgmigrate.RetryVersionTableLockTimeouts), so a boot that
+// starts while a pg_dump holds the table waits it out rather than fail on its first wait.
+//
+// The second creates the table with those columns where there is none, judges every row before it
+// applies anything (pgmigrate.ReconcileRecorded, whose rule pgmigrate.Reconcile states: a refusal
+// rolls the whole transaction back, nothing applied), and applies the pending migrations. It adds
+// the columns again where they are missing, for one case alone: on a fresh database, a pod of the
+// release before can create the table without them between the two transactions, and the ALTER
+// then holds ACCESS EXCLUSIVE until this transaction commits, after the pending migrations. That
+// pod serves at once, so its request's read of the table (requests.writtenBeforeMigration13) waits
+// behind the ALTER until this transaction commits, a wait the pending migrations bound. Each fill
+// is logged once the transaction has committed (pgmigrate.LogFixes). A fresh database commits
+// nothing, its table included, until every migration has applied.
 func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	migrations, err := pgmigrate.Load(fsys, "migrations")
 	if err != nil {
@@ -200,44 +231,98 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 		return err
 	}
 	defer releaseMigrationConn(ctx, conn)
+	if err := pgmigrate.RetryVersionTableLockTimeouts(ctx, versionTable, func(ctx context.Context) error {
+		return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			if err := lockAndPin(ctx, tx); err != nil {
+				return err
+			}
+			return pgmigrate.EnsureIdentityColumns(ctx, tx, versionTable, nil)
+		})
+	}); err != nil {
+		return err
+	}
+	var fixes []pgmigrate.Fix
 	// BeginFunc commits when the callback returns nil and rolls the whole set back when it returns
 	// an error, so a failed migration leaves none of the set applied.
-	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, int64(8330001)); err != nil {
-			return fmt.Errorf("lock migrations: %w", err)
+	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		if err := lockAndPin(ctx, tx); err != nil {
+			return err
 		}
-		// Pin gives the transaction, until it ends, lock_timeout at LockTimeout, the text settings,
-		// and session_authorization, role and search_path at the values that RESET gives them. So
-		// the create table and the first applied check below are bounded by LockTimeout and resolve
-		// broker_schema_migrations under those values, whatever session the pooled connection
-		// brings. Exec pins the transaction again after each migration's statements, so each later
-		// check and insert runs pinned too. The pin comes after the advisory lock and not before it,
-		// because lock_timeout bounds the wait for an advisory lock too. A pin before the lock would
-		// make a second broker process that starts while another one migrates give up after
-		// LockTimeout, where it must wait its turn.
-		if err := pgmigrate.Pin(ctx, tx); err != nil {
-			return fmt.Errorf("pin the runner's settings: %w", err)
-		}
-		if _, err := tx.Exec(ctx, `create table if not exists broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())`); err != nil {
+		if _, err := tx.Exec(ctx, `create table if not exists broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now(), `+pgmigrate.IdentityColumns+`)`); err != nil {
 			return fmt.Errorf("create broker_schema_migrations: %w", err)
 		}
+		// The one window the comment above names: a release before this one created the table
+		// between the two transactions.
+		if err := pgmigrate.EnsureIdentityColumns(ctx, tx, versionTable, nil); err != nil {
+			return err
+		}
+		// The advisory lock is held to the commit, so what the table records now is what it
+		// records for every migration below.
+		recorded, reconciled, err := pgmigrate.ReconcileRecorded(ctx, tx, versionTable, migrations)
+		if err != nil {
+			return pgmigrate.Labelled(versionTable, err)
+		}
+		fixes = reconciled
+		applied := make(map[int]bool, len(recorded))
+		for _, row := range recorded {
+			applied[row.Version] = true
+		}
 		for _, migration := range migrations {
-			var applied bool
-			if err := tx.QueryRow(ctx, `select exists(select 1 from broker_schema_migrations where version=$1)`, migration.Version).Scan(&applied); err != nil {
-				return fmt.Errorf("check whether migration %s is applied: %w", migration.Name, err)
-			}
-			if applied {
+			if applied[migration.Version] {
 				continue
 			}
 			if err := pgmigrate.Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `insert into broker_schema_migrations (version) values ($1)`, migration.Version); err != nil {
+			if err := pgmigrate.Record(ctx, tx, versionTable, migration); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	pgmigrate.LogFixes(versionTable, fixes)
+	return nil
+}
+
+// lockAndPin takes the broker's migration lock in tx, a transaction-level advisory lock every
+// broker boot takes, so concurrent boots serialize instead of racing on the version table, and
+// then pins tx (pgmigrate.Pin): lock_timeout at LockTimeout, the text settings, and
+// session_authorization, role and search_path at the values that RESET gives them, so every later
+// statement of tx is bounded by LockTimeout and resolves broker_schema_migrations under those
+// values, whatever session the pooled connection brings. Exec pins the transaction again after
+// each migration's statements, so each later insert runs pinned too. The pin comes after the
+// advisory lock and not before it, because lock_timeout bounds the wait for an advisory lock too:
+// a pin before the lock would make a second broker process that starts while another one migrates
+// give up after LockTimeout, where it must wait its turn.
+func lockAndPin(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, int64(8330001)); err != nil {
+		return fmt.Errorf("lock migrations: %w", err)
+	}
+	if err := pgmigrate.Pin(ctx, tx); err != nil {
+		return fmt.Errorf("pin the runner's settings: %w", err)
+	}
+	return nil
+}
+
+// CheckVersions reads what broker_schema_migrations records of each version against the
+// migrations this binary embeds, and what the runner's next boot would do with each row
+// (pgmigrate.CheckVersions), on one connection of the store's pool, which signs in as every pool
+// connection does (an RDS IAM token from WithTokenMinter included). It reads in a read-only
+// transaction it rolls back, and writes nothing.
+func (s *Store) CheckVersions(ctx context.Context) (*pgmigrate.VersionCheck, error) {
+	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("migrations refused: %w", err)
+	}
+	conn, err := s.Pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("connect: %w", err)
+	}
+	defer conn.Release()
+	return pgmigrate.CheckVersions(ctx, conn.Conn(), migrations, versionTable)
 }
 
 // releaseMigrationConn gives conn back to the pool once migrate's transaction has ended, after it

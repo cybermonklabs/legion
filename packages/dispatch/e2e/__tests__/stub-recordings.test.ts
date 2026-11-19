@@ -258,6 +258,59 @@ function holdsContent(tree: unknown): boolean {
   return Array.isArray(tree.content) && tree.content.length > 0;
 }
 
+/** Holds every 200 answer of the recording `file` to the document that demands a tree beside
+ *  every stored text, and every event such an answer lists to a tree that draws each text its
+ *  payload holds. Returns how many events it read. */
+function checkTrees(file: string): number {
+  let events = 0;
+  const har = JSON.parse(readFileSync(join(recordings, file), "utf8")) as Har;
+  for (const entry of har.log.entries) {
+    // A 200 alone: an error body carries no stored text of the issue the row reads, and the
+    // rows of the first describe are what hold every other status to its own schema. An entry
+    // this passes over - a route the contract does not cover, an answer that is no JSON - is one
+    // they have already refused, so nothing is left unguarded by the quiet `continue`s here.
+    if (entry.response.status !== 200) continue;
+    const route = routeOf(new URL(entry.request.url).pathname);
+    if (route === undefined) continue;
+    const method = entry.request.method.toLowerCase();
+    const declared = document.paths[route]?.[method]?.responses ?? {};
+    const code = declared["200"] === undefined ? "default" : "200";
+    const schema = declared[code]?.content?.["application/json"]?.schema;
+    const body = entry.response.content.text;
+    if (
+      schema === undefined ||
+      body === undefined ||
+      body.trim() === "" ||
+      !(entry.response.content.mimeType ?? "").includes("json")
+    ) {
+      continue;
+    }
+    const validate = withTrees.getSchema(schemaPointer("trees", route, method, code));
+    if (validate === undefined) continue;
+    const where = `${entry.request.method} ${new URL(entry.request.url).pathname} in ${file}`;
+    const answered: unknown = JSON.parse(body);
+    expect(
+      validate(answered),
+      `${where}: a stored text is answered without a display tree that draws it, so the row ` +
+        `that reads it reads the browser's own parse - ${withTrees.errorsText(validate.errors)}`
+    ).toBe(true);
+    if (!isEventList(schema)) continue;
+    // The list answered the schema above, so each of its entries holds the members an event
+    // declares; what it answers beside them is whatever the recorded server sent.
+    for (const event of answered as RecordedEvent[]) {
+      events += 1;
+      for (const at of eventTextPaths(event.payload, "payload", [])) {
+        expect(
+          holdsContent(event.trees?.[at]),
+          `${where}: event ${event.id} (${event.type}) answers ${at} without a display tree ` +
+            `to draw, so the row that reads it reads the browser's own parse`
+        ).toBe(true);
+      }
+    }
+  }
+  return events;
+}
+
 describe("every committed recording answers what the generated contract declares", () => {
   // An empty recordings directory is the state of this tree before the first family moved, and a
   // suite that passed over it silently would also pass over a directory a rename emptied.
@@ -343,6 +396,7 @@ describe("every committed recording answers the display tree of every stored tex
       "BroadcastRead.body",
       "BroadcastSummary.body",
       "CheckBlock.text",
+      "CheckResult.observed",
       "CommentWithTrees.body",
       "CommentWriteResponse.body",
       "Decision.text",
@@ -360,7 +414,7 @@ describe("every committed recording answers the display tree of every stored tex
     ]);
   });
 
-  // The event branch below is reached through `isEventList`, and that is derived from the
+  // The event branch of `checkTrees` is reached through `isEventList`, and that is derived from the
   // document too: `eventRefs` is every schema declaring a `payload` beside the `trees` map, and
   // a list of events is an array whose items `$ref` one of them. A generator that renamed the
   // map, or wrapped the list in an envelope of its own, would leave the branch matching nothing
@@ -370,64 +424,22 @@ describe("every committed recording answers the display tree of every stored tex
     expect([...eventRefs].sort()).toEqual(["#/components/schemas/Event"]);
   });
 
-  /** How many events the rows below read, over every committed recording: a branch that read
-   *  none would hold no recording to anything, however well the refs above are named. */
-  let checkedEvents = 0;
-
   for (const file of files) {
     test(file, () => {
-      const har = JSON.parse(readFileSync(join(recordings, file), "utf8")) as Har;
-      for (const entry of har.log.entries) {
-        // A 200 alone: an error body carries no stored text of the issue the row reads, and the
-        // rows above are what hold every other status to its own schema. An entry this passes
-        // over - a route the contract does not cover, an answer that is no JSON - is one they
-        // have already refused, so nothing is left unguarded by the quiet `continue`s here.
-        if (entry.response.status !== 200) continue;
-        const route = routeOf(new URL(entry.request.url).pathname);
-        if (route === undefined) continue;
-        const method = entry.request.method.toLowerCase();
-        const declared = document.paths[route]?.[method]?.responses ?? {};
-        const code = declared["200"] === undefined ? "default" : "200";
-        const schema = declared[code]?.content?.["application/json"]?.schema;
-        const body = entry.response.content.text;
-        if (
-          schema === undefined ||
-          body === undefined ||
-          body.trim() === "" ||
-          !(entry.response.content.mimeType ?? "").includes("json")
-        ) {
-          continue;
-        }
-        const validate = withTrees.getSchema(schemaPointer("trees", route, method, code));
-        if (validate === undefined) continue;
-        const where = `${entry.request.method} ${new URL(entry.request.url).pathname} in ${file}`;
-        const answered: unknown = JSON.parse(body);
-        expect(
-          validate(answered),
-          `${where}: a stored text is answered without a display tree that draws it, so the row ` +
-            `that reads it reads the browser's own parse - ${withTrees.errorsText(validate.errors)}`
-        ).toBe(true);
-        if (!isEventList(schema)) continue;
-        // The list answered the schema above, so each of its entries holds the members an event
-        // declares; what it answers beside them is whatever the recorded server sent.
-        for (const event of answered as RecordedEvent[]) {
-          checkedEvents += 1;
-          for (const at of eventTextPaths(event.payload, "payload", [])) {
-            expect(
-              holdsContent(event.trees?.[at]),
-              `${where}: event ${event.id} (${event.type}) answers ${at} without a display tree ` +
-                `to draw, so the row that reads it reads the browser's own parse`
-            ).toBe(true);
-          }
-        }
-      }
+      checkTrees(file);
     });
   }
 
-  // This is the sum of what the rows above read, so it stands last: bun runs a file's rows in
-  // the order they were registered. Run alone - under a `-t` filter that leaves the rows out -
-  // it reds, because none of them counted anything.
+  // A branch that read no event would hold no recording to anything, however well the refs
+  // above are named. The rows above run in random order, and this row may run before any of
+  // them or alone, under a `-t` filter that leaves them out. So it reads the recordings itself,
+  // in their sorted order, until one yields an event, whatever ran before it.
   test("the rows above read the events the recordings answer", () => {
+    let checkedEvents = 0;
+    for (const file of files) {
+      checkedEvents += checkTrees(file);
+      if (checkedEvents > 0) break;
+    }
     expect(checkedEvents).toBeGreaterThan(0);
   });
 });

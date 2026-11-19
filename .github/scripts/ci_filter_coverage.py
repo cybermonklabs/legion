@@ -8,6 +8,20 @@ of this repository running on a merge group - and main() runs them.
 check-ci-filters.sh runs it from the repository root with this directory on PYTHONPATH, through
 `import ci_filter_coverage` rather than as a script, so ci_job_reads.py's `from ci_filter_coverage
 import ...` gets these very classes.
+
+A step an exact entry pins (Exact) is refused, never read as reading everything, when it is not
+what the entry pins (refuse_off_pin): its script or directory differs, named by the first line
+that differs (pin_difference, name_list_difference) or by both directories, or something around
+it (an env name outside ENV_ALLOWED, a shell, a container, an environment write that reaches it)
+can change what it compiles or which tests it runs. The pin is also the table's word for which
+tests the step runs, and reading everything says nothing where a filter selects every Go file
+already. What surrounds a go command is read over the steps whose writes reach it: a pinned step
+the steps before it, a claimed simple command the steps up to and including its own (job_up_to),
+and a script's go command each job's steps up to the last one whose run: starts the script
+(names_script, SCRIPT_START), or every step of a job that names it nowhere (around_job).
+check-ci-filters.sh's header says why, gives the remedies - the step's own script line, or
+ENV_ALLOWED for a name with which go compiles the same files and runs the same tests - and gives
+the recipe that runs it as CI does, GOROOT unset.
 """
 
 from __future__ import annotations
@@ -178,8 +192,11 @@ class Exact:
     """A run: step of the gate's job whose go commands are not in the simple form, pinned to its
     whole script (compared as text, after trailing whitespace, and never parsed) and to the
     directory it runs in. Its `runs`, unpinned, stand for what the script compiles: while the
-    step holds exactly that script, every go line of it is claimed and the runs' closures are
-    what the job reads; once it differs, every run counts as reading everything a go command can."""
+    step holds exactly that script there, every go line of it is claimed and the runs' closures
+    are what the job reads. Since the pin is also the table's word for which tests the step runs,
+    a step whose script or directory differs is refused, naming the first line that differs or
+    both directories, and so is one whose env, shell, container or job could move what it compiles
+    or which tests it runs, naming what does (refuse_off_pin)."""
 
     step: str
     workdir: str
@@ -958,11 +975,124 @@ def script_lines(text: str) -> list:
     return [line for line in stripped if line and not line.startswith("#")]
 
 
+def odd_character(text: str) -> str | None:
+    """The first character of text outside printable ASCII, tabs and newlines, which Python and
+    bash may split, strip or read differently (a \\r, a NBSP); None when it holds none."""
+    return next((c for c in text if c not in "\t\n" and not " " <= c <= "~"), None)
+
+
 def script_reason(text: str) -> str:
     """'' when a run: script holds only printable ASCII, tabs and newlines; else the first other
-    character, which Python and bash may split, strip or read differently (a \\r, a NBSP)."""
-    odd = next((c for c in text if c not in "\t\n" and not " " <= c <= "~"), None)
+    character (odd_character)."""
+    odd = odd_character(text)
     return f"its step's script holds the character U+{ord(odd):04X}" if odd else ""
+
+
+# The anchored alternation of whole test names ci_job_reads.py writes into the -run or -skip of a
+# pinned script, `-run '^(Name|Name)$'`, each name a Go identifier. Where those lists are all a
+# step's line and its pin differ in, the refusal names the tests either side lacks rather than
+# quoting the line, which can run past a thousand characters: the text-check step's -run holds
+# fifteen names. A list holding any other pattern (`TestA.*`) is quoted like any other line,
+# since which tests a pattern selects is go's to say, not a set difference of its text.
+NAME_LIST = re.compile(r"(-run|-skip) '\^\(([A-Za-z_][A-Za-z0-9_]*(?:\|[A-Za-z_][A-Za-z0-9_]*)*)\)\$'")
+# A run of what bash splits words at, which the "spaces or tabs alone" reading compares lines by:
+# not Python's str.split(), which also splits at a no-break space bash reads as part of a word.
+BASH_BLANKS = re.compile(r"[ \t]+")
+# How much of a differing line a refusal quotes on each side of the difference.
+DIFFERENCE_CONTEXT = 40
+
+
+def excerpt(line: str, start: int, end: int) -> str:
+    """line[start:end], the part of a line that differs, with DIFFERENCE_CONTEXT characters on each
+    side and `...` where that cuts the line."""
+    low, high = max(0, start - DIFFERENCE_CONTEXT), min(len(line), end + DIFFERENCE_CONTEXT)
+    return f"{'...' if low else ''}{line[low:high]}{'...' if high < len(line) else ''}"
+
+
+def quoted(line: str) -> str:
+    """A line of a script as a refusal quotes it whole: in backticks, or `a blank line` for one
+    that holds nothing but spaces and tabs, which backticks would show as nothing."""
+    return f"`{line}`" if line.strip(" \t") else "a blank line"
+
+
+def held_character(part: str) -> str:
+    """What a refusal adds after quoting `part` of a step's line: the first character of it
+    outside printable ASCII and tab (odd_character), or ''."""
+    odd = odd_character(part)
+    return f", and holds the character U+{ord(odd):04X} there" if odd else ""
+
+
+def name_list_difference(line: str, pin: str) -> str:
+    """What the anchored name lists (NAME_LIST) of a step's line do that its pin's do not, where
+    those lists, the same flags in the same order, are all the two lines differ in: per list, each
+    test a -run leaves out or names besides the pinned -run, each test a -skip no longer skips or
+    skips besides the pinned -skip, or that a list names the pinned one's tests in another order or
+    more than once. '' where anything else differs, and where the lists are the pin's but stand
+    elsewhere in a line that reads the same without them."""
+    lists, pins = NAME_LIST.findall(line), NAME_LIST.findall(pin)
+    if (not lists or [flag for flag, _ in lists] != [flag for flag, _ in pins]
+            or NAME_LIST.sub("", line) != NAME_LIST.sub("", pin)):
+        return ""
+    parts = []
+    for (flag, got), (_, wanted) in zip(lists, pins):
+        got_names, wanted_names = set(got.split("|")), set(wanted.split("|"))
+        gone = ", ".join(sorted(wanted_names - got_names))
+        extra = ", ".join(sorted(got_names - wanted_names))
+        if gone:
+            parts.append(f"its -run leaves out {gone}, which the pinned -run names" if flag == "-run"
+                         else f"its -skip no longer skips {gone}, which the pinned -skip skips")
+        if extra:
+            parts.append(f"its -run names {extra}, which the pinned -run does not" if flag == "-run"
+                         else f"its -skip also skips {extra}, which the pinned -skip does not")
+        if got != wanted and not gone and not extra:
+            parts.append(f"its {flag} names the pinned {flag}'s tests in another order or more than once")
+    return "; ".join(parts)
+
+
+def pin_difference(script: str, pinned: str) -> str:
+    """'' when a step's run: script is the text its Exact entry pins, compared as the entry
+    compares them (after trailing whitespace, nothing parsed). Else the first line that differs, by
+    its number in the script, in one of seven forms:
+      * `its line N, <the line>, is past the pinned text's last line`: the step's script goes on
+        where the pin has ended;
+      * `it ends before the pinned text's line N, <that line>`: the pin goes on where the script
+        has ended;
+      * `on its line N, <what its name lists do>` (name_list_difference), where all that differs
+        on the line is its anchored -run or -skip lists of test names;
+      * `its line N differs from the pinned text's in spaces or tabs alone`, quoting neither;
+      * `its line N is a blank line where the pinned text's reads <its start>`, and
+      * `its line N reads <its start> where the pinned text's line is a blank line`, a blank line
+        being one of spaces and tabs alone, which backticks would show as nothing, and its start
+        the line's first 2 * DIFFERENCE_CONTEXT characters;
+      * else `its line N reads <part> where the pinned text's reads <part>`: both lines from the
+        first character that differs to the last, DIFFERENCE_CONTEXT characters either side.
+    The last two forms go on to name the first character of the step's part they quote outside
+    printable ASCII and tab, when it holds one (held_character). A line quoted whole is quoted as
+    quoted() quotes it."""
+    have, want = script.rstrip().split("\n"), pinned.rstrip().split("\n")
+    if have == want:
+        return ""
+    i = next((i for i, (a, b) in enumerate(zip(have, want)) if a != b), min(len(have), len(want)))
+    if i == len(want):
+        return f"its line {i + 1}, {quoted(have[i])}, is past the pinned text's last line"
+    if i == len(have):
+        return f"it ends before the pinned text's line {i + 1}, {quoted(want[i])}"
+    line, pin = have[i], want[i]
+    lists = name_list_difference(line, pin)
+    if lists:
+        return f"on its line {i + 1}, {lists}"
+    if BASH_BLANKS.split(line.strip(" \t")) == BASH_BLANKS.split(pin.strip(" \t")):
+        return f"its line {i + 1} differs from the pinned text's in spaces or tabs alone"
+    if not line.strip(" \t"):
+        return (f"its line {i + 1} is a blank line where the pinned text's reads "
+                f"`{excerpt(pin, 0, DIFFERENCE_CONTEXT)}`")
+    if not pin.strip(" \t"):
+        return (f"its line {i + 1} reads `{excerpt(line, 0, DIFFERENCE_CONTEXT)}` where the pinned text's line "
+                f"is a blank line" + held_character(line[:2 * DIFFERENCE_CONTEXT]))
+    start = len(os.path.commonprefix([line, pin]))
+    same_end = len(os.path.commonprefix([line[start:][::-1], pin[start:][::-1]]))
+    return (f"its line {i + 1} reads `{excerpt(line, start, len(line) - same_end)}` where the pinned text's reads "
+            f"`{excerpt(pin, start, len(pin) - same_end)}`" + held_character(line[start:len(line) - same_end]))
 
 
 def go_lines(text: str) -> list:
@@ -1036,11 +1166,12 @@ def reduce_line(line: str) -> tuple:
 
 
 # The only env: names a step, its job or the workflow may set while a go command of the step stays
-# reduced: names that cannot change what the command compiles. Any other name falls to everything,
+# reduced, or a step an exact entry pins stays unrefused: names that cannot change what the command
+# compiles or which tests it runs. Any other name falls to everything, or refuses the pinned step,
 # among them GO* and CGO_*, BASH_ENV and ENV (which bash sources before the script), HOME and
 # XDG_CONFIG_HOME (go reads its env file, GOFLAGS among it, from $XDG_CONFIG_HOME/go/env or else
 # $HOME/.config/go/env) and PATH (which chooses the go binary). Add a name here only when go
-# compiles the same files with it set as without.
+# compiles the same files with it set as without, and runs the same tests.
 #
 # GOPROXY is the one name go itself reads that is here. It says where a module's bytes come from,
 # never which version: the module files this check already reads decide that, and go.sum holds
@@ -1059,13 +1190,18 @@ ENV_ALLOWED = frozenset({
     "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
-    # env_reason reads every step's block whatever its order, so without this name here every go
-    # command of that job would count as unreduced and go_notices would have to match every Go
-    # file of the repository again. go reads it nowhere.
+    # around_job reads the env of every step up to the one that runs go-release-notices.sh, that
+    # step among them, so without this name here every go command of that script would count as
+    # unreduced and go_notices would have to match every Go file of the repository again. go reads
+    # it nowhere.
     "GH_TOKEN",
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
-    "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN", "PREVIOUS_COMMIT",
+    "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
+    # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with: its
+    # script passes it to the command as an argument, and go reads it nowhere.
+    "MIGRATION_BASE",
+    "PREVIOUS_COMMIT",
     "TESTCONTAINERS_RYUK_DISABLED",
 })
 
@@ -1120,6 +1256,42 @@ def job_reason(job: dict) -> str:
             if written:
                 return f'step "{step_label(step)}" runs `{written.group(0)}`, which every later step inherits'
     return ""
+
+
+def job_up_to(job: dict, step: dict, including: bool = True) -> dict:
+    """The job as `step` sees it: its steps before that one, and with `including` that one too. A
+    step's write of $GITHUB_ENV or $GITHUB_PATH reaches only the steps after it, so a step later in
+    the job moves nothing `step` runs: reading the whole job would refuse a pinned step, or widen a
+    claimed command, for a write that comes after it. `step`'s own script is read with it where
+    that script is no pin: its `go env -w` reaches its later go commands. A pinned step's own
+    script is what its entry pins, so refuse_off_pin reads only the steps before it. The whole job
+    where `step` is none of its steps."""
+    steps = job.get("steps") or []
+    at = next((i for i, s in enumerate(steps) if s is step), None)
+    return job if at is None else {**job, "steps": steps[:at + 1] if including else steps[:at]}
+
+
+# What may come before a script's path where a step starts it: the start of a line, a space, a
+# quote, an `=`, a `(` or a backtick; `./` after one of those; or a `/` after a variable
+# (`$NAME`), a `}` or a `)`, which end `${NAME}`, `${{ ... }}` and `$(...)`. A `/` after anything
+# else ends a directory of another path, so `tools/scripts/e2e-local.sh` is not
+# `packages/envoy/scripts/e2e-local.sh` run from `packages/envoy`.
+SCRIPT_START = r"(?:^|[\s'\"=(`]|(?:^|[\s'\"=(`])\./|(?:\$[A-Za-z_][A-Za-z0-9_]*|[})])/)"
+
+
+def names_script(holder: dict, job: dict, step: dict, source: str) -> bool:
+    """Whether a run: step names the repository script `source`: by its path from the repository
+    root, or from the directory the step runs in, as a whole word of its run: text after one of
+    SCRIPT_START's starts - `"$GITHUB_WORKSPACE/<script>"`, `${{ github.workspace }}/<script>`,
+    `$(<script> ...)`, a backticked call, `$(git rev-parse --show-toplevel)/<script>` and
+    `./<script>` among them. The script's own parent directories before its path from the step's
+    directory make its path from the root, which is read as that; any other directory before it
+    names another script. Nothing that goes on the path after it (`.bak`, `-old`, a longer name)
+    counts."""
+    run = str(step.get("run", ""))
+    workdir = step_workdir(holder, job, step)
+    paths = {source, os.path.relpath(source, workdir)} if workdir != "." else {source}
+    return any(re.search(rf"{SCRIPT_START}{re.escape(p)}(?![\w.-])", run) for p in paths)
 
 
 def around_reason(document: dict, job: dict, steps: list) -> str:
@@ -1178,15 +1350,74 @@ def owner_steps(units: list, owner: str) -> list:
     return [s for own, _, _, _, job in units if own == owner for s in job.get("steps") or []]
 
 
-def around_job(units: list, owner: str) -> str:
-    """The first thing around a ci.yaml job that can change what a go command it starts compiles,
-    over its own steps and those of a workflow it calls, each read under the env:, defaults and
-    container of the file that holds it; or ''."""
+def around_job(units: list, owner: str, source: str) -> str:
+    """The first thing around a ci.yaml job that can change what a go command its script `source`
+    holds compiles, over its own steps and those of a workflow it calls, each read under the env:,
+    defaults and container of the file that holds it; or ''. A job some step of which names the
+    script (names_script) is read up to and including the last such step, since a step after it
+    runs after the script. A job that names it nowhere is read whole, since it may start the
+    script some way this check does not see - in a form names_script does not read, by another
+    script, or by a test it compiles."""
     for own, _, _, holder, job in units:
-        reason = around_reason(holder, job, job.get("steps") or []) if own == owner else ""
+        if own != owner:
+            continue
+        steps = job.get("steps") or []
+        naming = [i for i, s in enumerate(steps) if "run" in s and names_script(holder, job, s, source)]
+        read = {**job, "steps": steps[:naming[-1] + 1]} if naming else job
+        reason = around_reason(holder, read, read.get("steps") or [])
         if reason:
             return reason
     return ""
+
+
+def exact_entries(names) -> str:
+    """How a refusal names the gates whose Exact entries pin one step."""
+    names = sorted(set(names))
+    return f"gate {names[0]}'s exact entry" if len(names) == 1 else f"the exact entries of gates {', '.join(names)}"
+
+
+def refuse_off_pin(path: str, where: str, step: dict, holder: dict, job: dict, workdir: str, entries: list,
+                   problems: list[Annotation]) -> None:
+    """Refuse a run: step its Exact entries pin (`entries`, each (the gate's filter, Exact)) where
+    the step is not what they pin: a script or a directory other than an entry's, named by the
+    first line that differs (pin_difference) or by both directories, and an env, shell, container
+    or step of the job before this one (around_reason over job_up_to) that can change what its go
+    commands compile or which tests they run. Its own script's writes are the pin's to hold.
+
+    Refused rather than read as reading everything, which a step off its pin once counted as. The
+    pin is also the table's word for which tests the step runs - ci_job_reads.py builds the
+    text-check step's -run from TEXT_CHECK_TESTS, the names envoy-go's step of what the race build
+    cannot run leaves out - and reading everything says nothing where the filter selects every Go
+    file already, as the text_checks filter does: a guard test dropped from that -run ran in no job
+    while this check passed, and so did one a `GOFLAGS: -skip=` in the step's env skipped. No pinned
+    step runs under such an env, shell or container. Entries of two gates pinning one text make one
+    refusal, and the gates' entries of one step one refusal of what surrounds it."""
+    label = step_label(step)
+    script = str(step["run"])
+    pins = defaultdict(set)  # (the script an entry pins, as pin_difference compares it; its directory) -> gates
+    for name, e in entries:
+        pins[(e.script.rstrip(), clean_dir(e.workdir))].add(name)
+    off_pin = False
+    for (pinned_script, directory), names in pins.items():
+        drift = [d for d in (pin_difference(script, pinned_script),
+                             "" if workdir == directory else f"it runs in {workdir}, the entry's in {directory}") if d]
+        if drift:
+            off_pin = True
+            pin = "pins" if len(names) == 1 else "pin"
+            problems.append(error(path, f"{where} step \"{label}\" is off the script and directory "
+                                        f"{exact_entries(names)} {pin} it to: {'; '.join(drift)}; make the step run "
+                                        f"that text there again, or change {'the entry' if len(names) == 1 else 'the entries'}, "
+                                        f"and any list of ci_job_reads.py its text is built from, with the step"))
+    # A step already refused as off its pin is not refused again for a character its script holds.
+    moved = (around_reason(holder, job_up_to(job, step, including=False), [step])
+             or ("" if off_pin else script_reason(script)))
+    if moved:
+        problems.append(error(path, f"{where} step \"{label}\" is pinned whole by {exact_entries(n for n, _ in entries)}, "
+                                    f"but {moved}, and that can change what its go commands compile, or which tests "
+                                    f"they run, where no pin holds it; remove it, or put what it sets on the step's "
+                                    f"own script, where the pin holds it, or, for a name with which go compiles the "
+                                    f"same files and runs the same tests, add it to ENV_ALLOWED"))
+
 
 
 # ---------------------------------------------------------------- the check
@@ -1259,8 +1490,10 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
     # or by an Exact entry pinning the step's whole script. A line claimed by a Run is reduced only
     # in its one simple form, the whole script of its step, under an env, job, shell and directory
     # that cannot move it; its packages, -tags, -race and mode must then be exactly the Run's. Any
-    # other claimed command is unreduced and falls to everything a go command can read, as does
-    # every run of an Exact entry whose step's script, directory or surroundings differ.
+    # other claimed command is unreduced and falls to everything a go command can read. A step an
+    # Exact entry pins is refused instead when its script or directory is not the entry's, naming
+    # the first line that differs or both directories, and when its env, shell, container or job
+    # could move what it compiles, naming what does.
     # Each index is keyed by the ci.yaml job the gate names, which is the job that runs the
     # steps wherever they are: a job that calls a reusable workflow keeps its id, its
     # `needs: changes` and its whole `if:` in ci.yaml and holds its steps in the called file,
@@ -1296,16 +1529,11 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 continue
             script = str(step["run"])
             workdir = step_workdir(holder, job, step)
-            around = around_reason(holder, job, [step]) or script_reason(script)
             entries = [fe for (j, ref), fes in exacts.items() if j == own and step_matches(step, ref) for fe in fes]
-            for name, e in entries:
-                reason = (around or ("" if script.rstrip() == e.script.rstrip() else "the step's script is not the pinned text")
-                          or ("" if workdir == clean_dir(e.workdir) else f"its step runs in {workdir}, the entry's in {e.workdir}"))
-                if reason:
-                    where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\"'s pinned script"
-                    unreduced[name] += [(r, where, reason) for r in e.runs]
             if entries:
+                refuse_off_pin(path, where_job(path, name_there, own), step, holder, job, workdir, entries, problems)
                 continue  # every go line of the step is claimed by its Exact entries
+            around = around_reason(holder, job_up_to(job, step), [step]) or script_reason(script)
             mine = [r for (j, ref), rs in claims.items() if j == own and step_matches(step, ref) for r in rs]
             for line in go_lines(script):
                 where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\" runs `{line}`"
@@ -1361,9 +1589,11 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                                                                           f"runs `{r.text}`; update or remove the Run"))
     # A script's go command is held exact rather than reduced: the line holding the pinned text is
     # that text alone, uncontinued, and no env:, shell: or defaults.run.shell of the workflow, the
-    # job or any of its steps (the check does not know which starts the script), no container: and
-    # no environment write of the job can move it. A job that calls a workflow runs the script from
-    # that workflow's jobs, so each of them is read the same way. Its variables are the Run author's.
+    # job or its steps, no container: and no environment write of the job can move it - each job's
+    # steps up to the last one naming the script, or all of them where it names the script nowhere
+    # (around_job), since the check does not otherwise know which step starts it. A job that calls
+    # a workflow runs the script from that workflow's jobs, so each of them is read the same way.
+    # Its variables are the Run author's.
     for g in data.GATES:
         for r in g.runs:
             if not r.source:
@@ -1379,7 +1609,7 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 continue
             lines = source_text.split("\n")
             held = [i for i, line in enumerate(lines) if r.text in line]
-            reason = around_job(units, g.job) or ("" if held else "its text spans lines")
+            reason = around_job(units, g.job, r.source) or ("" if held else "its text spans lines")
             for i in held:
                 line = lines[i].strip(" \t")
                 if not reason and line != r.text:

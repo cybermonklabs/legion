@@ -53,11 +53,11 @@ const (
 
 // dequeueWait bounds each wait of this test on the daemon's own work: an event through the
 // intake, a read of GitHub, a fact, and an outbox row's tries, the longest of whose waits here is
-// the four seconds before a row's fourth try (the outbox's retryBackoff). It is the bound a fault
-// is reported at, far above that, so a slow machine is not a failure and a row that never
-// finishes fails its case in seconds rather than at the package's deadline. dequeuePoll is how
-// often a wait asks: each question is a read of the database or of the daemon's whole log, so it
-// is not asked a hundred times a second.
+// the four seconds before a row's fourth try (the outbox's backoff, record.RetryBackoff). It is
+// the bound a fault is reported at, far above that, so a slow machine is not a failure and a row
+// that never finishes fails its case in seconds rather than at the package's deadline.
+// dequeuePoll is how often a wait asks: each question is a read of the database or of the
+// daemon's whole log, so it is not asked a hundred times a second.
 const (
 	dequeueWait = 30 * time.Second
 	dequeuePoll = 50 * time.Millisecond

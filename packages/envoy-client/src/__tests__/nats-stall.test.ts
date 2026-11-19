@@ -54,7 +54,11 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
       const proxy = await startStallProxy(stack.natsHostPort);
       const publisher = await connect({ servers: [stack.natsUrl], name: `nats-stall-pub-${slug}` });
       const client = await connect(
-        natsConnectionOptions({ servers: [proxy.url], name: `nats-stall-${slug}`, seed: undefined })
+        natsConnectionOptions({
+          servers: [proxy.url],
+          name: `nats-stall-${slug}`,
+          credential: { kind: "none" },
+        })
       );
       try {
         const subject = `nats-stall.${slug}.${crypto.randomUUID()}`;
