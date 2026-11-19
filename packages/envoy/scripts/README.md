@@ -665,7 +665,8 @@ registry (for ghcr.io, `gh auth token | docker login ghcr.io -u x --password-std
 `DOCKER_CONFIG` of your own), `jq` and python3 with PyYAML.
 
 `daemon-release-gate.test.sh` proves every verdict behind a fake `gh` and a fake `docker` that
-answers a single image and an index the way the real one does; CI runs it in the
+answers a single image and an index the way the real one does. Its fakes, fixture builders and
+assertion helpers are in `lib/daemon-release-gate-harness.sh`, which it sources; CI runs it in the
 `envoy-go-checks` job of `.github/workflows/ci.yaml`.
 
 ## Measuring search on a copy of the corpus
