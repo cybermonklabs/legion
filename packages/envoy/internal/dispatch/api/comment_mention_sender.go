@@ -82,31 +82,35 @@ type mentionSend struct {
 	// parks is how many times this send has waited for an earlier event of its comment's owner,
 	// which paces its lane's next try (mentionOrderRetry).
 	parks int
-	// heldFor is the session this send last waited to reach, heldBy the earlier event it waited
-	// behind, and heldSince when it first waited, all zero for a send that has not waited; warned
-	// is that a park logged its WARN (mentionSender.park, reportLate). A send that waited reads the
-	// rule again for heldFor before it tries once more (sendCommentMention).
+	// heldFor is the session this send last waited to reach, behind an earlier event or, its read of
+	// the rule having failed, behind none; heldBy is the earlier event it last waited behind, and
+	// heldSince when it first waited behind one, both zero until it has; warned is that a park
+	// logged its WARN (mentionSender.park, reportLate). A send that waited reads the rule again
+	// for heldFor, alone, before it tries once more (sendCommentMention).
 	heldFor   string
 	heldBy    model.MentionCopyHolder
 	heldSince time.Time
 	warned    bool
-	// unread is that this send's last try could not read the copy rule (mentionHeldForOrder.unread):
-	// it waits all the same, behind no event, so its park is no held copy's (serve, park).
+	// unread is that this send's last try could not read the copy rule, in its whole delivery
+	// (mentionHeldForOrder.unread) or alone (sendCommentMention): it waits all the same, behind no
+	// event, so its park is no held copy's (serve, park).
 	unread bool
 }
 
-// held records what h says the send waited for: behind h.by, to reach the session h names, from
-// now when it had not waited before; or, when h's read of the rule failed (h.unread), behind no
-// event, which leaves what the send last waited behind as it was and stamps no wait.
+// held records what h says the send waited for: to reach the session h names, behind h.by, from
+// now when it had not waited behind an event before; or, when h's read of the rule failed
+// (h.unread), behind no event, which leaves what the send last waited behind as it was and stamps
+// no wait. Either way its next try reads the rule alone for that session (sendCommentMention),
+// so a send whose read keeps failing makes the whole delivery no more than one the rule holds.
 func (m *mentionSend) held(h *mentionHeldForOrder) {
 	m.unread = h.unread
+	if h.target.SessionID != nil {
+		m.heldFor = *h.target.SessionID
+	}
 	if h.unread {
 		return
 	}
 	m.heldBy = h.by
-	if h.target.SessionID != nil {
-		m.heldFor = *h.target.SessionID
-	}
 	if m.heldSince.IsZero() {
 		m.heldSince = time.Now()
 	}
@@ -646,17 +650,27 @@ func (m *mentionSender) wait() {
 // again, which its lane parks (park): the same attempt, under the claim that send renewed, with a
 // take-over window of its own.
 //
-// A send that waited before reads the rule alone first, for the session it waited to reach
-// (mentionCopyHolderFor), and parks again while the earlier event still owes its send: a parked
+// A send that waited before - behind an earlier event, or behind none because its read of the rule
+// failed - reads the rule alone first, for the session it waited to reach (mentionCopyHolderFor),
+// and parks again while the earlier event still owes its send, or while that read fails: a parked
 // lane's try then costs the rule's one statement (copyrule.Holder) and, for each role route the
 // earlier events owe, one listener lookup of the role's holder (roleHolderMayBe, within
 // mentionLookupTimeout); no claim and no write, while its claim is the one the sender writes again
-// for every queued send. Only a send the rule lets go, or whose read alone failed, makes the whole
-// delivery, which claims, resolves and asks the rule once more.
+// for every queued send. A read that fails parks the send as one whose whole delivery could not
+// read the rule does (mentionSend.unread): behind no event, keeping its claim and its place, so
+// the owner's later comments to the session stay behind it. Only a send the rule lets go makes the
+// whole delivery, which claims, resolves and asks the rule once more.
 func (s *server) sendCommentMention(ctx context.Context, item mentionSend) (mentionSend, bool) {
 	ctx = store.WithTransactionTracking(ctx)
 	if item.heldFor != "" {
-		if by, err := s.mentionCopyHolderFor(ctx, item.created, item.heldFor); err == nil && by != nil {
+		by, err := s.mentionCopyHolderFor(ctx, item.created, item.heldFor)
+		switch {
+		case err != nil:
+			slog.Error("dispatch: read whether a comment mention's session must take an earlier event first; the send waits",
+				"comment", item.comment.ID, "target", item.mention.Target, "attempt", item.attempt, "error", err)
+			item.unread = true
+			return item, true
+		case by != nil:
 			item.heldBy, item.unread = *by, false
 			return item, true
 		}

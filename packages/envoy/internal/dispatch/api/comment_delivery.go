@@ -683,7 +683,8 @@ func (s *server) recordCommentDeliveryResolution(
 // resumeOwedDelivery, createCommentDelivery), so the send is made again once the outbox has sent
 // what comes first. A read of that rule that fails is answered the same way, as a wait behind no
 // event (mentionHeldForOrder.unread): the send keeps its claim and its place on its lane, so the
-// owner's later comments to the session stay behind it, and it tries again a moment later.
+// owner's later comments to the session stay behind it, and it tries again a moment later by
+// reading the rule alone for that session, as a send held behind an event does (sendCommentMention).
 //
 // Attempt 1 of a comment whose other routes were decided on its mentions' resolution
 // (mentions_decide_routes, resolveCommentDeliveries) keeps the resolution it was opened with,
