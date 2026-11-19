@@ -106,8 +106,9 @@ LISTED = [
     # loads are its bundle's, which BUNDLES pairs with dispatch_two_builds_go, so the block is
     # the union of the two sets: a module only the command loads is one the suite loads too.
     # Its jobs' `Build contracts for dispatch e2e` step runs packages/contracts' `build:dispatch`,
-    # which bundles the four entries the dashboard imports (web/vite.config.ts:117-126 aliases the
-    # same four) and so compiles nothing outside dispatch_ui's set: not
+    # which bundles the six entries packages/dispatch imports (the four the dashboard imports,
+    # which web/vite.config.ts:117-126 aliases, and the e2e helpers' ./setting-url and
+    # ./log-text) and so compiles nothing outside dispatch_ui's set: not
     # packages/contracts/src/legion-api.ts, which neither Dispatch nor the command imports. A
     # change that breaks the package's full `build` fails the contracts job's own
     # `Build contracts` step, whose filter takes the whole tree.
