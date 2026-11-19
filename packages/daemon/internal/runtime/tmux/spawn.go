@@ -837,13 +837,13 @@ func (r *Runtime) openWindow(ctx context.Context, name string, pane []string) (p
 	if first == nil {
 		return report, nil
 	}
-	if created && !noServerStderr.MatchString(first.Error()) {
+	// Once the launch's context has ended, no retry can run, and the first failure is what says a
+	// window the launch opened may still run (killOpened).
+	if ctx.Err() != nil || created && !noServerStderr.MatchString(first.Error()) {
 		return paneReport{}, first
 	}
 	recreated, err := r.ensureSession(ctx)
 	if err != nil {
-		// The first failure stays: once the launch's context has ended, it is what says a window
-		// the launch opened may still run (killOpened).
 		return paneReport{}, errors.Join(first, err)
 	}
 	if !recreated {
@@ -909,9 +909,9 @@ func (r *Runtime) killOpened(ctx context.Context, window string, err error) erro
 
 // killLaunched runs argv, the kill-pane or kill-window of what a failed launch left unrecorded
 // (killUnrecorded, killOpened). It runs even once ctx has ended, since the caller's deadline may be
-// what failed the launch, bounded by runTmux's own timeout. A target gone says, by its stderr,
-// is gone; a kill that could not run is its error, and one that exited non-zero, timed out or that
-// a signal ended is `tmux<exited>`.
+// what failed the launch, bounded by runTmux's own timeout. A kill whose stderr matches gone found
+// its target already gone, and succeeded. A kill that could not run answers its own error, and one
+// that exited non-zero, timed out or that a signal ended answers `tmux<exited>`.
 func (r *Runtime) killLaunched(ctx context.Context, argv []string, gone *regexp.Regexp) error {
 	res, err := r.run(context.WithoutCancel(ctx), argv)
 	switch {

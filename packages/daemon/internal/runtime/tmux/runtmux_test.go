@@ -188,7 +188,7 @@ func TestATmuxClientThatFailsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T) 
 	})
 	// The launch's context ends during the marker, and the kill of the window it opened is then
 	// ended by a signal: the kill still runs, and the launch error says the window may still run,
-	// through openWindow too, whose second look for the session meets the ended context.
+	// through openWindow too, which tries no second look for the session once the context ended.
 	t.Run("a kill of the opened window a signal ended, its launch's context gone", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		var calls []string
@@ -210,7 +210,7 @@ func TestATmuxClientThatFailsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T) 
 			return result{exitCode: -1, signal: "signal: killed", stderr: "lost server"}, nil
 		}}
 		_, err := r.openWindow(ctx, "tree", []string{"true"})
-		if want := "kill window @7, which the failed launch opened: tmux was ended by signal: killed: lost server"; err == nil || !strings.Contains(err.Error(), want) {
+		if want := "context canceled\nkill window @7, which the failed launch opened: tmux was ended by signal: killed: lost server"; err == nil || err.Error() != want {
 			t.Errorf("openWindow = %v, want it to say %q", err, want)
 		}
 		if want := []string{"has-session", "new-window", "set-option", "kill-window"}; !slices.Equal(calls, want) {
