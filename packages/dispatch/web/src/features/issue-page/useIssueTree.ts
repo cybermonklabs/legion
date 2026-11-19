@@ -46,8 +46,9 @@ export interface IssueTreeView {
    *  under a new set of addresses or as a refetch of the set it had answered. It is what a view
    *  reads to draw the page's line that the names failed. The names in hand stand meanwhile -
    *  the tree and what the page publishes are built from the last answer each read gave - so a
-   *  view keeps every row's words and every chip's name beside that line. It is false before
-   *  the first answer and once both reads have answered with success. */
+   *  view keeps every row's words and every chip's name beside that line; a first read that
+   *  fails holds no names, and turns it true all the same. It is false while a read is out that
+   *  has not failed yet, and once both reads have answered with success. */
   readonly namesFailed: boolean;
   readonly root: TreeNode;
 }
@@ -325,16 +326,25 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     ...referenceTargetsQuery(extra),
     ...EVENT_FRESH,
   });
-  // Both answers, the second's standing for an address both name. Where nothing is left for the
-  // second read to name, it has no answer, and the one it gave before is dropped: its query is
+  // Both answers, the second's standing for an address both name that it is asked for now
+  // (`extra`), and the first's for every other: an answer the second gave for an older set,
+  // kept while its new set loads or after that read fails, may name an address the first read
+  // has taken over since, whose name it holds from before. Where nothing is left for the second
+  // read to name, it has no answer, and the one it gave before is dropped: its query is
   // disabled, so that answer would stand for good over the first read's newer names for the
   // same addresses, and again while a later set loads or after its read fails.
   const moreAnswer = useLastAnswer(extra.length === 0 ? NO_MORE_TARGETS : more.data);
   const named = useMemo(() => {
     const added = moreAnswer?.targets ?? [];
     if (first === undefined || added.length === 0) return first;
-    return [...new Map([...first, ...added].map((target) => [target.ref, target])).values()];
-  }, [first, moreAnswer]);
+    const asked = new Set(extra);
+    const ordered = [
+      ...added.filter((target) => !asked.has(target.ref)),
+      ...first,
+      ...added.filter((target) => asked.has(target.ref)),
+    ];
+    return [...new Map(ordered.map((target) => [target.ref, target])).values()];
+  }, [extra, first, moreAnswer]);
   // A failure of either read, which the names in hand stand through (above). The second read
   // fails only where something is left for it to name: where nothing is, its query is disabled.
   const namesFailed = targets.isError || more.isError;

@@ -14,6 +14,7 @@ import { wordsOf } from "../refs/tree-fragment";
 import { anchorQuote, changeAnchor, decisionChangeComments } from "./decision-review";
 import { buildIssueTree, type DocumentBlocks, isStatement, type TreeNode } from "./issue-tree";
 import { coverageStatements } from "./tree-drafts";
+import { nodesInOrder } from "./tree-keys";
 import { waitingOnReader } from "./waiting";
 
 /**
@@ -546,9 +547,8 @@ test("the count and the tree read a tie by one rule for a statement, whatever ad
     issue: planned,
     viewer: "alice",
   });
-  const nodes = (node: TreeNode): TreeNode[] => [node, ...node.children.flatMap(nodes)];
   expect(
-    nodes(root)
+    nodesInOrder(root)
       .filter(isStatement)
       .map((node) => node.id)
       .sort()

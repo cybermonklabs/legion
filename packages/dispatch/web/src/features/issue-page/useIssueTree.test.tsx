@@ -1182,20 +1182,10 @@ test("an event on CORE-1 leaves a names read naming only CORE-12 alone", () => {
   }
 });
 
-const roadmap: Artifact = {
-  created_at: "2026-11-05T00:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  id: "artifact-roadmap",
+const roadmap = issueDocument("artifact-roadmap", "roadmap-md", {
   issue_key: null,
-  kind: "doc",
   name: "Roadmap",
-  primary: false,
-  project: "CORE",
-  ref_key: "artifact:artifact-roadmap",
-  session_id: null,
-  slug: "roadmap-md",
-  versions: [],
-};
+});
 
 // A project document's event is on the document and what it owns, each written under
 // `dispatch://CORE/artifact/roadmap-md`. A rename, a removal and a comment's edit carry the slug,

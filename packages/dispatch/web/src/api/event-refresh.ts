@@ -1500,7 +1500,7 @@ function eventAddresses(event: DispatchEvent): ((address: string) => boolean) | 
   }
   const slug = projectDocumentSlug(event);
   if (slug === undefined) {
-    const documents = `dispatch://${project}/artifact/`;
+    const documents = buildDispatchReference({ kind: "document", project, slug: "" });
     return (address) => address.startsWith(documents);
   }
   const document = buildDispatchReference({ kind: "document", project, slug });
@@ -1520,16 +1520,11 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
   }
   return {
     queryKey: ["reference-targets"],
-    when: (_data, query) => {
-      const addresses: unknown = query.queryKey[1];
-      return (
-        Array.isArray(addresses) &&
-        addresses.some(
-          (address: unknown) =>
-            typeof address === "string" && (!address.startsWith("dispatch://") || touched(address))
-        )
-      );
-    },
+    when: (_data, query) =>
+      rowsOf<unknown>(query.queryKey[1]).some(
+        (address) =>
+          typeof address === "string" && (!address.startsWith("dispatch://") || touched(address))
+      ),
   };
 }
 
@@ -1575,7 +1570,10 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * the app holds and renders not. A project document's new version or ask's edit reaches a read
  * naming any document of its project, since neither carries the slug its addresses are written
  * with (`eventAddresses`). It refreshes through the same `refreshQueries` every other rule does,
- * so a read already out, or begun under a second ago, is fetched again once those rules allow.
+ * so a read already out, or begun under a second ago, is fetched again once those rules allow;
+ * since the rule tests the read's key against the answer that lands, a first read out at the
+ * event that then fails holds no answer to test and is not read again by it, and window focus
+ * or a later event reads it again (`refetchFailedOnFocus`).
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {
