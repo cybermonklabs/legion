@@ -1,6 +1,8 @@
 package ghconfig
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -378,5 +380,188 @@ func TestParsePairsRefusesALineThatIsNoPair(t *testing.T) {
 	bundle.Pairs = []ghrepo.Rename{{To: ghrepo.MustParse("cybermonklabs/legion")}}
 	if err := bundle.Validate(); err == nil || !strings.Contains(err.Error(), "names no repository on one side") {
 		t.Errorf("Validate of a bundle holding half a pair = %v, want a refusal naming it", err)
+	}
+}
+
+// entryNames is the names of dir's entries, sorted, as os.ReadDir answers them.
+func entryNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
+}
+
+// The root a runtime hands WriteBundle may sit under a state directory reached through a link, or
+// be a link itself, and its cleaning runs all the same: the root is resolved once before it is
+// cleaned, so rolefile.RemoveTree, which refuses a parent that is a link, is handed the directory
+// the link names. In both rows a stray file at the root and a `<owner>/<repo>` directory an older
+// run left go, and the owners' own files stay. Without that resolution the second row's cleaning
+// is refused ("… is a symlink"), and the stray file outlives the write.
+func TestWriteBundleCleansARootReachedThroughALink(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		root func(t *testing.T) string
+	}{
+		{"under a state directory that is a symlink", func(t *testing.T) string {
+			state := filepath.Join(t.TempDir(), "state")
+			if err := os.Symlink(t.TempDir(), state); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(state, "gh")
+		}},
+		{"a root that is itself a link", func(t *testing.T) string {
+			root := filepath.Join(t.TempDir(), "gh")
+			if err := os.Symlink(t.TempDir(), root); err != nil {
+				t.Fatal(err)
+			}
+			return root
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := tc.root(t)
+			if _, err := WriteBundle(root, twoOwnerBundle("ghs_acme_write")); err != nil {
+				t.Fatalf("first WriteBundle: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "stray"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			expires := time.Date(2026, 10, 16, 18, 0, 0, 0, time.UTC)
+			if _, err := Write(Dir(root, "acme/widgets"), Render("ghs_acme_widgets", "implement", expires)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := WriteBundle(root, twoOwnerBundle("ghs_acme_write")); err != nil {
+				t.Fatalf("second WriteBundle: %v", err)
+			}
+			if got, want := entryNames(t, root), []string{"acme", PairsFile, "sjawhar"}; !slices.Equal(got, want) {
+				t.Fatalf("root holds %q, want %q: the stray file goes", got, want)
+			}
+			if got, want := entryNames(t, Dir(root, "acme")), []string{ConfigFile, HostsFile}; !slices.Equal(got, want) {
+				t.Fatalf("acme's directory holds %q, want %q: the repository directory an older run cut goes", got, want)
+			}
+			for owner, token := range map[string]string{"acme": "ghs_acme_write", "sjawhar": "ghs_sjawhar_read"} {
+				hosts, err := os.ReadFile(filepath.Join(Dir(root, owner), HostsFile))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, err := TokenFromHosts(hosts); err != nil || got != token {
+					t.Fatalf("%s's hosts.yml token = %q, %v, want %q", owner, got, err, token)
+				}
+			}
+		})
+	}
+}
+
+// The pane's own user can write the bundle's root, so a link it plants there is unlinked and never
+// followed. A link at the root to a directory outside it goes, and the file in what it names
+// stays. A link under a stale `<owner>/<repo>` directory the pane made 0555, which the daemon,
+// holding no capability, cannot unlink it from, is left as it is: WriteBundle answers a permission
+// error naming that stale directory, and the directory the link names, and the file in it, are as
+// they were. os.RemoveAll opens such an entry with O_DIRECTORY|O_NOFOLLOW, which a gVisor release
+// follows a link through (rolefile.OpenDirectory), so in such a pod it deletes what the link names;
+// Linux refuses that open, so only such a gVisor shows that control fail.
+func TestWriteBundleRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("as root a 0555 directory does not stop the unlink, so the removal never opens the link")
+	}
+	outside := t.TempDir()
+	precious := filepath.Join(outside, "precious")
+	if err := os.WriteFile(precious, []byte("kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kept := func(t *testing.T) {
+		t.Helper()
+		if body, err := os.ReadFile(precious); err != nil || string(body) != "kept\n" {
+			t.Fatalf("%s, in the directory the planted link names, is %q (%v), want it kept", precious, body, err)
+		}
+	}
+	root := filepath.Join(t.TempDir(), "gh")
+	if _, err := WriteBundle(root, twoOwnerBundle("ghs_acme_write")); err != nil {
+		t.Fatalf("first WriteBundle: %v", err)
+	}
+
+	stray := filepath.Join(root, "stray")
+	if err := os.Symlink(outside, stray); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteBundle(root, twoOwnerBundle("ghs_acme_write")); err != nil {
+		t.Fatalf("WriteBundle over a link at the root: %v", err)
+	}
+	if _, err := os.Lstat(stray); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the link %s at the root is still there (%v)", stray, err)
+	}
+	kept(t)
+
+	stale := filepath.Join(Dir(root, "acme"), "widgets")
+	if err := os.Mkdir(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(stale, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stale, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// The temporary directory's own cleanup could not remove the stale directory at 0555.
+	t.Cleanup(func() { _ = os.Chmod(stale, 0o755) })
+	_, err := WriteBundle(root, twoOwnerBundle("ghs_acme_write"))
+	if !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), "remove acme/widgets from the gh bundle") {
+		t.Fatalf("WriteBundle over a link under a 0555 directory = %v, want the unlink refused naming acme/widgets", err)
+	}
+	kept(t)
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the planted link is %v (%v), want it left as it was", info, err)
+	}
+}
+
+// EmptyBundle leaves the gh directory of a controller whose gh acts as nobody an empty 0700
+// directory, whatever an earlier run left there — a file, a directory holding a file, and a link
+// to a directory outside it — even where the root is itself a link: it is resolved once, so the
+// directory the link names is what is emptied, and the link left in it is unlinked without being
+// followed, so the file in the directory it names stays. Without that resolution the removal is
+// refused ("… is a symlink"), and the earlier run's files outlive it.
+func TestEmptyBundleEmptiesARootThatIsALinkWithoutFollowingOne(t *testing.T) {
+	outside := t.TempDir()
+	precious := filepath.Join(outside, "precious")
+	if err := os.WriteFile(precious, []byte("kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	named := t.TempDir()
+	if err := os.Chmod(named, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(named, HostsFile), []byte(Hosts("ghs_stale")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(named, "acme"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(named, "acme", HostsFile), []byte(Hosts("ghs_acme_stale")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(named, "outside")); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "gh")
+	if err := os.Symlink(named, root); err != nil {
+		t.Fatal(err)
+	}
+	if err := EmptyBundle(root); err != nil {
+		t.Fatalf("EmptyBundle(%s): %v", root, err)
+	}
+	if got := entryNames(t, named); len(got) != 0 {
+		t.Fatalf("%s, which the root links to, holds %q, want nothing", named, got)
+	}
+	if info, err := os.Stat(named); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("%s is %v (%v), want a 0700 directory", named, info, err)
+	}
+	if body, err := os.ReadFile(precious); err != nil || string(body) != "kept\n" {
+		t.Fatalf("%s, in the directory the planted link names, is %q (%v), want it kept", precious, body, err)
 	}
 }

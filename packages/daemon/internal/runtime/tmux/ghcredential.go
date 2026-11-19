@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -127,26 +125,4 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 				"expiresAt", written.ExpiresAt, "dirs", changed)
 		}
 	}
-}
-
-// emptyGitHubBundle makes root an empty 0700 directory, removing whatever an earlier launch wrote
-// there: the gh directory of a controller whose gh acts as nobody (runtime.ErrNoGitHubOwner), which
-// GH_CONFIG_DIR still names so no gh configuration elsewhere is read in its place.
-func emptyGitHubBundle(root string) error {
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(root, 0o700); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
-			return err
-		}
-	}
-	return nil
 }
