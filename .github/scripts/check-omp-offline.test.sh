@@ -570,6 +570,9 @@ func TestValues(t *testing.T) {
 		return exec.Command(program, "models")
 	}
 	_ = run(found)
+	looked, _ := os.LookupEnv("LEGION_TEST_OMP")
+	byLookup := exec.Command(looked, "models")
+	byLookup.Env = []string{"HOME=" + home}
 }
 EOF
 put "$root" packages/daemon/internal/podsafety/literal_test.go <<'EOF'
@@ -592,6 +595,8 @@ check "names the function's, from another file of the package" "$(named values_t
 check "names the method's, which reads LEGION_OMP_PATH" "$(named values_test.go 16)"
 check "names it after env" "$(named values_test.go 18)"
 check "names it as a parameter the closure's call is given" "$(named values_test.go 21)"
+check "names os.LookupEnv of LEGION_TEST_OMP as a door" "$(contains "$out" 'values_test.go:24: a test reads LEGION_TEST_OMP')"
+check "names the exec of LookupEnv's value" "$(named values_test.go 25)"
 check "names the literal path, in a file with no door" "$(named literal_test.go 5)"
 check "names bash -c, in a file with no door" "$(named literal_test.go 7)"
 check "does not read the non-test file's Getenv as a door" "$(is "$(contains "$out" 'pinned.go')" false)"
