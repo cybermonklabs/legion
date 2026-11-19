@@ -292,10 +292,11 @@ func TestASharedCheckASignalEndedKeepsWhatItPrinted(t *testing.T) {
 // A read of the guard's that a signal ended after its program printed (the kernel's out-of-memory
 // kill) fails naming the signal, with what it printed beneath, as the same read's failed exit
 // carries it: the gh visibility read, its GraphQL read, the curl read, the read with no credential,
-// a git read of a push's records, and the token read, which quotes only its standard error, never
-// the password on its standard output. Each row's stand-in is the one program it names, first on
-// PATH, printing and killing itself; the curl read runs Guard.curl, never PATH's, so it is pointed
-// at the stand-in.
+// a git read of a push's records, which quotes only git's standard error (gitSaid), never the
+// push's content on its standard output, and the token read, which quotes only its standard error,
+// never the password on its standard output. Each row's stand-in is the one program it names, first
+// on PATH, printing and killing itself; the curl read runs Guard.curl, never PATH's, so it is
+// pointed at the stand-in.
 func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 	const slug = "invented-org/invented-repo"
 	killsItself := func(t *testing.T, name, script string, env ...string) *Guard {
@@ -319,7 +320,7 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 		{"the GraphQL read", "gh", toStderr, nil, func(g *Guard) error { _, err := g.graphQLVisibility(bound(t), slug); return err }},
 		{"the curl read", "curl", toStderr, []string{"GH_TOKEN=" + theToken}, func(g *Guard) error { _, err := g.curlVisibility(bound(t), slug); return err }},
 		{"the read with no credential", "git", toStderr, nil, func(g *Guard) error { _, err := g.lsRemote(bound(t), githubOrigin, slug); return err }},
-		{"a git read of a push's records", "git", toStderr, nil, func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err }},
+		{"a git read of a push's records", "git", "echo '+the pushed line'\n" + toStderr, nil, func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err }},
 		{"the token read", "gh", "echo 'password=" + theToken + "'\n" + toStderr, nil, func(g *Guard) error { _, err := g.ghToken(bound(t), slug); return err }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
