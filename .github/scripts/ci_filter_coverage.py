@@ -1276,6 +1276,11 @@ ENV_ALLOWED = frozenset({
     "MIGRATION_BASE",
     "PREVIOUS_COMMIT",
     "TESTCONTAINERS_RYUK_DISABLED",
+    # The deployment's term list .github/scripts/check-private-names.sh reads. The private-names
+    # jobs of ci-job-lint.yaml and docs-site.yaml map it from the secret of that name, and this
+    # check reads every step of a called file beside the go commands its other job runs. go reads
+    # it nowhere.
+    "PRIVATE_NAME_TERMS",
 })
 
 

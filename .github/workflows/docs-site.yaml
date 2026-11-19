@@ -49,6 +49,13 @@ on:
           docs-pages.yaml, which reports nothing.
         type: string
         default: ""
+    secrets:
+      PRIVATE_NAME_TERMS:
+        description: >-
+          The deployment's own private names, one a line, which the private-names job below
+          checks the built site for (.github/scripts/check-private-names.sh's fifth rule). Both
+          callers pass it.
+        required: false
 
 env:
   # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
@@ -177,11 +184,18 @@ jobs:
         run: |
           bun run docs:build
           ls -l docs/site/dist/THIRD_PARTY_NOTICES.txt
-      # The built site, generated reference pages and copied media captions include no private
-      # deployment repository, company, internal host, or Tailscale MagicDNS host. ci.yaml's lint
-      # job checks the sources, on a pull request and on a merge group alike.
-      - name: Check the built site has no private name, internal host, or tailnet host
-        run: .github/scripts/check-private-names.sh docs/site/dist
+      # The built site goes to the private-names job below, which checks it for private names:
+      # that check reads the deployment's term list, and this job, which runs dependency code
+      # (Bun, Astro, the Go builds), holds none. Hidden files too, so the check reads every file
+      # the site ships; `overwrite` lets a re-run of this job replace its first attempt's copy.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docs-site-dist
+          path: docs/site/dist
+          include-hidden-files: true
+          overwrite: true
+          retention-days: 1
+          if-no-files-found: error
       # The caller's deploy job publishes this artifact. Only docs-pages.yaml asks for it.
       - if: inputs.upload-pages-artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
@@ -199,6 +213,42 @@ jobs:
       # being ci.yaml's `ci-ok` job's own check run (.github/actions/ci-ok-report says how).
       # ci.yaml's docs job runs on a pull request and on a merge group alike, so the step is live
       # here; docs-pages.yaml's call passes no `ci-ok-changes`, and the step skips.
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always() && inputs.ci-ok-changes != ''
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: docs
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The built site, generated reference pages and copied media captions include no private
+  # deployment repository, company, internal host, Tailscale MagicDNS host or term of the
+  # deployment's own list. ci-job-lint.yaml's private-names job checks the sources, on a pull
+  # request and on a merge group alike. A job of its own, because it reads that list
+  # (PRIVATE_NAME_TERMS) and no job that runs dependency code holds it: this one checks out the
+  # .github cone for the script, downloads the site the build job uploaded, and runs that shell
+  # script alone. The callers' later jobs need the calling job, which is this one's too, so
+  # docs-pages.yaml's deploy publishes nothing this job refused.
+  private-names:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: docs-site-dist
+          path: docs/site/dist
+      # By the checkout's own path, the form every job that holds the list runs the check by.
+      - name: Check the built site has no private name, internal host, tailnet host, or term of the deployment's own list
+        env:
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh" docs/site/dist
+      # ci.yaml's call only, as the build job's report above.
       - name: Report ci-ok when this job decides a merge-group run
         if: always() && inputs.ci-ok-changes != ''
         uses: ./.github/actions/ci-ok-report

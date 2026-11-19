@@ -53,6 +53,7 @@ env:
       "envoy-go-checks": "envoy_go_checks",
       "envoy-infra-go": "envoy_infra_go",
       "text-checks": "text_checks",
+      "envoy-go-claim-model": "envoy_go_claim_model",
       "envoy-go-race": "envoy_go_race",
       "envoy-go-race-api": "envoy_go_race_api",
       "envoy-go-race-docs": "envoy_go_race_docs",
@@ -132,6 +133,8 @@ jobs:
       check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
       check_workflow_files_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_workflow_files_test }}
       check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
+      check_private_names_terms_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_terms_test }}
+      check_private_names_keys_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_keys_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
@@ -174,7 +177,7 @@ jobs:
       # why: .github/ci-notes/ci.md#why-the-browser-suite-is-ungated-and-what-the-label-decides
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
-      # why: .github/ci-notes/ci.md#the-nine-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
+      # why: .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
       envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go || 'false' }}
       # why: .github/ci-notes/ci.md#why-envoy-gos-fast-half-comes-back-on-every-push
       envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_go_checks }}
@@ -182,9 +185,10 @@ jobs:
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the dispatched one above, since it is one of the cheapest jobs of the file.
       text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.text_checks }}
-      # Seven slow suites, gated as .github/ci-notes/ci.md#the-nine-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
+      # Eight slow suites, gated as .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
+      envoy_go_claim_model: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_claim_model || 'false' }}
       envoy_go_race_docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
       dispatch_memory: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_memory || 'false' }}
       dispatch_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_multiprocess || 'false' }}
@@ -197,7 +201,7 @@ jobs:
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
       # so it comes back on every push that selects it, as the two suites above do.
       airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.airlock_lean }}
-      # A slow suite, gated as .github/ci-notes/ci.md#the-nine-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
+      # A slow suite, gated as .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
       envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_session_stall }}
@@ -245,6 +249,8 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       changes-result: ${{ needs.changes.result }}
       go_notices: ${{ needs.changes.outputs.go_notices }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # why: .github/ci-notes/ci.md#what-the-ci-images-job-copies-and-why-the-order-is-the-point
   ci-images:
@@ -331,6 +337,8 @@ jobs:
       check_action_pins_test: ${{ needs.changes.outputs.check_action_pins_test }}
       check_workflow_files_test: ${{ needs.changes.outputs.check_workflow_files_test }}
       check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
+      check_private_names_terms_test: ${{ needs.changes.outputs.check_private_names_terms_test }}
+      check_private_names_keys_test: ${{ needs.changes.outputs.check_private_names_keys_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
@@ -402,6 +410,8 @@ jobs:
     uses: ./.github/workflows/docs-site.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   contracts:
     needs: changes
@@ -544,6 +554,8 @@ jobs:
     uses: ./.github/workflows/ci-job-claude-envoy.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # why: .github/ci-notes/ci.md#envoy-gos-fast-half-the-go-format-check-the-two-generated-code-checks-the
   envoy-go-checks:
@@ -616,6 +628,18 @@ jobs:
       actions: read
       checks: write
     uses: ./.github/workflows/ci-job-envoy-go-race-api.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # why: .github/ci-notes/ci.md#the-mention-senders-claim-model-alone-on-a-runner-of-its-own
+  envoy-go-claim-model:
+    needs: changes
+    if: needs.changes.outputs.envoy_go_claim_model == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-envoy-go-claim-model.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
@@ -837,12 +861,14 @@ jobs:
           sparse-checkout: .github
           persist-credentials: false
 
+      # why: .github/ci-notes/ci.md#what-the-pr-title-check-step-maps-and-how-it-runs-its-scripts
       - name: Check the pull request's title, body, branch name, commits, comments and reviews
         env:
           GH_TOKEN: ${{ github.token }}
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
         run: |
-          payload=$(.github/scripts/find-pr-payload.sh)
-          GITHUB_EVENT_PATH="$payload" .github/scripts/check-pr-text.sh
+          payload=$("$GITHUB_WORKSPACE/.github/scripts/find-pr-payload.sh")
+          GITHUB_EVENT_PATH="$payload" "$GITHUB_WORKSPACE/.github/scripts/check-pr-text.sh"
 
   # why: .github/ci-notes/ci.md#the-merge-queues-cancel-act-mains-queue-builds-each-group-on-top
   cancel-started:
@@ -897,6 +923,7 @@ jobs:
       - text-checks
       - envoy-go-race
       - envoy-go-race-api
+      - envoy-go-claim-model
       - envoy-go-race-docs
       - envoy-go-docs-finalizers
       - dispatch-memory

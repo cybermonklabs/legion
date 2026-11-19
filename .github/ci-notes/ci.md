@@ -610,11 +610,11 @@ matches no file (its rule 9).
 
 ## text_checks: The text checks of the three Go modules, the Dispatch
 
-The text checks of the three Go modules, the Dispatch API's eight static source
+The text checks of the three Go modules, the Dispatch API's nine static source
 checks, and the two pure pins of packages/daemon's supervise table: the tests whose
 subject is a file's words. Their job runs packages/envoy/internal/textcheck,
 packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
-which the three Go lanes leave out of their own runs, those checks' fifteen tests
+which the three Go lanes leave out of their own runs, those checks' seventeen tests
 by name, and those two pins by name, which the daemon-go plain step skips.
 packages/envoy stays a wide
 root: file_copy_test.go walks every .go file under it (infra included), the API's
@@ -925,11 +925,12 @@ and whenever that job's own definition does, for the same reason
 ## envoy_go_race_api: The API race job. Not packages/envoy/**, as envoy_go_race has: that
 
 The API race job. Not packages/envoy/**, as envoy_go_race has: that root was here
-because internal/dispatch/api's lock_level_test.go, event_insert_guard_test.go and
-review_write_guard_test.go walk every non-test .go file of the module, and those
-seven source guards now carry `//go:build !race`, so the race build compiles none of
-them and the text-check job runs their tests instead. one_expression_guard_test.go
-walks the module the same way and is on that side of the tag for the same reason,
+because internal/dispatch/api's lock_level_test.go, event_insert_guard_test.go,
+issue_route_writer_guard_test.go and review_write_guard_test.go walk every non-test
+.go file of the module, and those source guards carry `//go:build !race`, so the race
+build compiles none of them and the text-check job runs their tests instead.
+one_expression_guard_test.go walks the module the same way and is on that side of
+the tag for the same reason,
 so no module-wide walk is left in this job's build (dispatch://INFRA-1413). What is
 left is the closure of `go test -race ./internal/dispatch/api/` (`go list -deps
 -test -race` in packages/envoy), one pattern per directory, with what those
@@ -943,6 +944,15 @@ The API's CI-reconcile passes route reads cireconcile's own record, so the race
 build of ./internal/dispatch/api compiles that package too. Its testdata is not
 here, for the reason this filter's header gives: a dependency's testdata is read
 by that package's own tests, which run in a job of their own.
+
+## envoy_go_claim_model: The mention sender's claim model's own job
+
+The mention sender's claim model's own job: `go test -run` of its two tests in
+./internal/dispatch/api. A -run moves no closure, so this is what the package's plain
+test build reads. packages/envoy stays a wide root, as text_checks' does: the !race
+source guards that build compiles walk every non-test .go file of the module, infra
+and testdata included, and the package's test closure reaches embedded files,
+migrations and goldens across it.
 
 ## envoy_go_race_docs: The document service's own race job. Not packages/envoy/**, as envoy_go_race
 
@@ -974,7 +984,7 @@ shell harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
 
 test-lib.sh, which the harness sources for check/is/summary (:63), and the
 frozen script it runs every case through beside the binary, symlinked into each
-fixture (:203,411,457,546). That script is the subject of
+fixture (:213,421,467,556). That script is the subject of
 the check_private_names_test filter, which gates another job's step: this job reads
 it as the engine it compares against.
 
@@ -1035,8 +1045,8 @@ ci-ok job's `needs:`, without which the verdict is reached before that job ends 
 nothing about it, and a gate in
 .github/scripts/ci_job_reads.py. An output an event must force is written in `changes`' outputs
 rather than left to its filter, as every output's workflow_dispatch case is, and so is one an
-event must hold back, as the nine slow suites' pull-request case is
-(.github/ci-notes/ci.md#the-nine-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the).
+event must hold back, as the ten slow suites' pull-request case is
+(.github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the).
 The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate,
 CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to
 every job of the file but the exempt ones, and the re-run term to every job but `ci-ok` and
@@ -1057,7 +1067,8 @@ it while it ran the daemon's Go suite and does not now), go-docs (docs, and the 
 of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
 listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
-builds the test binary of every package of the envoy module, and the binaries, multiprocess
+builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
+the API's of that set, and the binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
 broker's commands out of that same set), go-envoy-infra
 (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
@@ -1294,9 +1305,9 @@ a pull request is held to. The `full-ci` label no longer decides whether this su
 only which lane it runs: that job's `lane:` input reads the label, and
 .github/ci-notes/ci.md#what-the-lane-input-reads says what each event gets.
 
-## The nine slow suites, whose runner time dwarfs every other job's. The
+## The ten slow suites, whose runner time dwarfs every other job's. The
 
-The nine slow suites, whose runner time dwarfs every other job's. The merge queue runs
+The ten slow suites, whose runner time dwarfs every other job's. The merge queue runs
 them on the tree the change lands as, and that is where their result normally comes from;
 a pull request runs them only when it carries the label `full-ci`. Each is false on a
 pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
@@ -1334,8 +1345,8 @@ and so reads the same files.
 ## The paths filter's own verdict for every filter, before the `full-ci` term
 
 The paths filter's own verdict for every filter, before the `full-ci` term (`(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci'))`) rewrites
-the eight outputs the nine slow suites run behind. On a pull request without that
-label each of those eight is `false` whether its paths matched or not, so a reader of the
+the nine outputs the ten slow suites run behind. On a pull request without that
+label each of those nine is `false` whether its paths matched or not, so a reader of the
 outputs alone cannot tell "the filter said no" from "the label is absent"; with this
 beside them ci-ok's report tells the two apart and says which
 (.github/scripts/ci-ok.jq's `selection`). It gates no job and needs no plumbing of its
@@ -1620,7 +1631,7 @@ service on a job whose other thirty-odd steps would start it for nothing.
 The dashboard's and the proof editor's lint, typecheck, unit tests, build and asset checks.
 They were split out of the browser suite (the dispatch-browser job), whose full lane - the one
 the merge queue, the nightly and a pull request labelled `full-ci` run - is as slow as the
-nine suites that label holds back, while these checks must come back on every push.
+ten suites that label holds back, while these checks must come back on every push.
 No Postgres service and no Go, but contracts is built
 before the suites: one case of the dashboard's test run spawns Playwright, whose own
 resolution reads contracts' built dist/ (the comment on the step "Build contracts for the
@@ -1688,7 +1699,7 @@ them out), the architecture-note check over this repository's own .dispatch/arch
 through the composite action .github/actions/architecture-check, and the spec-file check over
 its .dispatch/spec through the composite action .github/actions/spec-check, both of which
 other repositories can call. The slow half, the envoy-go job (the module's unit tests, the
-container-backed NATS matrix and the integration suite), is one of the nine slow suites,
+container-backed NATS matrix and the integration suite), is one of the ten slow suites,
 which run in the merge queue and on a pull request labelled `full-ci`, while these checks
 must come back on every push. No Postgres service: nothing here opens a database. It
 restores go-envoy rather than go-envoy-test, the family of the slow half (the test binary of
@@ -1722,10 +1733,10 @@ compile runs in the lint job's notices step.
 ## The checks whose subject is text: each module's internal/textcheck package, the Dispatch
 
 The checks whose subject is text: each module's internal/textcheck package, the Dispatch API's
-eight static source checks, which read the module's own source, and the two pure pins of
+nine static source checks, which read the module's own source, and the two pure pins of
 packages/daemon's supervise table. None of them opens a database or starts a container, so the
 job carries no service and no `bun install`, and the three Go lanes (daemon-go, envoy-go and envoy-infra-go) leave those
-packages, those fifteen tests and those two pins out of their own runs
+packages, those seventeen tests and those two pins out of their own runs
 (.github/scripts/ci_job_reads.py builds both sides). Its filter names the trees those tests
 walk, so it is selected often, which is why the job is kept this cheap: five `go test` calls —
 the four that preceded the supervise pins take 4 minutes 4 seconds with an empty build cache,
@@ -1794,6 +1805,13 @@ kvwatch, natscred and the NATS auth service share this runner. The Dispatch stor
 cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
 natscred's and the auth service's tests open no store, so they need none.
+
+## The mention sender's claim model alone, on a runner of its own
+
+The mention sender's claim model alone, on a runner of its own: its search takes every core
+the runner has for as long as it runs, which beside envoy-go's other steps would put its
+minutes on theirs and theirs on its deadline. Its rules' test opens the store, so the job
+carries a Postgres service.
 
 ## Why the document service runs alone under the race detector
 
@@ -2067,6 +2085,13 @@ check main's ruleset requires: an `if:` can only take the job away, a skipped jo
 run is a passing required check, and a dead group must get a real failure rather than the
 check concluded by nothing. It comes before the checkout because no step after it runs
 once it has failed.
+
+## What the pr-title check step maps, and how it runs its scripts
+
+PRIVATE_NAME_TERMS is the deployment's own list, which check-private-names.sh's fifth rule
+reads and requires on a merge group (that script's header). Both scripts run by the
+checkout's own path, the form every job that holds the list runs the check by;
+check-pr-text.sh runs check-private-names.sh from its own directory.
 
 ## The merge queue's cancel act. Main's queue builds each group on top
 

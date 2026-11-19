@@ -142,6 +142,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/dispatch/legion/*'
   - 'packages/envoy/internal/dispatch/model/*'
   - 'packages/envoy/internal/dispatch/outbox/*'
+  - 'packages/envoy/internal/dispatch/outbox/copyrule/*'
   - 'packages/envoy/internal/dispatch/pmdoc/**'
   - 'packages/envoy/internal/dispatch/prioritystore/*'
   - 'packages/envoy/internal/dispatch/processes/*'
@@ -527,7 +528,6 @@ typecheck:
 # why: .github/ci-notes/ci.md#claude_envoy_build-what-packagesclaude-envoyscriptsbuildts-and-scriptsverify-buildsh
 claude_envoy_build: &claude_envoy_build
   - 'packages/claude-envoy/**'
-  - '.github/scripts/check-private-names.sh'
   - '.github/scripts/release-push.sh'
   # why: .github/ci-notes/ci.md#claude_envoy_build-releaseyamls-version-arguments-are-held-to-the-build-inputs
   - '.github/workflows/release.yaml'
@@ -557,6 +557,8 @@ claude_envoy:
   # why: .github/ci-notes/ci.md#claude_envoy-testsenvoy-channel-servertestts-holds-the-marketplace
   - '.claude-plugin/marketplace.json'
   - '.agents/plugins/marketplace.json'
+  - '.github/actions/private-names-packed-plugin/**'
+  - '.github/scripts/check-private-names.sh'
   - '.github/scripts/release-claude-envoy-check-packed.sh'
   - '.github/scripts/release-claude-envoy-manifest-repository.sh'
   - '.github/scripts/release-claude-envoy-version.sh'
@@ -744,6 +746,25 @@ check_private_names_test: &check_private_names_test
   - '.github/workflows/ci-job-test.yaml'
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-private-names.test.sh'
+  - '.github/scripts/check-private-names-test-lib.sh'
+  - '.github/scripts/check-private-names.sh'
+  - '.github/scripts/check-pr-text.sh'
+check_private_names_terms_test: &check_private_names_terms_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/check-private-names-terms.test.sh'
+  - '.github/scripts/check-private-names-test-lib.sh'
+  - '.github/scripts/check-private-names.sh'
+  - '.github/scripts/check-pr-text.sh'
+check_private_names_keys_test: &check_private_names_keys_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/check-private-names-keys.test.sh'
+  - '.github/scripts/check-private-names-test-lib.sh'
   - '.github/scripts/check-private-names.sh'
   - '.github/scripts/check-pr-text.sh'
 check_plugin_names_test: &check_plugin_names_test
@@ -774,6 +795,7 @@ check_release_credentials_test: &check_release_credentials_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-release-credentials.test.sh'
   - '.github/scripts/check-release-credentials.sh'
+  - '.github/scripts/shell_commands.py'
 repo_paths_test: &repo_paths_test
   - *ci_router
   - *ci_filters_data
@@ -905,7 +927,6 @@ check_ci_filters_test: &check_ci_filters_test
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/go_build_tags.py'
   - '.github/scripts/ci_job_reads.py'
-  - 'AGENTS.md'
   - '.github/workflows/ci-job-typecheck.yaml'
 check_ts_filters_test: &check_ts_filters_test
   - *ci_router
@@ -966,6 +987,8 @@ test:
   - *check_action_pins_test
   - *check_workflow_files_test
   - *check_private_names_test
+  - *check_private_names_terms_test
+  - *check_private_names_keys_test
   - *check_plugin_names_test
   - *check_fireevent_reasons_test
   - *check_daemon_api_contract_test
@@ -2005,6 +2028,7 @@ listener_server_change:
   - 'packages/envoy/internal/dispatch/legion/*'
   - 'packages/envoy/internal/dispatch/model/*'
   - 'packages/envoy/internal/dispatch/outbox/*'
+  - 'packages/envoy/internal/dispatch/outbox/copyrule/*'
   - 'packages/envoy/internal/dispatch/pmdoc/**'
   - 'packages/envoy/internal/dispatch/prioritystore/*'
   - 'packages/envoy/internal/dispatch/processes/*'
@@ -2726,6 +2750,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/dispatch/legion/metrics/*'
   - 'packages/envoy/internal/dispatch/model/*'
   - 'packages/envoy/internal/dispatch/outbox/*'
+  - 'packages/envoy/internal/dispatch/outbox/copyrule/*'
   - 'packages/envoy/internal/dispatch/pmdoc/*'
   - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/*'
   - 'packages/envoy/internal/dispatch/pmdoc/pmdoctest/*'
@@ -2793,10 +2818,17 @@ envoy_go_race_api:
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
   - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_checks_test.go'
+  - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_run_test.go'
+  - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_search_test.go'
+  - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_sql_test.go'
+  - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_steps_test.go'
+  - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_test.go'
   - '!packages/envoy/internal/dispatch/api/copy_lock_order_test.go'
   - '!packages/envoy/internal/dispatch/api/decision_block_route_guard_test.go'
   - '!packages/envoy/internal/dispatch/api/event_insert_guard_test.go'
   - '!packages/envoy/internal/dispatch/api/issue_ask_repair_xid_window_test.go'
+  - '!packages/envoy/internal/dispatch/api/issue_route_writer_guard_test.go'
   - '!packages/envoy/internal/dispatch/api/keyed_write_guard_test.go'
   - '!packages/envoy/internal/dispatch/api/lock_level_test.go'
   - '!packages/envoy/internal/dispatch/api/one_expression_guard_test.go'
@@ -2861,6 +2893,122 @@ envoy_go_race_api:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  # END generated
+# why: .github/ci-notes/ci.md#envoy_go_claim_model-the-mention-senders-claim-models-own-job
+envoy_go_claim_model:
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-envoy-go-claim-model.yaml'
+  - *go_workspace
+  - 'packages/envoy/**'
+  - 'packages/contracts/fixtures/live/**'
+  - 'packages/contracts/schemas/dispatch-openapi.json'
+  - 'packages/contracts/fixtures/ask-reply-recipients.json'
+  # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
+  # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+  - '!packages/envoy/agentloop/**/*_test.go'
+  - '!packages/envoy/brokeraddr/**/*_test.go'
+  - '!packages/envoy/clitest/**/*_test.go'
+  - '!packages/envoy/cmd/**/*_test.go'
+  - '!packages/envoy/dispatchbody/**/*_test.go'
+  - '!packages/envoy/going/**/*_test.go'
+  - '!packages/envoy/infra/**/*_test.go'
+  - '!packages/envoy/internal/broker/**/*_test.go'
+  - '!packages/envoy/internal/brokerclient/**/*_test.go'
+  - '!packages/envoy/internal/brokertoken/**/*_test.go'
+  - '!packages/envoy/internal/bus/**/*_test.go'
+  - '!packages/envoy/internal/cistore/**/*_test.go'
+  - '!packages/envoy/internal/cmdtest/**/*_test.go'
+  - '!packages/envoy/internal/config/**/*_test.go'
+  - '!packages/envoy/internal/contracts/**/*_test.go'
+  - '!packages/envoy/internal/ctxlock/**/*_test.go'
+  - '!packages/envoy/internal/dedupe/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/benchtime/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/bytelru/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/cireconcile/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/config/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/dashboard/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/delivery/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/deliveryaudit/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/docs/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/duty/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/embed/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/embedqueue/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/envoy/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/events/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/files/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/githubapi/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/githubapp/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/githubreads/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/legion/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/model/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/outbox/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/pmdoc/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/prioritystore/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/processes/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/rank/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/redeliver/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/refs/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/retry/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/routes/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/sessionanswers/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/specgraph/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/startup/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/store/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/text/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/texttreefill/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/workflowstore/**/*_test.go'
+  - '!packages/envoy/internal/envconf/**/*_test.go'
+  - '!packages/envoy/internal/fileowner/**/*_test.go'
+  - '!packages/envoy/internal/fold/**/*_test.go'
+  - '!packages/envoy/internal/ghrename/**/*_test.go'
+  - '!packages/envoy/internal/googleidentity/**/*_test.go'
+  - '!packages/envoy/internal/goroutinetest/**/*_test.go'
+  - '!packages/envoy/internal/integration/**/*_test.go'
+  - '!packages/envoy/internal/kvwatch/**/*_test.go'
+  - '!packages/envoy/internal/legionagents/**/*_test.go'
+  - '!packages/envoy/internal/logging/**/*_test.go'
+  - '!packages/envoy/internal/mcpbridge/**/*_test.go'
+  - '!packages/envoy/internal/metrics/**/*_test.go'
+  - '!packages/envoy/internal/oidc/**/*_test.go'
+  - '!packages/envoy/internal/pglisten/**/*_test.go'
+  - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+  - '!packages/envoy/internal/ratelimit/**/*_test.go'
+  - '!packages/envoy/internal/redact/**/*_test.go'
+  - '!packages/envoy/internal/roles/**/*_test.go'
+  - '!packages/envoy/internal/routing/**/*_test.go'
+  - '!packages/envoy/internal/runnerlog/**/*_test.go'
+  - '!packages/envoy/internal/serverwait/**/*_test.go'
+  - '!packages/envoy/internal/session/**/*_test.go'
+  - '!packages/envoy/internal/smoke/**/*_test.go'
+  - '!packages/envoy/internal/stacktest/**/*_test.go'
+  - '!packages/envoy/internal/store/**/*_test.go'
+  - '!packages/envoy/internal/testnats/**/*_test.go'
+  - '!packages/envoy/internal/testport/**/*_test.go'
+  - '!packages/envoy/internal/testtmp/**/*_test.go'
+  - '!packages/envoy/internal/textcheck/**/*_test.go'
+  - '!packages/envoy/internal/verify/**/*_test.go'
+  - '!packages/envoy/internal/webhook/**/*_test.go'
+  - '!packages/envoy/internal/weborigin/**/*_test.go'
+  - '!packages/envoy/internal/wirecheck/**/*_test.go'
+  - '!packages/envoy/listenerwire/**/*_test.go'
+  - '!packages/envoy/listenfd/**/*_test.go'
+  - '!packages/envoy/loadtest/**/*_test.go'
+  - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/natscred/**/*_test.go'
+  - '!packages/envoy/natsgrant/**/*_test.go'
+  - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/steprecord/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#envoy_go_race_docs-the-document-services-own-race-job-not-packagesenvoy-as-envoy_go_race
 envoy_go_race_docs:

@@ -46,7 +46,7 @@ on:
       - ".github/workflows/worker-image.yaml"
   workflow_dispatch:
 
-# why: .github/ci-notes/release.md#why-the-workflow-level-permissions-block-is-empty-and-the-three-stages-a-release-waits-for
+# why: .github/ci-notes/release.md#why-the-workflow-level-permissions-block-is-empty-and-the-four-stages-a-release-waits-for
 permissions: {}
 
 concurrency:
@@ -223,6 +223,20 @@ jobs:
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
 
+  # why: .github/ci-notes/release.md#what-legion_names-checks
+  legion_names:
+    needs: legion_build
+    if: always() && needs.legion_build.result == 'success' && needs.legion_build.outputs.skip != 'true'
+    # contents: read is for the called workflow's checkout.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-notes-names.yaml
+    with:
+      artifact: legion-notes
+      notes: ${{ needs.legion_build.outputs.notes }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+
   # why: .github/ci-notes/release.md#what-pi_envoy_build-hands-to-publish
   pi_envoy_build:
     # why: .github/ci-notes/release.md#why-only-main-publishes-a-plugin
@@ -331,6 +345,21 @@ jobs:
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
 
+  # The private-name check of the changelog entries pi_envoy_build rendered, as legion_names says;
+  # publish's pi-envoy steps run only when it succeeded.
+  pi_envoy_names:
+    needs: pi_envoy_build
+    if: always() && needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs.skip != 'true'
+    # contents: read is for the called workflow's checkout.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-notes-names.yaml
+    with:
+      artifact: pi-envoy-notes
+      notes: ${{ needs.pi_envoy_build.outputs.notes }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+
   # The Legion Oh My Pi plugin, @sjawhar/pi-legion, built and published as @sjawhar/pi-envoy is.
   pi_legion_build:
     # Only main publishes, as .github/ci-notes/release.md#why-only-main-publishes-a-plugin says.
@@ -437,6 +466,21 @@ jobs:
 
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
+
+  # The private-name check of the changelog entries pi_legion_build rendered, as legion_names
+  # says; publish's pi-legion steps run only when it succeeded.
+  pi_legion_names:
+    needs: pi_legion_build
+    if: always() && needs.pi_legion_build.result == 'success' && needs.pi_legion_build.outputs.skip != 'true'
+    # contents: read is for the called workflow's checkout.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-notes-names.yaml
+    with:
+      artifact: pi-legion-notes
+      notes: ${{ needs.pi_legion_build.outputs.notes }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # why: .github/ci-notes/release.md#what-claude_envoy_build-packs-and-why-it-builds-the-plugin-first
   claude_envoy_build:
@@ -560,9 +604,35 @@ jobs:
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
 
+  # why: .github/ci-notes/release.md#what-claude_envoy_names-checks-and-why-it-is-a-job-of-its-own
+  claude_envoy_names:
+    needs: claude_envoy_build
+    if: always() && needs.claude_envoy_build.result == 'success' && needs.claude_envoy_build.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # contents: read is for the checkout.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - uses: ./.github/actions/private-names-packed-plugin
+        with:
+          artifact: claude-envoy-tarball
+          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
+
+      - uses: ./.github/actions/private-names-release-notes
+        if: needs.claude_envoy_build.outputs.notes == 'true'
+        with:
+          artifact: claude-envoy-notes
+          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
+
   # why: .github/ci-notes/release.md#what-the-publish-job-runs-and-why-one-job-publishes-all-four-packages
   publish:
-    needs: [pi_envoy_build, pi_legion_build, claude_envoy_build, legion_build]
+    needs: [pi_envoy_build, pi_envoy_names, pi_legion_build, pi_legion_names, claude_envoy_build, claude_envoy_names, legion_build, legion_names]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -598,7 +668,7 @@ jobs:
       # package's reset of the checkout removes it and no git command sees it.
       - name: "pi-envoy: Download the tarball"
         id: pi_envoy_download
-        if: ${{ !cancelled() && needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs.skip != 'true' && needs.pi_envoy_names.result == 'success' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pi-envoy-tarball
@@ -616,7 +686,7 @@ jobs:
           name=$(jq -r .name packages/pi-envoy/package.json)
           stem="${name#@}"
           stem="${stem//\//-}-$VERSION"
-          tag=$(.github/scripts/release-push.sh handed pi-envoy-v "$VERSION" "$RUNNER_TEMP/pi-envoy-tarball" "$stem.tgz")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed pi-envoy-v "$VERSION" "$RUNNER_TEMP/pi-envoy-tarball" "$stem.tgz")
           { echo "tag=$tag"; echo "stem=$stem"; } >> "$GITHUB_OUTPUT"
 
       # The tarball is pi_envoy_build's bytes, never a repack here: npm publish is handed the .tgz,
@@ -641,7 +711,8 @@ jobs:
         env:
           VERSION: ${{ needs.pi_envoy_build.outputs.version }}
           TAG: ${{ steps.pi_envoy_handed.outputs.tag }}
-        run: .github/scripts/release-push.sh tag "$VERSION" "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
 
       # why: .github/ci-notes/release.md#why-the-deploy-key-reaches-the-envoy-plugins-tag-push-alone
       - name: "pi-envoy: Push tag"
@@ -650,7 +721,8 @@ jobs:
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           TAG: ${{ steps.pi_envoy_handed.outputs.tag }}
-        run: .github/scripts/release-push.sh push-tag "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
 
       - name: "pi-envoy: Create GitHub release"
         id: pi_envoy_release
@@ -660,7 +732,8 @@ jobs:
           TAG: ${{ steps.pi_envoy_handed.outputs.tag }}
           VERSION: ${{ needs.pi_envoy_build.outputs.version }}
           STEM: ${{ steps.pi_envoy_handed.outputs.stem }}
-        run: .github/scripts/release-push.sh release "$TAG" "Pi Envoy v$VERSION" "$RUNNER_TEMP/pi-envoy-tarball/$STEM.tgz"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "Pi Envoy v$VERSION" "$RUNNER_TEMP/pi-envoy-tarball/$STEM.tgz"
 
       # The entries pi_envoy_build rendered from this release's fragments, under the runner's
       # temporary directory as the tarball is, outside the checkout.
@@ -679,13 +752,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.pi_envoy_handed.outputs.tag }}
         run: |
-          .github/scripts/release-push.sh release-section "$TAG" '## Changelog' \
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release-section "$TAG" '## Changelog' \
             "$RUNNER_TEMP/pi-envoy-notes/release-notes.md"
 
       # pi-legion: what pi_legion_build packed, published as pi-envoy's above is.
       - name: "pi-legion: Download the tarball"
         id: pi_legion_download
-        if: ${{ !cancelled() && needs.pi_legion_build.result == 'success' && needs.pi_legion_build.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && needs.pi_legion_build.result == 'success' && needs.pi_legion_build.outputs.skip != 'true' && needs.pi_legion_names.result == 'success' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pi-legion-tarball
@@ -702,7 +775,7 @@ jobs:
           name=$(jq -r .name packages/pi-legion/package.json)
           stem="${name#@}"
           stem="${stem//\//-}-$VERSION"
-          tag=$(.github/scripts/release-push.sh handed pi-legion-v "$VERSION" "$RUNNER_TEMP/pi-legion-tarball" "$stem.tgz")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed pi-legion-v "$VERSION" "$RUNNER_TEMP/pi-legion-tarball" "$stem.tgz")
           { echo "tag=$tag"; echo "stem=$stem"; } >> "$GITHUB_OUTPUT"
 
       - name: "pi-legion: Publish to npm"
@@ -725,7 +798,8 @@ jobs:
         env:
           VERSION: ${{ needs.pi_legion_build.outputs.version }}
           TAG: ${{ steps.pi_legion_handed.outputs.tag }}
-        run: .github/scripts/release-push.sh tag "$VERSION" "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
 
       # The deploy key reaches this step alone of this package's, as for pi-envoy.
       - name: "pi-legion: Push tag"
@@ -734,7 +808,8 @@ jobs:
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           TAG: ${{ steps.pi_legion_handed.outputs.tag }}
-        run: .github/scripts/release-push.sh push-tag "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
 
       - name: "pi-legion: Create GitHub release"
         id: pi_legion_release
@@ -744,7 +819,8 @@ jobs:
           TAG: ${{ steps.pi_legion_handed.outputs.tag }}
           VERSION: ${{ needs.pi_legion_build.outputs.version }}
           STEM: ${{ steps.pi_legion_handed.outputs.stem }}
-        run: .github/scripts/release-push.sh release "$TAG" "Pi Legion v$VERSION" "$RUNNER_TEMP/pi-legion-tarball/$STEM.tgz"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "Pi Legion v$VERSION" "$RUNNER_TEMP/pi-legion-tarball/$STEM.tgz"
 
       # pi-legion's entries, written into its release body as pi-envoy's are above.
       - name: "pi-legion: Download the changelog entries"
@@ -762,13 +838,13 @@ jobs:
           TAG: ${{ steps.pi_legion_handed.outputs.tag }}
         run: |
           # pi_legion_build's one rendered file, written into the body as pi-envoy's is above.
-          .github/scripts/release-push.sh release-section "$TAG" '## Changelog' \
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release-section "$TAG" '## Changelog' \
             "$RUNNER_TEMP/pi-legion-notes/release-notes.md"
 
       # why: .github/ci-notes/release.md#why-the-claude-plugin-is-not-part-of-the-plugin-pair
       - name: "claude-envoy: Download the tarball"
         id: claude_envoy_download
-        if: ${{ !cancelled() && needs.claude_envoy_build.result == 'success' && needs.claude_envoy_build.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && needs.claude_envoy_build.result == 'success' && needs.claude_envoy_build.outputs.skip != 'true' && needs.claude_envoy_names.result == 'success' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: claude-envoy-tarball
@@ -785,7 +861,7 @@ jobs:
           name=$(jq -r .name packages/claude-envoy/package.json)
           stem="${name#@}"
           stem="${stem//\//-}-$VERSION"
-          tag=$(.github/scripts/release-push.sh handed claude-envoy-v "$VERSION" "$RUNNER_TEMP/claude-envoy-tarball" "$stem.tgz")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed claude-envoy-v "$VERSION" "$RUNNER_TEMP/claude-envoy-tarball" "$stem.tgz")
           { echo "tag=$tag"; echo "stem=$stem"; } >> "$GITHUB_OUTPUT"
 
       - name: "claude-envoy: Publish to npm"
@@ -808,7 +884,8 @@ jobs:
         env:
           VERSION: ${{ needs.claude_envoy_build.outputs.version }}
           TAG: ${{ steps.claude_envoy_handed.outputs.tag }}
-        run: .github/scripts/release-push.sh tag "$VERSION" "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
 
       # The deploy key reaches this step alone of this package's, as for pi-envoy.
       - name: "claude-envoy: Push tag"
@@ -817,7 +894,8 @@ jobs:
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           TAG: ${{ steps.claude_envoy_handed.outputs.tag }}
-        run: .github/scripts/release-push.sh push-tag "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
 
       - name: "claude-envoy: Create GitHub release"
         id: claude_envoy_release
@@ -827,7 +905,8 @@ jobs:
           TAG: ${{ steps.claude_envoy_handed.outputs.tag }}
           VERSION: ${{ needs.claude_envoy_build.outputs.version }}
           STEM: ${{ steps.claude_envoy_handed.outputs.stem }}
-        run: .github/scripts/release-push.sh release "$TAG" "Claude Envoy v$VERSION" "$RUNNER_TEMP/claude-envoy-tarball/$STEM.tgz"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "Claude Envoy v$VERSION" "$RUNNER_TEMP/claude-envoy-tarball/$STEM.tgz"
 
       # claude-envoy's entries, written into its release body as pi-envoy's are above.
       - name: "claude-envoy: Download the changelog entries"
@@ -845,13 +924,13 @@ jobs:
           TAG: ${{ steps.claude_envoy_handed.outputs.tag }}
         run: |
           # claude_envoy_build's one rendered file, written into the body as pi-envoy's is above.
-          .github/scripts/release-push.sh release-section "$TAG" '## Changelog' \
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release-section "$TAG" '## Changelog' \
             "$RUNNER_TEMP/claude-envoy-notes/release-notes.md"
 
       # why: .github/ci-notes/release.md#what-the-publish-job-does-with-the-codex-plugin
       - name: "codex-envoy: Download the tarball"
         id: codex_envoy_download
-        if: ${{ !cancelled() && needs.claude_envoy_build.result == 'success' && needs.claude_envoy_build.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && needs.claude_envoy_build.result == 'success' && needs.claude_envoy_build.outputs.skip != 'true' && needs.claude_envoy_names.result == 'success' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: codex-envoy-tarball
@@ -868,7 +947,7 @@ jobs:
           name=$(jq -r .name packages/claude-envoy/codex/package.json)
           stem="${name#@}"
           stem="${stem//\//-}-$VERSION"
-          .github/scripts/release-push.sh handed claude-envoy-v "$VERSION" "$RUNNER_TEMP/codex-envoy-tarball" "$stem.tgz" >/dev/null
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed claude-envoy-v "$VERSION" "$RUNNER_TEMP/codex-envoy-tarball" "$stem.tgz" >/dev/null
           { echo "name=$name"; echo "stem=$stem"; } >> "$GITHUB_OUTPUT"
 
       - name: "codex-envoy: Publish to npm"
@@ -918,7 +997,7 @@ jobs:
               [ "$3" = success ] || return 0
               released=$4
             fi
-            .github/scripts/release-push.sh pair-version "$5" "$released"
+            "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" pair-version "$5" "$released"
           }
           pi_envoy=$(pair_member "$PI_ENVOY_RESULT" "$PI_ENVOY_SKIP" "$PI_ENVOY_RELEASED" "$PI_ENVOY_VERSION" pi-envoy-v)
           pi_legion=$(pair_member "$PI_LEGION_RESULT" "$PI_LEGION_SKIP" "$PI_LEGION_RELEASED" "$PI_LEGION_VERSION" pi-legion-v)
@@ -940,7 +1019,7 @@ jobs:
       # why: .github/ci-notes/release.md#why-legion-is-released-only-once-both-plugins-are-on-npm
       - name: "legion: Check the linked plugin pair"
         id: legion_pair
-        if: ${{ !cancelled() && steps.pair.outputs.ok == 'true' && needs.legion_build.result == 'success' && needs.legion_build.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && steps.pair.outputs.ok == 'true' && needs.legion_build.result == 'success' && needs.legion_build.outputs.skip != 'true' && needs.legion_names.result == 'success' }}
         env:
           LINKED_PI_ENVOY: ${{ needs.legion_build.outputs.pi_envoy_version }}
           LINKED_PI_LEGION: ${{ needs.legion_build.outputs.pi_legion_version }}
@@ -979,7 +1058,7 @@ jobs:
             arch=${target#*/}
             archives+=("legion-$os-$arch.tar.gz")
           done
-          tag=$(.github/scripts/release-push.sh handed legion-v "$VERSION" "$dir" "${archives[@]}")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed legion-v "$VERSION" "$dir" "${archives[@]}")
           (cd "$dir" && sha256sum -- "${archives[@]}" > SHA256SUMS)
           {
             echo "tag=$tag"
@@ -1000,8 +1079,8 @@ jobs:
           TAG: ${{ steps.legion_assets.outputs.tag }}
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         run: |
-          .github/scripts/release-push.sh tag "$VERSION" "$TAG"
-          .github/scripts/release-push.sh push-tag "$TAG"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
 
       # why: .github/ci-notes/release.md#what-the-archives-attestation-is-for-and-how-a-consumer-verifies-it
       - name: "legion: Attest the archives"
@@ -1025,7 +1104,7 @@ jobs:
           while IFS= read -r file; do
             [ -z "$file" ] || assets+=("$file")
           done <<< "$FILES"
-          .github/scripts/release-push.sh release "$TAG" "legion v$VERSION" "${assets[@]}"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "legion v$VERSION" "${assets[@]}"
           { echo "version=$VERSION"; echo "tag=$TAG"; } >> "$GITHUB_OUTPUT"
 
       # legion's entries, written into its release body as the plugins' are above.
@@ -1044,7 +1123,7 @@ jobs:
           TAG: ${{ steps.legion_assets.outputs.tag }}
         run: |
           # legion_build's one rendered file, written into the body as the plugins' are above.
-          .github/scripts/release-push.sh release-section "$TAG" '## Changelog' \
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release-section "$TAG" '## Changelog' \
             "$RUNNER_TEMP/legion-notes/release-notes.md"
 
   # why: .github/ci-notes/release.md#what-the-worker-image-build-is-given-and-what-it-pushes
@@ -1143,4 +1222,4 @@ jobs:
           test -n "$REF"
           # shellcheck disable=SC2016 # literal Markdown backticks, no expansion wanted
           printf '`%s`\n' "$REF" |
-            .github/scripts/release-push.sh release-section "$RELEASE_TAG" '## Worker image' -
+            "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release-section "$RELEASE_TAG" '## Worker image' -
