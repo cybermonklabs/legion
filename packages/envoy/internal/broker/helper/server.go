@@ -994,7 +994,9 @@ func (s *Server) lacksCredential(err error) bool {
 // sessionHeld reports whether err is the broker refusing an enrolment the session name it
 // states belongs to another principal (403 SESSION_HELD, enroll.ErrSessionHeld). The broker
 // keys a name's carry on its principal — person, Google account or service account — and hands
-// a name back to that one alone.
+// a name back to that one alone, but for a service account BROKER_SESSION_ACCOUNT_PAIRS pairs
+// with a holding one. No pair names a person or a Google account, the principals this helper
+// enrols under, so to this helper the name is its holder's alone.
 //
 // That refuses the principal THIS attempt enrolled under, and not the name for ever: the
 // helper chooses the principal again at every attempt (Broker.signingAuthority), so the person

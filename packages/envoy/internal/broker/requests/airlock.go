@@ -627,9 +627,11 @@ type AirlockSecret struct {
 //
 // It takes no enrollment: the connection's placeholder is what proves the grant, and
 // AirlockConnection has already checked that the grant and its enrollment are live. A grant the
-// checks refuse is ended exactly as Values ends it, since they are the same checks.
+// checks refuse is ended exactly as Values ends it, since they are the same checks, and a grant
+// whose chain fails is logged as Values logs it, under at=airlock (GrantChainInvalidMessage),
+// since the proxy refuses it GRANT_CHAIN_INVALID as the session's release does.
 func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string]AirlockSecret, string, error) {
-	checked, err := m.checkRelease(ctx, grantID, "")
+	checked, err := m.checkRelease(ctx, grantID, "", "airlock")
 	if err != nil {
 		return nil, "", err
 	}

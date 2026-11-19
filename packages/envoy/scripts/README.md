@@ -596,7 +596,14 @@ Each tick prints one tab-separated line per target:
 attempt rides the name's line). On exit it prints, per target, when it was
 seen, how many ticks `/healthz` answered, and the `/v1` non-200 answers at the
 ticks `/healthz` answered 200, counted by `code:error` with the first and last
-time, then the sends and Dispatch attempts by outcome, then the verdict.
+time, then the sends and Dispatch attempts by outcome, then the verdict. A
+signal ends the run the same way, whether it reaches the probe alone
+(`kill <pid>`) or its whole process group, as Ctrl-C at a terminal and
+`timeout -s TERM` send it. The group's signal also kills the request or the
+sleep in flight. The target whose request it cut short, and each target after
+it in that tick, print no line for that tick and are not counted; the summary
+and the verdict cover every target line printed before it, and a Dispatch
+message that tick had already posted.
 
 ### Verdict and exit codes
 
@@ -641,8 +648,10 @@ while, so the target fails: a client that reached it then was refused the list
 
 `listener-deploy-probe.test.sh` proves the verdict over two fake tasks, one
 Python process per case serving `127.0.0.1` and `127.0.0.2` on one port the
-kernel chose, behind a fake `getent`; CI runs it in the `envoy-go-checks` job,
-whose steps are in `.github/workflows/ci-job-envoy-go-checks.yaml`.
+kernel chose, behind a fake `getent`, and that a `TERM` sent to the probe's
+process group during its sleep or a request, or an `INT` during its sleep,
+still ends in the summary and the verdict; CI runs it in the `envoy-go-checks`
+job, whose steps are in `.github/workflows/ci-job-envoy-go-checks.yaml`.
 
 ## daemon-release-gate.sh
 

@@ -28,9 +28,12 @@ func TestLoadNonTransactionalMigration(t *testing.T) {
 	}
 }
 
+// The marker's words inside a literal, or in prose of a longer comment, are text: the file is an
+// ordinary migration. The marker as a comment of its own on any line but the first is refused
+// (TestLoadRefusesTheNonTransactionalMarkerBelowTheFirstLine).
 func TestLoadDoesNotReadAMarkerInsideSQLAsAnExecutionMode(t *testing.T) {
 	for _, sql := range []string{
-		"-- ordinary header\n-- pgmigrate:non-transactional\nselect 1; select 2;",
+		"-- see `-- pgmigrate:non-transactional` in the README\nselect 1; select 2;",
 		"select $$\n-- pgmigrate:non-transactional\n$$;",
 	} {
 		migrations, err := Load(fstest.MapFS{"migrations/0001_normal.up.sql": {Data: []byte(sql)}}, "migrations")
@@ -38,6 +41,38 @@ func TestLoadDoesNotReadAMarkerInsideSQLAsAnExecutionMode(t *testing.T) {
 			t.Fatalf("ordinary migration = %+v, %v", migrations, err)
 		}
 	}
+}
+
+// A replaces line, or any other line, written above the non-transactional marker leaves the marker
+// where nonTransactionalHeader does not read it, so the file would run in a transaction; the
+// loader refuses it, naming the file and the marker's line. Before this rule the first case loaded
+// as a transactional migration, and an earlier version of the test above accepted the second. The
+// control is the same file with the marker first and the replaces line after it, which loads as
+// non-transactional and declares the line.
+func TestLoadRefusesTheNonTransactionalMarkerBelowTheFirstLine(t *testing.T) {
+	index := "create index concurrently if not exists things_kind on things (kind);\n"
+	replaces := "-- replaces: 0001_index.up.sql sha256:" + strings.Repeat("0", 64) + "\n"
+	for name, sql := range map[string]string{
+		"below a replaces line":       replaces + "-- pgmigrate:non-transactional\n" + index,
+		"below an ordinary comment":   "-- ordinary header\n-- pgmigrate:non-transactional\nselect 1; select 2;",
+		"indented, with CRLF endings": "-- header\r\n  -- pgmigrate:non-transactional\r\n" + index,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := Load(fstest.MapFS{"migrations/0001_index.up.sql": {Data: []byte(sql)}}, "migrations")
+			if err == nil || len(got) != 0 || !strings.Contains(err.Error(), "migration 0001_index.up.sql line 2: the -- pgmigrate:non-transactional marker is read on the first line alone") {
+				t.Fatalf("Load = %+v, %v; want a refusal naming the file and line 2", got, err)
+			}
+		})
+	}
+	t.Run("control: the marker first, the replaces line after it", func(t *testing.T) {
+		got, err := Load(fstest.MapFS{"migrations/0001_index.up.sql": {Data: []byte("-- pgmigrate:non-transactional\n" + replaces + index)}}, "migrations")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !got[0].NonTransactional || len(got[0].Replaces) != 1 {
+			t.Errorf("non-transactional %v, replaces %v; want the marker read and the line declared", got[0].NonTransactional, got[0].Replaces)
+		}
+	})
 }
 
 func TestLoadRefusesUnsafeNonTransactionalMigrations(t *testing.T) {

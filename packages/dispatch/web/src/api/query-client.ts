@@ -9,6 +9,7 @@ import {
   type QueryObserverOptions,
   type RefetchOptions,
   type RefetchQueryFilters,
+  type Updater,
 } from "@tanstack/react-query";
 
 import { ApiError, isEventHeadUnavailable, isRetryableQueryError } from "./client";
@@ -176,4 +177,26 @@ export class DispatchQueryClient extends QueryClient {
     // network returns; the follow-up still runs when it does.
     return query.state.fetchStatus === "paused" ? Promise.resolve() : followUp;
   }
+}
+
+/**
+ * Puts `updater`'s value into the query `queryKey` over every read of it still out. A read in
+ * flight was asked before this write, so it answers the state the write replaces, and its answer
+ * would put that state back when it lands: a mark's answer that clears an unread count would be
+ * undone by the count a read asked before the mark brings (`storeAgentState`, `unread.ts`). So the
+ * read is cancelled first, in the same synchronous step as the write, as `askSignInAgain` and the
+ * board's moves (`board-moves.ts`) cancel theirs: TanStack's cancel takes effect at once, and puts
+ * back the state from before that read, which the write then replaces. Nothing runs between the
+ * two. A refetch `DispatchQueryClient` held behind the cancelled read (`#refetch`) starts only once
+ * that read has settled, after this write, so it asks for the state the write is of. An awaited
+ * cancel would put the write after that refetch has started, and every reader of this step would
+ * still read the value the write replaces. Answers what `setQueryData` answers.
+ */
+export function replaceQueryData<T>(
+  client: QueryClient,
+  queryKey: QueryKey,
+  updater: Updater<T | undefined, T | undefined>
+): T | undefined {
+  void client.cancelQueries({ exact: true, queryKey });
+  return client.setQueryData<T>(queryKey, updater);
 }

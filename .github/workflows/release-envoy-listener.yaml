@@ -73,9 +73,9 @@ concurrency:
   cancel-in-progress: false
 
 # Every job declares its own permissions (targets, build, docker, image_index, attest,
-# release_build, release_publish below); nothing runs under this workflow-level default, so it
-# stays empty rather than becoming an unreviewed grant to a job added later with no block of its
-# own.
+# release_build, release_names, release_publish below); nothing runs under this workflow-level
+# default, so it stays empty rather than becoming an unreviewed grant to a job added later with no
+# block of its own.
 #
 # The release is split into build jobs and credentialed jobs. build, docker and release_build run
 # the module's code and every third-party module it links, so they hold no secret and no write
@@ -86,7 +86,9 @@ concurrency:
 # pinned actions below. Neither restores a cache (`cache-mode: none`), and the deploy key is in the
 # env of the one step that pushes the tag. image_index is neither: it holds docker's package push
 # alone and runs no dependency code, only `docker buildx imagetools` over the digests the docker
-# legs hand over.
+# legs hand over. Nor is release_names, which holds the deployment's term list and no write scope
+# and runs no dependency code: it checks the changelog entries release_build rendered for private
+# names, and release_publish releases only when it succeeded.
 permissions: {}
 
 env:
@@ -598,6 +600,25 @@ jobs:
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
 
+  # The private-name check of the changelog entries release_build rendered, over the very file
+  # release_publish writes into the GitHub release's body, through
+  # .github/workflows/release-notes-names.yaml, whose header says why it is a job of its own and
+  # what it runs. It runs whenever release_build released, and checks when that release rendered
+  # entries. release_publish needs this job, and its release steps run only when it succeeded, so
+  # a finding releases nothing; `latest` still moves, since the image carries no changelog.
+  release_names:
+    needs: release_build
+    if: always() && needs.release_build.result == 'success' && needs.release_build.outputs.skip != 'true'
+    # contents: read is for the called workflow's checkout.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-notes-names.yaml
+    with:
+      artifact: envoy-release-notes
+      notes: ${{ needs.release_build.outputs.notes }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+
   # Moves `latest` and, when release_build decided a release, publishes it: confirms the version
   # against the tags inside the concurrency group, checks what build and release_build handed over,
   # writes SHA256SUMS, tags the commit, attests the host binaries and creates the GitHub release.
@@ -611,12 +632,12 @@ jobs:
     # release jobs, outside this group; this job serializes only moving tags and releases. Only
     # main moves `latest` or cuts a `legion-envoy-v*` tag and release: a workflow_dispatch from
     # any other branch publishes its `envoy:<sha>` image above and stops there. `latest` moves
-    # whatever release_build did; the release steps run only on its success and once "Confirm the
-    # version" finds no other run took the version.
+    # whatever release_build did; the release steps run only on its success and release_names',
+    # and once "Confirm the version" finds no other run took the version.
     # targets too: this job holds contents: write, the deploy key and the rest, so it runs no
     # script to derive the image it tags and reads back, and takes it from targets' output, which
     # `needs` carries only to a job naming targets directly.
-    needs: [build, image_index, release_build, targets]
+    needs: [build, image_index, release_build, release_names, targets]
     # On `always()`, so a skipped release_build does not skip this job; every job whose outputs
     # the steps below read has its result tested, targets' among them.
     if: >-
@@ -825,7 +846,7 @@ jobs:
       # $LEGION_ENVOY_VERSION_ARGS is expanded unquoted on purpose, as in release_build.
       - name: Confirm the version
         id: confirm
-        if: needs.release_build.result == 'success' && needs.release_build.outputs.skip != 'true'
+        if: needs.release_build.result == 'success' && needs.release_build.outputs.skip != 'true' && needs.release_names.result == 'success'
         env:
           VERSION: ${{ needs.release_build.outputs.version }}
           GH_TOKEN: ${{ github.token }}
@@ -833,11 +854,11 @@ jobs:
         run: |
           status=0
           # shellcheck disable=SC2086 # $LEGION_ENVOY_VERSION_ARGS is the argument list, split on purpose
-          .github/scripts/release-push.sh version legion-envoy-v --expect "$VERSION" $LEGION_ENVOY_VERSION_ARGS >/dev/null || status=$?
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" version legion-envoy-v --expect "$VERSION" $LEGION_ENVOY_VERSION_ARGS >/dev/null || status=$?
           case $status in
             0) echo "release=true" >> "$GITHUB_OUTPUT" ;;
             3) ;;
-            4) .github/scripts/release-push.sh restart release-envoy-listener.yaml "$LOST_RACES" ;;
+            4) "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" restart release-envoy-listener.yaml "$LOST_RACES" ;;
             *) exit "$status" ;;
           esac
 
@@ -886,7 +907,7 @@ jobs:
             subjects+=("agent-secrets-$os-$arch.tar.gz")
           done
           archives+=("${subjects[@]}")
-          tag=$(.github/scripts/release-push.sh handed legion-envoy-v "$VERSION" assets "${archives[@]}")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed legion-envoy-v "$VERSION" assets "${archives[@]}")
           (cd assets && sha256sum -- "${archives[@]}" > SHA256SUMS)
           {
             echo "tag=$tag"
@@ -907,8 +928,8 @@ jobs:
           TAG: ${{ steps.assets.outputs.tag }}
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         run: |
-          .github/scripts/release-push.sh tag "$VERSION" "$TAG"
-          .github/scripts/release-push.sh push-tag "$TAG"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
       # Build provenance for the host binaries a mise pin installs, linux or darwin, which the
       # release below uploads exactly. `--repo` alone accepts an archive any workflow of this
       # repository attested, so the check pins the signer as docs/kubernetes.md ("Pin by digest,
@@ -937,7 +958,7 @@ jobs:
           while IFS= read -r file; do
             [ -z "$file" ] || assets+=("$file")
           done <<< "$FILES"
-          .github/scripts/release-push.sh release --upload-to-published \
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release --upload-to-published \
             --notes "Envoy listener release — Go binary + Docker image, plus agent-secrets and agent-secrets-helper host binaries." \
             "$TAG" "$TAG" "${assets[@]}"
       # The entries release_build rendered from this release's fragments, under the runner's
@@ -958,5 +979,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.assets.outputs.tag }}
         run: |
-          .github/scripts/release-push.sh release-section "$TAG" '## Changelog' \
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release-section "$TAG" '## Changelog' \
             "$RUNNER_TEMP/release-notes/release-notes.md"
