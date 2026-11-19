@@ -234,11 +234,13 @@ server runs as (a container's `postgres`, for instance), or its loader skips
 the library with a warning. The run then sets `DISPATCH_E2E_PG_STALL_DIR=<dir>`
 beside `DATABASE_URL`, so the row stalls the disk through the same file. As it
 stalls the disk, the row reads on the server, as the superuser the suite
-connects as, that the stall holds it: `<dir>`'s library in its memory map, a
-`wal_sync_method` of `fsync` or `fdatasync`, and an `fsync` the server runs
-(`COPY ... TO PROGRAM` of `timeout 1 dd conv=fsync`, so `timeout` and `dd`
-must be on the server's `PATH`) that goes through before the stall and waits
-during it. A server short of any of them fails the row, naming what it lacks.
+connects as, that the stall holds it: a `wal_sync_method` of `fsync` or
+`fdatasync`, that very call made by the server (`COPY ... TO PROGRAM` of
+`timeout 1 sync --data /dev/null` for `fdatasync`, `sync /dev/null` for
+`fsync`, so `timeout` and coreutils `sync` must be on the server's `PATH`)
+going through before the stall and waiting during it, and `<dir>`'s library in
+its memory map. A server short of any of them fails the row, naming what it
+lacks.
 
 A run of more than one worker is one stack per worker, each with a Postgres, a
 file-store bucket and ports of its own, so five variables that name one of

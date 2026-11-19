@@ -70,6 +70,9 @@ export async function buildStallLibrary(dir: string): Promise<void> {
   }
   mkdirSync(dir, { recursive: true });
   chmodSync(dir, 0o755);
+  // A stall file an earlier run left behind would hold the next server from its first write, and
+  // the row's check before its stall would fail as though the server were slow; a build clears it.
+  rmSync(stallEnvironment(dir).PG_STALL_FILE, { force: true });
   const built = join(dir, library);
   try {
     await execFileAsync("cc", ["-shared", "-fPIC", "-O2", "-o", built, source]);
@@ -82,20 +85,31 @@ export async function buildStallLibrary(dir: string): Promise<void> {
   chmodSync(built, 0o755);
 }
 
-/** Where the server's fsync probe leaves its exit status: its data directory, the working
+/** Where the server's flush probe leaves its exit status: its data directory, the working
  *  directory of each of its processes and the root of `pg_read_file`'s relative paths. */
 const probeStatus = "fsync-stall-probe.rc";
 
-/** How the server's fsync probe ended: 124 when `dd`'s `fsync` was still waiting at `timeout`'s
- *  1 s. The server runs it (`COPY ... TO PROGRAM`), so it carries the server's own environment,
- *  the `LD_PRELOAD` and `PG_STALL_FILE` the library reads, and sees the server's files. Its
- *  output is /dev/null, whose `fsync` fails at once (`EINVAL`, status 1) where the library lets
- *  it through, so no disk decides how long it takes; and the statement writes nothing the
- *  server commits, so it does not wait on a server whose commits wait for the disk. */
-async function serverFsyncProbe(): Promise<string> {
+/** The program the probe runs for each WAL flush the library holds: coreutils `sync` on
+ *  /dev/null makes exactly that call, `fdatasync` with `--data`, `fsync` without, and the call
+ *  fails at once (`EINVAL`, status 1) where the library lets it through. `dd conv=fdatasync`
+ *  cannot stand in: on /dev/null it falls back to `fsync`, so a library that held `fsync` alone
+ *  would pass for one that holds the server's `fdatasync`. */
+const flushProgram = {
+  fdatasync: "sync --data /dev/null",
+  fsync: "sync /dev/null",
+} as const;
+
+/** How the server's flush probe ended: 124 when the `sync` was still waiting at `timeout`'s 1 s.
+ *  The server runs it (`COPY ... TO PROGRAM`), so it carries the server's own environment, the
+ *  `LD_PRELOAD` and `PG_STALL_FILE` the library reads, and sees the server's files; and the
+ *  statement writes nothing the server commits, so it does not wait on a server whose commits
+ *  wait for the disk. The query sends the program no row: the program never reads its input, and
+ *  a row Postgres flushes into the pipe after the program has exited fails the close with
+ *  `Broken pipe`, which a backend paused for a few milliseconds hits. */
+async function serverFlushProbe(call: keyof typeof flushProgram): Promise<string> {
   await sql(
-    "COPY (SELECT 1) TO PROGRAM 'timeout 1 dd if=/dev/zero of=/dev/null bs=1 count=1 " +
-      `conv=fsync status=none 2>/dev/null; echo $? > ${probeStatus}'`
+    `COPY (SELECT 1 WHERE false) TO PROGRAM 'timeout 1 ${flushProgram[call]} 2>/dev/null; ` +
+      `echo $? > ${probeStatus}'`
   );
   return sql(`SELECT trim(pg_read_file('${probeStatus}'))`);
 }
@@ -105,14 +119,15 @@ async function serverFsyncProbe(): Promise<string> {
  *  none once it holds, which is when every commit of that server that waits for the disk waits
  *  for as long as the stall file exists:
  *
- *  - its processes have `dir`'s fsync-stall.so in their memory map;
- *  - an `fsync` made in its environment goes through before the stall file exists, and waits
- *    once it does (`serverFsyncProbe`). That reads what the library does in the server's
- *    environment rather than what the server was given: a server that watches another file, or
- *    cannot see this one, lets the second probe through, and one whose `fsync` waits with no
- *    stall, on a file that is never removed or a probe too slow to tell, holds the first; and
  *  - its WAL flush is an `fsync` or an `fdatasync` (`wal_sync_method`), the calls the library
- *    holds, and not a write opened `O_SYNC` or `O_DSYNC`.
+ *    holds, and not a write opened `O_SYNC` or `O_DSYNC`;
+ *  - that very call, made in its environment, goes through before the stall file exists, and
+ *    waits once it does (`serverFlushProbe`). That reads what the library does in the server's
+ *    environment rather than what the server was given: a server that watches another file, or
+ *    cannot see this one, or runs a library that holds the other call only, lets the second probe
+ *    through, and one whose flush waits with no stall, on a file that is never removed or a probe
+ *    too slow to tell, holds the first; and
+ *  - its processes have `dir`'s fsync-stall.so in their memory map.
  *
  *  No statement of the server's own can stand in for the probe: with `fsync` off, the setting the
  *  stall exists to test, Postgres makes no `fsync` at all, so a `CHECKPOINT` or a
@@ -121,28 +136,30 @@ async function serverFsyncProbe(): Promise<string> {
 export async function stallServer(dir: string): Promise<string[]> {
   const preloaded = stallEnvironment(dir).LD_PRELOAD;
   const missing: string[] = [];
-  const before = await serverFsyncProbe();
-  if (before === "124") {
-    missing.push("an fsync made in its environment was still waiting after 1 s before the stall");
-  }
-  stallDisk(dir);
-  const during = await serverFsyncProbe();
-  if (during !== "124") {
-    missing.push(
-      `an fsync made in its environment ended with status ${during} during the stall, rather ` +
-        `than waiting out the probe's 1 s: it does not wait on ${stallEnvironment(dir).PG_STALL_FILE}`
-    );
-  }
-  const [loaded, flush] = (
-    await sql(
-      `SELECT position('${preloaded.replaceAll("'", "''")}' in pg_read_file('/proc/self/maps')) > 0, ` +
-        "current_setting('wal_sync_method')"
-    )
-  ).split("|");
-  if (loaded !== "t") missing.push(`its processes have not loaded ${preloaded}`);
+  const flush = await sql("SELECT current_setting('wal_sync_method')");
   if (flush !== "fsync" && flush !== "fdatasync") {
     missing.push(`its WAL flush is wal_sync_method=${flush}, not fsync or fdatasync`);
   }
+  // A flush the library does not hold is probed as an fsync, which the reason above already fails.
+  const call = flush === "fdatasync" ? "fdatasync" : "fsync";
+  const before = await serverFlushProbe(call);
+  if (before === "124") {
+    missing.push(`an ${call} made in its environment was still waiting after 1 s before the stall`);
+  }
+  stallDisk(dir);
+  const during = await serverFlushProbe(call);
+  if (during !== "124") {
+    missing.push(
+      `an ${call} made in its environment ended with status ${during} during the stall, rather ` +
+        `than waiting out the probe's 1 s: it does not wait on ${stallEnvironment(dir).PG_STALL_FILE}`
+    );
+  }
+  // A maps line ends with the mapped file's whole path, after a space, so the path is matched
+  // between the two: another directory ending in this one's name does not match.
+  const loaded = await sql(
+    `SELECT position(' ${preloaded.replaceAll("'", "''")}' || chr(10) in pg_read_file('/proc/self/maps')) > 0`
+  );
+  if (loaded !== "t") missing.push(`its processes have not loaded ${preloaded}`);
   return missing;
 }
 

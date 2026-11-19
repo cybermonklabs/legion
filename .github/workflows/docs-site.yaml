@@ -139,10 +139,11 @@ jobs:
       # table past the reset each shot set starts with (docs/site/media/shot-runner.ts), which
       # waits at most 5 s for it: dispatch-browser.yaml's multiprocess job failed so, a read mark
       # holding user_document_reads while the disk was slow. A service container takes no server
-      # arguments, so `alter system` writes the three and a reload applies them, as
-      # .github/scripts/pg-connection-ceiling.sh sets max_connections on a service; all three
-      # take a reload, and synchronous_commit reaches every session that starts after it. The
-      # step reads them back from a new session and fails unless each is off.
+      # arguments, so `alter system` writes the three, as .github/scripts/pg-connection-ceiling.sh
+      # writes max_connections on a service, and a reload applies them: max_connections needs that
+      # script's restart, and these three need only the reload, synchronous_commit reaching every
+      # session that starts after it. The step reads them back from a new session and fails unless
+      # each is off.
       - name: Turn crash safety off on the screenshots' Postgres
         timeout-minutes: 2
         run: |

@@ -1200,8 +1200,9 @@ jobs:
         # `apt-get update`.
         #
         # The fonts are not needed: this job's specs are every *.multiprocess.e2e.ts there is --
-        # coedit, signin and two-builds today (`multiprocessSpecs` in e2e/playwright.config.ts
-        # matches them by that suffix, so a new one joins without an edit here) -- and they run
+        # coedit, cross-build, read-marker-disk-stall, signin and two-builds today
+        # (`multiprocessSpecs` in e2e/playwright.config.ts matches them by that suffix, so a new
+        # one joins without an edit here) -- and they run
         # headless Chromium and compare no screenshot (none holds `toHaveScreenshot` or
         # `toMatchSnapshot`), and fonts-liberation and fonts-noto-color-emoji are on the image
         # already. A row that later needs CJK or Thai glyphs would fail visibly.
@@ -1249,8 +1250,8 @@ jobs:
         # multiprocess specs through the round-robin proxy, against one Postgres the harness
         # starts from the image pulled above. DISPATCH_E2E_PG_STALL_DIR is the directory the
         # harness builds e2e/fsync-stall.c into and preloads into that server, which
-        # e2e/read-marker-disk-stall.multiprocess.e2e.ts needs and is skipped without; the
-        # runner's own cc builds it.
+        # e2e/read-marker-disk-stall.multiprocess.e2e.ts needs: with CI set the row fails
+        # without it, and only a local run skips it. The runner's own cc builds it.
         timeout-minutes: 4
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11

@@ -191,3 +191,20 @@ test(
   },
   rowLimit()
 );
+
+// A stall file an earlier run left in the directory would hold the next server from its first
+// write; a build into that directory clears it, and keeps the directory's own library.
+test(
+  "a build clears a stall file an earlier run left behind",
+  async () => {
+    const again = mkdtempSync(join(tmpdir(), "fsync-stall-again-"));
+    try {
+      writeFileSync(stallEnvironment(again).PG_STALL_FILE, "");
+      await buildStallLibrary(again);
+      expect(readdirSync(again)).toEqual(["fsync-stall.so"]);
+    } finally {
+      rmSync(again, { force: true, recursive: true });
+    }
+  },
+  rowLimit()
+);
