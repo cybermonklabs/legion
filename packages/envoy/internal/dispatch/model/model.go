@@ -3183,25 +3183,29 @@ type HandoffRecordedEventPayload struct {
 // step and kind, from 1. Result is passed, failed or stopped, "" while the run still runs;
 // ReturnedTo is the place a failed or stopped run returned its task to, 0 being the retro's and
 // the merge's place, and Report the handoff its ending role named, each null where the run has
-// none.
+// none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the agent that did
+// the retro gave the plan the issue ran, and its reason, each null where the record holds none
+// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them).
 type StepRecord struct {
-	ID         string     `json:"id"`
-	Issue      string     `json:"issue"`
-	Task       string     `json:"task"`
-	Step       int        `json:"step"`
-	Kind       string     `json:"kind" enum:"step,retro,merge"`
-	Role       string     `json:"role"`
-	Type       string     `json:"type"`
-	Agent      string     `json:"agent"`
-	Session    string     `json:"session"`
-	Model      string     `json:"model"`
-	Generation int64      `json:"generation"`
-	Attempt    int        `json:"attempt"`
-	StartedAt  *time.Time `json:"started_at"`
-	EndedAt    *time.Time `json:"ended_at"`
-	Result     string     `json:"result" enum:",passed,failed,stopped"`
-	ReturnedTo *int       `json:"returned_to"`
-	Report     *string    `json:"report"`
+	ID           string     `json:"id"`
+	Issue        string     `json:"issue"`
+	Task         string     `json:"task"`
+	Step         int        `json:"step"`
+	Kind         string     `json:"kind" enum:"step,retro,merge"`
+	Role         string     `json:"role"`
+	Type         string     `json:"type"`
+	Agent        string     `json:"agent"`
+	Session      string     `json:"session"`
+	Model        string     `json:"model"`
+	Generation   int64      `json:"generation"`
+	Attempt      int        `json:"attempt"`
+	StartedAt    *time.Time `json:"started_at"`
+	EndedAt      *time.Time `json:"ended_at"`
+	Result       string     `json:"result" enum:",passed,failed,stopped"`
+	ReturnedTo   *int       `json:"returned_to"`
+	Report       *string    `json:"report"`
+	Rating       *int       `json:"rating"`
+	RatingReason *string    `json:"rating_reason"`
 }
 
 // StepTask is one task of an issue with every run of its steps, in the order they ran.
@@ -3216,6 +3220,62 @@ type StepTask struct {
 type IssueSteps struct {
 	Issue string     `json:"issue"`
 	Tasks []StepTask `json:"tasks"`
+}
+
+// PlanTask is one task of a plan: its id, a slug unique in the plan (`default` for the one task of
+// an issue whose owner gave no plan), and its steps in order, each a role or `role:key`.
+type PlanTask struct {
+	ID    string   `json:"id"`
+	Steps []string `json:"steps"`
+}
+
+// PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that
+// run's work started (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the
+// owner's document and the version of it the plan was read from (both null for the source
+// default, the default steps of an issue whose owner gave none), and its tasks.
+type PlanRecord struct {
+	ID         string     `json:"id"`
+	Issue      string     `json:"issue"`
+	Generation int64      `json:"generation"`
+	Source     string     `json:"source" enum:"default,owner"`
+	ArtifactID *string    `json:"artifact_id"`
+	Version    *int       `json:"version"`
+	Tasks      []PlanTask `json:"tasks"`
+}
+
+// PlanRating is the rating of one retro of a finished issue: the rating, 1 to 5, the agent that did
+// the retro gave the plan, its reason, the retro's step record and the moment it ended, null where
+// its end never reached Dispatch.
+type PlanRating struct {
+	Rating  int        `json:"rating"`
+	Reason  string     `json:"reason"`
+	StepID  string     `json:"step_id"`
+	EndedAt *time.Time `json:"ended_at"`
+}
+
+// FinishedIssue is one issue of a project that is done and closed, as GET
+// /api/v1/projects/{key}/plans lists it: its plan (that of its newest run, null for an issue whose
+// work started before Legion wrote plans or that Legion never ran), the rating of each of its
+// retros in the order they ran, the earliest start and the latest end of its step records and the
+// whole seconds between them (each null where no record holds one, and the seconds null too where
+// that end is before that start), and its count of step records of kind step that failed.
+type FinishedIssue struct {
+	Issue           string       `json:"issue"`
+	Title           string       `json:"title"`
+	ClosedAt        time.Time    `json:"closed_at"`
+	Plan            *PlanRecord  `json:"plan"`
+	Ratings         []PlanRating `json:"ratings"`
+	StartedAt       *time.Time   `json:"started_at"`
+	EndedAt         *time.Time   `json:"ended_at"`
+	DurationSeconds *int64       `json:"duration_seconds"`
+	FailedSteps     int          `json:"failed_steps"`
+}
+
+// ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project, newest
+// close first.
+type ProjectPlans struct {
+	Project string          `json:"project"`
+	Issues  []FinishedIssue `json:"issues"`
 }
 
 // ReferencedBy identifies a post or artifact that mentions an artifact.

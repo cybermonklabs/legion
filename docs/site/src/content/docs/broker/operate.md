@@ -844,20 +844,48 @@ deployment whose sign-in broke. What an operator reads from each field:
 A broker session lasts `BROKER_SIGNIN_SESSION_SECONDS` from the moment it was made and is never
 extended, so a person whose Workspace account is suspended can still approve until it expires. To
 end every browser session one login holds, wherever and whenever it was made, run the subcommand
-in a broker pod:
+`end-sessions` with that login ([Running a subcommand](#running-a-subcommand) says where):
 
-```sh
-kubectl exec deploy/broker -- envoy-broker end-sessions ada@example.com
+```text
 end-sessions: ended 2 sessions of ada@example.com
 ```
 
-It reads the same configuration the serving process does, so it reaches the same database and
-signs in to it the same way, binds no listener and applies no migration: an image older than the
-servers cannot migrate the database behind them on its way to ending a session. The person's next
-visit to a request's page signs them in again, if the provider still lets them; to stop that, take
-them out of the Workspace or out of `BROKER_SIGNIN_DOMAIN` first. It is the only subcommand the
-broker takes: anything else is refused with a usage line, and `envoy-broker` with no argument
-serves.
+It writes: it deletes that login's rows of `browser_sessions`, and nothing else. It reads the same
+settings the serving process does, so it reaches the same database and signs in to it with the
+same login, binds no listener and applies no migration: an image older than the servers cannot
+migrate the database behind them on its way to ending a session. The person's next visit to a
+request's page signs them in again, if the provider still lets them; to stop that, take them out
+of the Workspace or out of `BROKER_SIGNIN_DOMAIN` first.
+
+### Running a subcommand
+
+The broker takes three subcommands, `end-sessions`, `versions` ([A migration recorded under
+another file](#a-migration-recorded-under-another-file)) and `airlock-check`; anything else is
+refused with a usage line, and `envoy-broker` with no argument serves. `end-sessions` and
+`versions` read the broker's settings and sign in to its database as the server does, and bind no
+listener, so either runs in any one-off process of the image that has what the serving broker has:
+
+- a route to the broker's database, such as any proxy the broker's pods reach it through, and the
+  serving broker's `BROKER_DATABASE_URL`, with whatever else it signs in to the database with:
+  where that URL is an RDS IAM one, the AWS identity the broker mints its tokens from, through the
+  AWS SDK's default credential chain; where it signs in by password and the URL holds none, the
+  password from `PGPASSWORD` or a passfile;
+- `BROKER_PUBLIC_URL` and the secret store's settings, as the serving broker has them
+  (`BROKER_SECRETS_STORE`, `BROKER_SECRETS_PREFIX` and that store's key setting), which every
+  process of the image requires;
+- `BROKER_SIGNIN=off`, in place of the serving broker's sign-in: neither subcommand signs anyone
+  in. `BROKER_SIGNIN=off` refuses to start beside any sign-in or judge setting, so leave unset the
+  four of the sign-in client, `BROKER_SIGNIN_SESSION_SECONDS` and `BROKER_SIGNIN_DEVICE_AUDIENCE`,
+  and the judge's six (`BROKER_JUDGE_MODEL_URL`, `BROKER_JUDGE_MODEL`,
+  `BROKER_JUDGE_MODEL_PROTOCOL`, `BROKER_JUDGE_MODEL_AUDIENCE`, `BROKER_JUDGE_DISPATCH_URL` and
+  `BROKER_JUDGE_DISPATCH_TOKEN_FILE`), since a broker that signs no one in runs no judge.
+
+Take those from wherever your deployment keeps them, and run the subcommand wherever it lets you
+run a one-off process of the image: an exec into a broker pod,
+`kubectl -n <namespace> exec <broker pod> -- envoy-broker end-sessions ada@example.com`, or a
+one-off pod, job or container of the image with those settings in its environment. `end-sessions`
+writes through that login; `versions` writes nothing. Run `end-sessions` with the image that
+serves now, and `versions` with the image you mean to roll out.
 
 ### A broker that signs nobody in
 
@@ -1970,6 +1998,89 @@ trade and every call of that machine, the copy's included, is refused. Find and 
 the token before you put the machine back: the latest `token_expires_at` above says when the last
 copied token ends, at most an hour after it was minted. Rotate any secret the copy may have read;
 the broker cannot take back a value it released.
+
+## A migration recorded under another file
+
+The broker records each migration it applies in `broker_schema_migrations`: its version, the
+name and sha256 of the file the version first shipped with (the file itself, or for one that
+declares `-- replaces:` lines, the one its first line names), and the sha256 of the text it
+applied. At every start, before it applies anything, it compares each recorded version with the
+file of that version in its own image:
+
+- A version recorded with no name, as every one a broker before this check wrote, takes the
+  identity the broker records of the file, and the broker logs
+  `pgmigrate: recorded the identity of a migration applied before the runners recorded identities`
+  for each. It is never refused. The first start of the release that brings the check writes one
+  such line for each migration, and refuses none.
+- A version recorded under a name and sha256 that is neither the file's own nor one its
+  `-- replaces: <name> sha256:<hex>` lines name stops the start.
+- A version whose applied text is neither the file's own text nor one its replaces lines name
+  stops the start too: the database ran an edit of the file this image does not hold, such as
+  another branch's.
+- A version no file of the image has is left as it is, as an image rolled back finds them.
+- Any other version passes and is left as it is, so a pod of the release that recorded it still
+  starts beside this one and after a rollback.
+
+A start that stops applies nothing, logs `broker: fatal` and exits 1. On a database a broker
+before this check created, the start first adds the identity columns in a transaction of its own,
+and that catalog change stands even when the rows are then refused: the columns are nullable and
+the release before ignores them.
+
+The refusal names the version, what the database records and what the image's file is:
+
+```text
+migrations refused, none applied: version 32 is recorded as 0032_another_branch.up.sql sha256:<recorded>, and this build's file of version 32 is 0032_oauth_pod_sessions_binding.up.sql sha256:<file>: if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it); if the edit is intended, add this line to 0032_oauth_pod_sessions_binding.up.sql, after the replaces lines it has (its first replaces line names the identity version 32 first shipped with): -- replaces: 0032_another_branch.up.sql sha256:<recorded>
+```
+
+A refusal of the applied text says so instead (`the text applied under it has sha256 …`), and
+offers the lines that would accept that text. A lock timeout, or a failed read or write of the
+table, reads `read or record what broker_schema_migrations records, none applied: …`, and is no
+reason to reset anything.
+
+What you do depends on how the database came to hold another file:
+
+- **It ran another branch's or an earlier commit's migration, or an edit of one** (a development,
+  test or preview database): its schema is not the one this image's files make. Reset it: drop
+  the database, create it empty, and start the broker, which migrates it from the first file.
+  This includes a fresh preview or development database that a newer image created and an older
+  image then starts on: the older image refuses it, and you reset it. It includes too a
+  development or preview database whose rows recorded no name when a branch's image first started
+  on it under this check, where that branch edits a migration in place and its file does not yet
+  declare the main branch's identity of it in a replaces line: that start recorded the branch's
+  own identity, not the main branch's, and the main branch's image refuses it. A branch whose
+  edited file already declares the main branch's identity, as the pre-merge check requires,
+  records that identity, and the main branch's image starts on it. Never reset the production
+  database this way; a refusal there is a release to stop and investigate.
+- **The file was edited or renamed on purpose**, and the database already holds the schema it
+  means: add the line the refusal names, alone on a line of its own and outside every quoted
+  string or function body, to the file, after the replaces lines it has, and ship it. The next
+  start accepts the row as it is. The first replaces line names the identity the version first
+  shipped with; a later edit of the same file keeps it first and adds one naming the edit before
+  it. The line names a file of the same version and 64 lower-case hex digits; a line that begins
+  `-- replaces:` and is written any other way, or that sits inside a quoted string or a function
+  body, stops every start, naming the file and the line. A pull request that edits a migration
+  main already holds without such lines fails CI's `envoy-go-checks` job before it merges.
+
+An image cannot accept a text it has never seen, so it refuses a database whose migration a later
+image applied from an edited text: one that an image with the edit created from empty, and a
+production database rolled back by hand to an image it never ran, one older than the image that
+first applied a migration it holds. Roll back only to an image the database ran, as a Deployment
+rollout undo to the revision that was serving does. An image starts on a database a later image
+only filled, and an edited text a database ran before this check is not detected: the first start
+records its own file.
+
+A start fills the rows that record no name as it judges them. `envoy-broker versions` makes the
+same judgment without changing the database, against the files of the image it runs: it reads the
+broker's settings, signs in to the database with the broker's login, and reads the version table
+in a read-only transaction. Run the image you are about to roll out, before you roll it out, in a
+one-off process of that image with the serving broker's settings
+([Running a subcommand](#running-a-subcommand)). An exec into a broker pod,
+`kubectl -n <namespace> exec <broker pod> -- envoy-broker versions`, judges the image already
+serving.
+
+It prints what the next start would do with each version, and exits 1 when a version would be
+refused or has no file in that release, or when the table records nothing, which it prints as
+`NOTHING CHECKED`: a check of the wrong database must not read as a clean one.
 
 ## The audit record
 
