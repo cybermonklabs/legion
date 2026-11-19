@@ -410,15 +410,21 @@ func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, er
 const gitErrorBytes = 4096
 
 // gitSaid is what a failure of Guard.git quotes of the standard error git wrote: trimmed and, past
-// gitErrorBytes, cut at the start of a character, with the count of the bytes left out.
+// gitErrorBytes, its last gitErrorBytes bytes, after the count of the bytes left out before them.
+// The end is what is kept because git writes its `fatal:` line last, after any warnings. The cut
+// moves forward to the start of a character, at most utf8.UTFMax bytes, so a valid character is
+// never split and an invalid run cannot take the whole quote.
 func gitSaid(stderr string) string {
 	said := strings.TrimSpace(stderr)
 	if len(said) <= gitErrorBytes {
 		return said
 	}
-	cut := gitErrorBytes
-	for cut > 0 && !utf8.RuneStart(said[cut]) {
-		cut--
+	cut := len(said) - gitErrorBytes
+	for i := cut; i < cut+utf8.UTFMax; i++ {
+		if utf8.RuneStart(said[i]) {
+			cut = i
+			break
+		}
 	}
-	return fmt.Sprintf("%s… (%d more bytes)", said[:cut], len(said)-cut)
+	return fmt.Sprintf("(%d bytes left out) …%s", cut, said[cut:])
 }

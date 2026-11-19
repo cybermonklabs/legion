@@ -364,8 +364,8 @@ func TestParseUpdates(t *testing.T) {
 // A git read of a push's records that fails quotes what git wrote on its standard error, never its
 // standard output, which is the push's own content: a stand-in git that writes a megabyte of a
 // diff's added lines to its standard output and its reason to its standard error is refused with
-// the reason alone. A standard error past gitErrorBytes is cut there, with the count of the bytes
-// left out. Each stand-in is the one git first on PATH.
+// the reason alone. A standard error past gitErrorBytes is cut to its end, which holds git's
+// `fatal:` line, after the count of the bytes left out. Each stand-in is the one git first on PATH.
 func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
 	failingGit := func(t *testing.T, script string) *Guard {
 		t.Helper()
@@ -383,15 +383,24 @@ func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
 			t.Errorf("git = %.200v, want %q", err, want)
 		}
 	})
-	t.Run("a standard error past the cap", func(t *testing.T) {
-		guard := failingGit(t, "yes 'fatal: unable to read tree' | head -c 100000 >&2")
+	t.Run("a standard error past the cap, its reason last", func(t *testing.T) {
+		guard := failingGit(t, "yes 'warning: refname is ambiguous' | head -n 4000 >&2\necho 'fatal: unable to read tree' >&2")
 		_, err := guard.git(bound(t), t.TempDir(), "diff-tree", "HEAD")
 		if err == nil {
 			t.Fatal("git = nil, want its failure")
 		}
 		said := strings.TrimPrefix(err.Error(), "git diff-tree exited 1: ")
-		if !strings.HasPrefix(said, "fatal: unable to read tree\n") || !strings.HasSuffix(said, " more bytes)") || len(said) > gitErrorBytes+len("… (100000 more bytes)") {
-			t.Errorf("git quoted %d bytes ending %q, want at most %d of its standard error and the count of the rest", len(said), said[max(0, len(said)-40):], gitErrorBytes)
+		if !strings.HasPrefix(said, "(") || !strings.Contains(said, " bytes left out) …") || !strings.HasSuffix(said, "\nfatal: unable to read tree") ||
+			len(said) > gitErrorBytes+len("(200000 bytes left out) …") {
+			t.Errorf("git quoted %d bytes, from %q to %q, want the count of the bytes left out and at most the last %d bytes of its standard error, its reason included",
+				len(said), said[:min(len(said), 40)], said[max(0, len(said)-40):], gitErrorBytes)
+		}
+	})
+	// Two-byte characters then one byte put the cut on the second byte of a character.
+	t.Run("a cut inside a character moves to the next one", func(t *testing.T) {
+		said := gitSaid(strings.Repeat("é", gitErrorBytes) + "x")
+		if want := "(4098 bytes left out) …" + strings.Repeat("é", gitErrorBytes/2-1) + "x"; said != want {
+			t.Errorf("gitSaid = %q…, want %q…: whole characters after the count", said[:min(len(said), 40)], want[:40])
 		}
 	})
 }
