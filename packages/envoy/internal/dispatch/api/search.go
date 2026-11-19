@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -1027,8 +1026,10 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 
 	query := r.URL.Query()
 	searchText := strings.TrimSpace(query.Get("q"))
-	if utf8.RuneCountInString(searchText) < 2 {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "q must be at least 2 characters")
+	// q is counted in UTF-16 code units at both ends, as `dispatch search`, the web palette and
+	// the route description count it, so a query the command sends is never refused here.
+	if length := itemblocks.Units16(searchText); length < 2 {
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("q: %d of at least 2", length))
 		return
 	}
 	// q is capped as `dispatch search` caps it, counted after trimming so a query the command
