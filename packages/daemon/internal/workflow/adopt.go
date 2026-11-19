@@ -10,7 +10,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // AdoptionRefusal says why issue cannot join tree for what its own record says, nil when it can. A
@@ -242,9 +241,9 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 // The record takes its next generation, the fence every row of the old tree already checks (its
 // linger's close, its supervise rows, its issue suspend; a stop row still stops a claim that stands
 // in the old tree, the daemon outbox's stopInLeftTree), with its hand-over fence deleted and
-// its generation's facts cleared. The move queues a suspend of the old tree for each claim of the
-// member still standing there (LeftTreeStops), so none runs on there and holds the old tree's
-// cleanup. A todo record enters the tree admitted on the repository it
+// its generation's facts cleared. The move queues a suspend of the old tree for each role of the
+// member whose claim does not already stand in another tree (LeftTreeStops), so none runs on there
+// and holds the old tree's cleanup. A todo record enters the tree admitted on the repository it
 // was first recorded with (enterChild, RecordedFact, recordedResolution), as an unrecorded todo
 // child does, so it starts its first phase at the slot the waiting line gives it, or is held at
 // admitted while an unfinished Dispatch issue holds it. Any other status is written as a parked
@@ -293,16 +292,22 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 }
 
 // LeftTreeStops is the stop a move queues for the tree it takes an issue out of: a suspend of that
-// tree for each role of left, the issue's record as the move found it, whose stored claim still
-// stands in left's tree and has not retired. Every move queues it, whatever stop rows of the old
-// tree are still queued: admission's re-admission of a member as a root of its own (a hand-over,
-// an orphan carry) and adoption into a live tree (moveIntoTree). Nothing else is sure to reach the
+// tree for each role of left, the issue's record as the move found it, but a role whose stored
+// claim already stands in another tree. Every move queues it, whatever stop rows of the old tree
+// are still queued: admission's re-admission of a member as a root of its own (a hand-over, an
+// orphan carry) and adoption into a live tree (moveIntoTree). Nothing else is sure to reach the
 // claim: a stop of the old tree can have finished before the move, superseded by a newer start, as
 // a production check's look start supersedes the linger's suspend, or fall to the new generation's
 // fence, as an issue close still queued does; and the new tree's start, which re-points the claim,
 // runs only once the issue is admitted, which a blocker or the admission cap can hold off for as
 // long as they stand. The old tree's cleanup waits on every claim still running in it
 // (store.CleanupReservedTree), and the old root's next run waits on that cleanup.
+//
+// It is queued for every role, as everyClaim queues a tree's own stops, and not only for the
+// claims the move's transaction reads: a start of the old tree already past its fences when the
+// move commits (a production check's look) creates or relaunches its claim after that read, in
+// the old tree. A row for a role with no claim, or one that runs nothing, finishes with nothing
+// to stop. Only a claim already standing in another tree is left out: it is that tree's.
 //
 // The daemon outbox runs the row as a stop of a tree its issue has left (stopInLeftTree): it
 // suspends the claim while the claim still stands in the old tree, as the daemon and keeping its
@@ -326,8 +331,7 @@ func LeftTreeStops(ctx context.Context, tx pgx.Tx, store record.Store, project s
 	}
 	var stops []record.SuperviseRequest
 	for i, role := range claim.Roles {
-		held := claims[tokens[i]]
-		if held == nil || held.Tree != left.Tree || held.State == supervise.StateRetired {
+		if held := claims[tokens[i]]; held != nil && held.Tree != left.Tree {
 			continue
 		}
 		stops = append(stops, record.SuperviseRequest{Op: "suspend", Tree: left.Tree, Role: role, Generation: left.Generation,

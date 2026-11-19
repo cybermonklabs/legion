@@ -29,9 +29,11 @@ related_issues:
   the issue's admission. The row still stops a claim the in-memory machine shows standing in the
   old tree, and leaves one the new tree re-pointed.
 - A stop the old tree still has queued is not enough: one can have finished before the move
-  (superseded by a newer start) or fall to the new generation's fence. So the move itself queues a
-  stop of the old tree for every claim it leaves standing there, and the new tree's rows never
-  read it, since it is queued at the old generation.
+  (superseded by a newer start) or fall to the new generation's fence, and a start of the old tree
+  already past its fences can bring a claim up after the move has read the claims. So the move
+  itself queues a stop of the old tree for every role of the issue but one whose claim already
+  stands in another tree, and the new tree's rows never read it, since it is queued at the old
+  generation.
 - Each row kind left unfenced is a test: queue it for the old tree, move the issue, run the row,
   and assert it acts on nothing.
 
@@ -42,8 +44,9 @@ close, its supervise rows and its issue suspend. `WorkspaceRemove` was fenced on
 generation alone, so an old linger's removal could delete an adopted child's workspace; it now
 carries `Tree` (`record/outbox.go:400`), written by `workflow/linger.go` and checked in
 `daemon/outbox.go` `removeWorkspace`, covered by `TestAWorkspaceRemovalOfATreeTheIssueLeftActsOnNothing`.
-A `tree_close` of the tree the issue left is fenced on the old root (`payload.Tree` and
-`payload.Linger`, which `ReserveWorkflowTreeCleanup` reads), never on the issue's current root.
+A `tree_close` of the tree the issue left is a stop of that tree (`stopInLeftTree`). Its only fence
+is the in-memory claim standing in `payload.Tree`. It reserves nothing; the close rows of the issues
+still in that tree reserve and confirm the cleanup.
 
 A hand-over that landed before the linger's suspend of a child's planner left that planner
 `registered` in the old tree, and the old tree's cleanup waited on it until the child's new tree
@@ -51,5 +54,6 @@ started it, which a child held on a blocker never did. `daemon/outbox.go` `stopI
 stops it from the old tree's own `suspend` and `tree_close` rows, and wakes that tree's close rows
 so the cleanup confirms on the stop (`TestTheOldTreesStopsReachACarriedRoleItsLingerSuspendMissed`).
 A merged child whose linger suspend a production check's look start superseded, carried while the
-look ran, had no stop row left at all; `workflow.LeftTreeStops`, queued by admission's `readmit`
-and `moveIntoTree`, covers it (`TestAMoveStopsTheCarriedRoleNoStopRowOfItsOldTreeStillReaches`).
+look ran, had no stop row left at all, and neither had a claim that look's in-flight start brought
+up after the move; `workflow.LeftTreeStops`, queued by admission's `readmit` and `moveIntoTree` for
+every role, covers both (`TestAMoveStopsTheCarriedRoleNoStopRowOfItsOldTreeStillReaches`).

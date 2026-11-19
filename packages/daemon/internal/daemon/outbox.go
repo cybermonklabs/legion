@@ -170,6 +170,7 @@ type outboxTrees interface {
 	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
 	DeleteWorkspaceBundle(ctx context.Context, issue string) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
+	StoredClaimMayRunIn(ctx context.Context, token claim.Token, tree string) (bool, error)
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
 	TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at time.Time) (bool, error)
@@ -2469,18 +2470,25 @@ func childArchitectFirstStart(issue record.Issue, payload record.SuperviseReques
 // in the claim's memory, so a restart that forgets it is asked again by the start's next attempt,
 // with the same deadline. Once none runs, every claim of the issue may be re-pointed to the
 // issue's tree (supervise.Machine.Retree), and the issue's Sandbox, which no role of the old tree
-// then runs in, is the new tree's to relabel (runtime/sandbox's ensureSandbox). A claim already in
-// the issue's tree is skipped on its view, which only Retree changes, so a start waits on no
-// decision a sibling claim has in flight.
+// then runs in, is the new tree's to relabel (runtime/sandbox's ensureSandbox). The close rows of
+// each tree such a claim stood in are made due at once then (wakeTreeCloses), since that tree's
+// cleanup may have been waiting on the claim this start stopped. A claim already in the issue's
+// tree is skipped on its view, which only Retree changes, so a start waits on no decision a
+// sibling claim has in flight.
 func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 	var running []string
+	var left []string
 	for _, role := range claim.Roles {
 		token, err := claim.NewToken(r.project, issue.Key, role)
 		if err != nil {
 			return fmt.Errorf("derive the %s claim of %s: %w", role, issue.Key, err)
 		}
 		machine, found := r.supervisor.Machine(token)
-		if !found || machine.View().Claim.Tree == issue.Tree {
+		if !found {
+			continue
+		}
+		tree := machine.View().Claim.Tree
+		if tree == issue.Tree {
 			continue
 		}
 		still, err := r.stopCarried(ctx, machine, token, issue)
@@ -2489,10 +2497,17 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 		}
 		if still != "" {
 			running = append(running, still)
+		} else if !slices.Contains(left, tree) {
+			left = append(left, tree)
 		}
 	}
 	if len(running) > 0 {
 		return wait.Errorf("start of %s in tree %s waits for %s to stop", issue.Key, issue.Tree, strings.Join(running, ", "))
+	}
+	for _, tree := range left {
+		if err := r.wakeTreeCloses(ctx, tree); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -2538,29 +2553,44 @@ func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, to
 // cap). The old tree's cleanup waits on every claim still running in it
 // (store.CleanupReservedTree), and the old root's next run waits on the cleanup, so a claim no stop
 // of the old tree reaches holds both until the new tree starts it. That is why every move queues a
-// suspend of the old tree for each claim it leaves standing there (workflow.LeftTreeStops), beside
-// whatever stop rows of the old tree are still queued.
+// suspend of the old tree for every role of the issue but one whose claim already stands in another
+// tree (workflow.LeftTreeStops), beside whatever stop rows of the old tree are still queued.
 //
 // So the row stops the claim while it still stands in the old tree, as the new tree's start would
 // (stopCarried), and waits on its backoff until it runs nothing. A claim the new tree has
 // re-pointed is that tree's, and the row leaves it. The row runs on the issue's lifecycle lane, as
 // the new tree's start does, so no start re-points the claim between the read and the suspension.
+// A row that finds no machine for the claim is a wait while the stored claim names the old tree and
+// may still hold a process (StoredClaimMayRunIn), as the plain suspend's is (stopWithoutMachine):
+// the supervisor persists a claim before it publishes its machine, and the daemon running the row
+// in a rolling restart holds no machine for a claim the other daemon created after this one booted.
 //
 // The row confirms nothing itself: the old tree's own close rows hold its cleanup's reservation
 // and confirm it, each on its own issue's lane, where that tree's Sandboxes are deleted
 // (reservedTreeClose). Once the claim runs nothing, the row makes every close row of the old tree
-// due at once (TreeCloses), so the cleanup confirms on the stop rather than at the backoff retry
-// of a close that found the claim still running. Run here, the deletes would hold the issue's
-// lifecycle lane, and its new tree's start behind them, for as long as each Sandbox's delete is
-// awaited. A close that is running as the stop lands, and settles its retry after the wake, still
-// waits out its backoff, at most the backoff's cap.
+// due at once (wakeTreeCloses), so the cleanup confirms on the stop rather than at the backoff
+// retry of a close that found the claim still running. Run here, the deletes would hold the
+// issue's lifecycle lane, and its new tree's start behind them, for as long as each Sandbox's
+// delete is awaited. A close that is running as the stop lands, and settles its retry after the
+// wake, still waits out its backoff, at most the backoff's cap.
 func (r *outbox) stopInLeftTree(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
 	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
 	if err != nil {
 		return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
 	}
 	machine, found := r.supervisor.Machine(token)
-	if !found || machine.View().Claim.Tree != payload.Tree {
+	if !found {
+		may, err := r.trees.StoredClaimMayRunIn(ctx, token, payload.Tree)
+		if err != nil {
+			return err
+		}
+		if may {
+			return wait.Errorf("%s of tree %s, which %s has left for tree %s, waits for the supervising machine of its stored claim %s",
+				payload.Op, payload.Tree, issue.Key, issue.Tree, token)
+		}
+		return nil
+	}
+	if machine.View().Claim.Tree != payload.Tree {
 		return nil
 	}
 	still, err := r.stopCarried(ctx, machine, token, issue)
@@ -2571,14 +2601,14 @@ func (r *outbox) stopInLeftTree(ctx context.Context, row record.OutboxRow, paylo
 		return wait.Errorf("%s of tree %s, which %s has left for tree %s, waits for %s to stop", payload.Op, payload.Tree,
 			issue.Key, issue.Tree, still)
 	}
-	return r.wakeTreeCloses(ctx, payload.Tree, row.Issue)
+	return r.wakeTreeCloses(ctx, payload.Tree)
 }
 
-// wakeTreeCloses makes every close row of tree on an issue other than skip due now, in a
-// transaction of its own, which owns the commit hooks the expedites register (projectRecords,
-// intake.OnCommit), so each row's lane is woken once they commit. skip is the issue whose stop asks:
-// its own close rows of the tree are stops of its other roles, which need no wake.
-func (r *outbox) wakeTreeCloses(ctx context.Context, tree, skip string) error {
+// wakeTreeCloses makes every close row of tree on the issues still in it due now (TreeCloses), in
+// a transaction of its own, which owns the commit hooks the expedites register (projectRecords,
+// intake.OnCommit), so each row's lane is woken once they commit. The carried issue's own close
+// rows of the tree are not among them: they only stop its roles, and need no wake.
+func (r *outbox) wakeTreeCloses(ctx context.Context, tree string) error {
 	now := r.now()
 	scoped, committed := intake.WithCommitHooks(ctx)
 	var woken []int64
@@ -2588,9 +2618,6 @@ func (r *outbox) wakeTreeCloses(ctx context.Context, tree, skip string) error {
 			return err
 		}
 		for _, due := range closes {
-			if due.Issue == skip {
-				continue
-			}
 			if err := r.records.ExpediteOutbox(scoped, tx, due, now); err != nil {
 				return err
 			}

@@ -15,11 +15,12 @@ import (
 )
 
 // An adoption moves a member of a closed tree into a live one (AdoptMember, moveIntoTree), and the
-// member can leave a claim still running in the tree it left, which that tree's cleanup waits on.
-// The move queues the old tree's suspend of each claim of the member that still stands there and
-// has not retired, at the member's old generation, and of no other: a claim already retired, one
-// standing in another tree, and a role with no claim get none. The daemon's outbox runs such a row
-// as a stop of a tree its issue has left.
+// member can leave a claim still running in the tree it left, which that tree's cleanup waits on,
+// or a start of the old tree already past its fences can create or relaunch one there after the
+// move has read the claims. The move queues the old tree's suspend of every role of the member, at
+// the member's old generation, a role with no claim and a retired one's included, and of no role
+// whose claim already stands in another tree. The daemon's outbox runs such a row as a stop of a
+// tree its issue has left.
 func TestAnAdoptionQueuesTheOldTreesStopOfEachClaimItLeavesThere(t *testing.T) {
 	const closedRoot, member, liveRoot = "LEGION-207", "LEGION-208", "LEGION-300"
 	pool := migratedPool(t)
@@ -79,10 +80,13 @@ func TestAnAdoptionQueuesTheOldTreesStopOfEachClaimItLeavesThere(t *testing.T) {
 	reason := member + " left tree " + closedRoot
 	want := []record.SuperviseRequest{
 		{Op: "suspend", Tree: closedRoot, Role: claim.RoleArchitect, Generation: 3, Reason: reason},
+		{Op: "suspend", Tree: closedRoot, Role: claim.RolePlanner, Generation: 3, Reason: reason},
+		{Op: "suspend", Tree: closedRoot, Role: claim.RoleImplementer, Generation: 3, Reason: reason},
 		{Op: "suspend", Tree: closedRoot, Role: claim.RoleTester, Generation: 3, Reason: reason},
+		{Op: "suspend", Tree: closedRoot, Role: claim.RoleMerger, Generation: 3, Reason: reason},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("the adoption queued the supervise rows %+v for %s; want the old tree's suspend of its architect and its tester alone: %+v",
-			got, member, want)
+		t.Fatalf("the adoption queued the supervise rows %+v for %s; want the old tree's suspend of every role but its reviewer, "+
+			"whose claim stands in another tree: %+v", got, member, want)
 	}
 }

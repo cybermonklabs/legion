@@ -3011,7 +3011,8 @@ func (s *Postgres) EarlierNotices(ctx context.Context, tx pgx.Tx, tree string, i
 
 func (s *Postgres) TreeCloses(ctx context.Context, tx pgx.Tx, tree string) ([]OutboxRow, error) {
 	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
-		where kind = $1 and payload->>'op' = 'tree_close' and payload->>'tree' = $2
+		where kind = $1 and issue in (select key from issues where tree = $2)
+		and payload->>'op' = 'tree_close' and payload->>'tree' = $2
 		order by id`, string(OutboxKindSupervise), tree)
 	if err != nil {
 		return nil, fmt.Errorf("read the close rows of tree %s: %w", tree, err)

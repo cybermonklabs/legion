@@ -2040,10 +2040,11 @@ type Store interface {
 	// waits behind is due rather than climb a backoff to it (the daemon's deliverNotice, whose
 	// fence waits with wait.Until for a catch-up the wake pacing holds).
 	EarlierNotices(ctx context.Context, tx pgx.Tx, tree string, id int64) ([]OutboxRow, error)
-	// TreeCloses is every tree close row (SuperviseRequest's "tree_close") queued for tree, on any
-	// issue, oldest first: the rows a tree's cleanup reservation is driven by, which the outbox
-	// makes due at once when a stop of a tree its issue has left stops the claim they wait on (the
-	// daemon outbox's stopInLeftTree).
+	// TreeCloses is every tree close row (SuperviseRequest's "tree_close") queued for tree on an
+	// issue that still stands in tree, oldest first: the rows that hold the tree's cleanup
+	// reservation and confirm it (a close of a tree its issue has left only stops a claim, and is
+	// not listed). The outbox makes them due at once when a claim their cleanup waits on stops (the
+	// daemon outbox's wakeTreeCloses).
 	TreeCloses(ctx context.Context, tx pgx.Tx, tree string) ([]OutboxRow, error)
 	// RoleRun reads one role's run of an issue generation: its queued supervise rows and the claim
 	// with token.

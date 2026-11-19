@@ -567,6 +567,22 @@ func (s *Store) StoredClaimMayRun(ctx context.Context, token claim.Token, row in
 	return may, nil
 }
 
+// StoredClaimMayRunIn is whether the stored claim of token stands in tree and may still hold a
+// process. A stop of a tree its issue has left that finds no machine for the claim is a wait while
+// it does (the daemon outbox's stopInLeftTree): the supervisor persists a claim before it
+// publishes its machine, and a daemon of a rolling restart holds no machine for a claim the other
+// daemon created after it booted. It has no start-row term, unlike StoredClaimMayRun: no start of
+// the issue's new tree runs against a claim that still stands in the old one.
+func (s *Store) StoredClaimMayRunIn(ctx context.Context, token claim.Token, tree string) (bool, error) {
+	var may bool
+	err := s.pool.QueryRow(ctx, `select exists (select 1 from claims where token = $1 and tree = $2 and `+claimMayRun+`)`,
+		string(token), tree).Scan(&may)
+	if err != nil {
+		return false, fmt.Errorf("read stored claim %s in tree %s: %w", token, tree, err)
+	}
+	return may, nil
+}
+
 // ClaimUnretired is whether the store holds token's claim in any state but retired: the claims the
 // daemon's orphan sweep knows (knownClaims), read at the moment the runtime decides rather than when
 // the sweep read its claims. A token no claim holds is not unretired.
