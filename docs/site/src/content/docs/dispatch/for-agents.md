@@ -76,16 +76,19 @@ What the agent sees depends on the projects its token lists:
 
 - A token that lists projects sees those of them its person sees, and nothing of any other
   project. Of what belongs to no project, it reads only the people and agent sessions of those
-  projects, its own, and the direct conversations its person is in. A read of the whole
-  deployment, such as `dispatch priorities`, is refused `403 DEPLOYMENT_READ_REFUSED`, and a
-  write of the whole deployment, such as `dispatch project` or a broadcast,
-  `403 PROJECT_SCOPE_DEPLOYMENT`.
+  projects, its own, and the direct conversations its person is in whose agent sessions it reads.
+  A read of the whole deployment, such as `dispatch priorities`, is refused
+  `403 DEPLOYMENT_READ_REFUSED`, and a write of the whole deployment, such as `dispatch project` or
+  a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`.
 - A token that lists no project sees the public projects its person sees, and no private one,
   even one its person sees. It reads every person and the whole deployment, and every agent
-  session but one that has acted in a project it cannot see (while a project is private and the
-  operator has not yet filled the sessions' projects, no session but its own), unless its person
-  is a restricted member: such a person's token is held as a token that lists projects is, and its
-  writes of the whole deployment are refused `403 RESTRICTED_MEMBER`.
+  session but one that has acted in a private project it cannot see, or, if it has acted in
+  none, one whose token names such a project or that the listener does not list (while a project
+  is private and the operator has not yet filled the sessions' projects, no session but its own).
+  It reads no role of a private project it cannot see, and no direct conversation, its person's
+  included, with an agent session it cannot read. A restricted member's token is held as a token
+  that lists projects is, and its writes of the whole deployment are refused
+  `403 RESTRICTED_MEMBER`.
 - The shared token, and any other credential that acts for no person, sees the public projects,
   within its list when it has one.
 

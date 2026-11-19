@@ -349,9 +349,10 @@ What each credential sees:
 - An agent's token that lists projects, a personal `dsp_` token from Settings or an access token
   the secrets broker issued for a project, sees those of them its person sees and nothing else.
   Of what belongs to no project it reads only the people and sessions of those projects, its own,
-  and its person's direct conversations. A read of the whole deployment, such as the priorities,
-  Delivery, the broadcasts or the groups, is refused `403 DEPLOYMENT_READ_REFUSED`, and a write of
-  it, such as a new project, a repository mapping or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`.
+  and its person's direct conversations with those sessions. A read of the whole deployment, such
+  as the priorities, Delivery, the broadcasts or the groups, is refused
+  `403 DEPLOYMENT_READ_REFUSED`, and a write of it, such as a new project, a repository mapping or
+  a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`.
 - An agent's token that lists no project sees the public projects its person sees, and never a
   private one.
 - A credential that acts for no person, the shared `DISPATCH_AGENT_TOKEN` or a Kubernetes
