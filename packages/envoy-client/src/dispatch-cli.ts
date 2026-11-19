@@ -132,7 +132,7 @@ export function cliRefusals(text: string): CliRefusal[] {
 const SUBSCRIPTIONS_TIMEOUT_MS = 1_500;
 
 /**
- * The output, at most `limit` characters (unbounded for a host that shows all of it). Within the
+ * The output, at most `limit` UTF-16 code units (unbounded for a host that shows all of it). Within the
  * limit it is the result text, the picture lines, then the `kept` lines (the follow notice and the
  * CLI's own notes) as given. Past it, the text and every picture line are written whole through
  * `writeFull`, and the output names that file: the result text is cut first, then picture lines are
@@ -149,7 +149,9 @@ export function fitOutput(
   const whole = [text, ...pictures, ...kept].join("\n");
   if (whole.length <= limit) return whole;
   const full = [text, ...pictures].join("\n");
-  const marker = `(the full result, ${full.length} long, over the ${limit} this output holds: ${writeFull(full)})`;
+  // The marker states the full result's length alone: the output it sits in may hold the full
+  // result's length and more, with the kept lines, so a comparison with `limit` could be false.
+  const marker = `(the full result, ${full.length} long: ${writeFull(full)})`;
   const droppedLine = (left: number): string =>
     `(${left} more picture line${left === 1 ? "" : "s"} left out: see the full result)`;
   // The tail's length for each number of picture lines shown, from the parts' lengths alone, one
