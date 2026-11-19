@@ -2,8 +2,13 @@ package tmux
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -105,6 +110,79 @@ func TestKillUnrecordedNamesItsTimeoutNotAnExit(t *testing.T) {
 	if want := "kill pane %1, whose process pid 42 was never recorded: tmux timed out after 10s"; err == nil || err.Error() != want {
 		t.Errorf("killUnrecorded = %v, want %q", err, want)
 	}
+}
+
+// A tmux client a signal ends after new-window or split-window opened its pane leaves no pane the
+// daemon does not own. openWindowIn kills the window it opened when its ownership marker's client
+// is killed, as it does when the marker exits non-zero, and when the bootstrap window's cleanup
+// fails either way after new-window opened the agent's window; splitWindow keeps the pane it split
+// when select-layout's client is killed, as it does when select-layout exits non-zero, so the
+// launch records it. Read as an error alone, each left an agent pane running beside the claim's
+// relaunch.
+func TestATmuxClientASignalEndsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T) {
+	killed := exec.Command("sh", "-c", "kill -KILL $$").Run()
+	if killed == nil {
+		t.Fatal("a shell that sent itself SIGKILL exited 0")
+	}
+	// calls records each tmux command a run makes, the target of a kill-window beside its verb.
+	// dies names the command that fails: a verb, or `kill-window <target>`; exits says whether it
+	// exits 1 rather than dying of the signal.
+	runner := func(dies string, exits bool, calls *[]string) func(context.Context, []string) (result, error) {
+		return func(_ context.Context, argv []string) (result, error) {
+			command := verb(argv)
+			if command == "kill-window" {
+				command += " " + argv[len(argv)-1]
+			}
+			*calls = append(*calls, command)
+			switch {
+			case command == dies && exits:
+				return result{exitCode: 1, stderr: "can't find window"}, nil
+			case command == dies:
+				return result{}, fmt.Errorf("run tmux %s: %w", command, killed)
+			case command == "new-window":
+				return result{stdout: "@7 %9 4242\n"}, nil
+			case command == "split-window":
+				return result{stdout: "%9 4242\n"}, nil
+			}
+			return result{}, nil
+		}
+	}
+	bootstrap := "kill-window legion-test:" + bootstrapWindow
+	for _, exits := range []bool{false, true} {
+		t.Run(fmt.Sprintf("the bootstrap window's cleanup, exiting %t", exits), func(t *testing.T) {
+			var calls []string
+			r := &Runtime{socket: "legion-test", run: runner(bootstrap, exits, &calls)}
+			if _, err := r.openWindowIn(context.Background(), "tree", []string{"true"}, true); err == nil {
+				t.Error("openWindowIn = nil, want the cleanup's failure")
+			}
+			if want := []string{"new-window", bootstrap, "kill-window @7"}; !slices.Equal(calls, want) {
+				t.Errorf("tmux ran %q, want %q: the window new-window opened is left open", calls, want)
+			}
+		})
+	}
+	t.Run("the window ownership marker", func(t *testing.T) {
+		var calls []string
+		r := &Runtime{socket: "legion-test", run: runner("set-option", false, &calls)}
+		_, err := r.openWindowIn(context.Background(), "tree", []string{"true"}, false)
+		if !errors.Is(err, killed) {
+			t.Errorf("openWindowIn = %v, want the marker's signal", err)
+		}
+		if want := []string{"new-window", "set-option", "kill-window @7"}; !slices.Equal(calls, want) {
+			t.Errorf("tmux ran %q, want %q: the window the marker could not own is left open", calls, want)
+		}
+	})
+	t.Run("select-layout after a split", func(t *testing.T) {
+		var calls []string
+		var logs strings.Builder
+		r := &Runtime{socket: "legion-test", run: runner("select-layout", false, &calls), log: slog.New(slog.NewTextHandler(&logs, nil))}
+		report, err := r.splitWindow(context.Background(), "@7", []string{"true"})
+		if err != nil || report != (paneReport{window: "@7", pane: "%9", pid: 4242}) {
+			t.Errorf("splitWindow = %+v, %v; want the split pane and no error: an error leaves the pane unowned", report, err)
+		}
+		if !strings.Contains(logs.String(), "select-layout failed after a split") || !strings.Contains(logs.String(), "signal: killed") {
+			t.Errorf("logged %q, want the select-layout failure with its signal", logs.String())
+		}
+	})
 }
 
 // fakeTmuxClient writes an executable that runs body under sh in place of a tmux client.

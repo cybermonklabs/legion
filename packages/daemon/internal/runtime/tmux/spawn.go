@@ -861,6 +861,9 @@ func (r *Runtime) openWindow(ctx context.Context, name string, pane []string) (p
 // after, before the result is read. The pane marks its own window before it starts the shim, so a
 // crash that loses the report still leaves a reapable owner marker; after the report this method
 // repeats the marker and treats a failure as a launch failure (markOwner and openWindow, tmux.ts).
+// Every failure after new-window opened its window, the bootstrap cleanup's or the marker's, by an
+// exit or by a signal ending the client, kills that window (killOpened), so no agent pane is left
+// running that the launch did not record.
 func (r *Runtime) openWindowIn(ctx context.Context, name string, pane []string, createdSession bool) (paneReport, error) {
 	res, err := r.run(ctx, newWindowArgv(r.socket, r.socket, name, pane))
 	if err != nil {
@@ -868,11 +871,14 @@ func (r *Runtime) openWindowIn(ctx context.Context, name string, pane []string, 
 	}
 	if createdSession {
 		cleanup, err := r.run(ctx, killBootstrapWindowArgv(r.socket, r.socket))
-		if err != nil {
-			return paneReport{}, err
+		if err == nil && cleanup.exitCode != 0 {
+			err = fmt.Errorf("tmux bootstrap window cleanup%s", failed(cleanup))
 		}
-		if cleanup.exitCode != 0 {
-			return paneReport{}, fmt.Errorf("tmux bootstrap window cleanup%s", failed(cleanup))
+		if err != nil {
+			if opened, readErr := readPaneReport("new-window", res, true); res.exitCode == 0 && readErr == nil {
+				return paneReport{}, r.killOpened(ctx, opened.window, err)
+			}
+			return paneReport{}, err
 		}
 	}
 	if res.exitCode != 0 {
@@ -883,19 +889,27 @@ func (r *Runtime) openWindowIn(ctx context.Context, name string, pane []string, 
 		return paneReport{}, err
 	}
 	marker, err := r.run(ctx, markWindowOwnerArgv(r.socket, report.window, r.socket))
-	if err != nil {
-		return paneReport{}, err
+	if err == nil && marker.exitCode != 0 {
+		err = fmt.Errorf("tmux window ownership marker%s", failed(marker))
 	}
-	if marker.exitCode != 0 {
-		if _, err := r.run(ctx, killWindowArgv(r.socket, report.window)); err != nil {
-			return paneReport{}, err
-		}
-		return paneReport{}, fmt.Errorf("tmux window ownership marker%s", failed(marker))
+	if err != nil {
+		return paneReport{}, r.killOpened(ctx, report.window, err)
 	}
 	return report, nil
 }
 
-// splitWindow splits pane into window and tiles the layout (splitWindow, tmux.ts).
+// killOpened kills window, which new-window opened for a launch that then failed with err, and
+// answers err, joined with the kill's own error where its client could not run.
+func (r *Runtime) killOpened(ctx context.Context, window string, err error) error {
+	if _, killErr := r.run(ctx, killWindowArgv(r.socket, window)); killErr != nil {
+		return errors.Join(err, killErr)
+	}
+	return err
+}
+
+// splitWindow splits pane into window and tiles the layout (splitWindow, tmux.ts). The pane is
+// open once split-window reports it, so a select-layout that fails, by its exit or by a signal
+// ending its client, is logged and the pane returned, never an error that would leave it unowned.
 func (r *Runtime) splitWindow(ctx context.Context, window string, pane []string) (paneReport, error) {
 	res, err := r.run(ctx, splitWindowArgv(r.socket, window, pane))
 	if err != nil {
@@ -910,7 +924,7 @@ func (r *Runtime) splitWindow(ctx context.Context, window string, pane []string)
 	}
 	report.window = window
 	if res, err := r.run(ctx, selectLayoutArgv(r.socket, window)); err != nil {
-		return paneReport{}, err
+		r.log.Warn("tmux runtime: select-layout failed after a split", "window", window, "detail", err.Error())
 	} else if res.exitCode != 0 {
 		r.log.Warn("tmux runtime: select-layout failed after a split", "window", window, "detail", failure(res))
 	}
