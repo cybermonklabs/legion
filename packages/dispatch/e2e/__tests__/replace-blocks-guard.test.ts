@@ -130,14 +130,20 @@ const logDirectories = temporaryDirectories("replace-blocks-log");
  *  cost line names without its value, so `label`, one per case, is what tells their cost lines
  *  apart. A `bun` of the row's own stands first on PATH: it leaves a marker file, prints `log` as
  *  the instance's output, and exits 1, so a string the guard lets through starts nothing.
- *  `started` is whether that `bun` ran. */
+ *  `started` is whether that `bun` ran. A `ps` of the row's own stands beside it: it leaves a
+ *  marker file and answers nothing, so `psRan` is whether the driver started one. The start reads
+ *  each process group through proc_group (scripts/e2e/lib/process-tree.sh), from the one
+ *  process's /proc/<pid>/stat: procps's `ps -o pgid= -p PID` reads every process of the host for
+ *  that answer, 2.17 s a call on a devbox at load 475, and the two a row's start made went past
+ *  the driver's short bound when each cost 31 s. */
 async function drive(
   label: string,
   databaseUrl: string,
   log = ""
-): Promise<{ code: number; stdout: string; stderr: string; started: boolean }> {
+): Promise<{ code: number; stdout: string; stderr: string; started: boolean; psRan: boolean }> {
   const bin = fakeBunDirectories();
   const marker = join(bin, "bun-ran");
+  const psMarker = join(bin, "ps-ran");
   const logFile = join(bin, "instance.log");
   writeFileSync(logFile, log);
   writeFileSync(
@@ -147,6 +153,9 @@ async function drive(
       mode: 0o755,
     }
   );
+  writeFileSync(join(bin, "ps"), `#!/usr/bin/env bash\n: >'${psMarker}'\nexit 1\n`, {
+    mode: 0o755,
+  });
   const { code, stdout, stderr } = await runBounded({
     argv: ["bash", "e2e/acceptance/replace-blocks.sh"],
     bound: "short",
@@ -161,7 +170,7 @@ async function drive(
     },
     from: import.meta.url,
   });
-  return { code, stdout, stderr, started: existsSync(marker) };
+  return { code, stdout, stderr, started: existsSync(marker), psRan: existsSync(psMarker) };
 }
 
 /** What a row's failure says of a driver that ended, whatever its exit code: that code and its
@@ -339,11 +348,11 @@ test.skipIf(!live)(
 );
 
 test.skipIf(!live)(
-  "a scratch database on the shared server is let through to the start",
+  "a scratch database on the shared server is let through to the start, which starts no ps",
   async () => {
     await withScratchDatabase(async (scratch) => {
       const run = await drive("scratch-let-through", scratch.url);
-      const { code, stdout, started } = run;
+      const { code, stdout, started, psRan } = run;
       expect(
         {
           code,
@@ -351,11 +360,13 @@ test.skipIf(!live)(
             `starting a Dispatch of its own with bun run dispatch:local. It builds the dashboard, builds the server and seeds ${scratch.name} first`
           ),
           started,
+          psRan,
         },
-        "The guard refused a database of the run's own on the shared server, or the start line " +
-          "does not name the database the server answered." +
+        "The guard refused a database of the run's own on the shared server, the start line " +
+          "does not name the database the server answered, or the start read a process group " +
+          "through ps." +
           driverSaid(run)
-      ).toEqual({ code: 1, starting: true, started: true });
+      ).toEqual({ code: 1, starting: true, started: true, psRan: false });
     });
   },
   // The driver, a bounded child under the short bound. The scratch database's create and drop go
@@ -424,7 +435,7 @@ test.skipIf(!live)(
       ).toBe(true);
 
       const run = await drive("failed-start", scratch.url, log);
-      const { code, stderr, started } = run;
+      const { code, stderr, started, psRan } = run;
       expect(
         {
           code,
@@ -432,11 +443,20 @@ test.skipIf(!live)(
           stopped: stderr.includes("it stopped while it started"),
           printedUrl: stderr.includes(scratch.url),
           printedHandOver: handOver.filter((line) => stderr.includes(line.trim())),
+          psRan,
         },
         "The failed start printed the instance's hand-over message, which holds DATABASE_URL " +
-          "whole. Print the log only up to that message." +
+          "whole, or read a process group through ps. Print the log only up to that message, " +
+          "and read each group through proc_group." +
           driverSaid(run)
-      ).toEqual({ code: 1, started: true, stopped: true, printedUrl: false, printedHandOver: [] });
+      ).toEqual({
+        code: 1,
+        started: true,
+        stopped: true,
+        printedUrl: false,
+        printedHandOver: [],
+        psRan: false,
+      });
     });
   },
   // Two bounded children one after the other, `tail` then the driver, each under the short

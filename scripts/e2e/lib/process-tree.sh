@@ -9,8 +9,9 @@
 # `exec -a` gives argv[0] any name, so a process is told by the program the kernel records it runs
 # (/proc/<pid>/exe).
 #
-# Sourced, never run, by lib/rig.sh and by stage2-tmux-supervision.sh, which sources no rig. It
-# needs nothing of its caller's.
+# Sourced, never run, by lib/rig.sh, by stage2-tmux-supervision.sh, which sources no rig, and by
+# packages/dispatch/e2e/acceptance/replace-blocks.sh, for proc_group. It needs nothing of its
+# caller's.
 
 # record_pid_sh is the POSIX sh a tmux pane's command runs as
 # `sh -c "$record_pid_sh" record-pid FILE COMMAND…`: it writes its own pid and its start time (stat

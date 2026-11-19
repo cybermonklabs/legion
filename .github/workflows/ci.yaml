@@ -2533,6 +2533,10 @@ jobs:
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/envoy-client/test/**'
+              # packages/dispatch/e2e/acceptance/replace-blocks.sh sources it for proc_group, and
+              # e2e/__tests__/replace-blocks-guard.test.ts, which this job's test step runs, runs
+              # that script (ci_job_reads.py's dispatch_ui).
+              - 'scripts/e2e/lib/process-tree.sh'
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
             # holds: the shards, the three `-alone` projects, the two-process job, the
             # fake-embedder job, the visual review and the merge job. Every entry is something a
