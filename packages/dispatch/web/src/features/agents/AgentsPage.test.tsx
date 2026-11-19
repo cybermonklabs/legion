@@ -22,6 +22,7 @@ import {
   NetworkError,
   RequestTimeoutError,
 } from "../../api/client";
+import { userAgentStateQuery } from "../../api/queries";
 import type {
   Agent,
   BroadcastCreated,
@@ -32,6 +33,7 @@ import type {
   MessageDelivery,
   MessageDeliveryMode,
   MessageRead,
+  UserAgentState,
   UserAgentStates,
 } from "../../api/types";
 import { AuthGate } from "../../app";
@@ -200,6 +202,11 @@ function LocationProbe() {
   return <div data-testid="location-search">{location.search}</div>;
 }
 
+/** The viewer's agent state of `session` as the page holds it. */
+function storedState(queryClient: QueryClient, session: string): UserAgentState | undefined {
+  return queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey)?.[session];
+}
+
 function renderAgents({
   agentState = {},
   inboxRows = inbox,
@@ -282,11 +289,17 @@ function renderAgents({
   });
   // Dispatch's store of the viewer's agent state: a read answers it as it stands, and a write
   // changes it, so a read asked after a write - the one a write's answer asks again for a read it
-  // cancelled (`replaceQueryData`) - answers the write.
+  // cancelled (`replaceQueryData`) - answers the write. While a row holds the reads
+  // (`holdAgentStateReads`), each waits, so what the page shows of a write is what it stored of
+  // the write's own answer.
   const served: UserAgentStates = { ...agentState };
-  const getMyAgentState = spyOn(api, "getMyAgentState").mockImplementation(async () => ({
-    ...served,
-  }));
+  let heldReads: (() => void)[] | undefined;
+  const getMyAgentState = spyOn(api, "getMyAgentState").mockImplementation(() => {
+    if (heldReads === undefined) return Promise.resolve({ ...served });
+    const { promise, resolve } = Promise.withResolvers<UserAgentStates>();
+    heldReads.push(() => resolve({ ...served }));
+    return promise;
+  });
   // Dispatch answers a state write with the session's whole state: the marks the write set over
   // the state it held, with `pinned_at` added by a pin and dropped by an unpin, and nothing left
   // unread. A mark the body leaves out rides as a null the write does not read.
@@ -322,12 +335,28 @@ function renderAgents({
     getBroadcast,
     getInbox,
     getMyAgentState,
+    /** Holds every agent-state read from here on, and answers the function that lets them go:
+     *  it answers each with the state as it stands then, inside an awaited `act`, since each
+     *  answer redraws the page. */
+    holdAgentStateReads: (): (() => Promise<void>) => {
+      heldReads ??= [];
+      return () =>
+        act(async () => {
+          const answers = heldReads ?? [];
+          heldReads = undefined;
+          for (const answer of answers) answer();
+        });
+    },
     listAgentMessages,
     listAgents,
     listIssues,
     listProjects,
     putAgentState,
     queryClient,
+    /** Changes what Dispatch holds of `session`, as another of the person's devices would. */
+    serveAgentState: (session: string, state: UserAgentState) => {
+      served[session] = state;
+    },
     restore: () => {
       getBroadcast.mockRestore();
       getMyAgentState.mockRestore();
@@ -1013,10 +1042,26 @@ test("Agents keeps a pinned session in its own group, first among its rows", asy
     expect(titles(region)).toEqual(["Planner", "Silent", "Reviewer"]);
     expect(groupCount(region, "idle")).toBe("(2)");
 
+    const releaseReads = page.holdAgentStateReads();
+    // The reads that follow the write wait, so what the row sees is what the page stored of
+    // the write's own answer, not what a later read brought.
+    // Another of the person's devices clears Silent's conversation first, so Dispatch's answer to
+    // the unpin carries that Clear, which the press does not draw.
+    page.serveAgentState("silent-session", {
+      cleared_before: "2026-09-14T00:30:00Z",
+      pinned_at: "2026-09-14T00:00:00Z",
+      unread_replies: 0,
+    });
     await user.click(within(region).getByRole("button", { name: "Unpin Silent" }));
     // Unpinned it stays in Idle, behind the Reviewer, whose activity is the newer of the two.
     await waitFor(() => expect(titles(region)).toEqual(["Planner", "Reviewer", "Silent"]));
     expect(groupCount(region, "idle")).toBe("(2)");
+    await waitFor(() =>
+      expect(storedState(page.queryClient, "silent-session")?.cleared_before).toBe(
+        "2026-09-14T00:30:00Z"
+      )
+    );
+    await releaseReads();
     expect(page.putAgentState.mock.calls.map(([session, input]) => [session, input])).toEqual([
       ["silent-session", { pinned: false }],
     ]);
@@ -1192,10 +1237,18 @@ test("Agents pins a card by writing the person's agent state, not a browser pref
   try {
     const pin = await screen.findByRole("button", { name: "Pin Planner" });
     expect(pin).toHaveAttribute("aria-pressed", "false");
+    const releaseReads = first.holdAgentStateReads();
+    // The reads that follow the write wait, so what the row sees is what the page stored of
+    // the write's own answer, not what a later read brought.
     await user.click(pin);
 
     const unpin = await screen.findByRole("button", { name: "Unpin Planner" });
     expect(unpin).toHaveAttribute("aria-pressed", "true");
+    // The press draws the pin at the browser's time; the answer carries Dispatch's.
+    await waitFor(() =>
+      expect(storedState(first.queryClient, "planner-session")?.pinned_at).toBe(ANSWERED_PIN_AT)
+    );
+    await releaseReads();
     expect(within(unpin.closest("article") ?? unpin).getByRole("heading").textContent).toBe(
       "Planner"
     );
@@ -1886,9 +1939,11 @@ test("an agent's unread reply shows on its row and in the navigation until its c
     await expect(screen.findByRole("link", { name: "New reply 1" })).resolves.toBeTruthy();
     expect(within(planner).queryByText("At /dash.")).not.toBeInTheDocument();
 
-    await user.click(
-      await within(planner).findByRole("button", { name: "New reply 1 from Planner" })
-    );
+    const opener = await within(planner).findByRole("button", { name: "New reply 1 from Planner" });
+    const releaseReads = page.holdAgentStateReads();
+    // The reads that follow the write wait, so what the row sees is what the page stored of
+    // the write's own answer, not what a later read brought.
+    await user.click(opener);
     await expect(within(planner).findByText("At /dash.")).resolves.toBeTruthy();
     await waitFor(() =>
       expect(page.putAgentState).toHaveBeenCalledWith(
@@ -1900,6 +1955,8 @@ test("an agent's unread reply shows on its row and in the navigation until its c
     await waitFor(() =>
       expect(within(planner).queryByRole("button", { name: /unread/ })).not.toBeInTheDocument()
     );
+    expect(screen.queryByRole("link", { name: /^New repl/ })).not.toBeInTheDocument();
+    await releaseReads();
     expect(screen.queryByRole("link", { name: /^New repl/ })).not.toBeInTheDocument();
   } finally {
     page.view.unmount();
@@ -2047,6 +2104,9 @@ test("Agents Clear hides every exchange up to now for this viewer and persists t
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");
     await expect(within(planner).findByText("Second question")).resolves.toBeTruthy();
+    const releaseReads = page.holdAgentStateReads();
+    // The reads that follow the write wait, so what the row sees is what the page stored of
+    // the write's own answer, not what a later read brought.
     await user.click(within(planner).getByRole("button", { name: "Clear conversation" }));
     // The cutoff is the newest visible message's own timestamp, so the Clear hides exactly what
     // was on screen whatever the browser clock says.
@@ -2069,6 +2129,7 @@ test("Agents Clear hides every exchange up to now for this viewer and persists t
     ).not.toBeInTheDocument();
     const cleared = within(planner).getByText(/^Cleared/);
     expect(cleared.querySelector("time")?.getAttribute("datetime")).toBe("2026-09-14T02:00:00Z");
+    await releaseReads();
     const showAnyway = within(planner).getByRole("button", { name: "Show anyway" });
 
     // Looking back does not touch the cutoff; the whole history is there, folded as usual.
