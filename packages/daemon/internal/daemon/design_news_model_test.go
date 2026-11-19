@@ -1,12 +1,10 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"math/rand/v2"
 	"os"
 	"regexp"
@@ -101,6 +99,12 @@ import (
 // that settles it (newsModelAmbiguity), and the level rule is held again from that step on. Each seed
 // logs its counts, and the run logs their totals.
 //
+// One credit the drive never makes final is a tester's: the first hand-over's tester turn ends in a
+// provider error, and the second's runs until a clear has ended its run, so no tester's turn ends
+// with its result while its run stands, and a tester's credit that the result never made final is
+// one the model cannot see. TestATestersTurnThatRanMakesItsCreditFinalAndItIsNotToldAgain
+// (design_news_credit_test.go) pins it.
+//
 // With no variable set it runs newsModelCISeed for 40 steps, a few seconds: a seed whose run
 // reaches eighteen of the twenty kinds of step and that each of the record's rules, put back wrong
 // one at a time, fails (newsModelCISeed says how that was read). LEGION_NEWS_MODEL_SEED runs one seed,
@@ -146,14 +150,13 @@ func TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold(t *testing.T) {
 // newsModelCISeed is the seed the model test runs where no variable names one. Its 40 steps reach
 // eighteen of the twenty kinds of step — all but the provider error's ladder and the restart — the
 // two hand-overs, a re-entry, a re-admission and the root architect's narrowed task among them, and
-// the run fails under each of the seven rules the record keeps put back wrong one at a time (MA to MG
-// of the round-12 mutations: a credit counted in any run, a credit reaching from any version, a fold
-// that keeps no unreached credit, a read that counts no standing credit, a fold before the turn's
-// result, a carried opening that clears any opening, and a narrowed root task that keeps the news
-// it held). Read from runs of seeds 1 to 100 at 40 steps: unmutated with -v, which prints the kinds
-// each seed's drive chose (newsModel.kinds), and under each mutation. 91 of those seeds failed under
-// all seven, no seed reached all twenty kinds, and 35 is one of the five that fail under all seven
-// and reach eighteen.
+// the run fails under each of the seven rules the record keeps put back wrong one at a time (a credit
+// counted in any run, a credit reaching from any version, a fold that keeps no unreached credit, a
+// read that counts no standing credit, a fold before the turn's result, a carried opening that
+// clears any opening, and a narrowed root task that keeps the news it held). Read from runs of seeds
+// 1 to 100 at 40 steps: unmutated with -v, which prints the kinds each seed's drive chose
+// (newsModel.kinds), and under each of the seven. 91 of those seeds failed under all seven, no seed
+// reached all twenty kinds, and 35 is one of the five that fail under all seven and reach eighteen.
 const newsModelCISeed = 35
 
 // errModelWrite is a write the model's claim store refused (newsModelStore).
@@ -349,7 +352,6 @@ type newsModelRow struct {
 type newsModelAgent struct {
 	name  string
 	row   *newsModelRow
-	issue string
 	role  claim.Role
 	token claim.Token
 	// machine and conn are the claim and the connection its prompts reach, nil until a start
@@ -373,7 +375,8 @@ type newsModelAgent struct {
 	// ranAt is each prompt whose turn's result came and whose final credit the claim store has not
 	// landed yet, with how many refusals had been spent before that result; finalized each delivery
 	// id the claim store wrote final; lost each prompt whose final credit a refused write lost: its
-	// result came, a write was refused since, and the store caught up without making it final.
+	// claim's writes are the ones refused (newsModelStore.refusing), its result came, a write was
+	// refused since, and the store caught up without making it final.
 	ranAt     map[string]int
 	finalized map[string]bool
 	lost      map[string]bool
@@ -390,9 +393,9 @@ func newNewsModelRow(name, issue string, audience record.DesignAudience) *newsMo
 		prompts: map[string]*newsModelPrompt{}}
 }
 
-// agent adds role's claim on issue to the claims crediting r.
-func (r *newsModelRow) agent(t *testing.T, name, issue string, role claim.Role) *newsModelAgent {
-	a := &newsModelAgent{name: name, row: r, issue: issue, role: role, token: mustClaimToken(t, issue, role), errored: map[string]bool{},
+// agent adds role's claim on r's issue to the claims crediting r.
+func (r *newsModelRow) agent(t *testing.T, name string, role claim.Role) *newsModelAgent {
+	a := &newsModelAgent{name: name, row: r, role: role, token: mustClaimToken(t, r.issue, role), errored: map[string]bool{},
 		superseded: map[string]bool{}, ranAt: map[string]int{}, finalized: map[string]bool{}, lost: map[string]bool{}}
 	r.agents = append(r.agents, a)
 	return a
@@ -516,7 +519,6 @@ type newsModel struct {
 	seed   int64
 	rng    *rand.Rand
 	r      *newsPathRig
-	st     *store.Store
 	claims *newsModelStore
 	clock  *heldClock
 	step   int
@@ -579,19 +581,36 @@ func storedFrom(d *supervise.Delivery) newsModelStored {
 	return newsModelStored{held: true, id: d.ID, confirmed: !d.ConfirmedAt.IsZero(), carried: carried, ran: d.Ran}
 }
 
-// storedDelivery is token's delivery as the claim store holds it now, nil for none.
-func (m *newsModel) storedDelivery(token claim.Token) *supervise.Delivery {
+// storedClaims is every claim the claim store holds now, and the delivery each holds by its token,
+// nil for none. The store moves only between steps, so a check, a trace line and a restart each read
+// it once and hand the map to every reader of it (lagging, standing).
+func (m *newsModel) storedClaims() ([]supervise.Claim, map[claim.Token]*supervise.Delivery) {
 	m.t.Helper()
-	claims, err := m.st.Claims(m.r.ctx)
+	claims, err := m.claims.Claims(m.r.ctx)
 	if err != nil {
 		m.fail("read the stored claims: %v", err)
 	}
+	stored := make(map[claim.Token]*supervise.Delivery, len(claims))
 	for _, c := range claims {
-		if c.Token == token {
-			return c.Pending
-		}
+		stored[c.Token] = c.Pending
 	}
-	return nil
+	return claims, stored
+}
+
+// toldRows is every told row of the tree as every reader reads it (record.Store.TreeTold), by its
+// issue and audience: a row the record does not hold reads as the zero row, as newsPathRig.toldOf
+// answers it. A check and a trace line each read it once.
+func (m *newsModel) toldRows() map[toldKey]record.DesignTold {
+	m.t.Helper()
+	rows := map[toldKey]record.DesignTold{}
+	m.r.inTx(func(tx pgx.Tx) error {
+		told, err := m.r.records.TreeTold(m.r.ctx, tx, m.r.root)
+		for _, row := range told {
+			rows[toldKey{row.Issue, row.Audience}] = row
+		}
+		return err
+	})
+	return rows
 }
 
 // newNewsModel builds seed's run: the root in implementing and its child in testing at version 4
@@ -612,11 +631,11 @@ func newNewsModel(t *testing.T, seed int64) *newsModel {
 	}
 	child := newNewsModelRow("child's holder", pathChild, record.AudienceHolder)
 	root := newNewsModelRow("root's architect", pathRoot, record.AudienceArchitect)
-	m := &newsModel{t: t, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), uint64(seed))), r: r, st: st, clock: &heldClock{},
+	m := &newsModel{t: t, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), uint64(seed))), r: r, clock: &heldClock{},
 		latest: 4, decisionOnly: map[int]bool{}, childGen: 1, rootGen: 1, child: child, root: root, ran: map[string]int{}, kinds: map[string]bool{}}
-	m.reviewer = child.agent(t, "reviewer", pathChild, claim.RoleReviewer)
-	m.tester = child.agent(t, "tester", pathChild, claim.RoleTester)
-	m.architect = root.agent(t, "root's architect", pathRoot, claim.RoleArchitect)
+	m.reviewer = child.agent(t, "reviewer", claim.RoleReviewer)
+	m.tester = child.agent(t, "tester", claim.RoleTester)
+	m.architect = root.agent(t, "root's architect", claim.RoleArchitect)
 	m.claims = &newsModelStore{Store: st, refusing: m.reviewer.token}
 	r.sup.deps.Store, r.sup.deps.Clock = m.claims, m.clock
 	r.client.answer = m.answer
@@ -710,11 +729,13 @@ func (m *newsModel) drive(steps int) {
 // state is what a step left, for the trace: of each row, what the record and the model say its
 // holder took, and of each claim, what it holds and what its agent holds.
 func (m *newsModel) state() string {
+	_, stored := m.storedClaims()
+	rows := m.toldRows()
 	parts := []string{fmt.Sprintf("approved %d", m.latest)}
 	for _, row := range m.rows() {
-		told := m.r.toldOf(row.issue, row.audience)
+		told := rows[toldKey{row.issue, row.audience}]
 		took, known := told.Took(record.DesignStepSpec)
-		links, _ := m.standing(row)
+		links, _ := m.standing(row, stored)
 		parts = append(parts, fmt.Sprintf("%s took %s owed %t (opening %d); run %d base %d final %v standing %v",
 			row.name, versionWords(took, known), told.OpeningOwed, told.Opening, row.run, row.base, row.final, links))
 	}
@@ -727,7 +748,7 @@ func (m *newsModel) state() string {
 			pending = fmt.Sprintf("%s confirmed=%t carried=%t ran=%t", p.ID, !p.ConfirmedAt.IsZero(), len(p.Carried) > 0, p.Ran)
 		}
 		parts = append(parts, fmt.Sprintf("%s holds %s (the claim store %+v), its agent next %q turn %q",
-			a.name, pending, storedFrom(m.storedDelivery(a.token)), a.next, a.turn))
+			a.name, pending, storedFrom(stored[a.token]), a.next, a.turn))
 	}
 	return strings.Join(parts, "; ")
 }
@@ -747,33 +768,37 @@ const newsModelLatest = 40
 // Each step is listed as many times as it is likely, and the likeliest is the one that moves the
 // run on from where it stands: the reconcile while the outbox holds a row of it, the reviewer's
 // starts while it holds one of those, the agent's turn while it holds a prompt, the turn's end while
-// it is in one, the provider error's ladder while it waits, and the shim's hello while the claim
-// store lags the machine, which is the decision that repairs it. A row nothing holds is not run, so
-// a run spends its steps between turns and inside them rather than on rows that are not there.
+// it is in one, the provider error's ladder while it waits, and the shim's hello while the
+// reviewer's claim store lags its machine, which is the decision that repairs it. A row nothing
+// holds is not run, so a run spends its steps between turns and inside them rather than on rows that
+// are not there; the sweep, a close and reopening of the gate and the hello are listed once always.
 //
-// A person's new version is listed at any time: three times as often while the reviewer holds a
-// prompt that told news or is in its turn (but while nothing says yet what its run stood on), or
-// the root architect is in the turn of a prompt that carried its opening, so a version lands behind
-// what that prompt told and moves the opening past the one it carried, and three times as often
-// while nothing is in flight, so a run that has told everything goes on. The turn of a prompt that
-// told news ends as often in a provider error as in its result, but three times as often in its
-// result once the gate has moved the row's opening past the one that prompt carried, so the fold of
-// a passed opening comes; the turn of a prompt that told nothing mostly ends in its result, so the
-// run gets on to the next news. A newer task can take the place of a confirmed task whose turn
-// runs.
+// A person's new version, of each kind, is listed once up to version newsModelLatest, and three
+// times while the reviewer holds, or is in the turn of, a prompt of its run that told news (but not
+// while nothing says yet what its run stood on), while the root architect is in the turn of a prompt
+// that carried an opening, or while the reviewer holds no prompt and the outbox holds no reconcile
+// and no start of the reviewer's: so a version lands behind what a prompt told and moves the opening
+// past the one it carried, and a run that has told everything goes on. The reviewer's turn of a
+// prompt that told news of its run ends as often in a provider error as in its result, but three
+// times as often in its result once the gate has moved the row's opening past the one that prompt
+// carried and no role message told the one that stands, so the fold of a passed opening comes; the
+// turn of a prompt that told nothing of its run mostly ends in its result, so the run gets on to the
+// next news. A newer task can take the place of a confirmed task whose turn runs.
 //
-// A seed makes two hand-overs, each listed six times while the reviewer is in no turn and no
-// tester's turn runs, so both come early enough. The first is held to the traces of a credit
-// counted from an unfinal one: until the reviewer has taken to its result a prompt of the run that
-// told it a version while that hand-over's tester credit stands (newsModel.reviewed), no clear and no
-// refused write is listed, the reviewer's turn and its result are listed twelve times and nothing
-// else ends that turn, and a person's new version once, so the reviewer's credit counted from the
-// tester's is made final while the tester's stands; then the tester's provider error is listed six
-// times, which gives the tester's credit back. The second is held to a clear under a credit of the
-// run it ends: its tester's turn runs to the end of the drive, a re-entry and a re-admission are each
-// listed four times while it does and its run stands (handoverClearDue), and a person's new version
-// six times once a clear has ended that run, which owes the next run an opening under the number the
-// tester's prompt carried for the run that ended.
+// A seed makes two hand-overs, each listed six times while the reviewer is in no turn, no tester's
+// turn runs and two versions are left to approve, so both come early enough. The first is held to
+// the traces of a credit counted from an unfinal one. While its tester's turn runs no clear is
+// listed at all. Until the reviewer has taken to its result a prompt of its run that told it a
+// version while that credit stands (newsModel.reviewed), no refused write is listed, the reviewer's
+// turn and its result are listed twelve times and nothing else ends that turn, and a person's new
+// version once of each kind, so the reviewer's credit counted from the tester's is made final while
+// the tester's stands; from then on the tester's provider error is listed six times, which gives the
+// tester's credit back and ends the turn. The second is held to a clear under a credit of the run it
+// ends: its tester's turn runs to the end of the drive, a re-entry and a re-admission are each listed
+// four times while it does and its run stands, until one of them is made (handoverClearDue, whether
+// or not the reviewer holds a prompt and outside newsModelClears), and a person's new version six
+// times of each kind once a clear has ended that run, which owes the next run an opening under the
+// number the tester's prompt carried for the run that ended.
 //
 // Otherwise a clear of a generation is listed while the reviewer holds a prompt or is in a turn:
 // the claim then holds what the clear must leave counting for nothing, and a re-admission is listed
@@ -785,9 +810,9 @@ const newsModelLatest = 40
 // the run the last one began. The restart waits until the reviewer holds nothing and the root
 // architect is in no turn (restart). The root architect's task is listed three times while it has
 // news to carry (rootTaskEnabled) and has not been handed one yet, and once after; its turn's result
-// is listed once while the opening its prompt carried still stands, so a person's new version can
-// come first, eight times once the gate has moved the opening past it, and twice for a prompt that
-// carried no opening.
+// is listed eight times once the gate has moved the architect's opening past the one its prompt
+// carried and no role message told the one that stands, once while its prompt carried an opening
+// otherwise, so a person's new version can come first, and twice for a prompt that carried none.
 func (m *newsModel) enabled() []string {
 	rev, tester := m.reviewer, m.tester
 	var ops []string
@@ -799,11 +824,13 @@ func (m *newsModel) enabled() []string {
 	add("sweep", 1)
 	add("close-and-reopen", 1)
 	add("hello", 1)
-	lagging := m.lagging(rev)
+	_, stored := m.storedClaims()
+	lagging := m.lagging(rev, stored)
 	if lagging {
 		add("hello", 2)
 	}
-	reconciles, starts := len(m.r.held(ofKind(record.OutboxKindDesignChanges))) > 0, len(m.r.held(reviewerStarts)) > 0
+	held := m.r.observe()
+	reconciles, starts := slices.ContainsFunc(held, ofKind(record.OutboxKindDesignChanges)), slices.ContainsFunc(held, reviewerStarts)
 	if reconciles {
 		add("reconcile", 6)
 	}
@@ -943,12 +970,14 @@ func (m *newsModel) rootTaskEnabled() bool {
 		return false
 	}
 	if !row.OpeningOwed {
-		var recorded bool
-		if err := m.r.pool.QueryRow(m.r.ctx, `select exists (select 1 from design_changes where artifact_id = $1 and from_version = $2 and to_version = $3)`,
-			pathDoc, took, m.latest).Scan(&recorded); err != nil {
-			m.fail("read whether the change set of %d to %d is recorded: %v", took, m.latest, err)
-		}
-		if !recorded {
+		pair := record.VersionPair{ArtifactID: pathDoc, From: took, To: m.latest}
+		var recorded map[record.VersionPair]record.DesignChanges
+		m.r.inTx(func(tx pgx.Tx) error {
+			var err error
+			recorded, err = m.r.records.DesignChangesOf(m.r.ctx, tx, []record.VersionPair{pair})
+			return err
+		})
+		if _, held := recorded[pair]; !held {
 			return false
 		}
 	}
@@ -1125,8 +1154,9 @@ func (m *newsModel) reconcile() {
 		return
 	}
 	m.drain()
+	_, stored := m.storedClaims()
 	for _, row := range m.rows() {
-		m.settled(row)
+		m.settled(row, stored)
 	}
 }
 
@@ -1135,12 +1165,12 @@ func (m *newsModel) reconcile() {
 // (newNewsModel), and a row owed only versions that changed decision blocks alone, and no opening,
 // is raised past them, by a credit counted from the version it took (record.Store.RaiseTold), so a
 // raise read off a version an unfinal credit gave reaches nothing once that credit is given back.
-func (m *newsModel) settled(row *newsModelRow) {
+func (m *newsModel) settled(row *newsModelRow, stored map[claim.Token]*supervise.Delivery) {
 	m.t.Helper()
 	if row.base == newsModelUnknown {
 		row.base = m.latest - 1
 	}
-	links, opens := m.standing(row)
+	links, opens := m.standing(row, stored)
 	took, known := newsModelClosure(row.base, append(slices.Clone(row.final), links...))
 	if !known || took >= m.latest || !m.workUnchanged(took, m.latest) || m.owesOpening(row, opens) {
 		return
@@ -1195,16 +1225,23 @@ func (m *newsModel) reenterChild(until phase.Phase) {
 }
 
 // reenter is a re-entry of the child (reenterChild) whose next run is brought back to reviewing,
-// and the outbox runs the reviewer's start of the phase where the claim can take it. The run began
-// under an open gate: no opening is owed to it.
+// and the outbox runs the reviewer's start of the phase where the claim can take it
+// (startReviewer). The run began under an open gate: no opening is owed to it.
 func (m *newsModel) reenter() {
 	m.t.Helper()
 	m.reenterChild(phase.Reviewing)
+	m.startReviewer()
+	m.child.openSeq = m.r.toldOf(pathChild, record.AudienceHolder).Opening
+	m.child.told[m.child.openSeq] = true
+}
+
+// startReviewer runs the row that creates the child's branch and every start of its reviewer the
+// outbox holds, and waits for what the reviewer's machine started.
+func (m *newsModel) startReviewer() {
+	m.t.Helper()
 	m.r.run(ofKind(record.OutboxKindIssueBranch))
 	m.r.run(reviewerStarts)
 	m.reviewer.machine.Wait()
-	m.child.openSeq = m.r.toldOf(pathChild, record.AudienceHolder).Opening
-	m.child.told[m.child.openSeq] = true
 }
 
 // handover is a re-entry of the child (reenterChild) whose next run stops in testing, where a
@@ -1232,7 +1269,6 @@ func (m *newsModel) handover() {
 	}
 	if tester.machine == nil {
 		tester.machine, tester.conn = m.r.connect(pathChild, claim.RoleTester)
-		tester.seen = 0
 	}
 	tester.machine.Wait()
 	m.observeAgent(tester)
@@ -1243,7 +1279,11 @@ func (m *newsModel) handover() {
 		m.observeAgent(tester)
 	}
 	if p := m.child.prompts[tester.next]; p == nil || len(p.pairs) == 0 {
-		m.fail("the tester was sent %q, want its phase task telling version %d: the hand-over's own premise", tester.next, m.latest)
+		sent := "nothing"
+		if p != nil {
+			sent = strconv.Quote(p.text)
+		}
+		m.fail("the tester was sent %s, want its phase task telling version %d: the hand-over's own premise", sent, m.latest)
 	}
 	m.handle(tester, supervise.StreamTurnStart{Claim: tester.token})
 	tester.turn, tester.next = tester.next, ""
@@ -1253,9 +1293,7 @@ func (m *newsModel) handover() {
 	}
 	m.approve(false)
 	m.reconcile()
-	m.r.run(ofKind(record.OutboxKindIssueBranch))
-	m.r.run(reviewerStarts)
-	m.reviewer.machine.Wait()
+	m.startReviewer()
 	m.reviewed = false
 }
 
@@ -1290,9 +1328,7 @@ func (m *newsModel) readmit() {
 	for _, row := range m.rows() {
 		row.told[row.openSeq] = true
 	}
-	m.r.run(ofKind(record.OutboxKindIssueBranch))
-	m.r.run(reviewerStarts)
-	m.reviewer.machine.Wait()
+	m.startReviewer()
 }
 
 // rootTask is the tree root's architect handed the task of a new entry, which names two decisions
@@ -1311,21 +1347,24 @@ func (m *newsModel) rootTask() {
 	a := m.architect
 	// The entry is a new one: past what this model handed it, and past any entry the workflow
 	// raised on the architect's phases row meanwhile (a re-admitted root's promotion).
-	var raised int64
-	if err := m.r.pool.QueryRow(m.r.ctx, `select coalesce(max(entry), 0) from phases where issue = $1 and role = 'architect'`,
-		pathRoot).Scan(&raised); err != nil {
-		m.fail("read the root architect's phases row: %v", err)
-	}
-	m.entry = max(m.entry, raised) + 1
+	m.entry = max(m.entry, rolePhaseRow(m.t, m.r.pool, pathRoot, claim.RoleArchitect).Entry) + 1
 	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC).Add(time.Duration(m.entry) * time.Hour)
 	stays := record.DecisionMark{Issue: pathRoot, Ref: fmt.Sprintf("dispatch://%s/ask/entry-%d-stays", pathRoot, m.entry),
 		Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at}
 	replaced := stays
 	replaced.Ref, replaced.At = fmt.Sprintf("dispatch://%s/ask/entry-%d-replaced", pathRoot, m.entry), at.Add(time.Minute)
-	if _, err := m.r.pool.Exec(m.r.ctx, `insert into parked_decisions (issue, ref, decision, actor, at) values ($1, $2, $3, $4, $5), ($1, $6, $3, $4, $7)`,
-		pathRoot, stays.Ref, string(stays.Decision), stays.Actor, stays.At, replaced.Ref, replaced.At); err != nil {
-		m.fail("keep the two decisions of the root architect's entry %d: %v", m.entry, err)
+	keep := func(marks ...record.DecisionMark) {
+		m.r.inTx(func(tx pgx.Tx) error {
+			for _, mark := range marks {
+				if err := m.r.records.AddParkedDecision(m.r.ctx, tx, record.ParkedDecision{Issue: mark.Issue, Ref: mark.Ref,
+					Decision: mark.Decision, Actor: mark.Actor, At: mark.At}); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
 	}
+	keep(stays, replaced)
 	task := fmt.Sprintf("A person decided on the tree of %s while nobody in it could hear them: %s and %s. Read each before you continue.",
 		pathRoot, stays.Ref, replaced.Ref)
 	m.r.architectRow(m.entry, task)
@@ -1348,13 +1387,13 @@ func (m *newsModel) rootTask() {
 	}); len(ran) != 1 {
 		m.fail("the root architect's starts of entry %d run = %d, want the one queued", m.entry, len(ran))
 	}
-	if _, err := m.r.pool.Exec(m.r.ctx, `update parked_decisions set at = $3, held_by_claim = null, held_by_delivery = null
-		where issue = $1 and ref = $2`, pathRoot, replaced.Ref, replaced.At.Add(time.Hour)); err != nil {
-		m.fail("replace the decision %s: %v", replaced.Ref, err)
-	}
+	// A newer decision on the same reference replaces it, which leaves this task no longer holding
+	// it (record.Store.AddParkedDecision).
+	newer := replaced
+	newer.At = replaced.At.Add(time.Hour)
+	keep(newer)
 	if a.machine == nil {
 		a.machine, a.conn = m.r.connect(pathRoot, claim.RoleArchitect)
-		a.seen = 0
 		a.machine.Wait()
 	} else {
 		m.handle(a, supervise.StreamTurnEnd{Claim: a.token})
@@ -1376,8 +1415,9 @@ func (m *newsModel) rootTask() {
 func (m *newsModel) opened() {
 	m.t.Helper()
 	m.r.run(ofKind(record.OutboxKindRoleMessage))
+	told := m.toldRows()
 	for _, row := range m.rows() {
-		row.openSeq = m.r.toldOf(row.issue, row.audience).Opening
+		row.openSeq = told[toldKey{row.issue, row.audience}].Opening
 		for _, a := range row.agents {
 			messages := m.r.publishedTo(a.token)
 			for _, message := range messages[a.messages:] {
@@ -1401,15 +1441,12 @@ func (m *newsModel) restart() {
 	// A store that lags the machine being stopped holds a delivery that machine had moved past in
 	// memory alone: the booted machine reads the stored one, and the record stays where the last
 	// landed write left it until a write of that delivery lands (lagging).
+	claims, stored := m.storedClaims()
 	for _, a := range m.agents() {
-		if m.lagging(a) {
-			at := storedFrom(m.storedDelivery(a.token))
+		if m.lagging(a, stored) {
+			at := storedFrom(stored[a.token])
 			a.behind = &at
 		}
-	}
-	stored, err := m.st.Claims(m.r.ctx)
-	if err != nil {
-		m.fail("read the stored claims: %v", err)
 	}
 	deps := m.r.sup.deps
 	m.r.sup.stop()
@@ -1421,7 +1458,7 @@ func (m *newsModel) restart() {
 	deps.Clock = m.clock
 	sup.deps = deps
 	m.t.Cleanup(sup.stop)
-	if _, err := sup.restore(m.r.ctx, stored); err != nil {
+	if _, err := sup.restore(m.r.ctx, claims); err != nil {
 		m.fail("restore the stored claims: %v", err)
 	}
 	m.r.sup, m.r.conns, m.r.runner.supervisor = sup, deps.Conns.(*fake.Conns), sup
@@ -1429,13 +1466,9 @@ func (m *newsModel) restart() {
 		if a.machine == nil {
 			continue
 		}
-		a.machine, a.conn = m.r.reconnect(a.issue, a.role, a.turn != "")
+		a.machine, a.conn = m.r.reconnect(a.row.issue, a.role, a.turn != "")
 		a.seen, a.next = 0, ""
-		if err := a.machine.Handle(m.r.ctx, supervise.StreamHello{Claim: a.token, Generation: a.machine.Claim().Generation}); err != nil &&
-			!errors.Is(err, errModelWrite) {
-			m.fail("hello of the %s: %v", a.name, err)
-		}
-		a.machine.Wait()
+		m.handle(a, supervise.StreamHello{Claim: a.token, Generation: a.machine.Claim().Generation})
 	}
 }
 
@@ -1545,260 +1578,6 @@ func newsModelSameLinks(a, b []newsModelLink) bool {
 		return x.to - y.to
 	}
 	return slices.Equal(slices.SortedFunc(slices.Values(a), order), slices.SortedFunc(slices.Values(b), order))
-}
-
-// credits is what the copy carried credits row with, by the model's rule: each item to row as a
-// link, and each opening it says opened, by its number, counting only what was rendered for the run
-// the issue stands in now (design_news_current).
-func (m *newsModel) credits(row *newsModelRow, carried []byte) ([]newsModelLink, map[int]bool) {
-	m.t.Helper()
-	var news record.DeliveryNews
-	if err := json.Unmarshal(carried, &news); err != nil {
-		m.fail("decode the copy %s a delivery of the %s holds: %v", carried, row.name, err)
-	}
-	gen, treeGen := m.gens(row)
-	var links []newsModelLink
-	for _, item := range news.Items {
-		if item.Issue == row.issue && item.Audience == row.audience && item.Step == record.DesignStepSpec &&
-			item.Generation == gen && item.TreeGeneration == treeGen {
-			links = append(links, newsModelLinkOf(item))
-		}
-	}
-	opens := map[int]bool{}
-	for _, opening := range news.Openings {
-		if opening.Issue == row.issue && opening.Audience == row.audience && !opening.Closed &&
-			opening.Generation == gen && opening.TreeGeneration == treeGen {
-			opens[opening.Seq] = true
-		}
-	}
-	return links, opens
-}
-
-// standing is the credit row's claims hold in the claim store now: the copy each confirmed delivery
-// whose turn's result has not said it ran holds (credits).
-func (m *newsModel) standing(row *newsModelRow) ([]newsModelLink, map[int]bool) {
-	m.t.Helper()
-	var links []newsModelLink
-	opens := map[int]bool{}
-	for _, a := range row.agents {
-		if a.machine == nil {
-			continue
-		}
-		d := m.storedDelivery(a.token)
-		if d == nil || d.ConfirmedAt.IsZero() || d.Ran || len(d.Carried) == 0 {
-			continue
-		}
-		credited, opened := m.credits(row, d.Carried)
-		links = append(links, credited...)
-		maps.Copy(opens, opened)
-	}
-	return links, opens
-}
-
-// owesOpening says whether row owes the opening that stands, by the model's rule: no role message
-// told it, no final credit's fold settled it, and no standing credit (opens) carried it.
-func (m *newsModel) owesOpening(row *newsModelRow, opens map[int]bool) bool {
-	return !row.told[row.openSeq] && !row.cleared[row.openSeq] && !opens[row.openSeq]
-}
-
-// drain reads every write of a delivery the claim store took since the last drain, in order. A
-// write whose copy is new is the acknowledgement of a prompt, and the copy is held to that prompt's
-// text (invariant 1). A write of a confirmed delivery whose turn's result said it ran folds its copy
-// into the row its claim credits (the claim store's settleDesignNews): each credit of the run the
-// issue stands in is final, and an opening it says opened is settled where the row still holds that
-// number (design_news_opening_told).
-func (m *newsModel) drain() {
-	m.t.Helper()
-	for _, w := range m.claims.drain() {
-		a := m.agentOf(w.token)
-		if a == nil {
-			continue
-		}
-		if w.delivery == nil {
-			a.carried = nil
-			continue
-		}
-		d, row := *w.delivery, a.row
-		if len(d.Carried) > 0 && !bytes.Equal(d.Carried, a.carried) {
-			if p := row.prompts[d.ID]; p != nil {
-				if why := m.namesExactly(row, p, d.Carried); why != "" {
-					m.fail("invariant 1: the copy the claim store holds of the %s's prompt %s, which its confirmation credits, is not the news that prompt carried: %s",
-						a.name, d.ID, why)
-				}
-			}
-		}
-		a.carried = d.Carried
-		if d.ConfirmedAt.IsZero() || !d.Ran || len(d.Carried) == 0 {
-			continue
-		}
-		a.finalized[d.ID] = true
-		links, opens := m.credits(row, d.Carried)
-		row.final = append(row.final, links...)
-		if opens[row.openSeq] {
-			row.cleared[row.openSeq] = true
-		}
-	}
-}
-
-// truth is the version of the spec the model says row's holder took of prompts in the run its
-// issue stands in: from the version that run started from (base), through every pair they told,
-// and, where closed says so, through every version since that changed only decision blocks, which a
-// holder knows without being told. It is what the record is held never to pass with the prompts
-// the holders were told (closed), and to reach with the prompts whose credit stands (not closed).
-func (m *newsModel) truth(row *newsModelRow, prompts []*newsModelPrompt, closed bool) int {
-	var links []newsModelLink
-	for _, p := range prompts {
-		links = append(links, p.pairs...)
-	}
-	took := row.base
-	for moved := true; moved; {
-		moved = false
-		if reached, _ := newsModelClosure(took, links); reached != took {
-			took, moved = reached, true
-		}
-		for closed && took < m.latest && m.decisionOnly[took+1] {
-			took, moved = took+1, true
-		}
-	}
-	return took
-}
-
-// owes says whether row's holders have not been told the opening that stands by the role messages
-// or by any of prompts.
-func (m *newsModel) owes(row *newsModelRow, prompts []*newsModelPrompt) bool {
-	if row.told[row.openSeq] {
-		return false
-	}
-	for _, p := range prompts {
-		if p.opening == row.openSeq {
-			return false
-		}
-	}
-	return true
-}
-
-// lagging says whether the claim store holds a's delivery otherwise than its machine does: a
-// refused write the machine still owes. A restart does not end that. The booted machine reads the
-// stored delivery, so the two agree, yet what the stopped machine had decided of it in memory — a
-// provider error's take-back, say — was never written, and the booted machine's own first write of
-// it can be refused too. So a store that lagged at a restart lags until the stored delivery is
-// another than it was then (behind).
-func (m *newsModel) lagging(a *newsModelAgent) bool {
-	m.t.Helper()
-	if a.machine == nil {
-		return false
-	}
-	stored := storedFrom(m.storedDelivery(a.token))
-	if a.behind != nil {
-		if stored == *a.behind {
-			return true
-		}
-		a.behind = nil
-	}
-	return stored != storedFrom(a.machine.Claim().Pending)
-}
-
-// check reads every write the claim store took since the last check and holds each told row, as
-// every reader reads it, to the model (checkRow), counting the step ambiguous where a claim store
-// lags its machine. A prompt whose turn runs while its claim holds another task, or none, was given
-// back: a newer task took its place (the supersede step's, or a start's of a newer entry), which
-// ends its credit, and its turn's result, when it comes, is another delivery's.
-func (m *newsModel) check() {
-	m.t.Helper()
-	m.drain()
-	for _, a := range m.agents() {
-		if a.turn != "" && a.machine != nil {
-			if p := a.machine.Claim().Pending; p == nil || p.ID != a.turn {
-				a.superseded[a.turn] = true
-			}
-		}
-	}
-	ambiguous := false
-	for _, row := range m.rows() {
-		if m.checkRow(row) {
-			ambiguous = true
-		}
-	}
-	m.ambiguity.step(ambiguous)
-	m.ran["checks"]++
-	if ambiguous {
-		m.ran["checks with a refused write owed"]++
-	}
-}
-
-// checkRow holds row's told row to the model and answers whether the claim store lags the machine
-// of a claim that credits it.
-//
-// After a re-admission of the tree nothing says what the child's holder stood on, and the row knows
-// no version, until the reconcile reads the review history: the version approved before the one
-// that stands, which is the one below it (newNewsModel). The model takes that as the run's base at
-// the reconcile that reads it (settled), and holds the row to it from that step on.
-func (m *newsModel) checkRow(row *newsModelRow) bool {
-	m.t.Helper()
-	told := m.r.toldOf(row.issue, row.audience)
-	took, known := told.Took(record.DesignStepSpec)
-	lagging := false
-	for _, a := range row.agents {
-		lagging = m.lagging(a) || lagging
-	}
-	m.settleFinals(row, lagging)
-	links, opens := m.standing(row)
-	credited := append(slices.Clone(row.final), links...)
-	if row.base != newsModelUnknown && !known {
-		m.fail("exactly: the %s's row knows no version of the spec, but its run started from version %d: %+v", row.name, row.base, told)
-	}
-	if upper := m.truth(row, row.toldPrompts(lagging), true); known && row.base != newsModelUnknown && took > upper {
-		m.fail("never ahead of what it was told: the record says the %s took version %d, but it was told no further than %d", row.name, took, upper)
-	}
-	if want, wantKnown := newsModelClosure(row.base, credited); known != wantKnown || (known && took != want) {
-		m.fail("exactly: the record says the %s took %s, but what the claim store credits gives %s: from %s through the credits %v (final %v, standing %v)",
-			row.name, versionWords(took, known), versionWords(want, wantKnown), versionWords(row.base, row.base != newsModelUnknown), credited, row.final, links)
-	}
-	if !lagging && row.base != newsModelUnknown {
-		if lower := m.truth(row, row.creditedPrompts(), false); took < lower {
-			m.fail("level with what it read: the record says the %s took version %d, but it read the news up to %d", row.name, took, lower)
-		}
-	}
-	if !told.OpeningOwed && m.owes(row, row.toldPrompts(lagging)) {
-		m.fail("never ahead of what it was told: the record owes the %s no opening, but no message or read prompt told it opening %d", row.name, row.openSeq)
-	}
-	if want := m.owesOpening(row, opens); told.OpeningOwed != want {
-		m.fail("exactly: the record owes the %s the opening %d: %t, but the role messages and what the claim store credits say %t (told by a message %t, settled by a final credit %t, carried by a standing credit %t)",
-			row.name, row.openSeq, told.OpeningOwed, want, row.told[row.openSeq], row.cleared[row.openSeq], opens[row.openSeq])
-	}
-	if !lagging {
-		if owed := m.owes(row, row.creditedPrompts()); told.OpeningOwed != owed {
-			m.fail("level with what it read: the record owes the %s the opening %d: %t, but by the messages and the prompts whose credit stands it is %t",
-				row.name, row.openSeq, told.OpeningOwed, owed)
-		}
-	}
-	return lagging
-}
-
-// settleFinals settles each prompt of row's claims whose turn's result came and whose final credit
-// the claim store has not landed (ranAt): once the store has landed it, or the prompt is of a run
-// that ended, there is nothing to wait for; while the store lags a machine, the write that makes it
-// final may still come; and once the store has caught up without it, a refused write since that
-// result lost it (lost), or, where no write was refused since, the turn ran and the store never made
-// its credit final, which fails the run.
-func (m *newsModel) settleFinals(row *newsModelRow, lagging bool) {
-	m.t.Helper()
-	for _, a := range row.agents {
-		for _, id := range slices.Sorted(maps.Keys(a.ranAt)) {
-			spent := a.ranAt[id]
-			switch p := row.prompts[id]; {
-			case a.finalized[id] || p == nil || p.run != row.run:
-				delete(a.ranAt, id)
-			case lagging:
-			case m.claims.spentCount() > spent:
-				a.lost[id] = true
-				delete(a.ranAt, id)
-			default:
-				m.fail("level with what it read: the %s's turn on %s ran and its result came, but the claim store never made its credit final, and no write was refused since",
-					a.name, id)
-			}
-		}
-	}
 }
 
 // quiesce ends the run: no write is refused, every row runs, and each agent of the child takes

@@ -17,12 +17,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The cases here are two traces. In each, a delivery's confirmation credited news its turn's
-// result has not yet made final, and something then built on that credit: a start that computed
-// its news from the row the credit raised, and the reconcile's raise past it. The credit is then
-// given back. Since a credit is the delivery's own and a raise is a credit counted from the
-// version its pair names, the give-back ends exactly that credit, and whatever was counted from
-// the version it gave reaches nothing: the news of the pair before it is told, never lost.
+// The cases here are two traces, and the final credit they stand on. In each trace, a delivery's
+// confirmation credited news its turn's result has not yet made final, and something then built on
+// that credit: a start that computed its news from the row the credit raised, and the reconcile's
+// raise past it. The credit is then given back. Since a credit is the delivery's own and a raise is
+// a credit counted from the version its pair names, the give-back ends exactly that credit, and
+// whatever was counted from the version it gave reaches nothing: the news of the pair before it is
+// told, never lost. The third case is the credit no give-back can end, made final by the turn's
+// result through the machine that writes it.
 
 // creditRig is the reconcile rig with its child in implementing, its holder's row at version 3 of
 // the spec, its implementer's claim, and the daemon's claim store on the rig's pool.
@@ -190,5 +192,58 @@ func TestARaisePastAnUnfinalCreditGoesWithThatCredit(t *testing.T) {
 	}
 	if owed := r.owed(); len(owed) != 1 || owed[0].From == nil || *owed[0].From != 3 || owed[0].To != 5 {
 		t.Fatalf("the child's holder is owed %+v, want version 5 since version 3", owed)
+	}
+}
+
+// A tester's credit made final. The implementer's completion moves the issue into testing while its
+// holder's row stands at version 4 of the spec and the gate at 5. The reconcile the move queued
+// records what changed, and the tester's phase start carries version 5 since version 4. The
+// tester's turn confirms the task, a credit that stands; the turn's result says the turn ran, and
+// the write that records it folds the credit into the told row (supervise's promptResulted, the
+// claim store's settleDesignNews) before the task is retired. So the retirement ends no credit: the
+// row still says version 5, the record owes the issue nothing, and the sweep queues no reconcile
+// that would tell the tester that news again. A result that never made the credit final would leave
+// the retirement to end it, and version 5 would be news again. The model test cannot pin this
+// (TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold): no tester's turn there ends with its result
+// while its run stands.
+func TestATestersTurnThatRanMakesItsCreditFinalAndItIsNotToldAgain(t *testing.T) {
+	r := newNewsPathRig(t, 5, pathMember{key: pathRoot, at: phase.Implementing})
+	r.told(pathRoot, record.AudienceHolder, 4)
+	r.told(pathRoot, record.AudienceArchitect, 5)
+	token := mustClaimToken(t, pathRoot, claim.RoleTester)
+
+	r.complete(pathRoot)
+	if got := r.run(ofKind(record.OutboxKindDesignChanges)); len(got) != 1 {
+		t.Fatalf("design_changes rows after the move into testing = %d, want the one the move queued", len(got))
+	}
+	if got := r.run(startOf(pathRoot, claim.RoleTester, false)); len(got) != 1 {
+		t.Fatalf("the tester's start rows = %d, want the one the implementer's completion wrote", len(got))
+	}
+	tester, conn := r.connect(pathRoot, claim.RoleTester)
+	task := r.delivered(tester)
+	if sent := conn.Prompts(); len(sent) != 1 || sent[0].DeliveryID != task.ID || !strings.Contains(sent[0].Message, "version 5, since version 4") {
+		t.Fatalf("the tester's prompts = %+v, want its phase task, telling version 5 since version 4: the case's premise", sent)
+	}
+	r.wantTold("after the tester's task was sent, before its turn took it", pathRoot, record.AudienceHolder, 4, false)
+	r.startTurn(tester)
+	r.wantTold("after the tester's turn confirmed its task", pathRoot, record.AudienceHolder, 5, false)
+
+	endTurn(r.ctx, t, tester, token)
+	if pending := tester.Claim().Pending; pending != nil {
+		t.Fatalf("the tester holds %+v after its turn's result, want its task retired", pending)
+	}
+	r.wantTold("after the turn's result made the credit final and the task was retired", pathRoot, record.AudienceHolder, 5, false)
+	var owed record.TreeNews
+	r.inTx(func(tx pgx.Tx) error {
+		facts, err := record.TreeNewsFacts(r.ctx, r.records, tx, config.DesignGateRootIssues.Steps(), pathRoot)
+		owed = record.OwedNews(facts)
+		return err
+	})
+	if member, owes := owed.Member(pathRoot); owes {
+		t.Fatalf("the record owes %s %+v after the tester's turn ran, want nothing: its credit is final", pathRoot, member)
+	}
+	r.sweepNews()
+	if got := r.held(ofKind(record.OutboxKindDesignChanges)); len(got) != 0 {
+		t.Fatalf("the sweep queued %d design_changes rows after the tester's turn ran, want none: nothing is news again", len(got))
 	}
 }
