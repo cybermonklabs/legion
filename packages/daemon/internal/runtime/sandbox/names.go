@@ -332,7 +332,9 @@ func GitHubHostsDir(key string) (dir string, ok bool) {
 
 // The labels every object of a claim carries: the Sandbox, its pod template (the only place the
 // controller copies pod labels from), the claim's Secret, and the controller Sandbox's volume
-// claim template (copied to the PVC). The informers select on the project label.
+// claim template (copied to the PVC). The informers select on the project label. A kept issue
+// volume's claim template carries the project and issue labels alone, with labelVolume
+// (issuePod.disk).
 const (
 	labelProject = "legion.dev/project"
 	labelTree    = "legion.dev/tree"
@@ -347,11 +349,23 @@ const (
 // from the sandbox the launch that builds it decided.
 const labelSandbox = "legion.dev/sandbox"
 
+// labelVolume marks the claim template of an issue's kept volume with the one value volumeKept:
+// the `issue` template that issuePod.disk writes for a microVM pod under keep_volume
+// (keptVolume). It is what tells a stored issue Sandbox that keeps its volume (keptTemplate) from
+// one of the release before the pod-owned disk, whose `issue` template carries no such label.
+// Agent Sandbox copies a template's labels onto the claim it makes, so
+// `kubectl -n legion get pvc -l legion.dev/volume=kept` lists every kept claim.
+const (
+	labelVolume = "legion.dev/volume"
+	volumeKept  = "kept"
+)
+
 // issueVolume is the name a pod's disk is mounted under, an issue's and the controller's alike,
-// and the name of the one volume claim template the controller's Sandbox owns — an issue's owns
-// none, its disk being the pod's own ephemeral volume. The Agent Sandbox controller names the
-// claim it makes from a template `<template>-<sandbox>` (v1.0.3, sandbox_controller.go:1641),
-// which is IssueClaimName.
+// and the name of the one volume claim template that the controller's Sandbox owns. The Sandbox of
+// an issue that keeps its volume owns one of this name too (issuePod.disk). Every other issue's
+// Sandbox owns none: its disk is the pod's own ephemeral volume. The Agent Sandbox controller
+// names the claim it makes from a template `<template>-<sandbox>` (v1.0.3,
+// sandbox_controller.go:1641), which is IssueClaimName.
 const issueVolume = "issue"
 
 // A repository cache's identity and parts. labelCache marks every object of a cache — its Sandbox,
@@ -427,10 +441,11 @@ func cacheSecretName(sandbox string) string { return sandbox + "-token" }
 // Sandbox's cacheVolume template.
 func cacheClaimName(sandbox string) string { return cacheVolume + "-" + sandbox }
 
-// IssueClaimName is the volume claim of the project controller's Sandbox, as the Agent Sandbox
-// controller names the claim it makes from that Sandbox's `issue` template. An issue's Sandbox
-// owns no template and so no claim of this name: its pod's disk is an ephemeral volume the pod
-// owns. The token is cut to the Sandbox's name as SandboxName cuts it.
+// IssueClaimName is the volume claim that the Agent Sandbox controller makes from a Sandbox's
+// `issue` template, by the name it gives that claim: the project controller's claim, and the kept
+// volume of an issue whose microVM pod keeps its volume (issuePod.disk). Every other issue's
+// Sandbox owns no template and so no claim of this name: its pod's disk is an ephemeral volume
+// that the pod owns. The token is cut to the Sandbox's name as SandboxName cuts it.
 func IssueClaimName(t claim.Token) string { return issueVolume + "-" + SandboxName(t) }
 
 // secretName is the claim's Secret, which its Sandbox owns.

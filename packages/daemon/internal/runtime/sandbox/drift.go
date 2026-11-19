@@ -80,17 +80,20 @@ type podShapeRecord struct {
 
 // sandboxShape is the sandbox a microVM issue pod runs in, as its shape records it: the
 // RuntimeClass (microVMRuntimeClass), the ComputeClass whose nodes run it, the StorageClass its
-// disk is on (diskSpec), and the metadata endpoint its launcher serves, nil for none — each
-// runtime.kubernetes.sandbox.microvm's own (MicroVM). A gVisor pod records none
-// (podShapeRecord.Sandbox), so every gVisor shape encodes byte for byte as it did before the
-// setting existed and the setting's arrival opens no round over a gVisor pod, and the gVisor
-// pods' storage class stays out of every shape as it always was. A change of the microVM block's
-// storage class or metadata endpoint opens a round over each microVM pod and no other, and a change
-// of an issue's sandbox one over that issue's pod, from null to a microVM or back.
+// disk is on (diskSpec), whether it keeps its volume (keptVolume), and the metadata endpoint its
+// launcher serves, nil for none — each runtime.kubernetes.sandbox.microvm's own (MicroVM). A gVisor
+// pod records none (podShapeRecord.Sandbox), so every gVisor shape encodes byte for byte as it did
+// before the setting existed and the setting's arrival opens no round over a gVisor pod, and the
+// gVisor pods' storage class stays out of every shape as it always was. KeepVolume is written only
+// when it is true, so a shape with keep_volume off encodes byte for byte as it did before that
+// setting existed. A change of the microVM block's storage class, keep_volume or metadata endpoint
+// opens a round over each microVM pod and no other, and a change of an issue's sandbox one over
+// that issue's pod, from null to a microVM or back.
 type sandboxShape struct {
 	RuntimeClass string                `json:"runtime_class"`
 	ComputeClass string                `json:"compute_class"`
 	StorageClass string                `json:"storage_class"`
+	KeepVolume   bool                  `json:"keep_volume,omitempty"`
 	Metadata     *sandboxMetadataShape `json:"metadata,omitempty"`
 }
 
@@ -104,9 +107,9 @@ type sandboxMetadataShape struct {
 // podShape is the configuration a pod of kind is built from now, as its template's annotation
 // records it: the image every container runs, the kind's own reservation (podKind.resources), the
 // operator's volumes and mounts, the size of the pod's disk, and, for a pod that runs in a
-// microVM, where that microVM runs (microVM, launch.microVM; nil for a gVisor pod, which records
-// no sandbox). An encoding failure is unreachable — every field is an API object or a string — and
-// is logged and recorded as no shape, compared by image alone.
+// microVM, where that microVM runs and whether the pod keeps its volume (microVM, launch.microVM;
+// nil for a gVisor pod, which records no sandbox). An encoding failure is unreachable — every field
+// is an API object or a string — and is logged and recorded as no shape, compared by image alone.
 //
 // Every field is settled when the runtime is built and never written again, so the runtime calls
 // this once per kind and sandbox, as it is built, and keeps what it answers (podShapes,
@@ -115,7 +118,10 @@ type sandboxMetadataShape struct {
 func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 	var where *sandboxShape
 	if microVM != nil {
-		where = &sandboxShape{RuntimeClass: microVMRuntimeClass, ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass}
+		where = &sandboxShape{
+			RuntimeClass: microVMRuntimeClass, ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass,
+			KeepVolume: keptVolume(kind, microVM),
+		}
 		if endpoint := microVM.Metadata; endpoint != nil {
 			where.Metadata = &sandboxMetadataShape{WorkloadPool: endpoint.WorkloadPool, IdentityProvider: endpoint.IdentityProvider}
 		}
