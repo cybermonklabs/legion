@@ -48,6 +48,9 @@ psql "$LEGION_TEST_PG_DSN" -X -A -t -c "select name || ' = ' || current_setting(
 
 # The test's own status, read from PIPESTATUS: tee's would say only that the log was written.
 set +e
+# go-offline: no CI job runs this script (scripts/README.md, coverage-scale.sh: "CI never runs it").
+# A Job in the cluster's builds namespace runs it, with GOMODCACHE on its own scratch disk (above),
+# so a module this go test fetches is fetched by that Job alone and fails no pull request's check.
 DISPATCH_COVERAGE_SCALE_URL="$LEGION_TEST_PG_DSN" \
   go test -count=1 -v -timeout 3h -run '^TestCoverageStatementScale$' ./internal/dispatch/embedqueue/ 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}

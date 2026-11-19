@@ -4,7 +4,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -97,10 +96,7 @@ func TestTheRouteGuardNamesEveryFormOfAListenerRoute(t *testing.T) {
 // from no literal at all, which nothing in the package writes, is outside it. A package whose
 // source this read finds no file of has read nothing and fails as UNKNOWN.
 func TestTheLoadTestCallsTheListenerOnlyThroughItsClient(t *testing.T) {
-	out, err := exec.Command("go", "list", "-f", "{{.Dir}}{{range .GoFiles}} {{.}}{{end}}", "../loadtest").Output()
-	if err != nil {
-		t.Fatalf("go list ../loadtest: %v", err)
-	}
+	out := goList(t, "./loadtest", "-f", "{{.Dir}}{{range .GoFiles}} {{.}}{{end}}", "../loadtest")
 	fields := strings.Fields(string(out))
 	if len(fields) < 2 {
 		t.Fatalf("UNKNOWN: go list ../loadtest named %q, no directory and Go file to read", out)

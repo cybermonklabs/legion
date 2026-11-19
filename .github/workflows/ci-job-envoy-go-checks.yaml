@@ -127,6 +127,18 @@ jobs:
       - name: Test the architecture-note and spec-file rules and their commands
         run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
         working-directory: packages/envoy
+      # The clients test lists the clients' packages with `go list -deps -export`, which compiles
+      # them, and the load-test package with `go list`, both with GOPROXY=off (wirecheck.go's
+      # goList, listenerwire/golist_test.go): a fetch while the test runs fails it whenever the
+      # module proxy or the checksum database does, on a change that touched nothing it tests. So
+      # this step fetches what those listings read first, from the go-envoy entry restored above
+      # and tried again on failure: the four envoy packages and the two daemon packages
+      # TestListenerClientsUseListenerwire names, and ./loadtest. ci-caches.yaml's go-envoy fill
+      # fetches the same, so a filled entry leaves this step nothing to download.
+      - name: Fetch the modules of the listener clients the wire test lists
+        run: |
+          .github/scripts/go-fetch.sh deps packages/envoy ./internal/broker/wake ./internal/dispatch/envoy ./loadtest/listenerclient ./internal/testnats/cmd/refillrig ./loadtest
+          .github/scripts/go-fetch.sh deps packages/daemon ./internal/notify ./internal/controller
       # listenerwire's tests and wirecheck's need no database, and listenerwire's clients test
       # type-checks the daemon's listener clients, so they run here, their one run, and a change to
       # only those daemon packages starts this job rather than envoy-go's: envoy-go's unit step

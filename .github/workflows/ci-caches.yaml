@@ -306,16 +306,21 @@ jobs:
       # command a reader's tests build, which those builds read with GOPROXY=off and the readers'
       # fetch steps fetch before the tests: the Dispatch server (envoy-session-stall's
       # test/dispatch-stack.ts, and the embedder job of dispatch-browser.yaml) and the real
-      # broker's three commands (that job's harness, e2e/run-broker.sh). Last, the helm
-      # loadtest/cluster/tools.txt pins, which envoy-go-checks' fetch step installs before
-      # cluster.test.sh renders with it under GOPROXY=off: installed here, its modules and its
-      # compiled packages are in the entry, so that step finds them there rather than downloading
-      # helm's modules on every run.
+      # broker's three commands (that job's harness, e2e/run-broker.sh). Then the modules of the
+      # listener clients envoy-go-checks' wire test lists with GOPROXY=off (listenerwire's
+      # clients_test.go: four envoy packages and ./loadtest, and two of packages/daemon), which that
+      # job's fetch step fetches before the test, so a filled entry leaves it nothing to download.
+      # Last, the helm loadtest/cluster/tools.txt pins, which envoy-go-checks' fetch step installs
+      # before cluster.test.sh renders with it under GOPROXY=off: installed here, its modules and
+      # its compiled packages are in the entry, so that step finds them there rather than
+      # downloading helm's modules on every run.
       - name: Build the listener and natsd, and fetch the modules of the other commands the readers build
         if: steps.go-envoy.outputs.cache-hit != 'true'
         run: |
           go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
           ../../.github/scripts/go-fetch.sh deps . ./cmd/listener ./internal/testnats/cmd/natsd ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+          ../../.github/scripts/go-fetch.sh deps . ./internal/broker/wake ./internal/dispatch/envoy ./loadtest/listenerclient ./internal/testnats/cmd/refillrig ./loadtest
+          ../../.github/scripts/go-fetch.sh deps ../daemon ./internal/notify ./internal/controller
           ../../.github/scripts/go-fetch.sh tools loadtest/cluster/tools.txt
         working-directory: packages/envoy
 

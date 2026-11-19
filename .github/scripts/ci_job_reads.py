@@ -889,8 +889,8 @@ RULES = {
         run(DAEMON, ["./internal/notify", "./internal/controller"],
             "listenerwire/clients_test.go:28,30 wirecheck.Check runs go list -deps -export over them in packages/daemon (internal/wirecheck/wirecheck.go goList)",
             mode="build"),
-        *[Read(path, "listenerwire/clients_test.go:100 lists the load-test package's Go files and :110 parses each, "
-                     "test files passed over (TestTheLoadTestCallsTheListenerOnlyThroughItsClient)")
+        *[Read(path, "listenerwire/clients_test.go:99 lists the load-test package's Go files (goList, golist_test.go:19) "
+                     "and :106 parses each, test files passed over (TestTheLoadTestCallsTheListenerOnlyThroughItsClient)")
           for path in files_but_tests(f"{ENVOY}/loadtest")]],
     # --- envoy-infra
     f"{INFRA}/core/permissions_live_test.go": [
@@ -2919,7 +2919,8 @@ GATES = [
         darwin_vet("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY),
     ], reads=reads(
         (f"{ENVOY}/**", f"{at('envoy-go-checks', 'Check Go formatting')}: gofmt -l . in packages/envoy reads every .go file under it, infra included; the script tests below live here too"),
-        (".github/scripts/go-fetch.sh", f"{at('envoy-go-checks', 'Fetch the helm the cluster test renders with')} runs it"),
+        (".github/scripts/go-fetch.sh", f"{at('envoy-go-checks', 'Fetch the modules of the listener clients the wire test lists')} "
+                                        f"and {at('envoy-go-checks', 'Fetch the helm the cluster test renders with')} run it"),
         ("packages/contracts/scripts/gen-go.ts", f"{at('envoy-go-checks', 'Check Go contracts are generated from the shared schema')} (packages/contracts/package.json check:go)"),
         ("packages/contracts/schemas/**", "packages/contracts/scripts/gen-go.ts's envelopeFile and blockSchemaFile read schemas/"),
         # The pinned step above compares the emitter's bytes with this file, so an edit of it alone
