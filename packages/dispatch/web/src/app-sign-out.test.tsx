@@ -11,7 +11,7 @@ import {
 import userEvent from "@testing-library/user-event";
 
 import { endAsAReload, planner } from "./__tests__/draft-matrix-fixture";
-import { realClock, tick } from "./__tests__/fake-clock";
+import { onRealTurns, realClock, tick } from "./__tests__/fake-clock";
 import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
 import { ApiError, api, NetworkError } from "./api/client";
@@ -529,9 +529,10 @@ test("a 401 that is not Dispatch's own is a sign-out that did not go through", a
 // tab's own. A tab it knows of that does not answer within 300 ms is named as such.
 test("the sign-out question names every tab's unsent changes, and says when a tab did not answer", async () => {
   // On the fake clock, so the window the question waits out for the silent tab is moved past in
-  // the test's own steps rather than waited through in real time, and the `started` below reads
-  // that clock: a loaded machine moves it no further than this test does. The clock is installed
-  // before the user, which captures the timers it will advance (dispatch://INFRA-1505).
+  // the test's own steps, and the steps that show the question waits for it move no clock but
+  // those steps: the other tabs' answers come on real turns (`onRealTurns`), which move no
+  // clock. The clock is installed before the user, which captures the timers it will advance
+  // (dispatch://INFRA-1505).
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const answer = false;
@@ -562,10 +563,16 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
       await waitFor(() =>
         expect(silent.told).toContainEqual(expect.objectContaining({ here: true }))
       );
-      const started = Date.now();
       await user.click(screen.getByRole("button", { name: "Sign out" }));
-      await waitFor(() => expect(app.asked).toHaveLength(2));
-      expect(Date.now() - started).toBeGreaterThanOrEqual(OTHER_TABS_ANSWER_MS);
+      // The question waits out the window for the tab that does not answer: 50 ms before the
+      // window ends it is not asked, whatever the other tab answered on the real turns since,
+      // and once the window has passed it is.
+      await tick(OTHER_TABS_ANSWER_MS - 50);
+      await onRealTurns(() => app.asked.length > 1);
+      expect(app.asked).toHaveLength(1);
+      await tick(50);
+      await onRealTurns(() => app.asked.length > 1);
+      expect(app.asked).toHaveLength(2);
       expect(app.asked[1]).toBe(
         "Sign out and discard 3 unsent changes, and any unsent changes in your other Dispatch tabs?\n\n• CORE-1 set to done\n• CORE-4 set to backlog\n• Labels of CORE-4"
       );
@@ -586,10 +593,12 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
 // same changes. A tab that did not answer the last question is taken for gone, so the next one
 // neither waits for it nor says the other tabs may hold more, until it speaks again.
 test("the sign-out question names a duplicated tab's copies once, and forgets a tab that missed it", async () => {
-  // On the fake clock, so the span the second question does not wait out is the clock this test
-  // moves: read under the real one, a loaded machine can spend the whole window on scheduling
-  // and fail a question that waited for nothing (dispatch://INFRA-1505). The clock is installed
-  // before the user, which captures the timers it will advance.
+  // On the fake clock, held while the second question is asked: that question must come without
+  // a timer, so it is waited for on real turns (`onRealTurns`), which carry the other tabs'
+  // answers and move no clock. A question that waited out the window for the forgotten tab would
+  // come only once the clock passed that window, and here only the click's own zero-delay waits
+  // move it, so it would not come at all (dispatch://INFRA-1505). The clock is installed before
+  // the user, which captures the timers it will advance.
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const app = renderApp({
@@ -618,10 +627,9 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
     await waitFor(() => expect(app.asked).toHaveLength(1));
     expect(app.asked[0]).toBe(`Sign out and discard ${named}${elsewhere}?${listed}`);
 
-    const started = Date.now();
     await user.click(screen.getByRole("button", { name: "Sign out" }));
-    await waitFor(() => expect(app.asked).toHaveLength(2));
-    expect(Date.now() - started).toBeLessThan(OTHER_TABS_ANSWER_MS);
+    await onRealTurns(() => app.asked.length > 1);
+    expect(app.asked).toHaveLength(2);
     expect(app.asked[1]).toBe(`Sign out and discard ${named}?${listed}`);
 
     const beforeHello = tabs[2]?.told.length ?? 0;

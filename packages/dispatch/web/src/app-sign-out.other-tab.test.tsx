@@ -1,7 +1,7 @@
 import { expect, jest, test } from "bun:test";
 import { act, screen, waitFor } from "@testing-library/react";
 
-import { realClock, tick } from "./__tests__/fake-clock";
+import { onRealTurns, realClock, tick } from "./__tests__/fake-clock";
 import { ApiError } from "./api/client";
 import { aliceWrite, keptWrites, otherTab, renderApp } from "./app-sign-out-fixture";
 import { SIGN_OUT_SETTLE_MS } from "./features/shell/sign-in-channel";
@@ -280,9 +280,11 @@ test("a 401 with no other tab's sign-out holding the writes keeps them", async (
 // the writes go on once the sign-in check, read twice over `SIGN_OUT_SETTLE_MS`, still names the
 // person both times.
 test("a tab holding writes for another tab's sign-out resumes them once its lease lapses", async () => {
-  // On the fake clock, so the lease and the settle after it are moved past in steps rather than
-  // waited out: `resumed` below reads that clock, and a single jump would put the whole window
-  // at one instant.
+  // On the fake clock, so the lease and the settle after it are moved past in steps of
+  // `STEP_MS` rather than waited out, and the time the writes resume is counted in those steps:
+  // the steps are the only thing that moves the clock between the hold and the resume, with the
+  // real turns each step needs for what it set going (`onRealTurns`), so no poll of `waitFor`,
+  // whose count depends on how loaded the machine is, moves it (dispatch://INFRA-1505).
   jest.useFakeTimers();
   const app = renderApp({
     whoAmI: async () => ({ event_head: "0", kind: "user", login: "alice" }),
@@ -298,16 +300,21 @@ test("a tab holding writes for another tab's sign-out resumes them once its leas
     await waitFor(() => expect(attempts.length).toBeGreaterThan(0));
 
     signer.say({ signingOut: "alice" });
-    const said = Date.now();
-    await screen.findByText("CORE-1 set to done — Waiting for a sign-out in another tab");
+    const waiting = "CORE-1 set to done — Waiting for a sign-out in another tab";
+    await onRealTurns(() => screen.queryByText(waiting) !== null);
+    expect(screen.getByText(waiting)).toBeInTheDocument();
     const made = attempts.length;
-    await tick(4_000);
-    expect(attempts).toHaveLength(made);
 
-    await waitFor(() => expect(attempts.length).toBeGreaterThan(made));
-    const resumed = Date.now() - said;
-    expect(resumed).toBeGreaterThanOrEqual(SIGN_OUT_SETTLE_MS + 5_500);
-    expect(resumed).toBeLessThanOrEqual(SIGN_OUT_SETTLE_MS + 6_500);
+    const STEP_MS = 100;
+    let held = 0;
+    while (attempts.length === made && held <= SIGN_OUT_SETTLE_MS + 7_500) {
+      act(() => jest.advanceTimersByTime(STEP_MS));
+      held += STEP_MS;
+      await onRealTurns(() => attempts.length > made, 20);
+    }
+    expect(attempts.length).toBeGreaterThan(made);
+    expect(held).toBeGreaterThanOrEqual(SIGN_OUT_SETTLE_MS + 5_500);
+    expect(held).toBeLessThanOrEqual(SIGN_OUT_SETTLE_MS + 6_500);
     expect(screen.queryByText(/Waiting for a sign-out in another tab/)).not.toBeInTheDocument();
   } finally {
     realClock();
