@@ -11,6 +11,12 @@
 // the markdown and stores what it read, which is the fallback this pass does not touch; what the
 // pass adds is that no reader has to be the first to open a text for its tree to exist.
 //
+// A result's observed text is the one kind that joined the pass after a version's pass had run:
+// that pass runs once (fillVersion returns at once for a version openCursor reads as done), so a
+// result recorded before its write stored the tree gets one from this pass only once
+// pmdoc.DisplayTreeVersion is raised again. Until then the first results read of its issue reads
+// the text and stores its tree (api/results.go), the fallback above.
+//
 // It is a package of its own for the reason texttrees is: the texts it reads back belong to api
 // (comments, messages, broadcasts, asks, reviews and results), to docs (document versions) and to
 // architecture (component prose), and no one of those three can import the other two. It reads
