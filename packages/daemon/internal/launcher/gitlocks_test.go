@@ -618,7 +618,7 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 
 		t.Chdir(ws)
 		useSweepingLauncher(t)
-		fleet := newFleet(t, 5*time.Second, "tester")
+		fleet := newFleetOf(t, Config{StopGrace: 5 * time.Second, Workspace: ws}, "tester")
 		for _, path := range planted {
 			if !swept(path) {
 				t.Fatalf("the launcher's first pass left %s where it was; its log:\n%s", path, fleet.stderr.String())
