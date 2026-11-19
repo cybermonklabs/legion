@@ -1,6 +1,7 @@
 package oauthstore
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -17,6 +18,13 @@ func SetSweepMaxBatches(t *testing.T, n int) {
 	old := sweepMaxBatches
 	sweepMaxBatches = n
 	t.Cleanup(func() { sweepMaxBatches = old })
+}
+
+// SetPodSessionWriteHook sets s's testWriteHook to hook: writePodSession runs it once its insert of
+// a pod's first registration for a session has returned, before RegisterPodSession commits, given
+// the context that carries that write's transaction.
+func SetPodSessionWriteHook(s *Store, hook func(ctx context.Context)) {
+	s.testWriteHook = hook
 }
 
 // SweepStatement is one of Sweep's statements: what it sweeps, its SQL and arguments for a batch

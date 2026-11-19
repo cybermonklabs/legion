@@ -141,13 +141,11 @@ representatives=(
   packages/envoy/CHANGELOG.md
   packages/envoy/.changes/unreleased/INFRA-1-note.yaml
   packages/contracts/src/dispatch-api-search.ts
-  packages/contracts/AGENTS.md
   packages/envoy/internal/dispatch/model/model.go
   packages/dispatch/web/src/features/agent-view/AgentConversationPage.tsx
   packages/daemon/internal/daemon/bootgate.go
   packages/daemon/internal/daemon/probe.mjs
   packages/pi-shared/src/interface.ts
-  packages/pi-shared/AGENTS.md
   packages/pi-legion/extensions/legion.ts
   packages/pi-legion/extensions/legion.test.ts
   packages/daemon/internal/daemon/bootgate_test.go

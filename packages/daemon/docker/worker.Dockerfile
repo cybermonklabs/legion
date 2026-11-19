@@ -45,7 +45,7 @@
 # compiler and headers Go's cgo and race detector need (cgo stays off by default), gopls,
 # typescript-language-server with TypeScript's tsc and tsserver, pyright with its pyright-langserver,
 # and trixie's python3 with PyYAML (python3-yaml), curl, wget, jq, openssh-client (ssh-keygen),
-# util-linux (flock), postgresql-client (psql), redis-tools (redis-cli), sqlite3,
+# util-linux (flock), postgresql-client-18 (psql), redis-tools (redis-cli), sqlite3,
 # netcat-openbsd (nc), bind9-dnsutils (dig) and chromium (the browser Oh My Pi finds on PATH);
 # the PostgreSQL 18 server with pgvector and /usr/local/bin/legion-testpg, the pod's own test
 # database on a pod-lifetime emptyDir (the runtime-base stage says why);
@@ -699,7 +699,7 @@ COPY --chmod=0755 packages/daemon/docker/azure-cli/az /opt/azure-cli/bin/az
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS runtime-base
 # git: jj's git backend and the workers' own git use. ca-certificates: GitHub, Dispatch, model APIs.
 # chromium, python3, curl, wget, jq, openssh-client (for ssh-keygen), util-linux (for flock),
-# postgresql-client (for psql), redis-tools (for redis-cli), sqlite3, netcat-openbsd (for nc) and
+# postgresql-client-18 (for psql), redis-tools (for redis-cli), sqlite3, netcat-openbsd (for nc) and
 # bind9-dnsutils (for dig): what the capability check's browser, eval-python and toolchain rows look for
 # (packages/daemon/internal/capabilities/image.go) — the last five join flock in the toolchain row —
 # trixie's since the suite is the apt pin (the note above the ARGs); chromium brings its library
@@ -743,7 +743,7 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # for every browser (xvfb and fonts) is left out: it holds no library WebKit links or loads, and
 # Playwright's launch validation does not read it. The webkit-check stage fails the build when a
 # Playwright bump needs a library this list lacks.
-# postgresql-client (psql): `bun run e2e`, the Dispatch browser suite this deployment's
+# postgresql-client-18 (psql): `bun run e2e`, the Dispatch browser suite this deployment's
 # instructions require before a reader-facing Dispatch change merges, reaches psql through
 # packages/dispatch/e2e/psql.ts, which seed.ts calls for every spec's database reset; and the local
 # stack `bun run dispatch:local` (packages/dispatch/e2e/local-instance.ts) refuses to start without

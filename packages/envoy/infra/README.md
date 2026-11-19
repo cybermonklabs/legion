@@ -11,7 +11,7 @@ Pulumi language needs only the Pulumi CLI:
 | `envoy-infra:aws:WebhookListener` | Envoy's webhook listener on ECS Fargate, behind your load balancer's target group, with an alarm on each log line that says a delivery or a start went wrong. |
 | `envoy-infra:gcp:NatsHub` | A NATS server with JetStream on one Google Cloud VM that joins a tailnet, where its clients reach it: see [docs/nats-hub.md](docs/nats-hub.md), which says what it deploys, its inputs and how it is updated, with an example. |
 | `envoy-infra:gcp:ClusteredNatsHub` | NATS with JetStream as three servers on a GKE cluster, one per zone, through the `nats` Helm chart, with an optional session listener, which the hub runs as a workload of its own, and an optional tailnet entry whose hosts forward the tailnet's connections to NATS and to that listener; without the tailnet entry the listener is reached inside the cluster alone: see [gcp:ClusteredNatsHub](#gcpclusterednatshub). |
-| `envoy-infra:gcp:Dispatch` | Dispatch on GKE Autopilot, with Cloud SQL, served over a tailnet and, only to the namespaces `allowedNamespaces` names, inside its own cluster; at a public origin an entrance of the deployment's own serves, with Google sign-in or behind Identity-Aware Proxy, with the tailnet inputs unset and `publicOrigin` set; inside that cluster alone with both unset, or the cluster alone with `clusterOnly`: see [gcp:Dispatch](#gcpdispatch). |
+| `envoy-infra:gcp:Dispatch` | Dispatch on GKE Autopilot, with Cloud SQL, served over a tailnet and, only to the namespaces `allowedNamespaces` names, inside its cluster; at a public origin an entrance of the deployment's own serves, with Google sign-in or behind Identity-Aware Proxy, with the tailnet inputs unset and `publicOrigin` set; inside that cluster alone with both unset, or the cluster alone with `clusterOnly`. It makes its own cluster and its own Cloud SQL instance, or uses a GKE cluster (`existingCluster`), a Cloud SQL instance (`existingDatabaseInstance`), or both, that another program makes: see [gcp:Dispatch](#gcpdispatch). |
 
 The listener creates the `ENVOY_NOTIFICATIONS` stream and its key-value buckets itself when it
 starts, so it needs only a NATS server with JetStream to reach. It creates them at the deployment's
@@ -355,12 +355,12 @@ listener a delivery lease, the second copy waits the listener's bind deadline
 (`durableBindDeadline`, 135 seconds) for the durable the first copy holds, then exits, and is
 restarted over and over. The rolling update's surge is the one window where two copies exist, and
 with `maxUnavailable: 0` and `maxSurge: 1` it is longer than the old pod's stop: the new pod's
-listener contends for the durable from the moment its container starts, and the old pod is sent
-SIGTERM only once the new pod is Ready. The window is therefore the new pod's time to its first
-`/healthz` answer plus the old pod's 33 seconds, its 5-second preStop wait and its 28-second
-stop, and what has to hold it is the new pod's own 135-second bind deadline, counted from its own
-start. A new pod that never becomes Ready leaves the old one serving while the new one restarts
-on its bind deadline.
+listener contends for the durable from the moment its `/v1` opens, right after which it starts
+its bind, and the old pod is sent SIGTERM only once the new pod is Ready. The contention therefore
+lasts the startup probe's lag behind that open, at most one 10-second period (below), plus the old
+pod's 33 seconds, its 5-second preStop wait and its 28-second stop, and what has to hold it is the
+new pod's own 135-second bind deadline, counted from its `/v1` open. A new pod that never becomes
+Ready leaves the old one serving while the new one restarts on its bind deadline.
 
 Three more objects carry that pod:
 
@@ -411,16 +411,29 @@ How `/v1` admits a caller depends on who reaches the listener:
 
 Three probes read the pod's own loopback, two routes between them:
 
-- startup, `curl -sS -o /dev/null --max-time 8` of `http://127.0.0.1:9020/livez` every 5 seconds,
-  24 failures allowed: two minutes for the first answer;
-- liveness, the same `curl -sS` of `/livez` every 10 seconds, 6 failures allowed. The listener
-  answers `/livez` 204 and reads no bus for it, and without `-f` curl exits 0 whatever the HTTP
-  status, so any answer keeps the container running and only a minute of no answer at all
-  restarts it;
-- readiness, `curl -fsS` of `http://127.0.0.1:9020/healthz` every 5 seconds, with a 6-second
-  timeout and 2 failures allowed. It reads the HTTP status and never the body, so a pod that
-  answers 200 (`"starting"`) while it waits for the durable is ready, and the rolling update
-  never waits for the stream.
+- startup, `/bin/sh -c` of
+  `curl -fsS --max-time 5 http://127.0.0.1:9020/metrics | grep -q '^envoy_active_interests '`
+  every 10 seconds, with a 6-second timeout and 60 failures allowed: ten minutes for `/v1` to
+  open, after which the kubelet restarts the container. `/v1` answers 503 `service starting`
+  until its gate opens, and a listener that requires a credential refuses it to the probe, which
+  holds none, while `/metrics` takes none. The listener writes the sample line
+  `envoy_active_interests <n>` there only once that gate is open and the interest list can be
+  served; the pattern matches that line and never the gauge's `# HELP` or `# TYPE` line, which
+  every scrape carries. The kubelet runs neither of the other two probes, and the pod is not
+  Ready, until this one has passed, so a new pod stays out of the Service until its `/v1`
+  serves, and the rolling update keeps the old pod serving until then. `/v1` opens without
+  waiting for the durable consumer, which the old pod holds until it stops, so the gate cannot
+  wait on the old pod. The listener writes the sample this way since `legion-envoy-v29.15.0`; an
+  older listener writes it from its first answer, so there the probe passes at that answer, as
+  the `/livez` startup probe before it did;
+- liveness, `curl -sS -o /dev/null --max-time 8` of `http://127.0.0.1:9020/livez` every 10
+  seconds, 6 failures allowed. The listener answers `/livez` 204 and reads no bus for it, and
+  without `-f` curl exits 0 whatever the HTTP status, so any answer keeps the container running
+  and only a minute of no answer at all restarts it;
+- readiness, the same `curl -sS` of `/livez` every 10 seconds, 3 failures allowed, so only 30
+  seconds of no answer at all takes the pod out of the Service. Readiness and liveness are
+  status-blind, so a fault of the hub, which every pod shares, neither takes the one pod out of
+  the Service nor restarts it.
 
 The pod's preStop waits 5 seconds, the time its removal from the Service's endpoints takes to
 reach every node's proxy, so a connection a node still forwards is still answered. That wait and
@@ -428,9 +441,11 @@ the listener's own stop of 28 seconds are 33 seconds together, inside the pod's 
 40 seconds, which leaves a margin of 7 seconds (`listenerGraceMargin`). The margin covers the
 kubelet's own latency between the preStop hook's return and SIGTERM, the container's teardown
 and a late tick on a loaded node. It does not cover a listener that runs over its own deadlines.
-A hung pod holds its durable for the whole grace, so the replacement pod's time to its first
-`/healthz` answer plus that grace has to stay under the 135-second bind deadline. At 40 seconds
-the start allowance is 95 seconds.
+A hung pod holds its durable for the whole grace. The replacement's 135-second bind deadline
+(`durableBindDeadline` in `cmd/listener/durable.go`) counts from its `/v1` open, right after
+which the listener starts the bind, so what has to stay under it is the startup probe's lag
+behind that open plus the old pod's stop. At a grace of 40 seconds that lag may be up to 95
+seconds, and the probe's 10-second period keeps it at most 10.
 
 One pod has one cost: while that pod is unready or restarting, the listener's port 9020 refuses
 connections, the Tailscale Service's included. Port 4222 stays up through it, which is what the
@@ -678,8 +693,11 @@ only where the tailnet inputs are set: with that whole group unset the component
 Dispatch is then reached at `publicOrigin`, whose entrance is the deployment's own (the public
 origin, below), or, without it, at the app's own Service inside the cluster, by the namespaces
 `allowedNamespaces` names alone (the sandbox, below). With `clusterOnly` it deploys the cluster,
-its VPC and Cloud NAT alone and none of the rest. The table below says which resources each of
-those is, the sandbox and the public origin in the paragraph under it.
+its VPC and Cloud NAT alone and none of the rest. The cluster and the Cloud SQL instance are the
+component's own unless `existingCluster` or `existingDatabaseInstance` names one that another
+program makes ([A cluster and a database instance the component does not
+make](#a-cluster-and-a-database-instance-the-component-does-not-make)). The table below says which
+resources each of those is, the sandbox and the public origin in the paragraph under it.
 
 | Resource | Purpose | With `clusterOnly` |
 | --- | --- | --- |
@@ -695,10 +713,24 @@ those is, the sandbox and the public origin in the paragraph under it.
 | Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener each have a five-second pre-stop wait and the stop each is built for, and their termination grace periods differ: the app 35 seconds, the listener 40. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
 | Up to three PodDisruptionBudgets | `<hostname>` with `appPdbMinAvailable`, `<hostname>-tailnet` with `frontDoorPdbMinAvailable` and `<hostname>-listener` with `listenerPdbMinAvailable`, each over its own Deployment's pods (`app=<name>`) alone, with that `minAvailable` and Kubernetes' default `unhealthyPodEvictionPolicy`, so a drain cannot take that workload below that many ready pods. | Not built |
 
+Three inputs change what the first four rows register:
+
+- With `existingCluster`, the component registers no Autopilot cluster.
+- With `existingDatabaseInstance`, it registers no Cloud SQL instance, database or user. It keeps
+  the generated passwords.
+- With `regionalNetwork: false`, which only `existingCluster` allows, it registers no subnetwork,
+  router or Cloud NAT.
+
+The VPC is registered in every mode. The private services access range and connection are
+registered in every mode but `clusterOnly`, which never had them. So the network stays when the
+component's own cluster goes, and the Cloud SQL instance keeps its private IP.
+
 The ordering among them is the component's own. The Tailscale Service and the front door's
-Deployment are registered after the Cloud SQL instance, since switching `databaseAvailabilityType`
-updates that instance in place and restarts it and the tailnet name must come back only once the
-database it fronts is back. The Serve ConfigMap and the front door's Deployment are registered
+Deployment are registered after the Cloud SQL instance the component makes, since switching
+`databaseAvailabilityType` updates that instance in place and restarts it and the tailnet name
+must come back only once the database it fronts is back. With `existingDatabaseInstance` neither
+waits for an instance: the component never changes that instance, so nothing of the component
+restarts it. The Serve ConfigMap and the front door's Deployment are registered
 after the Tailscale Service, since a node that advertises a Service before it exists is not
 approved when the Service appears. Without `natsInCluster` the listener's Deployment waits for the
 front door's pods and its SOCKS5 Service, because `envoy-listener` exits when its first bus
@@ -708,8 +740,9 @@ the front door: `envoy-dispatch` serves without the bus — its `/healthz` readi
 alone, reporting `nats` false meanwhile, and its bus clients connect in the background once the
 proxy answers — and during a cutover the front door is deliberately away while the availability
 type changes, so the server must come back inside that stop rather than behind the front door. It
-still waits for the Cloud SQL instance, whose connection name is an argument of the
-`cloud-sql-proxy` sidecar on its own pod.
+still waits for the Cloud SQL instance the component makes, whose connection name is an argument
+of the `cloud-sql-proxy` sidecar on its own pod. With `existingDatabaseInstance` it waits only for
+the resources that input's value comes from.
 
 The sandbox builds every resource of that table except the front door's: no Tailscale Service
 `svc:<hostname>`, no `<hostname>-tailnet` Deployment, Service, NetworkPolicy or ServiceAccount,
@@ -720,6 +753,154 @@ input turns on, and the app's policy admits the `allowedNamespaces` alone. The S
 `<hostname>-dispatch` holds `DATABASE_URL`, `DISPATCH_AGENT_TOKEN` and `DISPATCH_SIGNING_KEY`
 alone, since the mode takes no sign-in input. A Dispatch at `publicOrigin` builds exactly what the
 sandbox builds, and its Secret adds `DISPATCH_SIGNIN_CLIENT_SECRET` with the sign-in inputs.
+
+### A cluster and a database instance the component does not make
+
+Two inputs let the component run in a GKE cluster and on a Cloud SQL instance that another
+program makes. A third, `regionalNetwork`, removes the regional part of the component's network
+once nothing uses it. With the three unset, the component registers what it registered before
+they existed.
+
+`existingCluster` names a GKE cluster by its name and its location, a region or a zone:
+`existingCluster: {name: example-cluster, location: us-central1}`. With it, the component
+registers no Cluster and creates every Kubernetes object in the named cluster. It still registers
+the Network `<hostname>-network`, the GlobalAddress and Connection `<hostname>-services`, and,
+while `regionalNetwork` is true, the Subnetwork, Router and RouterNat `<hostname>`. Unset, the
+component makes the Autopilot cluster `<hostname>`.
+
+`existingDatabaseInstance` is the connection name, `<project>:<region>:<instance>`, of a Cloud SQL
+instance. That is the form of the `databaseInstance` output, so a consumer can pass the
+`connectionName` of its own replica. With it, the component registers no DatabaseInstance,
+Database or User, and the app pod's `cloud-sql-proxy` sidecar connects to the named instance. It
+still registers the network, every RandomPassword under the name it always had, the principal's
+Secret Manager grants and every Kubernetes object. Unset, the component makes the Cloud SQL
+instance `<hostname>`.
+
+`regionalNetwork`, `true` when unset, controls the regional part of the network: the Subnetwork,
+Router and RouterNat `<hostname>` in `region`. The component's own cluster takes its addresses
+from that subnetwork, and its private nodes reach the internet through that router and Cloud NAT.
+`false` registers none of the three. The Network, the GlobalAddress and the Connection stay as
+they are, so the Cloud SQL instance keeps its private IP. Set it to `false`, beside
+`existingCluster`, once nothing uses the subnetwork.
+
+`existingCluster` and `existingDatabaseInstance` are independent: a stack can set one of them,
+both or neither.
+
+`existingCluster` is a plain object, because the component reads it before it registers anything
+(below). The schema cannot mark an object input plain: pulumi-go-provider v1.7.0 serves an object
+reference with no plain flag. So a generated SDK shows `name` and `location` as inputs. Pass both
+as strings that the program knows. Construct refuses another resource's output there, naming
+`existingCluster`, as it does for every plain input. `existingDatabaseInstance` is a Pulumi
+input, since a consumer takes it from another resource or stack.
+
+**The lookup.** After its providers check and before it registers anything, the component looks
+the named cluster up. It calls `getCluster` as a plain invoke, through the consumer's `gcp`
+provider, with the name and the location. It renders the kubeconfig from the endpoint and the CA
+certificate that the lookup reports. It builds the issuer from the project, the location that the
+lookup reports and the name. These are plain values, so the kubeconfig is known in each preview
+of a stack whose Network exists.
+
+**The grant.** Every identity that previews or applies the stack needs `container.clusters.get`
+on the named cluster, since the lookup runs in each preview and each update.
+
+**What the lookup refuses.** The component refuses a cluster that Dispatch cannot run in. Each
+refusal is a `core.InputError` naming `existingCluster`, after the prefix
+`envoy-infra:gcp:Dispatch <name>:`, and nothing registers:
+
+- The lookup fails: `existingCluster: look up cluster <name> in <location>: <error>`.
+- No endpoint: `existingCluster: cluster <name> in <location> has no endpoint, which the
+  component's Kubernetes provider reaches it at`.
+- No CA certificate: `existingCluster: cluster <name> in <location> has no CA certificate, which
+  the component's Kubernetes provider trusts its endpoint by`.
+- No Workload Identity pool: `existingCluster: cluster <name> in <location> has no Workload
+  Identity pool: the pods' principal, and the NATS seed's grant to it, live in that pool`.
+- The Secret Manager add-on off: `existingCluster: cluster <name> in <location> has the Secret
+  Manager add-on off: every pod mounts the NATS seed through it`.
+- No NetworkPolicy enforcement, which is neither Dataplane V2 (`datapathProvider`
+  `ADVANCED_DATAPATH`) nor network policy on: `existingCluster: cluster <name> in <location>
+  enforces no NetworkPolicy: its datapathProvider is "<provider>", not ADVANCED_DATAPATH, and its
+  network policy is off; the component's NetworkPolicies are its only fence`.
+
+**The network check.** The cluster must run on the component's own Network, the VPC that the
+component registers as `<hostname>-network`. The proxy sidecar runs with `--private-ip`, and it
+reaches the instance's private address on that network. Once the Network's name resolves, the
+component compares it with the last element of the cluster's `network` path. A cluster on another
+network fails the preview or the update with `existingCluster: cluster <name> in <location> runs
+on network <network>, not on the component's own network <network>: the Cloud SQL proxy reaches
+the instance's private address on the component's network`. Pulumi names the Network with a
+random suffix when it creates it, so only a stack whose Network exists can name a cluster on it.
+
+**The Kubernetes provider.** With `existingCluster`, the component's Kubernetes provider carries
+`clusterIdentifier`, set to the cluster's issuer. pulumi-kubernetes v4.34.2 then replaces the
+provider, and so every Kubernetes object on it, only when the identifier changes. It does not
+replace the provider when the cluster's CA or endpoint rotates, or when the kubeconfig is unknown
+in a preview. pulumi-kubernetes does not use this rule when the identifier is added or removed. So
+on the apply that first sets `existingCluster`, the change of the cluster that the kubeconfig names
+replaces the provider ([Moving a running stack onto a cluster and a database instance it does not
+make](#moving-a-running-stack-onto-a-cluster-and-a-database-instance-it-does-not-make)). The
+component's own cluster gives no `clusterIdentifier`, so the provider of a stack without
+`existingCluster` keeps the inputs it always had.
+
+The identifier names the cluster by its project, location and name alone. So when another program
+deletes the cluster and makes it again with the same name and location, the identifier does not
+change: pulumi-kubernetes updates the provider and does not replace it, and Pulumi's state still
+holds the Kubernetes objects that the new cluster does not have. An update does not make those
+objects again while the state holds them.
+
+**The database.** The component makes neither the database nor the login on an instance that
+`existingDatabaseInstance` names. That instance must hold the database `dispatch` and the login
+`dispatch`, whose password is the component's generated one. The RandomPassword
+`<hostname>-password` keeps that password whatever `existingDatabaseInstance` says, and
+`DATABASE_URL` carries it. No output carries the password. A promoted replica of the component's
+own instance holds both, with that password.
+
+The proxy sidecar runs with `--private-ip`, so the instance must have a private IP that the
+cluster's pods reach. The instance must take its private IP through the private services
+Connection of the component's own network. A promoted replica of the component's own instance
+does. Cloud SQL gives an instance its private IP through private services access, which is a VPC
+Network Peering. VPC Network Peering is not transitive. So a peering with another network does
+not let the pods reach an instance that takes its private IP through that network's private
+services access
+([About private services access](https://docs.cloud.google.com/sql/docs/postgres/about-private-services-access)).
+
+**Inputs refused beside them.** The component refuses each of these by name before it registers
+anything:
+
+- `databaseVersion`, `databaseTier`, `databaseAvailabilityType` and `databaseWaitsFor` beside
+  `existingDatabaseInstance`, each as `<input> configures the Cloud SQL instance the component
+  makes, which existingDatabaseInstance replaces: unset it, or unset existingDatabaseInstance`.
+  Each would configure nothing, so the component refuses it instead of ignoring it.
+- `regionalNetwork: false` without `existingCluster`, as `regionalNetwork false leaves the
+  component's own cluster no subnetwork: set existingCluster, or unset regionalNetwork`.
+- `existingCluster` and `existingDatabaseInstance` under `clusterOnly`, which also refuses
+  `regionalNetwork: false` ([Inputs](#inputs-1)).
+- An `existingCluster.name` that is not a GKE cluster name, as `existingCluster.name "<name>" must
+  be a GKE cluster name: a lowercase letter, then lowercase letters, digits and hyphens, ending in
+  a letter or digit, at most 40 characters`.
+- An `existingCluster.location` that is not a region or a zone, as `existingCluster.location
+  "<location>" must be a region or a zone, such as us-central1 or us-central1-a`.
+- An nkey seed in `existingCluster.name` or `existingCluster.location`, as in every plain string
+  input.
+
+Once `existingDatabaseInstance` resolves, the component refuses a seed in it. Then it refuses a
+value that is not a connection name, as `existingDatabaseInstance must be a Cloud SQL instance's
+connection name, <project>:<region>:<instance>, as its connectionName gives it: a project id, or a
+domain-scoped one as <domain>:<project>, a region, and the instance's name, each in lowercase (not
+echoed)`. Neither refusal quotes the value, which can come from another stack as a secret.
+
+**Where the pods run.** The lookup checks each cluster feature that the component relies on:
+Workload Identity, the Secret Manager add-on, NetworkPolicy enforcement and the component's own
+network. It does not check where the pods can run. A Standard cluster with node
+auto-provisioning off needs a node pool or a compute class that fits the pods. A namespace's
+`cloud.google.com/default-compute-class` label gives the pods a compute class, with no input here.
+The component still holds the app pod to Autopilot's size bounds (`appCpu`, [Inputs](#inputs-1)),
+which an Autopilot-mode compute class applies too.
+
+**Outputs.** With `existingCluster`, `clusterName` is the name it gives, `kubeconfig` is the one
+rendered from the lookup, and `serviceAccountIssuer` is the cluster's issuer.
+`DISPATCH_OIDC_ISSUER` defaults to that issuer. `principal` is built from the pool that the lookup
+reports, so a cluster in the same project gives the same principal. With
+`existingDatabaseInstance`, `databaseInstance` is that input's value once it resolves.
 
 ### Inputs
 
@@ -746,42 +927,68 @@ names every input of that group still unset, such as `(the tailnet inputs are se
 at all; unset: tags, tailnetAuthKey)`, so one run names the whole shortfall. The twelve are
 optional in the schema because a generated SDK's constructor refuses a nil required input, so a
 cluster-only consumer, which sets none of them, could not call the component at all while they
-stayed required. `tailnetAuthKey`, `natsUrl`, `natsSeedSecret`, `signInClientSecret` and
-`databaseWaitsFor` are Pulumi inputs and may come from another resource or stack.
+stayed required. `tailnetAuthKey`, `natsUrl`, `natsSeedSecret`, `signInClientSecret`,
+`iapAudience`, `databaseWaitsFor` and `existingDatabaseInstance` are Pulumi inputs and may come
+from another resource or stack.
 `tailnetAuthKey` and `signInClientSecret` are secrets. `databaseVersion`
 defaults to `POSTGRES_18`, `databaseTier` to `db-custom-4-15360`, `namespace` to `dispatch`, and
 `deletionProtection` to `true`; it sets both Pulumi's own guard and the Cloud SQL instance's
 `deletionProtectionEnabled`, which refuses a delete from the API or the console too, and the
 `dispatch` database's `deletionPolicy` `PREVENT` (otherwise `DELETE`), which keeps an instance
 replacement from deleting the database first.
+It guards only what the component makes: its own cluster, its own Cloud SQL instance and
+`dispatch` database, and the Tailscale Service. A cluster that `existingCluster` names and an
+instance that `existingDatabaseInstance` names keep only the protection that their own program
+gives them.
 `existingNamespace`, `false` by default, makes the component use
 the namespace as it exists in the cluster rather than create it, for a deployment where another
 program owns the namespace. On a stack that has already applied, turning it on removes the
 Namespace from the program, and the next update deletes the namespace and everything in it, the
 front door's certificate Secret included: first remove the Namespace from the stack's state
 (`pulumi state delete <the Namespace's URN>`), so the update leaves it in the cluster. The flag is
-for a cluster that already exists: on a first apply the component creates the cluster, so no other
-program can have made the namespace yet. `allowedNamespaces`, empty by default, each a DNS label,
-names the in-cluster namespaces the NetworkPolicy admits on port 8766.
+for a cluster that already exists. Without `existingCluster`, a first apply creates the cluster,
+so no other program can have made the namespace yet. With `existingCluster` the cluster exists
+before the first apply, so another program may own the namespace from the start.
+`allowedNamespaces`, empty by default, each a DNS label, names the in-cluster namespaces the
+NetworkPolicy admits on port 8766.
+
+`existingCluster` and `existingDatabaseInstance` run the component in a cluster and on a Cloud SQL
+instance that another program makes, and `regionalNetwork` controls the regional part of its
+network ([A cluster and a database instance the component does not
+make](#a-cluster-and-a-database-instance-the-component-does-not-make)). `existingCluster`, unset
+by default, is a plain object, `{name, location}`. `existingDatabaseInstance`, unset by default,
+is a Pulumi input and may come from another resource or stack. `regionalNetwork`, `true` by
+default, is a plain boolean. Beside `existingDatabaseInstance` the component refuses
+`databaseVersion`, `databaseTier`, `databaseAvailabilityType` and `databaseWaitsFor`, each by
+name, since each configures the instance the component no longer makes. Without `existingCluster`
+it refuses `regionalNetwork: false`, since the component's own cluster takes its addresses from
+that subnetwork.
 
 `clusterOnly`, `false` by default, builds the cluster alone: the VPC, its subnetwork, the router,
 Cloud NAT and the Autopilot cluster, and nothing else. It registers no private services access
 range and no peering, no Cloud SQL instance, database or user, no generated password, no Secret
 Manager grant, no Kubernetes provider and no Kubernetes object, so it requires a `gcp` provider
-alone and no `random` one. Only `region`, `hostname` and `deletionProtection` come with it, the
-last guarding the cluster; every other input is refused by name, as `<input> configures Dispatch,
-which clusterOnly does not build: unset it, or unset clusterOnly`. `clusterName`, `kubeconfig` and
-`serviceAccountIssuer` carry the cluster's own values; `url`, `databaseInstance`, `principal`,
-`agentToken` and `serviceAccountSubject` are an explicit empty string, which is the same value in
-a preview and in an update. A stack already running Dispatch cannot turn it on: such a stack sets
+alone and no `random` one. Only `region`, `hostname`, `deletionProtection` and `regionalNetwork`
+come with it. `deletionProtection` guards the cluster. `regionalNetwork` shapes the network that
+both modes build, but this mode always makes its own cluster on the subnetwork. So `true` changes
+nothing, and the component refuses `false` as `regionalNetwork false leaves the cluster clusterOnly
+builds no subnetwork: unset regionalNetwork`. It refuses every other input by name, as `<input>
+configures Dispatch, which clusterOnly does not build: unset it, or unset clusterOnly`.
+`existingCluster` and `existingDatabaseInstance` are among them, since this mode always makes its
+own cluster and uses no database. `clusterName`, `kubeconfig` and `serviceAccountIssuer` carry the
+cluster's own values; `url`, `databaseInstance`, `principal`, `agentToken` and
+`serviceAccountSubject` are an explicit empty string, which is the same value in a preview and in
+an update. A stack already running Dispatch cannot turn it on: such a stack sets
 the inputs the mode refuses, so the update is refused before anything it would no longer build is
 deleted.
 
-With the tailnet group and `publicOrigin` unset the component is the sandbox: it builds its cluster, its database
-and its app as it always does, and no front door at all. The mode requires `natsInCluster`, since
-the pods reach a tailnet NATS hub only through the front door's SOCKS5 proxy and no front door
-runs one here, and at least one `allowedNamespaces` entry, since the app's NetworkPolicy is then
-its only ingress and a policy with no rule admits nobody; each missing one is refused by name. It
+With the tailnet group and `publicOrigin` unset the component is the sandbox: it builds its
+network and its app as it always does, on its own cluster and database or on the ones
+`existingCluster` and `existingDatabaseInstance` name, and no front door at all. The mode requires
+`natsInCluster`, since the pods reach a tailnet NATS hub only through the front door's SOCKS5
+proxy and no front door runs one here, and at least one `allowedNamespaces` entry, since the app's
+NetworkPolicy is then its only ingress and a policy with no rule admits nobody; each missing one
+is refused by name. It
 refuses `frontDoorReplicas` and `frontDoorPdbMinAvailable`, which size and protect a front door it
 does not build, and every sign-in input, since browser sign-in needs a redirect origin an OAuth
 provider takes and an in-cluster `http://` address is not one. The `url` output and the app's
@@ -913,10 +1120,10 @@ the component requires wherever it builds the front door — every deployment bu
 `clusterOnly`, neither of which builds one — and the tailnet that provider is configured for is
 the tailnet the Service is declared in. The Service is parented on the component, not on the
 cluster, and its `protect` follows `deletionProtection`, the input that already guards the
-cluster and the database, rather than being fixed: a child's explicit `Protect` overrides what
-it would inherit, so a fixed one could be changed only by a resource transform on the component
-([Providers and transformations](#providers-and-transformations)) or by a state edit, and a
-consumer that unprotects a Dispatch unprotects the Service with it.
+component's own cluster and database, rather than being fixed: a child's explicit `Protect`
+overrides what it would inherit, so a fixed one could be changed only by a resource transform on
+the component ([Providers and transformations](#providers-and-transformations)) or by a state
+edit, and a consumer that unprotects a Dispatch unprotects the Service with it.
 The Serve ConfigMap `<hostname>-serve` and the front door's Deployment are both registered after
 it, so on a fresh stack no pod advertises the Service before it exists: a node that advertises a
 Service before it exists is not approved when the Service appears.
@@ -1197,7 +1404,8 @@ deployment changes in the same deploy as this component's:
 
 - `BROKER_K8S_OIDC_AUDIENCE` is the value given here as `agentSecretsAudience`;
 - `BROKER_K8S_OIDC_ISSUER` is the issuer of this component's cluster, which GKE gives as
-  `https://container.googleapis.com/v1/projects/<project>/locations/<region>/clusters/<hostname>`;
+  `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster name>`,
+  the `serviceAccountIssuer` output (below);
 - `BROKER_API_ACCOUNTS` lists Dispatch's account, as
   `dispatch=system:serviceaccount:<namespace>:<hostname>`, in place of the `BROKER_UI_TOKEN` it
   once shared with Dispatch.
@@ -1214,7 +1422,7 @@ is the consumer's to delete.
 `oidcAudience` (plain) turns on the other direction, Dispatch verifying a caller's own projected
 ServiceAccount token: `DISPATCH_OIDC_AUDIENCE` is the audience such a token must carry and
 `DISPATCH_OIDC_ISSUER` the issuer that signed it, which is this component's cluster
-(`https://container.googleapis.com/v1/projects/<project>/locations/<region>/clusters/<hostname>`,
+(`https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster name>`,
 the `serviceAccountIssuer` output) unless `oidcIssuer` names another cluster's. Dispatch refuses
 to boot holding one of the pair alone, so the component renders both or neither, and an
 `oidcIssuer` with no `oidcAudience` is refused. The secrets broker's judge needs this: it reads
@@ -1338,7 +1546,8 @@ or `chatModel`, and an empty `azureChatApiVersion`, `azureChatScope` or `chatMod
 Once each Pulumi input resolves, before any child takes it, it refuses a seed in
 `tailnetAuthKey`, `signInClientSecret`, `natsSeedSecret`, `databaseWaitsFor`, `azureEmbedEndpoint`,
 `azureEmbedDeployment`, `azureEmbedKeySecret`, `azureTenantId`, `azureClientId`,
-`azureChatEndpoint`, `azureChatDeployment`, `chatEndpoint` and `chatTokenSecret`; a blank or
+`azureChatEndpoint`, `azureChatDeployment`, `chatEndpoint`, `chatTokenSecret` and
+`existingDatabaseInstance`; a blank or
 whitespace-only `tailnetAuthKey` or `signInClientSecret`, neither of which can work blank (the
 front door cannot join the tailnet, Dispatch refuses a blank sign-in secret at boot) — each a
 refusal naming the input and never echoing it; and a `natsUrl` that holds a seed, is local
@@ -1350,11 +1559,19 @@ and with `clusterOnly` a `gcp` provider alone. It creates its Kubernetes provide
 cluster's stable exec-plugin kubeconfig, so the machine running Pulumi needs
 `gke-gcloud-auth-plugin`; with `clusterOnly` it creates no Kubernetes provider and needs no
 plugin for one.
+The kubeconfig is the component's own cluster's, or the one it renders from the lookup of the
+cluster `existingCluster` names. With `existingCluster` the provider also carries
+`clusterIdentifier`, the cluster's issuer. The refusals of `existingCluster`,
+`existingDatabaseInstance` and `regionalNetwork`, and the reason for each, are under [A cluster
+and a database instance the component does not
+make](#a-cluster-and-a-database-instance-the-component-does-not-make).
 
 The generated `principal` output is the Kubernetes service account's Workload Identity principal,
 `principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<project id>.svc.id.goog/subject/ns/<namespace>/sa/<hostname>`,
 built from the cluster's own Workload Identity pool, so it resolves only once the cluster that
-creates the pool exists. The app's Cloud SQL Auth Proxy needs `roles/cloudsql.client` on the
+creates the pool exists. The pool is the component's own cluster's, or the one the lookup reports
+for the cluster `existingCluster` names, which exists already. The app's Cloud SQL Auth Proxy
+needs `roles/cloudsql.client` on the
 project for that principal, which the component does not write, since writing a project IAM
 member needs `resourcemanager.projects.setIamPolicy`: the consumer grants it from a program whose
 identity holds that permission, building the member from the principal's known form rather than
@@ -1378,8 +1595,10 @@ The `serviceAccountIssuer` and `serviceAccountSubject` outputs are the issuer an
 app's and the listener's Kubernetes service-account tokens (the front door's pods run as an
 account the subject never names): the cluster's own issuer,
 `https://container.googleapis.com/v1/projects/<project id>/locations/<location>/clusters/<cluster name>`,
-and `system:serviceaccount:<namespace>:<hostname>`. The keyless Azure form rests on them, for the
-embedder and the answerer alike: the
+and `system:serviceaccount:<namespace>:<hostname>`. For the component's own cluster, `<location>`
+is `region` and `<cluster name>` is `hostname`. With `existingCluster` they are the location that
+the lookup reports and the name that `existingCluster` gives. The keyless Azure form rests on
+them, for the embedder and the answerer alike: the
 managed identity `azureClientId` names holds a federated identity credential whose issuer is
 `serviceAccountIssuer`, whose subject is `serviceAccountSubject` and whose audience is
 `api://AzureADTokenExchange` (or the `azureFederationAudience` set), which admits these pods'
@@ -1812,6 +2031,107 @@ after the component has adopted it: readers lose `<hostname>.<tailnetDnsName>`, 
 component's state still records a Service that is gone, so the next `up` plans nothing until a
 `pulumi refresh`. Keeping both declarations is no better: two resources then own one Service and
 each apply overwrites what the other declared.
+
+### Moving a running stack onto a cluster and a database instance it does not make
+
+A stack that runs on the component's own cluster and Cloud SQL instance can move onto a cluster
+and an instance that another program makes. The move takes two or three applies. This section
+says what each apply registers, and what Pulumi then does.
+
+**Before the switch.**
+
+- Give every identity that previews or applies the stack `container.clusters.get` on the new
+  cluster. The lookup runs in each preview and each update.
+- Make sure that the new cluster passes the lookup and runs on the component's Network ([A
+  cluster and a database instance the component does not
+  make](#a-cluster-and-a-database-instance-the-component-does-not-make)). On a Standard cluster
+  with node auto-provisioning off, give the pods a node pool or a compute class that fits them.
+- Create the PriorityClass that `priorityClassName` names in the new cluster. With
+  `existingNamespace`, create the namespace there too, since the component then makes none.
+- With `natsInCluster`, make sure that `natsUrl` names an address that the new cluster resolves
+  and reaches, and that the hub admits the namespace of the pods there to its client port. The
+  pods dial `natsUrl` with the DNS of the cluster they run in, so the name of a Service in the old
+  cluster does not resolve in the new one.
+- Move each caller in a namespace that `allowedNamespaces` names to the new cluster, or give it
+  another way to Dispatch. The app's Service and its NetworkPolicy move to the new cluster, so a
+  pod in the old cluster no longer reaches Dispatch at that Service.
+- Make sure that the new instance holds the database `dispatch` and the login `dispatch` with the
+  component's password, on a private IP that the pods reach. A promoted replica of the
+  component's own instance does.
+- Make every federated credential that trusts `serviceAccountIssuer`, such as the Azure
+  embedder's and the answerer's, trust the new cluster's issuer too. The new issuer is
+  `https://container.googleapis.com/v1/projects/<project id>/locations/<location>/clusters/<name>`.
+
+**What the switch stops registering.** Naming `existingCluster` stops the component registering
+its Cluster. Naming `existingDatabaseInstance` stops it registering its DatabaseInstance, Database
+and User. Pulumi deletes what a program no longer registers. With `deletionProtection` true, each
+of those deletes is refused or does harm:
+
+- The Cluster's `deletionProtection` refuses its delete.
+- The instance's `deletionProtection` and `deletionProtectionEnabled` refuse its delete. So does a
+  `protect` option that a consumer sets on it with a transform.
+- The Database's `deletionPolicy` `PREVENT` refuses its delete.
+- The User's delete drops the login `dispatch` from the old instance.
+
+With `deletionProtection` false, the apply deletes them. So keep them in state, by adoption or by
+retention. `pulumi state delete` alone does not work: it refuses a resource that others in state
+depend on. The Kubernetes objects depend on the Cluster, and the Database and the User depend on
+the instance.
+
+- **Adoption.** In the switching change, the consumer's program declares each of these resources
+  at its root, with an alias to the child's old URN and with a `protect` option of its own.
+  Nothing leaves state. The consumer's transforms on those children move onto the root
+  declarations.
+- **Retention.** An apply before the switch gives each of these resources `retainOnDelete: true`
+  and `protect: false`, through a stack transform. Pulumi refuses to remove a protected resource
+  even with `retainOnDelete`, so `protect` must go too. The switch then drops them from state, and
+  they keep running.
+
+**The applies.**
+
+1. With retention only: the apply that sets `retainOnDelete` and lifts `protect`, as above. It
+   changes nothing in Google Cloud.
+2. The switch: set `existingCluster`, `existingDatabaseInstance` or both. With
+   `existingDatabaseInstance`, unset `databaseVersion`, `databaseTier`, `databaseAvailabilityType`
+   and `databaseWaitsFor`, which the component refuses beside it. With adoption, add the root
+   declarations in this same change.
+3. Later, with `existingCluster` set and once nothing uses the subnetwork: set
+   `regionalNetwork: false`. That apply deletes the Subnetwork, Router and RouterNat `<hostname>`.
+   It keeps the Network, the GlobalAddress and the Connection.
+
+**What the switch replaces.** Naming `existingCluster` changes the cluster that the kubeconfig
+names. So pulumi-kubernetes replaces the component's Kubernetes provider, and every Kubernetes
+object on it. Pulumi creates each object in the new cluster first and deletes it from the old
+cluster last. Both clusters run the objects for the length of the apply. In that apply:
+
+- The component creates the front door's Secret `<hostname>-tailnet-tls` empty in the new
+  cluster, so the front door there orders a new certificate ([The front door](#the-front-door)).
+- Pulumi deletes a Namespace that the component made (without `existingNamespace`) from the old
+  cluster, with everything in it.
+- A consumer that builds its own Kubernetes provider from the stack's last `kubeconfig` output
+  still reaches the old cluster.
+
+Naming `existingDatabaseInstance` alone replaces no Kubernetes object. It changes the
+`cloud-sql-proxy` argument, which replaces the app's pods as any change to its pod template does.
+
+**After the switch.**
+
+- `clusterName`, `kubeconfig` and `serviceAccountIssuer` name the new cluster.
+- `databaseInstance` is the value of `existingDatabaseInstance`.
+- `principal` stays the same for a cluster in the same project.
+- With `agentSecretsUrl`, the secrets broker's `BROKER_K8S_OIDC_ISSUER` must name the new issuer,
+  since Dispatch's account token now comes from the new cluster.
+- With `oidcAudience` and no `oidcIssuer`, `DISPATCH_OIDC_ISSUER` is the new issuer, so a caller's
+  token must come from the new cluster.
+
+**Before each apply.** Run `pulumi preview` on the stack. Then check two things in its output:
+
+- The Network, the GlobalAddress and the Connection show no step.
+- The preview deletes or replaces only the resources that this section names.
+
+The transition tests (`gcp/dispatch_network_test.go`) derive these operations from the
+component's registrations, an inference about the Pulumi engine, so the real stack's preview is
+the check.
 
 ### YAML
 
@@ -3565,8 +3885,9 @@ credential-free session user holding `SessionPermissions`, are checked against r
 2.10 and 2.15.1 servers, the session user's refusal of the stream's stored-message get included,
 as are a
 session consumer the listener's user creates, pulls, acks, restarts and deletes, both of its role
-lane queue groups, and the session user's refusal of a consumer create; `AGENTS.md` in this
-directory says how.
+lane queue groups, and the session user's refusal of a consumer create, in
+`core/permissions_live_test.go` under the `natslive` tag; `AGENTS.md` in this directory gives the
+command that runs it.
 
 `ListenerHostPermissions(machineID)` is the grant of a listener's own NATS user, one no session
 shares: `ListenerPermissions(machineID)`, the session consumers' calls included, then a plain

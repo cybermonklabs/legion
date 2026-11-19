@@ -21,8 +21,8 @@
 # non-zero exits are hits (1) and a search that failed (2).
 #
 # Run from anywhere: .github/scripts/check-plugin-names.sh
-# CI runs it over the repository in ci.yaml's lint job, beside check-private-names.sh, and its
-# tests (check-plugin-names.test.sh) in ci.yaml's test job.
+# CI runs it over the repository in ci.yaml's lint job, beside ci-job-lint.yaml's private-names job,
+# and its tests (check-plugin-names.test.sh) in ci.yaml's test job.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -57,7 +57,6 @@ allowlist=(
   # The legacy Dispatch client comment: `SearchResult.issue` stays until no installed client built
   # before the owner-only shape remains, and the old package is one of those clients.
   packages/contracts/src/dispatch-api-search.ts
-  packages/contracts/AGENTS.md
   packages/envoy/internal/dispatch/model/model.go
   # The live-view message names the plugin releases that do not stream ("before 5.8.0").
   packages/dispatch/web/src/features/agent-view/AgentConversationPage.tsx
@@ -65,15 +64,12 @@ allowlist=(
   # tells an operator to uninstall it, and its load probe reads the old package's marker.
   packages/daemon/internal/daemon/bootgate.go
   packages/daemon/internal/daemon/probe.mjs
-  # The shared interface: `LEGACY_LEGION_LOADED_KEY` is the old package's marker, and the symbol
-  # table in the package's AGENTS.md says what that marker means.
+  # The shared interface: `LEGACY_LEGION_LOADED_KEY` is the old package's marker.
   packages/pi-shared/src/interface.ts
-  packages/pi-shared/AGENTS.md
-  # The Legion entry's refusal names the old package as the thing to uninstall, its test asserts
-  # that sentence, and the package's AGENTS.md quotes it.
+  # The Legion entry's refusal names the old package as the thing to uninstall, and its test
+  # asserts that sentence.
   packages/pi-legion/extensions/legion.ts
   packages/pi-legion/extensions/legion.test.ts
-  packages/pi-legion/AGENTS.md
   # The Go tests that plant the old package's marker and assert each lane's refusal.
   packages/daemon/internal/daemon/bootgate_test.go
   packages/daemon/internal/daemon/imageprobe_test.go

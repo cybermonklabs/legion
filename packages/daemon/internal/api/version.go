@@ -21,8 +21,7 @@ package api
 // and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
 // `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The same commit also writes this bump into the contract
-// history of `packages/pi-legion/AGENTS.md` as the last bump.
+// and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
 // disagrees with this constant.
 //
@@ -2421,7 +2420,7 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 175: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
+// 170: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
 // `--session-writer-audience <audience>`, a fifth session flag after
 // `--session-impersonate-service-account` (`sessionWriterAudienceFlag` after
 // `sessionProxyAccountFlag`, `internal/runtime/sandbox/manifest.go`). The daemon renders it only
@@ -2439,7 +2438,7 @@ package api
 // controller's pod runs the launcher's roles-dir form for its one role in place of the
 // single-role form (`--roles-dir` and `--role controller`, sandbox's
 // controllerPod.rolesDirContainer), so role-init hides the writer token and the controller's
-// launcher token from the controller's agent. A launcher built before 175 exits 2 on the unknown
+// launcher token from the controller's agent. A launcher built before 170 exits 2 on the unknown
 // flag in every pod the daemon creates with it, so the image probe, which holds the image's
 // pi-legion to this number, refuses such an image at boot instead, as it did for 137's flag. An
 // older daemon refuses the member by name (`internal/config`'s readSessionDatabase), so it
@@ -2448,14 +2447,14 @@ package api
 // launcher's command for its life, and an older daemon sends no `agentExecutable`, so that
 // launcher refuses every Oh My Pi start an older daemon sends it (`internal/launcher`'s
 // newSessionPeer). An older daemon also reads no fifth flag, and every relaunch of a claim
-// recorded at 175 installs its plugin pair and so keeps the pod whatever its image: each start is
+// recorded at 170 installs its plugin pair and so keeps the pod whatever its image: each start is
 // refused and charged as a launch failure, the controller's claim fails and its retries install
 // into the same pod until its Sandbox is deleted, and each issue claim fails and needs a retry
 // once its pod is replaced. So the member is turned off on this release first: restore the
 // account's grant to the pod's own principal, remove writer_audience and restart the daemon,
 // which reads the fifth flag as a moved session store and replaces each pod that carries it (an
 // issue pod by its update round, the controller's pod at its next launch); only once no launcher
-// command carries the flag is the daemon rolled back below 175 (docs/kubernetes.md, "Selecting
+// command carries the flag is the daemon rolled back below 170 (docs/kubernetes.md, "Selecting
 // the store"). A deployment that sets
 // no writer audience renders no fifth flag, and its launcher reads no `agentExecutable`, so its
 // pods carry the command they carried before. (The
@@ -2472,6 +2471,12 @@ package api
 // request at that merge, which ended at 2026-11-19T16:56:58Z, found 169 (#3831 and #4065), 170
 // (#2230, #4030, #4173, #4180 and #4193), 171 (#4115 and #4485), 172 (#3659), 173 (#4493) and
 // 174 (#4273) declared, so this entry moved to 175, the lowest number above main's 168 that no
-// other open pull request declares. Read the base's own number and every open pull request again
-// at every forward merge rather than from this line.)
-const DaemonAPIVersion = 175
+// other open pull request declares. The forward merge of 2026-11-19 that brought in d7c7c531 left
+// main at 168. A reading of every open pull request at that merge, which ended at
+// 2026-11-19T23:08:22Z, found 169 (#4273), 171 (#2230, #4049 and #4065), 172 (#3659), 173
+// (#4493), 174 (#3993), 175 (#3712 and #4432 as well), 176 (#4030, #4173, #4180, #4182, #4193,
+// #4259, #4261, #4269 and #4290), 177 (#4017), 178 (#3831 and #4115), 179 (#4392 and #4540) and
+// 180 (#4175) declared, and none 170, so this entry moved to 170, the lowest number above main's
+// 168 that no other open pull request declares. Read the base's own number and every open pull
+// request again at every forward merge rather than from this line.)
+const DaemonAPIVersion = 170
