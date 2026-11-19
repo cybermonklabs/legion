@@ -1668,11 +1668,11 @@ func TestProbeNameIsTheProjectAndTheImage(t *testing.T) {
 	}
 	long := probeName(strings.Repeat("widgets", 12), testDigestHex, "")
 	if len(long) > maxNameLength || !strings.HasPrefix(long, "legion-probe-widgetswidgets") || !strings.HasSuffix(long, "-1d10089a0000") {
-		t.Errorf("probeName of a long project = %q (%d characters), want a DNS label ending in the digest", long, len(long))
+		t.Errorf("probeName of a long project = %q (%d bytes), want a DNS label ending in the digest", long, len(long))
 	}
 	longRun := probeName(strings.Repeat("widgets", 12), testDigestHex, "0a1b2c3d")
 	if len(longRun) > maxNameLength || !strings.HasPrefix(longRun, "legion-probe-widgetswidgets") || !strings.HasSuffix(longRun, "-1d10089a0000-0a1b2c3d") {
-		t.Errorf("probeName of a long project with a run = %q (%d characters), want a DNS label ending in the digest and the run", longRun, len(longRun))
+		t.Errorf("probeName of a long project with a run = %q (%d bytes), want a DNS label ending in the digest and the run", longRun, len(longRun))
 	}
 }
 

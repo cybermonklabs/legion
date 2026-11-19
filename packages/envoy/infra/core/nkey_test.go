@@ -29,7 +29,7 @@ func TestUserSeedPublicKey(t *testing.T) {
 		{"lowercase", strings.ToLower(readmeSeed), "the value is not base32"},
 		{"empty", "", "the value decodes to 0 bytes, not the 36 of a seed"},
 		{"a user public key", readmePublicKey, "the value decodes to 35 bytes, not the 36 of a seed"},
-		{"one character changed", readmeSeed[:5] + "A" + readmeSeed[6:], "the value's checksum does not match"},
+		{"one base32 character changed", readmeSeed[:5] + "A" + readmeSeed[6:], "the value's checksum does not match"},
 		// The README seed's 32 bytes behind the prefix bytes (0, 0), with a valid checksum.
 		{"another prefix byte", "AAAKYRHVIOREXV7EUZTBHUHL7NUMHPMAS7QMDU3GTIUWEI5LDNOXD43I5I", "the value is not a seed (wrong prefix byte)"},
 		// The same bytes behind a seed's prefix of the account type: an account seed.

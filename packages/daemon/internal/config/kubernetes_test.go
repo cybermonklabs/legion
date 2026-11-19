@@ -1239,7 +1239,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "a claim name no claim can have",
 			body: kubernetesFile + "    pod:\n      volumes: [{name: share, persistent_volume_claim: {name: Team_Share}}]\n",
-			want: `runtime.kubernetes.pod.volumes[0].persistent_volume_claim.name "Team_Share" is no PersistentVolumeClaim's name: a claim is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters`,
+			want: `runtime.kubernetes.pod.volumes[0].persistent_volume_claim.name "Team_Share" is no PersistentVolumeClaim's name: a claim is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 ASCII characters`,
 		},
 		{
 			name: "a claim that sets read_only on the source",
