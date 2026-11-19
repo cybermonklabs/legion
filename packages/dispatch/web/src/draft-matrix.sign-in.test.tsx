@@ -15,8 +15,10 @@
  * | Another person's sign-in from another tab                  | (2)      |
  * | A reload, the composer's reads cached as the shell draws   | cell     |
  * | A lapse, then the same person's sign-in                    | cell     |
+ * | A sign-out, then the same person's or another's sign-in    | cell     |
+ * | A sign-out in another tab, then either person's sign-in    | cell     |
  *
- * The last row is the shell's first sign-in after a reload. The tab keeps what the reader typed
+ * The reload row is the shell's first sign-in after a reload. The tab keeps what the reader typed
  * (`draft-store.ts`), and the draft stores take it up when `AuthGate` tells them who is signed
  * in, so the shell is drawn only in the commit after that, the first sign-in's too: a composer
  * whose reads the query client already holds mounts in the shell's first commit and opens on the
@@ -27,6 +29,14 @@
  * is no write: the page does not list it, the draft store keeps it through the lapse
  * (`DraftStore.signedIn`), and the same person's sign-in draws the shell again with the composer
  * open on it.
+ *
+ * A sign-out is no lapse. Once it lands - the person's own press of Sign out, which Dispatch
+ * answers, or another tab's word that Dispatch signed them out there - every draft store forgets
+ * the person's drafts, in the page and in the tab's storage, and takes none until the next
+ * sign-in (`DraftStore.signedOut`): the draft the docked composer keeps for its address as the
+ * sign-in page takes it away is dropped too. So the tab keeps nothing of theirs for whoever signs
+ * in next at this browser, and the same person's sign-in opens the composer empty as another
+ * person's does.
  *
  * 1. Run under each client: TanStack's own, which the other app-shell rows use, and
  *    `DispatchQueryClient`, built as `main.tsx` builds it. While the check holds no answer the
@@ -68,7 +78,7 @@ import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
 import { ApiError, api } from "./api/client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
-import { renderApp } from "./app-sign-out-fixture";
+import { otherTab, renderApp } from "./app-sign-out-fixture";
 import { issue } from "./features/margin/margin-fixture";
 import { buildIssuePath } from "./features/refs/routes";
 
@@ -375,4 +385,105 @@ test("a lapse, then the same person's sign-in, opens the composer on the words t
     app.teardown();
     restoreReads();
   }
+});
+
+/** Every draft the tab keeps for a reload, as its entry's name and the login it is kept for. */
+function draftsKept(): string[] {
+  const storage = window.sessionStorage;
+  return Array.from({ length: storage.length }, (_, index) => storage.key(index))
+    .filter((name): name is string => name?.startsWith("dispatch.draft:") === true)
+    .map((name) => {
+      const kept: unknown = JSON.parse(storage.getItem(name) ?? "null");
+      const login = typeof kept === "object" && kept !== null ? Reflect.get(kept, "login") : "";
+      return `${name} (${String(login)})`;
+    });
+}
+
+/** Where alice's sign-out lands: her own press of Sign out on this page, which Dispatch answers,
+ *  or another tab's word on the sign-in channel that Dispatch signed her out there. */
+type SignedOutIn = "this tab" | "another tab";
+
+/** Has alice type into the docked composer on CORE-1's issue page, signs her out `where`, and
+ *  then has alice sign in again, and, on a page of its own, bob instead. For each it answers what
+ *  the tab keeps once she is signed out, what the composer opens on for the person signed in
+ *  next, how many fields on the page hold her words then, and what the tab keeps then. */
+async function afterASignOut(where: SignedOutIn): Promise<Record<string, unknown>> {
+  const typed = "Alice's comment, typed before she signed out";
+  const at = buildIssuePath({ key: issue.key, kind: "conversation" });
+  const seen: Record<string, unknown> = {};
+  for (const next of ["alice", "bob"]) {
+    const user = userEvent.setup();
+    const restoreReads = answerIssueReads();
+    // Who Dispatch names: alice, nobody once she is signed out, and then the person signed in next.
+    let login: string | undefined = "alice";
+    const app = renderApp({
+      at,
+      logout: async () => {
+        login = undefined;
+        return { ok: true as const };
+      },
+      whoAmI: async () => {
+        if (login === undefined) throw new ApiError(401, { error: "unauthorized" });
+        return named(login);
+      },
+    });
+    const signer = where === "another tab" ? otherTab("tab-2") : undefined;
+    try {
+      const composer = await screen.findByRole("form", { name: "Comment composer" });
+      const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+      await user.click(field);
+      await user.paste(typed);
+
+      if (signer === undefined) {
+        await user.click(screen.getByRole("button", { name: "Sign out" }));
+      } else {
+        login = undefined;
+        act(() => signer.say({ signedOut: "alice" }));
+      }
+      await screen.findByRole("link", { name: "Sign in with Google" });
+      const signedOut = draftsKept();
+
+      login = next;
+      await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
+      await screen.findByText(`Signed in as ${next}`);
+      const back = await screen.findByRole("form", { name: "Comment composer" });
+      const opened = within(back).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+      seen[next] = {
+        composer: opened.value,
+        kept: draftsKept(),
+        shown: screen.queryAllByDisplayValue(typed).length,
+        signedOut,
+      };
+    } finally {
+      signer?.close();
+      app.teardown();
+      restoreReads();
+    }
+  }
+  return seen;
+}
+
+/** What a cell below sees for each person signed in after alice's sign-out: nothing of hers. */
+const NOTHING_OF_ALICES = { composer: "", kept: [], shown: 0, signedOut: [] };
+
+// A sign-out is no lapse: the person ended their session at this browser, and whoever signs in
+// next here must find nothing they typed. Alice presses Sign out with words in the docked
+// composer, and Dispatch answers it. The sign-in page takes the composer away, and the tab keeps
+// none of her drafts, the one the composer keeps for its address as it goes among them; her own
+// sign-in then opens the composer empty, as bob's does.
+test("a sign-out, then the same person's or another person's sign-in, opens the composer empty and leaves the tab none of the person's drafts", async () => {
+  expect(await afterASignOut("this tab")).toEqual({
+    alice: NOTHING_OF_ALICES,
+    bob: NOTHING_OF_ALICES,
+  });
+});
+
+// The same sign-out, landed in another tab of the browser: that tab says Dispatch signed alice
+// out (`{signedOut}` on the sign-in channel), this page reads who is signed in and draws the
+// sign-in page, and it keeps nothing of hers either.
+test("a sign-out in another tab, then the same person's or another person's sign-in, opens the composer empty and leaves the tab none of the person's drafts", async () => {
+  expect(await afterASignOut("another tab")).toEqual({
+    alice: NOTHING_OF_ALICES,
+    bob: NOTHING_OF_ALICES,
+  });
 });

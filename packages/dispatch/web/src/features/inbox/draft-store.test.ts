@@ -81,6 +81,56 @@ test("another person's sign-in forgets every draft in the tab too, and a lapse k
   });
 });
 
+// A sign-out that lands ends the person's session at this browser, so the next person to sign in
+// here must find nothing they typed: the store forgets their drafts in the page and in the tab,
+// and takes none a field hands it before the next sign-in (the shell going, its fields with it),
+// so the person's own sign-in after it finds nothing either. A page that has not been told who is
+// signed in yet drops what the tab kept for them; a store whose drafts are another person's keeps
+// those, in the page and in the tab. A lapse is no sign-out, and keeps everything.
+test("a sign-out forgets the person's drafts in the page and in the tab, keeps another person's, and a lapse keeps them", () => {
+  const { storage } = keptTab();
+  const store = createDraftStore("answer", storage);
+  store.signedIn("alice");
+  store.set("ask-1", "My answer");
+  store.signedIn(undefined);
+  const lapsed = { kept: storage.getItem(entry("ask-1")) !== null, read: store.read("ask-1") };
+  store.signedOut("alice");
+  const signedOut = { kept: storage.getItem(entry("ask-1")), read: store.read("ask-1") };
+  store.set("ask-1", "My answer, handed over as the field went");
+  const handedOver = { kept: storage.getItem(entry("ask-1")), read: store.read("ask-1") };
+  store.signedIn("alice");
+  const signedInAgain = store.read("ask-1");
+
+  const before = createDraftStore("answer", storage);
+  before.signedIn("alice");
+  before.set("ask-2", "My other answer");
+  const loaded = createDraftStore("answer", storage);
+  loaded.signedOut("alice");
+  const loadedKept = storage.getItem(entry("ask-2"));
+  loaded.signedIn("alice");
+
+  const bobsTab = keptTab();
+  const bobs = createDraftStore("answer", bobsTab.storage);
+  bobs.signedIn("bob");
+  bobs.set("ask-3", "Bob's answer");
+  bobs.signedOut("alice");
+  expect({
+    bob: { kept: bobsTab.storage.getItem(entry("ask-3")) !== null, read: bobs.read("ask-3") },
+    handedOver,
+    lapsed,
+    loaded: { kept: loadedKept, read: loaded.read("ask-2") },
+    signedInAgain,
+    signedOut,
+  }).toEqual({
+    bob: { kept: true, read: "Bob's answer" },
+    handedOver: { kept: null, read: "" },
+    lapsed: { kept: true, read: "My answer" },
+    loaded: { kept: null, read: "" },
+    signedInAgain: "",
+    signedOut: { kept: null, read: "" },
+  });
+});
+
 test("with nobody signed in yet, a draft stays in the page and nothing is kept in the tab", () => {
   const { storage } = keptTab();
   const store = createDraftStore("answer", storage);

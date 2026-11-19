@@ -29,6 +29,12 @@ export const coverage: readonly CoverageEntry[] = [
     {
       row: "a lapse, then the same person's sign-in, opens the composer on the words typed before the lapse",
     },
+    {
+      row: "a sign-out, then the same person's or another person's sign-in, opens the composer empty and leaves the tab none of the person's drafts",
+    },
+    {
+      row: "a sign-out in another tab, then the same person's or another person's sign-in, opens the composer empty and leaves the tab none of the person's drafts",
+    },
     { reason: REASONS[1] },
     { reason: REASONS[2] }
   ),
@@ -45,6 +51,12 @@ export const coverage: readonly CoverageEntry[] = [
     "AuthGate | AuthenticatedApp | early return | if (signedOut) return …",
     {
       row: "a lapse, then the same person's sign-in, opens the composer on the words typed before the lapse",
+    },
+    {
+      row: "a sign-out, then the same person's or another person's sign-in, opens the composer empty and leaves the tab none of the person's drafts",
+    },
+    {
+      row: "a sign-out in another tab, then the same person's or another person's sign-in, opens the composer empty and leaves the tab none of the person's drafts",
     },
     { reason: REASONS[3] }
   ),

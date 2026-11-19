@@ -1140,6 +1140,51 @@ test("a change of who is signed in undoes the writes it drops before the kinds l
   });
 });
 
+// A sign-out that lands is told, with the person it signed out, once their writes are gone,
+// whichever way it lands: this page's (`signedOut`), another tab's (`dropLogin`), and a lapse that
+// is another tab's sign-out landing - one still holding the writes, or one whose tab went just
+// before it (`releaseUnsettled`). The page forgets the drafts the person typed on that word
+// (`app.tsx`). A plain lapse, another person's sign-in and the preload's `clear` land none, and
+// tell no one.
+test("a landed sign-out tells whom it signed out, and a lapse or another person's sign-in tells no one", async () => {
+  await onFakeClock(async () => {
+    const ways: Record<string, (writes: Writes) => void> = {
+      "this page's sign-out": (writes) => writes.signedOut("alice"),
+      "another tab's sign-out": (writes) => writes.dropLogin("alice"),
+      "a lapse under another tab's sign-out": (writes) => {
+        writes.holdFor("alice");
+        writes.signedIn(undefined);
+      },
+      "a lapse just after a gone tab's sign-out": (writes) => {
+        writes.holdFor("alice");
+        writes.releaseUnsettled("alice");
+        writes.signedIn(undefined);
+      },
+      "a lapse": (writes) => writes.signedIn(undefined),
+      "another person's sign-in": (writes) => writes.signedIn("bob"),
+      "the preload's clear": (writes) => writes.clear(),
+    };
+    const heard: string[] = [];
+    for (const [name, way] of Object.entries(ways)) {
+      const { writes } = storeOf();
+      writes.signedIn("alice");
+      void statusWrite(writes, () => Promise.withResolvers<never>().promise).catch(() => {});
+      await settle();
+      const stop = writes.onSignedOut((login) => {
+        heard.push(`${name}: ${login}, ${writes.rows().length} writes left`);
+      });
+      way(writes);
+      stop();
+    }
+    expect(heard).toEqual([
+      "this page's sign-out: alice, 0 writes left",
+      "another tab's sign-out: alice, 0 writes left",
+      "a lapse under another tab's sign-out: alice, 0 writes left",
+      "a lapse just after a gone tab's sign-out: alice, 0 writes left",
+    ]);
+  });
+});
+
 // W48. A sign-out discards nothing until Dispatch answers it, and sends nothing of its person's
 // meanwhile: while it is out every other write of theirs stops trying after the attempt in flight
 // and none starts. Refused, it lets them go on, each where it stood; landed, they stay held until
