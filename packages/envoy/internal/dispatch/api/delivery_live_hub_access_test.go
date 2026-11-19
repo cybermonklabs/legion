@@ -16,10 +16,11 @@ import (
 // access.ChangedChannel as it commits, and the hub resolves every subscriber's reader again before
 // its next recompute. dave, a full member PRIV's list names, holds a timeline. He is taken off the
 // list in a write that appends no event, so the live event feed carries nothing that could move
-// what he sees; only the announcement does. A pull request of acme/secret, PRIV's repository, then
-// reaches dave's page in no frame. A pull request of acme/widgets, PUB's, written after it, does:
-// the read that names it has read acme/secret#7's row as well, and would name it too were it made
-// for the reader dave had before. The test ends on that frame, and fails when no frame names it.
+// what he sees; only the announcement does. acme/secret#7, a pull request of PRIV's issue, then
+// reaches dave's page in no frame. acme/widgets#8, which names no issue and so is shown to every
+// open viewer, written after it, does: the read that names it has read acme/secret#7's row as well,
+// and would name it too were it made for the reader dave had before. The test ends on that frame,
+// and fails when no frame names it.
 //
 // Control: the hub does not listen on access.ChangedChannel. dave's page is sent acme/secret#7
 // with the next delta, read for the reader he had before, and the test fails naming it.
@@ -29,13 +30,6 @@ func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
 	seedPeople(t, seed.database, dave)
 	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/people/"+dave, nil, http.StatusOK)
 	seedHubSettings(t, seed.database)
-	if _, err := seed.database.Pool.Exec(t.Context(), `
-		insert into repo_projects (repo, project, created_by) values
-			('acme/widgets', 'PUB', '{"kind":"user","id":"operator"}'),
-			('acme/secret', 'PRIV', '{"kind":"user","id":"operator"}')
-	`); err != nil {
-		t.Fatalf("map the two repositories: %v", err)
-	}
 	clock := newNoonHubClock()
 	now := clock.Now()
 	rig := hubOn(t, seed.handler, seed.database, seed.deps, clock, nil)
@@ -67,6 +61,7 @@ func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
 	}
 	secret := hubPR(7, now.Add(-time.Hour))
 	secret.Repo, secret.URL = "acme/secret", "https://github.com/acme/secret/pull/7"
+	secret.IssueKey = new(seed.issue[seedPrivate])
 	upsertPR(t, seed.database, secret)
 	upsertPR(t, seed.database, hubPR(8, now.Add(-time.Hour)))
 
@@ -125,23 +120,17 @@ func framePullRequests(frame any) ([]string, []byte) {
 // again after the re-check. The racing subscribe here resolves a reader that sees PRIV, as one
 // resolved before an access change would, and a re-check runs to its end before the subscribe
 // joins; resolved again, the reader sees PRIV no more, and the page is sent a snapshot that names
-// no pull request of acme/secret, PRIV's repository.
+// no pull request of PRIV's issue.
 //
 // Control: the hub does not resolve a sub's reader again when its subscribe raced a re-check; the
 // page holds the snapshot read for the reader that saw PRIV, and the test fails.
 func TestASubscribeThatRacesAReaderRecheckIsReadAgain(t *testing.T) {
 	seed := seedPrivateProject(t)
 	seedHubSettings(t, seed.database)
-	if _, err := seed.database.Pool.Exec(t.Context(), `
-		insert into repo_projects (repo, project, created_by) values
-			('acme/widgets', 'PUB', '{"kind":"user","id":"operator"}'),
-			('acme/secret', 'PRIV', '{"kind":"user","id":"operator"}')
-	`); err != nil {
-		t.Fatalf("map the two repositories: %v", err)
-	}
 	clock := newNoonHubClock()
 	secret := hubPR(7, clock.Now().Add(-time.Hour))
 	secret.Repo, secret.URL = "acme/secret", "https://github.com/acme/secret/pull/7"
+	secret.IssueKey = new(seed.issue[seedPrivate])
 	upsertPR(t, seed.database, secret)
 	saw, err := seed.server.readerFor(t.Context(), model.BrowserActor(seedCarol))
 	if err != nil {
@@ -204,8 +193,8 @@ func TestASubscribeThatRacesAReaderRecheckIsReadAgain(t *testing.T) {
 // TestADeliveryViewIsReadAgainForItsReaderAtANewProject: a new project is public, so every full
 // member sees it as it is made, and its project.created event, which the relay's feed carries and
 // nothing announces on access.ChangedChannel, has the hub resolve every subscriber's reader again.
-// alice, a full member, holds a timeline; carol makes project NEW, and a pull request of
-// acme/fresh, NEW's repository, then reaches alice's page.
+// alice, a full member, holds a timeline; carol makes project NEW and an issue in it, and
+// acme/fresh#9, a pull request of that issue, then reaches alice's page.
 //
 // Control: the hub's intake takes project.created as it takes any other event; alice's view stays
 // read for the reader that saw no NEW, and no frame names acme/fresh#9.
@@ -223,13 +212,12 @@ func TestADeliveryViewIsReadAgainForItsReaderAtANewProject(t *testing.T) {
 	rig.settle(t)
 
 	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/projects", map[string]string{"key": "NEW", "name": "Project NEW"}, http.StatusCreated)
-	if _, err := seed.database.Pool.Exec(t.Context(), `
-		insert into repo_projects (repo, project, created_by) values ('acme/fresh', 'NEW', '{"kind":"user","id":"operator"}')
-	`); err != nil {
-		t.Fatalf("map acme/fresh to NEW: %v", err)
-	}
+	created := decodeBody[struct {
+		Key string `json:"key"`
+	}](t, seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues", map[string]string{"project": "NEW", "title": "The issue of NEW"}, http.StatusCreated))
 	fresh := hubPR(9, clock.Now().Add(-time.Hour))
 	fresh.Repo, fresh.URL = "acme/fresh", "https://github.com/acme/fresh/pull/9"
+	fresh.IssueKey = &created.Key
 	upsertPR(t, seed.database, fresh)
 
 	deadline := time.After(10 * time.Second)

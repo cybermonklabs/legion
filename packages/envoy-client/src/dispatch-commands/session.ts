@@ -64,9 +64,11 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // a session of its own: read either omission as that older build, not as "no session".
   const proved = identity.kind === "agent" ? (identity.session ?? null) : null;
   const project = identity.kind === "agent" ? (identity.project ?? null) : null;
-  // The projects the credential may use, which a Dispatch that predates the list leaves out, as
-  // it does for a credential that lists none; project is then the one it names, if any.
-  const projects = identity.projects?.length ? identity.projects : null;
+  // The projects the credential may use, which only the agent shape carries (a browser's cookie
+  // lists none), and which a Dispatch that predates the list leaves out, as it does for a
+  // credential that lists none; project is then the one it names, if any.
+  const projects =
+    identity.kind === "agent" && identity.projects?.length ? identity.projects : null;
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =

@@ -133,7 +133,7 @@ func TestPullRequestsMergedTogetherComeBackInOneOrder(t *testing.T) {
 		t.Helper()
 		for i, planned := range pools {
 			plan := storetest.Plans[i]
-			window, err := ListPullRequestsInWindow(ctx, planned, everyViewer, earlier, at)
+			window, err := ListPullRequestsInWindow(ctx, planned, earlier, at)
 			if err != nil {
 				t.Fatalf("ListPullRequestsInWindow: %v", err)
 			}
@@ -144,7 +144,7 @@ func TestPullRequestsMergedTogetherComeBackInOneOrder(t *testing.T) {
 			if !slices.Equal(got, wantWindow) {
 				t.Errorf("%s, ListPullRequestsInWindow under a %s = %q, want %q", when, plan, got, wantWindow)
 			}
-			waiting, err := ListPullRequestsWaitingAt(ctx, planned, everyViewer, "acme/widgets", Production{JobNames: []string{"widgets-release / widgets-release"}}, at)
+			waiting, err := ListPullRequestsWaitingAt(ctx, planned, "acme/widgets", Production{JobNames: []string{"widgets-release / widgets-release"}}, at)
 			if err != nil {
 				t.Fatalf("ListPullRequestsWaitingAt: %v", err)
 			}

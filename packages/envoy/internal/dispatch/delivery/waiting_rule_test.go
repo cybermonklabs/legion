@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -176,39 +174,6 @@ func TestTheWaitingSQLAgreesWithTheShippingRuleForProductionJobNamesAndStepData(
 	}
 }
 
-// TestTheWaitingPullRequestsAreOfARepositoryTheReaderSees: ListPullRequestsWaitingAt holds the
-// deploy repository to the reader's viewer (access.RepositoryClause), as every read of a pull
-// request is. acme/widgets is mapped to deliveryProject, and one of its pull requests waits, no
-// deploy having run: a reader that sees deliveryProject reads it, and an open reader that does not
-// reads none.
-//
-// Control: the statement holds the repository to no viewer; the reader that does not see
-// deliveryProject reads the pull request, and the test fails.
-func TestTheWaitingPullRequestsAreOfARepositoryTheReaderSees(t *testing.T) {
-	pool, ctx := deliveryTestPool(t)
-	seedDeliveryProject(t, ctx, pool)
-	at := time.Date(2024, 5, 10, 0, 0, 0, 0, time.UTC)
-	seedWaitingHistory(t, ctx, pool, nil, []waitingPR{{waitingRepo, 501, at.Add(-24 * time.Hour)}})
-	production := Production{JobNames: []string{waitingJob}}
-	for _, reader := range []struct {
-		name string
-		sees []string
-		want int
-	}{
-		{"a reader that sees " + deliveryProject, []string{deliveryProject}, 1},
-		{"an open reader that does not see " + deliveryProject, []string{}, 0},
-	} {
-		viewer := refs.VisibilityArg(model.Actor{Viewer: &model.Viewer{Person: "dana", Open: true, Sees: reader.sees, AnyPrivate: true}})
-		waiting, err := ListPullRequestsWaitingAt(ctx, pool, viewer, waitingRepo, production, at)
-		if err != nil {
-			t.Fatalf("ListPullRequestsWaitingAt for %s: %v", reader.name, err)
-		}
-		if len(waiting) != reader.want {
-			t.Errorf("%s reads %d waiting pull requests of %s, want %d", reader.name, len(waiting), waitingRepo, reader.want)
-		}
-	}
-}
-
 // TestTheWaitingSQLAgreesWithTheShippingRuleOverMergeQueueHistories holds the same agreement over
 // generated histories shaped as a merge queue makes them: each run's head commit is timed up to an
 // hour before GitHub created it, a pull request lands in that gap, in a run's own creation second,
@@ -341,7 +306,7 @@ func seedWaitingHistory(t *testing.T, ctx context.Context, pool *store.Pool, run
 // the run that ships it after at.
 func waitingSets(t *testing.T, ctx context.Context, pool *store.Pool, at time.Time, production Production) (sqlSet, goSet map[int]string) {
 	t.Helper()
-	waiting, err := ListPullRequestsWaitingAt(ctx, pool, everyViewer, waitingRepo, production, at)
+	waiting, err := ListPullRequestsWaitingAt(ctx, pool, waitingRepo, production, at)
 	if err != nil {
 		t.Fatalf("ListPullRequestsWaitingAt: %v", err)
 	}
@@ -351,7 +316,7 @@ func waitingSets(t *testing.T, ctx context.Context, pool *store.Pool, at time.Ti
 	}
 
 	epoch := time.Unix(0, 0)
-	stored, err := ListPullRequestsInWindow(ctx, pool, everyViewer, epoch, at)
+	stored, err := ListPullRequestsInWindow(ctx, pool, epoch, at)
 	if err != nil {
 		t.Fatalf("ListPullRequestsInWindow: %v", err)
 	}

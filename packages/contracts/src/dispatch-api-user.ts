@@ -34,10 +34,11 @@ export interface AuthenticatedUser {
  *  session the credential itself proved, which only an access token the secrets broker issued
  *  does, and `project`, deprecated, the one key of a one-key `projects`, null for any other list.
  *  Both are absent from a Dispatch older than broker-issued tokens, which a client reads as an
- *  older build rather than as null. `projects` is the credential's list, sorted, and
- *  the agent form's `private_projects` those of them the caller must treat as private (a private
- *  project, one the credential no longer sees, one that names no project), so a key is public
- *  exactly when it is in `projects` and not in `private_projects`; both are absent when empty.
+ *  older build rather than as null. The agent form's `projects` is the credential's list, sorted,
+ *  and its `private_projects` those of them the caller must treat as private (a private project,
+ *  one the credential no longer sees, one that names no project), so a key is public exactly when
+ *  it is in `projects` and not in `private_projects`; both are absent when empty. A person at a
+ *  browser lists none, so the person form carries neither.
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
  *  call: both of them for a person at a browser, the set its row names for a personal token, and

@@ -450,15 +450,11 @@ type deliveryView struct {
 	readFrom time.Time
 	// body is the last answer, nil until the first and while delivery is not configured; seq the
 	// change position it reflects and changedAt when that change was recorded; and readingSeq the
-	// position a read under way reflects, so a change at or before it marks nothing. shownSeq and
-	// shownAt are the position and its time the view's frames name, the newest change at or below
-	// seq its reader sees (deliveryShownChange).
+	// position a read under way reflects, so a change at or before it marks nothing.
 	body       *deliveryLiveEncoded
 	seq        int64
 	readingSeq int64
 	changedAt  *time.Time
-	shownSeq   int64
-	shownAt    *time.Time
 	// from and at are the window start and the pipeline clock the last answer resolved; expiry is
 	// the next moment something leaves it, zero for a custom range or a pinned at.
 	from, at time.Time

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -54,8 +55,8 @@ type deliveryPipelinePRChecks struct {
 // fixture's day. Runs are read by start over the whole of the shown days, today included past at.
 // The PR checks are the pull_request runs; the deploy jobs are read from the push runs on main
 // (decision 6); the lead times are every population pull request merged in the shown days,
-// before any facet, since the Pipeline page follows neither the timeline's window nor its facets,
-// and of those only the ones of a repository the caller sees (readDeliveryRows).
+// before any facet, since the Pipeline page follows neither the timeline's window nor its facets.
+// Each of the three counts only what the timeline's rule shows the caller (readPipelinePopulation).
 func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 	reader, ok := s.readerOf(w, r)
 	if !ok {
@@ -81,15 +82,22 @@ func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 
 // pipelinePopulation is every read the Pipeline page's answer for one `at` makes: the PR-checks
 // pull_request runs and the deploy push runs on main started in the shown days, each with its
-// jobs, and the population pull requests merged in them (their lead times).
+// jobs, and the population pull requests merged in them (their lead times), each as its reader is
+// shown it.
 type pipelinePopulation struct {
 	checks, deploys delivery.RunsWithJobs
 	leadTimes       deliveryPopulation
 }
 
 // readPipelinePopulation reads the Pipeline page's runs and pull requests for the shown days
-// ending on at's UTC day, the lead times' pull requests as reader reads them (readDeliveryRows).
-// Runs are read by start over the whole of the shown days, today included past at.
+// ending on at's UTC day, as reader is shown them. Runs are read by start over the whole of the
+// shown days, today included past at. The lead times' pull requests are the timeline's
+// (readDeliveryRows), and so are the deploy runs: one the timeline leaves out, having first
+// shipped only pull requests the reader is not shown, is left out of the job timings
+// (deliveryPopulation.hiddenRuns). A PR-checks run names its pull request by number, so it can
+// carry a hidden pull request's timing, failing job and run address: it is shown when its pull
+// request, the deploy repository's row of that number, is, and one whose number no row holds names
+// no issue and is shown to an open viewer (prChecksShown).
 func (s *server) readPipelinePopulation(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, at time.Time) (pipelinePopulation, error) {
 	pool := s.deps.Store.Pool
 	from := measures.WindowStart(at)
@@ -124,7 +132,42 @@ func (s *server) readPipelinePopulation(ctx context.Context, reader model.Actor,
 	if pop.leadTimes, err = s.readDeliveryRows(ctx, reader, settings, from, to, url.Values{}, false, false); err != nil {
 		return pipelinePopulation{}, err
 	}
+	if seesEveryObject(reader) {
+		return pop, nil
+	}
+	pop.deploys.Runs, pop.deploys.Jobs = runsWhere(pop.deploys.Runs, pop.deploys.Jobs, func(run delivery.DeliveryRun) bool {
+		return !pop.leadTimes.hiddenRuns[run.RunID]
+	})
+	shown, err := s.prChecksShown(ctx, reader, settings.DeployRepo, pop.checks.Runs)
+	if err != nil {
+		return pipelinePopulation{}, err
+	}
+	pop.checks.Runs, pop.checks.Jobs = runsWhere(pop.checks.Runs, pop.checks.Jobs, shown)
 	return pop, nil
+}
+
+// prChecksShown is whether reader is shown each of runs, PR-checks runs of repo: a run is shown
+// when its pull request, the row of its number (delivery.PullRequestNumbersShown), is, and a run
+// whose number no row holds, or that names none, names no issue and is shown to an open viewer.
+func (s *server) prChecksShown(ctx context.Context, reader model.Actor, repo string, runs []delivery.DeliveryRun) (func(delivery.DeliveryRun) bool, error) {
+	numbers := []int{}
+	for _, run := range runs {
+		if run.PRNumber != nil {
+			numbers = append(numbers, *run.PRNumber)
+		}
+	}
+	shown, err := delivery.PullRequestNumbersShown(ctx, s.deps.Store.Pool, repo, numbers, refs.VisibilityArg(reader))
+	if err != nil {
+		return nil, err
+	}
+	open := reader.Viewer != nil && reader.Viewer.Open
+	return func(run delivery.DeliveryRun) bool {
+		if run.PRNumber == nil {
+			return open
+		}
+		visible, stored := shown[*run.PRNumber]
+		return visible || (!stored && open)
+	}, nil
 }
 
 // deliveryPipelineCompute is GET /api/v1/delivery/pipeline's body as of at, from a population read

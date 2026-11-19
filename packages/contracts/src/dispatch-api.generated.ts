@@ -870,7 +870,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends. */
+    /** @description The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends. An open viewer reads the passes; a restricted member or a credential that lists projects is 403 DEPLOYMENT_READ_REFUSED. */
     get: operations["getApiV1CiReconcilePasses"];
     put?: never;
     post?: never;
@@ -1177,7 +1177,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. Only the pull requests whose issue the caller sees, and, for a full member or a credential with no person that lists no project, those that name no issue; every count, facet, measure and title is computed from them, and a run with none of its pull requests left is left out. */
     get: operations["getApiV1DeliveryMeasures"];
     put?: never;
     post?: never;
@@ -1194,7 +1194,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets; not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets; not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. Its lead times, deploy job timings and PR checks count only the pull requests and runs the timeline's rule shows the caller. */
     get: operations["getApiV1DeliveryPipeline"];
     put?: never;
     post?: never;
@@ -1211,7 +1211,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. A run the timeline's rule does not show the caller answers 404 NOT_FOUND, as a run id no run holds does. */
     get: operations["getApiV1DeliveryRunsById"];
     put?: never;
     post?: never;
@@ -1230,7 +1230,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Create a Delivery session group {name, sessions}: the group becomes the Parent agent of every pull request whose first session it holds; 409 SESSION_IN_GROUP for a session another group holds, 409 SESSION_GROUP_NAME_TAKEN for a name another group has, 409 SESSION_GROUP_NAME_IS_SESSION_TITLE for a name that is the title of a session outside the group. The timeline lists every group (session_groups). */
+    /** @description Create a Delivery session group {name, sessions}: the group becomes the Parent agent of every pull request whose first session it holds; 409 SESSION_IN_GROUP for a session another group holds, 409 SESSION_GROUP_NAME_TAKEN for a name another group has, 409 SESSION_GROUP_NAME_IS_SESSION_TITLE for a name that is the title of a session outside the group. The timeline lists every group whose every session the caller may see (session_groups). */
     post: operations["postApiV1DeliverySessionGroups"];
     delete?: never;
     options?: never;
@@ -1263,7 +1263,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. Only the pull requests whose issue the caller sees, and, for a full member or a credential with no person that lists no project, those that name no issue; every count, facet, measure and title is computed from them, and a run with none of its pull requests left is left out. */
     get: operations["getApiV1DeliveryTimeline"];
     put?: never;
     post?: never;
@@ -3227,7 +3227,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. Either shape also carries projects, the list of projects the credential may use, sorted, absent when it lists none; project is deprecated, and for a credential with a list is its one key when the list holds one, null otherwise. The agent shape also carries private_projects, those of projects the caller must treat as private: a private project, one the credential no longer sees, or a key no project holds, sorted, absent when there is none; a key is public exactly when it is in projects and not in private_projects. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. member_kind is restricted for a restricted member, and absent for everyone else; a member kind that cannot be read is 503 IDENTITY_UNAVAILABLE. */
+    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. projects is the list of projects the credential may use, sorted, absent when it lists none. private_projects lists those of projects the caller must treat as private: a private project, or one the credential no longer sees, sorted, absent when there is none. project is deprecated, and is the one key of a one-key list, null otherwise. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. member_kind is restricted for a restricted member, and absent for everyone else; a member kind that cannot be read is 503 IDENTITY_UNAVAILABLE. */
     get: operations["getApiV1Whoami"];
     put?: never;
     post?: never;
@@ -6814,7 +6814,6 @@ export interface components {
       login: string;
       /** @enum {string} */
       member_kind?: "restricted";
-      projects?: string[];
       scopes: string[] | null;
     };
     WorkUnderNoPriority: {

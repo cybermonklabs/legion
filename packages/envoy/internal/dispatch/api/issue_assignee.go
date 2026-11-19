@@ -151,18 +151,17 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, listUsersResponse{Users: users})
 }
 
-// whoamiUser is the body GET /api/v1/whoami answers a person at a browser.
+// whoamiUser is the body GET /api/v1/whoami answers a person at a browser. A browser's cookie lists
+// no projects, so the shape carries no list (KF4): a credential that lists projects is an agent
+// credential, and answers whoamiAgent.
 type whoamiUser struct {
 	// Always "user": whoami writes this body for a person at a browser alone.
 	Kind  string `json:"kind" enum:"user"`
 	Login string `json:"login"`
 	// MemberKind is "restricted" for a restricted member and absent for everyone else, so a full
 	// member's answer is the one it always was.
-	MemberKind string `json:"member_kind,omitempty" enum:"restricted"`
-	// Projects is the list of projects the credential may use, sorted, and absent when it lists
-	// none, which a browser's cookie never does (whoamiProjects).
-	Projects []string `json:"projects,omitempty"`
-	Scopes   []string `json:"scopes"`
+	MemberKind string   `json:"member_kind,omitempty" enum:"restricted"`
+	Scopes     []string `json:"scopes"`
 }
 
 // whoamiAgent is the body GET /api/v1/whoami answers every credential that is not a person's
@@ -238,7 +237,7 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 
 // newWhoamiUser is whoami's answer to a person at a browser.
 func newWhoamiUser(actor model.Actor, memberKind string, scopes []string) whoamiUser {
-	return whoamiUser{Kind: "user", Login: actor.ID, MemberKind: memberKind, Projects: whoamiProjects(actor.Credential), Scopes: scopes}
+	return whoamiUser{Kind: "user", Login: actor.ID, MemberKind: memberKind, Scopes: scopes}
 }
 
 // newWhoamiAgent is whoami's answer to a credential that is not a person's browser session. Its
@@ -298,9 +297,9 @@ func whoamiScopes(credential *model.Credential) []string {
 	return credential.Scopes
 }
 
-// whoamiProjects is the projects a credential lists as whoami answers them, in either shape: a
-// sorted copy, and nil, which the answer leaves out, for a credential that lists none (KF4: avenue
-// F routes a session's transcripts by this list).
+// whoamiProjects is the projects a credential lists as whoami's agent shape answers them: a sorted
+// copy, and nil, which the answer leaves out, for a credential that lists none (KF4: avenue F
+// routes a session's transcripts by this list).
 func whoamiProjects(credential *model.Credential) []string {
 	if credential == nil || len(credential.Projects) == 0 {
 		return nil
