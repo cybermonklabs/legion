@@ -115,7 +115,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.Labels != nil {
 		var err error
-		labels, err = normalizeIssueLabels(*input.Labels)
+		labels, err = normalizeIssueLabels("labels", *input.Labels)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -123,7 +123,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.LabelsAdd != nil {
 		var err error
-		labelsAdd, err = normalizeIssueLabels(*input.LabelsAdd)
+		labelsAdd, err = normalizeIssueLabels("labels_add", *input.LabelsAdd)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -609,7 +609,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 // mergeIssueLabels adds labels to existing without dropping a concurrent writer's labels. The total
 // still passes through the same cap and de-duplication as a full labels replacement.
 func mergeIssueLabels(existing, added []string) ([]string, error) {
-	return normalizeIssueLabels(append(append([]string{}, existing...), added...))
+	return normalizeIssueLabels("labels", append(append([]string{}, existing...), added...))
 }
 
 // isExternalLinksSubset reports whether every URL in requested already belongs to existing. The

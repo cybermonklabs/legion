@@ -536,16 +536,18 @@ func (a *advancesScan) resolve() []model.IssueAdvance {
 	return entries
 }
 
-func normalizeIssueLabels(values []string) ([]string, error) {
+// normalizeIssueLabels trims, bounds and deduplicates the labels a request sent in field (`labels`,
+// `labels_add`, or the list query's repeated `label`), and a refusal names that field.
+func normalizeIssueLabels(field string, values []string) ([]string, error) {
 	if len(values) > maxIssueLabels {
-		return nil, countExceededError("LABELS_INPUT", "labels", len(values), maxIssueLabels)
+		return nil, countExceededError("LABELS_INPUT", field, len(values), maxIssueLabels)
 	}
 	labels := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for index, value := range values {
 		label := strings.TrimSpace(value)
 		if length := itemblocks.Units16(label); length == 0 || length > maxIssueLabel16 {
-			return nil, errorf(http.StatusBadRequest, "LABELS_INPUT", "labels[%d] is %d long; a label is 1 to %d long", index, length, maxIssueLabel16)
+			return nil, errorf(http.StatusBadRequest, "LABELS_INPUT", "%s[%d] is %d long; a label is 1 to %d long", field, index, length, maxIssueLabel16)
 		}
 		key := strings.ToLower(label)
 		if _, duplicate := seen[key]; duplicate {
@@ -573,7 +575,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	project := strings.TrimSpace(query.Get("project"))
 	statuses := parseStatusFilter(query["status"])
 	parent := strings.TrimSpace(query.Get("parent"))
-	labels, err := normalizeIssueLabels(query["label"])
+	labels, err := normalizeIssueLabels("label", query["label"])
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
