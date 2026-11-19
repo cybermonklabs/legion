@@ -2468,6 +2468,9 @@ package api
 // Contract 151 is served with no code of its own here: its four shapes are on the launcher's
 // wire, which the image probe pairs by number, and its one state key is a settings key, so a
 // caller at 151 is served what one at 146 is, and 151's records are 146's under its own number.
+// Contract 160 is served with no code of its own here: its two shapes are on the launcher's
+// wire, which the image probe pairs by number, and its one state key is a settings key, so a
+// caller at 160 is served what one at 152 is, and 160's records are 152's under its own number.
 // Contract 146 is one of the contracts served down here too, by its row of shaping.go's
 // stateNarrowings, and this contract is served above it: a caller below 146 is served every
 // issue without `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (`withoutEntryTimes`,
@@ -2497,10 +2500,6 @@ package api
 // alike. The controller's `read_state` of 46 to 85 hands its model the parsed state whole, which
 // is no read, and an earlier `legion controller start` names `mapped` in its controller's
 // addressing; the `legion` command states no contract and is served this daemon's own.
-// Contract 160 is served with no code of its own here either: its two shapes are on the
-// launcher's wire, which the image probe pairs by number, and its one state key,
-// `settings.runtime.kubernetes.volume_trim`, is a settings key no reader types, so a caller at 160
-// is served what one at 152 is, and 160's records are 152's under its own number.
 // The records hold only the settings keys a supported reader types, and every other settings key
 // path is in no record at any contract, so a new legion.yaml key is no contract change, as the
 // reader's own rule in `packages/contracts/src/legion-api.ts` has it. The declaration is
@@ -2510,7 +2509,7 @@ package api
 // `z.looseObject` that types top-level positive integers and nothing nested at every contract:
 // `max_fix_attempts` and `worker_boot_timeout_seconds` from 46 (7b4ffe3c) to 58,
 // `worker_boot_timeout_seconds` alone from 59 (7e7bcf21), and `review_round_cap` beside it from
-// 86 (a4c0ff99) to this contract, 160 (a573bac2) among them. Outside the schema, plugin code
+// 86 (a4c0ff99) to this contract. Outside the schema, plugin code
 // reads the block only through pi-legion's `read_state` with `settings`, which passes it through
 // untyped. A loose object passes a key it does not name and refuses the body only for a key it
 // names and does not find, so a record holds `settings` and, below it, exactly the keys its own

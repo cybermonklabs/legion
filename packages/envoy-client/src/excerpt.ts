@@ -1,12 +1,10 @@
 // packages/envoy-client/src/excerpt.ts
 //
 // One line of someone else's text, safe to print: a body or a reason phrase that a gateway, a proxy
-// or anything else in a server's place wrote. Every client that quotes such a body in an error
-// quotes it through `bodyForText`: the Dispatch client (`dispatch-http.ts`) a gateway's page, the
+// or anything else in a server's place wrote. Every client that names such a body in an error
+// names it through `bodyForText`: the Dispatch client (`dispatch-http.ts`) a gateway's page, the
 // Envoy transport (`transport.ts`) a body that is not the listener's error JSON, and the operator's
-// live-events probe (`scripts/e2e/lib/dispatch-live-events.ts`) a whoami answer with no
-// event_head. pi-shared's daemon client quotes none of a body that is not the daemon's refusal
-// and names its length alone (`unreadableBody`).
+// live-events probe (`scripts/e2e/lib/dispatch-live-events.ts`) a whoami answer with no event_head.
 
 import { textHead } from "./ask-answer";
 

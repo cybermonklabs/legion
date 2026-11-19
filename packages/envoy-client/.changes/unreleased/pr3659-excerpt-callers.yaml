@@ -1,5 +1,4 @@
 kind: Changed
 body: |-
   The header of `excerpt.ts` no longer names pi-shared's daemon client among the callers of
-  `bodyForText`. That client quotes no part of a failure body that is not the daemon's refusal,
-  and names it by its length in bytes alone (`unreadableBody`).
+  `bodyForText`, which that client does not call.

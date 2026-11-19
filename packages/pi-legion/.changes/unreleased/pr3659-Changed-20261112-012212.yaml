@@ -5,7 +5,8 @@ body: |-
   its pod. A refusal for an answer the reader cannot read now names the contract this build
   speaks, the contract the daemon states or that it stated none, and which side is behind,
   whether the answer was a success or a failure that is not the daemon's refusal; the body of
-  such a failure is named by its length in bytes, and no part of either body is quoted. One
+  such a failure is named by its length in bytes, and no part of either body is quoted. For such
+  a failure, the body's length replaces the redacted one-line excerpt that #4140 gives. One
   raised after an attempt the client retried says the earlier attempt may have been applied and
   names what to read to learn whether it landed.
   `read_record`, `handoff_complete` and the phase reminder with its stall evidence read the

@@ -502,11 +502,11 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 const daemonContractHeader = "Legion-Daemon-Contract"
 
 // statingContract is the one handler every request of this daemon passes through: it states the
-// daemon's contract and hands the request on to handler, which is the mux with every request's
-// context marked for the pool (trackTransactions). It is a handler around the whole mux and
-// not a line in a writer, because the header rides on every answer — the catch-all's 404 and
-// `GET /healthz` as much as a `/legion/v1` route, a refusal as much as a success, and the four
-// routes that answer 204 with no body at all, which write no body for a writer to add it to.
+// daemon's contract and hands the request on to handler, the handler NewServer wraps. It is a
+// handler around the whole mux and not a line in a writer, because the header rides on every
+// answer — the catch-all's 404 and `GET /healthz` as much as a `/legion/v1` route, a refusal as
+// much as a success, and the four routes that answer 204 with no body at all, which write no body
+// for a writer to add it to.
 //
 // It is a type of its own rather than a closure so that a test can read the server's Handler and
 // see that the mux is wrapped, which is what makes a route that misses the header impossible.

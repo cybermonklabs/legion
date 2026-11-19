@@ -130,35 +130,6 @@ test("a refusal whose body is not the daemon's refusal shape keeps its status an
   expect((refused as LegionDaemonApiError).detail).toContain("not the daemon's refusal");
 });
 
-// The coordinator's ruling on the review of 81d860a8f7: a body that is not the daemon's refusal
-// was written by something in its place, which can echo the request back, so it is never named
-// whole; nor does a parser's message quote a piece of it. This client names such a body by its
-// length alone and quotes none of it (dispatch://INFRA-2694/artifact/verification-md, c9).
-test("a proxy's page in the daemon's place is named by its length, never quoted", async () => {
-  const secret = fixtureSecret("proxy");
-  const page =
-    "<html><head><title>502 Bad Gateway</title></head>\n<body><h1>502 Bad Gateway</h1>\n" +
-    `<pre>Authorization: Bearer ${secret}</pre>\n${"<p>filler</p>\n".repeat(1500)}</body></html>`;
-  const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: CONTRACT,
-    fetch: daemon(
-      () => new Response(page, { status: 502, headers: { "Content-Type": "text/html" } })
-    ).fetch,
-  });
-
-  const refused = await client.register(registration).catch((error: unknown) => error);
-  expect(refused).toBeInstanceOf(LegionDaemonApiError);
-  expect(refused).toMatchObject({ status: 502, code: undefined });
-  const { detail, message } = refused as LegionDaemonApiError;
-  expect(detail).toStartWith(
-    `a body of ${new TextEncoder().encode(page).length} bytes is not the daemon's refusal shape (not JSON).`
-  );
-  expect(message).not.toContain("502 Bad Gateway");
-  expect(message).not.toContain(secret);
-  expect(message).not.toContain("\n");
-  expect(message.length).toBeLessThan(400);
-});
-
 test("ready and exit post the claim wire's requests and accept only the empty 204", async () => {
   const { fetch, requests } = daemon(() => new Response(null, { status: 204 }));
   const client = createLegionDaemonClient("http://daemon.test", {
@@ -833,7 +804,7 @@ test("a non-success answer that is not the daemon's refusal names both contracts
   // A proxy's page in front of the daemon, with a value only its end carries: the refusal names
   // the page by its length in bytes and quotes none of it. `state` is not wrapped in the restart
   // retry, so its 503 comes straight back.
-  const page = `<html>503 Service Unavailable</html>${"x".repeat(4000)}${BODY_SECRET}`;
+  const page = `<html>\n503 Service Unavailable</html>${"x".repeat(4000)}${BODY_SECRET}`;
   const proxied = (daemonContract: number, body = page): LegionDaemonClient =>
     createLegionDaemonClient("http://daemon.test", {
       pluginContract: CONTRACT,
@@ -864,6 +835,8 @@ test("a non-success answer that is not the daemon's refusal names both contracts
   expect(detail).not.toContain("Service Unavailable");
   expect(detail).not.toContain("x".repeat(8));
   expect(detail).not.toContain(BODY_SECRET);
+  expect((behind as LegionDaemonApiError).message).not.toContain("\n");
+  expect((behind as LegionDaemonApiError).message.length).toBeLessThan(400);
 
   const ahead = await proxied(CONTRACT - 1)
     .state()
