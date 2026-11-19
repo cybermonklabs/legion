@@ -623,6 +623,13 @@ provider_keys:
   other secret file the daemon reads follows: one that cannot be read, is not a regular file, holds
   nothing, or is readable by its group or others refuses the boot, naming the variable and the
   file. Kubernetes refuses the form: a file on the daemon's disk reaches no pod.
+  Under tmux the boot also refuses a key named for a variable every pane carries, a key whose
+  `_FILE` pointer every pane carries, and a key `pane_env` would refuse whatever its value: a
+  variable that places the session a resume reads, one the runtime tells a Claude Code pane or a
+  resumed Oh My Pi pane after the operator's variables, and a launch secret's pointer, each with
+  the reason `pane_env` gives.
+  The shim exports every provider key into Oh My Pi's environment, where it acts as the pane
+  variable of that name.
 - **`controller: daemon`** works under tmux too: the daemon launches the controller in a pane of
   its own window, `controller`, working in `<state_dir>/controller`, told `LEGION_CONTROLLER=1` and
   an empty `LEGION_SLACK_CHANNELS`, and supervises it like a root architect. It needs
