@@ -1050,7 +1050,7 @@ const legionCacheView = z.object({
  * approves with. */
 const legionAppInstallations = z.object({ implement: z.boolean(), review: z.boolean() });
 
-/** `api.LiveRepositoryView` — one repository a live record names (contract 169): `repo`, the name
+/** `api.LiveRepositoryView` — one repository a live record names (contract 173): `repo`, the name
  * the records keep it under; `servedAs`, the other name of its configured pair
  * (`repository_renames`) where the rename rule serves it under that one; and, from what GitHub and
  * Dispatch last answered for the name it is served under, `apps`, each role App's installation on
@@ -1068,7 +1068,7 @@ const legionLiveRepository = z.object({
   cache: legionCacheView.optional(),
 });
 
-/** `api.RepositoriesView` — the repositories the daemon works in (contract 169): `live`, one entry
+/** `api.RepositoriesView` — the repositories the daemon works in (contract 173): `live`, one entry
  * for each repository the project's live records name, read in the state's own snapshot and sorted
  * by its lowercased `<owner>/<name>`, and `caches`, the repository caches of repositories no live
  * record names, each kept until its `retainedUntil` (contract 32); both never null. A repository is
@@ -1076,7 +1076,7 @@ const legionLiveRepository = z.object({
  *
  * A plugin of an earlier contract reads the block with that contract's own schema, which requires
  * `owners`, `mapped`, `refused` and `withoutWebhookApp`, so the route serves a caller in a pod
- * below 169 that older block, written from the same entries (`api.stateFor`,
+ * below 173 that older block, written from the same entries (`api.stateFor`,
  * `withoutRepositoriesLive`). That body is never served to a plugin of this contract, so this
  * schema reads only this block. */
 const legionRepositories = z.object({
@@ -1110,7 +1110,7 @@ const legionConsumerLag = z.object({
  * claim nothing will wake, by issue and then role, never null (contract 23); `heldOutboxRows` is
  * every due lifecycle outbox row held behind its issue's running one, by when it came due and then
  * id, never null (contract 28); `repositories` is the repositories the project's live records
- * name, with the caches of the rest (contracts 31, 169); `settings` is the daemon's resolved
+ * name, with the caches of the rest (contracts 31, 173); `settings` is the daemon's resolved
  * legion.yaml with no credential, credential source or credential file path, required, and loose
  * like `payload` above, so a legion.yaml key added later is no contract change (contract 35);
  * being `z.looseObject` it keeps

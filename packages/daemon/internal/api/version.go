@@ -2383,7 +2383,7 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
-// 169: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
+// 173: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
 // block of `GET /legion/v1/state` becomes the repositories the project's live records name, read
 // in the state's own snapshot. The block is `{live, caches}`. `live` holds one entry for each
 // repository a live record names, under the name the records keep, sorted by its lowercased
@@ -2396,7 +2396,7 @@ package api
 // `refused` and `withoutWebhookApp` are gone, and with them each entry's `default`, which the
 // daemon no longer knows. A plugin of 152 reads the block with a schema that requires those four
 // keys and would refuse the whole state without them, so a caller in a pod whose claims record a
-// contract below 169 is served the block in 152's shape, written from the same entries (api's
+// contract below 173 is served the block in 152's shape, written from the same entries (api's
 // repositoriesLiveContract and withoutRepositoriesLive): `owners` and `mapped` are the entries
 // both role Apps are installed on, under the name each is served under, every `default` false;
 // `refused` is each other entry with its `readError`, the App not installed on it, or "GitHub has
@@ -2404,17 +2404,18 @@ package api
 // daemon cannot place in a pod — the operator's `legion state`, `legion controller start`, a tmux
 // pane — is served the new block whatever its plugin, and the boot gate and `legion probe-image`
 // keep a tmux pane's plugin at this contract. `packages/contracts/src/legion-api.ts` mirrors the
-// new block, and the fixture `state-narrowed-repositories.json` is the body a pod at 168 is served.
-// (This change takes 169, the lowest number above main's 160 that no open pull request declares:
-// a census of `const DaemonAPIVersion` at refs/pull/<n>/head over all 233 open pull requests of
-// this repository, taken at 2026-11-19T09:09:18Z, reads above main's 160: 161 (#4173, #4180, #4193
-// and #4259), 162 (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 167 (#3831, #4030,
-// #4485 and this pull request, #4493) and 168 (#2230, #4273 and #4488), with nothing above. This
-// entry stood at 167, the lowest number above main's 152 that no open head declared at the census
-// of 2026-11-19T00:00:15Z, until main reached 160 and three other heads, #3831, #4030 and #4485,
-// took 167 as well. Each of those numbers is the number that head declared at that reading and no
-// head's for good. Read main's own number and every open pull request's again at the next forward
-// merge rather than from this line, as
+// new block, and the fixture `state-narrowed-repositories.json` is the body a pod at 172 is served.
+// (This change takes 173, the lowest number above main's 160 that no open pull request declares:
+// a census of `const DaemonAPIVersion` at refs/pull/<n>/head over all 236 open pull requests of
+// this repository, taken at 2026-11-19T14:55:51Z, reads above main's 160: 161 (#4180 and #4259),
+// 162 (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 167 (#4273), 168 (#3993, #4175
+// and #4488), 169 (#3831, #4065 and this pull request, #4493), 170 (#2230, #4030, #4173 and
+// #4193), 171 (#4485 and #4495) and 172 (#3659), with nothing above. This entry stood at 167, the
+// lowest number above main's 152 that no open head declared at the census of
+// 2026-11-19T00:00:15Z, then at 169 from the census of 2026-11-19T09:09:18Z, until two other heads,
+// #3831 and #4065, took 169 as well. Each of those numbers is the number that head declared at
+// that reading and no head's for good. Read main's own number and every open pull request's again
+// at the next forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 169
+const DaemonAPIVersion = 173

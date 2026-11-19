@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -100,6 +102,99 @@ func TestWriteClaudeMCPConfig(t *testing.T) {
 		len(server.Args) != 1 || server.Args[0] != "/opt/legion/claude-envoy/dist/envoy-channel.js" ||
 		server.Env["CLAUDE_PLUGIN_DATA"] != filepath.Join(dir, "envoy-plugin-data") {
 		t.Errorf("the MCP configuration is %s", raw)
+	}
+}
+
+// A fifo or a link at the MCP configuration's path, which the pane can leave there since the
+// claim's directory is its own, is replaced by a 0600 regular file holding the configuration, and
+// the file a link named is left as it was. Written with os.WriteFile, as it was, a fifo holds the
+// spawn waiting for a reader for as long as none comes, and a link has the file it names truncated
+// and written.
+func TestWriteClaudeMCPConfigReplacesAFifoOrALinkAtItsPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// plant puts the shape at path and answers the check of what it must leave as it was,
+		// or nil.
+		plant func(t *testing.T, path string) (kept func(t *testing.T))
+	}{
+		{"a fifo", func(t *testing.T, path string) func(t *testing.T) {
+			if err := syscall.Mkfifo(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return nil
+		}},
+		{"a link to a file outside the directory", func(t *testing.T, path string) func(t *testing.T) {
+			precious := filepath.Join(t.TempDir(), "precious")
+			if err := os.WriteFile(precious, []byte("precious\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(precious, path); err != nil {
+				t.Fatal(err)
+			}
+			return func(t *testing.T) {
+				t.Helper()
+				if body, err := os.ReadFile(precious); err != nil || string(body) != "precious\n" {
+					t.Errorf("%s, the file the link named, is %q (%v), want it as it was", precious, body, err)
+				}
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "mcp.json")
+			kept := tc.plant(t, path)
+			type answer struct {
+				path string
+				err  error
+			}
+			answered := make(chan answer, 1)
+			go func() {
+				path, err := writeClaudeMCPConfig(dir, testClaude)
+				answered <- answer{path, err}
+			}()
+			var got answer
+			select {
+			case got = <-answered:
+			case <-time.After(time.Second):
+				// The write waits in an open of the fifo for a reader. An open of it for reading
+				// and writing waits on nothing and is that reader, so the goroutine ends before
+				// the test does. It is opened again until the write answers, since the write may
+				// not yet have reached its open when the first is closed.
+				released := time.After(10 * time.Second)
+				for {
+					if fifo, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {
+						_ = fifo.Close()
+					}
+					select {
+					case late := <-answered:
+						t.Fatalf("writeClaudeMCPConfig over %s waited more than a second, and answered %v only once the open it waited in was released", path, late.err)
+					case <-released:
+						t.Fatalf("writeClaudeMCPConfig over %s has not answered in 11 seconds", path)
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+			}
+			if got.err != nil || got.path != path {
+				t.Fatalf("writeClaudeMCPConfig over %s = %s, %v, want it replaced", path, got.path, got.err)
+			}
+			if kept != nil {
+				kept(t)
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+				t.Fatalf("%s is %v after writeClaudeMCPConfig, want a regular file of mode 0600", path, info.Mode())
+			}
+			want, err := claudelaunch.MCPConfig(testClaude.Bun, testClaude.PluginDir, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body, err := os.ReadFile(path); err != nil || string(body) != string(want) {
+				t.Fatalf("%s holds %q (%v) after writeClaudeMCPConfig, want %q", path, body, err, want)
+			}
+		})
 	}
 }
 

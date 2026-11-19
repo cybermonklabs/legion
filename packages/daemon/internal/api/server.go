@@ -1187,14 +1187,14 @@ const assignmentsContract = 141
 const entryTimesContract = 146
 
 // repositoriesLiveContract is the daemon contract that made the state's `repositories` block the
-// repositories the project's live records name (version.go's 169, dispatch://INFRA-4401): `live`,
+// repositories the project's live records name (version.go's 173, dispatch://INFRA-4401): `live`,
 // one entry per repository with what GitHub and Dispatch answered of it, beside `caches`, in
 // place of `owners`, `mapped`, `refused` and `withoutWebhookApp`. A plugin before it reads the
 // block with the schema of contract 152, which requires those four keys, so the block this
 // contract writes refuses that plugin's whole state, as surely as a key a strict reader does not
 // name. That caller is served the block in contract 152's shape, written from the same entries
 // (withoutRepositoriesLive), and every other caller the block this contract writes.
-const repositoriesLiveContract = 169
+const repositoriesLiveContract = 173
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -95,6 +96,12 @@ type Command struct {
 	// no repository.
 	Clone string
 }
+
+// exitedHook, when set, is handed each command execRunner.Run ran and its process's state once it
+// ended, for a test of this package that must tell how a command ended: Result's ExitCode is -1
+// for every signaled process, so it cannot tell a SIGTERM from a SIGKILL. Nothing outside the
+// package's tests sets it.
+var exitedHook atomic.Pointer[func(Command, *os.ProcessState)]
 
 // Result is the process result. A non-zero ExitCode, or TimedOut, is a process failure; a
 // non-nil Run error means the process could not be started or observed, or a signal other than
@@ -317,6 +324,9 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	child.Stdout = &stdout
 	child.Stderr = &stderr
 	err = child.Run()
+	if hook := exitedHook.Load(); hook != nil && child.ProcessState != nil {
+		(*hook)(command, child.ProcessState)
+	}
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
 	// TimedOut is read before the run's own error is propagated, not after: exec reports a command
 	// whose Cancel succeeded and which then exited cleanly as the context's error (watchCtx), and

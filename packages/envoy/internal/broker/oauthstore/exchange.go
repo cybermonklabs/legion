@@ -22,23 +22,27 @@ var (
 	_ oauth2.DPoPBoundSession = (*ExchangeSession)(nil)
 )
 
-// ErrSessionHeld is a session name another principal holds. It is the one refusal BindSession
-// has, and the text names the session so an operator reading it knows which name is taken without
-// having to find the request again.
+// ErrSessionHeld is a session name another principal holds and the claimant may not take: its
+// holder is no account paired with the claimant (SetSessionPairs; a claim reads the claimant's own
+// pairs, so a pair does not chain), or the configuration fixes the name, which no pair takes. It
+// is the one refusal BindSession has, and the text names the session so an operator reading it
+// knows which name is taken without having to find the request again.
 var ErrSessionHeld = errors.New("oauthstore: another identity holds this session name")
 
 // SessionRetention is how long a session name stays its principal's after the last token minted
-// under it expires: 90 days. Until then the name is refused to every other principal; after it,
-// the sweep deletes the row and the name is anyone's to claim.
+// under it expires: 90 days. Until then the name is refused to every other principal but an
+// account paired with its principal (SetSessionPairs), which takes it unless the configuration
+// fixes it, and a pair does not chain: an account paired only with the principal's pair is
+// refused too. After it, the sweep deletes the row and the name is anyone's to claim.
 //
-// It bounds how many names the table keeps, and it is safe to state because a name moves only
-// once its principal has stopped using it for longer than any credential the exchange accepts can
-// sit unused: the longest, a machine login, lapses at most 30 days after its last refresh
-// (BROKER_LAUNCHER_CREDENTIAL_SECONDS' ceiling), a pod's projected token at most a day after it
-// was minted, a workflow run's within the hour. A principal coming back after 90 days comes back
-// through a new login approved by a person, a new pod or a new run, and nothing it held before
-// is still spendable. It is far past how long a Legion role sits idle between assignments, which
-// is hours or days.
+// It bounds how many names the table keeps, and it is safe to state because a name moves to a
+// principal not paired with its own only once its principal has stopped using it for longer than
+// any credential the exchange accepts can sit unused: the longest, a machine login, lapses at
+// most 30 days after its last refresh (BROKER_LAUNCHER_CREDENTIAL_SECONDS' ceiling), a pod's
+// projected token at most a day after it was minted, a workflow run's within the hour. A
+// principal coming back after 90 days comes back through a new login approved by a person, a new
+// pod or a new run, and nothing it held before is still spendable. It is far past how long a
+// Legion role sits idle between assignments, which is hours or days.
 //
 // It is a constant rather than a setting because the bound follows from those ceilings, not from
 // anything a deployment chooses: shorter would hand a name over while its principal could still
@@ -181,10 +185,11 @@ func (s *ExchangeSession) Clone() oauth2.Session {
 
 // BindSession claims the session name for principal until SessionRetention past expires, the
 // moment the token the claim is made for expires, and reports ErrSessionHeld when another
-// principal holds it. fixed says the configuration of the process making the claim fixes the
-// name for principal; the claim then holds the name with no expiry and takes it from whoever
-// holds it, and BindSession answers the principal it took the name from, one whose claim had not
-// run out; it answers "" for a name that was unheld, run out or already principal's.
+// principal holds it and principal may not take it. fixed says the configuration of the process
+// making the claim fixes the name for principal; the claim then holds the name with no expiry and
+// takes it from whoever holds it. BindSession answers the principal it took the name from, one
+// whose claim had not run out, by a fixed claim or a pair's (below); it answers "" for a name
+// that was unheld, run out or already principal's.
 //
 // The name is the principal's from its first claim: the same principal re-claiming it extends
 // the claim and never shortens it, any other principal is refused for as long as the claim
@@ -194,37 +199,124 @@ func (s *ExchangeSession) Clone() oauth2.Session {
 // any session string, and a token naming another principal's session would be believed by
 // everything downstream that believes the token.
 //
+// Beside a fixed claim, the one claim that takes a live name from its holder is that of an
+// account paired with the holder (SetSessionPairs, PairedWith; with none set, none is paired),
+// so a deployment whose pods move to another account keeps each role's session name, which the
+// role's new pod would otherwise be refused. A pair works both ways: pods moved back take the
+// names back the same way. It does not chain: a claim reads the claimant's own pairs, and every
+// pair works both ways, so with A paired with B and B with C, C takes a name B holds and never one
+// A holds. And it never takes a name the configuration fixes: one held with no expiry
+// (ReserveSessions, a fixed claim), nor one Reserved fixes for anyone, though another principal
+// still holds it as an ordinary claim, since such a name goes to its entry at the entry's own
+// claim and to nobody else. A take holds the name for the taker's own claim, SessionRetention past
+// expires, not for what was left of the holder's; only a principal re-claiming its own name keeps
+// the later of the two expiries.
+//
 // The configuration decides here, at the claim, rather than at ReserveSessions: two replicas
 // started with configurations that disagree, as during a rollout that re-points a fixed name,
 // each give the name to the principal their own configuration fixes it for when that principal
 // asks, so the entry the configuration fixes a name for is never refused its own name, and a
 // re-point takes effect at the new entry's first exchange.
 //
-// It is one statement, and the only one that refuses a claim, so two exchanges racing for one
-// name cannot both win: the loser's insert conflicts with the winner's row and its update is
-// refused by the row's own principal and expiry. The holder it answers is read from the
-// statement's snapshot, so a claim that committed while this one waited on its row is not named.
+// It runs in the transaction ctx carries (WithTx, BeginTX), so an enrollment's claim commits or
+// rolls back with the enrollment and an exchange's with the token it is made for, and in one of
+// its own when ctx carries none. It locks the name's row first (select ... for update), inserting
+// the claim when there is none, and then one update writes the claim; that update's where is the
+// only place a claim is refused. The lock is what makes two claims racing for one name end with
+// one holder: the second waits on the row the first holds, and under read committed then reads
+// and decides on the row the first committed, so a claimant not paired with the new holder is
+// refused and one paired with it takes the name in turn; under repeatable read it fails with a
+// serialization error instead and writes nothing. The holder it answers is the one the lock read,
+// which is the holder the deciding update read, so a claim that committed while this one waited
+// is the one named.
 func (s *Store) BindSession(ctx context.Context, session, principal string, fixed bool, expires time.Time) (string, error) {
-	var taken string
-	err := s.db(ctx).QueryRow(ctx, `with prior as (
-			select principal from oauth_session_bindings where session = $1 and expires_at > now()
-		), bound as (
-			insert into oauth_session_bindings (session, principal, expires_at)
-			values ($1, $2, case when $4 then `+heldByConfiguration+` else $3 end)
-			on conflict (session) do update set principal = excluded.principal,
-				expires_at = greatest(oauth_session_bindings.expires_at, excluded.expires_at)
-			where $4 or oauth_session_bindings.principal = excluded.principal or oauth_session_bindings.expires_at <= now()
-			returning true
-		)
-		select coalesce((select principal from prior where principal <> $2), '') from bound`,
-		session, principal, expires.Add(SessionRetention), fixed).Scan(&taken)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", fmt.Errorf("%w: %s", ErrSessionHeld, session)
-	}
+	ctx, err := s.BeginTX(ctx)
 	if err != nil {
 		return "", fmt.Errorf("bind session name: %w", err)
 	}
+	defer s.Rollback(ctx)
+	taken, err := s.bindSession(ctx, session, principal, fixed, expires)
+	if err != nil {
+		return "", err
+	}
+	if err := s.Commit(ctx); err != nil {
+		return "", fmt.Errorf("bind session name: %w", err)
+	}
 	return taken, nil
+}
+
+// bindSession is BindSession's claim, made in the transaction ctx carries.
+func (s *Store) bindSession(ctx context.Context, session, principal string, fixed bool, expires time.Time) (string, error) {
+	db, until := s.db(ctx), expires.Add(SessionRetention)
+	// holder and live are the name's row as its lock read it: the principal holding it, and
+	// whether that hold had not run out.
+	var holder string
+	var live bool
+	for {
+		err := db.QueryRow(ctx, `select principal, expires_at > now() from oauth_session_bindings where session = $1 for update`,
+			session).Scan(&holder, &live)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("bind session name: %w", err)
+		}
+		// No row: this is the name's first claim, unless another claim inserted the row since
+		// the select read, in which case the insert writes nothing and the next pass locks and
+		// reads that claim's row.
+		inserted, err := db.Exec(ctx, `insert into oauth_session_bindings (session, principal, expires_at)
+			values ($1, $2, case when $4 then `+heldByConfiguration+` else $3 end)
+			on conflict (session) do nothing`, session, principal, until, fixed)
+		if err != nil {
+			return "", fmt.Errorf("bind session name: %w", err)
+		}
+		if inserted.RowsAffected() == 1 {
+			return "", nil
+		}
+	}
+	_, reserved := s.Reserved[session]
+	updated, err := db.Exec(ctx, `update oauth_session_bindings set principal = $2,
+			expires_at = case when $4 then `+heldByConfiguration+` when principal = $2 then greatest(expires_at, $3) else $3 end
+		where session = $1 and ($4 or principal = $2 or expires_at <= now()
+			or (principal = any($5::text[]) and expires_at <> `+heldByConfiguration+` and not $6))`,
+		session, principal, until, fixed, s.PairedWith(principal), reserved)
+	if err != nil {
+		return "", fmt.Errorf("bind session name: %w", err)
+	}
+	if updated.RowsAffected() == 0 {
+		return "", fmt.Errorf("%w: %s", ErrSessionHeld, session)
+	}
+	if live && holder != principal {
+		return holder, nil
+	}
+	return "", nil
+}
+
+// SetSessionPairs pairs the two principals of each of pairs for session names, each principal
+// spelled as exchange.AccountPrincipal spells an account ("account:" and the ServiceAccount
+// subject), and replaces whatever pairs were set before; nil or empty pairs nothing. Either
+// principal of a pair takes a session name the other holds (BindSession), so it writes each pair
+// both ways and the set is symmetric by construction. It is what lets an operator move a
+// deployment's pods to another account without each role's new pod being refused its own session
+// name, as cmd/broker reads BROKER_SESSION_ACCOUNT_PAIRS. It must be called before the store
+// serves an enrollment or a token exchange, since the claims read the pairs with no lock.
+func (s *Store) SetSessionPairs(pairs [][2]string) {
+	paired := make(map[string][]string, 2*len(pairs))
+	for _, pair := range pairs {
+		paired[pair[0]] = append(paired[pair[0]], pair[1])
+		paired[pair[1]] = append(paired[pair[1]], pair[0])
+	}
+	s.sessionPairs = paired
+}
+
+// PairedWith is every principal SetSessionPairs paired principal with, the pairs a claim by
+// principal reads (BindSession): principal takes a session name any of them holds, and, since
+// every pair works both ways, each of them takes one principal holds. A claim reads the
+// claimant's own pairs alone, so a pair does not chain: with A paired with B and B with C, C takes
+// a name B holds and never one A holds. It is nil for a principal in no pair, and the slice is the
+// store's own, which the caller must not write to.
+func (s *Store) PairedWith(principal string) []string {
+	return s.sessionPairs[principal]
 }
 
 // ReserveSessions holds every session name reserved maps to a principal (the names the entries of

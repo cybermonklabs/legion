@@ -1,11 +1,14 @@
 package ghconfig
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -378,5 +381,424 @@ func TestParsePairsRefusesALineThatIsNoPair(t *testing.T) {
 	bundle.Pairs = []ghrepo.Rename{{To: ghrepo.MustParse("cybermonklabs/legion")}}
 	if err := bundle.Validate(); err == nil || !strings.Contains(err.Error(), "names no repository on one side") {
 		t.Errorf("Validate of a bundle holding half a pair = %v, want a refusal naming it", err)
+	}
+}
+
+// entryNames is the names of dir's entries, sorted, as os.ReadDir answers them.
+func entryNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
+}
+
+// The root a runtime hands WriteBundle may sit under a state directory reached through a link, or
+// be a link itself, and it is written and cleaned all the same. Before the second write the root's
+// pairs file is a fifo, which replaceFile removes under the root resolved once, and the root is
+// resolved once again before it is cleaned, so rolefile.RemoveTree, which refuses a parent that is
+// a link, is handed the directory the link names both times. In both rows the pairs file is then a
+// regular file holding the bundle's pairs, a stray file at the root and a `<owner>/<repo>`
+// directory an older run left go, and the owners' own files stay. Without replaceFile's
+// resolution the row whose root is itself a link fails the write ("write the gh bundle's
+// renames.txt: … is a symlink"); without the cleaning's, that row's cleaning is refused ("… is a
+// symlink"), and the stray file outlives the write.
+func TestWriteBundleCleansARootReachedThroughALink(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		root func(t *testing.T) string
+	}{
+		{"under a state directory that is a symlink", func(t *testing.T) string {
+			state := filepath.Join(t.TempDir(), "state")
+			if err := os.Symlink(t.TempDir(), state); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(state, "gh")
+		}},
+		{"a root that is itself a link", func(t *testing.T) string {
+			root := filepath.Join(t.TempDir(), "gh")
+			if err := os.Symlink(t.TempDir(), root); err != nil {
+				t.Fatal(err)
+			}
+			return root
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := tc.root(t)
+			bundle := twoOwnerBundle("ghs_acme_write")
+			if _, err := WriteBundle(root, bundle); err != nil {
+				t.Fatalf("first WriteBundle: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "stray"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			expires := time.Date(2026, 10, 16, 18, 0, 0, 0, time.UTC)
+			if _, err := Write(Dir(root, "acme/widgets"), Render("ghs_acme_widgets", "implement", expires)); err != nil {
+				t.Fatal(err)
+			}
+			pairs := filepath.Join(root, PairsFile)
+			if err := os.Remove(pairs); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Mkfifo(pairs, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			answered := make(chan error, 1)
+			go func() {
+				_, err := WriteBundle(root, bundle)
+				answered <- err
+			}()
+			var err error
+			select {
+			case err = <-answered:
+			case <-time.After(5 * time.Second):
+				// A write waiting in an open of the fifo is released by an open of it for reading
+				// and writing, which waits on nothing, so its goroutine ends before the test does.
+				released := time.After(10 * time.Second)
+				for {
+					if fifo, err := os.OpenFile(pairs, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {
+						_ = fifo.Close()
+					}
+					select {
+					case err := <-answered:
+						t.Fatalf("second WriteBundle over the fifo %s waited more than 5 seconds, and answered %v only once the open it waited in was released", pairs, err)
+					case <-released:
+						t.Fatalf("second WriteBundle over the fifo %s has not answered in 15 seconds", pairs)
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+			}
+			if err != nil {
+				t.Fatalf("second WriteBundle: %v", err)
+			}
+			info, err := os.Lstat(pairs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.Mode().IsRegular() {
+				t.Fatalf("%s is %v after the second WriteBundle, want a regular file", pairs, info.Mode())
+			}
+			if body, err := os.ReadFile(pairs); err != nil || string(body) != RenderPairs(bundle.Pairs) {
+				t.Fatalf("%s holds %q (%v) after the second WriteBundle, want %q", pairs, body, err, RenderPairs(bundle.Pairs))
+			}
+			if got, want := entryNames(t, root), []string{"acme", PairsFile, "sjawhar"}; !slices.Equal(got, want) {
+				t.Fatalf("root holds %q, want %q: the stray file goes", got, want)
+			}
+			if got, want := entryNames(t, Dir(root, "acme")), []string{ConfigFile, HostsFile}; !slices.Equal(got, want) {
+				t.Fatalf("acme's directory holds %q, want %q: the repository directory an older run cut goes", got, want)
+			}
+			for owner, token := range map[string]string{"acme": "ghs_acme_write", "sjawhar": "ghs_sjawhar_read"} {
+				hosts, err := os.ReadFile(filepath.Join(Dir(root, owner), HostsFile))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, err := TokenFromHosts(hosts); err != nil || got != token {
+					t.Fatalf("%s's hosts.yml token = %q, %v, want %q", owner, got, err, token)
+				}
+			}
+		})
+	}
+}
+
+// The pane's own user can write the bundle's root, so a link it plants there is unlinked and never
+// followed. A link at the root to a directory outside it goes, and the file in what it names
+// stays. A link under a stale `<owner>/<repo>` directory the pane made 0555, which the daemon,
+// holding no capability, cannot unlink it from, is left as it is: WriteBundle answers a permission
+// error naming that stale directory, and the directory the link names, and the file in it, are as
+// they were. So is a link under a 0555 subdirectory of a directory the pane made at an owner's
+// config.yml: replaceFile removes what is there before it writes the file, and removes it without
+// following a link, so the write answers the unlink's permission error, naming the link, and the
+// file in the directory the link names stays. os.RemoveAll, in the cleaning or in replaceFile,
+// opens such an entry with O_DIRECTORY|O_NOFOLLOW, which a gVisor release follows a link through
+// (rolefile.OpenDirectory), so in such a pod it deletes what the link names; Linux refuses that
+// open, so only such a gVisor shows either control fail.
+func TestWriteBundleRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("as root a 0555 directory does not stop the unlink, so the removal never opens the link")
+	}
+	outside := t.TempDir()
+	precious := filepath.Join(outside, "precious")
+	if err := os.WriteFile(precious, []byte("kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kept := func(t *testing.T) {
+		t.Helper()
+		if body, err := os.ReadFile(precious); err != nil || string(body) != "kept\n" {
+			t.Fatalf("%s, in the directory the planted link names, is %q (%v), want it kept", precious, body, err)
+		}
+	}
+	root := filepath.Join(t.TempDir(), "gh")
+	if _, err := WriteBundle(root, twoOwnerBundle("ghs_acme_write")); err != nil {
+		t.Fatalf("first WriteBundle: %v", err)
+	}
+
+	stray := filepath.Join(root, "stray")
+	if err := os.Symlink(outside, stray); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteBundle(root, twoOwnerBundle("ghs_acme_write")); err != nil {
+		t.Fatalf("WriteBundle over a link at the root: %v", err)
+	}
+	if _, err := os.Lstat(stray); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the link %s at the root is still there (%v)", stray, err)
+	}
+	kept(t)
+
+	stale := filepath.Join(Dir(root, "acme"), "widgets")
+	if err := os.Mkdir(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(stale, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stale, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// The temporary directory's own cleanup could not remove the stale directory at 0555.
+	t.Cleanup(func() { _ = os.Chmod(stale, 0o755) })
+	_, err := WriteBundle(root, twoOwnerBundle("ghs_acme_write"))
+	if !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), "remove acme/widgets from the gh bundle") {
+		t.Fatalf("WriteBundle over a link under a 0555 directory = %v, want the unlink refused naming acme/widgets", err)
+	}
+	kept(t)
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the planted link is %v (%v), want it left as it was", info, err)
+	}
+
+	// The stale directory goes, its link first, so that nothing but the config.yml below is left
+	// for the write to refuse.
+	if err := os.Chmod(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(stale); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(Dir(root, "acme"), ConfigFile)
+	if err := os.Remove(config); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(config, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	buried := filepath.Join(sub, "link")
+	if err := os.Symlink(outside, buried); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sub, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o755) })
+	_, err = WriteBundle(root, twoOwnerBundle("ghs_acme_write"))
+	// The file the link names is checked first, so that a removal which followed the link fails
+	// the test naming the file it deleted.
+	kept(t)
+	named := filepath.Join("acme", ConfigFile, "sub", "link")
+	if !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), named) {
+		t.Fatalf("WriteBundle over a link under a 0555 directory at acme's %s = %v, want the unlink refused naming %s", ConfigFile, err, named)
+	}
+	if info, err := os.Lstat(buried); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link planted under acme's %s is %v (%v), want it left as it was", ConfigFile, info, err)
+	}
+}
+
+// WriteBundle is the one function both the tmux daemon and `legion controller start` write a
+// role's gh bundle through, and the pane's own user can write each of the three files it writes:
+// an owner's config.yml and hosts.yml, and the root's pairs file. Whatever the pane left at one
+// of them, a fifo, a link to /dev/zero or a link to a file outside the root, is replaced by
+// rename, never waited on or followed: WriteBundle answers within a second, the path is then a
+// regular file holding what the bundle renders for it, and the file a link named is as it was.
+// A bundle written again over its own untouched files leaves every one of them as it was. A read
+// with os.ReadFile waits on such a fifo for a writer for as long as none comes and reads /dev/zero
+// without end, and a write with os.WriteFile waits on it for a reader and has the file a link
+// names truncated.
+func TestWriteBundleReplacesAFifoOrALinkAtEachFileItWrites(t *testing.T) {
+	bundle := twoOwnerBundle("ghs_acme_write")
+	bundle.Pairs = []ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "CyberMonkLabs/legion")}
+	files := []struct {
+		name string // the file as the subtests name it
+		rel  string // its path under the root
+		want string // what the bundle renders for it
+	}{
+		{"acme's config.yml", filepath.Join("acme", ConfigFile), Config},
+		{"acme's hosts.yml", filepath.Join("acme", HostsFile), Hosts("ghs_acme_write")},
+		{"the root's pairs file", PairsFile, RenderPairs(bundle.Pairs)},
+	}
+	shapes := []struct {
+		name string
+		// plant puts the shape at path and answers the check of what it must leave as it was,
+		// or nil.
+		plant func(t *testing.T, path string) (kept func(t *testing.T))
+	}{
+		{"a fifo", func(t *testing.T, path string) func(t *testing.T) {
+			if err := syscall.Mkfifo(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return nil
+		}},
+		{"a link to dev zero", func(t *testing.T, path string) func(t *testing.T) {
+			if err := os.Symlink("/dev/zero", path); err != nil {
+				t.Fatal(err)
+			}
+			return nil
+		}},
+		{"a link to a file outside the root", func(t *testing.T, path string) func(t *testing.T) {
+			precious := filepath.Join(t.TempDir(), "precious")
+			if err := os.WriteFile(precious, []byte("precious\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(precious, path); err != nil {
+				t.Fatal(err)
+			}
+			return func(t *testing.T) {
+				t.Helper()
+				if body, err := os.ReadFile(precious); err != nil || string(body) != "precious\n" {
+					t.Fatalf("%s, the file the link named, is %q (%v), want it as it was", precious, body, err)
+				}
+			}
+		}},
+	}
+
+	t.Run("an ordinary bundle is written as before", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "gh")
+		if _, err := WriteBundle(root, bundle); err != nil {
+			t.Fatalf("first WriteBundle: %v", err)
+		}
+		written := make([]fs.FileInfo, len(files))
+		for i, file := range files {
+			info, err := os.Lstat(filepath.Join(root, file.rel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			written[i] = info
+		}
+		if changed, err := WriteBundle(root, bundle); err != nil || len(changed) != 0 {
+			t.Fatalf("WriteBundle of the bundle the root holds = %q, %v, want no directory changed", changed, err)
+		}
+		for i, file := range files {
+			path := filepath.Join(root, file.rel)
+			if info, err := os.Lstat(path); err != nil || !os.SameFile(info, written[i]) {
+				t.Fatalf("%s was replaced (%v), want the file the first write made left alone", path, err)
+			}
+			if body, err := os.ReadFile(path); err != nil || string(body) != file.want {
+				t.Fatalf("%s holds %q (%v), want %q", path, body, err, file.want)
+			}
+		}
+	})
+
+	for _, file := range files {
+		for _, shape := range shapes {
+			t.Run(file.name+" is "+shape.name, func(t *testing.T) {
+				root := filepath.Join(t.TempDir(), "gh")
+				if _, err := WriteBundle(root, bundle); err != nil {
+					t.Fatalf("first WriteBundle: %v", err)
+				}
+				path := filepath.Join(root, file.rel)
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				kept := shape.plant(t, path)
+				answered := make(chan error, 1)
+				go func() {
+					_, err := WriteBundle(root, bundle)
+					answered <- err
+				}()
+				var err error
+				select {
+				case err = <-answered:
+				case <-time.After(time.Second):
+					// In a fifo row the write waits in an open of the fifo. An open of it for
+					// reading and writing waits on nothing and is the writer or the reader that
+					// open waits for, so the goroutine ends before the test does. It is asked
+					// again until the write answers, since a write that read the fifo can wait
+					// again to write it. In a /dev/zero row a reader that followed the link is in
+					// an endless read, which no such open releases, so its goroutine runs on.
+					released := time.After(10 * time.Second)
+					for {
+						if fifo, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {
+							_ = fifo.Close()
+						}
+						select {
+						case err := <-answered:
+							t.Fatalf("WriteBundle over %s waited more than a second, and answered %v only once the open it waited in was released", path, err)
+						case <-released:
+							t.Fatalf("WriteBundle over %s has not answered in 11 seconds", path)
+						case <-time.After(10 * time.Millisecond):
+						}
+					}
+				}
+				if err != nil {
+					t.Fatalf("WriteBundle over %s = %v, want it replaced", path, err)
+				}
+				if kept != nil {
+					kept(t)
+				}
+				info, err := os.Lstat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !info.Mode().IsRegular() {
+					t.Fatalf("%s is %v after WriteBundle, want a regular file", path, info.Mode())
+				}
+				if body, err := os.ReadFile(path); err != nil || string(body) != file.want {
+					t.Fatalf("%s holds %q (%v) after WriteBundle, want %q", path, body, err, file.want)
+				}
+			})
+		}
+	}
+}
+
+// EmptyBundle leaves the gh directory of a controller whose gh acts as nobody an empty 0700
+// directory, whatever an earlier run left there — a file, a directory holding a file, and a link
+// to a directory outside it — even where the root is itself a link: it is resolved once, so the
+// directory the link names is what is emptied, and the link left in it is unlinked without being
+// followed, so the file in the directory it names stays. Without that resolution the removal is
+// refused ("… is a symlink"), and the earlier run's files outlive it.
+func TestEmptyBundleEmptiesARootThatIsALinkWithoutFollowingOne(t *testing.T) {
+	outside := t.TempDir()
+	precious := filepath.Join(outside, "precious")
+	if err := os.WriteFile(precious, []byte("kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	named := t.TempDir()
+	if err := os.Chmod(named, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(named, HostsFile), []byte(Hosts("ghs_stale")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(named, "acme"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(named, "acme", HostsFile), []byte(Hosts("ghs_acme_stale")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(named, "outside")); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "gh")
+	if err := os.Symlink(named, root); err != nil {
+		t.Fatal(err)
+	}
+	if err := EmptyBundle(root); err != nil {
+		t.Fatalf("EmptyBundle(%s): %v", root, err)
+	}
+	if got := entryNames(t, named); len(got) != 0 {
+		t.Fatalf("%s, which the root links to, holds %q, want nothing", named, got)
+	}
+	if info, err := os.Stat(named); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("%s is %v (%v), want a 0700 directory", named, info, err)
+	}
+	if body, err := os.ReadFile(precious); err != nil || string(body) != "kept\n" {
+		t.Fatalf("%s, in the directory the planted link names, is %q (%v), want it kept", precious, body, err)
 	}
 }

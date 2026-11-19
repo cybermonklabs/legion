@@ -55,7 +55,7 @@ const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 // requires `owners`, `mapped`, `refused` and `withoutWebhookApp` beside `caches` and strips any
 // other key. Every plugin parses the state with the schema of the contract it was built at, and a
 // Kubernetes deployment relaunches no stale session (INFRA-945 spec R10), so this reader is live in
-// every pod still on the previous image. The route serves a pod below 169 the block in this shape,
+// every pod still on the previous image. The route serves a pod below 173 the block in this shape,
 // written from the entries of this contract's own (`api`'s `withoutRepositoriesLive`), and
 // `state-narrowed-repositories.json` is that body: this is a copy and not an import, so a later
 // edit of the current schema cannot move the reader it is held to.
@@ -96,7 +96,7 @@ const repositoriesAt152 = z.object({
   caches: z.array(cacheViewAt152),
 });
 
-/** The state body a caller in a pod below 169 is served: this contract's state, every other key as
+/** The state body a caller in a pod below 173 is served: this contract's state, every other key as
  * this schema reads it, with the repositories block in contract 152's shape. */
 const stateWithRepositoriesAt152 = LegionStateResponse.extend({ repositories: repositoriesAt152 });
 
@@ -113,7 +113,7 @@ const schemas: Record<string, z.ZodType> = {
   // daemon's own controller (`controller: daemon`) holds its claim on no issue.
   "state-controller-claim.json": LegionStateResponse,
   // Written by internal/api's TestStateNarrowedRepositoriesGolden: the state route's body for a pod
-  // whose plugin is at the contract before 169, its repositories block in contract 152's shape.
+  // whose plugin is at the contract before 173, its repositories block in contract 152's shape.
   "state-narrowed-repositories.json": stateWithRepositoriesAt152,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
@@ -1586,7 +1586,7 @@ test("a Stage 3 issue without its Dispatch status is refused", () => {
 // Contract 31: every recorded issue carries the repository it targets and its default branch, and
 // its pull request the repository it is in. Contract 32: a repository's cache under the Kubernetes
 // runtime, Ready with its last health read or the read's failure, and the caches of repositories no
-// live record names, listed with when they go. Contract 169: the block is `live` and `caches` and
+// live record names, listed with when they go. Contract 173: the block is `live` and `caches` and
 // nothing else. `live` is one entry for each repository a live record names, sorted, with the name
 // its pair serves it as where the rename rule serves it under the other name, each role App's
 // installation once GitHub answered both reads, why GitHub's last read did not name it, why
@@ -2005,16 +2005,16 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-// A pod whose plugin is below 169 reads the repositories block with contract 152's schema
+// A pod whose plugin is below 173 reads the repositories block with contract 152's schema
 // (`repositoriesAt152`), which requires `owners`, `mapped`, `refused` and `withoutWebhookApp`: the
 // block this contract writes refuses there, and with it the whole state, so the route serves that
 // pod the block in 152's shape, written from the same entries, and leaves every other key as this
-// contract writes it. `state-narrowed-repositories.json` is the body served to a pod at 168
+// contract writes it. `state-narrowed-repositories.json` is the body served to a pod at 172
 // (`internal/api`'s TestStateNarrowedRepositoriesGolden), and the drift gate above holds every key
 // of it to that copy. The entries land where 152 put them: `owners` and `mapped` are the ones both
 // role Apps are installed on, under the name each is served under, every `default` false;
 // `refused` is each other entry with why; `withoutWebhookApp` is each entry with a `webhookApp`.
-test("a reader at contract 152 parses the repositories block served below 169", () => {
+test("a reader at contract 152 parses the repositories block served below 173", () => {
   const served = fixtureBody("state-narrowed-repositories.json");
   const written = served.repositories;
   expect(isJsonObject(written) ? Object.keys(written).sort() : written).toEqual([
@@ -2067,7 +2067,7 @@ test("a reader at contract 152 parses the repositories block served below 169", 
   expect(narrowedRest).toEqual(rest);
 
   // What serving the current block would do, and why it is not served: the reader of 152 refuses
-  // it for the four keys it requires, so a pod below 169 would lose its whole state.
+  // it for the four keys it requires, so a pod below 173 would lose its whole state.
   const current = repositoriesAt152.safeParse(fixtureBody("state.json").repositories);
   expect(current.success).toBeFalse();
   expect(current.error?.issues.map((issue) => issue.path[0]).sort()).toEqual([
@@ -2392,7 +2392,7 @@ test("the state golden carries each durable consumer's lag, and the list cannot 
 });
 
 // Each repository a live record names that Dispatch's GitHub App is not known to be installed on
-// carries why on its own entry (contracts 43, 169): the golden carries one, the entries Dispatch's
+// carries why on its own entry (contracts 43, 173): the golden carries one, the entries Dispatch's
 // App is known to be installed on carry no `webhookApp`, a state whose live records name nothing
 // carries an empty `live`, and an empty reason is refused.
 test("the state golden names each live repository without the webhook App", () => {
