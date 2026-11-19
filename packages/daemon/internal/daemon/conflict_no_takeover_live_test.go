@@ -331,7 +331,7 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 	r.note("read back: the second read ran %s after the first was logged: the daemon logged %q for %s, GitHub answering %v for head %v",
 		second.at.Sub(first.at).Round(time.Second), second.Message, r.key, second.Attrs["mergeable"], second.Attrs["readHead"])
 	asked := r.awaitLogged(conflictAskedLine, r.key, bound)
-	if asked.Attrs["why"] != classify.ConflictCheckNotGreen || asked.Attrs["phase"] != string(phase.Testing) || asked.Attrs["head"] != conflictFirstHead {
+	if asked.Attrs["why"] != string(classify.ConflictCheckNotGreen) || asked.Attrs["phase"] != string(phase.Testing) || asked.Attrs["head"] != conflictFirstHead {
 		t.Fatalf("the daemon logged %q for %s with %v, want the merge forward of %s asked in testing for %s",
 			asked.Message, r.key, asked.Attrs, conflictFirstHead, classify.ConflictCheckNotGreen)
 	}
