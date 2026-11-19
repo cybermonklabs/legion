@@ -49,9 +49,12 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // naming an owner the bundle holds no directory for — an owner the role's App is not installed
 // on — and one naming a repository a pair moved to an owner the bundle holds no directory for are
 // refused, exit 2, naming why, and the real gh never runs: no token is ever sent for a repository
-// it cannot reach. Under a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any directory's
-// token, every command is refused the same way but these: the guard's own visibility reads, which
-// run with that token (ghVisibilityRead), the shared check's visibility read
+// it cannot reach, but by one exception, R4 of dispatch://INFRA-3399 (ghTargetOf): a call that
+// writes nothing and names only owners the bundle holds no directory for, in a working directory
+// whose remotes name no github.com repository for it, keeps GH_CONFIG_DIR, as a command naming no
+// owner does. Under a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any directory's token,
+// every command is refused the same way but these: the guard's own visibility reads, which run
+// with that token (ghVisibilityRead), the shared check's visibility read
 // (sharedCheckVisibilityRead), the exact `gh api rate_limit` (ghRateLimitRead) and `gh auth
 // git-credential`.
 //
@@ -835,9 +838,15 @@ func ghCallerToken(env map[string]string) string {
 // an `<owner>` argument, a team, a project, an owner option, since such a command reaches
 // whatever else of that owner's gh resolves — is routed through dirFor, the bundle's own pick
 // (ghConfigDirFor), and they must all route to one directory; two are an error (selectors.dir).
-// The target's repository is the one repository they all name, which is none where a selector
-// names an owner alone. A GraphQL query naming its repository otherwise, by a node id or in the
-// query text, names none gh could resolve. GH_HOST naming another host than github.com, where gh
+// A call that writes nothing (ghWritesNothing, or a GraphQL query ghGraphQLQueryRead admits),
+// whose every item is an owner the bundle holds no directory for and whose working directory's
+// remotes named no github.com repository for it, runs with GH_CONFIG_DIR's directory, the one a
+// command naming no owner runs with, rather than being refused (R4 of dispatch://INFRA-3399);
+// every other call is routed and refused by the rule above. The target's writesNothing stays
+// ghWritesNothing's alone, which the guard's reading of the call rests on. The target's
+// repository is the one repository they all name, which is none where a selector names an owner
+// alone. A GraphQL query naming its repository otherwise, by a node id or in the query text,
+// names none gh could resolve. GH_HOST naming another host than github.com, where gh
 // would send no token of the bundle's, and a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of
 // any directory's token, are errors.
 func ghTargetOf(argv []string, env map[string]string, help func(path []string) (string, error), remotes func() ([]ghRemote, error), dirFor func(owner, name string) (string, error)) (ghTarget, error) {
@@ -909,7 +918,11 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	files := ghSentFiles(parsed)
 	command := strings.Join(cmd.path, " ")
 	writesNothing := ghWritesNothing(argv, cmd.path)
-	dir, err := sel.dir(dirFor)
+	fallback := ""
+	if writesNothing || ghGraphQLQueryRead(argv) {
+		fallback = env["GH_CONFIG_DIR"]
+	}
+	dir, err := sel.dir(dirFor, fallback)
 	if err != nil {
 		return ghTarget{}, err
 	}

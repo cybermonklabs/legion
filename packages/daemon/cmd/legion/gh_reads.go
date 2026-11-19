@@ -226,6 +226,154 @@ func ghWritesNothing(argv, path []string) bool {
 	return listed && ghReadGrammar(argv[len(path):], options, false)
 }
 
+// ghGraphQLQueryRead says whether argv, a call as typed, is a query of GitHub's GraphQL API that
+// writes nothing, which R4 of dispatch://INFRA-3399 lets run with GH_CONFIG_DIR's directory where
+// it names only owners the bundle holds no directory for, as it lets a call ghWritesNothing admits
+// (selectors.dir). It is no rule of the guard's: ghWritesNothing admits no `gh api graphql`, so the
+// guard reads such a call whole.
+//
+// gh sends a call to its GraphQL API where the endpoint is exactly the word `graphql` (cli/cli
+// v2.98.0 pkg/cmd/api/api.go, `isGraphQL := opts.RequestPath == "graphql"`), as a POST of its
+// fields, the query among them. So argv begins with `api graphql`, no word before them, and every
+// word after them is one of the options api.go's NewCmdApi defines that leave the request that
+// POST, its value in the next word: -f/--raw-field and -F/--field, -H/--header naming no method
+// override (ghMethodOverrideHeaders) and no Content-Length, which gh sets as the length of the
+// body it sends (pkg/cmd/api/http.go), -q/--jq and -t/--template; or one of the switches
+// --paginate and --slurp. No --input, whose file gh sends as the body, no -X/--method, no
+// --hostname, no value joined to its option, no `--` and no other option.
+//
+// Every field is key=value, its key the text before the first `=`. gh's parseFields
+// (pkg/cmd/api/fields.go) reads a `[` or a `]` in a key as nesting, and sets the request's query
+// from any key whose first named part it reads as `query`: `query[]`, `query[x]`, `query]x` and
+// `[query]` among them. Each part it reads is text of the key, so exactly one field's key is
+// exactly `query`, and no other key holds the word. That field is raw (-f/--raw-field), since gh
+// rewrites a typed field's value after this read it (magicFieldValue): it fills `{owner}`,
+// `{repo}` and `{branch}`, and `:owner`, `:repo` and `:branch`, from the working directory's
+// repository (fillPlaceholders), and reads a value beginning with `@` from a file or standard
+// input, which no typed field's value here does. The query names no operation but a query
+// (graphQLQueryOnly).
+func ghGraphQLQueryRead(argv []string) bool {
+	if len(argv) < 2 || argv[0] != "api" || argv[1] != "graphql" {
+		return false
+	}
+	query, queries := "", 0
+	for i := 2; i < len(argv); i++ {
+		option := argv[i]
+		switch option {
+		case "--paginate", "--slurp":
+			continue
+		case "-f", "--raw-field", "-F", "--field", "-H", "--header", "-q", "--jq", "-t", "--template":
+		default:
+			return false
+		}
+		if i++; i == len(argv) {
+			return false
+		}
+		value := argv[i]
+		switch option {
+		case "-f", "--raw-field", "-F", "--field":
+			key, text, valued := strings.Cut(value, "=")
+			typed := option == "-F" || option == "--field"
+			switch {
+			case !valued, typed && strings.HasPrefix(text, "@"):
+				return false
+			case key == "query" && !typed:
+				query, queries = text, queries+1
+			case strings.Contains(key, "query"):
+				return false
+			}
+		case "-H", "--header":
+			name, _, _ := strings.Cut(value, ":")
+			if name = strings.ToLower(strings.TrimSpace(name)); ghMethodOverrideHeaders[name] || name == "content-length" {
+				return false
+			}
+		}
+	}
+	return queries == 1 && graphQLQueryOnly(query)
+}
+
+// graphQLQueryOnly says whether text, a GraphQL document, names no operation but a query: read in
+// one pass over GraphQL's lexical grammar (the GraphQL spec, "Lexical Tokens"), none of its name
+// tokens is `mutation` or `subscription`, wherever it stands, so a field or an argument of that
+// name refuses the document too, and it holds no string left open. A comment and a string are
+// passed over as the pass meets them, never in a pass of their own, so a `#` inside a string
+// starts no comment and a quote inside a comment starts no string. A comment runs from `#` to the
+// next line terminator (\n, \r or \r\n); a string, from `"` to its closing quote past its escapes,
+// is refused where a line terminator or the text's end comes first; a block string, from `"""` to
+// the first `"""` not escaped as `\"""`, is refused where the text ends first. A name is
+// `[_A-Za-z][_0-9A-Za-z]*`, and a number is read whole, its fraction and exponent with it, so a
+// name right after a number, which the spec's lexer refuses and a looser one reads as a name,
+// is read as that name (`1e5mutation` names `mutation`). Anything else, the punctuators, white
+// space, commas and a byte order mark among them, is passed over.
+func graphQLQueryOnly(text string) bool {
+	digit := func(c byte) bool { return '0' <= c && c <= '9' }
+	nameStart := func(c byte) bool { return c == '_' || 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' }
+	nameRest := func(c byte) bool { return nameStart(c) || digit(c) }
+	inLine := func(c byte) bool { return c != '\n' && c != '\r' }
+	// at says whether text holds, at i, a byte that admits; past is the first index from i on
+	// whose byte it does not admit.
+	at := func(i int, admits func(byte) bool) bool { return i < len(text) && admits(text[i]) }
+	past := func(i int, admits func(byte) bool) int {
+		for at(i, admits) {
+			i++
+		}
+		return i
+	}
+	for i := 0; i < len(text); {
+		switch c := text[i]; {
+		case c == '#':
+			i = past(i, inLine)
+		case strings.HasPrefix(text[i:], `"""`):
+			end := i + 3
+			for !strings.HasPrefix(text[end:], `"""`) {
+				if end == len(text) {
+					return false
+				}
+				if strings.HasPrefix(text[end:], `\"""`) {
+					end += 3
+				}
+				end++
+			}
+			i = end + 3
+		case c == '"':
+			end := i + 1
+			for end == len(text) || text[end] != '"' {
+				if !at(end, inLine) {
+					return false
+				}
+				if text[end] == '\\' && at(end+1, inLine) {
+					end++
+				}
+				end++
+			}
+			i = end + 1
+		case nameStart(c):
+			end := past(i+1, nameRest)
+			if name := text[i:end]; name == "mutation" || name == "subscription" {
+				return false
+			}
+			i = end
+		case c == '-' || digit(c):
+			i = past(i+1, digit)
+			if i+1 < len(text) && text[i] == '.' && digit(text[i+1]) {
+				i = past(i+2, digit)
+			}
+			if i < len(text) && (text[i] == 'e' || text[i] == 'E') {
+				exponent := i + 1
+				if exponent < len(text) && (text[exponent] == '+' || text[exponent] == '-') {
+					exponent++
+				}
+				if at(exponent, digit) {
+					i = past(exponent, digit)
+				}
+			}
+		default:
+			i++
+		}
+	}
+	return true
+}
+
 // ghReadGrammar says whether args, the words of a call after its leaf's path, are in the read
 // grammar of a leaf that takes options (ghReadLeaves, ghAPIReadOptions). A word that begins with
 // `-` is one of options' spellings, whole: so no `--name=value`, no value joined to a short option

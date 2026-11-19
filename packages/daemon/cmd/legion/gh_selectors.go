@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
@@ -23,14 +24,23 @@ import (
 // repository of it, each once and with the argument that first named it (named): what the
 // bundle routes the command by (ghConfigDirFor), so a repository a configured rename moved is
 // one key and its owner's every other repository another, whichever owner names them; whether an
-// argument names the command's own repository (targeted), so gh resolves none of its own; and
+// argument names the command's own repository (targeted), so gh resolves none of its own;
 // whether gh api's arguments hold a placeholder gh fills from the command's own repository
-// (readsBase).
+// (readsBase); and whether the working directory's git remotes named a github.com repository
+// for the command (readRemote).
 type selectors struct {
 	api       bool
 	named     []ghNamed
 	targeted  bool
 	readsBase bool
+	// readRemote is set by fromWorkingDirectory for every remote line it counts that names a
+	// github.com repository, before add, which drops a line naming what a selector already
+	// named: the remotes are read after the command's own words, so a remote naming the
+	// repository an argument names leaves no entry of its own, and still says gh may act on the
+	// working directory's repository. A call whose remotes were read so is never run with the
+	// fallback directory (dir): R4 of dispatch://INFRA-3399 lets a read through only where the
+	// reader "finds no github.com remote there, whether or not it keeps that remote's entry".
+	readRemote bool
 }
 
 // ghNamed is one thing a command's selectors name, keyed as the bundle routes it: a repository,
@@ -124,18 +134,49 @@ func (s *selectors) onlyRepository() string {
 // answer for them with less than GitHub holds and no error at all. Two repositories of one owner
 // are two directories where a configured rename moved one of them, and two names of one
 // repository, the name a rename moved it away from and the one it moved to, are one directory.
-func (s *selectors) dir(dirFor func(owner, name string) (string, error)) (string, error) {
+//
+// fallback is the directory a command naming no owner runs with, GH_CONFIG_DIR's, for a call that
+// writes nothing, and "" for every other call (ghTargetOf). Given one, a call that names at least
+// one item, whose every item dirFor answers as an owner the bundle holds no directory for, and
+// whose working directory's git remotes named no github.com repository for it (readRemote), runs
+// with the fallback rather than being refused (R4 of dispatch://INFRA-3399): the bundle holds no
+// token of that owner's, and a call that writes nothing changes nothing on GitHub with the pane's
+// own. Every other call gets the answer above, exactly as with no fallback: the first refusal in
+// the order its items were named, or the routing of them all.
+func (s *selectors) dir(dirFor func(owner, name string) (string, error), fallback string) (string, error) {
+	// fallsBack stays true while every item so far is an owner the bundle holds no directory for.
+	fallsBack := fallback != "" && !s.readRemote
+	var refusal error
 	var dirs []string
 	routed := map[string][]string{}
 	for _, named := range s.named {
 		dir, err := dirFor(named.owner, named.name)
-		if err != nil {
-			return "", err
+		// A bare OwnerNotServedError, asserted on the error itself and never looked for inside
+		// it (errors.As), is ghConfigDirFor's answer for an owner the bundle holds no directory
+		// for, and nothing else is. A repository a configured rename pair moves never counts as
+		// one: where the pair's `to` owner has a directory, dirFor serves the repository from it,
+		// which this routes as every served item, and where that owner has none, the refusal
+		// names the pair and wraps the OwnerNotServedError inside its own words.
+		if _, unserved := err.(*leakguard.OwnerNotServedError); !unserved {
+			fallsBack = false
+		}
+		if err != nil && refusal == nil {
+			refusal = err
+		}
+		switch {
+		case refusal != nil && !fallsBack:
+			return "", refusal
+		case err != nil:
+			continue
 		}
 		if _, seen := routed[dir]; !seen {
 			dirs = append(dirs, dir)
 		}
 		routed[dir] = append(routed[dir], named.what)
+	}
+	if refusal != nil {
+		// Every item is an owner the bundle holds no directory for.
+		return fallback, nil
 	}
 	switch len(dirs) {
 	case 0:
@@ -670,7 +711,8 @@ func markedOrigin(remotes []ghRemote) (fetch int, ok bool) {
 // repo set-default, every remote's network. So a workspace whose remotes name two owners names
 // two, as one whose remotes name two repositories of one owner names two repositories, and so no
 // one repository. Each is routed as every selector is (dir), so remotes whose repositories two
-// directories answer for are refused.
+// directories answer for are refused. Every line that counts and names a github.com repository
+// sets readRemote, whether or not add keeps its entry.
 func (s *selectors) fromWorkingDirectory(remotes func() ([]ghRemote, error), honoursMarker bool) error {
 	advice := "name the repository with -R <owner>/<repo>"
 	if s.api {
@@ -692,6 +734,7 @@ func (s *selectors) fromWorkingDirectory(remotes func() ([]ghRemote, error), hon
 	}
 	for _, remote := range listed {
 		if owner, repo, _ := remote.repository(); owner != "" {
+			s.readRemote = true
 			s.add(owner, ghconfig.RepositoryName(repo), "the working directory's "+remote.what())
 		}
 	}
