@@ -2692,10 +2692,10 @@ package api
 // pull request declared at 2026-11-16T20:01Z, and 154 again at the merge that brought main in
 // at 151 (#4106), where the reading of the 194 open pull requests at 2026-11-17T12:23:43Z gave
 // 154 to this change alone, and 154 again at the merge that brought main in at 152 (#3730),
-// which is below it, and 168 at the merge that brought main in at 160 (#3519, the entry above),
-// where the reading of the 234 open pull requests at 2026-11-19T08:37:12Z gave 161 to 167 to
-// other heads and 168 to none, and 172 at a later round, when #3993, #4175 and #4488 had taken
-// 168 too, where the reading of the 233 open pull requests at 2026-11-19T13:36:20Z gave
+// which is below it, and 168 at the merge that brought main in at 160 (#3519, INFRA-2009's
+// entry above), where the reading of the 234 open pull requests at 2026-11-19T08:37:12Z gave 161
+// to 167 to other heads and 168 to none, and 172 at a later round, when #3993, #4175 and #4488
+// had taken 168 too, where the reading of the 233 open pull requests at 2026-11-19T13:36:20Z gave
 // 161 to 171 to other heads and 172 to none, and 172 again at the merge that brought main in at
 // 168 (#4488), which is below it, where the reading of the 241 open pull requests at
 // 2026-11-19T17:51:41Z gave 169 to 171 to other heads and 172 to this change alone. 87 was free

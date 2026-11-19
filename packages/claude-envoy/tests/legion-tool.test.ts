@@ -80,7 +80,8 @@ interface Request {
   readonly body: unknown
 }
 
-/** A stub daemon answering the golden fixtures, `state` in place of `state.json` when given. */
+/** A stub daemon answering the golden fixtures: `state` in place of `state.json` when given, and
+ * `daemonContract` as the contract its health route states when given. */
 async function daemon(
   options: { readonly daemonContract?: number; readonly state?: unknown } = {},
 ): Promise<{

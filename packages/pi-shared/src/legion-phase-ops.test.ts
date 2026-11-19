@@ -706,8 +706,8 @@ function closedRuntime(
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
     if (route === "/legion/v1/issues/LEGION-208/record") {
-      const state = daemonFixture("state.json") as { issues: Record<string, object> };
-      return Response.json({ ...state.issues["LEGION-208"], phase: "done", ...record });
+      const { issues } = stateAtPhase("done", record) as { issues: Record<string, object> };
+      return Response.json(issues["LEGION-208"]);
     }
     if (typeof init?.body === "string") posted.push(JSON.parse(init.body));
     if (route === "/legion/v1/grants") return Response.json(daemonFixture("grant.json"));
