@@ -6,9 +6,13 @@ import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
+import codexMarketplace from "../../../.agents/plugins/marketplace.json" with { type: "json" }
 import marketplace from "../../../.claude-plugin/marketplace.json" with { type: "json" }
 import plugin from "../.claude-plugin/plugin.json" with { type: "json" }
 import ompPlugin from "../.omp-plugin/plugin.json" with { type: "json" }
+import codexPlugin from "../codex/.codex-plugin/plugin.json" with { type: "json" }
+import codexHooks from "../codex/hooks/hooks.json" with { type: "json" }
+import codexPkg from "../codex/package.json" with { type: "json" }
 import type { ModCallArguments, ModCallName, ModCallResults } from "../hooks/mod-protocol"
 import pkg from "../package.json" with { type: "json" }
 import {
@@ -121,7 +125,8 @@ test("delivers each dedupe key once and answers each relayed frame, never a rece
  * One Dispatch message as the listener publishes it for one send: `/v1/messages/send` mints a
  * fresh `event_id`, `source_event_id` and `trace_id` for every request and derives `dedupe_key`
  * from the idempotency key Dispatch passes, which is the same for an attempt and its same-mode
- * Retry (`packages/envoy/cmd/listener/api.go` messageEnvelope, sendHandler).
+ * Retry (`packages/envoy/internal/contracts/message_envelope.go` AgentSendEnvelope, which
+ * `packages/envoy/cmd/listener/api.go` sendHandler calls).
  */
 function listenerSend(send: string): string {
   return JSON.stringify({
@@ -472,7 +477,56 @@ test("the committed manifests declare no version the release would have to bump;
   expect(marketplaceEntries).toHaveLength(1)
   expect(marketplaceEntries[0]).not.toHaveProperty("version")
   expect(ompPlugin.version).toBe(pkg.version)
+  // The Codex CLI names its plugin cache directory by this version and reinstalls when it changes
+  // (measured on 0.154.0), so release.yaml writes the release's version into it as well, and into
+  // the Codex package's own package.json, which publishes it at the same version as this one.
+  expect(codexPlugin.version).toBe(pkg.version)
+  expect(codexPkg.version).toBe(pkg.version)
   expect(MCP_SERVER_INFO).toEqual({ name: "envoy", version: pkg.version })
+})
+
+test("the Codex manifest starts the server in the plugin's own directory, as the Codex host", () => {
+  // Codex runs a plugin's MCP server with `cwd: "./"` in the plugin's directory and expands no
+  // `${PLUGIN_ROOT}` in its arguments; it passes the server only the variables `env_vars` names;
+  // and it asks before every call of a plugin's tool unless the tool is pre-approved (all measured
+  // on 0.154.0).
+  const envoy = codexPlugin.mcpServers.envoy
+  expect(envoy.cwd).toBe("./")
+  expect(envoy.args).toEqual(["./dist/envoy-channel.js", "--host", "codex"])
+  // Every variable that names where Envoy, NATS, Dispatch or the secrets broker is, or the
+  // credential for it: a Legion session pod sets several of these (its NATS nkey seed and its
+  // Dispatch token as files), and one Codex does not pass leaves the server without it.
+  for (const name of [
+    "AGENTBOX_HOST",
+    "AGENT_SECRETS_MACHINE_AUDIENCE",
+    "AGENT_SECRETS_MACHINE_IDENTITY",
+    "AGENT_SECRETS_MACHINE_TOKEN_FILE",
+    "AGENT_SECRETS_URL",
+    "DISPATCH_PUBLIC_URL",
+    "DISPATCH_STATE_DIR",
+    "DISPATCH_TOKEN",
+    "DISPATCH_TOKEN_BROKER",
+    "DISPATCH_TOKEN_FILE",
+    "DISPATCH_URL",
+    "ENVOY_CONFIG_FILE",
+    "ENVOY_MACHINE_ID",
+    "ENVOY_NATS_URL",
+    "ENVOY_TOKEN",
+    "ENVOY_TOKEN_FILE",
+    "ENVOY_URL",
+    "NATS_NKEY_SEED",
+    "NATS_NKEY_SEED_FILE",
+    "XDG_CONFIG_HOME",
+  ]) {
+    expect(envoy.env_vars).toContain(name)
+  }
+  expect(envoy.tools).toEqual({ dispatch: { approval_mode: "approve" } })
+  // Codex's validator refuses a manifest `hooks` field; with none, Codex reads hooks/hooks.json.
+  expect(codexPlugin).not.toHaveProperty("hooks")
+  const commands = Object.values(codexHooks.hooks).flatMap((groups) =>
+    groups.flatMap((group) => group.hooks.map((hook) => hook.command)),
+  )
+  for (const command of commands) expect(command).toMatch(/^bun "\$\{PLUGIN_ROOT\}\/dist\//)
 })
 
 test("the marketplace entry installs the plugin from npm, by name, above the placeholder", () => {
@@ -493,6 +547,21 @@ test("the marketplace entry installs the plugin from npm, by name, above the pla
   expect(source?.source).toBe("npm")
   expect(source?.package).toBe(pkg.name)
   const range = source?.version ?? ""
+  expect(Bun.semver.satisfies("0.0.0", range)).toBe(false)
+  expect(Bun.semver.satisfies("1.0.0", range)).toBe(true)
+  expect(Bun.semver.satisfies("99.0.0", range)).toBe(true)
+})
+
+test("the Codex marketplace entry installs the Codex package from npm, above the placeholder", () => {
+  // Codex reads .agents/plugins/marketplace.json in place of .claude-plugin/marketplace.json when
+  // a repository has both (measured on 0.154.0). The range is the Claude Code entry's, for the
+  // reasons the test above gives: the Codex package's first publish is a placeholder too.
+  expect(codexMarketplace.plugins).toHaveLength(1)
+  const entry = codexMarketplace.plugins[0]
+  expect(entry?.name).toBe(codexPlugin.name)
+  expect(entry?.source.source).toBe("npm")
+  expect(entry?.source.package).toBe(codexPkg.name)
+  const range = entry?.source.version ?? ""
   expect(Bun.semver.satisfies("0.0.0", range)).toBe(false)
   expect(Bun.semver.satisfies("1.0.0", range)).toBe(true)
   expect(Bun.semver.satisfies("99.0.0", range)).toBe(true)
@@ -1025,15 +1094,85 @@ test("with Envoy on and no NATS server the server serves its listener tools with
     expect(listed?.tools.map((tool) => tool.name)).toContain("envoy_send")
     expect(JSON.stringify(responses.get(3)?.["result"])).toContain("ses_no_nats")
     expect(responses.get(4)?.["result"]).toEqual({ content: [{ type: "text", text: "[]" }] })
-    expect(responses.get(5)?.["error"]).toMatchObject({
-      message: expect.stringContaining(
-        "inbound messages are off for this session: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)",
-      ),
+    // A tool's error is the tool's result, which the model reads, and no JSON-RPC error.
+    expect(responses.get(5)?.["error"]).toBeUndefined()
+    expect(responses.get(5)?.["result"]).toEqual({
+      content: [
+        {
+          type: "text",
+          text: expect.stringContaining(
+            "inbound messages are off for this session: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL)",
+          ),
+        },
+      ],
+      isError: true,
     })
     expect(stderr).toContain(
       "envoy-channel: Envoy's inbound messages are off: Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL); the Envoy tools still work",
     )
     expect(calls).toEqual(["GET /v1/sessions"])
+    expect(exitCode).toBe(0)
+  } finally {
+    listener?.stop(true)
+  }
+}, 20_000)
+
+test("a tool call the listener refused because its sender is rate limited answers a result with isError that holds the listener's sentence, and no JSON-RPC error", async () => {
+  const sentence =
+    "Your sending is rate limited. This message was not sent. This listener lets one session send " +
+    "4 messages a minute and 2 at once. You can send it again after 15 seconds."
+  let listener: Server<undefined> | undefined
+  try {
+    const home = temporaryHome("rate-limited")
+    const configDirectory = join(home, "claude-config")
+    await mkdir(configDirectory)
+    const calls: string[] = []
+    // The listener's 429 for a session past its sending limit (`senderRateLimitedAnswer`,
+    // packages/envoy/cmd/listener/sender_limit.go), to every call.
+    listener = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        calls.push(`${request.method} ${new URL(request.url).pathname}`)
+        return Response.json(
+          {
+            error: sentence,
+            reason: "sender_rate_limited",
+            retry_after_seconds: 15,
+            messages_per_minute: 4,
+            burst: 2,
+          },
+          { status: 429, headers: { "Retry-After": "15" } },
+        )
+      },
+    })
+    await writeFile(
+      join(configDirectory, "envoy.json"),
+      JSON.stringify({ envoy: { url: `http://127.0.0.1:${listener.port}` } }),
+    )
+    // No NATS server, so the server registers nothing and the tools' calls are the only ones.
+    const { exitCode, responses } = await runChannelServer(
+      {
+        HOME: home,
+        CLAUDE_CONFIG_DIR: configDirectory,
+        CLAUDE_CODE_SESSION_ID: "ses_rate_limited",
+        CLAUDE_PLUGIN_DATA: home,
+      },
+      [
+        { name: "envoy_send", arguments: { session_id: "ses_target", message: "hello" } },
+        { name: "envoy_publish", arguments: { topic: "notifications.team.x", message: "hello" } },
+      ],
+    )
+
+    for (const id of [4, 5]) {
+      expect(responses.get(id)?.["error"]).toBeUndefined()
+      expect(responses.get(id)?.["result"]).toEqual({
+        content: [{ type: "text", text: `${sentence} (reason: sender_rate_limited)` }],
+        isError: true,
+      })
+    }
+    // One call to each route, in whichever order the two concurrent calls reached the listener:
+    // a refusal is not sent again.
+    expect([...calls].sort()).toEqual(["POST /v1/messages/publish", "POST /v1/messages/send"])
     expect(exitCode).toBe(0)
   } finally {
     listener?.stop(true)

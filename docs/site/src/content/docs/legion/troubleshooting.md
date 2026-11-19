@@ -16,7 +16,7 @@ directory; `<KEY>` is an issue key such as `WIDGETS-12`.
 the environment and the files the configuration names, and starts nothing:
 
 ```sh
-legion start --config legion.yaml --check-config
+legion config check --config legion.yaml
 ```
 
 | It says | What to do |
@@ -30,7 +30,7 @@ legion start --config legion.yaml --check-config
 | `worker_stop_timeout_seconds must be at least 9 when runtime is kubernetes: …` | Raise it to 9 or more. A role's stop gives its agent 5 s to exit, drains its output for 1 s and waits at least 3 s for the CodeGraph warm-up to release its lease on the issue volume; a smaller grace would let the pod kill the shim with the lease held, and the role's relaunch would skip its own build for a minute. |
 | `projects must configure <PROJECT>, the daemon's own project` | `project` must also be a key of `projects`. |
 | `postgres_dsn is required (or set LEGION_POSTGRES_DSN)` | Give the daemon its database. |
-| `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": the project's repositories are Dispatch's mapping …` is one: map the repositories in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
+| `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": Dispatch holds the project's repository mapping …` is one: map the repositories in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
 | `omp_invocation is not used when runtime is kubernetes: …` | Remove it: every pod runs the worker image's Oh My Pi. |
 | `worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: …` | Claude Code runs the phase workers alone; leave the architect on `omp`. |
 | `worker_backends runs a role on claude, and boot is missing …` | Under tmux, give the daemon's environment what the message names: `LEGION_CLAUDE_PATH` and `LEGION_BUN_PATH` (or `claude` and `bun` on `PATH`), and `LEGION_CLAUDE_PLUGIN_DIR`, the absolute path of a built `packages/claude-envoy`. A Kubernetes daemon needs none of them: the worker image carries the plugin and Claude Code's pin, and each Claude role's pod installs the pinned Claude Code at launch, so `worker_backends` is accepted there with nothing else set. A launch whose install fails or does not verify fails, printing a `legion claude-code: …` line, so such a pod must reach the npm registry. |
@@ -82,10 +82,10 @@ cluster and the image:
   recovers it from Dispatch's listing once GitHub answers, with nothing to move. A
   `child-release-stalled` notice that names such a repository says which parent to release first:
   the recovery records no child under a parent that is not `todo`.
-- **A stamped repository the project does not serve.** `workflow: commit_issue_trailer_repos names
-  a repository this project does not serve, so no pane stamps a commit with the issue key for it`,
-  with the repository and the project: `projects.<KEY>.commit_issue_trailer_repos` only selects
-  among the repositories Dispatch maps to the project, so this name selects nothing. It is a
+- **A stamped repository the mapping does not hold.** The boot says once, naming the repository
+  and the project, that `projects.<KEY>.commit_issue_trailer_repos` names a repository Dispatch
+  does not map to the project. A pane still stamps a commit for that repository when it works it,
+  so the line catches a typo and nothing else. It is a
   warning, not a refusal — the boot's check reads no Dispatch, and a repository mapped the day
   after the file is written is no fault of the file. Map the repository to the project in
   Dispatch, or take the name out.
@@ -291,8 +291,8 @@ Check, in order:
    root the daemon recorded that a person moved back to `triage` is never queued again: it runs
    again only from `todo`. In `backlog` or `icebox` it does not run.
 3. **The project and its repository.** The issue's project must be the daemon's, under `projects`
-   in `legion.yaml`, and its repository one the daemon serves. An issue whose repository resolves to
-   none, or to one not mapped to the project, or left out for a missing App, is not admitted: the
+   in `legion.yaml`. The issue may name any `owner/name`, whether or not Dispatch maps it to the project. An issue
+   whose repository resolves to none, or to one a role App is not installed on, is not admitted: the
    daemon says why on the issue (`Legion did not admit this issue: …`), once until the cause
    changes. Set the issue's repository (the issue header's Repository picker, or
    `dispatch issue-update --repo owner/name`), or install the missing App, and move the issue to
@@ -475,8 +475,8 @@ where the decision was made. For a question, it is a reply on the question's own
 it or says that `todo` on the root brings the architect back to answer. It says what the controller
 judged. The tree stays parked when the park is not the controller's own hold, the park with its
 `Parked by Legion while it waits on:` comment beside it: a person's park, another agent's session's,
-or an operator's `legion status` (the comment names who, and the tree runs when a person sets it to
-`todo`, approves its spec when it has no parent, or asks the controller to start it). It stays
+or an operator's `legion issue status` (the comment names who, and the tree runs when a person sets
+it to `todo`, approves its spec when it has no parent, or asks the controller to start it). It stays
 parked too when the decision is older than the park, when the root is `done` or `triage`, or when
 the decision only questions the work. When the controller was down, its next start walks the parked
 roots. That walk reads only the last 10 events of each issue. The walk runs at each start and on
@@ -649,8 +649,8 @@ stands:
   catch-up. To restart the tree by hand, write the same pair:
 
   ```sh
-  legion status <KEY> backlog --config legion.yaml --operator-token-file operator-token
-  legion status <KEY> todo    --config legion.yaml --operator-token-file operator-token
+  legion issue status <KEY> backlog --config legion.yaml --operator-token-file operator-token
+  legion issue status <KEY> todo    --config legion.yaml --operator-token-file operator-token
   ```
 
 `legion claims retry --claim <token>` relaunches a failed architect on its session with fresh
@@ -669,12 +669,12 @@ prints each one it retried, and exits 1 naming each it refused: run it once the 
 failed launches is gone (a host moved onto tmux, a broken key replaced). It passes over a stopped
 claim, which is retired rather than failed, so name that one with `--claim`.
 
-A held issue has one more release, and it costs nothing. `legion status <KEY> todo` on the tree's
-own root releases the hold: the issue returns to the phase `heldFrom` names, that phase's worker
-starts with its task, and the generation, the review rounds, the pod and the issue's place in the
-admission line stay as they were. A person's move of the root to `todo` in the Dispatch dashboard
-and the controller's own `set_status` do the same, since all three write the one status the
-daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
+A held issue has one more release, and it costs nothing. `legion issue status <KEY> todo` on the
+tree's own root releases the hold: the issue returns to the phase `heldFrom` names, that phase's
+worker starts with its task, and the generation, the review rounds, the pod and the issue's place in
+the admission line stay as they were. A person's move of the root to `todo` in the Dispatch
+dashboard and the controller's own `set_status` do the same, since all three write the one status
+the daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
 of its own, and a root whose tree lingers or stands at `phase: done` is re-admitted at a new
 generation, which is what the restart above does.
 
@@ -1156,7 +1156,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   waiting on capacity; running it again` with the scheduler's reason and creates the pod again every
   5 minutes, serving nothing until one is placed and passes, and then reports the `pool-capacity`
   capability open with the count and the reason. Make room in the pool, or raise its limits; the
-  probe pod itself needs only 250m and 1Gi.
+  probe pod itself needs only 500m and 1Gi.
 - **The `workspace-init` container fails.** It provisions the issue's workspace on the pod's own
   disk, and its refusals name what to do, sometimes a `jj` command to run against the issue's
   clone (a local bookmark deleted and never pushed, or a conflicted one). Read it with
@@ -1390,8 +1390,9 @@ These arrive as messages on the Dispatch issue:
   round, so an approval or request for changes from anyone else leaves it undecided too. A review
   from the review App decides a round only when it comes from the reviewer's own session: the
   daemon reads the review's Legion footer
-  (`<!-- legion: {"session":"…","phase":"review","head":"…"} -->`) and requires the session it
-  names to match the session recorded on the reviewer's claim. That footer also names the head the
+  (`<!-- legion: {"session":"…","phase":"review","head":"…","entry":"…"} -->`) and requires the
+  session it names to match the session recorded on the reviewer's claim. That footer also names
+  the head the
   review read, and a review the review App submitted decides the round only when that head is the
   pull request's current head, compared exactly, whether the daemon heard of the review from its
   webhook or read it from GitHub's list. GitHub rewrites a review's `commit_id` to the current
@@ -1405,12 +1406,21 @@ These arrive as messages on the Dispatch issue:
   `gh pr view <n> --json headRefOid`. A person's review decides by its webhook on the `commit_id`
   that event carried; read from GitHub's list, where that id has moved, it decides nothing, logged
   as `workflow: a review decides nothing: a person's review read from the list`. A review-App
-  review with no footer at all, or whose
+  review with no footer at all, whose footer is not valid JSON (an unquoted placeholder left in
+  it, say), or whose
   footer names another session (the controller's, an architect's), is set aside and decides
   nothing, logged at warn as `workflow: a review decides nothing: the review App submitted it from
   a session that is not the reviewer's`, with `footer_session`, `reviewer_session` and
-  `body_truncated`. While the reviewer's session is not yet recorded, the login alone decides,
-  logged as `workflow: the reviewer's session is not recorded; the review App's login decides`.
+  `body_truncated`. The reviewer's session is the one the claims record holds for the claim the
+  daemon starts the reviewer under, in its first round as in every later one: recorded when the
+  reviewer's agent registers, it stays on the claim through later rounds, releases and relaunches.
+  While that claim records no session, or has no row - from the creation of the reviewer's claim
+  until its agent registers, and again after its session is forgotten until the next one
+  registers - a review-App review decides nothing and moves no commit, whoever submitted it,
+  logged at warn as `workflow: a review of the review App waits: the reviewer's claim records
+  no session, so the next read of the pull request's reviews judges it again`. That read, which
+  the daemon makes when a role of the issue hands off and when it starts, judges the review again
+  by the session recorded then.
   Envoy caps review bodies at 2048 runes, so the daemon restores a truncated review-App body from
   GitHub before reading its footer; a review it cannot restore (no review id) stays set aside with
   `body_truncated=true`. The remedy for this stall: the reviewer re-submits its review with the
@@ -1433,6 +1443,23 @@ These arrive as messages on the Dispatch issue:
   from that head leaves it undecided until the new head arrives. The remedy is the reviewer's
   approval of the head itself, which ends the round once the record reaches that head and GitHub
   reports that head one the issue may advance on.
+- **A later review round reads the whole change, or from an older commit.** The reviewer's task of
+  a later round names `Last reviewed commit: <sha>`, and the reviewer reads the difference from that
+  commit to the head. A review moves that commit only when it is the reviewer's own (its Legion
+  footer names the session the reviewer's claim records), the reviewer's phase row holds the task of
+  an entry, and the footer's `entry` is the entry on that row. Each task the reviewer gets in its
+  round ends with that entry, `Review entry: <n>.`, the task of a wake that brought its pod back
+  included, and the reviewer writes the number of the newest such sentence of its session into the
+  footer in quotes, `"entry":"<n>"`. The daemon reads a positive whole number written as a JSON
+  number (`"entry":7`) or as a string of digits (`"entry":"7"`); any other value, such as an
+  unfilled `"<entry>"`, an empty string, zero or `null`, reads as no entry and costs nothing else,
+  since the footer's session and head are still read. A review whose footer names no entry, or
+  another one, such as a review of a round before a new generation or a carried hand-over's
+  promotion entered the reviewer again, decides its round as any other and leaves the commit where
+  it stands; so does a person's review. The next round then reads from an older commit, or the
+  whole change where none stands, and a new generation clears the commit, so its first round reads
+  the whole change. The footer of the reviewer's newest deciding review on GitHub shows which case
+  holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the daemon sends such a head back to
   `implementing` on its own. And it enqueues nothing on a merge-queue base whose
@@ -1541,7 +1568,8 @@ is changed to.
 
 The daemon owns a running tree's status. A status an agent session writes on a running root is set
 back, and the tree's architect is told who wrote it. A person's move in the Dispatch dashboard, the
-controller's `set_status`, or `legion status` from an operator's shell, is what takes a tree out.
+controller's `set_status`, or `legion issue status` from an operator's shell, is what takes a
+tree out.
 
 A person's move between the workflow's own statuses on a running issue does not stick either. The
 daemon's status repair runs at each boot and then every `controller_wake_interval_seconds` (an
@@ -1716,7 +1744,7 @@ notice comes once per handoff commit, from whichever read finds it first.
   `intake: one fact's handling is cut after <n>s`, at warn when the limit is above an hour,
   where the cut comes too late to return a wedged handler's message while an operator is still
   looking. At the ten-minute floor that line names the floor as what decided the limit; above
-  it, `legion start --check-config` prints the same sentence, which an operator can read before
+  it, `legion config check` prints the same sentence, which an operator can read before
   a rollout. The limit is one acknowledgement window for each of a review's three bounded reads
   and one more for the fact's transaction and its wait on the apply lock, never below ten
   minutes, so `worker_rpc_timeout_seconds` is the key that changes it.

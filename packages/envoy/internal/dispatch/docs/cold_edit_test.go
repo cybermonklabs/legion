@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -80,6 +81,42 @@ func TestAColdWriteLoadsNoRoom(t *testing.T) {
 				t.Fatalf("document = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// The room a cold write's settlement loads stays resident as any room does (roomIdleTimeout), and
+// the writes after it publish into it, so a run of writes to a document no browser holds, each
+// settled before the next, loads the document once. Only the room a late departure's settlement
+// loads is retired as that settlement ends (retireSettlementRoom). ygo's idle sweep is held off
+// for the test's run, so its result does not depend on how long the machine takes to settle.
+func TestColdWritesSettledOneAfterAnotherLoadTheDocumentOnce(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = 20 * time.Millisecond
+	service.srv.RoomIdleTimeout = time.Hour
+	var loads atomic.Int32
+	service.bootstrapping = func(room string, _ []byte) {
+		if room == artifactID {
+			loads.Add(1)
+		}
+	}
+	if service.srv.GetDoc(artifactID) != nil {
+		t.Fatal("a room of the document is resident before the first write; nothing here is tested")
+	}
+	const writes = 5
+	for i := 1; i <= writes; i++ {
+		if _, err := joinedReplaceText(service, artifactID, fmt.Sprintf("Write %d of an agent, with no browser open.\n", i), model.Actor{Kind: "user", ID: "alice"}); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+		waitFor(t, roomWait(t), fmt.Sprintf("write %d to settle and its settlement to end", i), func() bool {
+			owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
+			return err == nil && !owed && !settlementUnderway(service, artifactID)
+		})
+	}
+	if got := loads.Load(); got != 1 {
+		t.Errorf("%d writes, each settled before the next, loaded the document %d times, want once: the room the first settlement loaded stays for the writes after it", writes, got)
+	}
+	if service.srv.GetDoc(artifactID) == nil {
+		t.Error("no room of the document is resident after its writes settled, want the one the first settlement loaded")
 	}
 }
 

@@ -571,11 +571,15 @@ fi
 # starts a pod. Here the registrar account stands in for that daemon: it logs in as the service
 # (BROKER_SERVICE_LOGINS), BROKER_POD_REGISTRARS lists it for the pod's account, and the body
 # carries the pod's own broker-audience token, the one a daemon enrolls that pod with. Without
-# it the exchange below is refused invalid_grant, naming the session. ---
+# it the exchange below is refused invalid_grant, naming the session. Both tokens stay out of
+# every command line: the body reaches curl on standard input from a here-string, which the
+# shell writes before curl starts, so no pipeline's status can hide curl's, and the header from a
+# file curl reads. ---
+registration=$(printf '{"pod_token": "%s", "session": "%s"}' "$(cat "$POD_TOKEN_FILE")" "$EXCHANGE_SESSION")
 if ! curl -sf -X POST "${PUBLIC_URL}/v1/oauth/exchange/pod-sessions" \
-  -H "Authorization: Bearer $(cat "$REGISTRAR_TOKEN_FILE")" \
+  -H @<(printf 'Authorization: Bearer %s' "$(cat "$REGISTRAR_TOKEN_FILE")") \
   -H 'Content-Type: application/json' \
-  -d "{\"pod_token\": \"$(cat "$POD_TOKEN_FILE")\", \"session\": \"$EXCHANGE_SESSION\"}" >/dev/null; then
+  --data @- <<<"$registration" >/dev/null; then
   echo "dev-broker: registering the exchange pod for $EXCHANGE_SESSION failed" >&2
   exit 1
 fi
@@ -654,7 +658,7 @@ dev-broker: ready.
     AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets DEMO_SERVICE_TOKEN -- printenv DEMO_SERVICE_TOKEN
     AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets $GITHUB_SECRET --github-owner $GITHUB_OWNER \\
       --github-repo proofs --github-token -- \\
-      sh -c 'curl -fsS -H "Authorization: Bearer \$$GITHUB_SECRET" $GITHUB_URL/repos/$GITHUB_OWNER/proofs'
+      sh -c 'printf "Authorization: Bearer %s" "\$$GITHUB_SECRET" | curl -fsS -H @- $GITHUB_URL/repos/$GITHUB_OWNER/proofs'
 
   To approve a pending request for DEMO_API_KEY, open the approve_url agent-secrets prints for
   it (${PUBLIC_URL}/approve/<record>) in a browser: the broker sends you to sign in at

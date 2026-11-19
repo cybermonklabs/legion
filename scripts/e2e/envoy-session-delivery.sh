@@ -829,10 +829,12 @@ dispatch_user() {
   curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H "X-Dispatch-User: ${dispatch_person}" \
     ${3:+-d "$3"} -w '\n%{http_code}' "${dispatch_url}$2"
 }
-# dispatch_agent METHOD PATH BODY: a request as the session live-delivery-driver (the agent token).
+# dispatch_agent METHOD PATH BODY: a request as the session live-delivery-driver (the agent token,
+# which reaches curl on standard input, in no command line).
 dispatch_agent() {
-  curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H "Authorization: Bearer ${agent_token}" \
-    -d "$(jq -c '. + {actor: {kind: "session", id: "live-delivery-driver"}}' <<<"$3")" -w '\n%{http_code}' "${dispatch_url}$2"
+  printf 'Authorization: Bearer %s' "$agent_token" |
+    curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H @- \
+      -d "$(jq -c '. + {actor: {kind: "session", id: "live-delivery-driver"}}' <<<"$3")" -w '\n%{http_code}' "${dispatch_url}$2"
 }
 answer_ok() { [[ "${1##*$'\n'}" == 2?? ]]; }
 answer_body() { printf '%s' "${1%$'\n'*}"; }

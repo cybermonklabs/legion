@@ -285,10 +285,10 @@ type IssuePullRequestAttributionEventPayload struct {
 // appendAttributionChange appends the move's event on each issue it concerns, in tx, and answers
 // the appended events for the caller to publish once tx commits.
 //
-// One AppendAll of both events rather than an Append each: a transaction that appends for two
-// owners must take both owner rows in one order or two such transactions moving a pull request
-// in opposite directions would wait on each other's row (events.Broker.LockOwners), and
-// AppendAll takes them in its own sorted order.
+// Both owners are locked in one call before the first append rather than each Append taking its
+// own as it reaches it: a transaction that appends for two owners must take them in one order or
+// two such transactions moving a pull request in opposite directions would each hold the lock
+// the other waits for (events.Broker.LockOwners, which sorts them by lock key).
 //
 // Neither issue can be missing by the time this runs: pull_request_heads.issue_key references
 // issues on delete set null, so the row's own lock, taken by headIssueBefore before the write,
@@ -311,9 +311,16 @@ func appendAttributionChange(
 			IssueKey: &key, Type: AttributionEventType, Actor: AttributionEventActor, Payload: payload,
 		})
 	}
-	appended, err := broker.AppendAll(ctx, tx, moved)
-	if err != nil {
+	if err := broker.LockOwners(ctx, tx, moved...); err != nil {
 		return nil, fmt.Errorf("record the attribution of %s#%d: %w", head.Repo, head.Number, err)
+	}
+	appended := make([]model.Event, 0, len(moved))
+	for _, event := range moved {
+		written, err := broker.Append(ctx, tx, event)
+		if err != nil {
+			return nil, fmt.Errorf("record the attribution of %s#%d: %w", head.Repo, head.Number, err)
+		}
+		appended = append(appended, written)
 	}
 	return appended, nil
 }

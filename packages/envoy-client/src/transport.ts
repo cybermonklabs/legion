@@ -150,9 +150,9 @@ const RoleHeldWireSchema = z.object({
  * A listener's error body. Beyond the message and its `code`, a refusal that names a session
  * names that session's state and its last registration, and a role's 404 names its holder too:
  * a send's `no live session <id>` carries `state` and `last_seen`
- * (`cmd/listener/api.go`'s `noLiveSessionRefusal`), and a role lookup's or a role publish's
+ * (`listenerwire.NoLiveSessionRefusal`), and a role lookup's or a role publish's
  * `holder lapsed` carries `holder`, `holder_state`, `last_seen` and `claim_released`
- * (`cmd/listener/role_holder.go`'s `roleHolderError`). Those two are the only refusals that name
+ * (`listenerwire.RoleRefusal`). Those two are the only refusals that name
  * a session. The listener's own text names neither the state nor the last registration, so
  * `EnvoyApiError` says them itself (`refusalStateText`): an agent told its peer did not answer
  * must be told whether that peer is unresponsive — still holding its role and its claims — or
@@ -161,14 +161,17 @@ const RoleHeldWireSchema = z.object({
 const ErrorWireSchema = z.object({
   error: z.string(),
   code: z.string().optional(),
-  // Why the listener refused a registration it can give the session no consumer. This list is
-  // the one every other comment in these packages points at, and it is the listener's own
-  // (`cmd/listener/session_delivery.go`'s delivery reason constants and the refusals that carry
-  // them): 503 `consumer_error` (a consumer call that failed, or a listener holding no
-  // session-consumer connection), 503 `no_grant` (the listener's NATS user may not manage
-  // session consumers), 503 `consumer_limit` (the stream holds as many consumers as its
-  // `max_consumers` allows, so the server creates no more), 409 `not_requested` (the
-  // registration asked for no consumer) and 409 `invalid_session_id` (the id names no consumer).
+  // Why the listener refused. This list is the one every other comment in these packages points
+  // at, and it is the listener's own (`cmd/listener/session_delivery.go`'s delivery reason
+  // constants and the refusals that carry them, and `cmd/listener/sender_limit.go`'s
+  // `senderRateLimitedAnswer`). A registration it can give the session no consumer: 503
+  // `consumer_error` (a consumer call that failed, or a listener holding no session-consumer
+  // connection), 503 `no_grant` (the listener's NATS user may not manage session consumers), 503
+  // `consumer_limit` (the stream holds as many consumers as its `max_consumers` allows, so the
+  // server creates no more), 409 `not_requested` (the registration asked for no consumer) and 409
+  // `invalid_session_id` (the id names no consumer). A send or a publish: 429
+  // `sender_rate_limited` (its agent session sent faster than the listener lets one session send,
+  // so this message was not stored; `retry_after_seconds` says when it can be sent again).
   reason: z.string().optional(),
   expected: z.array(z.string()).optional(),
   state: SessionStateSchema.optional(),
@@ -177,6 +180,8 @@ const ErrorWireSchema = z.object({
   last_seen: z.number().int().optional(),
   /** Always false on a lapsed role's 404: a lookup releases no claim, whatever the state. */
   claim_released: z.boolean().optional(),
+  /** A `sender_rate_limited` refusal's wait: the whole seconds until the sender may send again. */
+  retry_after_seconds: z.number().int().positive().optional(),
 });
 
 /**
@@ -185,7 +190,7 @@ const ErrorWireSchema = z.object({
  * not know never reaches a caller.
  *
  * `recipient`, `recipient_state`, `state`, `last_seen` and `duplicate` are a send's
- * (`cmd/listener/api.go`'s `sendResponse`). `recipient_state` is the target's registry state and
+ * (`listenerwire.SendResponse`). `recipient_state` is the target's registry state and
  * stays the strict three-value enum every deployed plugin parses. `state` is what the listener's
  * connection check found: `connected`, or `stopped` when no plugin of the target holds its relay
  * subject, so the message waits on the session's topic. It is read as a string rather than a
@@ -196,8 +201,8 @@ const ErrorWireSchema = z.object({
  * as an older listener's answer does.
  *
  * `holder` and `holder_state` are a role publish's, under the two names every role answer uses
- * (`publishResponse`). A publish to a topic the stream captures stores one copy that each
- * subscribed session's own consumer delivers, so there is no per-recipient send to report; its
+ * (`listenerwire.PublishResponse`). A publish to a topic the stream captures stores one copy that
+ * each subscribed session's own consumer delivers, so there is no per-recipient send to report; its
  * answer counts instead: `recipients` is every session other than the sender the topic is for,
  * and `recipients_connected` how many of those are running now. Both are absent from a role
  * topic's answer and from a listener whose copy of the known-session or interest bucket cannot be
@@ -487,9 +492,10 @@ export type UnsubscribeInput = {
    * The client instance handing these interests back: the same id its registration carries
    * ({@link SubscribeInput.clientInstanceID}). The listener frees only the role claims that
    * name this process, and never forces one from another, so a second process that resumed
-   * this session id keeps the role it holds. A release that names no process frees a claim
-   * that names none, and marks one it cannot free handed back, which stops that claim's
-   * renewal and frees the role a live window and up to one reap interval later. A role lane
+   * this session id keeps the role it holds. A release that names no process frees no claim,
+   * and marks the claim of each role lane topic it names handed back, whether that claim names
+   * a process or none, which stops that claim's renewal and frees the role a live window and
+   * up to one reap interval later. A role lane
    * topic whose claim the release did not free stays on the session's record, because that
    * topic is the interest half of a claim that still stands and the record's role topics are
    * what a deregistration of the session expands into the claims it frees; the answer names
@@ -720,9 +726,9 @@ export class EnvoyApiError extends Error {
   /** The listener's machine-readable `code`, when its error body carries one. */
   readonly code: string | undefined;
   /**
-   * Why the listener refused, when its error body carries one: the reason a registration no
-   * session consumer can be given is refused with, one of those `ErrorWireSchema.reason` names
-   * above.
+   * Why the listener refused, when its error body carries one: one of the names
+   * `ErrorWireSchema.reason` lists above, such as the reason a registration no session consumer
+   * can be given is refused with, or `sender_rate_limited`.
    */
   readonly reason: string | undefined;
   /** The session the refusal is about: a role's holder, where its body names one. */
@@ -736,6 +742,13 @@ export class EnvoyApiError extends Error {
    *  lapsed role and it is always false: a lookup or a publish takes nothing from a holder,
    *  whatever its state. */
   readonly claimReleased: boolean | undefined;
+  /**
+   * The whole seconds until the sender may send again, when the body names them: a
+   * `sender_rate_limited` refusal's `retry_after_seconds`. The client never sends a refused
+   * message again by itself (`request` retries nothing below 500), so a caller that wants the
+   * message sent waits this long and sends it again.
+   */
+  readonly retryAfterSeconds: number | undefined;
 
   constructor(
     readonly details: {
@@ -767,6 +780,7 @@ export class EnvoyApiError extends Error {
     this.sessionState = parsed?.holder_state ?? parsed?.state;
     this.lastSeen = parsed?.last_seen;
     this.claimReleased = parsed?.claim_released;
+    this.retryAfterSeconds = parsed?.retry_after_seconds;
   }
 }
 
@@ -992,6 +1006,8 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         status: response.status,
         responseBody: body,
       });
+      // Only a 5xx is sent again. A 4xx is the listener's answer to this message, and so is a 429
+      // `sender_rate_limited`: the agent reads its sentence and decides when to send it again.
       if (response.status >= 500) {
         options.onUnanswered?.();
         if (attempt + 1 < tries) {

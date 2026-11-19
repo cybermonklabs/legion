@@ -17,7 +17,7 @@ Instead:
 - `packages/envoy/infra/go.work` (`use (. ..)`) binds this module and `packages/envoy`. A go
   command run inside `packages/envoy/infra` finds it first: `go env GOWORK` there names it.
 - `go.mod` replaces `github.com/sjawhar/envoy` with `../`, so the plugin compiles the Envoy
-  packages it uses (`natsgrant`, `internal/bus`'s remote-NATS rule, and the
+  packages it uses (`daemonpermissions`, `internal/bus`'s remote-NATS rule, and the
   `internal/bus` and `internal/contracts` names the permission sets are built from) from this checkout.
 - Both being workspace modules keeps `scripts/go-third-party-notices.sh`, which ignores every
   module `go list -m` names, from listing Envoy's own packages as third-party code.
@@ -258,16 +258,14 @@ versions. Never add the module to the root `go.work`.
   `gcp/tailnet_joined_test.go` and `gcp/data_disk_test.go` run the secret fetcher, the listener's
   seed script, the joined script and the data disk's bootcmd entry as the golden holds them, so a
   change to any of them is tested there.
-- **Permission sets.** `core/permissions.go` wraps each set of `packages/envoy/natsgrant`, the one
-  grant table Envoy's auth service also answers connections with, as the rules a user takes;
-  natsgrant builds the listener, session, host, Dispatch and daemon sets from names that
-  `packages/envoy/internal/bus` and `internal/contracts` export, and the daemon's real-NATS proof
-  reads the same `natsgrant.Daemon`, so it and the hub cannot diverge. The plugin and the command
-  compile only `natsgrant`, `internal/bus` and what `internal/bus` imports (`internal/contracts`,
-  `internal/id`, and `natscred` with the token client under it, `internal/brokerclient`, for a
-  service's NATS credential) from Envoy (`go list -deps ./cmd/...`), so a change to Envoy's stores
-  cuts no plugin release. A subject Envoy's code sends that has no exported name gets one in `bus`, and
-  the code that sends it moves onto that name, so the client and its grant share one spelling.
+- **Permission sets.** `core/permissions.go` builds the listener, session, host and Dispatch sets
+  from names that `packages/envoy/internal/bus` and `internal/contracts` export. Its daemon set maps
+  `packages/envoy/daemonpermissions.Grant`, which builds the daemon's shared grant from those same
+  names so its real-NATS proof and the hub cannot diverge. The plugin and the command compile only
+  `daemonpermissions`, `internal/bus` and `internal/contracts` from Envoy (`go list -deps ./cmd/...`),
+  so a change to Envoy's stores cuts no plugin release. A subject Envoy's code sends that has no
+  exported name gets one in `bus`, and the code that sends it moves onto that name, so the client
+  and its grant share one spelling.
   `core/permissions_test.go` writes each set out by hand, as a check independent of those names. A
   change to a set changes every hub's rendered authorization, and so replaces every hub's VM and
   rewrites every clustered hub's `auth.conf`, which its reloader applies without a restart: both
@@ -463,6 +461,8 @@ The `envoy-infra-go` job of `.github/workflows/ci.yaml` holds its steps in
 ```sh
 test -z "$(gofmt -l .)"
 go vet -tags pulumilive,natslive ./...
+flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
+while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./...; done <<< "$flags"
 go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
 go test -timeout 30m -tags natslive ./core/ ./seed/ ./gcp/
 ```

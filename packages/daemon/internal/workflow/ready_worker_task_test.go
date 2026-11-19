@@ -19,7 +19,8 @@ import (
 )
 
 // seedPhaseWorker is a claim of role on issue in the state the ready fact finds it: ready, with or
-// without a task pending, as a worker whose process has just come back up.
+// without a task pending, as a worker whose process has just come back up. A claim a fixture
+// already recorded for the role (seedRoundOneRows records the reviewer's) takes that state.
 func seedPhaseWorker(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role, pending string) claim.Token {
 	t.Helper()
 	project, err := claim.ProjectToken("LEGION")
@@ -32,7 +33,9 @@ func seedPhaseWorker(t *testing.T, pool *pgxpool.Pool, issue string, role claim.
 	}
 	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, $2, $3, $4, $5, 2, 'ses', '/sessions/ses.jsonl', 'ready', 0, 0, 0, 0)`,
+		values ($1, $2, $3, $4, $5, 2, 'ses', '/sessions/ses.jsonl', 'ready', 0, 0, 0, 0)
+		on conflict (token) do update set project = excluded.project, generation = excluded.generation, session = excluded.session,
+		session_file = excluded.session_file, state = excluded.state`,
 		string(token), project, issue, issue, string(role)); err != nil {
 		t.Fatalf("seed the %s %s: %v", issue, role, err)
 	}

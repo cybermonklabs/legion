@@ -37,7 +37,7 @@ github_apps:
 nats_urls: [nats://127.0.0.1:4222]
 `
 
-// The five `gates.design` shapes the configuration check drives `legion start --check-config`
+// The five `gates.design` shapes the configuration check drives `legion config check`
 // against: a list, the empty list, no `gates` key at all, a word the key does not take, and a
 // list naming one step twice. Each is a whole legion.yaml but for the one thing it tests, so the
 // check reads the OK line or the refusal and nothing else can be what failed. Their paths are
@@ -787,7 +787,7 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: "dispatch_url must be the dispatch service base URL, not the /mcp endpoint",
 		},
 		// Boot needs each of these for a workflow, so the loader refuses the file, in the words of
-		// its own refusal: `legion start --check-config` never passes a file `legion start` refuses.
+		// its own refusal: `legion config check` never passes a file `legion start` refuses.
 		{
 			name: "dispatch_url without dispatch_token_file",
 			body: strings.Replace(minimalFile, "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN\n", "", 1),
@@ -824,11 +824,11 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: `projects key "demo" must match ^[A-Z][A-Z0-9]*$`,
 		},
 		{
-			// The project's repositories are Dispatch's mapping, so a file that still names one is
-			// refused, naming where they are set.
+			// Dispatch holds the project's repository mapping, so a file that still names a
+			// repository is refused, naming where the mapping is set.
 			name: "a project names its repository",
 			body: strings.Replace(minimalFile, "DEMO: {}", "DEMO: { repo: acme/widgets }", 1),
-			want: `Unknown key "projects.DEMO.repo": the project's repositories are Dispatch's mapping (Settings → Repositories → Projects)`,
+			want: `Unknown key "projects.DEMO.repo": Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`,
 		},
 		{
 			name: "review_workflows is no longer a key",
@@ -1640,7 +1640,7 @@ func TestLoadAcceptsAWakeRateOfZero(t *testing.T) {
 }
 
 // Every refused wake pacing value names its own key, which is what an operator reading
-// `legion start --check-config` needs: which of the two the daemon would not take. The assertion
+// `legion config check` needs: which of the two the daemon would not take. The assertion
 // is on the key's name rather than the sentence, so rewording a refusal is no test change.
 func TestLoadRefusesAWakePacingValueNamingItsKey(t *testing.T) {
 	for _, tc := range []struct{ name, line, key string }{
@@ -1863,7 +1863,7 @@ func TestAWarnedKeyLoadsWithEveryOtherValueIntact(t *testing.T) {
 // port, and the daemon adds the port itself (shimAddress, internal/daemon/daemon.go). So the loader
 // refuses, by its exact message, every value that is not an IP address or a DNS name: under
 // runtime: kubernetes, the one runtime that reads advertise_host, so no other refusal can stand in
-// for this one, rather than `legion start --check-config` passing a file no pod boots on.
+// for this one, rather than `legion config check` passing a file no pod boots on.
 func TestAdvertiseHostMustBeABareHost(t *testing.T) {
 	const refused = "advertise_host must be an IP address or a DNS name, with no scheme, port, path or brackets: the daemon adds worker_stream_port itself"
 	for _, tc := range []struct{ name, yaml, want string }{

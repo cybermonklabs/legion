@@ -1,0 +1,25 @@
+kind: Fixed
+body: |-
+  A change to the list of what people wrote to a session no longer changes a byte that an earlier
+  model request sent, so it no longer makes the provider write the session's prompt cache again
+  from the list's old place on, back to the compaction summary after a compaction. Every answers
+  message a main-loop request sends (a list, a list with no item, or the line saying the list could
+  not be read) is now recorded in the session as a custom entry, `envoy-answers-sent`, and every
+  later request carries it again right after the same message, with the same bytes, in the same
+  process or in one that resumed the session after a pod's idle release.
+
+  A change (a new item, an edit, an item withdrawn while its time is inside the 72 hours) is a new
+  list after the last message, with a second text block that says it replaces every earlier list
+  and every earlier failure line. Withdrawing the last item adds a list that says it has no item.
+  A failed read with no list to give adds the failure line once, and later failed reads and a
+  recovery to an empty window add nothing. The log now has one line for each failure episode, from
+  a failed read to the next read Dispatch answers, whether the request tells the model or not.
+  Before, a failure line from a read Dispatch answered with an error was not logged, and a read
+  that threw was logged on every request.
+
+  While Oh My Pi compacts the session, a request still carries none of the answers messages sent
+  and records nothing, as before: a request beside a running background compaction changes bytes
+  from the first answers message sent on.
+time: 2026-11-17T23:42:05Z
+custom:
+    Issue: pr4360

@@ -2,6 +2,7 @@ package airlock
 
 import (
 	"encoding/base64"
+	"net"
 	"strings"
 	"testing"
 )
@@ -138,11 +139,6 @@ func TestValidate(t *testing.T) {
 			want: []string{`secrets[1]`, `"github"`, "repeated"},
 		},
 		{
-			name:  "no host",
-			rules: Rules{Secrets: []SecretRule{{Name: "github"}}},
-			want:  []string{`secrets[0]`, `"github"`, "no host"},
-		},
-		{
 			name: "judge above 900 seconds",
 			rules: Rules{Secrets: []SecretRule{
 				{Name: "github", Hosts: []string{"a.example.com"}, Judge: new(uint32(901))},
@@ -161,7 +157,63 @@ func TestValidate(t *testing.T) {
 			rules: Rules{Secrets: []SecretRule{
 				{Name: "github", Kind: "gcp", Judge: new(uint32(901))},
 			}},
-			want: []string{`secrets[0]`, "no host"},
+			want: []string{`secrets[0]`, "901"},
+		},
+		{
+			name: "a host written as a URL",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "slack", Hosts: []string{"https://slack.com"}},
+			}},
+			want: []string{`secrets[0]`, `"slack"`, `"https://slack.com"`, "binds the secret nowhere"},
+		},
+		{
+			name: "a bare star, which no lookup can ever reach",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "gcloud", Hosts: []string{"*"}},
+			}},
+			want: []string{`secrets[0]`, `"gcloud"`, `"*"`, "binds the secret nowhere"},
+		},
+		{
+			name: "a host with a path",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "slack", Hosts: []string{"slack.com/"}},
+			}},
+			want: []string{`secrets[0]`, `"slack.com/"`, "binds the secret nowhere"},
+		},
+		{
+			name: "a host with a port, which the request's name never carries",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "slack", Hosts: []string{"slack.com:443"}},
+			}},
+			want: []string{`secrets[0]`, `"slack.com:443"`, "binds the secret nowhere"},
+		},
+		{
+			name: "an empty label",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "slack", Hosts: []string{".slack.com"}},
+			}},
+			want: []string{`secrets[0]`, `".slack.com"`, "binds the secret nowhere"},
+		},
+		{
+			name: "one bad host among good ones",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "gcloud", Hosts: []string{"oauth2.googleapis.com", "*"}},
+			}},
+			want: []string{`secrets[0]`, `"*"`, "binds the secret nowhere"},
+		},
+		{
+			name: "an IPv4 address, which no TLS client names in its SNI",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "slack", Hosts: []string{"93.184.216.34"}},
+			}},
+			want: []string{`secrets[0]`, `"93.184.216.34"`, "binds the secret nowhere"},
+		},
+		{
+			name: "a suffix only an address ends in",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "slack", Hosts: []string{"*.216.34"}},
+			}},
+			want: []string{`secrets[0]`, `"*.216.34"`, "binds the secret nowhere"},
 		},
 		{
 			name: "a repeated name wins over the entry's own fault",
@@ -194,11 +246,84 @@ func TestValidate(t *testing.T) {
 		{"kind aws", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Kind: "aws"}}}},
 		{"kind azure", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Kind: "azure"}}}},
 		{"no secret at all", Rules{}},
+		// An entry with no host says who decides a key the airlock binds nowhere: its judge
+		// and the judge's guidance, for a key whose value is released to the command.
+		{"an entry with no host", Rules{Secrets: []SecretRule{{Name: "a", Judge: new(uint32(600)), Guidance: "grant for releases"}}}},
+		{"an entry with an empty host list", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{}}}}},
+		{"a name", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"slack.com"}}}}},
+		{"a suffix", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"*.googleapis.com"}}}}},
+		{"a name with digits in all but its last label", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"1e100.net", "*.0.example.com"}}}}},
 	}
 	for _, c := range ok {
 		t.Run(c.name, func(t *testing.T) {
 			if err := Validate(c.rules); err != nil {
 				t.Errorf("Validate: %v", err)
+			}
+		})
+	}
+}
+
+// TestHostShapeOK holds HostShapeOK to what Decide carries a value on. Each row is read against
+// the request a TLS client makes to one host: that host as the CONNECT target and the Host
+// header, and the name the client sends in its SNI, which for an address is none (RFC 6066
+// section 3; Go's crypto/tls decides it with net.ParseIP). A refused entry is read against the
+// host whose service someone writing it plainly meant to bind, and Decide carries the value to
+// none of them; an accepted one is read against a host it binds, and Decide carries the value
+// there. HostBound alone is not the test, because an address matches itself exactly: what
+// refuses every request to one is check's comparison of the SNI with the CONNECT host.
+// Comparing a refused host with itself would prove nothing for the other shapes either, since
+// HostBound matches any string by itself exactly, and "slack.com:443" is never a request host.
+func TestHostShapeOK(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+		// The request host to read the entry against: one Decide carries the value to by it
+		// when the shape is accepted, and the name the entry meant to bind when it is refused.
+		request string
+	}{
+		{host: "slack.com", want: true, request: "slack.com"},
+		{host: "*.googleapis.com", want: true, request: "oauth2.googleapis.com"},
+		{host: "API.GitHub.com", want: true, request: "api.github.com"},
+		{host: "a-b.example.com", want: true, request: "a-b.example.com"},
+		{host: "localhost", want: true, request: "localhost"},
+		{host: "1e100.net", want: true, request: "1e100.net"},
+		{host: "*.0.example.com", want: true, request: "a.0.example.com"},
+		{host: "93.184.216.34", want: false, request: "93.184.216.34"},
+		{host: "*.216.34", want: false, request: "93.184.216.34"},
+		{host: "https://slack.com", want: false, request: "slack.com"},
+		{host: "*", want: false, request: "slack.com"},
+		{host: "slack.com/", want: false, request: "slack.com"},
+		{host: "slack.com:443", want: false, request: "slack.com"},
+		{host: ".slack.com", want: false, request: "a.slack.com"},
+		{host: "slack..com", want: false, request: "slack.com"},
+		{host: "slack.com.", want: false, request: "slack.com"},
+		{host: "*.", want: false, request: "slack.com"},
+		{host: "", want: false, request: "slack.com"},
+		{host: "-slack.com", want: false, request: "slack.com"},
+		{host: "slack-.com", want: false, request: "slack.com"},
+		{host: "slack_com", want: false, request: "slack.com"},
+	}
+	for _, c := range cases {
+		t.Run(c.host, func(t *testing.T) {
+			if got := HostShapeOK(c.host); got != c.want {
+				t.Fatalf("HostShapeOK(%q) = %v, want %v", c.host, got, c.want)
+			}
+			sni := c.request
+			if net.ParseIP(c.request) != nil {
+				sni = ""
+			}
+			rules := Rules{Secrets: []SecretRule{{Name: "slack", Hosts: []string{c.host}}}}
+			grant := Grant{Secret: "slack", Placeholder: "agent-secrets-placeholder-slack"}
+			r := &Request{
+				ConnectHost: c.request, ConnectPort: 443, SNI: sni, HostHeader: c.request,
+				Method: "GET", Path: "/", Headers: [][2]string{{"Authorization", "Bearer " + grant.Placeholder}},
+			}
+			carried, why := Decide(rules, grant, "the-value", r)
+			if c.want && !carried {
+				t.Errorf("HostShapeOK accepts %q, but Decide refuses a request to %q by it: %s", c.host, c.request, why)
+			}
+			if !c.want && carried {
+				t.Errorf("HostShapeOK refuses %q, but Decide carries the value to %q by it", c.host, c.request)
 			}
 		})
 	}
@@ -775,6 +900,35 @@ func TestDigest(t *testing.T) {
 		if got := (Rules{Secrets: []SecretRule{entry}}).Digest(entry.Name); got == want {
 			t.Errorf("a changed %s left the digest at %s", field, got)
 		}
+	}
+	// Guidance is the one field outside the fingerprint: it tells the judge how to decide a
+	// request to come, and changes nothing a live grant may do, so writing it ends no grant.
+	guided := base
+	guided.Guidance = "grant only for the release job"
+	if got := (Rules{Secrets: []SecretRule{guided}}).Digest(guided.Name); got != want {
+		t.Errorf("guidance moved the digest from %s to %s; want it left out of the fingerprint", want, got)
+	}
+}
+
+// TestBound: the one reader of "does the airlock hold this value back". An entry that binds a
+// host does; an entry with no host carries who decides and nothing more, so its value is released
+// to the command as a name with no entry is; and a name the file does not hold is not bound.
+func TestBound(t *testing.T) {
+	judge := uint32(300)
+	rules := Rules{Secrets: []SecretRule{
+		{Name: "bound", Hosts: []string{"api.example.com"}},
+		{Name: "hostless", Judge: &judge, Guidance: "grant for releases"},
+	}}
+	for name, want := range map[string]bool{"bound": true, "hostless": false, "absent": false} {
+		if got := rules.Bound(name) != nil; got != want {
+			t.Errorf("Bound(%q) found an entry: %v; want %v", name, got, want)
+		}
+	}
+	if seconds, ok := rules.JudgeSeconds("hostless"); !ok || seconds != 300 {
+		t.Errorf("JudgeSeconds(hostless) = %d, %v; want 300, true: a host-less entry still carries its judge", seconds, ok)
+	}
+	if got := rules.Guidance("hostless"); got != "grant for releases" {
+		t.Errorf("Guidance(hostless) = %q; want the entry's own text", got)
 	}
 }
 

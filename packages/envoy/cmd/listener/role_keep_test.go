@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // keptPublishAnswer is the publish route's 202 for a role message it kept: the envelope as it was
@@ -273,7 +274,7 @@ func TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing(t *testing.
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("publish with keep: false to a lapsed claim: status %d, body %s; want 404 with nothing kept", recorder.Code, recorder.Body.String())
 	}
-	var refusal roleHolderError
+	var refusal listenerwire.RoleRefusal
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -1087,7 +1088,7 @@ func TestTheRoleLaneKeepsAMessageForAClaimTheRestartGraceRetained(t *testing.T) 
 	// The claim is written before the listener's own registry opens, which is what a restart
 	// leaves behind: that registry restores the claim and gives it one session TTL of grace
 	// (store.ExpiredRoleClaimRetained) even while its holder's session registration is gone.
-	writer, err := store.Open(client.Conn, store.WithReplicas(1))
+	writer, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry that writes the claim: %v", err)
 	}

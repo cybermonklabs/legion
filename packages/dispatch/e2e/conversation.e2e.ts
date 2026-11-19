@@ -371,7 +371,10 @@ test("an agent's answer on a failed attempt is accepted and shown as the answer"
   // it cannot share their round: a PATCH that arrives first answers
   // `404 unknown fixture session s1` and fails the row. Only the project is independent.
   await Promise.all([setLiveSessions([planner]), createProject({ key: "CORE", name: "Core" })]);
-  await setSessionSendStatus("s1", 404);
+  // The listener answers every send 503, past the take-over window too, so the attempt fails. A
+  // 404 would not do: Dispatch queues a targeted message for a session no store of the listener's
+  // holds, and a queued attempt is no failure.
+  await setSessionSendStatus("s1", 503);
   const issue = await createIssue({ project: "CORE", title: "Failed receipt" });
   const question = "Did you get this?";
   const message = await createMessage(issue.key, {
@@ -385,7 +388,9 @@ test("an agent's answer on a failed attempt is accepted and shown as the answer"
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
     const card = turn(page, question);
-    await expect(card).toContainText("Failed: no live session s1");
+    await expect(card).toContainText(
+      "Failed: envoy listener: listener returned 503: service starting"
+    );
 
     // The receipt was wrong: the session did get the message and answers on that attempt.
     const answer = (await replyToMessageDelivery(
@@ -463,6 +468,49 @@ test("a compact answered ask's Write a reply opens its composer as the next keyb
   }
 });
 
+// The owner's case (INFRA-3677): a question its agent retracted still takes a reply in its
+// thread, and the reply is drawn under the ask.
+test("a retracted ask takes a reply in its thread, drawn under the ask", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Reply after a retraction" });
+  const ask = await createAsk(issue.key, { question: "Ship the retracted ask?" }, agent);
+  await resolveAsk(
+    ask.id,
+    { kind: "retracted", reason: "A newer question supersedes this one." },
+    agent
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const askTurn = page
+      .getByRole("region", { name: "Conversation" })
+      .locator(`[data-turn="ask:${ask.id}"]`);
+    await expect(askTurn.getByTestId("ask-resolution-badge")).toHaveText("Retracted");
+
+    const writeReply = askTurn.getByRole("button", { exact: true, name: "Write a reply" });
+    await expect(writeReply).toBeVisible();
+    await writeReply.click();
+    await askTurn.getByRole("textbox", { name: "Reply" }).fill("Noted. What replaced it?");
+    await askTurn.getByRole("button", { exact: true, name: "Reply" }).click();
+
+    const replies = askTurn.getByRole("region", { name: "Replies" }).locator("li");
+    await expect(replies).toHaveCount(1);
+    await expect(replies.first()).toContainText("Noted. What replaced it?");
+    // The server holds it under the ask, which stays retracted.
+    await expect
+      .poll(() => getAsk(ask.id))
+      .toMatchObject({
+        ask: { resolution: { kind: "retracted" }, state: "resolved" },
+        replies: [expect.objectContaining({ body: "Noted. What replaced it?" })],
+      });
+    await expect(askTurn.getByTestId("ask-resolution-badge")).toHaveText("Retracted");
+  } finally {
+    await alice.close();
+  }
+});
+
 // @pr: Create through answer to close: the ask is answered where the reader is, with no event row and the cards left mounted.
 test("Conversation answers an ask in place, draws no event row, and keeps its cards mounted across the filter @pr", async ({
   browser,
@@ -495,6 +543,7 @@ test("Conversation answers an ask in place, draws no event row, and keeps its ca
 
     const firstTurn = turn(page, "First turn");
     await expect(firstTurn).toBeVisible();
+    // The wait above drew the first turn, so the handle taken here is of that drawn turn.
     const handle = await firstTurn.elementHandle();
     if (handle === null) {
       throw new Error("the first conversation turn did not produce an element handle");
@@ -680,9 +729,18 @@ test("the iPhone Conversation fits controls and keeps the composer above the rev
     const controls = page.locator(
       '[aria-label="Conversation"] button, [aria-label="Conversation"] textarea, [aria-label="Conversation"] input'
     );
-    // One round trip for every control: its opacity and the box a finger taps. A control wrapped
-    // in its own label is tapped through the label, so that is the target to measure; demanding
-    // 44 px of the box itself drew a checkbox three times the size of every other control.
+    // Every part the controls stand in: the ten seeded turns and the composer.
+    await expect(
+      page
+        .getByRole("list", { name: "Conversation turns" })
+        .locator(":scope > li")
+        .filter({ hasText: /Phone turn \d/ })
+    ).toHaveCount(10);
+    await expect(page.getByRole("form", { name: "Comment composer" })).toBeVisible();
+    // The waits above drew every turn and the composer, so this one round trip measures every
+    // control: its opacity and the box a finger taps. A control wrapped in its own label is
+    // tapped through the label, so that is the target to measure; demanding 44 px of the box
+    // itself drew a checkbox three times the size of every other control.
     const measured = await controls.evaluateAll((elements) =>
       elements.map((element, index) => ({
         height: (element.closest("label") ?? element).getBoundingClientRect().height,

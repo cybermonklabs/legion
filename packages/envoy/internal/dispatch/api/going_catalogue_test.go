@@ -35,6 +35,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/me/asks/{id}/snooze",
 	"DELETE /api/v1/priorities/{id}",
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
+	"DELETE /api/v1/projects/{key}/legion/daemon",
 	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}",
 	"PATCH /api/v1/artifacts/{id}",
 	"PATCH /api/v1/comments/{id}",
@@ -63,6 +64,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/credential-requests/machine-lookup",
 	"POST /api/v1/credential-requests/{id}/approve",
 	"POST /api/v1/credential-requests/{id}/deny",
+	"POST /api/v1/credential-requests/{id}/dismiss",
 	"POST /api/v1/delivery/session-groups",
 	"POST /api/v1/going/requests",
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions",
@@ -90,6 +92,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"PUT /api/v1/projects/{key}/default-assignee",
 	"PUT /api/v1/projects/{key}/gated-steps",
+	"PUT /api/v1/projects/{key}/legion/daemon",
 	"PUT /api/v1/settings/delivery",
 	"PUT /api/v1/settings/repo-projects/{owner}/{repo}",
 }

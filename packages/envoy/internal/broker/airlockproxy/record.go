@@ -13,13 +13,113 @@ package airlockproxy
 
 import (
 	"bufio"
+	"context"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"regexp"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
+
+// placeholderPattern is a placeholder written whole, in any case: the prefix every placeholder
+// the broker mints starts with (requests.PlaceholderPrefix) and the run of letters and digits
+// after it. placeholderMark is what a line of this package writes in its place.
+var placeholderPattern = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(requests.PlaceholderPrefix) + `[0-9a-z]*`)
+
+const placeholderMark = "[placeholder]"
+
+// maskedHandler is the handler every line of this package is written through (New). Much of
+// what a line names is the command's own text - the method, the path, the host and port it asked
+// for, a reason or an error that quotes them, a refusal's correlation id from X-Correlation-Id,
+// the host of a CONNECT whose authority is its Host header - and a command can write its own
+// placeholder into any of it. A cut to 256 bytes keeps a line small and lowercasing a host keeps
+// it one spelling; neither keeps a placeholder out. So every text of every line - the message,
+// each string, each error's text and each value written as text - has each placeholder written
+// whole, in any case, replaced by placeholderMark before the line reaches the handler it was
+// given. The 32 characters after the prefix written without it are no text this can tell from
+// any other, and stay as they came. A line that holds no placeholder is handed on as it is.
+type maskedHandler struct{ slog.Handler }
+
+func (h maskedHandler) Handle(ctx context.Context, record slog.Record) error {
+	holds := placeholderPattern.MatchString(record.Message)
+	record.Attrs(func(a slog.Attr) bool {
+		holds = holds || maskAttr(a) != nil
+		return !holds
+	})
+	if !holds {
+		return h.Handler.Handle(ctx, record)
+	}
+	masked := slog.NewRecord(record.Time, record.Level, placeholderPattern.ReplaceAllString(record.Message, placeholderMark), record.PC)
+	record.Attrs(func(a slog.Attr) bool {
+		if replaced := maskAttr(a); replaced != nil {
+			a = *replaced
+		}
+		masked.AddAttrs(a)
+		return true
+	})
+	return h.Handler.Handle(ctx, masked)
+}
+
+func (h maskedHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	masked := make([]slog.Attr, len(attrs))
+	for i, a := range attrs {
+		masked[i] = a
+		if replaced := maskAttr(a); replaced != nil {
+			masked[i] = *replaced
+		}
+	}
+	return maskedHandler{h.Handler.WithAttrs(masked)}
+}
+
+func (h maskedHandler) WithGroup(name string) slog.Handler {
+	return maskedHandler{h.Handler.WithGroup(name)}
+}
+
+// maskAttr is a, written as its text with each placeholder replaced (maskedHandler), and nil for
+// an attribute whose text holds none. The text is a string's, an error's, each attribute's of a
+// group, and any other value's as fmt writes it. A number, a time and a duration are no text a
+// caller wrote and are never read.
+func maskAttr(a slog.Attr) *slog.Attr {
+	value := a.Value.Resolve()
+	var text string
+	switch value.Kind() {
+	case slog.KindString:
+		text = value.String()
+	case slog.KindAny:
+		if err, ok := value.Any().(error); ok {
+			text = err.Error()
+		} else {
+			text = fmt.Sprint(value.Any())
+		}
+	case slog.KindGroup:
+		group := value.Group()
+		var masked []slog.Attr
+		for i, member := range group {
+			if replaced := maskAttr(member); replaced != nil {
+				if masked == nil {
+					masked = append([]slog.Attr(nil), group...)
+				}
+				masked[i] = *replaced
+			}
+		}
+		if masked == nil {
+			return nil
+		}
+		replaced := slog.Attr{Key: a.Key, Value: slog.GroupValue(masked...)}
+		return &replaced
+	default:
+		return nil
+	}
+	if !placeholderPattern.MatchString(text) {
+		return nil
+	}
+	replaced := slog.String(a.Key, placeholderPattern.ReplaceAllString(text, placeholderMark))
+	return &replaced
+}
 
 // The codes the proxy port's own answers name: the refusal line and the count read them, one for
 // each place the proxy refuses a call or fails it for a cause of its own. A grant read's answers
@@ -29,8 +129,11 @@ const (
 	codeNotAProxyRequest = "NOT_A_PROXY_REQUEST"
 	// refuseCredential: no Proxy-Authorization, or one that is not Basic or not base64.
 	codeProxyCredential = "PROXY_CREDENTIAL_INVALID"
-	// serveConnect: a CONNECT authority that is no host and port.
+	// serveConnect: a CONNECT authority that is no host and port, or whose port names no number
+	// from 1 to 65535 (portNumber).
 	codeConnectTarget = "CONNECT_TARGET_INVALID"
+	// servePlain: an absolute URL whose port names no number from 1 to 65535 (portNumber).
+	codeProxyTarget = "PROXY_TARGET_INVALID"
 	// serveConnect and servePlain: a host that resolves nowhere, or somewhere this proxy never
 	// dials (checkedAddresses).
 	codeAddressRefused = "ADDRESS_REFUSED"
@@ -58,10 +161,16 @@ const (
 	codeAWSSignature = "AWS_SIGNATURE_REFUSED"
 	// serveBound: a request the swap refused although the decision allowed it.
 	codeSwapRefused = "SWAP_REFUSED"
+	// serveBound: a request that is no token request and carries an azure name's federated
+	// token's placeholder, which the header swap would hand the host the request goes to.
+	codeFederatedSwap = "FEDERATED_TOKEN_SWAP_REFUSED"
 	// exchangeToken: a token request whose form cannot be read.
 	codeTokenRequest = "TOKEN_REQUEST_INVALID"
 	// exchangeToken: a token request whose client_assertion is not this grant's placeholder.
 	codeTokenAssertion = "TOKEN_ASSERTION_REFUSED"
+	// exchangeToken: a token request to a host that is not the token authority's, or made as
+	// another application or in another tenant than the name's own document names (azureBound).
+	codeTokenApplication = "TOKEN_APPLICATION_REFUSED"
 	// exchangeToken: an exchange the token endpoint did not answer, or answered with nothing the
 	// proxy can hand on.
 	codeExchangeFailed = "TOKEN_EXCHANGE_FAILED"

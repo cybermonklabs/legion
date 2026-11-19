@@ -642,8 +642,8 @@ func TestWritingIssueAskStatesOnARunTheCloseCutsStoresNothing(t *testing.T) {
 	closer := model.Actor{Kind: "user", ID: "carol"}
 	err := joinedWrite(service, func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
-		// The issue route holds the issue's row before it writes any document.
-		if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+		// The issue route holds the issue's owner lock before it writes any document.
+		if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
 		}
 		_, err := service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{withdrawnAsk(region, closer)}, closer, false)
@@ -715,7 +715,8 @@ func roomResident(service *Service, artifactID string) bool {
 // service to hold none: the room's last browser leaving runs the settlement the document owes at
 // once (settleLastPeer), on the closed issue as on an open one, and its warm-up can load the
 // document into a new room before the poll reads the old one gone. That room stays resident until
-// it idles out (roomIdleTimeout), which says nothing about the close.
+// the departing browser's socket ends and retires it, or until it idles out (roomIdleTimeout) when
+// something took it up (retireSettlementRoom), which says nothing about the close.
 func waitForRoomGone(t *testing.T, service *Service, artifactID, issueKey string, room *crdt.Doc) {
 	t.Helper()
 	if room == nil {

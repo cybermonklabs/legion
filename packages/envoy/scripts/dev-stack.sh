@@ -656,11 +656,14 @@ callout_after_first_broker
 # Every broker of the run lists that account as the registrar of the pod's account
 # (BROKER_POD_REGISTRARS, in start_broker), and a broker with no such entry refuses the write 403
 # POD_REGISTRAR_NOT_LISTED. Without the row the exchange is refused invalid_grant, naming the
-# session. ---
+# session. Both tokens stay out of every command line: the body reaches curl on standard input
+# from a here-string, which the shell writes before curl starts, so no pipeline's status can hide
+# curl's, and the header from a file curl reads. ---
+registration=$(printf '{"pod_token": "%s", "session": "%s"}' "$(cat "$POD_TOKEN_FILE")" "$EXCHANGE_SESSION")
 if ! curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
-  -H "Authorization: Bearer $(cat "$REGISTRAR_TOKEN_FILE")" \
+  -H @<(printf 'Authorization: Bearer %s' "$(cat "$REGISTRAR_TOKEN_FILE")") \
   -H 'Content-Type: application/json' \
-  -d "{\"pod_token\": \"$(cat "$POD_TOKEN_FILE")\", \"session\": \"$EXCHANGE_SESSION\"}" >/dev/null; then
+  --data @- <<<"$registration" >/dev/null; then
   echo "dev-stack: registering the exchange pod for $EXCHANGE_SESSION failed" >&2
   exit 1
 fi

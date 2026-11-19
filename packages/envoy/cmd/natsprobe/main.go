@@ -35,6 +35,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/natscred"
@@ -187,7 +188,7 @@ func credential(getenv func(string) string, tokenFile, googleAudience string, no
 		return nil, "", err
 	}
 	client, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: getenv(brokerclient.BrokerURLVar), Key: key, Subject: subject, Session: session,
+		BrokerURL: brokeraddr.New(getenv(brokerclient.BrokerURLVar)), Key: key, Subject: subject, Session: session,
 		Projects: projects, NoLauncherCredential: true, HTTP: brokerclient.HTTPClient(),
 	})
 	if err != nil {

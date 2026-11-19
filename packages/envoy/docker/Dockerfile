@@ -99,36 +99,15 @@ RUN go-third-party-notices.sh --install
 COPY packages/envoy/go.mod packages/envoy/go.sum ./
 RUN go mod download
 
-COPY packages/envoy/cmd ./cmd
-COPY packages/envoy/internal ./internal
-# agentloop: the model loop and the tools a model may call, a package outside internal/ so the
-# daemon runs the same loop. envoy-broker's judge compiles it in, so the build needs it here
-# beside cmd and internal.
-COPY packages/envoy/agentloop ./agentloop
-# listenfd: the inherited listening socket envoy-dispatch and envoy-listener serve on
-# (DISPATCH_LISTEN_FD, ENVOY_LISTEN_FD).
-COPY packages/envoy/listenfd ./listenfd
-# going: the chat client, the answer filter and the run the going routes answer with, a package
-# outside internal/ so the daemon can speak the same stream (going/events.go). envoy-dispatch
-# compiles it in, so the build needs it here beside cmd and internal.
-COPY packages/envoy/going ./going
-# migrationid: the rule a store's migration identifiers follow, which internal/pgmigrate reads to
-# name the remedy a collision takes in the set that refused it.
-COPY packages/envoy/migrationid ./migrationid
-# roleholder: the no-holder reasons envoy-listener's role publish refusal names.
-COPY packages/envoy/roleholder ./roleholder
-# natscred: the NATS credential a bus connection presents, a service's platform token among
-# them, which internal/bus compiles into every binary below.
-COPY packages/envoy/natscred ./natscred
-# natsgrant: the one NATS grant table, which envoy-broker's NATS auth service answers each
-# connection from.
-COPY packages/envoy/natsgrant ./natsgrant
-# natsversion: the nats-server versions envoy-listener refuses to start against, which its session
-# consumers read (internal/bus) and the Legion daemon reads too.
-COPY packages/envoy/natsversion ./natsversion
-# The Go contracts file is generated from packages/contracts/schemas; never
+# The whole module, so a binary that imports a new package of it builds here with no edit to this
+# file, as the worker image's `COPY packages/envoy packages/envoy` builds agent-secrets. The root
+# .dockerignore leaves out what no image compiles: test files, internal/integration,
+# internal/smoke, deploy, infra (the envoy-infra module) and the changelog fragments.
+COPY packages/envoy ./
+# The Go contracts files are generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go
+COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go ./listenerwire/envelope_generated.go
 
 # /out/THIRD_PARTY_NOTICES, the image's /usr/share/doc/legion/THIRD_PARTY_NOTICES: the licenses of
 # the Go modules the four binaries below compile in (with the build's CGO_ENABLED and the image's

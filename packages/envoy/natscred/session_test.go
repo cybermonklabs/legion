@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -76,7 +77,7 @@ func TestConnectionProofVerifiesWithBrokertoken(t *testing.T) {
 		brokerURL, trades := stubBroker(t, 15*time.Minute)
 		identity := filepath.Join(t.TempDir(), "token")
 		require.NoError(t, os.WriteFile(identity, []byte("pod-token"), 0o600))
-		client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokerURL, Key: key, Subject: brokerclient.NewProjectedToken(identity), Session: "ses_a"})
+		client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokeraddr.New(brokerURL), Key: key, Subject: brokerclient.NewProjectedToken(identity), Session: "ses_a"})
 		require.NoError(t, err)
 		option, _ := natscred.Session(client)
 		nc, err := connect(t, rig.url, option)
@@ -208,7 +209,7 @@ func TestSessionKeeperMovesOffAPresentedTokenThatLapsesFirst(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			brokerURL, trades := stubBroker(t, row.presented)
-			client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokerURL, Key: key, Subject: brokerclient.NewProjectedToken(identity), Session: "ses_a"})
+			client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokeraddr.New(brokerURL), Key: key, Subject: brokerclient.NewProjectedToken(identity), Session: "ses_a"})
 			require.NoError(t, err)
 			option, keeper := natscred.Session(client)
 			var reconnected atomic.Int64

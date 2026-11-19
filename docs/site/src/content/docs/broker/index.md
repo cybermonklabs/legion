@@ -8,10 +8,11 @@ sidebar:
 
 The Secrets Broker hands agent sessions the secret values they need, one request at a time, so an
 agent never holds a long-lived API key. An agent asks for a secret by name; the broker decides from
-the secret's owner and tier whether to grant it at once, refuse it, or ask a person; and the person
-approves or denies it on the broker's own page, which their Dispatch Inbox links to, unless a
-model judge the deployment configured approves it first. A granted value reaches only the session
-that asked, in the environment of the command it runs, and every request, decision and use is
+the secret's owner and tier whether to grant it at once, refuse it, or ask someone: a person, who
+approves or denies it on the broker's own page, which their Dispatch Inbox links to, or, for a key
+its owner lets it decide, the model judge the deployment configured. A granted value reaches only
+the session that asked, in the environment of the command it runs, and every request, decision and
+use is
 recorded. That command is the agent's choice and can read the value, so approve a secret only for
 a session you would trust with the value itself. The command keeps the value in its environment
 for as long as it runs; the grant's expiry or revocation stops the session from reading the value
@@ -31,12 +32,12 @@ it.
   place for a key to leak. With the broker, an agent session holds only a signing key of its own
   that dies with the session, and fetches a value for exactly the command that needs it.
 - **A person approves what needs approval.** Each secret's owner and tier, two tags on the secret
-  itself, say who gets it automatically and who needs a person's yes. The request waits in that
+  itself, say who gets it automatically and who needs a yes. The request waits in that
   person's Dispatch Inbox, where they already work, and one click there opens its page on the
-  broker, where one more click approves it. A deployment may also run a model judge over one
-  narrow class of those requests — one secret, 15 minutes at most, a reason naming an open
-  Dispatch issue, and a secret the airlock rules let the judge decide — which the judge approves
-  or leaves for that person ([Concepts](/legion/broker/concepts/#the-model-judge)).
+  broker, where one more click approves it. A deployment may also run a model judge, which decides
+  the keys the airlock rules give it, each against its owner's guidance, and whose refusal is final;
+  a person never sees such a request unless the judge cannot decide it
+  ([Concepts](/legion/broker/concepts/#the-model-judge)).
 - **Every grant is recorded.** Each approval rests on a signed, content-addressed record of who
   asked, for what, why, and who decided, which the broker re-verifies every time it releases a
   value.
@@ -60,7 +61,7 @@ sequenceDiagram
     Broker->>Broker: read the secret's owner and tier
     alt granted at once
         Broker-->>CLI: granted
-    else a person must approve
+    else someone must decide
         opt the request carries a GitHub App narrowing
             Broker->>GitHub: list the App's installations, to check the account
             GitHub-->>Broker: the installations, or none on that account
@@ -71,18 +72,22 @@ sequenceDiagram
             end
             Broker-->>CLI: a narrowing it cannot serve is refused here, before the approval request
         end
-        Broker-->>CLI: pending, the approver its record names, and its page on the broker
-        opt the airlock rules let the judge decide this secret
-            Broker->>Dispatch: is the issue the request's reason names open?
-            Broker->>Model: the request and that issue, as data to judge
-            Model-->>Broker: approve, or refer it to a person
+        alt every key is one the airlock rules let the judge decide
+            Broker-->>CLI: pending, held for the judge, with no page
+            CLI->>Broker: GET /v1/requests/{id}?wait=N, held while pending
+            Broker->>Dispatch: the issue and the ask the reason points at, if any
+            Broker->>Model: the request, each key's guidance, and what Dispatch holds, as data to judge
+            Model-->>Broker: grant, or deny for good
+        else a person decides
+            Broker-->>CLI: pending, the approver its record names, and its page on the broker
+            CLI->>Broker: GET /v1/requests/{id}?wait=N, held while pending
         end
-        Note over Broker,Person: a request the judge referred, or never took, waits for its approver
+        Note over Broker,Person: a request the judge could not decide goes to its approver, once
         Dispatch->>Broker: pending requests for the person signed in
         Person->>Dispatch: open the request in the Inbox
         Dispatch-->>Person: a link to the request's page on the broker
         Person->>Broker: Approve, signed in to the broker
-        CLI->>Broker: poll until granted
+        Broker-->>CLI: granted, at once, to the read it was holding
     end
     CLI->>Broker: POST /v1/grants/{id}/values
     Broker-->>CLI: the values, read fresh from the secret store
@@ -99,11 +104,10 @@ is out of reach or refuses the App itself, or because the check passes its own t
 request waits for its approver as it did before, and the refusal comes when the grant is read
 ([Concepts](/legion/broker/concepts/#requests-and-grants)).
 
-The judge's step is there only where a deployment configures one. It takes a narrow class of the
-requests that wait: one secret, a lifetime of 15 minutes or less that the secret's airlock rules
-entry lets the judge decide, and a signed reason naming a Dispatch issue that is not done. It
-approves such a request or leaves it for the approver, and it never denies, so a request outside
-that class, and one the model refers, waits exactly as it does today
+The judge's step is there only where a deployment configures one. It takes a request whose every
+key that needs a decision has a `judge` entry in the airlock rules and no `admin` tag. It grants
+such a request or refuses it for good, and a request it cannot decide goes to the approver once;
+every other request waits for its person exactly as it does today
 ([Concepts](/legion/broker/concepts/#the-model-judge)).
 
 On a machine, `agent-secrets-helper` holds each agent session's key and signs for it. In a

@@ -31,20 +31,22 @@ env:
 
 jobs:
   envoy-go:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
-    # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
-    # 2 minutes the unit step's own 20 is 23; after the unit step, which runs strictly fewer
-    # packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, the store-form count's own 5 is 43 (two packages, which go test starts at once
-    # with -p at least 2, so its -timeout bounds the step); after that step's seconds, the
-    # database skip count's own timeout-minutes of 25 is 64
-    # (its -timeout bounds each package, not the step, so the step has a limit of its own, and
-    # its comment below says why 25); after that step's measured 6 minutes, natslive's default 10,
-    # the bus matrix's own 5 and the auth service's own 5 are 65, the integration step's 5 is
-    # less, and the callout check's own 6, after the seconds those two steps measure, is about 52.
+    # plain race-impossible step's five 10-minute runs, which is 51; after that step's measured
+    # 5 minutes (about 2 before the API's and delivery's xid window tests joined it, which took
+    # 134 s and 4 s on a two-vCPU pod; the auth service's restart storm adds 17 s) the unit step's
+    # own 20 is 26; after the unit step, which runs strictly fewer packages than the 35 minutes it
+    # measured before the race lane's left it and so cannot exceed that, the store-form count's
+    # own 5 is 46 (two packages, which go test starts at once with -p at least 2, so its -timeout
+    # bounds the step); after that step's seconds, the database skip count's own timeout-minutes
+    # of 25 is 67 (its -timeout bounds each package, not the step, so the step has a limit of its
+    # own, and its comment below says why 25); after that step's measured 6 minutes, natslive's
+    # default 10, the bus matrix's own 5 and the auth service's own 5 are 68, the integration
+    # step's 5 is less, and the callout check's own 6, after the seconds those two steps measure,
+    # is about 55.
     timeout-minutes: 70
     services:
       postgres:
@@ -84,8 +86,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
@@ -106,31 +108,37 @@ jobs:
             packages/envoy/internal/tests3/seaweedfs.go Image
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
-      # HoldsSeed's allocations, which the race runtime's own allocations would be counted into,
-      # and the documents package measures the heap a room keeps, which the detector's shadow
-      # memory and instrumentation move. Those are out of the race build altogether
-      # (//go:build !race), and the two render-reuse storms run fewer seeds and fewer edits under
-      # it (raceEnabled), so this is their full-size run. So is the NATS auth service's restart
-      # storm's: five hundred connections, two hundred under the detector (raceEnabled), whose
-      # instrumentation makes each in-process connect several times the cost (natscallout's
-      # race_disabled_test.go says why). The API's seven source guards, and
-      # one_expression_guard_test.go beside them, carry that tag too and are deliberately not
-      # here: they read the module's source, the text-check job runs their fifteen tests by name,
-      # and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly those out of this step rather than
-      # have each of them run twice. It comes before the unit step for the reason the API
-      # package's own run did: run beside the other package binaries,
+      # HoldsSeed's allocations, which the race runtime's own allocations would be counted into;
+      # the API's and delivery's xid window tests judge a window's gaps, which the detector
+      # stretches past any bound, so a race run checks only their shape, which this run checks as
+      # well (storetest.XidJudgesGaps, INFRA-636); and the documents package measures the heap a
+      # room keeps, which the detector's shadow memory and instrumentation move. Those are out of
+      # the race build altogether (//go:build !race), and the two render-reuse storms run fewer
+      # seeds and fewer edits under it (raceEnabled), so this is their full-size run. So is the
+      # NATS auth service's restart storm's: five hundred connections, two hundred under the
+      # detector (raceEnabled), whose instrumentation makes each in-process connect several times
+      # the cost (natscallout's race_disabled_test.go says why). The API's
+      # seven source guards, and one_expression_guard_test.go beside them, carry that tag too and
+      # are deliberately not here: they read the module's source, the text-check job runs their
+      # fifteen tests by name, and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly those out of
+      # this step rather than have each of them run twice. It comes before the unit step for the
+      # reason the API package's own run did: run beside the other package binaries,
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
       # wait for the event log's safe horizon, which any open transaction on this job's Postgres
-      # delays. The -run lists are derived in .github/scripts/ci_job_reads.py from the race
+      # delays. The five -run lists are derived in .github/scripts/ci_job_reads.py from the race
       # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
-      # either and missing here fails the ci-filters job naming this step. Measured over three
+      # either and missing here fails the ci-filters job naming this step. The restart storm took
+      # 17 s on a dev box. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
-      # 127 s, and the restart storm 17 s on a dev box, so 10 minutes each is ample.
+      # 127 s; with the xid window tests in, one run on a two-vCPU pod took the API 134.082 s and
+      # delivery 4.106 s (INFRA-636). 10 minutes each is ample.
       - name: Test what the race build cannot run at all or at full size
         run: |
+          go test -count=1 -timeout 10m -run '^(TestXidWindowAttributionMoveRecorded|TestXidWindowDeployedEventRecorded)$' ./internal/dispatch/delivery
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
           go test -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$' ./internal/broker/natscallout
+          go test -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$' ./internal/dispatch/api
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       # Everything the three race jobs run is left out here, since they run it under the detector,
@@ -139,14 +147,18 @@ jobs:
       # with no database and no Bun, and a change to only what they read must not start this
       # one. So are internal/dispatch/architecture/notes, internal/runnerlog,
       # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, which
-      # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES). The pattern is built
-      # in .github/scripts/ci_job_reads.py from the same list those
-      # jobs' own steps are built from, so what this step leaves out and what the other jobs run
-      # cannot drift apart. The broker's packages, internal/broker and everything under it, are
-      # left out too: the database-skips step below runs them with -json and fails on a failed
-      # test as on a skipped one, so this step ran each of them a second time (DATABASE_SKIPS_TREE
-      # in ci_job_reads.py). What is left is the rest of the module, the two longest packages of
-      # it (the API's and the documents service's) now among the ones the lane runs, so its 20
+      # envoy-go-checks tests on every push (NOTE_AND_SPEC_PACKAGES), and listenerwire and
+      # internal/wirecheck, which envoy-go-checks tests in their place (LISTENERWIRE_PACKAGES):
+      # listenerwire's clients test type-checks daemon packages, so a change to only those daemon
+      # packages starts no job with a database. The pattern is built in
+      # .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built from, so
+      # what this step leaves out and what the other jobs run cannot drift apart. The broker's
+      # packages, internal/broker and everything under it, are left out too: the database-skips
+      # step below runs them with -json and fails on a failed test as on a skipped one, so this step
+      # ran each of them a second time (DATABASE_SKIPS_TREE in ci_job_reads.py); that step in turn
+      # leaves out the race lane's packages under the tree, the auth service's natscallout today
+      # (DATABASE_SKIPS_PATTERN). What is left is the rest of the module, the two longest packages
+      # of it (the API's and the documents service's) now among the ones the lane runs, so its 20
       # minutes are ample. The two tests of the web app's display-tree fixture are skipped:
       # without `--check` TestWebDisplayFixture writes the committed fixture rather than checking
       # it, so a run here would ask nothing of it, and
@@ -155,7 +167,7 @@ jobs:
       # are built from the same list.
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/broker/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/broker/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
       # backend's rows run that backend's own code: the store forms against the GCP fake and the
@@ -172,14 +184,14 @@ jobs:
       # c8 also asks that the database broker suites run with BROKER_TEST_DATABASE_URL set and that
       # none skips. go test reports a skip as a pass, so this step is where the broker's packages
       # run: it runs ./internal/broker/... with -json, which the unit step above leaves out, fails
-      # on a failed test, and fails on any skipped test there, FuzzAirlock apart (it needs a built
-      # Lean model of the airlock, and the airlock-lean job runs it). A report it cannot read prints
-      # database_skips=UNKNOWN and fails too. database-skips.sh's -timeout of 15 minutes bounds each
-      # package's test binary, and the packages run several at a time, so one that starts late ends
-      # up to 15 minutes after its own start: the step's own limit of 25 minutes leaves a package
-      # that starts within the first 10 its whole -timeout, and so its dump. Measured on a loaded
-      # dev box on 2026-11-16: 331 s for the whole step, the slowest package,
-      # internal/broker/helper, 329 s.
+      # on a failed test, and fails on any skipped test there, FuzzAirlock and
+      # TestModelAgreesOnHostShapes apart (each needs a built Lean model of the airlock, and the
+      # airlock-lean job runs both). A report it cannot read prints database_skips=UNKNOWN and fails
+      # too. database-skips.sh's -timeout of 15 minutes bounds each package's test binary, and the
+      # packages run several at a time, so one that starts late ends up to 15 minutes after its own
+      # start: the step's own limit of 25 minutes leaves a package that starts within the first 10
+      # its whole -timeout, and so its dump. Measured on a loaded dev box on 2026-11-16: 331 s for
+      # the whole step, the slowest package, internal/broker/helper, 329 s.
       - name: Count the database broker suites' skips
         timeout-minutes: 25
         run: packages/envoy/scripts/database-skips.sh

@@ -2,6 +2,8 @@ package testnats
 
 import (
 	"fmt"
+	"math/rand/v2"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -132,12 +134,31 @@ func StartWithCallout(t testing.TB, keys CalloutKeys, static ...StaticUser) (url
 }
 
 // StartWithCalloutServer runs the server StartWithCallout runs and returns it with its client URL,
-// for a test that stops, starts or restarts it under connected clients.
+// for a test that stops, starts or restarts it under connected clients. Its relay listens on a
+// loopback address of its own (calloutHost).
 func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser) (*Server, string) {
 	t.Helper()
-	server := start(t, CalloutConfig(keys, static...), []string{"-js"})
+	server := startOn(t, calloutHost(), CalloutConfig(keys, static...), []string{"-js"})
 	awaitSeed(t, server.URL(), keys.ServiceSeed)
 	return server, server.URL()
+}
+
+// calloutHost is the address a callout server's relay listens on: on Linux, where every address
+// of 127.0.0.0/8 is the loopback, one chosen at random, and elsewhere 127.0.0.1.
+//
+// A test of the auth service counts what its hub sends the service, and the hub sends it a
+// request for every client that reaches it. A relay holds its port only for its own test's life.
+// A client that test leaves behind keeps dialing the port (a bus client reconnects forever), and
+// the kernel can give the same port to a later server's relay, in this test binary or in another
+// binary go test runs beside it. In the envoy-go-race step a client with no credential reached a
+// callout test's hub that way, and its replica counted three dropped requests where the test had
+// sent one. Such a client dials the address its own server had, so a relay on an address of its
+// own is out of its reach, whichever port it gets.
+func calloutHost() string {
+	if runtime.GOOS != "linux" {
+		return "127.0.0.1"
+	}
+	return fmt.Sprintf("127.%d.%d.%d", 1+rand.IntN(254), rand.IntN(256), 1+rand.IntN(254))
 }
 
 // awaitSeed waits, within connectTimeout, for the server at uri to admit the nkey user whose seed
