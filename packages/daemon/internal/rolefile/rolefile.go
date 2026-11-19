@@ -153,10 +153,13 @@ func (notDirectory) Unwrap() error { return unix.ENOTDIR }
 // RemoveTree removes path and everything under it, as os.RemoveAll does, but follows no link and
 // waits on nothing anywhere it walks, for a caller that removes what a role can write or swap.
 //
-//   - A link at path or anywhere below it is unlinked, and what it names is never opened.
-//   - path's parent is opened as OpenDirectory opens a directory: a parent that is a link is
-//     refused, and one that is no directory, a fifo among them, answers ENOTDIR at once. A caller
-//     whose parent is an operator's directory that may be a link resolves it first.
+//   - A link at path or anywhere below it is unlinked, or the unlink's error answered where the
+//     walk may not write its directory, and what it names is never opened.
+//   - path's parent, cleaned of a trailing separator or "." first, is opened as OpenDirectory
+//     opens a directory: a parent that is a link is refused, and one that is no directory is
+//     refused at once, without a wait (a fifo or a file answers ENOTDIR, a socket "<parent> is a
+//     socket"). A caller whose parent is an operator's directory that may be a link resolves it
+//     first.
 //   - Opening the parent needs read on it: a parent its caller cannot read is refused (`open
 //     <parent>: permission denied`), even for a path that is not there.
 //   - A path that is not there answers nil, and so does "", as os.RemoveAll answers. A path whose
@@ -181,6 +184,10 @@ func RemoveTree(path string) error {
 	if name == "." || name == ".." || name == string(filepath.Separator) {
 		return &fs.PathError{Op: "RemoveTree", Path: path, Err: unix.EINVAL}
 	}
+	// The last element is read raw, so "." and ".." are refused above; the parent is cleaned, so
+	// that "d//x" or "d/./x" opens "d" with O_NOFOLLOW, which refuses a link there, where "d/" or
+	// "d/." would have the kernel follow it.
+	parentPath = filepath.Clean(parentPath)
 	parent, err := OpenDirectory(unix.AT_FDCWD, parentPath, parentPath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -189,13 +196,13 @@ func RemoveTree(path string) error {
 		return err
 	}
 	defer unix.Close(parent)
-	if err := removeAt(parent, &node{parent: &node{name: parentPath}, name: name}); err != nil {
+	if err := removeAt(parent, &node{name: parentPath}, name); err != nil {
 		return &fs.PathError{Op: err.op, Path: err.at.path(), Err: err.err}
 	}
 	return nil
 }
 
-// splitPath is os/removeall_at.go's splitPath: path's parent, as path writes it, and its last
+// splitPath is os/path_unix.go's splitPath: path's parent, as path writes it, and its last
 // element, read before any cleaning, so that a last element of "." or ".." is seen as one and not
 // cleaned into the name of a directory above path. A path of no separator has the parent ".".
 func splitPath(path string) (parent, name string) {
@@ -222,10 +229,10 @@ func splitPath(path string) (parent, name string) {
 	return parent, name
 }
 
-// node is one entry of RemoveTree's walk: its name under its parent's node, the walk's root being
-// path's parent as RemoveTree was handed it. Each level holds its own name and a pointer, so a
-// chain of directories a role nests costs the walk its names and not their whole paths, which
-// grow with the square of the chain's depth.
+// node is one directory of RemoveTree's walk: its name under its parent's node, the walk's root
+// being path's cleaned parent. Each level holds its own name and a pointer, so a chain of
+// directories a role nests costs the walk its names and not their whole paths, which grow with the
+// square of the chain's depth.
 type node struct {
 	parent *node
 	name   string
@@ -253,18 +260,20 @@ type walkError struct {
 	err error
 }
 
-// removeAt removes at under the directory parent as os/removeall_at.go's removeAllFrom does, with
-// openDirectory in place of its openDirAt: at is unlinked outright when it can be, a link or
-// anything else that is no directory among it, and is opened and walked only when that fails and
-// it is a directory. Each pass over the directory reads at most a batch of names, removes them,
-// and opens the directory again, since removing entries can make a read already under way skip
-// some. It answers the first failure it met, which the walk goes on past.
-func removeAt(parent int, at *node) *walkError {
-	unlinkErr := unlinkat(parent, at.name, 0)
+// removeAt removes name under the directory parent, dir being parent's node, as
+// os/removeall_at.go's removeAllFrom does, with openDirectory in place of its openDirAt: name is
+// unlinked outright when it can be, a link or anything else that is no directory among it, and is
+// opened and walked only when that fails and it is a directory. Each pass over the directory reads
+// at most a batch of names, removes them, and opens the directory again, since removing entries
+// can make a read already under way skip some. It answers the first failure it met, which the walk
+// goes on past. The entry's own node is made only once its unlink fails: most entries go at once.
+func removeAt(parent int, dir *node, name string) *walkError {
+	unlinkErr := unlinkat(parent, name, 0)
 	if unlinkErr == nil || errors.Is(unlinkErr, unix.ENOENT) {
 		return nil
 	}
-	// EISDIR: a directory, whose entries go first. EPERM or EACCES: no write to parent, but at
+	at := &node{parent: dir, name: name}
+	// EISDIR: a directory, whose entries go first. EPERM or EACCES: no write to parent, but name
 	// may still be a directory whose entries can go. Anything else is the answer.
 	if !errors.Is(unlinkErr, unix.EISDIR) && !errors.Is(unlinkErr, unix.EPERM) && !errors.Is(unlinkErr, unix.EACCES) {
 		return &walkError{op: "unlinkat", at: at, err: unlinkErr}
@@ -311,7 +320,7 @@ func removeAt(parent int, at *node) *walkError {
 			read = len(names)
 			failed := 0
 			for _, entry := range names {
-				if err := removeAt(fd, &node{parent: at, name: entry}); err != nil {
+				if err := removeAt(fd, at, entry); err != nil {
 					failed++
 					if walkErr == nil {
 						walkErr = err

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -192,6 +193,25 @@ func TestRemoveTreeFollowsNoLink(t *testing.T) {
 		}
 		survives(t, file)
 	})
+	t.Run("a parent that is a link, however the path spells it", func(t *testing.T) {
+		base := t.TempDir()
+		target := filepath.Join(base, "target")
+		if err := os.MkdirAll(filepath.Join(target, "x", "deep"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		file := write(t, filepath.Join(target, "x", "deep", "f"), []byte("kept\n"))
+		lnk := link(t, target, filepath.Join(base, "lnk"))
+		sep := string(filepath.Separator)
+		// A trailing separator or "." makes the link a component the kernel follows on its way to
+		// the last one, which O_NOFOLLOW covers alone; the parent is cleaned first, so each
+		// spelling opens the link itself and is refused.
+		for _, path := range []string{lnk + sep + "x", lnk + sep + "x" + sep, lnk + sep + sep + "x", lnk + sep + "." + sep + "x"} {
+			if err := RemoveTree(path); err == nil || !strings.Contains(err.Error(), lnk+" is a symlink") {
+				t.Errorf("RemoveTree(%q) = %v, want the parent refused as %q", path, err, lnk+" is a symlink")
+			}
+			survives(t, file)
+		}
+	})
 	t.Run("a tree with a link in it", func(t *testing.T) {
 		target, file := victim(t)
 		tree := filepath.Join(t.TempDir(), "tree")
@@ -342,12 +362,10 @@ func TestRemoveTreeAnswersTheUnlinkForAFileItCanNeitherUnlinkNorRead(t *testing.
 }
 
 // A chain of directories a role nests under a directory PID 1 removes is removed holding each
-// level's name, not its whole path: what the removal allocates grows with the chain's size, where
-// a walk that held each level's joined path allocated about the square of the depth (the review of
-// cybermonklabs/legion#4461 measured 415 MiB of heap at 20,000 levels in an issue pod, where
-// os.RemoveAll took 3 MiB). The bound is on the bytes the removal allocates (TotalAlloc), which
-// bounds the most it can hold at once; a collection before each read keeps the runtime's own
-// garbage out of the count.
+// level's name, not its whole path: what the removal allocates grows with the chain's size. A walk
+// that joins each level's path allocates about the square of the depth, over 400 MB at this depth.
+// The bound is on the bytes the removal allocates (TotalAlloc), which bounds the most it can hold
+// at once.
 func TestRemoveTreeOfADeepTreeHoldsItsMemoryBound(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and removes 20,000 directories: 12.5 s in an issue pod under gVisor")
@@ -376,12 +394,10 @@ func TestRemoveTreeOfADeepTreeHoldsItsMemoryBound(t *testing.T) {
 	}
 	_ = unix.Close(dir)
 	var before, after runtime.MemStats
-	runtime.GC()
 	runtime.ReadMemStats(&before)
 	start := time.Now()
 	err = RemoveTree(chain)
 	took := time.Since(start)
-	runtime.GC()
 	runtime.ReadMemStats(&after)
 	if err != nil {
 		t.Fatalf("RemoveTree of a chain %d deep: %v", depth, err)
@@ -396,10 +412,18 @@ func TestRemoveTreeOfADeepTreeHoldsItsMemoryBound(t *testing.T) {
 	}
 }
 
-// RemoveTree reads path's last element before any cleaning, as os.RemoveAll does: a path ending in
-// "." or ".." answers EINVAL and removes nothing, where cleaning it first would name a directory
-// above path and remove that. An empty path answers nil, as os.RemoveAll answers it.
+// RemoveTree reads path's last element before any cleaning: a path ending in "." or ".." answers
+// EINVAL and removes nothing, where cleaning it first would name a directory above path and remove
+// that. An empty path answers nil, as os.RemoveAll answers it. Every refused row is refused before
+// RemoveTree opens anything: the directory opens go through a seam that records and refuses each,
+// so that if the guard went, the "/" row could not walk the machine's root.
 func TestRemoveTreeRemovesNothingAbovePath(t *testing.T) {
+	var opened []string
+	directoryOpen = func(dirfd int, name string, flag int, perm uint32) (int, error) {
+		opened = append(opened, name)
+		return -1, unix.EACCES
+	}
+	t.Cleanup(func() { directoryOpen = Openat })
 	root := t.TempDir()
 	kept := filepath.Join(root, "a", "b")
 	if err := os.MkdirAll(kept, 0o755); err != nil {
@@ -421,6 +445,10 @@ func TestRemoveTreeRemovesNothingAbovePath(t *testing.T) {
 	if err := RemoveTree(""); err != nil {
 		t.Errorf(`RemoveTree("") = %v, want nil`, err)
 	}
+	if len(opened) != 0 {
+		t.Fatalf("RemoveTree opened %q for a path it refuses, want no open", opened)
+	}
+	directoryOpen = Openat
 	if err := RemoveTree(kept + string(filepath.Separator)); err != nil {
 		t.Fatalf("RemoveTree(%q) = %v, want nil", kept+string(filepath.Separator), err)
 	}
