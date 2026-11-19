@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"golang.org/x/sys/unix"
 )
@@ -86,8 +87,10 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 		return fmt.Errorf("hold this role's mounts to itself: %w", err)
 	}
 	// A generation that failed midway left its stage's empty stand-ins behind; their mounts went
-	// with its namespace, so nothing under the stage is a mount here.
-	if err := os.RemoveAll(stage); err != nil {
+	// with its namespace, so nothing under the stage is a mount here. Every removal role-init makes
+	// under the role's homes is the launcher's own rule for a tree a role can write: it follows no
+	// link (rolefile.RemoveTree).
+	if err := rolefile.RemoveTree(stage); err != nil {
 		return fmt.Errorf("clear the role's stage: %w", err)
 	}
 	for _, dir := range []string{filepath.Join(homes, "upper"), work, filepath.Join(homes, "tmp"), filepath.Join(homes, "var-tmp"), stage} {
@@ -108,7 +111,7 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 		if entry.Name() == filepath.Base(work) {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(works, entry.Name())); err != nil {
+		if err := rolefile.RemoveTree(filepath.Join(works, entry.Name())); err != nil {
 			roleLogf(cfg, "role-init: clear an earlier generation's overlay work directory: %v", err)
 		}
 	}
@@ -206,7 +209,7 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 	if err := privateDevices(); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(stage); err != nil {
+	if err := rolefile.RemoveTree(stage); err != nil {
 		return fmt.Errorf("clear the role's stage: %w", err)
 	}
 	// The covers, last of the mounts made from under them: every role's directories go behind an
@@ -357,11 +360,11 @@ func ownConfigHome(shared, own string, mounts []string) (string, error) {
 	case complete:
 		return own, nil
 	}
-	if err := os.RemoveAll(own); err != nil {
+	if err := rolefile.RemoveTree(own); err != nil {
 		return "", err
 	}
 	partial := own + ".partial"
-	if err := os.RemoveAll(partial); err != nil {
+	if err := rolefile.RemoveTree(partial); err != nil {
 		return "", err
 	}
 	err := filepath.WalkDir(shared, func(path string, entry fs.DirEntry, err error) error {

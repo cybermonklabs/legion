@@ -140,22 +140,26 @@ func (notDirectory) Unwrap() error { return unix.ENOTDIR }
 // for a path that is not there (unless path's parent is a symlink, which it refuses as it refuses
 // every link it meets), but it follows no link and waits on nothing anywhere it walks.
 // Every path it is handed is under a directory a role can write, or swap: the shared clone's
-// .git/worktrees, a workspace's own parent (Remove's aside), or the leak-check install's parent
-// (its staging directory and what it moved aside). os.RemoveAll fails both rules there. When path
-// is no file it can unlink outright, it opens path's parent with a plain open(2)
-// (os/removeall_at.go), and a plain open of a fifo waits for a writer for as long as none comes,
-// under whatever its caller holds. And it opens each directory below path with O_DIRECTORY and
-// O_NOFOLLOW, which a gVisor release can follow a link through (OpenDirectory), so a link a role
-// plants below path, under a directory the removal cannot unlink it from, has PID 1 delete what it
-// points at. So every directory here, path's parent included, is opened as OpenDirectory opens
-// one, the walk goes on only from a descriptor whose fstat says directory, and every entry is
-// removed by unlinkat relative to its directory's descriptor, which removes a link and never what
-// it names. A parent that is no directory, a fifo among them, answers ENOTDIR at once. Opening
-// the parent needs read on it, where os.RemoveAll needs only write and search: a parent its caller
-// cannot read is refused (`open <parent>: permission denied`), even for a path that is not there.
-// Every caller's parent is made 0700 or 0755 by the daemon, a role's shim or the install, so its
-// owner can read it, and only a role that changed the mode of its own parent meets this; the
-// removal then fails rather than removing.
+// .git/worktrees, a workspace's own parent (Remove's aside), the leak-check install's parent
+// (its staging directory and what it moved aside), a role's private directory (the pod's launcher
+// clearing it before a generation starts, and a generation's directory under it), or the role's
+// homes directory, which role-init clears (its stage, its overlay work directories, its config
+// home and that copy's .partial). os.RemoveAll fails both rules there. When path is no file it
+// can unlink outright, it opens path's parent with a plain open(2) (os/removeall_at.go), and a
+// plain open of a fifo waits for a writer for as long as none comes, under whatever its caller
+// holds. And it opens each directory below path with O_DIRECTORY and O_NOFOLLOW, which a gVisor
+// release can follow a link through (OpenDirectory), so a link a role plants below path, under a
+// directory the removal cannot unlink it from, has PID 1 delete what it points at. So every
+// directory here, path's parent included, is opened as OpenDirectory opens one, the walk goes on
+// only from a descriptor whose fstat says directory, and every entry is removed by unlinkat
+// relative to its directory's descriptor, which removes a link and never what it names. A parent
+// that is no directory, a fifo among them, answers ENOTDIR at once. Opening the parent needs read
+// on it, where os.RemoveAll needs only write and search: a parent its caller cannot read is
+// refused (`open <parent>: permission denied`), even for a path that is not there. Every caller's
+// parent is made 0700 or 0755 by the daemon, a role's shim, the install or role-init, or is a
+// role's private directory, which the pod mounts as drwxrwxrwt, so its owner can read it, and
+// only a role that changed the mode of its own parent meets this; the removal then fails rather
+// than removing.
 func RemoveTree(path string) error {
 	clean := filepath.Clean(path)
 	parentPath, name := filepath.Dir(clean), filepath.Base(clean)
