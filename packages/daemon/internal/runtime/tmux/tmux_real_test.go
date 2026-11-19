@@ -1758,7 +1758,7 @@ func TestRealTmuxProviderKeysReachOMPAndNothingElse(t *testing.T) {
 	flagged := false
 	for _, argv := range r.recorded() {
 		for _, word := range argv {
-			if strings.Contains(word, "--provider-env-dir "+dir+" --") {
+			if strings.Contains(word, "--provider-env-dir "+shellprefix.Word(dir)+" --") {
 				flagged = true
 			}
 			if strings.Contains(word, "stub-provider-value") {
@@ -1847,7 +1847,7 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	stub := "#!/bin/sh\nfor last; do :; done\n" +
 		"if [ \"$last\" = --help ]; then\n" +
 		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
-		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
+		"  exec cat " + shellprefix.Literal(help) + "/\"${path:-gh}\".txt\nfi\n" +
 		"case \" $* \" in\n\\ api\\ --hostname\\ github.com\\ *\\ --jq\\ .visibility\\ )\n  echo public\n  exit 0;;\nesac\n" +
 		"printf 'real gh %s\\n' \"$GH_CONFIG_DIR\"\n"
 	if err := os.WriteFile(realGH, []byte(stub), 0o755); err != nil {

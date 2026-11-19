@@ -29,7 +29,7 @@ func importMarker(name string) string {
 // argv dropped, or a fixture Oh My Pi never looked at, shows as a missing one.
 func TestTheAgentArgvImportsTheRepositorysExtensionsHooksAndCommands(t *testing.T) {
 	omp := testbin.OMP(t)
-	dir := t.TempDir()
+	dir := testbin.OMPDir(t, omp)
 	envoy, plugin, repo, home := filepath.Join(dir, "envoy"), filepath.Join(dir, "plugin"), filepath.Join(dir, "repo"), filepath.Join(dir, "home")
 	for path, content := range map[string]string{
 		filepath.Join(envoy, "package.json"):                              `{"name":"envoy-test-plugin","version":"0.0.1","omp":{"extensions":["extension.js"]}}`,

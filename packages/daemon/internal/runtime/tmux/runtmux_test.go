@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // A tmux client that exits on its own did not time out, however long pipeDrainDelay then holds
@@ -33,7 +35,7 @@ func TestRunTmuxReportsTheClientsOwnExitWhenSomethingHoldsItsPipesPastIt(t *test
 			dir := t.TempDir()
 			pidFile := filepath.Join(dir, "lingering.pid")
 			t.Cleanup(func() { killPIDFile(pidFile) })
-			client := fakeTmuxClient(t, dir, "echo answered; sleep 30 & echo $! >"+pidFile+"; exit "+strconv.Itoa(testCase.exit))
+			client := fakeTmuxClient(t, dir, "echo answered; sleep 30 & echo $! >"+shellprefix.Literal(pidFile)+"; exit "+strconv.Itoa(testCase.exit))
 			r := &Runtime{tmuxPath: client, commandTimeout: testCase.timeout, environ: []string{"PATH=" + os.Getenv("PATH")}}
 
 			started := time.Now()
@@ -108,7 +110,7 @@ func TestRunTmuxReadsAClientASignalEndedAsAFailedRunNamingTheSignal(t *testing.T
 func TestAStopsWaitOutlivesAListingASignalEnded(t *testing.T) {
 	dir := t.TempDir()
 	seen := filepath.Join(dir, "seen")
-	client := fakeTmuxClient(t, dir, "if [ -e '"+seen+"' ]; then echo \"can't find pane: %1\" >&2; exit 1; fi\n: >'"+seen+"'; kill -KILL $$")
+	client := fakeTmuxClient(t, dir, "if [ -e "+shellprefix.Literal(seen)+" ]; then echo \"can't find pane: %1\" >&2; exit 1; fi\n: >"+shellprefix.Literal(seen)+"; kill -KILL $$")
 	r := &Runtime{tmuxPath: client, socket: "legion-test", commandTimeout: time.Minute, environ: []string{"PATH=" + os.Getenv("PATH")}}
 	r.run = r.runTmux
 

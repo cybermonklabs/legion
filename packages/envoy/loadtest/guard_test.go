@@ -386,7 +386,10 @@ func TestACommandLineSecretIsRefusedBeforeAnyOtherInput(t *testing.T) {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	blocking := "host=127.0.0.1 port=1 user=postgres sslmode=verify-full sslrootcert=" + fifo
+	// The path is a single-quoted keyword value, a '\' and a quote escaped as libpq reads them, so a
+	// space in the test's temporary directory leaves it one value naming the FIFO.
+	blocking := "host=127.0.0.1 port=1 user=postgres sslmode=verify-full sslrootcert='" +
+		strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(fifo) + "'"
 	for _, args := range [][]string{
 		{"-token", secret, "-pg", blocking},
 		{"-pg", blocking + " password=" + secret},

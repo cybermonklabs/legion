@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 type fakeTLSClient struct {
@@ -955,7 +956,7 @@ func TestTLSProbeCurlReadsNoCurlrc(t *testing.T) {
 
 	bin := t.TempDir()
 	record := filepath.Join(bin, "first-arguments")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + record + "'\nexit 0\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> " + shellprefix.Literal(record) + "\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -8,9 +8,10 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { directoryWithout, PLAIN_WORD_REFUSES } from "@legion/pi-shared/test/test-paths";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
@@ -26,7 +27,14 @@ const withoutDocker = skipWithout("docker");
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
 const root = path.resolve(import.meta.dir, "../../../..");
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
-const work = temporaryDirectory("skill-scenarios-rig");
+// The suite's work directory. Its path is plain, `[A-Za-z0-9/._-]` alone (PLAIN_WORD_REFUSES,
+// test-paths.ts), since rig.sh and the model route installers it runs take no other: rig.sh
+// splits SKILL_SCENARIOS_JUDGE_ENV on blanks by design (cmd_judge_omp) and refuses a key file
+// whose path is not plain (judge_keys), and the installers refuse a `--dest` or `--key-dir` that
+// is not (scripts/e2e/lib/install-key-file-model-route.sh, install-model-gateway.sh). Its second
+// base is /tmp, not this package's .cache: rig.sh refuses a SKILL_SCENARIOS_WORK inside the
+// checkout, and one with a `.omp` in it or above it, which a checkout in the operator's HOME has.
+const work = directoryWithout(PLAIN_WORD_REFUSES, [tmpdir(), "/tmp"], "skill-scenarios-rig-");
 const operatorHome = path.join(work, "operator-home");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
 // read it would list this directory. It is staged in a hook, below the one the reservation

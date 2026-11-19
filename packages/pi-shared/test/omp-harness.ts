@@ -6,8 +6,7 @@
 // together as one Legion pane against a stand-in daemon and listener. The profile format, the
 // flags and the RPC stream are the Oh My Pi pin's (the repository's .omp-pin), so a pin bump that
 // changes one is fixed here once.
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import * as os from "node:os";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   deliverSubject,
@@ -18,7 +17,8 @@ import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { Terminal } from "@xterm/headless";
-import { linkOmpNatives } from "./omp-natives";
+import { linkOmpNatives, nativesLinkProblem, ompNativesCache } from "./omp-natives";
+import { ompScratch } from "./test-paths";
 
 export interface Request {
   readonly path: string;
@@ -42,18 +42,32 @@ export type Cleanup = (() => Promise<void>)[];
  * A scratch root with the profile's home, the session's workspace and its transcript directory.
  * The home's Oh My Pi natives are hardlinks to `binary`'s one cached copy (omp-natives.ts), so
  * a case writes none of them.
+ *
+ * The root's path holds no '?': Bun, which Oh My Pi runs on, loads no module from a path that
+ * holds one, in any form, so under such a root Oh My Pi loads neither its natives nor an extension
+ * a case writes there. It is under os.tmpdir() when that holds no '?', else under this package's
+ * .cache/test-omp, else /tmp, and only under a base a hardlink from the natives cache reaches,
+ * since a link cannot cross filesystems; the case fails naming what each base answered when none
+ * takes one (`ompScratch`, test-paths.ts). A case that binds a unix socket under the root names its
+ * path relative to the root in `socket`: the root is then under the first of os.tmpdir(), /tmp and
+ * the package's .cache that also leaves that path within the 107 bytes Linux takes.
  */
 export async function ompRoot(
   binary: string,
   prefix: string,
-  cleanup: Cleanup
+  cleanup: Cleanup,
+  options: { readonly socket?: string } = {}
 ): Promise<{
   readonly home: string;
   readonly workspace: string;
   readonly sessions: string;
   readonly root: string;
 }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const natives = await ompNativesCache(binary);
+  const root = ompScratch(prefix, {
+    ...options,
+    accept: (directory) => nativesLinkProblem(natives, directory),
+  });
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
   const workspace = path.join(root, "workspace");

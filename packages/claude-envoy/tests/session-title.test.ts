@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { skipWithout } from "@legion/test-fixtures/host-tools"
 import { queryTmux, sessionTitle, type TmuxQuery, tmuxPaneTitle } from "../src/session-title"
+import { shellQuote } from "./channel-session-harness"
 
 const SESSION_ID = "3084299d-32a7-41a3-ba9b-f61675b03b8d"
 const SERVER_PID = "4242"
@@ -416,9 +417,11 @@ test.skipIf(withoutTmux)(
 test("queryTmux is bounded even by a tmux that ignores SIGTERM", () => {
   const directory = mkdtempSync(join(tmpdir(), "title-tmux-"))
   const marker = join(directory, "ran")
-  writeFileSync(join(directory, "tmux"), `#!/bin/sh\ntrap "" TERM\ntouch ${marker}\nsleep 5\n`, {
-    mode: 0o755,
-  })
+  writeFileSync(
+    join(directory, "tmux"),
+    `#!/bin/sh\ntrap "" TERM\ntouch ${shellQuote(marker)}\nsleep 5\n`,
+    { mode: 0o755 },
+  )
   // A child of its own, so the stub is first on the PATH it starts with, wherever the spawn looks
   // `tmux` up. The child times its own call and prints the milliseconds beside the answer, because
   // what is bounded is `queryTmux`, not Bun's start-up and this import, which on a loaded machine

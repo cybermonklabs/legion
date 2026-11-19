@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // stubTestPG puts a `legion-testpg` on PATH that appends one line per call — the subcommand, the
@@ -20,8 +22,8 @@ func stubTestPG(t *testing.T) (calls string) {
 	dir := t.TempDir()
 	calls = filepath.Join(dir, "calls")
 	script := "#!/bin/sh\nif [ -f \"$" + testPGLogVariable + "\" ]; then log=present; else log=absent; fi\n" +
-		"printf '%s %s %s %s %s\\n' \"$1\" \"$" + TestPGVariable + "\" \"$" + testPGDirVariable + "\" \"$" + testPGLogVariable + "\" \"$log\" >> " + calls +
-		"\nexit $(cat " + filepath.Join(dir, "exit") + ")\n"
+		"printf '%s %s %s %s %s\\n' \"$1\" \"$" + TestPGVariable + "\" \"$" + testPGDirVariable + "\" \"$" + testPGLogVariable + "\" \"$log\" >> " + shellprefix.Literal(calls) +
+		"\nexit $(cat " + shellprefix.Literal(filepath.Join(dir, "exit")) + ")\n"
 	if err := os.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +237,7 @@ func TestCheckTestPostgresRunsEveryStepAndStopsTheServer(t *testing.T) {
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
 	for _, program := range []string{testPGProgram, "psql"} {
-		script := "#!/bin/sh\nprintf '%s %s\\n' \"$(basename \"$0\")\" \"$*\" >> " + calls + "\nexit $(cat " + filepath.Join(dir, "exit") + ")\n"
+		script := "#!/bin/sh\nprintf '%s %s\\n' \"$(basename \"$0\")\" \"$*\" >> " + shellprefix.Literal(calls) + "\nexit $(cat " + shellprefix.Literal(filepath.Join(dir, "exit")) + ")\n"
 		if err := os.WriteFile(filepath.Join(dir, program), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}

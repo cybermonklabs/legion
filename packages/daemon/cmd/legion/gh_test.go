@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -862,7 +863,7 @@ func legionGh(t *testing.T, env map[string]string, args ...string) (code int, st
 func ghWrapperDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nexec '"+os.Args[0]+"' gh \"$@\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nexec "+shellprefix.Literal(os.Args[0])+" gh \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -1037,7 +1038,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	}
 	// Nor may another wrapper of the machine's own lead PATH: gh would make it its git helper.
 	shims := t.TempDir()
-	if err := os.WriteFile(filepath.Join(shims, "gh"), []byte("#!/bin/sh\nGH_TOKEN=$(cat ~/.token) exec '"+stub+"' \"$@\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(shims, "gh"), []byte("#!/bin/sh\nGH_TOKEN=$(cat ~/.token) exec "+shellprefix.Literal(stub)+" \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	shimmed := map[string]string{"PATH": shims + ":" + wrappers + ":" + os.Getenv("PATH")}
@@ -1106,15 +1107,15 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	starts := filepath.Join(t.TempDir(), "starts")
 	legion := filepath.Join(t.TempDir(), "legion")
-	counting := "#!/bin/sh\necho start >>'" + starts + "'\n[ \"$(wc -l <'" + starts + "')\" -le 4 ] || exit 97\n" +
-		testMainEnv + "=1 exec '" + os.Args[0] + "' \"$@\"\n"
+	counting := "#!/bin/sh\necho start >>" + shellprefix.Literal(starts) + "\n[ \"$(wc -l <" + shellprefix.Literal(starts) + ")\" -le 4 ] || exit 97\n" +
+		testMainEnv + "=1 exec " + shellprefix.Literal(os.Args[0]) + " \"$@\"\n"
 	wrappers, elsewhere := t.TempDir(), t.TempDir()
 	shim := filepath.Join(t.TempDir(), "gh")
 	for path, script := range map[string]string{
 		legion:                         counting,
-		filepath.Join(wrappers, "gh"):  "#!/bin/sh\nexec '" + legion + "' gh \"$@\"\n",
-		filepath.Join(elsewhere, "gh"): "#!/bin/sh\nexec '" + legion + "' gh \"$@\"\n",
-		shim:                           "#!/bin/sh\nexec '" + filepath.Join(wrappers, "gh") + "' \"$@\"\n",
+		filepath.Join(wrappers, "gh"):  "#!/bin/sh\nexec " + shellprefix.Literal(legion) + " gh \"$@\"\n",
+		filepath.Join(elsewhere, "gh"): "#!/bin/sh\nexec " + shellprefix.Literal(legion) + " gh \"$@\"\n",
+		shim:                           "#!/bin/sh\nexec " + shellprefix.Literal(filepath.Join(wrappers, "gh")) + " \"$@\"\n",
 	} {
 		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 			t.Fatal(err)
@@ -1214,8 +1215,8 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 			}
 			record := filepath.Join(t.TempDir(), "read")
 			readsVisibility := "cat >/dev/null 2>&1\n" +
-				leakguard.VisibilityReadVar + "=" + slug + " gh " + strings.Join(leakguard.VisibilityReadArgs(slug), " ") + " >/dev/null 2>'" + record + "'\n" +
-				"echo \"exit $?\" >'" + record + ".status'\nexit 0\n"
+				leakguard.VisibilityReadVar + "=" + slug + " gh " + strings.Join(leakguard.VisibilityReadArgs(slug), " ") + " >/dev/null 2>" + shellprefix.Literal(record) + "\n" +
+				"echo \"exit $?\" >" + shellprefix.Literal(record+".status") + "\nexit 0\n"
 			env := envFor(shim)
 			env["PUBLIC_LEAK_CHECK"] = leakguardtest.Write(t, t.TempDir(), readsVisibility)
 			env[leakguard.RunByRealGhVar] = shim
@@ -1376,7 +1377,7 @@ func ghStandInHelp(help string) string {
 	return "#!/bin/sh\nfor last; do :; done\n" +
 		"if [ \"$last\" = --help ]; then\n" +
 		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
-		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n"
+		"  exec cat " + shellprefix.Literal(help) + "/\"${path:-gh}\".txt\nfi\n"
 }
 
 // ghRefusal is what the stand-in checks of this package print when they refuse a `legion gh`
@@ -2001,7 +2002,7 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 			script := "#!/bin/sh\nfor last; do :; done\n" +
 				"if [ \"$last\" = --help ]; then\n" +
 				"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
-				"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
+				"  exec cat " + shellprefix.Literal(help) + "/\"${path:-gh}\".txt\nfi\n" +
 				"if [ \"$4\" = graphql ]; then\n  :\n" + tc.graphql + "fi\n" +
 				"echo rest >> \"$GH_STANDIN_RECORD\"\n" + tc.rest
 			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
@@ -2430,12 +2431,12 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 			hold := filepath.Join(bin, "legion")
 			holding := "#!/bin/sh\nprintf 'legion gh held\\n' >>\"$GH_STANDIN_RECORD\"\nticks=0\n" +
 				"while [ ! -f \"$GH_STANDIN_RELEASE\" ] && [ \"$ticks\" -lt 200 ]; do sleep 0.05; ticks=$((ticks+1)); done\n" +
-				"sleep 0.05\nexec '" + os.Args[0] + "' \"$@\"\n"
+				"sleep 0.05\nexec " + shellprefix.Literal(os.Args[0]) + " \"$@\"\n"
 			if err := os.WriteFile(hold, []byte(holding), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			wrappers := t.TempDir()
-			if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+hold+"' gh \"$@\"\n"), 0o700); err != nil {
+			if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec "+shellprefix.Literal(hold)+" gh \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			command := legionGhCommand(t, t.TempDir(), map[string]string{

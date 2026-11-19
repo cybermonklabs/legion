@@ -18,6 +18,7 @@ import {
   toolResultsIn,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { shellQuote } from "@legion/pi-shared/test/test-paths";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // On the real Oh My Pi: the `task` subagent of a Legion role pane makes a jj commit, and the
@@ -403,8 +404,8 @@ for (const role of ROLES) {
       // Then it prints the description of the commit and the three variables of `PRINTED`.
       const first = await pane.next("the subagent's first model request");
       const command = [
-        `jj git init '${repo}'`,
-        `cd '${repo}'`,
+        `jj git init ${shellQuote(repo)}`,
+        `cd ${shellQuote(repo)}`,
         "printf 'probe\\n' > probe.txt",
         `jj commit -m '${COMMIT_MESSAGE}'`,
         "jj --no-pager --color=never log -r @- --no-graph -T description",

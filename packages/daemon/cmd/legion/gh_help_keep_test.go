@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // loggingGh is a stand-in real gh that writes one line to log for every process `legion gh` runs
@@ -30,7 +31,7 @@ func loggingGh(t *testing.T) (stub, log string) {
 	}
 	dir := t.TempDir()
 	stub, log = filepath.Join(dir, "gh"), filepath.Join(dir, "processes.log")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>'" + log + "'\n" +
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>" + shellprefix.Literal(log) + "\n" +
 		strings.TrimPrefix(ghStandInPrefix(help), "#!/bin/sh\n") + "echo 'gh ran'\n"
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -388,7 +389,7 @@ func TestGhHelpKeepKeepsNothingForAMultiplexer(t *testing.T) {
 	}
 	bin := t.TempDir()
 	current, mise := filepath.Join(bin, "current"), filepath.Join(bin, "mise")
-	if err := os.WriteFile(mise, []byte("#!/bin/sh\nexec \"$(cat '"+current+"')\" \"$@\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(mise, []byte("#!/bin/sh\nexec \"$(cat "+shellprefix.Literal(current)+")\" \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	shim := filepath.Join(t.TempDir(), "gh")

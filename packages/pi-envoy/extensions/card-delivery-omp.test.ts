@@ -18,6 +18,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { shellQuote } from "@legion/pi-shared/test/test-paths";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
@@ -630,7 +631,7 @@ async function interruptKeepsCards(
     cleanup.push(() => writeFile(release, ""));
     first.reply([
       call("bash", {
-        command: `touch '${started}'; while [ ! -e '${release}' ]; do sleep 0.1; done; echo released`,
+        command: `touch ${shellQuote(started)}; while [ ! -e ${shellQuote(release)} ]; do sleep 0.1; done; echo released`,
       }),
     ]);
     await session.until("the blocking tool call to start", async () =>

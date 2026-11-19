@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -25,14 +26,16 @@ func TestConfigCheckRefusesARoleOverlayThePaneCannotRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	config, _ := workflowConfig(t, 13370, "role_config_files: {implementer: ["+present+"]}\n")
+	// Each path is a YAML double-quoted string: a plain scalar ends or turns into a flow indicator at
+	// a '?', ',' or ']' the test's temporary directory may hold.
+	config, _ := workflowConfig(t, 13370, "role_config_files: {implementer: ["+strconv.Quote(present)+"]}\n")
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 	if want := demoCheckConfigOK + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("a present overlay: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 
-	config, _ = workflowConfig(t, 13370, "role_config_files: {implementer: ["+present+", "+missing+"]}\n")
+	config, _ = workflowConfig(t, 13370, "role_config_files: {implementer: ["+strconv.Quote(present)+", "+strconv.Quote(missing)+"]}\n")
 	out.Reset()
 	errb.Reset()
 	code = run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)

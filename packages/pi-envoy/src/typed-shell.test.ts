@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isShellCommandReport } from "@legion/contracts";
+import { moduleScratch, shellQuote } from "@legion/pi-shared/test/test-paths";
 import { procmgr } from "@oh-my-pi/pi-utils";
 import {
   runShellCommand,
@@ -156,7 +157,7 @@ describe("running a person's command", () => {
   test("starts no login shell, so a profile answers nothing in the command's place", async () => {
     const directory = scratch();
     const home = scratch();
-    const profile = `printf 'banner\\n'\ncd ${home}\nTYPED_SHELL_TEST_PROFILE=read\n`;
+    const profile = `printf 'banner\\n'\ncd ${shellQuote(home)}\nTYPED_SHELL_TEST_PROFILE=read\n`;
     await Bun.write(join(home, ".profile"), profile);
     await Bun.write(join(home, ".zprofile"), profile);
     const before = process.env.HOME;
@@ -188,7 +189,7 @@ describe("running a person's command", () => {
     const directory = scratch();
     const home = scratch();
     const startup = join(home, "startup.sh");
-    await Bun.write(startup, `printf 'banner\\n'\ncd ${home}\n`);
+    await Bun.write(startup, `printf 'banner\\n'\ncd ${shellQuote(home)}\n`);
     const beforeBashEnv = process.env.BASH_ENV;
     const beforeEnv = process.env.ENV;
     process.env.BASH_ENV = startup;
@@ -223,7 +224,8 @@ describe("running a person's command", () => {
   // the command with the host's shell prefix before it, so the row reads the first two
   // arguments rather than the whole list.
   test("passes `-f` to a zsh, whose `.zshenv` no environment closes", async () => {
-    const directory = scratch();
+    // The runner below is a module Bun loads, so its directory's path holds no '?' (test-paths.ts).
+    const directory = moduleScratch(import.meta.dir, "typed-shell-test-");
     const shell = join(directory, "zsh");
     await Bun.write(
       shell,
@@ -448,7 +450,7 @@ describe("running a person's command", () => {
     const directory = scratch();
     const ready = join(directory, "ready");
     try {
-      const result = await runShellCommand(`printf early; touch ${ready}; sleep 600`, {
+      const result = await runShellCommand(`printf early; touch ${shellQuote(ready)}; sleep 600`, {
         cwd: directory,
         limitMs: 60_000,
         started: (stop) => {
@@ -483,8 +485,8 @@ describe("running a person's command", () => {
     };
     try {
       const result = await runShellCommand(
-        `echo $$ > ${pidFile}; ${setsid} sh -c 'printf gone > ${escaped}; sleep 5' &` +
-          ` while [ ! -f ${escaped} ]; do sleep 0.02; done; printf hi`,
+        `echo $$ > ${shellQuote(pidFile)}; ${setsid} sh -c ${shellQuote(`printf gone > ${shellQuote(escaped)}; sleep 5`)} &` +
+          ` while [ ! -f ${shellQuote(escaped)} ]; do sleep 0.02; done; printf hi`,
         {
           cwd: directory,
           limitMs: 60_000,
@@ -513,14 +515,15 @@ describe("running a person's command", () => {
   // the limit cannot cover - and read off this machine's own process table, which again no fake
   // clock can drive.
   test("leaves nothing running when the process that started the command exits first", async () => {
-    const directory = scratch();
+    // The runner below is a module Bun loads, so its directory's path holds no '?' (test-paths.ts).
+    const directory = moduleScratch(import.meta.dir, "typed-shell-test-");
     const pidFile = join(directory, "pid");
     const runner = join(directory, "runner.ts");
     await Bun.write(
       runner,
       [
         `import { runShellCommand } from ${JSON.stringify(join(import.meta.dir, "typed-shell.ts"))};`,
-        `void runShellCommand(${JSON.stringify(`echo $$ > ${pidFile}; exec sleep 600`)}, {`,
+        `void runShellCommand(${JSON.stringify(`echo $$ > ${shellQuote(pidFile)}; exec sleep 600`)}, {`,
         `  cwd: ${JSON.stringify(directory)},`,
         "  limitMs: 600_000,",
         "});",

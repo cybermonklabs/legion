@@ -230,7 +230,12 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the clone recorded no credential: %v", err)
 	}
-	tokenFile, held, _ := strings.Cut(strings.TrimSpace(string(credential)), " ")
+	// The record is the token file's path, a space, and what it held: the path may hold a space.
+	record := strings.TrimSpace(string(credential))
+	tokenFile, held := record, ""
+	if i := strings.LastIndexByte(record, ' '); i >= 0 {
+		tokenFile, held = record[:i], record[i+1:]
+	}
 	if held != "ghs_test" || !strings.HasPrefix(tokenFile, v.tmp+string(filepath.Separator)) {
 		t.Fatalf("the clone was handed %s holding %q, want the provisioning token under TMPDIR %s", tokenFile, held, v.tmp)
 	}

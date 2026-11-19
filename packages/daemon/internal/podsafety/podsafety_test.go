@@ -284,7 +284,7 @@ func TestEnsureScratchMakesEveryDirectoryTheRoleIsToldToWriteUnder(t *testing.T)
 // the endpoint the repository sets must read the same with Apply and without it.
 func TestARepositorysSettingsReachTheAgentUnderTheOperators(t *testing.T) {
 	omp := testbin.OMP(t)
-	dir := t.TempDir()
+	dir := testbin.OMPDir(t, omp)
 	home := filepath.Join(dir, "home")
 	testbin.OMPHome(t, omp, home)
 	repo := filepath.Join(dir, "repo")
@@ -344,7 +344,7 @@ func TestThePinnedOhMyPiRootsItsStateUnderTheStateHomeOnlyWhereTheShimMadeThePro
 		"without the shim":                    false,
 	} {
 		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := testbin.OMPDir(t, omp)
 			home := filepath.Join(dir, "home")
 			testbin.OMPHome(t, omp, home)
 			stateHome := filepath.Join(dir, "state", "tester")

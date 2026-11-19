@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -53,7 +54,7 @@ func killRecordedHelper(t *testing.T, pidFile, seconds string) {
 // of the rows that use it, with a command line helperRunning tells from a pid the kernel has
 // reused. Each row gives its stand-in a sleep of its own.
 func holdsStandIn(pidFile, seconds string) string {
-	return "echo $$ >'" + pidFile + ".new'\nmv '" + pidFile + ".new' '" + pidFile + "'\nexec sleep " + seconds + "\n"
+	return "echo $$ >" + shellprefix.Literal(pidFile+".new") + "\nmv " + shellprefix.Literal(pidFile+".new") + " " + shellprefix.Literal(pidFile) + "\nexec sleep " + seconds + "\n"
 }
 
 // signalWhileHeld starts command, the `legion` command name names, as the leader of a process

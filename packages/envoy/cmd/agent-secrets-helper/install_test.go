@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
 // installRig is a temp XDG config dir, a fake systemctl on PATH that appends its argv to a log
@@ -47,7 +48,10 @@ func newInstallRig(t *testing.T) *installRig {
 	t.Helper()
 	// TMPDIR may sit behind a symlink; install writes the resolved path, so the rig's binary
 	// lives at one. The socket keeps the short unresolved path (unix socket paths are capped).
-	dir := shortTempDir(t)
+	// install refuses a binary path, and a socket or other path the unit's Environment= lines
+	// name, that holds a character systemd would split or expand (installEscaped): a guard on the
+	// unit it writes. So the rig's directory holds none of them, wherever TMPDIR is.
+	dir := testtmp.Without(t, filepath.Join("cfg", "systemd", "user", "agent-secrets-helper.service"), installEscaped)
 	real, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -63,13 +67,14 @@ func newInstallRig(t *testing.T) *installRig {
 	if err := os.WriteFile(r.pid, []byte("4100\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\nif [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
-		"if [ \"$2\" = show ] && [ \"$3\" = --property=Job ]; then if [ -e " + r.calls + ".job ]; then read -r job < " + r.calls + ".job; echo \"$job\"; fi; exit 0; fi\n" +
-		"if [ \"$2\" = show ]; then read -r pid < " + r.pid + "; echo \"$pid\"; exit 0; fi\n" +
-		"echo \"$*\" >> " + r.calls + "\n" +
-		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".fail-restart ]; then exit 1; fi\n" +
-		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".slow-restart ]; then [ -e " + r.calls + ".no-queued-job ] || echo 7 > " + r.calls + ".job; exec /bin/sleep 20; fi\n" +
-		"if [ \"$2\" = restart ] && [ ! -e " + r.calls + ".same-process ]; then read -r pid < " + r.pid + "; echo $((pid + 1)) > " + r.pid + "; fi\n"
+	q := shellQuote
+	script := "#!/bin/sh\nif [ \"$2\" = is-active ]; then read -r state < " + q(r.active) + "; echo \"$state\"; exit 0; fi\n" +
+		"if [ \"$2\" = show ] && [ \"$3\" = --property=Job ]; then if [ -e " + q(r.calls+".job") + " ]; then read -r job < " + q(r.calls+".job") + "; echo \"$job\"; fi; exit 0; fi\n" +
+		"if [ \"$2\" = show ]; then read -r pid < " + q(r.pid) + "; echo \"$pid\"; exit 0; fi\n" +
+		"echo \"$*\" >> " + q(r.calls) + "\n" +
+		"if [ \"$2\" = restart ] && [ -e " + q(r.calls+".fail-restart") + " ]; then exit 1; fi\n" +
+		"if [ \"$2\" = restart ] && [ -e " + q(r.calls+".slow-restart") + " ]; then [ -e " + q(r.calls+".no-queued-job") + " ] || echo 7 > " + q(r.calls+".job") + "; exec /bin/sleep 20; fi\n" +
+		"if [ \"$2\" = restart ] && [ ! -e " + q(r.calls+".same-process") + " ]; then read -r pid < " + q(r.pid) + "; echo $((pid + 1)) > " + q(r.pid) + "; fi\n"
 	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +89,14 @@ func newInstallRig(t *testing.T) *installRig {
 	r.unit = filepath.Join(dir, "cfg", "systemd", "user", "agent-secrets-helper.service")
 	return r
 }
+
+// shellQuote is s as one single-quoted shell word, each ' in it closed, escaped and reopened.
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
+// installEscaped is every character install refuses in a path it writes into the unit: its
+// needsEscaping (install.go), whitespace ExecStart would split on, a quote, and the `%` and `$`
+// systemd expands.
+const installEscaped = " \t\r\n\"'\\%$;"
 
 func (r *installRig) run(args ...string) error {
 	r.t.Helper()

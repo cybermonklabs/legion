@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -30,8 +31,8 @@ func stubCodegraph(t *testing.T, callLog string) {
 	t.Helper()
 	dir := t.TempDir()
 	script := `#!/bin/sh
-printf '%s\n' "$*" >> '` + callLog + `'
-env >"$(mktemp '` + callLog + `.env.XXXXXX')"
+printf '%s\n' "$*" >> ` + shellprefix.Literal(callLog) + `
+env >"$(mktemp ` + shellprefix.Literal(callLog+".env.XXXXXX") + `)"
 marker=".codegraph/.codegraph-initialized"
 case "$1" in
 status)
@@ -123,10 +124,10 @@ func TestWarmCodegraphIndexInBackgroundNeverWaitsAndBuildsOncePerWorkspace(t *te
 		t.Fatal(err)
 	}
 	script := `#!/bin/sh
-echo "$1" >> '` + callLog + `'
+echo "$1" >> ` + shellprefix.Literal(callLog) + `
 case "$1" in
 status) echo '{"initialized":false}' ;;
-init) while [ ! -f '` + release + `' ] && [ -d '` + scratch + `' ]; do sleep 0.05; done ;;
+init) while [ ! -f ` + shellprefix.Literal(release) + ` ] && [ -d ` + shellprefix.Literal(scratch) + ` ]; do sleep 0.05; done ;;
 esac
 `
 	if err := os.WriteFile(filepath.Join(bin, "codegraph"), []byte(script), 0o700); err != nil {
@@ -247,7 +248,7 @@ func TestWarmCodegraphIndexRepairsAPartialIndex(t *testing.T) {
 	}
 	binDir := t.TempDir()
 	script := `#!/bin/sh
-printf '%s\n' "$1" >> '` + callLog + `'
+printf '%s\n' "$1" >> ` + shellprefix.Literal(callLog) + `
 case "$1" in
 status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
@@ -285,7 +286,7 @@ func TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectory(t *testing.T
 	}
 	binDir := t.TempDir()
 	script := `#!/bin/sh
-printf '%s\n' "$1" >> '` + callLog + `'
+printf '%s\n' "$1" >> ` + shellprefix.Literal(callLog) + `
 case "$1" in
 status) echo '{"initialized":false}' ;;
 index) echo 'CodeGraph not initialized' >&2; exit 1 ;;
@@ -353,7 +354,7 @@ func TestWarmCodegraphIndexSkipsRepairWhileABuildIsLive(t *testing.T) {
 	}
 	binDir := t.TempDir()
 	script := `#!/bin/sh
-printf '%s\n' "$1" >> '` + callLog + `'
+printf '%s\n' "$1" >> ` + shellprefix.Literal(callLog) + `
 case "$1" in
 status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
@@ -440,7 +441,7 @@ func TestWarmCodegraphIndexJudgesAnEmptyLockByItsAge(t *testing.T) {
 			}
 			binDir := t.TempDir()
 			script := `#!/bin/sh
-printf '%s\n' "$1" >> '` + callLog + `'
+printf '%s\n' "$1" >> ` + shellprefix.Literal(callLog) + `
 case "$1" in
 status)` + takeLock + ` echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
@@ -472,7 +473,7 @@ func TestWarmCodegraphIndexRepairsOncePerWorkspace(t *testing.T) {
 	}
 	binDir := t.TempDir()
 	script := `#!/bin/sh
-printf '%s\n' "$1" >> '` + callLog + `'
+printf '%s\n' "$1" >> ` + shellprefix.Literal(callLog) + `
 case "$1" in
 status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
@@ -1013,7 +1014,7 @@ func TestWarmCodegraphIndexStillInitializesAFreshWorkspaceWhenStatusFails(t *tes
 	dir := t.TempDir()
 	binDir := t.TempDir()
 	script := `#!/bin/sh
-printf '%s\n' "$1" >> '` + callLog + `'
+printf '%s\n' "$1" >> ` + shellprefix.Literal(callLog) + `
 case "$1" in
 status) echo 'database disk image is malformed' >&2; exit 1 ;;
 index) echo 'CodeGraph not initialized' >&2; exit 1 ;;
@@ -1148,7 +1149,7 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 	fake := func(t *testing.T, callLog, cases string) {
 		t.Helper()
 		binDir := t.TempDir()
-		script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + callLog + "'\ncase \"$1\" in\n" + cases + "esac\n"
+		script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> " + shellprefix.Literal(callLog) + "\ncase \"$1\" in\n" + cases + "esac\n"
 		if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}

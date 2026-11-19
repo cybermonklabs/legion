@@ -21,6 +21,12 @@ import { bearerCredential } from "@legion/envoy-client/bearer";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+import {
+  moduleBase,
+  moduleDirectory,
+  shellQuote,
+  wordDirectory,
+} from "@legion/pi-shared/test/test-paths";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   temporaryDirectories,
@@ -1764,7 +1770,10 @@ describe("dispatch CLI calls", () => {
   // A stand-in for the plugin's `dispatch`: under --dry-run it prints the arguments its flags name as
   // JSON (a `-file` flag reads its path, `-` reads stdin). A real call can record the arguments it
   // would post under ASKGATE_POSTED, so the gate tests compare reviewed content with sent content.
-  const work = temporaryDirectory("askgate-cli");
+  // The stand-in's shebang is bun, and the rows below write this directory's paths as unquoted
+  // words of commands whose form the grammar reads (an absolute program word, a leading `cd`, an
+  // absolute `--path`), so its path holds no blank, `'` or `?` (test-paths.ts).
+  const work = wordDirectory(import.meta.dir, "askgate-cli-");
   const bin = path.join(work, "bin");
   beforeAll(() => {
     fs.mkdirSync(bin);
@@ -2264,7 +2273,7 @@ console.log(JSON.stringify(args, null, 2));
     const marker = path.join(work, "heredoc-marker");
     fs.rmSync(marker, { force: true });
     await expectUnread(
-      `dispatch ask --issue X-1 --question-file - <<E\\\nOF\n$(printf marker > ${marker}; printf reviewed)\nEOF`
+      `dispatch ask --issue X-1 --question-file - <<E\\\nOF\n$(printf marker > ${shellQuote(marker)}; printf reviewed)\nEOF`
     );
     expect(fs.existsSync(marker)).toBe(false);
   });
@@ -2670,9 +2679,12 @@ console.log(JSON.stringify(args, null, 2));
   // the call lost its marker. Every row below is run through real bash with a stand-in
   // `dispatch` that prints the argv it got and its standard input.
   describe("the override comment, wherever the command's line ends", () => {
-    const argvBin = temporaryDirectory("argv-dispatch");
-    /** Where a rebuttal that ran would leave its mark; no row may create one. */
-    const sentinels = temporaryDirectory("sentinel");
+    // The stand-in's shebang is bun, so its directory's path holds no '?' (test-paths.ts).
+    const argvBin = moduleDirectory(import.meta.dir, "argv-dispatch-");
+    /** Where a rebuttal that ran would leave its mark; no row may create one. Each rebuttal shape
+     * writes the path as an unquoted word inside its own quotes, so it holds no blank, `'` or `?`
+     * (test-paths.ts): quoting it would turn a rebuttal into another of the shapes below. */
+    const sentinels = wordDirectory(import.meta.dir, "sentinel-");
     beforeAll(() => {
       fs.writeFileSync(
         path.join(argvBin, "dispatch"),
@@ -3744,9 +3756,10 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     /**
      * A stand-in `dispatch` of its own, which consumes the marker for the argv bash hands it, as
      * the CLI does: it parses its own flags into the arguments the marker binds, reads `-` from
-     * standard input, and prints both the argv it got and what `consumeMarker` answered.
+     * standard input, and prints both the argv it got and what `consumeMarker` answered. Its
+     * shebang is bun, so its directory's path holds no '?' (test-paths.ts).
      */
-    const consumingBin = temporaryDirectory("consuming-dispatch");
+    const consumingBin = moduleDirectory(import.meta.dir, "consuming-dispatch-");
     beforeAll(() => {
       fs.writeFileSync(
         path.join(consumingBin, "dispatch"),
@@ -4520,7 +4533,8 @@ describe("the literal grammar, widened to forms with no expansion", () => {
   // the CLI would receive for each form. The directory's path is reserved here and the fixture is
   // staged in the `beforeAll` below, which Bun runs after the one the reservation registered: a
   // run that selects no row of this describe makes none of it.
-  const root = temporaryDirectory("askgate-argv");
+  // The stand-in's shebang is bun, so the directory's path holds no '?' (test-paths.ts).
+  const root = moduleDirectory(import.meta.dir, "askgate-argv-");
   const bin = path.join(root, "bin");
   // A home of the test's own: no child here reads the caller's.
   const home = path.join(root, "home");
@@ -4925,7 +4939,9 @@ describe("eval cells that run the dispatch CLI (A1)", () => {
 });
 
 describe("sessions", () => {
-  const makeDirectory = temporaryDirectories("askgate");
+  // A row below writes a stand-in whose shebang is bun, so the directories hold no '?'
+  // (test-paths.ts).
+  const makeDirectory = temporaryDirectories("askgate", { root: moduleBase(import.meta.dir) });
 
   test("a halt in one session does not carry into the next", async () => {
     const g = bind({ env: { OMP_ASKGATE_TIMEOUT_MS: "20" }, complete: untilAborted });

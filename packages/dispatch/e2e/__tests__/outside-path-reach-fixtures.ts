@@ -33,6 +33,7 @@ import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Subprocess, udp } from "bun";
+import { shellQuote } from "../local-instance-support";
 import type { Answers, Seen } from "./outside-path-reach-origin";
 
 export const script = fileURLToPath(
@@ -479,7 +480,7 @@ export function reachFixtures() {
       `[ -d "$rounds/${name}-$round" ] || exit 70; round=$((round + 1)); done`;
     const path = pathWithCurl(
       [
-        `rounds=${rounds} log=${log} target= round=`,
+        `rounds=${shellQuote(rounds)} log=${shellQuote(log)} target= round=`,
         'case "$*" in',
         ...Object.entries(paced).map(([name, at]) => `  *telnet://${at}) target=${name} ;;`),
         "esac",
@@ -497,7 +498,7 @@ export function reachFixtures() {
       sleep,
       [
         `#!${bash}`,
-        `rounds=${rounds} log=${log}`,
+        `rounds=${shellQuote(rounds)} log=${shellQuote(log)}`,
         claim("sleep"),
         `for target in ${Object.keys(paced).join(" ")}; do`,
         `  ${untilExists('"$rounds/$target-$round/logged"')}`,

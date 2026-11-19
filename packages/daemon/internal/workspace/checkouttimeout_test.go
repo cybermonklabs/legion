@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // checkoutDelay is how long the jj the cases below start sleeps before a checkout, and
@@ -32,7 +34,7 @@ func slowCheckoutTools(t *testing.T, delay time.Duration) map[string]string {
 	t.Helper()
 	tools := testTools(t)
 	wrapper := filepath.Join(t.TempDir(), "jj")
-	script := "#!/bin/sh\ncase \" $* \" in *' sparse reset '*) sleep " + strconv.FormatFloat(delay.Seconds(), 'f', -1, 64) + " ;; esac\nexec '" + tools["jj"] + "' \"$@\"\n"
+	script := "#!/bin/sh\ncase \" $* \" in *' sparse reset '*) sleep " + strconv.FormatFloat(delay.Seconds(), 'f', -1, 64) + " ;; esac\nexec " + shellprefix.Literal(tools["jj"]) + " \"$@\"\n"
 	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}

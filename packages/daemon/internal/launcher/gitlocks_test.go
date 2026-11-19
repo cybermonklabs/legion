@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -421,7 +422,7 @@ func roleNamespaceHolder(t *testing.T, dir, lock string) int {
 		FixedRoot: filepath.Join(dir, "fixed"),
 		// The shell's own open of the lock, which its exec of sleep keeps: one process of the
 		// role's namespaces holds the lock open, and it says so once it does.
-		Argv: []string{"/bin/sh", "-c", "exec 9<'" + lock + "'; echo holding; exec sleep 300"},
+		Argv: []string{"/bin/sh", "-c", "exec 9<" + shellprefix.Literal(lock) + "; echo holding; exec sleep 300"},
 	}
 	// The layout role-init binds back at the fixed paths, as the probe's is built
 	// (CheckRoleNamespaces): this role's own directories and nothing of any other role.

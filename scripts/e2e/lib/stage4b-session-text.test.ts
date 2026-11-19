@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { scriptFunctions } from "./script-functions";
+import { scriptFunctions, shellQuote } from "./script-functions";
 
 // session_psql, session_text and session_byte_len, taken from lib/session-db.sh by name, and
 // session_copy, record_pair, claim_session_text and collect_transcripts, taken from
@@ -268,7 +268,7 @@ function copyInto(
   writeFileSync(join(base, "sentinel"), sentinel);
   before?.(dest, root);
   const r = run(
-    `evidence='${evidence}'\nsession_copy '${prefix}' review-pair '${stem}'`,
+    `evidence=${shellQuote(evidence)}\nsession_copy '${prefix}' review-pair '${stem}'`,
     rows(root)
   );
   return { r, root, evidence, base, dest };

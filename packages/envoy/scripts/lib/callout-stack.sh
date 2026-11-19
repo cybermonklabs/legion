@@ -106,7 +106,7 @@ callout_after_first_broker() {
   callout_exports="
   export DEV_STACK_CALLOUT=1
   export NATS_AUTH=broker
-  export DEV_STACK_NATS_SERVICE_TOKEN_FILE=$callout_listener_token
+  export DEV_STACK_NATS_SERVICE_TOKEN_FILE=$(printf %q "$callout_listener_token")
   export DEV_STACK_EXCHANGE_SESSION=$EXCHANGE_SESSION
   export DEV_STACK_BROKER_PIDS=\"$BROKER_PID $BROKER2_PID\"
   export DEV_STACK_NATS_MONITOR_URL=$callout_monitor_url"

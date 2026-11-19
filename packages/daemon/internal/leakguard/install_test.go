@@ -462,7 +462,7 @@ func TestAHelpRunThatEndsWithNoExitIsRefusedNamingWhy(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			parent := t.TempDir()
 			pidFile := filepath.Join(parent, "help-pid")
-			body := served(t, wholeCheck(t, "#!/bin/sh\necho 'LEAK CHECK: reading the rules' >&2\necho $$ >'"+pidFile+"'\nexec sleep 30\n"))
+			body := served(t, wholeCheck(t, "#!/bin/sh\necho 'LEAK CHECK: reading the rules' >&2\necho $$ >"+shQuote(pidFile)+"\nexec sleep 30\n"))
 			dir := filepath.Join(parent, "leak-check")
 			ctx, cancel := context.WithCancel(bound(t))
 			defer cancel()

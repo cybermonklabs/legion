@@ -91,7 +91,14 @@ cleanup() {
       wait "$pid" 2>/dev/null || true
     fi
   done
-  pkill -f "${temporary_dir}/dev-stack\." 2>/dev/null || true
+  # pkill reads its pattern as an extended regex, so each regex character of the directory's own
+  # name is escaped: a '?', '[' or '.' in TMPDIR would otherwise match some other path, or none.
+  local pattern=${temporary_dir}/dev-stack. c
+  pattern=${pattern//\\/\\\\}
+  for c in . '[' ']' '*' '^' '$' '?' '+' '(' ')' '{' '}' '|'; do
+    pattern=${pattern//"$c"/\\$c}
+  done
+  pkill -f "$pattern" 2>/dev/null || true
   rm -rf "$temporary_dir"
 }
 trap cleanup EXIT
@@ -470,7 +477,10 @@ fail() {
 # nothing — the exact regression each caller checks for — exits 1, and head, awk and sed on empty
 # input exit 0, so that 1 would become the pipeline's status and trip errexit before the caller's
 # own emptiness check could print its diagnostic.
-work_dir_of() { grep -o 'dev-stack: workdir .*' "$1" | head -n1 | awk '{print $3}' || true; }
+#
+# The run's work directory, from its "dev-stack: workdir" line: every field after the second, so
+# a TMPDIR with a space in its name is read whole.
+work_dir_of() { grep -o 'dev-stack: workdir .*' "$1" | head -n1 | cut -d' ' -f3- || true; }
 created_databases() { grep -o 'create database dev_stack_[a-z0-9_]*' "$1" | awk '{print $3}' | sort | tr '\n' ' ' || true; }
 dropped_databases() { grep -o 'drop database if exists dev_stack_[a-z0-9_]*' "$1" | awk '{print $5}' | sort | tr '\n' ' ' || true; }
 # The port dev-stack.sh printed for one process, from its own "dev-stack: <name> <url>" line.
@@ -481,8 +491,15 @@ broker_log_port() { grep -o '"message":"broker listening","addr":"127\.0\.0\.1:[
 nats_log_port() { grep -o 'Listening for client connections on 127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
 listener_log_port() { grep -o '"addr":"127\.0\.0\.1:[0-9]*"' "$1" | head -n1 | sed -E 's/.*:([0-9]+)"$/\1/' || true; }
 dispatch_log_port() { grep -o 'msg="dispatch: listening" addr=127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
-# The value of one "export NAME=..." line of the banner.
-exported() { grep -o "export $2=.*" "$1" | head -n1 | cut -d= -f2- || true; }
+# The value of one "export NAME=..." line of the banner, as the shell that sources the line reads
+# it: the banner prints each path with printf %q, so the line is evaluated, in a subshell, rather
+# than cut at its "=".
+exported() {
+  local line
+  line="$(grep -o "export $2=.*" "$1" | head -n1 || true)"
+  [[ -n "$line" ]] || return 0
+  (eval "${line#export }" && printf '%s' "${!2}") || true
+}
 
 # The globals assert_instance_ready sets for the caller: the run's work directory, the suffix its
 # names are made from, the ports every process of it reported, the port its Dispatch keeper held,
@@ -574,7 +591,7 @@ assert_instance_ready() {
   [[ "$exported_value" == "nats://127.0.0.1:${process_port[natsd]}" ]] ||
     fail "$label exported NATS_URLS=$exported_value, not natsd's own port"
   exported_value="$(exported "$log_file" PATH)"
-  [[ "$exported_value" == "${work_dir}/bin:\$PATH" ]] ||
+  [[ "$exported_value" == "${work_dir}/bin:${PATH}" ]] ||
     fail "$label exported PATH=$exported_value, not this run's binaries first"
   exported_value="$(exported "$log_file" AGENT_SECRETS_ACCOUNT_TOKEN_FILE)"
   [[ -s "$exported_value" ]] ||
@@ -639,12 +656,12 @@ assert_instance_ready() {
   # first box's.
   # shellcheck disable=SC2016 # the banner prints these dollar signs; they are not this shell's
   for value in 'DEV_STACK_METADATA_PORT_FILE=$DEV_STACK_BOX2_METADATA_PORT_FILE' \
-    'AGENT_SECRETS_HELPER_SOCK=$DEV_STACK_BOX2_AGENT_SECRETS_HELPER_SOCK' \
-    'AGENT_SECRETS_STATE_FILE=$DEV_STACK_BOX2_AGENT_SECRETS_STATE_FILE'; do
+    'AGENT_SECRETS_HELPER_SOCK="$DEV_STACK_BOX2_AGENT_SECRETS_HELPER_SOCK"' \
+    'AGENT_SECRETS_STATE_FILE="$DEV_STACK_BOX2_AGENT_SECRETS_STATE_FILE"'; do
     grep -qF "$value" "$log_file" ||
       fail "$label printed no line that starts the second box with $value"
   done
-  grep -qF "${work_dir}/bin/agent-secrets-helper serve" "$log_file" ||
+  grep -qF "$(printf %q "${work_dir}/bin/agent-secrets-helper") serve" "$log_file" ||
     fail "$label printed no line that starts the second box's helper from this run's own binaries"
 
   # Each readiness check this run made named its own process's port, so no check of it could have
@@ -971,9 +988,11 @@ grep -q "fake listener: machine=dev-stack-${run_suffix} nats-token=${work_dir}/l
   fail "the --callout run's listener was not started with its NATS token"
 grep -q "nats-token=${work_dir}/dispatch-nats-token$" "${work_dir}/logs/dispatch.log" ||
   fail "the --callout run's Dispatch was not started with its NATS token"
+# Each value as the shell that sources the banner reads it (exported): the pids one word, the paths
+# whole.
 for pair in "DEV_STACK_CALLOUT=1" "NATS_AUTH=broker" "DEV_STACK_NATS_SERVICE_TOKEN_FILE=${work_dir}/listener-nats-token" \
   "DEV_STACK_EXCHANGE_SESSION=example-worker-session" \
-  "DEV_STACK_BROKER_PIDS=\"${process_port[broker]} ${second_broker_port}\"" \
+  "DEV_STACK_BROKER_PIDS=${process_port[broker]} ${second_broker_port}" \
   "DEV_STACK_NATS_MONITOR_URL=http://127.0.0.1:${process_port[natsd]}"; do
   [[ "$(exported "$log1" "${pair%%=*}")" == "${pair#*=}" ]] ||
     fail "the --callout run exported ${pair%%=*}=$(exported "$log1" "${pair%%=*}"), not ${pair#*=}"

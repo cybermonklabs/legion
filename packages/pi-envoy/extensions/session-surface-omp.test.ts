@@ -15,6 +15,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { shellQuote } from "@legion/pi-shared/test/test-paths";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, ErrorCode, headers, type NatsConnection, NatsError, StringCodec } from "nats";
 import { z } from "zod";
@@ -1138,7 +1139,7 @@ test.skipIf(skip)(
   async () => {
     const session = await startSession({
       prepare: async ({ home }) => {
-        const profile = `printf 'a banner\\n'\ncd ${home}\n`;
+        const profile = `printf 'a banner\\n'\ncd ${shellQuote(home)}\n`;
         for (const name of [".profile", ".bash_profile", ".zprofile"]) {
           await Bun.write(path.join(home, name), profile);
         }
@@ -1358,7 +1359,7 @@ test.skipIf(skip)(
     const session = await startSession();
     const release = path.join(session.workspace, "release");
     const waiting = await session.send(
-      `!while [ ! -f ${release} ]; do sleep 0.05; done; printf released`
+      `!while [ ! -f ${shellQuote(release)} ]; do sleep 0.05; done; printf released`
     );
 
     const prompt = await session.send("Are you still taking messages?");

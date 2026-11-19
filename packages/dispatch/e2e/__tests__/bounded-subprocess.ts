@@ -2,9 +2,10 @@
  *  but the two stated edges below: the argv, the working directory, the environment the caller
  *  chose, how the pipes are read, the bound that stops a child that is stuck, and the line the
  *  run that started a child prints on its own stderr when that child ends. It also holds the
- *  limit a row states for itself, which is read from the bounds of what that row waits for, and
+ *  limit a row states for itself, which is read from the bounds of what that row waits for,
  *  `whether` and `eventually`, the wait a row makes for a state another process reaches, which
- *  the short bound ends.
+ *  the short bound ends, and `bunLoadableDirectory`, the temporary directory a row writes files
+ *  in for a `bun` it runs on them.
  *
  * That line, and the failure of a child its bound stopped, go to the run's stderr, which CI keeps
  * in a public log, so both name the child as `named` writes it.
@@ -92,8 +93,9 @@
  * `ci.yaml` names either.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { relative } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
 
@@ -909,4 +911,33 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
     );
   }
   return { code: await child.exited, named: name, stderr, stdout };
+}
+
+/** This package's `.cache/test-bun`, which `.gitignore` leaves out: the second base
+ *  `bunLoadableDirectory` tries. */
+const packageBunScratch = fileURLToPath(new URL("../../.cache/test-bun", import.meta.url));
+
+/** A fresh directory Bun can load a module from, for a row that writes test files or modules
+ *  there and runs `bun` on them. Bun loads no module from a path that holds a '?', in any form,
+ *  so under a TMPDIR holding one such a row would fail before it tested anything. The directory
+ *  is made under the first base that holds no '?' and takes a directory: `os.tmpdir()`, then
+ *  this package's `.cache/test-bun`. With neither, this throws, naming what each base answered,
+ *  so the row fails; it never skips. The caller removes the directory when its row ends. */
+export function bunLoadableDirectory(prefix: string): string {
+  const answers: string[] = [];
+  for (const base of [tmpdir(), packageBunScratch]) {
+    if (base.includes("?")) {
+      answers.push(`${base} holds a '?'`);
+      continue;
+    }
+    try {
+      mkdirSync(base, { recursive: true });
+      return mkdtempSync(join(base, prefix));
+    } catch (error) {
+      answers.push(
+        `${base} made no directory (${error instanceof Error ? error.message : String(error)})`
+      );
+    }
+  }
+  throw new Error(`no base gives a directory Bun can load a module from: ${answers.join("; ")}`);
 }

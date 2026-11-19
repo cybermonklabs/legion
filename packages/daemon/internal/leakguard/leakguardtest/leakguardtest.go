@@ -26,6 +26,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // CheckName is the shared check's file name, which is how the guard finds it on PATH. The guard
@@ -71,7 +73,7 @@ func Refusing(report string) string {
 // rather than read from the environment, since the verification hands the check none of the
 // test's. It reads no standard input: the verification gives it none.
 func AnswersHelp(runs string) string {
-	return "echo help >>'" + runs + "'\n" +
+	return "echo help >>" + shellprefix.Literal(runs) + "\n" +
 		"echo '# Usage: check-public-text FILE..., --commits REV..., --tree DIR, gh-guard ARGS, or REMOTE URL.'\nexit 1\n"
 }
 

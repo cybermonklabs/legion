@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -303,7 +304,7 @@ func TestTheTmuxBootGateReadsAMemoryRolesWholeValue(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	image := capabilities.Image{Launch: omp, Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
+	image := capabilities.Image{Launch: shellprefix.Word(omp), Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
 	cfg := config.Config{
 		Project:         "test",
 		Runtime:         config.Runtime{Name: "tmux"},

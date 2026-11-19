@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/registry"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -626,7 +627,7 @@ func workflowConfig(t *testing.T, port int, extra string) (path, marker string) 
 	t.Setenv("LEGION_GH_PATH", omp)
 	dir := t.TempDir()
 	marker = filepath.Join(dir, "private-key-command-ran")
-	command := "touch " + marker + "; exit 1"
+	command := "touch " + shellprefix.Literal(marker) + "; exit 1"
 	body := fmt.Sprintf(`project: DEMO
 port: %d
 postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
@@ -1210,7 +1211,7 @@ func TestConfigCheckRefusesWhatTheSandboxRuntimeRefuses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			marker := filepath.Join(dir, "private-key-command-ran")
-			command := "touch " + marker + "; exit 1"
+			command := "touch " + shellprefix.Literal(marker) + "; exit 1"
 			body := fmt.Sprintf(`project: DEMO
 postgres_dsn: postgres://legion:legion@127.0.0.1:1/legion
 state_dir: %s

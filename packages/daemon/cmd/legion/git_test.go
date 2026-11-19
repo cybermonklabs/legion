@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
 
@@ -27,7 +28,7 @@ import (
 func trailerLegion(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "legion")
-	writeTrailerScript(t, path, testMainEnv+"=1 exec '"+os.Args[0]+"' \"$@\"\n")
+	writeTrailerScript(t, path, testMainEnv+"=1 exec "+shellprefix.Literal(os.Args[0])+" \"$@\"\n")
 	return path
 }
 
@@ -149,7 +150,7 @@ func trailerCalls(t *testing.T, log string) [][]string {
 
 // trailerLogging is a script body that records its arguments in log (trailerCalls).
 func trailerLogging(log string) string {
-	return "printf '%s\\037' \"$@\" >> '" + log + "'\nprintf '\\n' >> '" + log + "'\n"
+	return "printf '%s\\037' \"$@\" >> " + shellprefix.Literal(log) + "\nprintf '\\n' >> " + shellprefix.Literal(log) + "\n"
 }
 
 // trailerWrapperDir is a directory holding a tmux pane's git: a script that runs legion as
@@ -157,7 +158,7 @@ func trailerLogging(log string) string {
 func trailerWrapperDir(t *testing.T, legion string) string {
 	t.Helper()
 	bin := t.TempDir()
-	writeTrailerScript(t, filepath.Join(bin, "git"), "exec '"+legion+"' git --after '"+bin+"' -- \"$@\"\n")
+	writeTrailerScript(t, filepath.Join(bin, "git"), "exec "+shellprefix.Literal(legion)+" git --after "+shellprefix.Literal(bin)+" -- \"$@\"\n")
 	return bin
 }
 
@@ -171,7 +172,7 @@ func TestGitWrapperAfterRunsTheNextGitOnPathAScriptIncluded(t *testing.T) {
 	bin := trailerWrapperDir(t, legion)
 	host := t.TempDir()
 	log := filepath.Join(host, "calls")
-	writeTrailerScript(t, filepath.Join(host, "git"), trailerLogging(log)+"exec '"+git+"' \"$@\"\n")
+	writeTrailerScript(t, filepath.Join(host, "git"), trailerLogging(log)+"exec "+shellprefix.Literal(git)+" \"$@\"\n")
 	path := bin + ":" + host + ":" + trailerPath(git)
 	repo := trailerRepo(t, git)
 	sh, err := exec.LookPath("sh")
@@ -298,9 +299,9 @@ func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
 			log := filepath.Join(t.TempDir(), "runs")
 			prepend := ""
 			if tc.prepend {
-				prepend = "PATH='" + t.TempDir() + "':\"$PATH\"\nexport PATH\n"
+				prepend = "PATH=" + shellprefix.Literal(t.TempDir()) + ":\"$PATH\"\nexport PATH\n"
 			}
-			wrapper := "#!" + bash + "\nset -euo pipefail\nprintf 'run\\n' >> '" + log + "'\n" + prepend + realGit +
+			wrapper := "#!" + bash + "\nset -euo pipefail\nprintf 'run\\n' >> " + shellprefix.Literal(log) + "\n" + prepend + realGit +
 				"_real=\"$(real_git)\"\nexec \"$_real\" \"$@\"\n"
 			if err := os.WriteFile(filepath.Join(shims, "git"), []byte(wrapper), 0o700); err != nil {
 				t.Fatal(err)
@@ -325,7 +326,7 @@ func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
 
 	compiled := goGitProgram(t, hostGitSource)
 	firstNotSelf := func(log string) string {
-		return "#!" + bash + "\nprintf 'run\\n' >> '" + log + "'\n" +
+		return "#!" + bash + "\nprintf 'run\\n' >> " + shellprefix.Literal(log) + "\n" +
 			"IFS=:\nfor dir in $PATH; do\n" +
 			"  [[ -n $dir && -f $dir/git && -x $dir/git && ! $dir/git -ef $0 ]] && exec \"$dir/git\" \"$@\"\n" +
 			"done\nexit 127\n"
@@ -558,7 +559,7 @@ func TestGitWrapperInstallsAPanesTrailers(t *testing.T) {
 	legion := trailerLegion(t)
 	host := t.TempDir()
 	log := filepath.Join(host, "calls")
-	writeTrailerScript(t, filepath.Join(host, "git"), trailerLogging(log)+"exec '"+git+"' \"$@\"\n")
+	writeTrailerScript(t, filepath.Join(host, "git"), trailerLogging(log)+"exec "+shellprefix.Literal(git)+" \"$@\"\n")
 	root := t.TempDir()
 	if err := workerbin.Install(root, legion, host+":"+filepath.Dir(git)); err != nil {
 		t.Fatalf("workerbin.Install: %v", err)
@@ -703,11 +704,11 @@ func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *t
 	// the loop closes that descriptor, and bash cannot put stderr back: git would print to /dev/null.
 	closing := "#!" + bash + "\n" +
 		"for fd in /proc/self/fd/*; do n=${fd##*/}; if [ \"$n\" -gt 2 ] && [ \"$n\" != 255 ]; then eval \"exec $n>&-\"; fi; done\n" +
-		"exec '" + git + "' \"$@\"\n"
+		"exec " + shellprefix.Literal(git) + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(closer, "git"), []byte(closing), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeTrailerScript(t, filepath.Join(keeper, "git"), "exec '"+git+"' \"$@\"\n")
+	writeTrailerScript(t, filepath.Join(keeper, "git"), "exec "+shellprefix.Literal(git)+" \"$@\"\n")
 	copyExecutable(t, goGitProgram(t, strings.Replace(closingGitSource, "REAL_GIT", strconv.Quote(git), 1)), filepath.Join(compiledCloser, "git"))
 	lines := "\nOmp-Session: closer-session\nLegion-Role: implementer\n"
 	// fifo is a command that makes the FIFO name in TMPDIR and writes text into it (fifoWriter).
@@ -737,7 +738,7 @@ func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *t
 			row{"-F /dev/stdin from a pipe through " + host.name + " that closes descriptors", host.dir,
 				"printf msg | git commit -q --allow-empty -F /dev/stdin", "", true, lines, "", ""},
 			row{"-t /dev/stdin beside --amend, HEAD's message, through " + host.name + " that closes descriptors", host.dir,
-				"'" + git + `' commit -q --allow-empty -m msg && printf 'msg\n' > "$TMPDIR/template" && ` +
+				shellprefix.Literal(git) + ` commit -q --allow-empty -m msg && printf 'msg\n' > "$TMPDIR/template" && ` +
 					`git commit -q --allow-empty --amend -t /dev/stdin < "$TMPDIR/template"`,
 				"", false, "", "Aborting commit; you did not edit the message.", ""},
 			row{"-F <a FIFO> through " + host.name + " that closes descriptors", host.dir,
@@ -745,7 +746,7 @@ func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *t
 			row{"-m msg -t <a FIFO> with another text through " + host.name + " that closes descriptors", host.dir,
 				fifo("template-fifo", `A template\n`) + `git commit -q --allow-empty -m msg -t "$TMPDIR/template-fifo"`, "", true, lines, "", ""},
 			row{"-t <a FIFO> beside --amend, HEAD's message, through " + host.name + " that closes descriptors", host.dir,
-				"'" + git + "' commit -q --allow-empty -m msg && " + fifo("amend-fifo", `msg\n`) +
+				shellprefix.Literal(git) + " commit -q --allow-empty -m msg && " + fifo("amend-fifo", `msg\n`) +
 					`git commit -q --allow-empty --amend -t "$TMPDIR/amend-fifo"`,
 				"", false, "", "Aborting commit; you did not edit the message.", ""},
 			row{"-F <(printf msg) through " + host.name + " that closes descriptors", host.dir,
@@ -811,7 +812,7 @@ func TestGitWrapperAfterGivesAFifoMessageThroughAHostThatClosesDescriptors(t *te
 	closer, compiledCloser := t.TempDir(), t.TempDir()
 	closing := "#!" + bash + "\n" +
 		"for fd in /proc/self/fd/*; do n=${fd##*/}; if [ \"$n\" -gt 2 ] && [ \"$n\" != 255 ]; then eval \"exec $n>&-\"; fi; done\n" +
-		"exec '" + git + "' \"$@\"\n"
+		"exec " + shellprefix.Literal(git) + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(closer, "git"), []byte(closing), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -871,7 +872,7 @@ func TestGitWrapperAfterRunsAHostScriptWithNoInterpreterLine(t *testing.T) {
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	host := t.TempDir()
-	if err := os.WriteFile(filepath.Join(host, "git"), []byte("exec '"+git+"' \"$@\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(host, "git"), []byte("exec "+shellprefix.Literal(git)+" \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	sh, err := exec.LookPath("sh")

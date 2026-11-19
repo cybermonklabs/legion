@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
@@ -357,8 +358,8 @@ func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
 // never a line cut short.
 func TestAClaudeFinalSaveAtTheFloorGraceLandsOrKeepsTheLastPeriodicSave(t *testing.T) {
 	c := newClaudeRig(t, Config{StopGrace: shim.MinStopGrace})
-	script := fmt.Sprintf(`trap 'sleep %d; printf "{\"n\":\"last\"}\n" >> %q; exit 0' TERM; sleep 600 & wait`,
-		int(shim.DefaultGrace/time.Second), c.transcript)
+	script := "trap " + shellprefix.Literal(fmt.Sprintf(`sleep %d; printf "{\"n\":\"last\"}\n" >> %s; exit 0`,
+		int(shim.DefaultGrace/time.Second), shellprefix.Literal(c.transcript))) + " TERM; sleep 600 & wait"
 	c.launch(1, script, false)
 	write(t, c.transcript, "{\"n\":1}\n", time.Now())
 	c.awaitRow(c.transcript, "{\"n\":1}\n")

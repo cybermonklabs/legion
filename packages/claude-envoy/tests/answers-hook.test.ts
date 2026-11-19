@@ -13,6 +13,7 @@ import {
 } from "@legion/envoy-client/session-answers"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { buildBundles } from "../scripts/build"
+import { bunModuleDirectory, shellQuote } from "./channel-session-harness"
 
 // The answers hook as Claude Code runs it: the bundle `hooks.json` names
 // (`dist/session-hook.js answers`), its whole environment given, its input on stdin. One stand-in
@@ -24,7 +25,7 @@ let bundle = ""
 let bundleDirectory = ""
 
 beforeAll(async () => {
-  bundleDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-answers-bundle-"))
+  bundleDirectory = await bunModuleDirectory("claude-envoy-answers-bundle-")
   await buildBundles(bundleDirectory)
   bundle = join(bundleDirectory, "session-hook.js")
 }, 60_000)
@@ -184,12 +185,15 @@ async function eventually(check: () => boolean, what: string): Promise<void> {
  *  hook's code until a refresher has finished after that start (its outcome written, its lock
  *  gone), 15 s at most. The hook then finds that outcome at its first look, and starts a refresher
  *  of its own, so where a refresher's race with the hook's deadline would decide the case, this
- *  decides it. */
-async function preloadAfterRefresher(home: string, state: string, signal: string): Promise<string> {
+ *  decides it. Bun loads it as a module, so it is written where Bun can load one from
+ *  (`bunModuleDirectory`). */
+async function preloadAfterRefresher(state: string, signal: string): Promise<string> {
   const directory = join(state, "sessions", SESSION)
   const outcome = JSON.stringify(join(directory, "answers-refresh.json"))
   const lock = JSON.stringify(join(directory, "answers-refresh.lock"))
-  const preload = join(home, "after-refresher.ts")
+  const preloadDirectory = await bunModuleDirectory("claude-envoy-answers-preload-")
+  cleanup.push(() => rm(preloadDirectory, { recursive: true, force: true }))
+  const preload = join(preloadDirectory, "after-refresher.ts")
   await writeFile(
     preload,
     [
@@ -646,7 +650,7 @@ test("a refresher that met a Dispatch with no answers route hands the hook its n
   // As in the failing-command case: the waiting hook holds its code until the refresher the
   // starting hook starts has finished, so it carries that refresher's outcome.
   const ready = join(home, "ready")
-  const preload = await preloadAfterRefresher(home, state, ready)
+  const preload = await preloadAfterRefresher(state, ready)
   const waiting = runHook(env, sessionStart("resume", home), { preload })
   await eventually(() => existsSync(ready), "the waiting hook's start")
   const starting = await runHook(env, sessionStart("startup", home))
@@ -695,7 +699,7 @@ test("a `!` token command runs outside the hook: a quick one gives the bearer, a
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf late`,
+        token: `!while [ ! -e ${shellQuote(gate)} ]; do sleep 0.02; done; printf late`,
       },
     }),
   )
@@ -733,9 +737,12 @@ test("a `!` token command runs outside the hook: a quick one gives the bearer, a
   expect(await readdir(tmp)).toEqual([])
 }, 20_000)
 
-/** Processes whose command line holds `marker`, as `pgrep -f` finds them. */
+/** Processes whose command line holds `marker`, as `pgrep -f` finds them. Its pattern is an
+ *  extended regular expression, so each character with a meaning there is escaped: `marker` is
+ *  matched as written. */
 function processesWith(marker: string): string {
-  return Bun.spawnSync(["pgrep", "-f", marker]).stdout.toString().trim()
+  const written = marker.replace(/[.[\\()*+?{|^$]/g, "\\$&")
+  return Bun.spawnSync(["pgrep", "-f", written]).stdout.toString().trim()
 }
 
 /** Whether no refresher of the session runs for the project directory `home` (its command line
@@ -756,14 +763,14 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   const { home, state, config, tmp } = await scratch()
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
   // The command waits until the test opens the gate, a path no other process names: `pgrep -f`
-  // finds the command's shell by it.
+  // finds the command's shell by it, as the command quotes it.
   const gate = join(home, "gate")
   await writeFile(
     join(config, "envoy.json"),
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
+        token: `!while [ ! -e ${shellQuote(gate)} ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
       },
     }),
   )
@@ -778,12 +785,12 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   expectWithinDeadline(first)
   // The command outlives the hook, in the refresher the hook started (whose own bun start-up may
   // end after the hook did).
-  await eventually(() => processesWith(gate) !== "", "the command's start")
+  await eventually(() => processesWith(shellQuote(gate)) !== "", "the command's start")
 
   await writeFile(gate, "")
   await refresherFinished(state, firstSince)
   expect(await readdir(tmp)).toEqual([])
-  expect(processesWith(gate)).toBe("")
+  expect(processesWith(shellQuote(gate))).toBe("")
   expect(dispatch.requests).toEqual([`Bearer ${DISPATCH_TOKEN} /api/v1/agents/${SESSION}/answers`])
 
   await rm(gate)
@@ -796,7 +803,7 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   expectWithinDeadline(second)
   await writeFile(gate, "")
   await refresherFinished(state, secondSince)
-  expect(processesWith(gate)).toBe("")
+  expect(processesWith(shellQuote(gate))).toBe("")
 }, 20_000)
 
 test("with a slow token command, a list read from another Dispatch than envoy.json names now never stands in", async () => {
@@ -869,7 +876,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
     JSON.stringify({
       dispatch: {
         serverUrl: beforeUrl,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
+        token: `!while [ ! -e ${shellQuote(gate)} ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
       },
     }),
   )
@@ -882,7 +889,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
 
   // The refresher resolves envoy.json before its command runs: once the command runs, it reads
   // `before` whatever envoy.json names next.
-  await eventually(() => processesWith(gate) !== "", "the command's start")
+  await eventually(() => processesWith(shellQuote(gate)) !== "", "the command's start")
 
   // envoy.json now names another Dispatch. A hook starts while the refresher runs; it opens the
   // gate once its process has started and holds its code until the refresher has read `before`
@@ -891,7 +898,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
     envoyJson,
     JSON.stringify({ dispatch: { serverUrl: now.base, token: "!printf now-token" } }),
   )
-  const preload = await preloadAfterRefresher(home, state, gate)
+  const preload = await preloadAfterRefresher(state, gate)
   const context = contextOf(
     await runHook(env, sessionStart("resume", home), { preload }),
     "SessionStart",
@@ -933,7 +940,7 @@ test("a token command that fails gives the hook its error, not a Dispatch envoy.
   // has finished, so it finds that refresher's outcome at its first look; the starting hook,
   // started once the waiting one runs, starts that refresher.
   const ready = join(home, "ready")
-  const preload = await preloadAfterRefresher(home, state, ready)
+  const preload = await preloadAfterRefresher(state, ready)
   const waiting = runHook(env, sessionStart("resume", home), { preload })
   await eventually(() => existsSync(ready), "the waiting hook's start")
   const starting = await runHook(env, sessionStart("startup", home))
@@ -1031,7 +1038,7 @@ test("a list read for the Dispatch envoy.json names stands in even when a refres
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${sameToken}`,
+        token: `!while [ ! -e ${shellQuote(gate)} ]; do sleep 0.02; done; printf ${sameToken}`,
       },
     }),
   )
@@ -1066,7 +1073,7 @@ test("hooks started together run a slow token command once", async () => {
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!printf 'run\\n' >> '${runs}'; sleep 1.5; printf ${DISPATCH_TOKEN}`,
+        token: `!printf 'run\\n' >> ${shellQuote(runs)}; sleep 1.5; printf ${DISPATCH_TOKEN}`,
       },
     }),
   )

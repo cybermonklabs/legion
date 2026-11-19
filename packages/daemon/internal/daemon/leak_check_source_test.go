@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // leakCheckTag is the tag these tests read the check at, spelled as the worker image pins one.
@@ -333,7 +334,7 @@ func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) 
 					githubtest.Unexpected(t, w, r)
 				}
 			}})
-			tokens := appauth.New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", TokenCommand: broker.command}},
+			tokens := appauth.New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", TokenCommand: shellprefix.Word(broker.command)}},
 				appauth.Options{BaseURL: github.URL, HTTPClient: github.Client(), Stderr: io.Discard})
 
 			served, err := leakCheckSource(tokens, github.URL).Get(context.Background(), leakCheckTag)

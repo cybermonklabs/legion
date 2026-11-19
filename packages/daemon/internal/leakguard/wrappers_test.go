@@ -53,7 +53,7 @@ func wrapperCopy(t *testing.T, dir, name string, repointed ...[2]string) string 
 // lets an argument holding a newline be read back whole.
 func logging(t *testing.T, path, log string) string {
 	t.Helper()
-	script := "#!/bin/sh\nprintf '%s\\0' \"$@\" >> '" + log + "'\nexit 0\n"
+	script := "#!/bin/sh\nprintf '%s\\0' \"$@\" >> " + shQuote(log) + "\nexit 0\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestTheGitWrappersHooksPathOutranksTheCallersOwn(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv")
 	script := wrapperCopy(t, dir, "git", [2]string{
-		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), log),
+		"real=/usr/bin/git", "real=" + shQuote(logging(t, filepath.Join(dir, "stand-in-git"), log)),
 	})
 	run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
 	const callers = "/tmp/a-hooks-path-of-the-callers-own"
@@ -111,7 +111,7 @@ func TestTheGitWrapperPassesANonPushThroughByteForByte(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv")
 	script := wrapperCopy(t, dir, "git", [2]string{
-		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), log),
+		"real=/usr/bin/git", "real=" + shQuote(logging(t, filepath.Join(dir, "stand-in-git"), log)),
 	})
 	run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
 	want := []string{"-c", "core.hooksPath=/tmp/x", "--git-dir", "/tmp/repo/.git", "status", "--porcelain", "--no-verify"}
@@ -133,7 +133,7 @@ func TestTheGitWrapperHandsACommitToLegionGit(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv")
 	script := wrapperCopy(t, dir, "git", [2]string{
-		"legion=/opt/legion/bin/legion", "legion=" + logging(t, filepath.Join(dir, "stand-in-legion"), log),
+		"legion=/opt/legion/bin/legion", "legion=" + shQuote(logging(t, filepath.Join(dir, "stand-in-legion"), log)),
 	})
 	run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
 	if out, err := run.Try(dir, script, "-C", dir, "commit", "-m", "x"); err != nil {
@@ -160,8 +160,8 @@ func TestTheGitWrapperRoutesEachCommandByItsSubcommand(t *testing.T) {
 			gitLog, legionLog := filepath.Join(dir, "argv"), filepath.Join(dir, "legion-argv")
 			git := logging(t, filepath.Join(dir, "stand-in-git"), gitLog)
 			script := wrapperCopy(t, dir, "git",
-				[2]string{"real=/usr/bin/git", "real=" + git},
-				[2]string{"legion=/opt/legion/bin/legion", "legion=" + logging(t, filepath.Join(dir, "stand-in-legion"), legionLog)},
+				[2]string{"real=/usr/bin/git", "real=" + shQuote(git)},
+				[2]string{"legion=/opt/legion/bin/legion", "legion=" + shQuote(logging(t, filepath.Join(dir, "stand-in-legion"), legionLog))},
 			)
 			run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
 			if out, err := run.Try(dir, append([]string{script}, tc.Args...)...); err != nil {
@@ -203,7 +203,7 @@ func TestTheGitWrapperPassesTwentyThousandArgumentsOfANonPushThroughWithoutARebu
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv")
 	script := wrapperCopy(t, dir, "git", [2]string{
-		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), log),
+		"real=/usr/bin/git", "real=" + shQuote(logging(t, filepath.Join(dir, "stand-in-git"), log)),
 	})
 	run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
 	const count, bound = 20_000, 10 * time.Second
@@ -268,7 +268,7 @@ func TestTheGitWrapperPutsItsHooksPathAfterTheCallersGlobalOptions(t *testing.T)
 			dir := t.TempDir()
 			log := filepath.Join(dir, "argv")
 			script := wrapperCopy(t, dir, "git", [2]string{
-				"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), log),
+				"real=/usr/bin/git", "real=" + shQuote(logging(t, filepath.Join(dir, "stand-in-git"), log)),
 			})
 			run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
 			if out, err := run.Try(dir, append([]string{script}, tc.args...)...); err != nil {
@@ -299,11 +299,11 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 	// The git wrapper, under the name and in the directory the jj wrapper looks for on PATH: the
 	// jj wrapper's first check is that the git jj would shell out to is that wrapper.
 	gitWrapper := wrapperCopy(t, bin, "git", [2]string{
-		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), filepath.Join(dir, "argv")),
+		"real=/usr/bin/git", "real=" + shQuote(logging(t, filepath.Join(dir, "stand-in-git"), filepath.Join(dir, "argv"))),
 	})
 	script := wrapperCopy(t, dir, "jj",
 		[2]string{"real=/usr/local/bin/jj", "real=" + jj},
-		[2]string{"wrapper=/opt/legion/bin/git", "wrapper=" + gitWrapper},
+		[2]string{"wrapper=/opt/legion/bin/git", "wrapper=" + shQuote(gitWrapper)},
 	)
 	// A configuration file naming another git, for the --config-file spelling.
 	configFile := filepath.Join(dir, "another.toml")

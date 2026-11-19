@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // standIn writes, as omp under dir, a script that embeds the natives list lines (in the format the
@@ -34,7 +36,7 @@ func TestTheNativesCacheRunsOmpOnceAndEveryHomeLinksTheOneCopy(t *testing.T) {
 	dir := t.TempDir()
 	runs := filepath.Join(dir, "runs")
 	omp := standIn(t, dir, []string{`{ variant: "default", filename: "pi_natives.test.node", size: 6 },`},
-		"echo run >>"+runs+"\nmkdir -p \"$HOME/.omp/natives/9.9.9\"\nprintf native >\"$HOME/.omp/natives/9.9.9/pi_natives.test.node\"\n")
+		"echo run >>"+shellprefix.Literal(runs)+"\nmkdir -p \"$HOME/.omp/natives/9.9.9\"\nprintf native >\"$HOME/.omp/natives/9.9.9/pi_natives.test.node\"\n")
 	root := filepath.Join(dir, "cache")
 	digest, _, err := readBinary(omp)
 	if err != nil {
@@ -97,8 +99,8 @@ func TestANativesFillShortOfAnEmbeddedSizeCachesNothing(t *testing.T) {
 		`{ variant: "modern", filename: "pi_natives.test-modern.node", size: 6 },`,
 		`{ variant: "baseline", filename: "pi_natives.test-baseline.node", size: 8 },`,
 	}, "natives=\"$HOME/.omp/natives/9.9.9\"\nmkdir -p \"$natives\"\n"+
-		"if [ -e "+runs+" ]; then printf modern >\"$natives/pi_natives.test-modern.node\"; "+
-		"else printf mod >\"$natives/pi_natives.test-modern.node\"; fi\necho run >>"+runs+"\n")
+		"if [ -e "+shellprefix.Literal(runs)+" ]; then printf modern >\"$natives/pi_natives.test-modern.node\"; "+
+		"else printf mod >\"$natives/pi_natives.test-modern.node\"; fi\necho run >>"+shellprefix.Literal(runs)+"\n")
 	root := filepath.Join(dir, "cache")
 	digest, _, err := readBinary(omp)
 	if err != nil {
@@ -169,7 +171,7 @@ func TestANativesFillThatExtractsNothingCachesNothing(t *testing.T) {
 func TestANativesFillRefusesABinaryThatListsNoEmbeddedNatives(t *testing.T) {
 	dir := t.TempDir()
 	runs := filepath.Join(dir, "runs")
-	omp := standIn(t, dir, nil, "echo run >>"+runs+"\nmkdir -p \"$HOME/.omp/natives/9.9.9\"\nprintf native >\"$HOME/.omp/natives/9.9.9/pi_natives.test.node\"\n")
+	omp := standIn(t, dir, nil, "echo run >>"+shellprefix.Literal(runs)+"\nmkdir -p \"$HOME/.omp/natives/9.9.9\"\nprintf native >\"$HOME/.omp/natives/9.9.9/pi_natives.test.node\"\n")
 	if _, err := fillNativesCache(filepath.Join(dir, "cache"), omp); err == nil || !strings.Contains(err.Error(), "lists no embedded natives") {
 		t.Fatalf("the fill of a binary that lists no natives = %v, want it refused", err)
 	}

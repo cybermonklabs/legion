@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -84,7 +85,7 @@ func TestClaudeBridgeEndsWithItsFramesUnread(t *testing.T) {
 	if err := os.WriteFile(toolCall, []byte(line), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	p := startClaudeBridge(t, "cat "+toolCall+"\ntouch \"$CLAUDE_STANDIN_READY\"\nexec sleep 300\n", stdout)
+	p := startClaudeBridge(t, "cat "+shellprefix.Literal(toolCall)+"\ntouch \"$CLAUDE_STANDIN_READY\"\nexec sleep 300\n", stdout)
 	p.awaitFull("the bridge's stdout full, the shim reading none of it", shim)
 	state, left := p.hangUp()
 	if code := state.ExitCode(); code != 128+int(syscall.SIGTERM) {
@@ -120,8 +121,9 @@ func TestClaudeBridgeHoldsClaudeCodeWhileTheShimPauses(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer shim.Close()
-	p := startClaudeBridge(t, "trap 'echo TERM >>"+signals+"' TERM\ntrap 'echo HUP >>"+signals+"' HUP\n"+
-		"touch \"$CLAUDE_STANDIN_READY\"\ncat "+stream+"\n", stdout)
+	p := startClaudeBridge(t, "trap "+shellprefix.Literal("echo TERM >>"+shellprefix.Literal(signals))+" TERM\n"+
+		"trap "+shellprefix.Literal("echo HUP >>"+shellprefix.Literal(signals))+" HUP\n"+
+		"touch \"$CLAUDE_STANDIN_READY\"\ncat "+shellprefix.Literal(stream)+"\n", stdout)
 	// The bridge holds its own copy: the shim's end reads to its end once the bridge exits.
 	_ = stdout.Close()
 	p.await("the bridge holding Claude Code's output for the shim", func() bool {

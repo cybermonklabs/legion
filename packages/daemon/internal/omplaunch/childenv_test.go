@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // `mise where` starts without either raw NATS seed the daemon holds.
@@ -17,7 +18,7 @@ func TestMiseWhereGetsNoNATSSeed(t *testing.T) {
 	dir := t.TempDir()
 	dump := filepath.Join(dir, "env")
 	mise := filepath.Join(dir, "mise")
-	if err := os.WriteFile(mise, []byte("#!/bin/sh\nenv >"+dump+"\necho "+dir+"\n"), 0o755); err != nil {
+	if err := os.WriteFile(mise, []byte("#!/bin/sh\nenv >"+shellprefix.Literal(dump)+"\necho "+shellprefix.Literal(dir)+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = resolveMiseOmp(mise, "github:acme/omp@1") // the tool dir has no omp; the environment is the point

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/testtmp"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -32,6 +33,9 @@ func vmReadingText(role, container string, usage, throttled int64, cpuMax string
 	return fmt.Sprintf("role %s\ncontainer %s\nusage_usec %d\nthrottled_usec %d\ncpu_max %s\nmemory_current %d\ninactive_file %d\nend\n",
 		role, container, usage, throttled, cpuMax, memory, inactive)
 }
+
+// shellQuote is s as one single-quoted shell word, each ' in it closed, escaped and reopened.
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
 // vmCollect parses text as one target's stream, stamping each reading with the next of ats.
 func vmCollect(t *testing.T, target *vmTarget, text string, ats ...time.Time) []cgroupSample {
@@ -270,7 +274,9 @@ func TestVMSampleRunsTheEmbeddedScript(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	shim := filepath.Join(dir, "ssh-shim")
+	// vm-sample splits -ssh on spaces, the command and its arguments being one flag by design, so
+	// the shim sits where its path holds no space, wherever TMPDIR is.
+	shim := filepath.Join(testtmp.Without(t, "", " \t\n"), "ssh-shim")
 	if err := os.WriteFile(shim, []byte("#!/bin/sh\nshift\nexec \"$@\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -370,8 +376,9 @@ func vmWholeSamples(path string) []cgroupSample {
 func TestVMSampleRestartsADeadSSH(t *testing.T) {
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "ssh-calls")
-	fake := filepath.Join(dir, "fake-ssh")
-	script := "#!/bin/sh\ncat >/dev/null\necho \"$@\" >>" + calls + "\n" +
+	// vm-sample splits -ssh on spaces (TestVMSampleRunsTheEmbeddedScript says why the fake sits apart).
+	fake := filepath.Join(testtmp.Without(t, "", " \t\n"), "fake-ssh")
+	script := "#!/bin/sh\ncat >/dev/null\necho \"$@\" >>" + shellQuote(calls) + "\n" +
 		"cat <<'EOF'\n" + vmReadingText("dispatch", "dispatch", 7, 0, "1600000 100000", 11, 1) + "EOF\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

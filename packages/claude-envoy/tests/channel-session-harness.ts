@@ -7,6 +7,9 @@
  * the rest of this package's tests do, rather than one file per entry point.
  */
 import { randomBytes } from "node:crypto"
+import { mkdir, mkdtemp, realpath } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { isAbsolute, join, relative, sep } from "node:path"
 import type { DeliveryCapability } from "@legion/contracts"
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
@@ -353,6 +356,66 @@ export function observedClient(client: FakeClient): {
  */
 export function useScratchState(): TemporaryDirectoryMaker {
   return temporaryDirectories("claude-envoy-state")
+}
+
+/** `path` as one single-quoted shell word: each `'` in it closes the quote, is escaped, and
+ * reopens it. */
+export function shellQuote(path: string): string {
+  return `'${path.replaceAll("'", "'\\''")}'`
+}
+
+/** This package's own base for `bunModuleDirectory`, git-ignored with every `.cache`. */
+const bunModuleCache = join(import.meta.dir, "..", ".cache", "test-bun")
+/** The repository this package is in, which `bunModuleDirectory` keeps out of when asked to. */
+const repositoryRoot = join(import.meta.dir, "..", "..", "..")
+
+/** Whether `path` is `root` or under it; both are real paths. */
+function isInside(root: string, path: string): boolean {
+  const fromRoot = relative(root, path)
+  return !(fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot))
+}
+
+/**
+ * A fresh directory, `prefix` and six random characters, for files Bun loads as modules: a built
+ * bundle, a `--preload` file, a plugin's dist/. Bun loads no module from a path that holds a '?',
+ * in any form: it answers "Module not found". So the directory is made under the first base that
+ * holds no '?' and takes a directory, os.tmpdir() and then this package's `.cache/test-bun`, and
+ * with neither it throws, naming what each base answered. The caller removes it when its test
+ * ends.
+ *
+ * `outsideRepository` is for a check that a module runs with no node_modules to resolve from,
+ * which any directory inside the repository has above it, so the check could not fail there: the
+ * bases are then os.tmpdir() and /tmp, each taken only when it is outside the repository, and
+ * never `.cache/test-bun`.
+ */
+export async function bunModuleDirectory(
+  prefix: string,
+  options: { readonly outsideRepository?: boolean } = {},
+): Promise<string> {
+  const outside = options.outsideRepository === true
+  const answers: string[] = []
+  for (const base of outside ? [tmpdir(), "/tmp"] : [tmpdir(), bunModuleCache]) {
+    if (base.includes("?")) {
+      answers.push(`${base} holds a '?'`)
+      continue
+    }
+    try {
+      if (outside) {
+        const [real, root] = await Promise.all([realpath(base), realpath(repositoryRoot)])
+        if (isInside(root, real)) {
+          answers.push(`${base} is inside the repository (${root})`)
+          continue
+        }
+      }
+      if (base === bunModuleCache) await mkdir(base, { recursive: true })
+      return await mkdtemp(join(base, prefix))
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      answers.push(`${base} took no directory: ${reason}`)
+    }
+  }
+  const where = outside ? " outside the repository" : ""
+  throw new Error(`no directory Bun can load a module from${where}: ${answers.join("; ")}`)
 }
 
 /**

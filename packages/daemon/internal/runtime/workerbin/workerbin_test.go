@@ -169,7 +169,7 @@ func TestInstallWritesTheGitWrapperWhereTheImagesGitDoesNotLeadPath(t *testing.T
 			if err != nil {
 				t.Fatalf("git: %v", err)
 			}
-			if want := "#!/bin/sh\nexec '/opt/legion state/legion' git --after '" + bin + "' -- \"$@\"\n"; string(contents) != want {
+			if want := "#!/bin/sh\nexec '/opt/legion state/legion' git --after " + shellprefix.Literal(bin) + " -- \"$@\"\n"; string(contents) != want {
 				t.Fatalf("git = %q, want %q", contents, want)
 			}
 			if info, err := os.Stat(script); err != nil {

@@ -575,12 +575,18 @@ func plantWorkspaceConfig(t *testing.T, dir, toml string) {
 	}
 }
 
+// tomlString is value as one TOML basic string: a TOML literal string ('…') ends at a `'` the
+// test's temporary directory may hold, and a basic string escapes only `\` and `"` here.
+func tomlString(value string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
+}
+
 // plantFilter makes every changed .txt file of the working copy at dir pass through a clean filter
 // that runs probe(what), and changes one.
 func (rig *initRig) plantFilter(dir, what string) {
 	rig.t.Helper()
 	filter := rig.script(what, "exec cat")
-	plantWorkspaceConfig(rig.t, dir, "[git.filter]\nenabled = true\n[git.filter.drivers.planted]\nclean = ['"+filter+"']\nsmudge = ['cat']\nrequired = false\n")
+	plantWorkspaceConfig(rig.t, dir, "[git.filter]\nenabled = true\n[git.filter.drivers.planted]\nclean = ["+tomlString(filter)+"]\nsmudge = ['cat']\nrequired = false\n")
 	for name, body := range map[string]string{".gitattributes": "*.txt filter=planted\n", "planted.txt": "changed\n"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 			rig.t.Fatal(err)
@@ -597,7 +603,7 @@ func (rig *initRig) plantGit(clone string) {
 		rig.t.Fatal(err)
 	}
 	planted := rig.script("git", "exec "+shellprefix.Literal(git)+` "$@"`)
-	plantWorkspaceConfig(rig.t, clone, "[git]\nexecutable-path = '"+planted+"'\n")
+	plantWorkspaceConfig(rig.t, clone, "[git]\nexecutable-path = "+tomlString(planted)+"\n")
 }
 
 // gitHooks is every hook githooks(5) names.
@@ -712,7 +718,10 @@ func TestWhatAnIssuePlantsNeitherReadsTheProvisioningTokenNorOutlivesItsPod(t *t
 			plant: func(rig *initRig, pod *rigPod) {
 				command := rig.script("ext", "exit 1")
 				rig.git(pod.clone(), "config", "protocol.ext.allow", "always")
-				rig.git(pod.clone(), "config", "url.ext::"+command+" %S.insteadOf", "https://github.com/"+boundaryRepo)
+				// git-remote-ext splits its command on unescaped spaces and reads `% ` as a space
+				// and `%%` as a '%', so the path under the test's temporary directory is escaped so.
+				escaped := strings.NewReplacer("%", "%%", " ", "% ").Replace(command)
+				rig.git(pod.clone(), "config", "url.ext::"+escaped+" %S.insteadOf", "https://github.com/"+boundaryRepo)
 			},
 			live: func(rig *initRig, pod *rigPod) { rig.git(pod.clone(), "ls-remote", "origin") },
 		},

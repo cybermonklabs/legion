@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -558,7 +559,7 @@ func TestTheLeakCheckInstallsVerificationIsHeldFromThePodsReaperWhileItRuns(t *t
 	pinLeakCheck(t, leakCheckPin)
 	marks := t.TempDir()
 	pidFile, release := filepath.Join(marks, "pid"), filepath.Join(marks, "release")
-	check := "echo $$ >'" + pidFile + "'\nwhile [ ! -e '" + release + "' ]; do sleep 0.01; done\n" + leakguardtest.AnswersHelp(os.DevNull)
+	check := "echo $$ >" + shellprefix.Literal(pidFile) + "\nwhile [ ! -e " + shellprefix.Literal(release) + " ]; do sleep 0.01; done\n" + leakguardtest.AnswersHelp(os.DevNull)
 	frames := slicedLeakCheck(t, leakCheckPin, packedLeakCheck(t, check))
 	guard := &pidGuard{}
 	managers, err := newManagers(Config{RolesDir: testerRolesDir(t), Roles: []string{"tester"}, Stdout: io.Discard, Stderr: io.Discard,

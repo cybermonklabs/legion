@@ -140,6 +140,10 @@
     "./test/skills-guard": {
       "types": "./test/skills-guard.ts",
       "bun": "./test/skills-guard.ts"
+    },
+    "./test/test-paths": {
+      "types": "./test/test-paths.ts",
+      "bun": "./test/test-paths.ts"
     }
   },
   "scripts": {

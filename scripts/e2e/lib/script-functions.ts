@@ -1,5 +1,10 @@
-import { readFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import {
+  type TemporaryDirectoryMaker,
+  temporaryDirectories,
+} from "@legion/test-fixtures/temporary-directories";
 
 /**
  * Reads the shell script at `path` once and returns `fn`, which gives the definition of the
@@ -69,4 +74,55 @@ export function expectNoMissingHelpers(...outputs: string[]): void {
         "extracts call: add each one beside them"
     );
   }
+}
+
+/** `text` as one single-quoted shell word: each `'` in it is closed, escaped and reopened. */
+export function shellQuote(text: string): string {
+  return `'${text.replaceAll("'", "'\\''")}'`;
+}
+
+// The characters lib/github-apps.sh (app_token_dir_ok), lib/install-key-file-model-route.sh and
+// lib/install-model-gateway.sh admit in a directory whose path they write into a credential
+// command or an Oh My Pi `!command` word. They refuse any other character by design, so a test
+// that hands them a directory under a TMPDIR named with a space, a `?` or a `'` would only ever
+// meet that refusal.
+const plainPath = /^[A-Za-z0-9_./-]+$/;
+
+/**
+ * temporaryDirectories(prefix) under the first base whose real path holds only the characters
+ * those scripts admit and that takes a directory: os.tmpdir(), then scripts/e2e's own
+ * .cache/test-paths (git-ignored through `.cache`), made only when it is reached. Each directory
+ * the maker makes is removed when its test ends. Call it where temporaryDirectories is called, and
+ * use it only for the directories those scripts write into a command or a config: every other path
+ * stays under os.tmpdir(), so the quoting of the rest is still tested there. With no base that
+ * qualifies it throws, naming what each base answered, and the file fails: it never skips.
+ */
+export function plainPathDirectories(prefix: string): TemporaryDirectoryMaker {
+  const bases: [string, () => string][] = [
+    ["os.tmpdir()", () => realpathSync(tmpdir())],
+    [
+      "scripts/e2e/.cache/test-paths",
+      () => join(realpathSync(join(import.meta.dir, "..")), ".cache", "test-paths"),
+    ],
+  ];
+  const answers: string[] = [];
+  for (const [name, resolve] of bases) {
+    try {
+      const root = resolve();
+      if (!plainPath.test(root)) {
+        answers.push(`${name} is ${root}, which holds a character other than [A-Za-z0-9_./-]`);
+        continue;
+      }
+      mkdirSync(root, { recursive: true });
+      accessSync(root, constants.W_OK | constants.X_OK);
+      return temporaryDirectories(prefix, { root });
+    } catch (error) {
+      answers.push(
+        `${name} takes no directory: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  throw new Error(
+    `no base for the ${prefix} directories holds only [A-Za-z0-9_./-] and takes a directory: ${answers.join("; ")}`
+  );
 }

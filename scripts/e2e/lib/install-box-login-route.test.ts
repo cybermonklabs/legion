@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { shellQuote } from "./script-functions";
 
 // The box-login route's own installer, against a fake operator home in a temp directory: never the
 // real ~/.omp. Its one outside call is `mise ls --global --json`, faked here by a `mise` first on
@@ -400,7 +401,7 @@ describe("a box-login run's teardown", () => {
       [
         "bash",
         "-c",
-        `trap 'sleep 0.3; touch ${JSON.stringify(graceful)}; exit 0' TERM; echo ready; while :; do sleep 0.1; done`,
+        `trap ${shellQuote(`sleep 0.3; touch ${JSON.stringify(graceful)}; exit 0`)} TERM; echo ready; while :; do sleep 0.1; done`,
       ],
       { stdout: "pipe" }
     );

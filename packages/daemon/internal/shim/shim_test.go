@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -1342,7 +1343,7 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 			// wrapper looking jj up on PATH never finds this one again.
 			record := filepath.Join(t.TempDir(), "jj-commands")
 			bin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\" >> "+record+"\nPATH=\"${PATH#*:}\" exec "+jj+" \"$@\"\n"), 0o700); err != nil {
+			if err := os.WriteFile(filepath.Join(bin, "jj"), []byte("#!/bin/sh\nprintf '%s\\n' \"$1\" >> "+shellprefix.Literal(record)+"\nPATH=\"${PATH#*:}\" exec "+shellprefix.Literal(jj)+" \"$@\"\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1496,7 +1497,9 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 		// script is the PATH's jj, given the real jj and the lock.
 		script func(jj, lock string) string
 	}{
-		{"jj's own index write", func(jj, _ string) string { return "#!/bin/sh\nPATH=\"${PATH#*:}\" exec " + jj + " \"$@\"\n" }},
+		{"jj's own index write", func(jj, _ string) string {
+			return "#!/bin/sh\nPATH=\"${PATH#*:}\" exec " + shellprefix.Literal(jj) + " \"$@\"\n"
+		}},
 		{"a git jj ran", func(_, lock string) string {
 			return "#!/bin/sh\necho \"fatal: Unable to create '" + lock + "': File exists.\" >&2\nexit 1\n"
 		}},

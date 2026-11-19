@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { StallCall, StallWatchdogLog } from "@legion/pi-shared/stall-watchdog";
+import { shellQuote } from "@legion/pi-shared/test/test-paths";
 import {
   readStallProcesses,
   type StallProcessScan,
@@ -98,8 +99,8 @@ test("the first step ends the stuck call's own processes, and only those", async
       [
         // Wave one: what the agent started before the call. The runners are among them,
         // because a runner is what the tool keeps between calls.
-        `PI_SESSION_FILE='${SESSION_FILE}' /usr/bin/python3 -u '${ownRunner}' & echo own-runner $!`,
-        `PI_SESSION_FILE='${OTHER_SESSION_FILE}' /usr/bin/python3 -u '${subRunner}' & echo sub-runner $!`,
+        `PI_SESSION_FILE='${SESSION_FILE}' /usr/bin/python3 -u ${shellQuote(ownRunner)} & echo own-runner $!`,
+        `PI_SESSION_FILE='${OTHER_SESSION_FILE}' /usr/bin/python3 -u ${shellQuote(subRunner)} & echo sub-runner $!`,
         "sleep 300 & echo before $!",
         // The gap the call's execution is placed in.
         "sleep 1",

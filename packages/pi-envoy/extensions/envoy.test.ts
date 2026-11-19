@@ -88,8 +88,10 @@ import {
   subscribeLegionNotice,
 } from "@legion/pi-shared/role-claim-bridge";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
+import { moduleBase, shellQuote } from "@legion/pi-shared/test/test-paths";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
@@ -5279,7 +5281,7 @@ describe("envoy OMP extension", () => {
           dispatch: {
             enabled: true,
             serverUrl: "https://old.dispatch.example",
-            token: `!touch ${marker}; echo old-token`,
+            token: `!touch ${shellQuote(marker)}; echo old-token`,
           },
         })
       );
@@ -5536,10 +5538,14 @@ describe("envoy OMP extension", () => {
         lookup: (id: string) => settingHandles.get(id),
       }));
     };
+    /** Where `standInDispatch` puts its `dispatch`, whose shebang is bun, so the directory's path
+     * holds no '?' (test-paths.ts). */
+    const makeDispatchBin = temporaryDirectories("envoy-dispatch-bin", {
+      root: moduleBase(import.meta.dir),
+    });
     /** A stand-in `dispatch` whose --dry-run prints its flags as JSON, first on PATH for the call. */
     const standInDispatch = () => {
-      const bin = join(configDirectory, "bin");
-      mkdirSync(bin);
+      const bin = makeDispatchBin();
       writeFileSync(
         join(bin, "dispatch"),
         `#!${process.execPath}

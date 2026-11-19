@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // installedOnBoth is namedTokens with the App installed on both accounts of the configured pair:
@@ -148,9 +149,9 @@ func bothInstalledGh(t *testing.T) func(t *testing.T, args ...string) (int, stri
 			t.Fatal(err)
 		}
 	}
-	write("legion", "#!/bin/sh\n"+testMainEnv+"=1 exec '"+os.Args[0]+"' \"$@\"\n")
-	write("gh", "#!/bin/sh\nexec '"+filepath.Join(bin, "legion")+"' gh \"$@\"\n")
-	write("real-gh", "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --help|-h|help|--version) exec '"+gh+"' \"$@\";; esac; done\n"+
+	write("legion", "#!/bin/sh\n"+testMainEnv+"=1 exec "+shellprefix.Literal(os.Args[0])+" \"$@\"\n")
+	write("gh", "#!/bin/sh\nexec "+shellprefix.Literal(filepath.Join(bin, "legion"))+" gh \"$@\"\n")
+	write("real-gh", "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --help|-h|help|--version) exec "+shellprefix.Literal(gh)+" \"$@\";; esac; done\n"+
 		"case \"$*\" in *'--jq .visibility'*) echo private; exit 0;; esac\n"+
 		"sed -n 's/^    oauth_token: //p' \"$GH_CONFIG_DIR/hosts.yml\"\n")
 	home := t.TempDir()

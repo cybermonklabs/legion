@@ -590,6 +590,9 @@ func (c configCase) file(name, text string) string {
 
 func (c configCase) config(text string) { c.env("AWS_CONFIG_FILE", c.file("config", text)) }
 
+// shellQuote is s as one single-quoted shell word, each ' in it closed, escaped and reopened.
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+
 func (c configCase) credentials(text string) {
 	c.env("AWS_SHARED_CREDENTIALS_FILE", c.file("credentials", text))
 }
@@ -809,9 +812,10 @@ func TestAWSASeedInTheAWSConfigurationIsRefusedBeforeAnyCall(t *testing.T) {
 		}, want: profile("example", "credential_source"), clean: "Environment", reach: true},
 		{name: "credential_process", setup: func(c configCase, v string) {
 			c.noEnvCredentials()
-			process := c.file("process", "#!/bin/sh\nprintf '%s' \"$*\" > '"+filepath.Join(c.dir, "process-ran")+"'\nexit 1\n")
+			process := c.file("process", "#!/bin/sh\nprintf '%s' \"$*\" > "+shellQuote(filepath.Join(c.dir, "process-ran"))+"\nexit 1\n")
 			require.NoError(c.t, os.Chmod(process, 0o700))
-			c.config("[default]\ncredential_process = " + process + " " + v + "\n")
+			// The SDK runs credential_process with sh -c.
+			c.config("[default]\ncredential_process = " + shellQuote(process) + " " + v + "\n")
 		}, want: profile("default", "credential_process"), clean: "clean", reach: true},
 		{name: "web_identity_token_file", setup: func(c configCase, v string) {
 			c.noEnvCredentials()

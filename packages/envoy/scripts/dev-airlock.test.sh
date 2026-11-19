@@ -310,9 +310,13 @@ stop_stack() {
 
 # exported reads one "export NAME=value" line of dev-airlock.sh's own banner: the last such
 # line in the log, since dev-broker.sh's banner, printed first, exports some of the same names
-# for its own broker.
+# for its own broker. It reads the line as the shell that sources it does: both banners print
+# each path with printf %q, so the line is evaluated, in a subshell, rather than cut at its "=".
 exported() {
-  grep -oE "export $1=[^[:space:]]+" "$log" | tail -n1 | cut -d= -f2- || true
+  local line
+  line="$(grep -oE "export $1=.*" "$log" | tail -n1 || true)"
+  [[ -n "$line" ]] || return 0
+  (eval "${line#export }" && printf '%s' "${!1}") || true
 }
 
 # --- The default run: two brokers. ---

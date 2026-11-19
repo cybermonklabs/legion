@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -86,9 +87,12 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"role_config_files.<role> entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, top: "role_config_files: {tester: [/etc/legion-fallback/fallback.yml]}\n"}.refuse(t)
 	},
+	// A fixture names a path under the test's temporary directory as a YAML double-quoted string:
+	// in a flow collection, a plain scalar ends or turns into an indicator at a '?', ',' or ']' the
+	// directory may hold.
 	"role_config_files.<role> names <file>, which the <role>'s Oh My Pi could not read: …": func(t *testing.T) string {
 		missing := filepath.Join(t.TempDir(), "missing.yml")
-		return refusalFile{top: "role_config_files: {implementer: [" + missing + "]}\n"}.refuse(t)
+		return refusalFile{top: "role_config_files: {implementer: [" + strconv.Quote(missing) + "]}\n"}.refuse(t)
 	},
 	"role_config_files.<role> …": func(t *testing.T) string {
 		return refusalFile{top: "role_config_files: {implementer: []}\n"}.refuse(t)
@@ -112,7 +116,7 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	},
 	"projects.<KEY>.memory.config_files names <file>, which a memory-group role's Oh My Pi could not read: …": func(t *testing.T) string {
 		missing := filepath.Join(t.TempDir(), "missing.yml")
-		return refusalFile{project: "    memory: {mode: on, config_files: [" + missing + "]}\n"}.refuse(t)
+		return refusalFile{project: "    memory: {mode: on, config_files: [" + strconv.Quote(missing) + "]}\n"}.refuse(t)
 	},
 	"projects.<KEY>.memory.config_files …": func(t *testing.T) string {
 		return refusalFile{project: "    memory: {mode: on, config_files: [/etc/legion-operator/memory.yml, /etc/legion-operator/memory.yml]}\n"}.refuse(t)
@@ -123,7 +127,7 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 		if err := os.WriteFile(overlay, []byte("retry:\n  modelFallback: true\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		return refusalFile{project: "    memory: {mode: on, config_files: [" + overlay + "], instructions: " + missing + "}\n"}.refuse(t)
+		return refusalFile{project: "    memory: {mode: on, config_files: [" + strconv.Quote(overlay) + "], instructions: " + strconv.Quote(missing) + "}\n"}.refuse(t)
 	},
 	// The declared experiments. `experiments` is read on the project as the `memory` block is, so
 	// each of these is one project key and the kubernetes base only where a pod mount is in view.
@@ -178,7 +182,7 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 			t.Fatal(err)
 		}
 		return refusalFile{project: "    experiments: {plan-length: {mode: random, variants: [{name: long, config_files: [" +
-			overlay + "], instructions: " + missing + "}, {name: control}]}}\n"}.refuse(t)
+			strconv.Quote(overlay) + "], instructions: " + strconv.Quote(missing) + "}, {name: control}]}}\n"}.refuse(t)
 	},
 	`projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    commit_issue_trailer_repos: [acme]\n"}.refuse(t)

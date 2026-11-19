@@ -30,6 +30,10 @@ const PROFILE_TOKEN = fixtureSecret("profile");
 const USER_TOKEN = fixtureSecret("user");
 /** The Dispatch bearer a checkout's `.envoy/envoy.json` names. */
 const REPO_TOKEN = fixtureSecret("repo");
+/** `value` as one single-quoted shell word, each `'` in it closed, escaped and reopened. */
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
 
 /** Writes the neutral file, `$HOME/.config/legion/envoy.json`, which a command reads when it is
  * handed no file and runs under no harness. Returns its path. */
@@ -697,7 +701,10 @@ describe("sessionDispatchUrl", () => {
     const home = tempDir();
     const marker = path.join(home, "ran");
     writeUserConfig(home, {
-      dispatch: { serverUrl: "http://dispatch.test/", token: `!touch '${marker}'; printf t` },
+      dispatch: {
+        serverUrl: "http://dispatch.test/",
+        token: `!touch ${shellQuote(marker)}; printf t`,
+      },
     });
     const env = { HOME: home };
     const file = sessionConfigFile("command", env);

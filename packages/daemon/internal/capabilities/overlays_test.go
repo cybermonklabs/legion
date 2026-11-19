@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // OverlayEntries leaves out the empty entries Oh My Pi leaves out.
@@ -44,7 +46,7 @@ func TestCheckOverlaysRefusesOnlyANonZeroExit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	img := Image{Launch: omp, Env: []string{"PATH=" + os.Getenv("PATH"), "PI_CONFIG_FILES=/elsewhere.yml"}, WorkDir: dir}
+	img := Image{Launch: shellprefix.Literal(omp), Env: []string{"PATH=" + os.Getenv("PATH"), "PI_CONFIG_FILES=/elsewhere.yml"}, WorkDir: dir}
 	for _, tc := range []struct {
 		name          string
 		overlays, own []string
@@ -82,7 +84,7 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	img := Image{Launch: omp, Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
+	img := Image{Launch: shellprefix.Literal(omp), Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
 	got, err := CheckOverlays(context.Background(), img, []string{slow, bad}, []string{slow, bad})
 	if want := "Oh My Pi refuses " + bad + ": error: Failed to parse config overlay " + bad; got != want {
 		t.Errorf("CheckOverlays refused %q, want %q", got, want)

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
+	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
@@ -39,7 +40,10 @@ func imageOmp(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "omp")
 	script := `#!/bin/sh
-if [ -n "${LEGION_TEST_SEEN:-}" ]; then
+# url is a path as a file: URL, percent-encoded as Oh My Pi's import.meta.url encodes it
+# (testbin.FileURLShell), so a reader that parses the URL reads back the whole path. It runs no
+# other program: the image's PATH here names only the image's stubs.
+` + testbin.FileURLShell + `if [ -n "${LEGION_TEST_SEEN:-}" ]; then
   first=${PI_CONFIG_FILES%%:*}
   if [ -n "$first" ] && [ -f "$first" ]; then written=written; else written=absent; fi
   printf '%s %s %s\n' "${PI_CONFIG_FILES:-none}" "$written" "${OMP_SESSION_STORAGE:-unset}" >>"$LEGION_TEST_SEEN"
@@ -49,8 +53,8 @@ case "$*" in
 "models --extension "*" --extension "*" --extension "*" --json")
   envoy=$(cd "$3" && pwd -P)
   root=$(cd "$5" && pwd -P)
-  printf 'LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://%s/dist/legion.js\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n' "$root" >&2
-  printf 'LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=file://%s/dist/envoy.js\nLEGION_ENVOY_PUBLISHER=file://%s/dist/envoy.js\n' "$envoy" "$envoy" >&2
+  printf 'LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=%s\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n' "$(url "$root/dist/legion.js")" >&2
+  printf 'LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=%s\nLEGION_ENVOY_PUBLISHER=%s\n' "$(url "$envoy/dist/envoy.js")" "$(url "$envoy/dist/envoy.js")" >&2
   if [ -n "${LEGION_PROMPT_AGENTS:-}" ]; then echo LEGION_PROMPT_AGENTS=resolved >&2; fi
   if [ -n "${LEGION_PROMPT_AGENTS:-}" ] && [ -z "${LEGION_SKIP_AGENT_MODELS:-}" ]; then echo LEGION_AGENT_MODELS=resolved >&2; fi
   if [ -n "${LEGION_PROMPT_SKILLS:-}" ]; then echo LEGION_PROMPT_SKILLS=resolved >&2; fi ;;
@@ -594,12 +598,15 @@ func TestProbeImageWithPodSafetyProbesOnThePodsBaseline(t *testing.T) {
 			}
 			sessions := map[string]int{}
 			for _, run := range runs {
-				fields := strings.Fields(run)
-				if len(fields) != 3 || !tc.overlays.MatchString(fields[0]+" "+fields[1]) {
+				// The record is PI_CONFIG_FILES, whether its first overlay exists, and
+				// OMP_SESSION_STORAGE, a space apart: the overlays are paths, which hold a space
+				// wherever the test's temporary directory does, so the record is read from its end.
+				last := strings.LastIndexByte(run, ' ')
+				if last < 0 || strings.LastIndexByte(run[:last], ' ') < 0 || !tc.overlays.MatchString(run[:last]) {
 					t.Errorf("a probe ran Oh My Pi with %q, want %s", run, tc.overlays)
 					continue
 				}
-				sessions[fields[2]]++
+				sessions[run[last+1:]]++
 			}
 			if want := map[string]int{tc.sessions: len(runs) - 1, "legion-launch-probe": 1}; !maps.Equal(sessions, want) {
 				t.Errorf("the probes ran Oh My Pi with OMP_SESSION_STORAGE %v, want %v: the session-storage probe's own value once, %q otherwise", sessions, want, tc.sessions)

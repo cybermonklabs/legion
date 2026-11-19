@@ -23,7 +23,7 @@ import (
 // the transcript's, not a launch that could not start.
 func TestThePinnedOhMyPiRefusesToResumeAClaudeCodeTranscript(t *testing.T) {
 	omp := testbin.OMP(t)
-	dir := t.TempDir()
+	dir := testbin.OMPDir(t, omp)
 	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")
 	testbin.OMPHome(t, omp, home)
 	// A profile whose one model is an operator's provider that nothing listens on: RPC mode starts

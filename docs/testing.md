@@ -278,6 +278,26 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   `os.MkdirTemp` whose first argument is a string literal naming a directory, anywhere in that
   module's tests. It reads no other shape: a directory named by a variable or a constant, or an
   `os.CreateTemp`, is left to review.
+- A test whose tool cannot take a character in a path takes its directory from
+  `testtmp.Without(t, longest, chars)`: `Dir`'s directory, whose path also holds none of `chars`.
+  Bun, which Oh My Pi runs on, loads no module from a path holding a `?`, so every path a test hands
+  the real Oh My Pi comes from `testbin.OMPDir` (`WithoutAccepting` for `?`, only under a base a
+  hardlink from the natives cache reaches, with `TMPDIR` pointed at the directory).
+  `agent-secrets-helper install` refuses an executable or socket path its unit would have to
+  escape, and `vm-sample` splits `-ssh` on whitespace, so their tests' rigs take theirs from
+  `Without` too, each for those characters alone. `Without` tries `TMPDIR`, then its closest
+  ancestor that holds none of `chars`, then the module's own `.cache/testtmp`, then `/tmp`, and
+  fails the test naming what each base answered when none qualifies. Its `.cache` base sits inside
+  the checkout, so a test whose module must resolve nothing from the repository's `node_modules`
+  refuses that base in its accept check, and no test that builds a repository of its own takes its
+  directory from `Without`.
+- A test whose fake writes shell text quotes every temporary path in it as one shell word
+  (`shellprefix.Literal` or `shellprefix.Word` in the daemon module, a single-quote helper in the
+  envoy module and in TypeScript), and a fake that reports where Oh My Pi loaded a module from
+  writes the `file:` URL percent-encoded, as Oh My Pi does (`testbin.FileURL` in Go, and
+  `testbin.FileURLShell`, which encodes the same bytes, in a fake's shell). Before you call such a
+  test done, run it with `TMPDIR` and `GOTMPDIR` under a directory named `tmp with space`, one named
+  `tmp-q?x` and one named `tmp-sq'x`, as well as under a plain one.
 - Two kinds of site keep a directory of their own on purpose.
   `packages/daemon/internal/shim/socketpath_test.go`'s `roleTempDir` builds a deliberately long
   one, as long as the `TMPDIR` a Legion role is told, so that its test proves sockets still bind

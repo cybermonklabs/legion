@@ -32,6 +32,7 @@ import {
   LEGION_BINARY,
   writeProcEntry,
 } from "./multi-repo-proc-tree";
+import { shellQuote } from "./script-functions";
 
 // second-owner proves, from inside the issue's pod and as the role's own agent process, that the
 // role's GitHub credential reads T and is served the receive-pack advertisement for both O, the
@@ -195,7 +196,7 @@ function roleBin(): string {
 
 // git is never run by the probes: this one records its arguments and fails.
 function fakeRoleGit(bin: string, record: string): void {
-  fakeBin(bin, "git", `printf '%s\\n' "$*" >>'${record}'\nexit 1`);
+  fakeBin(bin, "git", `printf '%s\\n' "$*" >>${shellQuote(record)}\nexit 1`);
 }
 
 function roleEnviron(bin: string, home: string, pathPrefix?: string): Record<string, string> {
@@ -509,7 +510,7 @@ describe("second-owner: the role's credential, resolved once, reaching another o
       const planted = join(newWork(), "planted");
       mkdirSync(planted, { recursive: true });
       const marker = join(newWork(), "planted-ran");
-      const record = `echo "$0" >>'${marker}'`;
+      const record = `echo "$0" >>${shellQuote(marker)}`;
       // These would forge both probes: one token for every repository, and T's name for any read.
       fakeBin(
         planted,

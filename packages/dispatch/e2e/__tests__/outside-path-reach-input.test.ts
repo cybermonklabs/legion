@@ -460,8 +460,9 @@ describe.concurrent("outside-path-reach.sh", () => {
             })
           )
         );
+        // The path is the test's own temporary directory's, which may hold a space.
         expect(verdict(directory)).toMatch(
-          /^UNKNOWN: OUTSIDE_PATH_TARGETS names \S+, which this device could not read whole: .*read error: 0: Is a directory$/
+          /^UNKNOWN: OUTSIDE_PATH_TARGETS names .+, which this device could not read whole: .*read error: 0: Is a directory$/
         );
         expect(directory.code).toBe(2);
         expect(verdict(missing)).toEndWith(

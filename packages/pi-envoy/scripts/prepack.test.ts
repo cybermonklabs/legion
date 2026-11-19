@@ -1,10 +1,18 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
 import { stageSkills } from "@legion/pi-shared/test/skills-guard";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { outsideModuleDirectory, shellQuote } from "@legion/pi-shared/test/test-paths";
 
 const PACKAGE_ROOT = path.resolve(import.meta.dir, "..");
 const REPO_ROOT = path.resolve(PACKAGE_ROOT, "../..");
@@ -108,9 +116,16 @@ describe("the dispatch CLI the package ships", () => {
     // installed plugin unpacks.
     const dist = path.join(PACKAGE_ROOT, "dist");
     let distWasBuilt = false;
-    const work = temporaryDirectory("pi-envoy-pack");
+    // The unpacked bin/dispatch runs its bundle with bun, so the directory's path holds no '?'; and
+    // it sits outside the repository, so the bundle resolves no package from the repository's
+    // node_modules and the row reads only what the tarball carries (test-paths.ts).
+    const work = outsideModuleDirectory("pi-envoy-pack-");
     let tarball = "";
     let unpacked = "";
+    // The PATH bin/dispatch runs under: its `bun` is this Bun with auto-install off
+    // (`--no-install`), so a package the bundle does not carry is not fetched in its place and the
+    // run fails as it would on a machine with no registry to reach.
+    let noInstallPath = "";
 
     beforeAll(async () => {
       // The pack builds `dist/`, which .gitignore hides, so `git status` would never report it
@@ -136,10 +151,40 @@ describe("the dispatch CLI the package ships", () => {
       expect(
         Bun.spawnSync(["tar", "xzf", tarball, "-C", unpacked, "--strip-components=1"]).exitCode
       ).toBe(0);
+      const bin = path.join(work, "no-install-bin");
+      mkdirSync(bin);
+      writeFileSync(
+        path.join(bin, "bun"),
+        `#!/bin/sh\nexec ${shellQuote(process.execPath)} --no-install "$@"\n`
+      );
+      chmodSync(path.join(bin, "bun"), 0o755);
+      noInstallPath = `${bin}:${process.env.PATH ?? ""}`;
     }, 120_000);
 
     afterAll(() => {
       if (!distWasBuilt) rmSync(dist, { recursive: true, force: true });
+    });
+
+    // The control for the row below: the same bin/dispatch over a bundle that imports a package it
+    // does not carry fails under that PATH, where plain bun would install the package and pass.
+    test("a bin/dispatch whose bundle lacks a package fails under that PATH", () => {
+      const plugin = path.join(work, "lacking");
+      mkdirSync(path.join(plugin, "bin"), { recursive: true });
+      mkdirSync(path.join(plugin, "dist"), { recursive: true });
+      writeFileSync(
+        path.join(plugin, "bin/dispatch"),
+        readFileSync(path.join(unpacked, "bin/dispatch"))
+      );
+      chmodSync(path.join(plugin, "bin/dispatch"), 0o755);
+      writeFileSync(
+        path.join(plugin, "dist/dispatch.js"),
+        'import isNumber from "is-number";\nconsole.log(isNumber(1));\n'
+      );
+      const run = Bun.spawnSync([path.join(plugin, "bin/dispatch")], {
+        env: { PATH: noInstallPath, HOME: work },
+      });
+      expect(run.exitCode).not.toBe(0);
+      expect(run.stderr.toString()).toContain("is-number");
     });
 
     test("carries an executable bin/dispatch that runs the bundled CLI", async () => {
@@ -151,7 +196,7 @@ describe("the dispatch CLI the package ships", () => {
       expect(await readdir(path.join(unpacked, "bin"))).toEqual(["dispatch"]);
       const help = Bun.spawnSync([path.join(unpacked, "bin/dispatch"), "--help"], {
         env: {
-          PATH: process.env.PATH ?? "",
+          PATH: noInstallPath,
           HOME: work,
           DISPATCH_HOST: "omp",
           DISPATCH_SESSION_ID: "pack-check",

@@ -26,7 +26,7 @@ import (
 // list would fail both the value and the list.
 func TestEveryRolesOhMyPiHasAsyncAndAutoBackgroundOnInAPodAndInAPane(t *testing.T) {
 	omp := testbin.OMP(t)
-	dir := t.TempDir()
+	dir := testbin.OMPDir(t, omp)
 	home := filepath.Join(dir, "home")
 	testbin.OMPHome(t, omp, home)
 	// The working directory a role's Oh My Pi starts in, with no settings of its own, so the two

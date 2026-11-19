@@ -19,10 +19,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
+	"github.com/sjawhar/legion/daemon/internal/testbin"
 )
 
 // manifestAt is where the tests' pi-legion manifest goes under a plugins root, and envoyManifestAt
@@ -269,7 +272,8 @@ func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
 }
 
 // fakeOmp is an `omp` that answers the load probe by a plan, one step per attempt (the last step
-// repeats), and records each attempt's argv, environment, and the probe file it was handed.
+// repeats), and records each attempt's argv (one NUL-terminated argument after another),
+// environment, and the probe file it was handed.
 type fakeOmp struct {
 	dir, path, prefix string
 }
@@ -281,36 +285,38 @@ func newFakeOmp(t *testing.T, plan ...string) fakeOmp {
 		t.Fatalf("write the plan: %v", err)
 	}
 	script := `#!/bin/sh
-dir=` + dir + `
+dir=` + shellprefix.Literal(dir) + `
 n=$(( $(cat "$dir/count" 2>/dev/null || echo 0) + 1 ))
 # Renamed into place: the test reads this file while a later attempt writes it, and a plain
 # redirection truncates before it writes, so the reader can see it empty.
 echo "$n" >"$dir/count.$n" && mv "$dir/count.$n" "$dir/count"
-printf '%s\n' "$*" >"$dir/argv.$n"
+printf '%s\0' "$@" >"$dir/argv.$n"
 env >"$dir/env.$n"
 cp "$3" "$dir/probe.$n"
 step=$(sed -n "${n}p" "$dir/plan")
 [ -n "$step" ] || step=$(tail -n 1 "$dir/plan")
 # Where a real Oh My Pi reports each plugin loaded from: the real path of the legion.js or envoy.js
-# the profile links, as import.meta.url renders it (symlinks resolved, a cache-busting query
-# appended). Every yes-* step loads pi-legion from the profile speaking interface 1; what it says
-# of pi-envoy, and of the pre-split package, is the step's own.
-root="$HOME/.omp"
+# the profile links, as import.meta.url renders it (symlinks resolved, the path percent-encoded as
+# url.pathToFileURL encodes it, a cache-busting query appended; url is testbin.FileURLShell).
+# Every yes-* step loads pi-legion from the profile speaking interface 1; what it says of pi-envoy,
+# and of the pre-split package, is the step's own. The reports go out through printf's %b, so a
+# '%' the encoding writes is not read as a conversion.
+` + testbin.FileURLShell + `root="$HOME/.omp"
 [ -n "${OMP_PROFILE:-}" ] && root="$root/profiles/$OMP_PROFILE"
 installed=$(cd "$root/plugins/node_modules/@sjawhar/pi-legion" 2>/dev/null && pwd -P)
 envoy=$(cd "$root/plugins/node_modules/@sjawhar/pi-envoy" 2>/dev/null && pwd -P)
-legion="LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$installed/dist/legion.js?mtime=1\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n"
-with_envoy="LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=file://$envoy/dist/envoy.js?mtime=1\n"
+legion="LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=$(url "$installed/dist/legion.js")?mtime=1\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n"
+with_envoy="LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=$(url "$envoy/dist/envoy.js")?mtime=1\n"
 case "$step" in
-yes) printf "$legion$with_envoy" >&2; exit 0 ;;
-yes-then-linger) printf "$legion$with_envoy" >&2; sleep 30 & echo $! >"$dir/lingering.pid"; exit 0 ;;
-yes-elsewhere) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$HOME/elsewhere/dist/legion.js?mtime=1\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
-yes-unowned) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$HOME/unowned/legion.js\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
+yes) printf '%b' "$legion$with_envoy" >&2; exit 0 ;;
+yes-then-linger) printf '%b' "$legion$with_envoy" >&2; sleep 30 & echo $! >"$dir/lingering.pid"; exit 0 ;;
+yes-elsewhere) printf '%b' "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=$(url "$HOME/elsewhere/dist/legion.js")?mtime=1\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
+yes-unowned) printf '%b' "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=$(url "$HOME/unowned/legion.js")\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
 # No pi-envoy; a skill asked for is missing too, so a test can see which refusal wins.
-yes-no-envoy) printf "${legion}LEGION_ENVOY_INTERFACE=none\n" >&2; [ -z "${LEGION_PROMPT_SKILLS:-}" ] || echo "LEGION_PROMPT_SKILLS_MISSING=$LEGION_PROMPT_SKILLS" >&2; exit 0 ;;
-yes-envoy-mismatch) printf "${legion}LEGION_ENVOY_INTERFACE=2\nLEGION_ENVOY_LOADED_FROM=file://$envoy/dist/envoy.js?mtime=1\n" >&2; exit 0 ;;
-yes-legacy) printf "$legion${with_envoy}LEGION_LEGACY_PLUGIN_LOADED_FROM=file://$HOME/legacy/dist/legion.js?mtime=1\n" >&2; exit 0 ;;
-yes-envoy-elsewhere) printf "${legion}LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=file://$HOME/envoy-elsewhere/dist/envoy.js?mtime=1\n" >&2; exit 0 ;;
+yes-no-envoy) printf '%b' "${legion}LEGION_ENVOY_INTERFACE=none\n" >&2; [ -z "${LEGION_PROMPT_SKILLS:-}" ] || echo "LEGION_PROMPT_SKILLS_MISSING=$LEGION_PROMPT_SKILLS" >&2; exit 0 ;;
+yes-envoy-mismatch) printf '%b' "${legion}LEGION_ENVOY_INTERFACE=2\nLEGION_ENVOY_LOADED_FROM=$(url "$envoy/dist/envoy.js")?mtime=1\n" >&2; exit 0 ;;
+yes-legacy) printf '%b' "$legion${with_envoy}LEGION_LEGACY_PLUGIN_LOADED_FROM=$(url "$HOME/legacy/dist/legion.js")?mtime=1\n" >&2; exit 0 ;;
+yes-envoy-elsewhere) printf '%b' "${legion}LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=$(url "$HOME/envoy-elsewhere/dist/envoy.js")?mtime=1\n" >&2; exit 0 ;;
 yes-then-die) echo LEGION_PLUGIN_LOADED=yes >&2; echo "database is locked" >&2; exit 1 ;;
 yes-then-killed) echo LEGION_PLUGIN_LOADED=yes >&2; kill -KILL $$ ;;
 no) echo LEGION_PLUGIN_LOADED=no >&2; exit 0 ;;
@@ -357,6 +363,23 @@ func (f fakeOmp) read(t *testing.T, name string) string {
 	return string(raw)
 }
 
+// argv is the arguments attempt n ran Oh My Pi with, read whole whatever the paths in them hold.
+func (f fakeOmp) argv(t *testing.T, n int) []string {
+	t.Helper()
+	return strings.Split(strings.TrimSuffix(f.read(t, "argv."+strconv.Itoa(n)), "\x00"), "\x00")
+}
+
+// invocation is f's omp as the gate is handed it: an OMP invocation is a shell fragment, each path
+// in it quoted for the shell (omplaunch.ResolveInvocation), so a temporary directory whose name
+// holds a space or a glob character still names the one file.
+func (f fakeOmp) invocation() string { return shellprefix.Word(f.path) }
+
+// launchShown is the launch command f's prefix and omp make, as a refusal's %q shows it.
+func (f fakeOmp) launchShown() string {
+	shown := strconv.Quote(omplaunch.WithPrefix([]string{f.prefix}, f.invocation()))
+	return shown[1 : len(shown)-1]
+}
+
 // gateUnder is a gate over a pane environment whose HOME holds a pi-legion manifest declaring
 // legion (raw JSON) and a pi-envoy manifest beside it, each installed as `omp plugin install`
 // installs it — the profile's package directory a link to the unpacked plugin — run through f with
@@ -380,7 +403,7 @@ func gateUnder(t *testing.T, f fakeOmp, legion string) (pluginGate, *bytes.Buffe
 			"XDG_DATA_HOME": filepath.Join(home, "state", "home", ".local", "share"),
 		},
 		workDir:    t.TempDir(),
-		invocation: f.path,
+		invocation: f.invocation(),
 		prefix:     []string{f.prefix},
 		timeout:    1500 * time.Millisecond,
 		retry:      bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 40 * time.Millisecond},
@@ -485,7 +508,7 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 	envoy, _ := filepath.EvalSymlinks(filepath.Dir(envoyManifestAt(filepath.Join(gate.env["HOME"], ".omp", "profiles", "gate"))))
 	for _, want := range []string{
 		`msg="boot gate: pi-legion speaks this daemon's contract and loads with pi-envoy"`,
-		"daemonApiVersion=3", "envoyInterface=1", `envoyFrom="file://` + envoy + `/dist/envoy.js?mtime=1"`,
+		"daemonApiVersion=3", "envoyInterface=1", `envoyFrom="` + testbin.FileURL(envoy+"/dist/envoy.js") + `?mtime=1"`,
 	} {
 		if !strings.Contains(logged.String(), want) {
 			t.Errorf("the gate's log lacks %q:\n%s", want, logged.String())
@@ -495,7 +518,7 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 	if n := f.attempts(t); n != 1 {
 		t.Fatalf("Oh My Pi ran %d times, want once", n)
 	}
-	argv := strings.Fields(f.read(t, "argv.1"))
+	argv := f.argv(t, 1)
 	if len(argv) != 4 || argv[0] != "models" || argv[1] != "--extension" || argv[3] != "--json" {
 		t.Errorf("omp argv = %q, want models --extension <probe> --json", argv)
 	}
@@ -685,7 +708,7 @@ func TestTheLoadProbeRefusesAPluginAtAnotherEnvoyInterface(t *testing.T) {
 	err := gate.verify(context.Background())
 
 	envoy, _ := filepath.EvalSymlinks(filepath.Dir(envoyManifestAt(filepath.Join(gate.env["HOME"], ".omp", "profiles", "gate"))))
-	want := "pi-envoy at file://" + envoy + "/dist/envoy.js?mtime=1 publishes plugin interface 2; pi-legion speaks 1: install both releases built from this daemon's commit into OMP profile gate"
+	want := "pi-envoy at " + testbin.FileURL(envoy+"/dist/envoy.js") + "?mtime=1 publishes plugin interface 2; pi-legion speaks 1: install both releases built from this daemon's commit into OMP profile gate"
 	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
 	}
@@ -703,7 +726,7 @@ func TestTheLoadProbeRefusesAPluginBesideTheOldPackage(t *testing.T) {
 
 	err := gate.verify(context.Background())
 
-	want := "a pane of OMP profile gate still loads @sjawhar/pi-legion-envoy from file://" + gate.env["HOME"] + "/legacy/dist/legion.js?mtime=1: run `OMP_PROFILE=gate omp plugin uninstall @sjawhar/pi-legion-envoy`"
+	want := "a pane of OMP profile gate still loads @sjawhar/pi-legion-envoy from " + testbin.FileURL(gate.env["HOME"]+"/legacy/dist/legion.js") + "?mtime=1: run `OMP_PROFILE=gate omp plugin uninstall @sjawhar/pi-legion-envoy`"
 	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
 	}
@@ -779,7 +802,7 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 			if err == nil {
 				t.Fatal("the gate passed a launch that failed")
 			}
-			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", f.prefix + " " + f.path, "secrets: ANTHROPIC_API_KEY was denied"} {
+			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", f.launchShown(), "secrets: ANTHROPIC_API_KEY was denied"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal does not say %q: %v", want, err)
 				}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -14,7 +15,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
+	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // The load probe resolves every task agent and skill Legion's prompts name through the real Oh My
@@ -24,7 +27,11 @@ import (
 // settings included, since a session drops a skill they disable or ignore. The profile's one model
 // is an operator's provider nothing listens on, so no credential the machine carries decides the
 // run (no probe here makes a model call). The Envoy plugin is the test fixture's, publishing the
-// interface as the real one does; the real one loads in TestTheRealPluginsOnTheRealOhMyPi.
+// interface as the real one does; the real one loads in TestTheRealPluginsOnTheRealOhMyPi. Every
+// path the test hands Oh My Pi sits under testbin.OMPDir rather than the caller's TMPDIR: Bun,
+// which Oh My Pi runs on, loads no module from a path holding a '?', so under such a TMPDIR the
+// pinned Oh My Pi loads neither its natives nor a plugin. cybermonklabs/oh-my-pi#46 fixes the
+// natives; a plugin under such a path still cannot load, and its error then names Bun's limit.
 func TestThePromptReferenceProbeOnTheRealOhMyPi(t *testing.T) {
 	omp := testbin.OMP(t)
 	noAgent := "finds no task agent thermonuclear-deep-review (dispatched by dist/skills/legion-worker/SKILL.md)"
@@ -48,7 +55,7 @@ func TestThePromptReferenceProbeOnTheRealOhMyPi(t *testing.T) {
 			settings: "skills:\n  ignoredSkills:\n    - thermonuclear-deep-review\n", refusal: noRubric},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := testbin.OMPDir(t, omp)
 			home := filepath.Join(dir, "home")
 			testbin.OMPHome(t, omp, home)
 			root, envoyRoot := referencePlugin(t, dir, testCase.agent, testCase.rubric), testEnvoyPlugin(t, dir, nil)
@@ -84,12 +91,12 @@ func TestThePromptReferenceProbeOnTheRealOhMyPi(t *testing.T) {
 			log := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 			var err error
 			if testCase.onPod {
-				err = ProbeImage(context.Background(), ImageProbe{Omp: omp, Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot, RoleReferences: promptrefs.New(), Log: log})
+				err = ProbeImage(context.Background(), ImageProbe{Omp: shellprefix.Word(omp), Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot, RoleReferences: promptrefs.New(), Log: log})
 			} else {
 				installPlugins(t, omp, environ, envoyRoot, root)
 				// A pane loads the plugins through discovery, as the daemon's boot gate on tmux
 				// probes it.
-				err = pluginGate{env: env, workDir: dir, invocation: omp, timeout: defaultProbeTimeout, retry: bootprobe.Image,
+				err = pluginGate{env: env, workDir: dir, invocation: shellprefix.Word(omp), timeout: defaultProbeTimeout, retry: bootprobe.Image,
 					contract: 3, log: log}.verify(context.Background())
 			}
 
@@ -129,7 +136,12 @@ func installPlugins(t *testing.T, omp string, environ []string, roots ...string)
 // reads are the ones the entries write.
 func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 	omp := testbin.OMP(t)
-	envoy, legion := packedPlugin(t, "pi-envoy", "envoy"), packedPlugin(t, "pi-legion", "legion")
+	// The packed plugins sit outside the checkout as well as off a '?' path, so Oh My Pi resolves
+	// none of their imports from the repository's node_modules: a bundle missing a dependency fails
+	// here as it would where it is installed.
+	checkout := filepath.Join("..", "..", "..", "..")
+	plugins := testtmp.WithoutAccepting(t, "", "?", func(dir string) error { return outsideCheckout(checkout, dir) })
+	envoy, legion := packedPlugin(t, plugins, "pi-envoy", "envoy"), packedPlugin(t, plugins, "pi-legion", "legion")
 	for _, testCase := range []struct {
 		name      string
 		installed []string
@@ -142,7 +154,7 @@ func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 		{"both", []string{envoy, legion}, []string{"LEGION_PLUGIN_LOADED=yes\n", "LEGION_PLUGIN_ENVOY_INTERFACE=5\n", "LEGION_ENVOY_INTERFACE=5\n"}, ""},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := testbin.OMPDir(t, omp)
 			home := filepath.Join(dir, "home")
 			testbin.OMPHome(t, omp, home)
 			agentDir := filepath.Join(home, ".omp", "profiles", "legion", "agent")
@@ -181,7 +193,7 @@ func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 			// The gate, in a pane's lane, against the contract the packed pi-legion declares: this
 			// daemon's. The image build's probe skips the agents' models, and so does this, since
 			// the profile configures none of the roles the shipped agents name.
-			gate := pluginGate{env: env, workDir: dir, invocation: omp, timeout: defaultProbeTimeout, retry: bootprobe.Image,
+			gate := pluginGate{env: env, workDir: dir, invocation: shellprefix.Word(omp), timeout: defaultProbeTimeout, retry: bootprobe.Image,
 				contract: api.DaemonAPIVersion, skipAgentModels: true, log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
 			err := gate.verify(context.Background())
 			switch {
@@ -197,14 +209,58 @@ func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 	}
 }
 
+// outsideCheckout answers why dir will not do for a module that must resolve nothing from
+// checkout's node_modules: it is the checkout or below it. The two are compared by their real
+// paths, so a symlink into the checkout, or a checkout reached through one, counts.
+func outsideCheckout(checkout, dir string) error {
+	root, err := filepath.EvalSymlinks(checkout)
+	if err != nil {
+		return fmt.Errorf("the checkout %s has no real path: %w", checkout, err)
+	}
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return fmt.Errorf("%s has no real path: %w", dir, err)
+	}
+	if rel, err := filepath.Rel(root, real); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("it is inside the checkout %s, whose node_modules would resolve what the plugins must carry", root)
+	}
+	return nil
+}
+
+// A directory inside the checkout is refused whether it is named by its own path or through a
+// symlink from outside, and a directory outside it is taken.
+func TestOutsideCheckoutComparesRealPaths(t *testing.T) {
+	root := t.TempDir()
+	checkout, outside := filepath.Join(root, "checkout"), filepath.Join(root, "outside")
+	for _, dir := range []string{filepath.Join(checkout, ".cache", "x"), outside} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(filepath.Join(checkout, ".cache"), alias); err != nil {
+		t.Fatal(err)
+	}
+	for dir, inside := range map[string]bool{
+		filepath.Join(checkout, ".cache", "x"): true,
+		filepath.Join(alias, "x"):              true,
+		checkout:                               true,
+		outside:                                false,
+	} {
+		if err := outsideCheckout(checkout, dir); (err != nil) != inside {
+			t.Errorf("outsideCheckout(%s) = %v, want refused %t", dir, err, inside)
+		}
+	}
+}
+
 // packedPlugin packs the plugin under packages/<name> as its release is packed — the committed
 // manifest's `omp.extensions` rewritten to the one built bundle, dist/<entry>.js, then `bun pm
 // pack`, which runs the package's prepack (the build, the notices, the staged skills) — and
-// unpacks the tarball into a directory of the test's, which it answers. The rewrite is in place,
-// since bun packs the manifest it finds, so the committed manifest is restored byte for byte
-// whatever the pack did, and no two packs of one package may run at once; the one test that packs
-// does so one package after the other.
-func packedPlugin(t *testing.T, name, entry string) string {
+// unpacks the tarball into base, a directory of the test's (testbin.OMPDir), which it answers. The
+// rewrite is in place, since bun packs the manifest it finds, so the committed manifest is
+// restored byte for byte whatever the pack did, and no two packs of one package may run at once;
+// the one test that packs does so one package after the other.
+func packedPlugin(t *testing.T, base, name, entry string) string {
 	t.Helper()
 	pkg := filepath.Join("..", "..", "..", name)
 	path := filepath.Join(pkg, "package.json")
@@ -224,7 +280,8 @@ func packedPlugin(t *testing.T, name, entry string) string {
 	if err := os.WriteFile(path, rewritten, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out := t.TempDir()
+	out := filepath.Join(base, "pack-"+name)
+	mkdir(t, out)
 	pack := exec.Command("bun", "pm", "pack", "--destination", out, "--quiet")
 	pack.Dir = pkg
 	output, packErr := pack.CombinedOutput()
@@ -238,7 +295,7 @@ func packedPlugin(t *testing.T, name, entry string) string {
 	if err != nil || len(tarballs) != 1 {
 		t.Fatalf("bun pm pack wrote %v (%v), want one tarball", tarballs, err)
 	}
-	unpacked := filepath.Join(t.TempDir(), name)
+	unpacked := filepath.Join(base, name)
 	mkdir(t, unpacked)
 	if output, err := exec.Command("tar", "xzf", tarballs[0], "-C", unpacked, "--strip-components=1").CombinedOutput(); err != nil {
 		t.Fatalf("unpack %s: %v\n%s", tarballs[0], err, output)

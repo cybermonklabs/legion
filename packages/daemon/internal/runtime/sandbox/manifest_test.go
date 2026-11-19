@@ -705,7 +705,7 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 	sink := filepath.Join(dir, "ran")
 	recorder := func(name string) string {
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\necho "+name+" >> '"+sink+"'\n"), 0o755); err != nil {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\necho "+name+" >> "+shellQuote(sink)+"\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return path
@@ -721,7 +721,10 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 		}
 	}
 	home, configHome, clone := filepath.Join(dir, "home"), filepath.Join(dir, "config"), filepath.Join(dir, "clone")
-	planted := "[core]\n\tfsmonitor = " + monitor + "\n\thooksPath = " + hooks + "\n"
+	// git hands core.fsmonitor to a shell, so the program is a quoted word, held in the file as a
+	// double-quoted value with each `\` and `"` escaped. git runs a hook by its path alone.
+	fsmonitor := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(shellQuote(monitor))
+	planted := "[core]\n\tfsmonitor = \"" + fsmonitor + "\"\n\thooksPath = " + hooks + "\n"
 	if err := os.MkdirAll(filepath.Join(configHome, "git"), 0o755); err != nil {
 		t.Fatal(err)
 	}

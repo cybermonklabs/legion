@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 )
 
@@ -45,7 +46,7 @@ func plantHooks(t *testing.T, dir, sink string) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\nprintf '%s token-file=%s\\n' \"${0##*/}\" \"$LEGION_PROVISIONING_TOKEN_FILE\" >> '" + sink + "'\nexit 0\n"
+	script := "#!/bin/sh\nprintf '%s token-file=%s\\n' \"${0##*/}\" \"$LEGION_PROVISIONING_TOKEN_FILE\" >> " + shellprefix.Literal(sink) + "\nexit 0\n"
 	for _, hook := range gitHooks {
 		if err := os.WriteFile(filepath.Join(dir, hook), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
@@ -110,7 +111,8 @@ func TestProvisionRunsNoHookTheTreePlanted(t *testing.T) {
 		{"under a core.hooksPath GIT_CONFIG_PARAMETERS names", func(t *testing.T, _, sink string) {
 			hooks := filepath.Join(t.TempDir(), "hooks")
 			plantHooks(t, hooks, sink)
-			t.Setenv("GIT_CONFIG_PARAMETERS", "'core.hooksPath'='"+hooks+"'")
+			// git reads GIT_CONFIG_PARAMETERS with the shell's single-quote rules.
+			t.Setenv("GIT_CONFIG_PARAMETERS", "'core.hooksPath'="+shellprefix.Literal(hooks))
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -128,7 +130,7 @@ func TestProvisionRunsNoHookTheTreePlanted(t *testing.T) {
 func recordingScript(t *testing.T, what, sink, tail string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), what)
-	script := "#!/bin/sh\nprintf '" + what + " token-file=%s\\n' \"$LEGION_PROVISIONING_TOKEN_FILE\" >> '" + sink + "'\n" + tail + "\n"
+	script := "#!/bin/sh\nprintf '" + what + " token-file=%s\\n' \"$LEGION_PROVISIONING_TOKEN_FILE\" >> " + shellprefix.Literal(sink) + "\n" + tail + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -162,8 +164,9 @@ func TestProvisionStartsOnlyTheGitBootResolved(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		planted := recordingScript(t, "git", sink, "exec '"+git+"' \"$@\"")
-		plantWorkspaceConfig(t, clone, "[git]\nexecutable-path = '"+planted+"'\n")
+		planted := recordingScript(t, "git", sink, "exec "+shellprefix.Literal(git)+" \"$@\"")
+		// A basic string (tomlString), which a `'` in the test's temporary directory cannot end.
+		plantWorkspaceConfig(t, clone, "[git]\nexecutable-path = "+tomlString(planted)+"\n")
 	})
 	if err != nil {
 		t.Fatalf("second provision: %v", err)
@@ -181,7 +184,7 @@ func TestTheCredentialedFetchRunsNoWorkingCopyFilter(t *testing.T) {
 	sink := filepath.Join(t.TempDir(), "filter-ran")
 	err := provisionTwice(t, func(t *testing.T, _ *recordingRunner, clone string) {
 		filter := recordingScript(t, "filter", sink, "exec cat")
-		plantWorkspaceConfig(t, clone, "[git.filter]\nenabled = true\n[git.filter.drivers.planted]\nclean = ['"+filter+"']\nsmudge = ['cat']\nrequired = false\n")
+		plantWorkspaceConfig(t, clone, "[git.filter]\nenabled = true\n[git.filter.drivers.planted]\nclean = ["+tomlString(filter)+"]\nsmudge = ['cat']\nrequired = false\n")
 		for name, body := range map[string]string{".gitattributes": "*.txt filter=planted\n", "planted.txt": "changed\n"} {
 			if err := os.WriteFile(filepath.Join(clone, name), []byte(body), 0o644); err != nil {
 				t.Fatal(err)

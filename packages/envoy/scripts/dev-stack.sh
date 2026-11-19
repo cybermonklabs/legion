@@ -925,34 +925,37 @@ mkdir -p "$BOX2_HOME" "$BOX2_RUNTIME_DIR" "$BOX2_STATE_DIR" "$BOX2_KEY_DIR" "$BO
 chmod 700 "$BOX2_DIR" "$BOX2_HOME" "$BOX2_RUNTIME_DIR" "$BOX2_STATE_DIR" "$BOX2_KEY_DIR" "$BOX2_SIGNIN_DIR"
 echo "$APPROVER_LOGIN" >"$BOX2_OPERATOR_FILE"
 
+# Each path below is printed with printf %q, and each variable a pasted command names a path by is
+# in double quotes wherever the shell would split it (an env argument, a test, a cat), so every
+# path is one shell word for the shell that sources or runs a line, whatever TMPDIR's name holds.
 cat <<EOF
 
 dev-stack: ready.
 
-  export PATH=$BIN_DIR:\$PATH
+  export PATH=$(printf %q "$BIN_DIR"):\$PATH
   export AGENT_SECRETS_URL=$BROKER_URL
-  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$ACCOUNT_TOKEN_FILE
+  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$(printf %q "$ACCOUNT_TOKEN_FILE")
   export AGENT_SECRETS_APPROVER=$APPROVER_LOGIN
   export AGENT_SECRETS_APPROVE_URL=$DISPATCH_URL
-  export AGENT_SECRETS_HELPER_SOCK=$WORK_DIR/helper.sock
-  export AGENT_SECRETS_OPERATOR_FILE=$OPERATOR_FILE
-  export AGENT_SECRETS_MACHINE_FILE=$WORK_DIR/machine.json
-  export AGENT_SECRETS_STATE_FILE=$WORK_DIR/sessions.json
-  export AGENT_SECRETS_KEY_DIR=$WORK_DIR/keys
+  export AGENT_SECRETS_HELPER_SOCK=$(printf %q "$WORK_DIR/helper.sock")
+  export AGENT_SECRETS_OPERATOR_FILE=$(printf %q "$OPERATOR_FILE")
+  export AGENT_SECRETS_MACHINE_FILE=$(printf %q "$WORK_DIR/machine.json")
+  export AGENT_SECRETS_STATE_FILE=$(printf %q "$WORK_DIR/sessions.json")
+  export AGENT_SECRETS_KEY_DIR=$(printf %q "$WORK_DIR/keys")
   export DISPATCH_URL=$DISPATCH_URL
   export DISPATCH_TOKEN=$DISPATCH_TOKEN_VALUE
   export ENVOY_URL=$LISTENER_URL
   export NATS_URLS=$NATS_URL
-  export DEV_STACK_DIR=$WORK_DIR
+  export DEV_STACK_DIR=$(printf %q "$WORK_DIR")
   export DEV_STACK_PID=$$
   export DEV_STACK_ISSUER_URL=$ISSUER_URL
-  export DEV_STACK_EXCHANGE_TOKEN_FILE=$EXCHANGE_TOKEN_FILE
-  export DEV_STACK_POD_TOKEN_FILE=$POD_TOKEN_FILE
-  export DEV_STACK_REGISTRAR_TOKEN_FILE=$REGISTRAR_TOKEN_FILE
-  export DEV_STACK_LISTENER_TOKEN_FILE=$LISTENER_TOKEN_FILE
+  export DEV_STACK_EXCHANGE_TOKEN_FILE=$(printf %q "$EXCHANGE_TOKEN_FILE")
+  export DEV_STACK_POD_TOKEN_FILE=$(printf %q "$POD_TOKEN_FILE")
+  export DEV_STACK_REGISTRAR_TOKEN_FILE=$(printf %q "$REGISTRAR_TOKEN_FILE")
+  export DEV_STACK_LISTENER_TOKEN_FILE=$(printf %q "$LISTENER_TOKEN_FILE")
   export DEV_STACK_MACHINE_ACCOUNT=$FLEET_ACCOUNT
   export DEV_STACK_PERSON_MACHINE_ACCOUNT=$PERSON_FLEET_ACCOUNT
-  export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT$callout_exports
+  export DEV_STACK_METADATA_SCRIPT=$(printf %q "$METADATA_SCRIPT")$callout_exports
 
   the token clients (Go and TypeScript alike), for a session that trades this machine's identity
   or signs a person in. The exchange's answer is a Dispatch access token acting for
@@ -969,7 +972,7 @@ dev-stack: ready.
   $EXCHANGE_PROJECT. Start one of each, on ports of their own, to drive both.
   export AGENT_SECRETS_SIGNIN_ISSUER=$ISSUER_URL
   export AGENT_SECRETS_SIGNIN_CLIENT_ID=$DEVICE_CLIENT_ID
-  export AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE=$DEVICE_SECRET_FILE
+  export AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE=$(printf %q "$DEVICE_SECRET_FILE")
 
   binaries:   $BIN_DIR
   logs:       $LOG_DIR  (one per process)
@@ -983,9 +986,9 @@ dev-stack: ready.
   Compute Engine metadata server, written for you at $METADATA_SCRIPT. Start it and point the
   client at it (it mints through dev-oidc-issuer's device grant for $FLEET_ACCOUNT):
 
-    python3 $METADATA_SCRIPT >$LOG_DIR/dev-metadata.log 2>&1 &
-    until [ -s $WORK_DIR/metadata-port ]; do sleep 0.1; done
-    export GCE_METADATA_HOST=127.0.0.1:\$(cat $WORK_DIR/metadata-port)
+    python3 $(printf %q "$METADATA_SCRIPT") >$(printf %q "$LOG_DIR/dev-metadata.log") 2>&1 &
+    until [ -s $(printf %q "$WORK_DIR/metadata-port") ]; do sleep 0.1; done
+    export GCE_METADATA_HOST=127.0.0.1:\$(cat $(printf %q "$WORK_DIR/metadata-port"))
 
   With that and the client's variables above, in a shell with no AGENT_SECRETS_HELPER_SOCK,
   \`agent-secrets FLEET_TOKEN -- <command>\` trades this machine's identity for a launcher
@@ -1001,17 +1004,17 @@ dev-stack: ready.
   stand-in of its own on a port of its own. Each is the variable it stands for under
   DEV_STACK_BOX2_:
 
-  export DEV_STACK_BOX2_DIR=$BOX2_DIR
-  export DEV_STACK_BOX2_HOME=$BOX2_HOME
-  export DEV_STACK_BOX2_XDG_RUNTIME_DIR=$BOX2_RUNTIME_DIR
-  export DEV_STACK_BOX2_XDG_STATE_HOME=$BOX2_STATE_DIR
-  export DEV_STACK_BOX2_AGENT_SECRETS_KEY_DIR=$BOX2_KEY_DIR
-  export DEV_STACK_BOX2_AGENT_SECRETS_MACHINE_FILE=$BOX2_MACHINE_FILE
-  export DEV_STACK_BOX2_AGENT_SECRETS_STATE_FILE=$BOX2_STATE_FILE
-  export DEV_STACK_BOX2_AGENT_SECRETS_SIGNIN_DIR=$BOX2_SIGNIN_DIR
-  export DEV_STACK_BOX2_AGENT_SECRETS_OPERATOR_FILE=$BOX2_OPERATOR_FILE
-  export DEV_STACK_BOX2_AGENT_SECRETS_HELPER_SOCK=$BOX2_HELPER_SOCK
-  export DEV_STACK_BOX2_METADATA_PORT_FILE=$BOX2_METADATA_PORT_FILE
+  export DEV_STACK_BOX2_DIR=$(printf %q "$BOX2_DIR")
+  export DEV_STACK_BOX2_HOME=$(printf %q "$BOX2_HOME")
+  export DEV_STACK_BOX2_XDG_RUNTIME_DIR=$(printf %q "$BOX2_RUNTIME_DIR")
+  export DEV_STACK_BOX2_XDG_STATE_HOME=$(printf %q "$BOX2_STATE_DIR")
+  export DEV_STACK_BOX2_AGENT_SECRETS_KEY_DIR=$(printf %q "$BOX2_KEY_DIR")
+  export DEV_STACK_BOX2_AGENT_SECRETS_MACHINE_FILE=$(printf %q "$BOX2_MACHINE_FILE")
+  export DEV_STACK_BOX2_AGENT_SECRETS_STATE_FILE=$(printf %q "$BOX2_STATE_FILE")
+  export DEV_STACK_BOX2_AGENT_SECRETS_SIGNIN_DIR=$(printf %q "$BOX2_SIGNIN_DIR")
+  export DEV_STACK_BOX2_AGENT_SECRETS_OPERATOR_FILE=$(printf %q "$BOX2_OPERATOR_FILE")
+  export DEV_STACK_BOX2_AGENT_SECRETS_HELPER_SOCK=$(printf %q "$BOX2_HELPER_SOCK")
+  export DEV_STACK_BOX2_METADATA_PORT_FILE=$(printf %q "$BOX2_METADATA_PORT_FILE")
   export DEV_STACK_BOX2_SESSION=$BOX2_SESSION
 
   Its metadata stand-in is the one script above on a port of its own, which it takes from
@@ -1021,24 +1024,24 @@ dev-stack: ready.
 
     DEV_STACK_METADATA_PORT_FILE=\$DEV_STACK_BOX2_METADATA_PORT_FILE \\
       DEV_STACK_METADATA_ACCOUNT=$PERSON_FLEET_ACCOUNT \\
-      python3 $METADATA_SCRIPT >$BOX2_METADATA_LOG 2>&1 &
-    until [ -s \$DEV_STACK_BOX2_METADATA_PORT_FILE ]; do sleep 0.1; done
+      python3 $(printf %q "$METADATA_SCRIPT") >$(printf %q "$BOX2_METADATA_LOG") 2>&1 &
+    until [ -s "\$DEV_STACK_BOX2_METADATA_PORT_FILE" ]; do sleep 0.1; done
 
-    env HOME=\$DEV_STACK_BOX2_HOME \\
-      XDG_RUNTIME_DIR=\$DEV_STACK_BOX2_XDG_RUNTIME_DIR \\
-      XDG_STATE_HOME=\$DEV_STACK_BOX2_XDG_STATE_HOME \\
-      AGENT_SECRETS_KEY_DIR=\$DEV_STACK_BOX2_AGENT_SECRETS_KEY_DIR \\
-      AGENT_SECRETS_MACHINE_FILE=\$DEV_STACK_BOX2_AGENT_SECRETS_MACHINE_FILE \\
-      AGENT_SECRETS_STATE_FILE=\$DEV_STACK_BOX2_AGENT_SECRETS_STATE_FILE \\
-      AGENT_SECRETS_SIGNIN_DIR=\$DEV_STACK_BOX2_AGENT_SECRETS_SIGNIN_DIR \\
-      AGENT_SECRETS_OPERATOR_FILE=\$DEV_STACK_BOX2_AGENT_SECRETS_OPERATOR_FILE \\
-      AGENT_SECRETS_HELPER_SOCK=\$DEV_STACK_BOX2_AGENT_SECRETS_HELPER_SOCK \\
+    env HOME="\$DEV_STACK_BOX2_HOME" \\
+      XDG_RUNTIME_DIR="\$DEV_STACK_BOX2_XDG_RUNTIME_DIR" \\
+      XDG_STATE_HOME="\$DEV_STACK_BOX2_XDG_STATE_HOME" \\
+      AGENT_SECRETS_KEY_DIR="\$DEV_STACK_BOX2_AGENT_SECRETS_KEY_DIR" \\
+      AGENT_SECRETS_MACHINE_FILE="\$DEV_STACK_BOX2_AGENT_SECRETS_MACHINE_FILE" \\
+      AGENT_SECRETS_STATE_FILE="\$DEV_STACK_BOX2_AGENT_SECRETS_STATE_FILE" \\
+      AGENT_SECRETS_SIGNIN_DIR="\$DEV_STACK_BOX2_AGENT_SECRETS_SIGNIN_DIR" \\
+      AGENT_SECRETS_OPERATOR_FILE="\$DEV_STACK_BOX2_AGENT_SECRETS_OPERATOR_FILE" \\
+      AGENT_SECRETS_HELPER_SOCK="\$DEV_STACK_BOX2_AGENT_SECRETS_HELPER_SOCK" \\
       AGENT_SECRETS_URL=$BROKER_URL \\
       AGENT_SECRETS_MACHINE_IDENTITY=metadata \\
       AGENT_SECRETS_MACHINE_AUDIENCE=$MACHINE_CLIENT_ID \\
       AGENT_SECRETS_SESSION=\$DEV_STACK_BOX2_SESSION \\
-      GCE_METADATA_HOST=127.0.0.1:\$(cat \$DEV_STACK_BOX2_METADATA_PORT_FILE) \\
-      $BIN_DIR/agent-secrets-helper serve >$BOX2_HELPER_LOG 2>&1 &
+      GCE_METADATA_HOST=127.0.0.1:\$(cat "\$DEV_STACK_BOX2_METADATA_PORT_FILE") \\
+      $(printf %q "$BIN_DIR/agent-secrets-helper") serve >$(printf %q "$BOX2_HELPER_LOG") 2>&1 &
 
   That helper trades this box's identity for a launcher credential of its own, bound to the key it
   keeps under its own HOME, so the broker holds one live credential for each of the two boxes and a

@@ -16,6 +16,8 @@ import (
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/stretchr/testify/require"
+
+	"github.com/sjawhar/envoy/infra/core"
 )
 
 // These tests sit inside the package because the pieces they run are unexported; they reach the
@@ -46,45 +48,45 @@ func tailnetTestShell(ctx context.Context, args ...string) *exec.Cmd {
 const fakeTailnetTailscale = `#!/bin/sh
 d=FAKE
 a="$*"
-a=${a#--socket=* }
+case "$1" in --socket=*) a=${a#"$1 "} ;; esac
 r=
 [ -e READY ] && r=" [ready]"
-echo "$(cat $d/clock) tailscale $*$r" >>$d/calls
+echo "$(cat "$d/clock") tailscale $*$r" >>"$d/calls"
 case "$a" in
 "status --json --peers=false")
-  [ -s $d/self-id ] || exit 1
-  printf '{\n  "Version": "1.104.1",\n  "BackendState": "Running",\n  "Self": {\n    "ID": "%s",\n    "HostName": "example-host-a",\n' "$(cat $d/self-id)"
+  [ -s "$d/self-id" ] || exit 1
+  printf '{\n  "Version": "1.104.1",\n  "BackendState": "Running",\n  "Self": {\n    "ID": "%s",\n    "HostName": "example-host-a",\n' "$(cat "$d/self-id")"
   printf '    "Capabilities": [\n      "example-cap",\n      "service-host"\n    ],\n'
   printf '    "CapMap": {\n      "example-cap": [\n        {\n          "SVC": []\n        }\n      ],\n'
   printf '      "service-host": [\n        {\n          "SVC-two": [\n            "100.100.100.1"\n          ]'
-  if [ -e $d/approved ] && [ -e $d/advertised ]; then
+  if [ -e "$d/approved" ] && [ -e "$d/advertised" ]; then
     printf ',\n          "SVC": [\n            "100.100.100.2",\n            "fd7a:115c:a1e0::2"\n          ]'
   fi
   printf '\n        }\n      ]\n    },\n    "Online": true\n  }\n}\n' ;;
 "debug prefs")
-  if [ -e $d/advertised ]; then printf '{\n\t"AdvertiseServices": [\n\t\t"SVC"\n\t]\n}\n'; else printf '{\n\t"AdvertiseServices": null\n}\n'; fi ;;
-"serve advertise SVC") touch $d/advertised ;;
-"serve drain SVC") rm -f $d/advertised ;;
+  if [ -e "$d/advertised" ]; then printf '{\n\t"AdvertiseServices": [\n\t\t"SVC"\n\t]\n}\n'; else printf '{\n\t"AdvertiseServices": null\n}\n'; fi ;;
+"serve advertise SVC") touch "$d/advertised" ;;
+"serve drain SVC") rm -f "$d/advertised" ;;
 "cert --cert-file=- --key-file=- CERT")
-  case "$(cat $d/cert-mode 2>/dev/null)" in
+  case "$(cat "$d/cert-mode" 2>/dev/null)" in
   ok) echo "-----BEGIN CERTIFICATE-----" ;;
   fail) echo "acme: authorization for CERT failed" >&2; exit 1 ;;
   *) echo '500 Internal Server Error: invalid domain "CERT"; must be one of ["example-host-a.example-tailnet.ts.net"]' >&2; exit 1 ;;
   esac ;;
-logout) rm -f $d/self-id $d/advertised ;;
+logout) rm -f "$d/self-id" "$d/advertised" ;;
 *) echo "unexpected: tailscale $*" >&2; exit 2 ;;
 esac
 `
 
 const fakeTailnetSleep = `#!/bin/sh
 d=FAKE
-now=$(( $(cat $d/clock) + ${1%%.*} ))
-echo $now >$d/clock.$$ && mv $d/clock.$$ $d/clock
+now=$(( $(cat "$d/clock") + ${1%%.*} ))
+echo $now >"$d/clock.$$" && mv "$d/clock.$$" "$d/clock"
 r=no
 [ -e READY ] && r=yes
-echo "$now sleep $1 ready=$r" >>$d/calls
-[ -f $d/hook ] && . $d/hook
-[ "$now" -lt "$(cat $d/limit)" ] || kill -TERM $PPID
+echo "$now sleep $1 ready=$r" >>"$d/calls"
+[ -f "$d/hook" ] && . "$d/hook"
+[ "$now" -lt "$(cat "$d/limit")" ] || kill -TERM $PPID
 exit 0
 `
 
@@ -150,7 +152,9 @@ func newTailnetRig(t *testing.T, selfID string, configure ...func(*tailnetServic
 	for _, d := range []string{r.fake, r.host.paths.mount, bin} {
 		require.NoError(t, os.MkdirAll(d, 0o755))
 	}
-	fill := strings.NewReplacer("FAKE", r.fake, "READY", r.host.paths.ready(), "REALDATE", realDate,
+	// The paths go in as shell words: the test's directory may hold a space or a quote.
+	q := core.ShellQuote
+	fill := strings.NewReplacer("FAKE", q(r.fake), "READY", q(r.host.paths.ready()), "REALDATE", q(realDate),
 		"SVC", r.host.service(), "CERT", tailnetRigCertificate)
 	for name, body := range map[string]string{
 		"tailscale": fakeTailnetTailscale, "sleep": fakeTailnetSleep,
@@ -175,7 +179,7 @@ func (r *tailnetRig) set(t *testing.T, name, content string) {
 }
 
 // hook has every stand-in sleep run body, with $now the clock it moved to and $d the stand-ins'
-// directory.
+// directory, which body quotes: the test's directory may hold a space.
 func (r *tailnetRig) hook(t *testing.T, body string) { r.set(t, "hook", body) }
 
 // flag writes the advertise gate's flag naming node, as a consumer's gate writes it.
@@ -301,7 +305,7 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	// the advertiser's output, so Wait does not wait for it once the advertiser is gone, and
 	// records its PID, so the test ends it.
 	sleep := "#!/bin/sh\necho \"$(cat FAKE/clock) sleep $1\" >>FAKE/calls\necho $$ >FAKE/sleep-pid\nexec REALSLEEP 30 >/dev/null 2>&1\n"
-	sleep = strings.NewReplacer("FAKE", r.fake, "REALSLEEP", realSleep).Replace(sleep)
+	sleep = strings.NewReplacer("FAKE", core.ShellQuote(r.fake), "REALSLEEP", core.ShellQuote(realSleep)).Replace(sleep)
 	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(r.fake), "bin", "sleep"), []byte(sleep), 0o755))
 	t.Cleanup(func() {
 		if b, err := os.ReadFile(filepath.Join(r.fake, "sleep-pid")); err == nil {
@@ -332,7 +336,7 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 // another capability naming this Service count for nothing.
 func TestTailnetServiceIsReadyOnlyOnceApproved(t *testing.T) {
 	r := newTailnetRig(t, tailnetRigNode)
-	r.hook(t, `if [ "$now" -ge 1100 ] && [ ! -e $d/approved ]; then touch $d/approved; echo "$now approved" >>$d/calls; fi`)
+	r.hook(t, `if [ "$now" -ge 1100 ] && [ ! -e "$d/approved" ]; then touch "$d/approved"; echo "$now approved" >>"$d/calls"; fi`)
 	ev, out := r.run(t, 200)
 	approved := tailnetIndexOf(ev, 0, "approved")
 	if tailnetIndexOf(ev, 0, tailnetAdvertiseCall) < 0 || approved < 0 {
@@ -417,9 +421,9 @@ func TestTailnetServiceStaysQuietWhileDraining(t *testing.T) {
 func TestTailnetServiceFollowsANewNode(t *testing.T) {
 	r := newTailnetRig(t, tailnetRigNode)
 	r.set(t, "approved", "")
-	r.hook(t, fmt.Sprintf(`if [ -e %s ] && [ ! -e $d/switched ]; then
-  echo nBBBBCNTRL >$d/self-id; rm -f $d/advertised; touch $d/switched; echo "$now new node" >>$d/calls
-fi`, r.host.paths.ready()))
+	r.hook(t, fmt.Sprintf(`if [ -e %s ] && [ ! -e "$d/switched" ]; then
+  echo nBBBBCNTRL >"$d/self-id"; rm -f "$d/advertised"; touch "$d/switched"; echo "$now new node" >>"$d/calls"
+fi`, core.ShellQuote(r.host.paths.ready())))
 	ev, out := r.run(t, 120)
 	switched := tailnetIndexOf(ev, 0, "new node")
 	advertise := tailnetIndexOf(ev, switched, tailnetAdvertiseCall)
@@ -499,7 +503,7 @@ func TestTailnetServiceWithACertificateIsReadyOnlyApprovedAndHoldingIt(t *testin
 	r := newTailnetRig(t, tailnetRigNode, tailnetWithCertificate)
 	r.set(t, "cert-mode", "ok")
 	r.flag(t, tailnetRigNode)
-	r.hook(t, `if [ "$now" -ge 1090 ] && [ ! -e $d/approved ]; then touch $d/approved; echo "$now approved" >>$d/calls; fi`)
+	r.hook(t, `if [ "$now" -ge 1090 ] && [ ! -e "$d/approved" ]; then touch "$d/approved"; echo "$now approved" >>"$d/calls"; fi`)
 	ev, out := r.run(t, 200)
 	approved := tailnetIndexOf(ev, 0, "approved")
 	order := tailnetIndexOf(ev, 0, tailnetOrderCall)

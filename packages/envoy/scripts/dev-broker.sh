@@ -580,18 +580,20 @@ if ! curl -sf -X POST "${PUBLIC_URL}/v1/oauth/exchange/pod-sessions" \
 fi
 echo "dev-broker: registered the exchange pod to write under $EXCHANGE_SESSION" >&2
 
+# Each path an export or a command below names is printed with printf %q, so it is one shell word
+# for the shell that sources or runs the line, whatever TMPDIR's own name holds.
 cat <<EOF
 
 dev-broker: ready.
 
   export AGENT_SECRETS_URL=$PUBLIC_URL
-  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$ACCOUNT_TOKEN_FILE
+  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$(printf %q "$ACCOUNT_TOKEN_FILE")
   export AGENT_SECRETS_APPROVER=$APPROVER_LOGIN
-  export AGENT_SECRETS_HELPER_SOCK=$WORK_DIR/helper.sock
-  export AGENT_SECRETS_OPERATOR_FILE=$OPERATOR_FILE
-  export AGENT_SECRETS_MACHINE_FILE=$WORK_DIR/machine.json
-  export AGENT_SECRETS_STATE_FILE=$WORK_DIR/sessions.json
-  export DEV_BROKER_DIR=$WORK_DIR
+  export AGENT_SECRETS_HELPER_SOCK=$(printf %q "$WORK_DIR/helper.sock")
+  export AGENT_SECRETS_OPERATOR_FILE=$(printf %q "$OPERATOR_FILE")
+  export AGENT_SECRETS_MACHINE_FILE=$(printf %q "$WORK_DIR/machine.json")
+  export AGENT_SECRETS_STATE_FILE=$(printf %q "$WORK_DIR/sessions.json")
+  export DEV_BROKER_DIR=$(printf %q "$WORK_DIR")
   export DEV_BROKER_METRICS_URL=$METRICS_URL
   export DEV_BROKER_POD_UID=$POD_UID
   export DEV_BROKER_SERVICE=$SERVICE
@@ -603,7 +605,7 @@ dev-broker: ready.
   export DEV_BROKER_GITHUB_CASE_SECRET=$GITHUB_CASE_SECRET
   export DEV_BROKER_GITHUB_CASE_OWNER=$GITHUB_CASE_OWNER
   export DEV_BROKER_GITHUB_HUMAN_SECRET=$GITHUB_HUMAN_SECRET
-  export PATH=$BIN_DIR:\$PATH
+  export PATH=$(printf %q "$BIN_DIR"):\$PATH
 
   binaries:            $BIN_DIR  (broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper, agent-secrets-devrelay)
   secret store:        $STORE_LINE
@@ -648,7 +650,7 @@ dev-broker: ready.
 
     KEYS=\$(mktemp -d)
     dev-airlock-stands enroll-pod --url $PUBLIC_URL --service $SERVICE \\
-      --token-file $REGISTRAR_TOKEN_FILE --pod-token-file $POD_TOKEN_FILE --pod-uid $POD_UID \\
+      --token-file $(printf %q "$REGISTRAR_TOKEN_FILE") --pod-token-file $(printf %q "$POD_TOKEN_FILE") --pod-uid $POD_UID \\
       --thumbprint "\$(agent-secrets keygen --out "\$KEYS")" | jq -r .enrollment_id >"\$KEYS/enrollment"
     AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets DEMO_SERVICE_TOKEN -- printenv DEMO_SERVICE_TOKEN
     AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets $GITHUB_SECRET --github-owner $GITHUB_OWNER \\

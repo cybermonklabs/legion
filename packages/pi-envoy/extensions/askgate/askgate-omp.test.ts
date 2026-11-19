@@ -11,6 +11,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { shellQuote } from "@legion/pi-shared/test/test-paths";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // AskGate on the real Oh My Pi: the loader resolves the gate's string-literal imports of the host's
@@ -39,9 +40,12 @@ const isGateRequest = (request: Request): boolean =>
 const isRuleRequest = (request: Request): boolean =>
   JSON.stringify(request.body.system ?? "").includes("You are AskGate's rule check.");
 
-/** The scripted bash call: a `dispatch ask` by the stand-in's literal path, which the gate reads. */
+/** The scripted bash call: a `dispatch ask` by the stand-in's literal path, which the gate reads.
+ * The path is one double-quoted word, which bash and the grammar both take as written when it
+ * holds a blank, a `'` or a `?`; a single-quoted one with a `'` in it would hold `'\''`, whose
+ * backslash the grammar does not take as literal. */
 const ask = (dispatch: string) =>
-  `${dispatch} ask --issue DSP-1 --question 'Ship the release today?'`;
+  `"${dispatch}" ask --issue DSP-1 --question 'Ship the release today?'`;
 
 /** One tool call of the scripted model turn. */
 type Block = { type: "tool_use"; name: string; input: Record<string, unknown> };
@@ -383,7 +387,7 @@ test.skipIf(omp === undefined && !onActions)(
         type: "tool_use",
         name: "bash",
         input: {
-          command: `${dispatch} artifact --issue DSP-1 --name brief.md --path ${path.join(path.dirname(path.dirname(dispatch)), "brief.md")}`,
+          command: `"${dispatch}" artifact --issue DSP-1 --name brief.md --path "${path.join(path.dirname(path.dirname(dispatch)), "brief.md")}"`,
         },
       }),
     });
@@ -402,7 +406,9 @@ for (const [form, firstTurn, config] of [
     (dispatch: string): Block => ({
       type: "tool_use",
       name: "bash",
-      input: { command: `python3 -c 'import subprocess; subprocess.run(${askArgv(dispatch)})'` },
+      input: {
+        command: `python3 -c ${shellQuote(`import subprocess; subprocess.run(${askArgv(dispatch)})`)}`,
+      },
     }),
     [],
   ],
@@ -462,7 +468,9 @@ test.skipIf(omp === undefined && !onActions)(
       firstTurn: (dispatch) => ({
         type: "tool_use",
         name: "bash",
-        input: { command: `python3 -c 'import subprocess; subprocess.run(${askArgv(dispatch)})'` },
+        input: {
+          command: `python3 -c ${shellQuote(`import subprocess; subprocess.run(${askArgv(dispatch)})`)}`,
+        },
       }),
     });
     expect(asksPosted(requests)).toBe(1);
@@ -485,7 +493,9 @@ test.skipIf(omp === undefined && !onActions)(
       firstTurn: (dispatch) => ({
         type: "tool_use",
         name: "bash",
-        input: { command: `python3 -c 'import subprocess; subprocess.run(${askArgv(dispatch)})'` },
+        input: {
+          command: `python3 -c ${shellQuote(`import subprocess; subprocess.run(${askArgv(dispatch)})`)}`,
+        },
       }),
     });
     expect(asksPosted(requests)).toBe(1);

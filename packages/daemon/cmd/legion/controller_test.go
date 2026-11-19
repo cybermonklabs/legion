@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -391,7 +392,7 @@ readlink /proc/self/fd/0 >%[1]s/stdin
 env -0 >%[1]s/env
 pwd >%[1]s/cwd
 exit %[2]d
-`, record, opts.exitCode, waitForFileScript(opts.waitForFile))
+`, shellprefix.Literal(record), opts.exitCode, waitForFileScript(opts.waitForFile))
 	if err := os.WriteFile(omp, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the recording omp: %v", err)
 	}
@@ -442,11 +443,12 @@ func (c *operatorMachine) installPlugin(contract int) {
 
 // loads has the recording Oh My Pi report pi-legion loaded from the package directory dir, and
 // pi-envoy from the pi-envoy package beside it, as the probe extension renders each: a file URL of
-// its dist/legion.js or dist/envoy.js with a cache-busting query.
+// its dist/legion.js or dist/envoy.js, percent-encoded as Oh My Pi encodes it (testbin.FileURL),
+// with a cache-busting query.
 func (c *operatorMachine) loads(dir string) {
 	c.t.Helper()
-	c.tells("loaded-from", "file://"+filepath.Join(dir, "dist", "legion.js")+"?mtime=1")
-	c.tells("envoy-loaded-from", "file://"+filepath.Join(filepath.Dir(dir), "pi-envoy", "dist", "envoy.js")+"?mtime=1")
+	c.tells("loaded-from", testbin.FileURL(filepath.Join(dir, "dist", "legion.js"))+"?mtime=1")
+	c.tells("envoy-loaded-from", testbin.FileURL(filepath.Join(filepath.Dir(dir), "pi-envoy", "dist", "envoy.js"))+"?mtime=1")
 }
 
 // loadsNothing has the recording Oh My Pi report pi-legion not loaded.
@@ -815,9 +817,10 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 		}
 	}
 	// Three lines: the probe, named before it runs so a prompt or a wait can be tied to it; the
-	// no-App line, since this default daemon has no Tokens; then the launch.
+	// no-App line, since this default daemon has no Tokens; then the launch. The probe names the
+	// invocation as the shell runs it, the omp's path one shell word.
 	wantProbe := fmt.Sprintf("[legion] checking the controller's Oh My Pi (env 'LEGION_TEST_PREFIX_RAN=1' %s) in %s before the daemon mints a capability\n",
-		filepath.Join(c.record, "omp"), filepath.Join(c.defaultDir, "controller"))
+		shellprefix.Word(filepath.Join(c.record, "omp")), filepath.Join(c.defaultDir, "controller"))
 	wantNoApp := "[legion] the daemon has no GitHub App to act as; the controller's gh acts as nobody\n"
 	wantLog := fmt.Sprintf("[legion] starting the controller for demo against %s; state in %s\n", d.url, c.defaultDir)
 	if errb != wantProbe+wantNoApp+wantLog {
@@ -1447,7 +1450,7 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 			testCase.loads(c)
 			code, _, errb := c.run()
 			for _, want := range testCase.want {
-				want = strings.ReplaceAll(want, "@HOME", c.home)
+				want = strings.ReplaceAll(strings.ReplaceAll(want, "file://@HOME", testbin.FileURL(c.home)), "@HOME", c.home)
 				if code != 1 || !strings.Contains(errb, want) {
 					t.Fatalf("legion controller start = %d, stderr %q; want 1 and %q", code, errb, want)
 				}

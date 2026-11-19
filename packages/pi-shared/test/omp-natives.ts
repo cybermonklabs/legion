@@ -8,6 +8,7 @@
 // The copy is the one the Go tests keep (packages/daemon/internal/testbin/natives.go,
 // testbin.OMPHome): the same directory, name, layout, lock and fill, so a machine holds one copy per
 // pin for both languages and either fills it for the other. A change to one is a change to both.
+import { linkSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import {
   chmod,
   link,
@@ -31,12 +32,38 @@ const caches = new Map<string, Promise<string>>();
  * Oh My Pi keeps its natives under $XDG_DATA_HOME/omp when that directory exists.
  */
 export async function linkOmpNatives(binary: string, home: string): Promise<void> {
+  await linkTree(await ompNativesCache(binary), path.join(home, ".omp", "natives"));
+}
+
+/** The shared copy of `binary`'s natives, filled first if no process has. */
+export function ompNativesCache(binary: string): Promise<string> {
   let cache = caches.get(binary);
   if (cache === undefined) {
     cache = fillNativesCache(nativesCacheRoot(), binary);
     caches.set(binary, cache);
   }
-  await linkTree(await cache, path.join(home, ".omp", "natives"));
+  return cache;
+}
+
+/**
+ * Why `linkOmpNatives` could not link the natives in `cache` into a HOME under `directory`, or
+ * undefined when it can: a hardlink cannot cross filesystems, so one file of the cache is linked
+ * into `directory` and the link removed. A root chooser passes over a base this refuses
+ * (test-paths.ts's `scratchWithout`).
+ */
+export function nativesLinkProblem(cache: string, directory: string): string | undefined {
+  const file = readdirSync(cache, { recursive: true })
+    .map((relative) => path.join(cache, String(relative)))
+    .find((candidate) => statSync(candidate).isFile());
+  if (file === undefined) return `the natives cache ${cache} holds no file`;
+  const probe = path.join(directory, ".natives-link-probe");
+  try {
+    linkSync(file, probe);
+  } catch (error) {
+    return `no link from the natives cache ${cache} lands here: ${(error as Error).message}`;
+  }
+  unlinkSync(probe);
+  return undefined;
 }
 
 /** Where the Go tests' os.UserCacheDir puts the cache on Linux, with its refusals. */

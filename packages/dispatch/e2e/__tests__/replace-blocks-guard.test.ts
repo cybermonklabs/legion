@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
+import { shellQuote } from "../local-instance-support";
 import { dropDatabase, sqlAt } from "../psql";
 import { masked, rowLimit, runBounded } from "./bounded-subprocess";
 
@@ -143,7 +144,7 @@ async function drive(
   writeFileSync(logFile, log);
   writeFileSync(
     join(bin, "bun"),
-    `#!/usr/bin/env bash\n: >'${marker}'\ncat '${logFile}'\nexit 1\n`,
+    `#!/usr/bin/env bash\n: >${shellQuote(marker)}\ncat ${shellQuote(logFile)}\nexit 1\n`,
     {
       mode: 0o755,
     }

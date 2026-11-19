@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -419,7 +420,9 @@ func TestGhChildGitRecursesIntoNoSubmodule(t *testing.T) {
 	// says whether the proxy read a credential, and what git printed.
 	sends := func(dir, helper string, env, command []string) (bool, string) {
 		proxy.take()
-		cmd := exec.Command(git, append([]string{"-c", "credential.https://github.com.helper=", "-c", "credential.https://github.com.helper=" + helper, "-c", "credential.interactive=false"}, command...)...)
+		// git runs a `!` helper through the shell, so the path under the test's temporary directory
+		// is one shell word.
+		cmd := exec.Command(git, append([]string{"-c", "credential.https://github.com.helper=", "-c", "credential.https://github.com.helper=!" + shellprefix.Literal(helper), "-c", "credential.interactive=false"}, command...)...)
 		cmd.Dir, cmd.Env = dir, env
 		out, _ := cmd.CombinedOutput()
 		for _, r := range proxy.take() {
@@ -573,7 +576,7 @@ func TestGhRepoGitConfigRefusalSeesWhatALaterGitReads(t *testing.T) {
 	// asGh runs args in dir as gh's git runs them and says whether the proxy read a credential.
 	asGh := func(dir string, args ...string) (bool, string) {
 		proxy.take()
-		cmd := exec.Command(git, append([]string{"-c", "credential.https://github.com.helper=", "-c", "credential.https://github.com.helper=" + helper, "-c", "credential.interactive=false"}, args...)...)
+		cmd := exec.Command(git, append([]string{"-c", "credential.https://github.com.helper=", "-c", "credential.https://github.com.helper=!" + shellprefix.Literal(helper), "-c", "credential.interactive=false"}, args...)...)
 		cmd.Dir, cmd.Env = dir, env
 		out, _ := cmd.CombinedOutput()
 		for _, r := range proxy.take() {

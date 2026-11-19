@@ -8,9 +8,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { directoryWithout, PLAIN_WORD_REFUSES } from "@legion/pi-shared/test/test-paths";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
 // `rig.sh run askgate on <n> <index> <start>`. The rig.sh under test is this one, copied into a
@@ -32,7 +33,18 @@ setDefaultTimeout(120_000);
 const withoutPython = skipWithout("python3");
 
 const root = path.resolve(import.meta.dir, "../../../..");
-const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });
+// The rigs run rig.sh, whose judge and model route installers take only plain paths
+// (`[A-Za-z0-9/._-]`, PLAIN_WORD_REFUSES), and bun on the stand-ins below (server.ts, the
+// checkout's seed.ts), which takes none with a '?', so the directory's path is plain
+// (test-paths.ts). Its second base is /tmp, not this package's .cache: rig.sh refuses a work
+// directory with a `.omp` in it or above it (omp_ancestor), and a checkout in the operator's HOME
+// has HOME's own .omp above it.
+const scratch = directoryWithout(
+  PLAIN_WORD_REFUSES,
+  [tmpdir(), "/tmp"],
+  "skill-scenarios-isolation-",
+  { real: true }
+);
 
 /**
  * Every write this file's body asks for, as a function the `beforeAll` at the end calls. The
