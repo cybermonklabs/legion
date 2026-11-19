@@ -10,7 +10,9 @@
 // A case's teardown (`runCleanup`) waits only for what the next case needs: every process of the
 // case ended, each omp with every process of its own group under OMP_END_MS and then OMP_KILL_MS,
 // and one that did not end named in the error; and the stand-in stopped. It does not wait for the
-// case's scratch root to be removed, which nothing after the case reads (`ompRoot`).
+// case's scratch root to be removed, which nothing after the case reads (`ompRoot`). A file runs
+// its teardown in the hook `cleanupHook` installs, whose bound is the harness's own, so a group
+// that does not end fails naming each of its processes, not on bun's unnamed hook timeout.
 import { readdirSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import * as os from "node:os";
@@ -130,9 +132,62 @@ export const OMP_END_MS = 10_000;
  *  SIGKILL on that machine. */
 export const OMP_KILL_MS = 5_000;
 
-/** The most one omp's end waits before it fails, naming what did not end. A hook that ends one
- *  omp is given at least this. */
+/** The most one omp's end waits before it fails, naming what did not end. `cleanupHook` gives a
+ *  hook this for each omp a cleanup list ends. */
 export const OMP_TEARDOWN_MS = OMP_END_MS + OMP_KILL_MS;
+
+/** What a cleanup hook gives the steps that end no process (a stand-in's stop, a NATS
+ *  connection's close, a held request's release, the scratch root's removal started): bun's own
+ *  default hook bound, which was all a hook had before an omp's end waited here. */
+const CLEANUP_STEPS_MS = 5_000;
+
+/** The steps `spawnRpc` and `spawnInteractive` push onto a cleanup list, each of which ends one
+ *  omp under OMP_TEARDOWN_MS: what `cleanupHook` counts a list's omps by. */
+const ompEnds = new WeakSet<() => Promise<void>>();
+
+/** Pushes `step`, which ends one omp, onto `cleanup`, where `cleanupHook` counts it. */
+function pushOmpEnd(cleanup: Cleanup, step: () => Promise<void>): void {
+  ompEnds.add(step);
+  cleanup.push(step);
+}
+
+/**
+ * Installs the hook that runs a file's cleanup (`runCleanup`) under the harness's own bound, so an
+ * omp group that does not end fails on `endGroup`'s error, which names each process that was still
+ * running and comes after the SIGKILL that ended them, and never on bun's unnamed "hook timed out"
+ * with the group left running. `hook` is bun's `afterEach`, or its `afterAll` for sessions a
+ * file's cases share; `lists` are the cleanup lists it runs side by side, read when it runs (one
+ * per shared session, say). A list's steps run one after another, so the bound is `omps` ends of
+ * one omp at OMP_TEARDOWN_MS each, plus CLEANUP_STEPS_MS for the steps that end no process. A list
+ * that ends more omps than `omps` fails the hook, naming the number to pass, whether or not its
+ * omps were slow to end: a bound too short for a case fails every run of it, not a loaded one.
+ */
+export function cleanupHook(
+  hook: (run: () => Promise<void>, timeout: number) => void,
+  lists: readonly Cleanup[],
+  omps = 1
+): void {
+  const run = async (): Promise<void> => {
+    const most = Math.max(
+      0,
+      ...lists.map((list) => list.filter((step) => ompEnds.has(step)).length)
+    );
+    // A list of its own beside the others, so they still run and their errors are thrown with it.
+    const counted: Cleanup =
+      most > omps
+        ? [
+            async () => {
+              throw new Error(
+                `a cleanup list ends ${most} omps one after another, but its hook is bounded ` +
+                  `for ${omps}: pass ${most} to cleanupHook`
+              );
+            },
+          ]
+        : [];
+    await runCleanup(...lists, counted);
+  };
+  hook(run, omps * OMP_TEARDOWN_MS + CLEANUP_STEPS_MS);
+}
 
 /** Whether `child` has exited and Bun has reaped it. */
 function reaped(child: Subprocess): boolean {
@@ -566,7 +621,7 @@ export function spawnRpc(
       detached: true,
     }
   );
-  cleanup.push(() => endGroup(child, "SIGTERM", () => signalGroup(child, "SIGTERM")));
+  pushOmpEnd(cleanup, () => endGroup(child, "SIGTERM", () => signalGroup(child, "SIGTERM")));
 
   const stderr = new Response(child.stderr).text();
   const closed = (async (): Promise<never> => {
@@ -688,7 +743,7 @@ export function spawnInteractive(
     terminal,
     detached: true,
   });
-  cleanup.push(async () => {
+  pushOmpEnd(cleanup, async () => {
     try {
       await endGroup(child, "SIGTERM", () => signalGroup(child, "SIGTERM"));
     } finally {

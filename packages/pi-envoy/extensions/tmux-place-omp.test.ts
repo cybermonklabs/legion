@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   type Cleanup,
+  cleanupHook,
   deliveryFor,
   ompNatsGuard,
   ompRoot,
@@ -59,9 +60,7 @@ const WINDOW_INDEX = 4;
 const PANE_INDEX = 1;
 
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+cleanupHook(afterEach, [cleanup]);
 
 /** `value` as one word of the shell tmux runs a pane's command through. */
 function quote(value: string): string {

@@ -12,6 +12,7 @@ import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-deliv
 import {
   type Block,
   type Cleanup,
+  cleanupHook,
   deliveryFor,
   type Interactive,
   messageStream,
@@ -173,9 +174,7 @@ const CASE_TIMEOUT_MS = 600_000;
 const COLUMNS = 200;
 
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+cleanupHook(afterEach, [cleanup]);
 
 /** One Messages request the stand-in holds until the case answers it. */
 interface Turn {

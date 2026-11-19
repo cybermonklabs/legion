@@ -5,6 +5,7 @@ import { PHASE_STALL_ENTRY } from "@legion/pi-shared/phase-stall";
 import {
   type Cleanup,
   call,
+  cleanupHook,
   type LegionPane,
   type LegionPaneOptions,
   ompNatsGuard,
@@ -164,9 +165,7 @@ const STALL_STATE = {
 };
 
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+cleanupHook(afterEach, [cleanup]);
 
 /** The text of every user message in a Messages request, joined. */
 function userText(request: Request): string {

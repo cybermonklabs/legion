@@ -7,6 +7,7 @@ import {
   type Block,
   type Cleanup,
   call,
+  cleanupHook,
   deliveryFor,
   messageStream,
   ompNatsGuard,
@@ -71,9 +72,7 @@ const DEADLINE_MS = 60_000;
 const MESSAGE_BOUND_MS = 30_000;
 
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+cleanupHook(afterEach, [cleanup]);
 
 /** A Messages request's whole conversation, as one string to find texts in. */
 function conversation(request: Request): string {

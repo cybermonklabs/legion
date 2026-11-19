@@ -7,6 +7,7 @@ import {
   type Block,
   type Cleanup,
   call,
+  cleanupHook,
   type LegionPane,
   messageStream,
   ompNatsGuard,
@@ -85,9 +86,8 @@ const COOLDOWN_MS = 4_000;
 const RESUME_COOLDOWN_MS = 12_000;
 
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+// Two omps: the relaunch case runs a second life of its pane (`resume`) on the same list.
+cleanupHook(afterEach, [cleanup], 2);
 
 /** A shell sleep the model asks for, which keeps one turn running while a cooldown runs out: the
  * requests of that same turn are the ones the `context` hook restores on. */

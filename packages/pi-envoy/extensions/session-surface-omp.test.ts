@@ -6,11 +6,11 @@ import * as path from "node:path";
 import {
   type Block,
   type Cleanup,
+  cleanupHook,
   isSummarization,
   messageStream,
   ompRoot,
   type Request,
-  runCleanup,
   sendRelayFrame,
   serveStandin,
   spawnRpc,
@@ -46,10 +46,9 @@ function setup(): { readonly binary: string; readonly nats: string } {
   return { binary: omp, nats: natsUrl };
 }
 
-/** How long a case waits for one thing the session owes it before failing on it. The two shared
- *  hooks take it too: bun's own 5 s per hook is less than a connection to the NATS server takes
- *  on a loaded machine, or the end of the sessions the cases shared, which the harness bounds at
- *  OMP_TEARDOWN_MS each and the hook runs side by side. */
+/** How long a case waits for one thing the session owes it before failing on it. The shared
+ *  `beforeAll` takes it too: bun's own 5 s per hook is less than a connection to the NATS server
+ *  takes on a loaded machine. */
 const DEADLINE_MS = 30_000;
 
 // The real `connect`'s connection reports the server it reached (`getServer`); the mock's has no
@@ -82,9 +81,7 @@ const SHELL_LIMIT_MS = 2_000;
  *  has its own steps, and the sessions are ended side by side, so the hook waits for the slowest
  *  one session's end, not for the sum of them. */
 const sessionCleanups: Cleanup[] = [];
-afterAll(async () => {
-  await runCleanup(...sessionCleanups.splice(0));
-}, DEADLINE_MS);
+cleanupHook(afterAll, sessionCleanups);
 
 function text(reply: string): Block {
   return { type: "text", text: reply };

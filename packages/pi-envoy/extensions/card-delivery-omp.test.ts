@@ -7,6 +7,7 @@ import {
   type Block,
   type Cleanup,
   call,
+  cleanupHook,
   deliveryFor,
   isSummarization,
   messageStream,
@@ -51,9 +52,7 @@ const CARDS_WHOLE_MS = 5_000;
 const RELAY_STREAM = "card-delivery-stream";
 
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+cleanupHook(afterEach, [cleanup]);
 
 /** A Messages request's conversation, as one string to find texts and their order in. */
 function conversation(request: Request): string {

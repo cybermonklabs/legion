@@ -121,7 +121,12 @@ since nothing in a pane runs `legion` from bash (LEGION-631). `name` keys every 
 case asserts (`<name>-grant-<n>`, `legion-<name>-<issue>-<role>`); `answer` is tried before the
 runner's routes (a case answers `handoff/complete` there), `prepare` runs before the profile and
 the spawn, and `quietMs` settles on gateway silence instead of the terminal `agent_end`. The pane
-it returns reads back as `turns`, `selfChecks`, `toolResults` and `transcriptEntries`.
+it returns reads back as `turns`, `selfChecks`, `toolResults` and `transcriptEntries`. Each file
+installs its teardown with `cleanupHook(afterEach, [cleanup])`, or `afterAll` over one list per
+session its cases share: the hook's bound is `OMP_TEARDOWN_MS` for each omp one list ends (its
+third argument, 1 by default) and 5 s for the steps that end no process, so an omp group that does
+not end fails naming each of its processes, never on bun's unnamed hook timeout, and a list that
+ends more omps than the hook is bounded for fails naming the number to pass.
 
 ## Where to look
 

@@ -7,6 +7,7 @@ import {
   type Block,
   type Cleanup,
   call,
+  cleanupHook,
   deliveryFor,
   isSelfCheck,
   messageStream,
@@ -76,9 +77,7 @@ const PRINTED = ["DISPATCH_HOST", "DISPATCH_SESSION_ID", "LEGION_ROLE"] as const
 const DEADLINE_MS = 60_000;
 
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+cleanupHook(afterEach, [cleanup]);
 
 /** Whether a Messages request is the subagent's own: only its system prompt is deep-worker's. */
 function isSubagentRequest(request: Request): boolean {
