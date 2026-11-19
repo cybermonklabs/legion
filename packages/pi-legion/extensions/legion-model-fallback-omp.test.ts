@@ -492,23 +492,14 @@ test.skipIf(skip)(
 
     const resumed = pane.served.slice(firstLife);
     expect(resumed.length).toBeGreaterThan(1);
-    // That the arming was restored, and not dropped or started again, is read from where this
-    // life's own turns went. Which half says it depends on whether the relaunch's boot outran the
-    // cooldown, and both are assertions: a filter over the turns before the due time proves
-    // nothing when there are none, which is what a loaded box gives.
+    // That the arming was restored, and not dropped, is read from where this life's own turns
+    // went: every turn served while the restored wait still ran went to the weaker model. A boot
+    // that outran the wait leaves no such turn, and then nothing here says where this life's first
+    // request went: the run's model is read before its first request, and whether the return was
+    // made ahead of it depends on which side of the due time the run started, not the request. The
+    // case below relaunches past the due time on purpose and asserts that first request.
     const beforeDue = resumed.filter((turn) => turn.at < dueAt);
-    if (beforeDue.length > 0) {
-      // The life was serving while the restored wait still ran, so every one of those turns went
-      // to the weaker model.
-      expect(beforeDue.map((turn) => turn.model)).not.toContain("strong-model");
-    } else {
-      // The boot outran the wait, so this life's first turn is already past the due time: it
-      // must be the return itself. A life that had started the wait again would have spent a
-      // whole cooldown on the weaker model first, and a life that had dropped the arming would
-      // never leave it.
-      expect(resumed[0]?.model).toBe("strong-model");
-      expect(pane.returnedAt(dueAt)).toBe(resumed[0]?.at);
-    }
+    expect(beforeDue.map((turn) => turn.model)).not.toContain("strong-model");
     // And the return did come, which is what says the arming survived at all: a life that had
     // restored nothing would have stayed on the weaker model for good.
     //
@@ -525,4 +516,49 @@ test.skipIf(skip)(
     expect((returned ?? 0) - resumedFrom).toBeLessThan(RESUME_COOLDOWN_MS);
   },
   300_000
+);
+
+test.skipIf(skip)(
+  "a pane relaunched once its restored wait is over sends its first turn to the model it fell back from",
+  async () => {
+    const pane = await fallbackPane({
+      cooldownMs: RESUME_COOLDOWN_MS,
+      // As in the case above: the second assignment's entries carry the arming to disk.
+      prompt: ["Start FALL-1.", "Note that."],
+      answer: (model, nth) => {
+        if (nth === 1) return refuses("refusal_1", { text: "Looking at it." });
+        if (nth === 2) return replies([call("bash", { command: "echo noted" })], `msg_${nth}`);
+        if (nth === 3) return replies([{ type: "text", text: "Noted." }], `msg_${nth}`);
+        // The resumed life's turn asks again while the session is on the weaker model and ends at
+        // its first request to any other: it ends on the return, whenever that comes.
+        return model === "weak-model"
+          ? replies([sleeps(2)], `ping_${nth}`)
+          : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+      },
+    });
+
+    const armed = (await pane.cooldowns()).at(-1)?.arming;
+    expect(armed).toMatchObject({ restoreTo: STRONG, cause: "refusal" });
+    const dueAt = armed?.dueAt ?? 0;
+    const firstLife = pane.served.length;
+
+    // The daemon relaunches the worker once the wait is over, as it does for a pane that was gone
+    // longer than the cooldown it fell back for, and as a boot slower than the rest of the wait
+    // does in the case above. A real wait, on purpose: the cooldown runs on the omp process's own
+    // clock, which no test can move, and this one ends at the due time the transcript records.
+    while (Date.now() < dueAt) await Bun.sleep(dueAt - Date.now());
+    await pane.resume([], "Carry on after the relaunch.");
+
+    // The host reads a request's model before it runs the `context` hook, so that hook cannot
+    // move the first request of a run: `before_agent_start` puts the due arming back ahead of
+    // it. A life that had dropped the arming would never leave the weaker model, and one that
+    // had started the wait again would spend a whole cooldown on it.
+    expect(pane.served[firstLife]?.model).toBe("strong-model");
+    // The return is the restored arming's own: the state it writes clears the arming and keeps the
+    // level the refusal raised, before the clean turn after it puts that level back to the base.
+    const states = await pane.cooldowns();
+    const armedLast = states.findLastIndex((state) => state.arming !== undefined);
+    expect(states[armedLast + 1]).toEqual({ levels: { [STRONG]: 2 } });
+  },
+  180_000
 );
