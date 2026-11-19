@@ -101,8 +101,7 @@ no run shares a port with another and
 none empties the database behind a server it did not start. Set, a port is
 used as given, and an occupied one fails with `address already in use`.
 `DISPATCH_E2E_REUSE_SERVERS=1` says the ports name a harness you started
-yourself, and the hook then starts nothing. `AGENTS.md`'s end-to-end section
-states that
+yourself, and the hook then starts nothing. `e2e/harness-ports.ts` states that
 rule in full — the accepted values and what a bad or duplicated port does. The
 harness starts `e2e/fake-envoy.ts` and that listener is the only Envoy the
 server ever talks to; tests seed its
@@ -114,7 +113,8 @@ Dispatch records the attempt `queued`), and say what a send answers it was with
 credential-request feature is on, and tests seed its pending requests with
 `setPendingCredentialRequests` from `e2e/fake-broker-helpers.ts`; an empty
 `DISPATCH_E2E_AGENT_SECRETS_URL` runs the suite with no broker instead, as a
-deployment that configures none (`AGENTS.md` has the switch). It also starts
+deployment that configures none (`e2e/run-server.sh` and `e2e/harness-broker.ts` have the
+switch). It also starts
 `e2e/plain-http-proxy.ts` for the plain-HTTP project.
 
 `DISPATCH_E2E_EMBEDDER=fake` starts one listener more, `e2e/fake-embedder.ts`, and points the
@@ -233,7 +233,7 @@ the rule reaches no job of this repository and only a run by hand.
 Every other mode runs on the default one worker, and so one stack: the deployed
 run, two-process mode,
 a run against servers you started (`DISPATCH_E2E_REUSE_SERVERS=1`) and
-`bun run dispatch:local`. `AGENTS.md`'s end-to-end section has the whole model.
+`bun run dispatch:local`. `e2e/harness-pool.ts` and `e2e/harness-ports.ts` hold the whole model.
 
 `e2e/run-server.sh` on its own is the server for a shell caller: with
 `DATABASE_URL`, `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT` and the broker switch's
@@ -277,7 +277,8 @@ pins a request to one process with the `X-Dispatch-E2E-Process: a|b` header or a
 context with the `dispatch-e2e-process` cookie, or splits a context with the `dispatch-e2e-page`
 and `dispatch-e2e-api` cookies (its page from one process, its API, sockets and `/auth` from the
 other), and reads which process served what from the proxy's `/_proxy/requests` and
-`/_proxy/sockets`; `AGENTS.md`'s end-to-end section has the whole contract. Any
+`/_proxy/sockets`; `e2e/harness-processes.ts` and `e2e/round-robin-proxy.ts` hold the whole
+contract. Any
 `DISPATCH_E2E_PROCESSES` other than `1`, `2` or unset is refused.
 
 To run one build's page against another build's server, give B a previous release, as CI's
@@ -310,6 +311,18 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
 
 It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess` sets; any value other than `oidc`
 or unset is refused.
+
+Three rules the code does not show:
+
+- In an Inbox test, move focus and the pointer off a row before you expect it to leave the list:
+  the Inbox keeps the row under the reader's hand drawn (`ViewportAnchor`, `heldRow`), and
+  `.check()` and `.click()` leave the pointer on it.
+- In the windowed Agents list, role queries skip a hidden row where CSS locators, `getByText` and
+  counts do not (`shownAgentRows` and `agentRow` in `e2e/agents.ts`), and `toBeHidden()` passes
+  when nothing matches, so put `toHaveCount(1)` beside it where the row must be mounted.
+- Apply the nightly job's re-recorded set by replacing `e2e/__recordings__` with its artifact
+  (`dispatch-browser-recordings-<attempt>`), never by copying it over the directory: a copy keeps
+  every recording no row writes any more.
 
 ## Local instance
 
@@ -762,8 +775,9 @@ the stubbed layer alone" to the rest of the run; set by hand it tells `globalSet
 stack at all, for the whole run and real-stack projects included, which then find no server to
 address.
 The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-three the `-alone` projects below take and the stubbed layer's own (`packages/dispatch/AGENTS.md`,
-"The stubbed layer", which the last two projects of the list run).
+three the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
+stubbed layer's own (`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two
+projects of the list run).
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
 test's or its `test.describe`'s title); a test takes the tag when the phone viewport can change
 what it

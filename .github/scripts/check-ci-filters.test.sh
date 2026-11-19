@@ -2874,10 +2874,10 @@ check "and says what to do about it" \
   "$(contains "$out" 'move filters of it into another paths-filter step of the job')"
 
 echo "case: the slow-suite list a reader is given names the jobs the label gates"
-# AGENTS.md's "The slow test suites run in the merge queue, not on a pull-request push" item is
-# the only place a person is told which suites the full-ci label holds back, and it names them
-# one by one. The set it must equal is derivable from the jobs rather than from the outputs: a
-# slow suite is a job whose `if:` tests a changes output whose own expression carries the
+# AGENTS.md's item on the jobs of `ci.yaml` held back on a pull request ("Pull requests and
+# merging") is the only place a person is told which suites the full-ci label holds back, and it
+# names them one by one. The set it must equal is derivable from the jobs rather than from the
+# outputs: a slow suite is a job whose `if:` tests a changes output whose own expression carries the
 # `full-ci` term. Reading the outputs alone is not enough, because two jobs can share one output
 # - main's envoy-go-docs-finalizers rides envoy_go_race_docs - and then the guide can name seven
 # jobs while eight are held back. Nothing else holds the two together, so a job another tree adds

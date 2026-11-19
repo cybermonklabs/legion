@@ -128,12 +128,12 @@ export function AgentConversationPage({
   // The human's direct messages and the session's replies to them, as Dispatch stores them. A
   // person's Send or Aside to a session that takes one becomes the session's own user turn, which
   // the stream carries tagged with this message's id, and the thread shows it once; one the
-  // stream carries untagged shows twice (`packages/pi-envoy/AGENTS.md`, the phase-worker section,
-  // says when). A BTW, an issue message, and any message to a session that takes no user turn
-  // from Envoy arrive as notices the stream has no frame for, and the session answers them with a
-  // `dispatch message` command, which the stream shows only as a `bash` tool call whose arguments
-  // hold that command. Without these the thread would show replies to messages the human cannot
-  // see, and no replies at all.
+  // stream carries untagged shows twice (`packages/pi-envoy/AGENTS.md`, "A person's message from
+  // Dispatch", says when). A BTW, an issue message, and any message to a session that takes no
+  // user turn from Envoy arrive as notices the stream has no frame for, and the session answers
+  // them with a `dispatch message` command, which the stream shows only as a `bash` tool call whose
+  // arguments hold that command. Without these the thread would show replies to messages the human
+  // cannot see, and no replies at all.
   const stored = useQuery(agentMessagesQuery(sessionId));
   // Seeing them is reading them, so only the view the person is looking at marks them read, as
   // the Agents page's collapsed row does.

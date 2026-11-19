@@ -831,8 +831,8 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 // merge in its opening clause and limits nothing of its `fail` clause by it. A test that passes on
 // the revert it exists to catch measures the wrong unit, so a check widened from here keeps the
 // clause. That is read over the composed prompt of each role a look reaches, the tester's and the
-// implementer's. The three pages that state the rule outside a prompt - the repository's
-// AGENTS.md, the e2e proof's account of the bound's look and the concepts page - are read by
+// implementer's. The two pages that state the rule outside a prompt - the e2e proof's account
+// of the bound's look and the concepts page - are read by
 // internal/textcheck's TestThePagesFailAnUnobservedRequirementOnlyWhereProductionCarriesTheMerge,
 // with the same clause rule, so an edit to one of them alone starts the text checks rather than
 // this package's whole lane. Each prompt must hold one such clause at least, so a matcher that

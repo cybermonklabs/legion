@@ -597,12 +597,6 @@ const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
     "an answered, a resolved or a withdrawn question waits on nobody",
     "a closed question has nobody to wait on; the rule decides whom an open question waits on",
   ],
-  // What a Dispatch older than every project naming a default answers: no person.
-  [
-    "packages/dispatch/AGENTS.md",
-    "a badge reading `Asked of <person>`, or `Asked of nobody`",
-    "the card's badge where the server names no person, which only an older Dispatch does",
-  ],
   // Not a question: a block copied from another ask, a bus message, a notification.
   [
     "packages/envoy/internal/dispatch/docs/ask_blocks.go",
@@ -613,16 +607,6 @@ const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
     "packages/envoy/internal/dispatch/docs/copied_asks_test.go",
     "A block taken for a copy opens no ask and reaches nobody's Inbox",
     "a copy of an ask block opens no ask, so it is no question waiting on anyone",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "since it opens no ask and reaches nobody's Inbox",
-    "a copy of an ask block opens no ask, so it is no question waiting on anyone",
-  ],
-  [
-    "packages/envoy/AGENTS.md",
-    "as a human's unnamed `artifact.version` reaches nobody",
-    "a version notification that reaches no follower, not whom a question waits on",
   ],
   [
     "skills/legion-controller/references/finding-asks.md",
@@ -645,11 +629,6 @@ const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
     "packages/envoy/internal/dispatch/api/one_expression_guard_test.go",
     "a read that reintroduced the two-step `coalesce(a.asked_of, i.assignee)`",
     "the spelling the count beneath it exists to catch",
-  ],
-  [
-    "packages/envoy-client/src/__tests__/dispatch-asked-of.test.ts",
-    "the person the ask was handed to, the assignee of its issue until somebody hands it on",
-    "an excerpt that row matches in packages/envoy/AGENTS.md, whose sentence goes on to the default",
   ],
 ];
 
@@ -782,10 +761,6 @@ test.each([
   [
     "packages/envoy/cmd/dispatch/README.md",
     "for an assignee move the assignee the issue was taken from",
-  ],
-  [
-    "packages/contracts/AGENTS.md",
-    "moved the status or the assignee (`IssueEventChanges.thread_logins`)",
   ],
 ])("states the rule: %s names the project's default on an assignee move's side that holds nobody", (path, opening) => {
   const text = readFileSync(join(REPO_ROOT, path), "utf8").replace(/\s+/g, " ");

@@ -2,7 +2,8 @@
 --
 -- sjawhar/legion#2354: Legion's phase handoffs move from committed `.legion/<KEY>/<phase>.json`
 -- files to records on the Dispatch issue. This migration creates handoffs, the phase handoffs a
--- session records on its issue (packages/envoy/AGENTS.md): one row per handoff a session writes
+-- session records on its issue (docs/site/src/content/docs/legion/concepts.md, "Handoffs on the
+-- Dispatch issue"): one row per handoff a session writes
 -- (POST /api/v1/issues/{key}/handoffs/{phase}, api/handoffs.go), holding id, issue_key, phase,
 -- version, body, author and created_at.
 --
