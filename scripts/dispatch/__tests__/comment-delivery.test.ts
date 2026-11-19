@@ -320,7 +320,7 @@ describe("the document", () => {
     // A value from the input, an author's e-mail address first, is a code span, which a Markdown
     // editor does not make a link; a uuid stays bare.
     expect(first.stdout).toContain(
-      `| ${REPLY} | \`ACME-15\` | 2026-10-19T01:31:21.247610Z | \`sami@theorem.dev\` | reply | ` +
+      `| ${REPLY} | \`ACME-15\` | 2026-10-19T01:31:21.247610Z | \`sami@example.com\` | reply | ` +
         `not delivered | \`not-addressed:claimant\` | \`${CLAIMANT}\` (claimant): ` +
         "not-addressed:claimant |"
     );
@@ -356,8 +356,8 @@ describe("the document", () => {
 
   test("a value with a backtick or a pipe is still one code span, in its table cell", async () => {
     const comments = input.comments.replace(
-      `${id(3)},1003,ACME-1,2026-10-20T00:00:00.000000Z,,sami@theorem.dev,`,
-      `${id(3)},1003,\`ACME-1\`,2026-10-20T00:00:00.000000Z,,a\`b|c@theorem.dev,`
+      `${id(3)},1003,ACME-1,2026-10-20T00:00:00.000000Z,,sami@example.com,`,
+      `${id(3)},1003,\`ACME-1\`,2026-10-20T00:00:00.000000Z,,a\`b|c@example.com,`
     );
     expect(comments).not.toBe(input.comments);
     const run = await cli({ comments });
@@ -367,7 +367,7 @@ describe("the document", () => {
     // value that starts or ends with a backtick; a `|` is `\|`.
     expect(run.stdout).toContain(
       `| ${id(3)} | \`\` \`ACME-1\` \`\` | 2026-10-20T00:00:00.000000Z | ` +
-        "``a`b\\|c@theorem.dev`` | conversation | not delivered | `never-published` | "
+        "``a`b\\|c@example.com`` | conversation | not delivered | `never-published` | "
     );
   });
 
@@ -780,8 +780,8 @@ describe("refusals", () => {
 
   test("rows of one comment that disagree are refused", () => {
     const changed = input.comments.replace(
-      `2026-10-20T10:00:00.100000Z,sami@theorem.dev,reply,false,session:${SESSION_A}`,
-      `2026-10-20T10:00:09.100000Z,sami@theorem.dev,reply,false,session:${SESSION_A}`
+      `2026-10-20T10:00:00.100000Z,sami@example.com,reply,false,session:${SESSION_A}`,
+      `2026-10-20T10:00:09.100000Z,sami@example.com,reply,false,session:${SESSION_A}`
     );
     expect(refusal({ ...input, comments: changed })).toEqual([
       `comments.csv lines 14 and 15: comment ${id(13)} has two values of published_at`,

@@ -1579,7 +1579,7 @@ function sessionPodListener(): SessionPodListener {
  * A session `sessionID` in a session pod, registering with `listener`, its transcript starting with
  * `transcript` (a fresh session has none). A `launch` names the role the pod's launch names in
  * `ENVOY_SESSION_ROLE` and, when it names one, the session it names for it in
- * `ENVOY_SESSION_ROLE_SESSION` (agent-infra's sessions workload); with no `launch` the environment
+ * `ENVOY_SESSION_ROLE_SESSION` (deployment's sessions workload); with no `launch` the environment
  * is left as it is. The host has one session manager, as Oh My Pi's has: `move` takes it to session
  * `id` the way `reason` does (a `/fork` or a tree branch carries the branch on, a `/new` starts an
  * empty one, and a `/fork`, a `/new` or a resume opens the branch `opens` gives, where given; a tree

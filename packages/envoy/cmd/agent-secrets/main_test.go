@@ -183,7 +183,7 @@ const approvedStatusJSON = `{"state":"granted","grant_id":"grant-approved","reco
 // whose requesters tag does not name this session, and the rule that refused it. DENY_ME keeps
 // its own canned answer, which carries no detail at all, so what a denial the broker explained
 // prints is told apart from what one it did not still prints.
-const refusedDetail = "GCLOUD_SAMI: requester-not-listed"
+const refusedDetail = "GCLOUD_DEMO: requester-not-listed"
 
 // deniedDetailStatusJSON is fakeBroker's GET /v1/requests/req-denied-listed, byte for byte: the
 // request DETAIL_DENIED made, read back, carrying the same detail its creation answered.

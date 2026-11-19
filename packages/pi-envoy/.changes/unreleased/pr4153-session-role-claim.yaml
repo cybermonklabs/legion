@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  A session whose launch names an Envoy role in `ENVOY_SESSION_ROLE` (which agent-infra's
+  A session whose launch names an Envoy role in `ENVOY_SESSION_ROLE` (which deployment's
   sessions workload sets once t-e-32 renames its `RoleEnv`, `AGENT_SESSION_ROLE` today) claims
   that role for itself, under its own credential, at its first registration and at every
   registration a pass makes after it, so a session pod no longer needs a claimer of its own that

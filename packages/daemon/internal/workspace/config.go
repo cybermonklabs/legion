@@ -69,7 +69,7 @@ const CloneTimeout = 30 * time.Minute
 // CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
 // repository's tree into a workspace that holds none — which is the issue's checkout alone today
 // (`jj sparse reset`, Provision), so the next such command takes this constant rather than a third
-// one. One write of the largest repository mapped, theorem-labs/oss-verify-proofs-internal, 282,134
+// one. One write of the largest repository mapped, example-org/oss-verify-proofs-internal, 282,134
 // files and 11.56 GiB, took 548.8 s and 554.9 s in an issue pod: this is 6.5 times that measured
 // run, and three times it at the worst rate measured over a 60-second window of it (10.0 MiB/s,
 // which writes the 11.56 GiB in 19.7 minutes).

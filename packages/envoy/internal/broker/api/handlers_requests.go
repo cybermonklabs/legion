@@ -75,7 +75,7 @@ type createRequestResponse struct {
 	// True when the request joined an identical one this session already had pending.
 	Coalesced bool `json:"coalesced,omitempty"`
 	// The broker's one sentence about why it denied the request: the secret that refused it and
-	// the rule that did, as "GCLOUD_SAMI: requester-not-listed", several joined with "; ". Null
+	// the rule that did, as "GCLOUD_DEMO: requester-not-listed", several joined with "; ". Null
 	// when the broker recorded none — every request it did not deny, and a denial whose rule it
 	// cannot name. A session reads it to learn that asking for that secret again will not help.
 	Detail *string `json:"detail"`
@@ -200,7 +200,7 @@ type requestStatusResponse struct {
 	// expired.
 	Decision *requestDecision `json:"decision"`
 	// The broker's one sentence about why it denied the request, as POST /v1/requests answers it:
-	// the secret that refused it and the rule that did, as "GCLOUD_SAMI: requester-not-listed".
+	// the secret that refused it and the rule that did, as "GCLOUD_DEMO: requester-not-listed".
 	// Null when the broker recorded none, a request it did not deny among them.
 	Detail *string `json:"detail"`
 	// While it is pending, its record's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>,

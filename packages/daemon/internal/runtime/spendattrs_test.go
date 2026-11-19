@@ -11,9 +11,9 @@ import (
 )
 
 // operatorSpendAttributesFor is the value the live deployment's operator writes, one per project
-// (legion/Pulumi.prod.yaml of theorem-labs/agent-infra), with the project's own lane.
+// (legion/Pulumi.prod.yaml of example-org/deployment), with the project's own lane.
 func operatorSpendAttributesFor(lane string) string {
-	return "theorem.project=legion,theorem.lane=" + lane + ",theorem.credential=gateway,theorem.person=sami@theorem.dev"
+	return "theorem.project=legion,theorem.lane=" + lane + ",theorem.credential=gateway,theorem.person=sami@example.com"
 }
 
 // liveAttributes is what the detector reads out of operatorSpendAttributesFor("legion-infra"),
@@ -23,7 +23,7 @@ func liveAttributes(pairs ...string) map[string]string {
 		"theorem.project":    "legion",
 		"theorem.lane":       "legion-infra",
 		"theorem.credential": "gateway",
-		"theorem.person":     "sami@theorem.dev",
+		"theorem.person":     "sami@example.com",
 	}
 	for i := 0; i < len(pairs); i += 2 {
 		attrs[pairs[i]] = pairs[i+1]
@@ -307,7 +307,7 @@ func TestSpendAttributesRefusalNamesOnlyTheMemberItRefuses(t *testing.T) {
 	if got == "" {
 		t.Fatal("SpendAttributesRefusal refuses nothing for a member with two =")
 	}
-	for _, other := range []string{"theorem.person", "sami@theorem.dev", "gateway", "legion-infra"} {
+	for _, other := range []string{"theorem.person", "sami@example.com", "gateway", "legion-infra"} {
 		if strings.Contains(got, other) {
 			t.Errorf("SpendAttributesRefusal = %q, which repeats %q from another member", got, other)
 		}

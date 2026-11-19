@@ -16,7 +16,7 @@ import (
 // sets it in `runtime.tmux.pane_env`: the project, the lane, the credential the gateway bills and
 // the person who owns the spend. The tests of the composition start from this value, so what they
 // read is the shape an operator writes rather than one invented here.
-const operatorSpendAttributes = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@theorem.dev"
+const operatorSpendAttributes = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@example.com"
 
 // Every pane carries the operator's own spend attributes with its own issue and role written
 // after them (runtime.SpendResourceAttributes, panePairs), so a pane's attributes name the issue

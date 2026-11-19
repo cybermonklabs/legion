@@ -2965,7 +2965,7 @@ export default function envoyExtension(pi: PiApi): void {
     );
 
   // The Envoy role a session pod's launch named (`ENVOY_SESSION_ROLE`) and the one session it named
-  // it for (`ENVOY_SESSION_ROLE_SESSION`, the id the pod starts the agent with; agent-infra's
+  // it for (`ENVOY_SESSION_ROLE_SESSION`, the id the pod starts the agent with; deployment's
   // sessions workload sets both once t-e-32 lands). That session claims the role itself, under its
   // own credential, which the listener holds to that very session, at every pass that registers
   // it (`settleRole`). No other session claims it, by any path: not a process the agent starts in

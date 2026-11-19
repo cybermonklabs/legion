@@ -11,7 +11,7 @@ import (
 
 // TarballPrefix is the one directory GitHub's tarball of the check's repository holds every
 // member under, `<owner>-<repo>-<sha>/`.
-const TarballPrefix = "theorem-labs-agent-infra-84d835ba5d00f97212253ffa221898f1f234a772/"
+const TarballPrefix = "example-org-deployment-84d835ba5d00f97212253ffa221898f1f234a772/"
 
 // checkDirectory is the directory of the check's repository the check's files are under. The
 // guard spells it for itself (leakguard.checkDirectory, unexported).
