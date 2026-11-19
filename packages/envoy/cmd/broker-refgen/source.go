@@ -76,23 +76,55 @@ func (s *source) fileOf(n ast.Node) *ast.File {
 	return nil
 }
 
-// funcs is every top-level function and method, keyed by name; a method is keyed by its name
-// alone, and two declarations sharing a name are refused, so a call by name is never ambiguous.
-func (s *source) funcs() (map[string]*ast.FuncDecl, error) {
-	out := map[string]*ast.FuncDecl{}
+// funcTable is every top-level function and method of one package that has a body, keyed by
+// name; a method is keyed by its name alone, since refgen runs no type checker and resolves a call
+// by the name it calls. A name more than one declaration shares, such as UnmarshalJSON declared on
+// two body types, or a function and a method of one name, is ambiguous: the table keeps every
+// declaration of it, and decl refuses it, naming each. So a package may declare a name refgen never
+// resolves more than once, and every call and route row refgen does resolve by name reaches the
+// one declaration of that name, never whichever of several came first.
+type funcTable struct {
+	src   *source
+	decls map[string][]*ast.FuncDecl
+}
+
+// funcs is the package's funcTable.
+func (s *source) funcs() funcTable {
+	t := funcTable{src: s, decls: map[string][]*ast.FuncDecl{}}
 	for _, f := range s.files {
 		for _, d := range f.Decls {
-			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Body != nil {
+				t.decls[fn.Name.Name] = append(t.decls[fn.Name.Name], fn)
 			}
-			if prev, dup := out[fn.Name.Name]; dup {
-				return nil, fmt.Errorf("%s and %s both declare %s; refgen resolves calls by name", s.at(prev), s.at(fn), fn.Name.Name)
-			}
-			out[fn.Name.Name] = fn
 		}
 	}
-	return out, nil
+	return t
+}
+
+// declares reports whether the package declares name, once or more.
+func (t funcTable) declares(name string) bool { return len(t.decls[name]) > 0 }
+
+// declaresMethod reports whether one of the package's declarations of name is a method.
+func (t funcTable) declaresMethod(name string) bool {
+	return slices.ContainsFunc(t.decls[name], func(fn *ast.FuncDecl) bool { return fn.Recv != nil })
+}
+
+// decl is the package's one declaration of name, nil when it declares none, and an error naming
+// each declaration when more than one shares the name, which a caller refuses with the position
+// of the call or the route row that named it.
+func (t funcTable) decl(name string) (*ast.FuncDecl, error) {
+	decls := t.decls[name]
+	switch len(decls) {
+	case 0:
+		return nil, nil
+	case 1:
+		return decls[0], nil
+	}
+	at := make([]string, len(decls))
+	for i, fn := range decls {
+		at[i] = t.src.at(fn)
+	}
+	return nil, fmt.Errorf("%s each declare %s, and refgen resolves a call by its name alone, so it cannot tell which one this reaches", strings.Join(at, " and "), name)
 }
 
 // specs yields every spec of the package's declarations of the given kinds (token.TYPE,
