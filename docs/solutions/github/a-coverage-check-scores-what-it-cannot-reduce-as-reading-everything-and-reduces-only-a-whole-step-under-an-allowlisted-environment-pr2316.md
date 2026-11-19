@@ -27,16 +27,6 @@ to an input it cannot fully read is not "refuse" but "the job reads everything":
   narrower fallback (the command's module, both modules, `.go` files only) is narrow somewhere,
   and each one was evaded by the next reviewer's probe. A `cd`, `go -C` or moved working directory
   must only be able to widen what a command reads.
-- **Refuse, do not widen, a step that differs from a text you pinned.** Widening answers only
-  what a job reads, and says nothing where the filter already selects everything. A step pinned
-  whole (an exact entry of `ci_job_reads.py`) is also the table's word for which tests the step
-  runs, so a step whose script or directory is not its pin is refused, naming the step and the
-  first line that differs, or both directories. The text-check job's filter selects every Go
-  file, and while such a step was widened, a guard test dropped from its `-run` passed the check
-  and ran in no job. So is a pinned step whose env, shell, container or job could change what it
-  compiles or which tests it runs: `GOFLAGS: -skip=<the test>` in the step's env leaves its
-  script, and so its pin, as they were, and go then skips that test though the `-run` names it.
-  Widening stays the answer for a command the check does not reduce.
 - **Reduce only the one form you understand completely.** The form: the step's whole `run:` script
   is the one command line (comments and blank lines aside), in the directory the check computes
   from, with no step `shell:`, no `defaults.run.shell` and no job `container:`. No earlier step of

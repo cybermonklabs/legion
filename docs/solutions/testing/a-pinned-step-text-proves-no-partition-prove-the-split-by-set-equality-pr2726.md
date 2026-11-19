@@ -61,9 +61,8 @@ Two mechanics of the checker, for whoever runs it:
   The module does repository-root-relative I/O at import time, so `cd .github/scripts` first ends
   `FileNotFoundError: [Errno 2] No such file or directory: 'packages/envoy'`.
 - Read the **first** problem, not the count.
-  When this note was written, a pinned script one byte off its text stopped being reduced, so its
-  runs claimed every Go file of the repository and the checker reported 22 problems for one edit.
-  It now refuses the step once, naming it and the line that differs.
+  A pinned script one byte off its text stops being reduced, so its runs claim every Go file of
+  the repository and the checker reports 22 problems for one edit.
 
 ## Evidence
 

@@ -8,6 +8,20 @@ of this repository running on a merge group - and main() runs them.
 check-ci-filters.sh runs it from the repository root with this directory on PYTHONPATH, through
 `import ci_filter_coverage` rather than as a script, so ci_job_reads.py's `from ci_filter_coverage
 import ...` gets these very classes.
+
+A step an exact entry pins (Exact) is refused, never read as reading everything, when it is not
+what the entry pins (refuse_off_pin): its script or directory differs, named by the first line
+that differs (pin_difference, name_list_difference) or by both directories, or something around
+it (an env name outside ENV_ALLOWED, a shell, a container, an environment write that reaches it)
+can change what it compiles or which tests it runs. The pin is also the table's word for which
+tests the step runs, and reading everything says nothing where a filter selects every Go file
+already. What surrounds a go command is read over the steps whose writes reach it: a pinned step
+the steps before it, a claimed simple command the steps up to and including its own (job_up_to),
+and a script's go command each job's steps up to the last one whose run: starts the script
+(names_script, SCRIPT_START), or every step of a job that names it nowhere (around_job).
+check-ci-filters.sh's header says why, gives the remedies - the step's own script line, or
+ENV_ALLOWED for a name with which go compiles the same files and runs the same tests - and gives
+the recipe that runs it as CI does, GOROOT unset.
 """
 
 from __future__ import annotations
