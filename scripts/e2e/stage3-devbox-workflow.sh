@@ -1268,7 +1268,6 @@ restart_scenarios() {
   # The same session in the same process incarnation is what "no phase restarted" means; the claim's
   # turn state (working, idle) may change across the restart as the agent finishes a turn.
   before_restart=$(daemon_state | jq -c --arg issue "$restart_issue" '.issues[$issue].workers.implementer.claim | {session, incarnation: (.locator.incarnation // "")}')
-  kill -TERM "$daemon_pid"
   stop_pid "$daemon_pid"
   daemon_pid=
   # While the daemon is down, a human board write becomes a durable Dispatch event that the restored

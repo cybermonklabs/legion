@@ -124,3 +124,35 @@ test.skipIf(skip)("a proc root that lists no process is reported, and found no l
     `refuse_leftovers: ${empty} lists no process, so whether an earlier ${prefix} run left processes running was not read\nstatus 2\n`
   );
 });
+
+// The working directories are read by one find, and a find that read nothing is no answer: one too
+// old for -files0-from (findutils before 4.9, which says so and exits 1) and one a signal ends are
+// each reported, naming the find's status and its complaint, with 2. The control is the find every
+// walk of a busy machine runs: it exits 1 for an entry of another user's process, which is no
+// complaint, so the check still answers.
+function findStub(body: string) {
+  const bin = mkdtempSync(join(dir, "find-"));
+  writeFileSync(join(bin, "find"), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  return bin;
+}
+test.skipIf(skip)(
+  "a find that fails, that a signal ends or that is too old for -files0-from is reported with 2, and one that meets only unreadable entries is not",
+  async () => {
+    const root = procRootOf(dir, [await sleeper()]);
+    const said = (bin: string) => check(root, bin);
+    const tooOld = said(findStub(`echo "find: unknown predicate \\\`-files0-from'" >&2\nexit 1`));
+    expect(tooOld).toEqual({
+      out: `refuse_leftovers: find exited 1 reading the working directories under ${root}: find: unknown predicate \`-files0-from'\nstatus 2\n`,
+      err: "",
+    });
+    const killed = said(findStub("kill -KILL $$"));
+    expect(killed).toEqual({
+      out: `refuse_leftovers: find exited 137 reading the working directories under ${root}: find ended with status 137 and printed nothing\nstatus 2\n`,
+      err: "",
+    });
+    const unreadable = said(
+      findStub(`/usr/bin/find "$@"\necho "find: '$proc_root/1/cwd': Permission denied" >&2\nexit 1`)
+    );
+    expect(unreadable).toEqual({ out: "status 0\n", err: "" });
+  }
+);

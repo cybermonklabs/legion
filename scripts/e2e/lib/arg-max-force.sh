@@ -12,11 +12,11 @@
 # whose entries together are under twice ROOM gets more first: entries of its own at pids above the
 # kernel's pid_max, which no process can hold, each an empty `environ` and empty `fd` and `cwd`
 # directories, so they name no process and no socket of any walk. They are counted in the shell and
-# made with one mkdir, so the force costs a row the same few programs however many it needs.
-# must pass runs here: OLD_FORM, the command line the walk replaced, run through eval, must fail
-# with E2BIG, and a program of no arguments must still start. SCRATCH is a directory the caller
-# owns, where the control keeps its stderr for the time of a read. Any failure of the force exits
-# the shell with 1 and a line naming it.
+# made with one mkdir, so the force costs a row the same few programs however many it needs. The
+# control the force must pass runs here: OLD_FORM, the command line the walk replaced, run through
+# eval, must fail with E2BIG, and a program of no arguments must still start. SCRATCH is a directory
+# the caller owns, where the control keeps its stderr for the time of a read. Any failure of the
+# force exits the shell with 1 and a line naming it.
 arg_max_force() {
   local entry=$1 room=$2 scratch=$3 old=$4 true_bin lo=0 hi=131072 mid err line unreal have n pad
   local -a made=() dirs=()

@@ -335,7 +335,9 @@ agent_pid() {
 # since is never signalled: a shell that works under this run's work directory names it in its PWD
 # and on its command line, and carries no mark. It is continued first: a check stops an agent with
 # SIGSTOP, and a stopped process keeps a TERM pending. The agent leads a session of its own
-# (own_session), so what it started goes with it.
+# (own_session), so the TERM to its group (signal_group) reaches what it started. A member that
+# outlives that TERM is left to cleanup's sweep (stop_marked_processes): a group is signalled only
+# while its leader is still the process recorded, and stop_pid has ended the leader.
 stop_agent() {
   [ -n "${1:-}" ] || return 0
   names_dir "$work" "${run_marks[@]}" "$1" || return 0
@@ -343,7 +345,6 @@ stop_agent() {
   kill -CONT "$1" 2>/dev/null || true
   signal_group "$1" TERM
   stop_pid "$1"
-  signal_group "$1" KILL
 }
 
 cleanup() {
@@ -363,6 +364,9 @@ cleanup() {
   stop_pid "$listener_b_keeper_pid"
   stop_pid "$dispatch_keeper_pid"
   stop_pid "$natsd_pid"
+  # What outlived its stop, a member of an agent's group that outlived the TERM among them: every
+  # process the run marked (both agents carry LEGION_E2E_RUN).
+  stop_marked_processes "$work" || true
   if [ -n "$database" ]; then
     psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||
       echo "could not drop database $database; drop it by hand" >&2

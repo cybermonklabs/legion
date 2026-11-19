@@ -176,6 +176,20 @@ record_start() {
   started_at[$1]=$start
 }
 
+# record_pid_file FILE VAR reads the pid and the start a process wrote of itself before it ran
+# (record_pid_sh), assigns the pid to VAR and records the start with it (started_at), and fails
+# until FILE is there whole. Both are the process's own, so a signal held to them reaches nothing
+# that took the pid since, however late FILE is read: a cleanup that reads it after the process
+# ended holds the pid to the process's start, not to a stranger's.
+record_pid_file() {
+  local pid start
+  { read -r pid start <"$1"; } 2>/dev/null || return 1
+  case $pid in '' | *[!0-9]*) return 1 ;; esac
+  case $start in '' | *[!0-9]*) return 1 ;; esac
+  started_at[$pid]=$start
+  printf -v "$2" '%s' "$pid"
+}
+
 # stop_pid PID ends PID, which the proof recorded with record_start (start_process records each
 # service): SIGTERM, then up to 10 s for it to exit, then SIGKILL, each sent through freeze_if held to
 # the recorded start, so a pid whose process ended, was reaped and passed to another process since,
@@ -205,8 +219,11 @@ stop_pid() {
 # proof recorded (record_start), only while PID is still that process: it stops the leader first
 # (freeze_if … STOP, held to the recorded start), so the leader cannot exit and leave its group id to
 # another group before the signal lands, then signals the group and thaws the leader. A leader with
-# no recorded start, or one that has gone, is left alone, and so is what is left of its group: the
-# run's sweep ends the marked processes that remain. It always succeeds.
+# no recorded start, or one that has gone, is left alone, and so is what is left of its group: with
+# no leader to hold to its start, nothing tells that group from another, so a signal_group after
+# stop_pid of the same leader sends nothing. A rig that must end a member that outlived its leader
+# runs the run's sweep (stop_marked_processes), as the Envoy session-states and clean-session-stop
+# cleanups do. It always succeeds.
 signal_group() {
   local pid=${1:-} start
   [ -n "$pid" ] || return 0
@@ -424,6 +441,24 @@ stop_tree() {
   [ "$(proc_parent "$pid")" = "$parent" ] || return 0
   kill -STOP "$pid" 2>/dev/null || return 0
   kill_frozen "$pid"
+}
+
+# proc_walk_complaint ERRFILE PROC prints the first line of a walk of PROC's stderr that is neither an
+# entry this user may not read, another user's process's, nor one whose process ended during the
+# walk, and fails when every line is one of those two: what a walk of every process meets on a
+# busy machine and no error of its own. A walk that could not start (E2BIG, a find that is not
+# there, or one too old to read -files0-from) leaves a line of its own or the shell's, which is a
+# complaint. listening_holders (lib/rig.sh) and refuse_leftovers (lib/leftovers.sh) read their
+# find's stderr with it.
+proc_walk_complaint() {
+  local line rest
+  while IFS= read -r line; do
+    rest=${line#*find: \'"$2"/}
+    [ "$rest" = "$line" ] || [[ ! $rest =~ ^[0-9]+(/[^\']*)?\':\ (Permission\ denied|No\ such\ file\ or\ directory)$ ]] || continue
+    printf '%s\n' "$line"
+    return 0
+  done <"$1"
+  return 1
 }
 
 # procs_naming DIR NAME… prints `PID START` (proc_start) for each process whose environment gives

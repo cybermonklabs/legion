@@ -245,22 +245,6 @@ listening_holders() {
   done | sort -un
 }
 
-# proc_walk_complaint ERRFILE PROC prints the first line of a walk of PROC's stderr that is neither an
-# entry this user may not read, another user's process's, nor one whose process ended during the
-# walk, and fails when every line is one of those two: what a walk of every process meets on a
-# busy machine and no error of its own. A walk that could not start (E2BIG, a find that is not
-# there) leaves a line of the shell's, which is a complaint.
-proc_walk_complaint() {
-  local line rest
-  while IFS= read -r line; do
-    rest=${line#*find: \'"$2"/}
-    [ "$rest" = "$line" ] || [[ ! $rest =~ ^[0-9]+(/[^\']*)?\':\ (Permission\ denied|No\ such\ file\ or\ directory)$ ]] || continue
-    printf '%s\n' "$line"
-    return 0
-  done <"$1"
-  return 1
-}
-
 # held_only_by PORT PID... succeeds when the processes holding the socket listening on PORT
 # (listening_holders) are exactly the PIDs given, and otherwise prints each holder with its command
 # and fails: a descriptor that leaked into another process (a tmux server, a pane, a CLI call) keeps
@@ -294,7 +278,9 @@ await_start() {
 
 # start_process NAME COMMAND... starts COMMAND in the background, logging to the service's log, and
 # sets <NAME>_pid to its pid, with its start time recorded (record_start, lib/process-tree.sh), so
-# stop_pid signals it only while it is still that process. Monitor mode is on for the start alone,
+# stop_pid signals it only while it is still that process. A service that has already exited when
+# the start is read records none, and start_process still succeeds, so await_start, not a driver's
+# `set -e`, names its log. Monitor mode is on for the start alone,
 # so the service leads a process group of its own: stop_tree stops what it kills with SIGSTOP
 # first, and a stopped member of this shell's own process group has the kernel hang up every member
 # of that group — this shell, the command that started it and the `bun test` that started that — as
@@ -312,7 +298,7 @@ start_process() {
   "$@" </dev/null >>"$evidence/logs/$name.log" 2>&1 &
   printf -v "${name}_pid" '%s' "$!"
   set +m
-  record_start "$!"
+  record_start "$!" || true
 }
 
 # run_processes prints the pid of every process of this run still alive: each that carries the run's

@@ -56,7 +56,7 @@ The three kind proofs write no such file: the Go live tests they drive write the
 
 Every stage proof marks each process it starts with `LEGION_E2E_RUN=$work` once its transcript runs, and its teardown and its checks that no process remains take only the processes that carry the mark ([`lib/process-tree.sh`](#libprocess-treesh)'s `marked_processes`):
 a person's shell or `tail -f` working under the run's directory is never signalled or waited on.
-A host that runs them needs GNU findutils 4.9 or later (`find -files0-from`, which Ubuntu 24.04 ships and 22.04's 4.8 does not): with an older `find` the port-holder read (`listening_holders`) exits 2 at every call.
+A host that runs them needs GNU findutils 4.9 or later (`find -files0-from`, which Ubuntu 24.04 ships and 22.04's 4.8 does not): with an older `find` the port-holder read (`listening_holders`) and the leftovers check (`refuse_leftovers`) exit 2 at every call.
 
 Each item below names a script, then what it proves.
 
@@ -6157,7 +6157,9 @@ Each item below names a function, then what it does.
 
 - `start_process NAME CMD…`
 
-  starts CMD in the background, appending to NAME's log, and sets `NAME_pid`
+  starts CMD in the background, appending to NAME's log, and sets `NAME_pid`, the leader of a process group of its own (monitor mode), with its start recorded (`record_start`).
+  A service that has already exited when its start is read records none, and `start_process` still succeeds, so a driver's `set -e` never ends the run there with no line saying why: `await_start` names the service's log.
+  A `setsid` in front of CMD would fork, since the job already leads its group, and leave `NAME_pid` a `setsid` that exits at once; `lib/unread-proc.test.ts` holds both, and that the broker walkthrough rig (`docs/site/media/broker/rig.sh`) starts no service through one
 
 - `start_held NAME PORT_VAR FD_ENV [--env K=V]… -- CMD…`
 
@@ -6276,16 +6278,17 @@ A proc root of a test's own processes, for code under test that reads `${proc_ro
 The walks of every process read it: `procs_naming` (and so `run_processes`, `marked_processes`, the sweep and the skill-scenario rig's `run_env_pids`), `listening_holders`, `refuse_leftovers` and the parked-decision proof's `stop_agent_daemons`.
 A walk of the host's whole `/proc` held a row to the host's process count; on this devbox at 25,474 entries `refuse_leftovers` alone took 29 s.
 Each row of `lib/run-processes.test.ts` walks a root of the processes it started and the test process, and its first row starts a marked process outside that root, which a walk that went back to the host's `/proc` would name.
-The file is #4187's, copied unchanged, so its header also names `role_kill_sh`, which reads a proc root once #4187 lands.
+A harness shell makes the same root for itself with one `ln -s` an entry, as `lib/unread-proc.test.ts`'s row for an agent's member that outlives its TERM does
 
 ## lib/process-tree.sh
 
 How a live proof knows a process it started: by the pid it had when it started, read from what started it, and by the program the kernel records it runs (`/proc/<pid>/exe`), never by a walk of the machine's `/proc` for its name, its command line or its working directory.
 On a devbox at load 469 one such walk of 29,613 entries took 504 s; every other Oh My Pi there runs under the same name, its own daemon broker child among them; an `omp_invocation`, a wrapper or `exec -a` gives `argv[0]` any name;
 and an entry read through `tr | grep -q` under `pipefail` reads as absent whenever grep stops before tr has written the rest, which missed 2 to 4 reads in 100 of a devbox's own environment and every read of one with a mebibyte after the variable.
-[`lib/rig.sh`](#librigsh) sources it, and `stage2-tmux-supervision.sh`, which sources no rig, sources it on its own.
+[`lib/rig.sh`](#librigsh) sources it, [`lib/leftovers.sh`](#libleftoverssh) sources it when no script has, and `stage2-tmux-supervision.sh`, which sources no rig, sources it on its own.
 It needs nothing of its caller's.
-Its walks of every process (`procs_naming`) read `${proc_root:-/proc}` ([`lib/proc-root.ts`](#libproc-rootts)) and hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` hands them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) `listening_holders` always exits 2.
+Its walks of every process (`procs_naming`) read `${proc_root:-/proc}` ([`lib/proc-root.ts`](#libproc-rootts)) and hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` and [`lib/leftovers.sh`](#libleftoverssh)'s `refuse_leftovers` hand them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) both always exit 2.
+Both read their `find`'s stderr with `proc_walk_complaint ERRFILE PROC`, which prints its first line that is neither an entry of PROC this user may not read nor one whose process ended during the walk, and fails when there is none.
 A walk or a read that cannot see the processes it reads says why and fails with 2, never reads as none: a proc root that lists no process, an `xargs` or a `find` a signal ended, an unreadable `/proc/net/tcp`, and a Linux `/proc` with no `self` (an empty tmpfs mounted there, `proc_unreadable`), where `proc_children`, `proc_descendants`, `stop_tree`, `kill_frozen`, `kill_held` and the sweep fail with 2.
 
 ```sh
@@ -6305,11 +6308,14 @@ A walk or a read that cannot see the processes it reads says why and fails with 
   prints PID's start time, field 22 of `/proc/PID/stat`, which the kernel sets at the fork and exec keeps, and nothing for a process that is gone, a zombie included:
   a pid and its start name one process even once the kernel has given the pid to another
 
-- `record_start PID`, `stop_pid PID`, `signal_group PID SIGNAL`
+- `record_start PID`, `record_pid_file FILE VAR`, `stop_pid PID`, `signal_group PID SIGNAL`
 
   `record_start` records PID's start time in `started_at`, read where the run learns the pid (right after its `&`, or from its own pid file), and fails for a pid with no live process.
+  `record_pid_file` reads the pid and start a process wrote of itself before it ran (`record_pid_sh`) into VAR and `started_at`, so a read made late, in a cleanup after the process ended, still holds the pid to that process's start; the broker walkthrough rig reads its helper's pid with it.
   `stop_pid` sends TERM, then KILL after 10 s, and `signal_group` sends SIGNAL to the group PID leads, each through `freeze_if` held to that recorded start, so a pid whose process ended and passed to another since gets no signal; a pid with no recorded start is named and left alone.
-  `lib/unread-proc.test.ts` holds both with a start that is not the process's own, and, where `sudo -n` can make a pid namespace whose `pid_max` is 2400, with a daemon that ended and a stranger that took its pid
+  A leader that has gone takes its group's signal with it: a `signal_group` after `stop_pid` of the same leader sends nothing, and a member that outlived the leader is the run's sweep's (`stop_marked_processes`), which the Envoy session-states and clean-session-stop cleanups run.
+  `lib/unread-proc.test.ts` holds both with a start that is not the process's own, and, where `sudo -n` can make a pid namespace whose `pid_max` is 2400, with a daemon that ended and a stranger that took its pid.
+  That row runs only on Linux 6.14 or later, where a pid namespace's `pid_max` is its own: on an older kernel the write would set the host's, so there it is skipped by that name, and the row fails, putting the host's value back, if the host's `pid_max` ever moves across it
 
 - `signalable PID`
 
@@ -6542,8 +6548,9 @@ The check fails, through the caller's `fail`, naming each container and process 
 A driver counts as alive only while its pid is a live, non-zombie process that started no later than the container or process it would own, since pids are reused.
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
-It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment in the shell itself and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process; a proc root that lists no process is reported through `fail`, naming it.
-`lib/leftovers.test.ts` holds both, and the reading of each of the three places a process names its run
+It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment in the shell itself and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process.
+A proc root that lists no process, and a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
+`lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run
 
 ## lib/operator-dispatch.sh
 

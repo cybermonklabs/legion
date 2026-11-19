@@ -305,7 +305,7 @@ start_daemon() {
   await_start daemon "$daemon_pid" 180 "the Go daemon to answer /healthz" \
     curl -fsS --max-time 5 "http://127.0.0.1:$port_daemon/healthz"
 }
-stop_daemon() { kill -TERM "$daemon_pid" 2>/dev/null || true; stop_pid "$daemon_pid"; daemon_pid=; }
+stop_daemon() { stop_pid "$daemon_pid"; daemon_pid=; }
 
 claim_session_file() {
   local issue=$1 role=$2

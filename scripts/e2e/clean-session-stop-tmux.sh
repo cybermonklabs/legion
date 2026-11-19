@@ -321,15 +321,16 @@ agent_pid() {
 # stop_agent PID ends the control session, and only while it still carries the run's mark
 # (names_dir and run_marks, lib/process-tree.sh), so a pid the kernel gave to another process since
 # is never signalled: a shell that works under this run's work directory names it in its PWD and on
-# its command line, and carries no mark. It leads a session of its own (own_session), so what it
-# started goes with it.
+# its command line, and carries no mark. It leads a session of its own (own_session), so the TERM to
+# its group (signal_group) reaches what it started. A member that outlives that TERM is left to
+# cleanup's sweep (stop_marked_processes): a group is signalled only while its leader is still the
+# process recorded, and stop_pid has ended the leader.
 stop_agent() {
   [ -n "${1:-}" ] || return 0
   names_dir "$work" "${run_marks[@]}" "$1" || return 0
   signalable "$1" || return 0
   signal_group "$1" TERM
   stop_pid "$1"
-  signal_group "$1" KILL
 }
 
 cleanup() {
