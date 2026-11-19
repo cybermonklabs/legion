@@ -254,7 +254,7 @@ func TestAVersionOneCharacterFromTheApprovedTextLeavesTheApprovalStale(t *testin
 	advice := agentEdit(t, handler, artifactID, 3, replaceOp("behind a flag and a canary.", "behind a flag!"))
 	approved, nearly := versionMarkdown(t, handler, artifactID, 1), versionMarkdown(t, handler, artifactID, 3)
 	if want := strings.Replace(approved, "behind a flag.", "behind a flag!", 1); nearly != want || len(nearly) != len(approved) {
-		t.Fatalf("version 3 = %q, want version 1 with one character changed, %q", nearly, want)
+		t.Fatalf("version 3 = %q, want version 1 with one ASCII character changed, %q", nearly, want)
 	}
 	requireNoCarry(t, handler, artifactID, 1, "stale")
 	if advice.SupersededApproval != nil {

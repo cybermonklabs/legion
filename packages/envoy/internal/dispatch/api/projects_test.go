@@ -268,9 +268,9 @@ func TestAnInvalidProjectIsRefusedForABearerAndAPerson(t *testing.T) {
 	}
 	for _, input := range []struct{ name, key, projectName, says string }{
 		{"lowercase key", "agent", "Agent project", badKey("agent")},
-		{"one-character key", "A", "Agent project", badKey("A")},
+		{"one-letter key", "A", "Agent project", badKey("A")},
 		{"key starting with a digit", "1AGENT", "Agent project", badKey("1AGENT")},
-		{"key over ten characters", "ABCDEFGHIJK", "Agent project", badKey("ABCDEFGHIJK")},
+		{"key over ten letters", "ABCDEFGHIJK", "Agent project", badKey("ABCDEFGHIJK")},
 		{"empty name", "AGENT", "", "project name is required"},
 		{"blank name", "AGENT", "   ", "project name is required"},
 		{"a bidi override", "AGENT", "Agent \u202eproject", `name holds U+202E, a bidi control that reorders the text a reader sees`},

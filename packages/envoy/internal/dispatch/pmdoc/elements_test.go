@@ -214,7 +214,7 @@ func TestARefusalAtTheGuardSaysWhereReadingStopped(t *testing.T) {
 	for lines, stopped := range map[int]int{1 << 19: 131_073, 70_000: 61_074} {
 		_, err := ParseForWrite(strings.Repeat("a\n", lines), nil)
 		if want := fmt.Sprintf("more than 65536 elements, too many to read past line %d;", stopped); !errors.Is(err, ErrTooManyElements) || !strings.Contains(err.Error(), want) {
-			t.Errorf("%d one-character lines: %v, want a refusal saying %q", lines, err, want)
+			t.Errorf("%d one-letter lines: %v, want a refusal saying %q", lines, err, want)
 		}
 	}
 }
