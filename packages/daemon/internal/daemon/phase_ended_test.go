@@ -177,17 +177,17 @@ func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
 // is how a woken role lost the end of its phase.
 func TestAPhaseEndedMessageForAReleasedPodIsKeptForItsWokenSession(t *testing.T) {
 	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
-	keptAcrossTheWake(t, ended, claim.RoleTester, ended.Message("LEGION-208"))
+	keptAcrossTheWake(t, ended, claim.RoleTester, ended.Message("LEGION-208"), keptOnce)
 }
 
 // A phase-ended message to a released role waits out the resume the wake pacing parks, as a hook
 // prompt does (TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod): the row reads the claim
 // again at the wake's turn or parkedWakeBound on, whichever comes first, as a routine wait, and
 // publishes nothing while the park holds, and the attempt after the turn has launched the resume
-// publishes the message with keep, once, and ends the row.
+// publishes the message with keep, once, and ends the row; the hook prompt is held instead.
 func TestAPhaseEndedMessageWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
 	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
-	keptAfterTheParkedWake(t, ended, claim.RoleTester, ended.Message("LEGION-208"))
+	keptAfterTheParkedWake(t, ended, claim.RoleTester, ended.Message("LEGION-208"), keptOnce)
 }
 
 // An operator's resume of a released role whose resume the wake pacing parked launches the claim
@@ -200,7 +200,7 @@ func TestAPhaseEndedMessageWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
 // the turn: the attempt at the bound then finds the row not due and publishes nothing.
 func TestAPhaseEndedMessageFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *testing.T) {
 	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
-	keptAfterAnOperatorsResume(t, ended, claim.RoleTester, ended.Message("LEGION-208"))
+	keptAfterAnOperatorsResume(t, ended, claim.RoleTester, ended.Message("LEGION-208"), keptOnce)
 }
 
 // A relaunch the wake pacing parks over a process the claim still records holds no row: the

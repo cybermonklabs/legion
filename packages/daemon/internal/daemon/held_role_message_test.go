@@ -90,11 +90,12 @@ func TestAHookPromptForAClaimThatKeepsItsSessionIsHeldUntilItsRoleIsHeld(t *test
 	}
 }
 
-// A listener that keeps the prompt for the role's next holder (cybermonklabs/legion#4079) is its
-// one keeper, so the row ends there, and is not held beside the kept copy, though the claim keeps
-// its session: the relaunched process on that session takes it from the kept lane when it holds
-// the role again.
-func TestAHookPromptTheListenerKeepsIsNotHeldForAClaimThatKeepsItsSession(t *testing.T) {
+// A listener that keeps a message for the role's next holder (cybermonklabs/legion#4079) keeps
+// one for one hour only, and a claim out of reach longer than that is the one handed to a person.
+// So a hook prompt for a claim that keeps its session is published without keep, the listener
+// keeps nothing though it could, and the daemon holds the row, the prompt's one keeper, until a
+// session holds the role again (R5), which the held prompt then reaches once.
+func TestAHookPromptForAClaimThatKeepsItsSessionIsHeldOnAListenerThatKeeps(t *testing.T) {
 	publisher := &holderPublisher{keeps: true}
 	runner, sup, pool := hookRunner(t, publisher)
 	sessionKeptClaim(t, sup, claim.RoleImplementer, supervise.StateWorking)
@@ -103,14 +104,21 @@ func TestAHookPromptTheListenerKeepsIsNotHeldForAClaimThatKeepsItsSession(t *tes
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
 
 	drain(t, runner)
-	if left := outboxRows(t, pool); left != 0 {
-		t.Fatalf("outbox rows left = %d, want the row ended once the listener kept the prompt", left)
+	if left := outboxRows(t, pool); left != 1 {
+		t.Fatalf("outbox rows left = %d, want the prompt held for the claim that keeps its session", left)
 	}
-	publisher.mu.Lock()
-	kept := publisher.kept
-	publisher.mu.Unlock()
-	if len(kept) != 1 || kept[0].topic != topic || !kept[0].keep {
-		t.Fatalf("kept = %#v, want the prompt kept once on %s", kept, topic)
+	if kept := publisher.keptCopies(); len(kept) != 0 {
+		t.Fatalf("kept = %#v, want nothing kept by the listener: the daemon is the prompt's one keeper", kept)
+	}
+
+	publisher.setAbsent()
+	dueNow(t, pool)
+	drain(t, runner)
+	if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != topic || delivered[0].keep {
+		t.Fatalf("delivered = %#v, want the held prompt delivered once to %s", delivered, topic)
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the delivered prompt finished", left)
 	}
 }
 

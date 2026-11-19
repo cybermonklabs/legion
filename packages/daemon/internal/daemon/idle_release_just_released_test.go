@@ -145,20 +145,28 @@ func idleRigWakeJustReleased(t *testing.T, rig *idleWakeRig) {
 // session reads gone, and the daemon then queues its role a phase-ended message and a hook
 // prompt, each a row of the role-message lane, as a conflict and a hook's firing queue them. No
 // sender tries either again. The first row's first attempt wakes the pod (wakeForDelivery) and
-// waits on its backoff, and each row's first attempt after that resume has launched publishes,
-// with keep, while the woken session has not claimed the role yet: its process is held before it
-// registers with the listener (idleRigPlan.HoldsBeforeEnvoy), as a woken Oh My Pi is still
-// starting then. No live session holds the role, so the listener keeps each message on the role's
-// kept lane — holder_lapsed while the released session's claim stands, unclaimed once the
-// listener's reaper freed it — and each row ends. Once the process goes on, its registration
-// under the claim that still names its session, or its claim of the role, hands both to the woken
-// session (cybermonklabs/legion#4079). A row that published with keep: false would meet the 404
-// and end undelivered, and the woken session would never be given its message.
+// waits on its backoff, and each row's first attempt after that resume has launched publishes
+// while the woken session has not claimed the role yet: its process is held before it registers
+// with the listener (idleRigPlan.HoldsBeforeEnvoy), as a woken Oh My Pi is still starting then.
+// The phase-ended row publishes with keep, so the listener keeps its message on the role's kept
+// lane — holder_lapsed while the released session's claim stands, unclaimed once the listener's
+// reaper freed it — and the row ends; the woken session's registration under the claim that still
+// names its session, or its claim of the role, hands it over (cybermonklabs/legion#4079). The woken
+// claim keeps its session, so the hook prompt publishes without keep, and the daemon holds its row
+// (R5) until the woken session holds the role, which the held row's next attempt then reaches.
 func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 	t.Helper()
 	issue := rig.issue(idleRigJustReleasedOutbox)
 	session := rig.session(issue)
 	registered := rig.agents.role(issue.key, string(issue.role)).Registered
+	rowsLeft := func(kind record.OutboxKind) int {
+		var left int
+		if err := rig.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = $2`,
+			issue.key, string(kind)).Scan(&left); err != nil {
+			t.Fatalf("read the %s rows of %s: %v", kind, issue.key, err)
+		}
+		return left
+	}
 
 	// 1. The release's stop of the process sent the clean stop of its session, and the listener
 	//    deleted the registration. The stop runs on a goroutine of its own once the machine's
@@ -180,35 +188,37 @@ func idleRigOutboxWakesJustReleased(t *testing.T, rig *idleWakeRig) {
 	enqueueOutbox(t, rig.pool, rig.records, mustOutboxRow(t, issue.key, ended, now))
 	enqueueOutbox(t, rig.pool, rig.records, mustOutboxRow(t, issue.key, hook, now))
 
-	// 3. The woken process registers with the daemon and holds, and both rows end while it does:
-	//    each publish meets a role no live session holds.
+	// 3. The woken process registers with the daemon and holds. The phase-ended row ends while it
+	//    does, its message kept by the listener; the hook prompt's row stays, held by the daemon.
 	idleRigEventually(t, idleRigPodWait, "the woken process of "+issue.key+" registered with the daemon", func() bool {
 		return rig.agents.role(issue.key, string(issue.role)).Registered > registered
 	})
-	idleRigEventually(t, idleRigRecordWait, "the phase-ended and hook-prompt rows of "+issue.key+" finished", func() bool {
-		var left int
-		if err := rig.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = any($2)`,
-			issue.key, []string{string(record.OutboxKindPhaseEnded), string(record.OutboxKindHookPrompt)}).Scan(&left); err != nil {
-			t.Fatalf("read the outbox rows of %s: %v", issue.key, err)
-		}
-		return left == 0
+	idleRigEventually(t, idleRigRecordWait, "the phase-ended row of "+issue.key+" finished", func() bool {
+		return rowsLeft(record.OutboxKindPhaseEnded) == 0
 	})
+	if left := rowsLeft(record.OutboxKindHookPrompt); left != 1 {
+		t.Fatalf("the hook prompt rows of %s while its woken session holds no role = %d, want the row held", issue.key, left)
+	}
 	rig.agents.setPlan(issue.key, string(issue.role), idleRigPlan{TakeTurn: true, ExitsAsReleasedInProduction: true})
 
 	// 4. The pod comes back once. The first row's wake is the one resume: a later attempt of
 	//    either row finds the claim no longer released and wakes nothing, and the listener's wake
-	//    report beside each kept publish meets the resume that wake opened.
+	//    report beside the kept publish meets the resume that wake opened.
 	rig.awaitResumed(issue, registered+1)
 	if resumes := rig.resumesOf(issue); len(resumes) != 1 || resumes[0].Kind != pods.WakeDelivery {
 		t.Errorf("the resumes of %s are recorded as %+v, want one, of kind %q", issue.key, resumes, pods.WakeDelivery)
 	}
+	// Once the woken session holds the role, the held row's next attempt delivers the prompt.
+	idleRigEventually(t, idleRigRecordWait, "the held hook-prompt row of "+issue.key+" finished", func() bool {
+		return rowsLeft(record.OutboxKindHookPrompt) == 0
+	})
 
-	// 5. Each message was kept for the role's next live holder, so the woken session's
-	//    registration, or its claim of the role, is what hands it over (drainKeptRole): each
-	//    reaches that session once, and nothing sends either again. The daemon publishes a role
-	//    message's text as its payload too, which the listener carries as a JSON document
-	//    (notify's Publish), and the session records that payload, so it is the text's JSON
-	//    encoding that is counted.
+	// 5. The phase-ended message was kept for the role's next live holder, so the woken session's
+	//    registration, or its claim of the role, is what hands it over (drainKeptRole), and the held
+	//    hook prompt is published to the session that holds the role: each reaches that session
+	//    once, and nothing sends either again. The daemon publishes a role message's text as its
+	//    payload too, which the listener carries as a JSON document (notify's Publish), and the
+	//    session records that payload, so it is the text's JSON encoding that is counted.
 	idleRigDeliveredOnce(t, rig, issue, idleRigPublishedText(t, ended.Message(issue.key)))
 	idleRigDeliveredOnce(t, rig, issue, idleRigPublishedText(t, hook.Message(issue.key)))
 }

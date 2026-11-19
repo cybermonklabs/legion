@@ -126,36 +126,37 @@ func TestAHookPromptForAReleasedPodWakesItAndWaits(t *testing.T) {
 
 // A released role's woken session claims its role only after the row's next attempt has
 // published: the first attempt wakes the pod and waits, and the next meets a role no live session
-// holds. The row publishes with keep, so the listener keeps the prompt for the role's next holder,
-// which that woken session is, and the row ends with the listener as the prompt's keeper; the pod
-// is woken once. Published with keep: false, the prompt would meet the no-holder answer there and
-// the row would end with the prompt kept nowhere, which is how a woken role lost it.
-func TestAHookPromptForAReleasedPodIsKeptForItsWokenSession(t *testing.T) {
-	keptAcrossTheWake(t, firedHook, claim.RoleImplementer, firedHook.Message("LEGION-208"))
+// holds. The woken claim keeps its session, so the row publishes without keep and the daemon holds
+// it, the prompt's one keeper (R5), and the row's attempt once that woken session holds the role
+// delivers it, once; the pod is woken once. Published with keep, the listener would be the
+// prompt's keeper for one hour only.
+func TestAHookPromptForAReleasedPodIsHeldForItsWokenSession(t *testing.T) {
+	keptAcrossTheWake(t, firedHook, claim.RoleImplementer, firedHook.Message("LEGION-208"), heldUntilItsRoleIsHeld)
 }
 
 // A released role's resume can wait for its turn in the wake pacing, which over a wave is more
 // than an hour away, and meanwhile the claim reads launching with no process (supervise's
 // parkWake): it is released no more, and no session of it can hold the role before that turn.
-// The row publishes nothing while the wake waits, since a kept publish then would start the
-// listener's hour long before the pod comes back. It waits as a routine wait, to the turn or to
+// The row publishes nothing while the wake waits. It waits as a routine wait, to the turn or to
 // parkedWakeBound on, whichever comes first, and reads the claim again then: the attempt that
 // finds the park makes the row due at the bound, a drain before the bound runs nothing, an
 // attempt past it while the park holds waits to the next bound, and an attempt past a turn the
 // wake has not run yet waits on its backoff. Once the turn has launched the resume, the row's
-// next attempt publishes the prompt with keep, once, and ends.
+// next attempt publishes the prompt without keep and holds it, and the attempt once the woken
+// session holds the role delivers it, once.
 func TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
-	keptAfterTheParkedWake(t, firedHook, claim.RoleImplementer, firedHook.Message("LEGION-208"))
+	keptAfterTheParkedWake(t, firedHook, claim.RoleImplementer, firedHook.Message("LEGION-208"), heldUntilItsRoleIsHeld)
 }
 
 // The turn a parked resume waits for lives in the machine's memory alone, and an operator's
 // resume ends the park long before it: the request drops the waiting wake and launches at once
 // (supervise's dropWakeFor). The row that found the park reads the claim again at the bound, so
-// its next attempt publishes the prompt with keep, once, and ends, the pacing's turn still far
-// off. The negative control is parkedWait without the bound, the row due at the turn: the attempt
-// at the bound then finds the row not due and publishes nothing.
+// its next attempt publishes the prompt and holds it, the pacing's turn still far off, and the
+// attempt once the woken session holds the role delivers it. The negative control is parkedWait
+// without the bound, the row due at the turn: the attempt at the bound then finds the row not due
+// and publishes nothing.
 func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *testing.T) {
-	keptAfterAnOperatorsResume(t, firedHook, claim.RoleImplementer, firedHook.Message("LEGION-208"))
+	keptAfterAnOperatorsResume(t, firedHook, claim.RoleImplementer, firedHook.Message("LEGION-208"), heldUntilItsRoleIsHeld)
 }
 
 // hookRunner is an outbox runner over an isolated database holding LEGION-208 in implementing,
@@ -201,8 +202,8 @@ func releasedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Ma
 // (holderPublisher with keeps), as the listener of cybermonklabs/legion#4079 answers a released
 // role whose woken session has not claimed it yet. The first attempt wakes the pod and waits,
 // publishing nothing; the next, run past the row's backoff on the runner's clock, publishes
-// message with keep and ends the row (keptOnce).
-func keptAcrossTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role, message string) {
+// message, and end checks what that publish did to the row.
+func keptAcrossTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role, message string, end deliveryEnd) {
 	t.Helper()
 	ctx := context.Background()
 	publisher := &holderPublisher{keeps: true}
@@ -232,7 +233,13 @@ func keptAcrossTheWake(t *testing.T, payload record.OutboxPayload, role claim.Ro
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("the row's next attempt: %v", err)
 	}
-	keptOnce(t, publisher, pool, role, id, topic, message, "the next attempt")
+	end(t, published{publisher: publisher, pool: pool, role: role, row: id, topic: topic, message: message, what: "the next attempt",
+		next: func(what string) {
+			runner.now = func() time.Time { return time.Now().Add(10 * time.Minute) }
+			if err := runner.RunOnce(ctx); err != nil {
+				t.Fatalf("%s: %v", what, err)
+			}
+		}})
 }
 
 const (
@@ -333,8 +340,8 @@ func (p *parkedWake) waiting() (tries int, waited string, due time.Time) {
 // before the bound does not run the row; an attempt past the bound, the park still holding,
 // waits to the next bound; and an attempt past the turn while the wake still waits for its timer
 // falls back to the backoff. Once the test fires the wake's turn and the resume launches, the
-// next attempt publishes message with keep and ends the row (keptOnce).
-func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role claim.Role, message string) {
+// next attempt publishes message, and end checks what that publish did to the row.
+func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role claim.Role, message string, end deliveryEnd) {
 	t.Helper()
 	p := parkTheWake(t, payload, role)
 	_, _, due := p.waiting()
@@ -379,16 +386,23 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 		t.Fatalf("the %s is %s recording %+v with wake %+v after the wake's turn, want the resume launched", role, held.State, held.Locator, held.WakeWaiting)
 	}
 	p.attemptAt(parkedTurn+3*time.Minute, "the row's attempt after the resume launched")
-	keptOnce(t, p.publisher, p.pool, role, p.row.ID, p.topic, message, "the attempt after the launch")
+	end(t, p.published(role, message, "the attempt after the launch", parkedTurn+3*time.Minute))
+}
+
+// published is the row as the attempt that publishes, ahead of the wall clock by at, left it; its
+// next attempt runs ten minutes on, past any backoff.
+func (p *parkedWake) published(role claim.Role, message, what string, at time.Duration) published {
+	return published{publisher: p.publisher, pool: p.pool, role: role, row: p.row.ID, topic: p.topic, message: message, what: what,
+		next: func(what string) { p.attemptAt(at+10*time.Minute, what) }}
 }
 
 // keptAfterAnOperatorsResume drives one role-message row for role's released claim on LEGION-208
 // to the park the wake pacing makes of its resume (parkTheWake), and then resumes the claim as an
 // operator does through the API's resume route (supervise.RequestResume): the request drops the
 // waiting wake and launches at once (supervise's dropWakeFor), the pacing's timer never fired.
-// The row's next attempt, at the bound after the attempt that found the park, publishes message
-// with keep and ends the row (keptOnce).
-func keptAfterAnOperatorsResume(t *testing.T, payload record.OutboxPayload, role claim.Role, message string) {
+// The row's next attempt, at the bound after the attempt that found the park, publishes message,
+// and end checks what that publish did to the row.
+func keptAfterAnOperatorsResume(t *testing.T, payload record.OutboxPayload, role claim.Role, message string, end deliveryEnd) {
 	t.Helper()
 	p := parkTheWake(t, payload, role)
 	if err := p.machine.Handle(context.Background(), supervise.RequestResume{Claim: mustClaimToken(t, "LEGION-208", role)}); err != nil {
@@ -403,31 +417,80 @@ func keptAfterAnOperatorsResume(t *testing.T, payload record.OutboxPayload, role
 		t.Fatalf("the row's attempt at the bound after the operator's resume published nothing, the row due at %s: a row due at the wake's turn, %s, waits out a turn the operator's resume has already ended",
 			due, p.turn)
 	}
-	keptOnce(t, p.publisher, p.pool, role, p.row.ID, p.topic, message, "the attempt at the bound")
+	end(t, p.published(role, message, "the attempt at the bound", parkFound+parkedWakeBound))
 }
 
-// keptOnce is the end every driver checks once the attempt that publishes has run, which what
-// names in a failure: one publish, kept rather than delivered, of message to topic with keep and
-// under the key of row, the row's own; the row finished, with the listener as the message's
-// keeper; and the one resume of role's pod, the wake the row's first attempt took.
-func keptOnce(t *testing.T, publisher *holderPublisher, pool *store.Pool, role claim.Role, row int64, topic, message, what string) {
+// published is the row as the attempt that publishes left it, for a delivery end to check: the
+// listener, the database, the role, the row's id, the role's topic and the message, what names
+// that attempt in a failure, and next, which runs the row's next attempt past its backoff.
+type published struct {
+	publisher *holderPublisher
+	pool      *store.Pool
+	role      claim.Role
+	row       int64
+	topic     string
+	message   string
+	what      string
+	next      func(what string)
+}
+
+// deliveryEnd is the end a driver checks once the attempt that publishes has run: keptOnce for a
+// phase-ended message, the listener keeping it, and heldUntilItsRoleIsHeld for a hook prompt, the
+// daemon holding it.
+type deliveryEnd func(t *testing.T, d published)
+
+// keptOnce is one publish, kept rather than delivered, of the message to the topic with keep and
+// under the row's own key; the row finished, with the listener as the message's keeper; and the one
+// resume of the role's pod, the wake the row's first attempt took.
+func keptOnce(t *testing.T, d published) {
 	t.Helper()
-	attempts, delivered := publisher.snapshot()
-	kept := publisher.keptCopies()
+	attempts, delivered := d.publisher.snapshot()
+	kept := d.publisher.keptCopies()
 	if attempts != 1 || len(delivered) != 0 || len(kept) != 1 {
 		t.Fatalf("%s made %d publishes, %d delivered and %d kept, want the one publish, kept for the role's next holder: a keep: false publish meets the no-holder answer and the message is kept nowhere",
-			what, attempts, len(delivered), len(kept))
+			d.what, attempts, len(delivered), len(kept))
 	}
-	if kept[0].topic != topic || !kept[0].keep || kept[0].message != message || kept[0].payload != any(message) {
-		t.Fatalf("the listener keeps %#v, want the message to %s, published with keep:\n\t%q", kept[0], topic, message)
+	if kept[0].topic != d.topic || !kept[0].keep || kept[0].message != d.message || kept[0].payload != any(d.message) {
+		t.Fatalf("the listener keeps %#v, want the message to %s, published with keep:\n\t%q", kept[0], d.topic, d.message)
 	}
-	if want := record.OutboxKey(row); kept[0].key != want {
+	if want := record.OutboxKey(d.row); kept[0].key != want {
 		t.Fatalf("the message went under key %q, want its row's own, %q, which a retry of the row repeats", kept[0].key, want)
 	}
-	if left := outboxRows(t, pool); left != 0 {
-		t.Fatalf("outbox rows left after %s = %d, want the row finished with the listener as the message's keeper", what, left)
+	if left := outboxRows(t, d.pool); left != 0 {
+		t.Fatalf("outbox rows left after %s = %d, want the row finished with the listener as the message's keeper", d.what, left)
 	}
-	if resumes := podResumes(t, pool, "LEGION-208"); resumes != 1 {
-		t.Fatalf("recorded resumes of the %s = %d, want the one wake the row's first attempt took", role, resumes)
+	if resumes := podResumes(t, d.pool, "LEGION-208"); resumes != 1 {
+		t.Fatalf("recorded resumes of the %s = %d, want the one wake the row's first attempt took", d.role, resumes)
+	}
+}
+
+// heldUntilItsRoleIsHeld is a hook prompt's end for a woken claim, which keeps its session (R5):
+// the attempt that publishes publishes without keep and meets no holder, so the listener keeps
+// nothing and the daemon holds the row, the prompt's one keeper. Once the woken session holds the
+// role, the row's next attempt delivers the prompt to it once, under the row's own key, and ends;
+// the pod is woken once.
+func heldUntilItsRoleIsHeld(t *testing.T, d published) {
+	t.Helper()
+	attempts, delivered := d.publisher.snapshot()
+	if kept := d.publisher.keptCopies(); attempts != 1 || len(delivered) != 0 || len(kept) != 0 {
+		t.Fatalf("%s made %d publishes, %d delivered and %d kept, want the one publish, kept by nobody", d.what, attempts, len(delivered), len(kept))
+	}
+	if left := outboxRows(t, d.pool); left != 1 {
+		t.Fatalf("outbox rows left after %s = %d, want the row held by the daemon for the claim that keeps its session", d.what, left)
+	}
+	d.publisher.setAbsent()
+	d.next("the attempt once the woken session holds the role")
+	attempts, delivered = d.publisher.snapshot()
+	if attempts != 2 || len(delivered) != 1 || len(d.publisher.keptCopies()) != 0 {
+		t.Fatalf("after the woken session holds the role: %d publishes, %d delivered, want the held prompt delivered once", attempts, len(delivered))
+	}
+	if got := delivered[0]; got.topic != d.topic || got.keep || got.message != d.message || got.key != record.OutboxKey(d.row) {
+		t.Fatalf("delivered %#v, want the prompt to %s under its row's own key, published without keep", got, d.topic)
+	}
+	if left := outboxRows(t, d.pool); left != 0 {
+		t.Fatalf("outbox rows left after the delivery = %d, want the row finished", left)
+	}
+	if resumes := podResumes(t, d.pool, "LEGION-208"); resumes != 1 {
+		t.Fatalf("recorded resumes of the %s = %d, want the one wake the row's first attempt took", d.role, resumes)
 	}
 }
