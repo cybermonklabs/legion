@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // sendBody is one send request's JSON, written the way a client writes it, so each test below
@@ -157,14 +158,14 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 		t.Fatalf("connect the listener's bus through the relay: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	// The sends below stamp their sender from the role claim view (senderStamp), so the listener's
 	// own startup gate is taken here, with the bus still reachable and before the cut.
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -208,7 +209,7 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("send with the bus unreachable: status %d, body %s; want 503", recorder.Code, recorder.Body.String())
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -270,14 +271,14 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 				t.Fatalf("connect the listener's bus through the relay: %v", err)
 			}
 			t.Cleanup(client.Close)
-			registry, err := store.Open(client.Conn, store.WithReplicas(1))
+			registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 			if err != nil {
 				t.Fatalf("open the interest registry: %v", err)
 			}
 			// The requests below stamp their sender from the role claim view (senderStamp), so the
 			// listener's own startup gate is taken here, before the freeze.
 			waitForRegistry(t, registry)
-			sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+			sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 			if err != nil {
 				t.Fatalf("open the session registry: %v", err)
 			}
@@ -311,7 +312,7 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 			if recorder.Code != http.StatusServiceUnavailable {
 				t.Fatalf("%s with the bus silent: status %d, body %s; want 503", route.name, recorder.Code, recorder.Body.String())
 			}
-			var refusal apiError
+			var refusal listenerwire.APIError
 			if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 				t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 			}
@@ -352,14 +353,14 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 		t.Fatalf("connect the listener's bus through the relay: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	// Each stamp below reads the role claim view (senderStamp), so the listener's own startup
 	// gate is taken here, before the freeze.
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -448,7 +449,7 @@ func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) 
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("send the bus refuses: status %d, body %s; want 503", recorder.Code, recorder.Body.String())
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -789,7 +790,7 @@ func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *t
 	if unanswered.Code != http.StatusServiceUnavailable {
 		t.Fatalf("a send whose bucket read never answered: status %d, body %s; want 503, since nothing was learned about %s", unanswered.Code, unanswered.Body.String(), target)
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(unanswered.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", unanswered.Body.String(), err)
 	}

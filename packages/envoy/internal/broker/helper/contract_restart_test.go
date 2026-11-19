@@ -168,7 +168,7 @@ func TestContractARevokedMachinesNextRefreshDropsItsLogin(t *testing.T) {
 	if _, err := LoadMachineFile(first.machineFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the machine file after the refused refresh: %v; want it deleted", err)
 	}
-	refused := `level=ERROR msg="` + dropRefreshRefused + `; cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)" credential_id=` + credentialID + " code=invalid_grant"
+	refused := `level=ERROR msg="` + dropRefreshRefused + `; cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it" credential_id=` + credentialID + " code=invalid_grant"
 	if !strings.Contains(second.logBuf.String(), refused) {
 		t.Fatalf("log:\n%s\nwant %s", second.logBuf.String(), refused)
 	}

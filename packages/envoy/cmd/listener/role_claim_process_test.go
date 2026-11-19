@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The two processes one session id can be claimed under: the one that registered the session and
@@ -382,7 +383,7 @@ func TestTheRoleLookupAnswersALapsedHoldersProcess(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("GET /v1/roles/%s once its holder's record has gone: status %d %s, want 404", role, recorder.Code, recorder.Body.String())
 	}
-	var answer roleHolderError
+	var answer listenerwire.RoleRefusal
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode %s: %v", recorder.Body.String(), err)
 	}
@@ -398,7 +399,7 @@ func TestTheRoleLookupAnswersALapsedHoldersProcess(t *testing.T) {
 // (unresponsive), and its record standing past the gone horizon (gone). Where the record stands it
 // still names the process that registered the session, which is no process the claim names, so
 // each row first reads the record it lapses. The body is decoded into a map, because
-// roleHolderError's string member cannot tell an empty field from no field.
+// listenerwire.RoleRefusal's string member cannot tell an empty field from no field.
 func TestTheRoleLookupOfALapsedClaimThatNamesNoProcessLeavesTheFieldOut(t *testing.T) {
 	const (
 		sessionID = "ses_shared_id"

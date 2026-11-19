@@ -535,6 +535,165 @@ func TestTheAirlocksProxyURLIsHeldToItsForm(t *testing.T) {
 	}
 }
 
+// TestLoadReadsTheAirlockClusterRanges: BROKER_AIRLOCK_CLUSTER_RANGES is a comma-separated list
+// of CIDR prefixes, IPv4 and IPv6 alike, with spaces around the commas allowed, each read as its
+// network; unset is none, which is a broker outside a cluster.
+func TestLoadReadsTheAirlockClusterRanges(t *testing.T) {
+	for _, row := range []struct{ name, value, want string }{
+		{"unset", "", ""},
+		{"one range", "34.118.224.0/20", "34.118.224.0/20"},
+		{"IPv4 and IPv6 with spaces around the commas", " 34.118.224.0/20 , 2001:db8:5::/48,198.51.100.0/24 ", "34.118.224.0/20 2001:db8:5::/48 198.51.100.0/24"},
+		{"a prefix with host bits, read as its network", "34.118.230.7/20", "34.118.224.0/20"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			e := validEnv()
+			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.value
+			cfg, err := Load(env(e))
+			if err != nil {
+				t.Fatalf("Load(BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", row.value, err)
+			}
+			var got []string
+			for _, prefix := range cfg.AirlockClusterRanges {
+				got = append(got, prefix.String())
+			}
+			if strings.Join(got, " ") != row.want {
+				t.Fatalf("Load(BROKER_AIRLOCK_CLUSTER_RANGES=%q) read %q; want %q", row.value, got, row.want)
+			}
+		})
+	}
+}
+
+// TestLoadRefusesAClusterRangeItCannotRead: an element that is empty or not a CIDR prefix refuses
+// the start, naming the setting and the element's position and never quoting the element, which
+// could be anything an operator pasted. An IPv4-mapped IPv6 prefix is refused too, since the proxy
+// reads every address it checks as plain IPv4 and no address would ever be inside one.
+func TestLoadRefusesAClusterRangeItCannotRead(t *testing.T) {
+	for _, row := range []struct{ name, value, want string }{
+		{"a trailing comma", "34.118.224.0/20,", "element 2 is empty"},
+		{"a leading comma", ",34.118.224.0/20", "element 1 is empty"},
+		{"a blank element between two", "34.118.224.0/20, ,198.51.100.0/24", "element 2 is empty"},
+		{"an element that is no prefix", "34.118.224.0/20,not-a-range", "element 2 is not a CIDR prefix"},
+		{"an address with no prefix length", "34.118.224.1", "element 1 is not a CIDR prefix"},
+		{"an IPv4-mapped IPv6 prefix", "::ffff:34.118.224.0/116", "element 1 is an IPv4-mapped IPv6 prefix"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			for _, e := range []map[string]string{validEnv(), airlockEnv()} {
+				e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.value
+				_, err := Load(env(e))
+				if err == nil || !strings.Contains(err.Error(), "BROKER_AIRLOCK_CLUSTER_RANGES") || !strings.Contains(err.Error(), row.want) {
+					t.Fatalf("Load(BROKER_AIRLOCK_CLUSTER_RANGES=%q) = %v; want a refusal naming the setting and %q", row.value, err, row.want)
+				}
+				if strings.Contains(err.Error(), "not-a-range") {
+					t.Fatalf("the refusal quotes the element: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestTheClusterRangesMustHoldTheKubernetesServiceAddress: in a cluster, which Kubernetes says by
+// setting KUBERNETES_SERVICE_HOST in every container, a broker with the airlock on refuses to start
+// unless BROKER_AIRLOCK_CLUSTER_RANGES holds that address, the kubernetes Service's ClusterIP, so a
+// deployment that forgot the setting or gave the wrong range cannot pass silently. Each refusal
+// names both variables. Outside a cluster, and in a cluster with no airlock, the setting is
+// optional.
+func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
+	for _, row := range []struct{ name, host, ranges, want string }{
+		{"the setting missing", "34.118.224.1", "", "BROKER_AIRLOCK_CLUSTER_RANGES is required"},
+		{"a KUBERNETES_SERVICE_HOST that is not an address", "kubernetes.default.svc", "34.118.224.0/20", "KUBERNETES_SERVICE_HOST is not an IP address"},
+		{"a range that does not hold the address", "34.118.224.1", "198.51.100.0/24", "KUBERNETES_SERVICE_HOST 34.118.224.1 is inside no range"},
+		{"an IPv6 address outside an IPv4 range", "2001:db8:5::1", "34.118.224.0/20", "KUBERNETES_SERVICE_HOST 2001:db8:5::1 is inside no range"},
+		// Kubernetes never sets these, and a value that is not empty is not "outside a cluster".
+		{"a KUBERNETES_SERVICE_HOST of spaces", "   ", "", "BROKER_AIRLOCK_CLUSTER_RANGES is required"},
+		{"a KUBERNETES_SERVICE_HOST of a tab", "\t", "", "BROKER_AIRLOCK_CLUSTER_RANGES is required"},
+		// A zone is read off before the check, and the refusal repeats the parsed address alone.
+		{"a zoned address outside the ranges", "fe80::1%some arbitrary text", "34.118.224.0/20", "KUBERNETES_SERVICE_HOST fe80::1 is inside no range"},
+	} {
+		t.Run("refuses "+row.name, func(t *testing.T) {
+			e := airlockEnv()
+			e["KUBERNETES_SERVICE_HOST"] = row.host
+			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
+			_, err := Load(env(e))
+			if err == nil {
+				t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q) = nil; want a refusal", row.host, row.ranges)
+			}
+			for _, want := range []string{"BROKER_AIRLOCK_CLUSTER_RANGES", "KUBERNETES_SERVICE_HOST", row.want} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal reads %q; want it to name %q", err, want)
+				}
+			}
+			if row.host == "kubernetes.default.svc" && strings.Contains(err.Error(), row.host) {
+				t.Errorf("the refusal quotes a KUBERNETES_SERVICE_HOST that is not an address: %v", err)
+			}
+			if strings.Contains(err.Error(), "arbitrary") {
+				t.Errorf("the refusal repeats the text after a zone's %%: %v", err)
+			}
+		})
+	}
+	for _, row := range []struct{ name, host, ranges string }{
+		{"a range that holds the address", "34.118.224.1", "34.118.224.0/20"},
+		{"a later range that holds the address", "34.118.224.1", "198.51.100.0/24, 34.118.224.0/20"},
+		{"an IPv6 range that holds an IPv6 address", "2001:db8:5::1", "2001:db8:5::/48"},
+		{"an IPv6 range that holds a zoned IPv6 address", "2001:db8:5::1%eth0", "2001:db8:5::/48"},
+		{"outside a cluster, with the setting missing", "", ""},
+		{"outside a cluster, with a range", "", "34.118.224.0/20"},
+	} {
+		t.Run("starts with "+row.name, func(t *testing.T) {
+			e := airlockEnv()
+			e["KUBERNETES_SERVICE_HOST"] = row.host
+			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
+			if _, err := Load(env(e)); err != nil {
+				t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", row.host, row.ranges, err)
+			}
+		})
+	}
+	t.Run("starts in a cluster with no airlock and no ranges", func(t *testing.T) {
+		e := validEnv()
+		e["KUBERNETES_SERVICE_HOST"] = "34.118.224.1"
+		if _, err := Load(env(e)); err != nil {
+			t.Fatalf("Load with no rules file in a cluster: %v", err)
+		}
+	})
+}
+
+// TestEveryAddressConfigReadsIsReadWithoutItsZone: the addresses config reads are read the way
+// the proxy reads every address it checks (netaddr.Canonical): an IPv4-mapped address as the IPv4
+// address it holds, and a zone dropped. BROKER_AIRLOCK_TEST_RESOLVE's address is one the proxy
+// dials, and a sign-in issuer on a zoned loopback address is on this machine as the unzoned one
+// is. A zone cannot ride on a prefix at all: netip.ParsePrefix refuses one, which the control
+// below holds.
+func TestEveryAddressConfigReadsIsReadWithoutItsZone(t *testing.T) {
+	e := validEnv()
+	e["BROKER_AIRLOCK_TEST_RESOLVE"] = "s.airlock.test=2001:db8::1%eth0 t.airlock.test=::ffff:127.0.0.2"
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load with a zoned and a mapped BROKER_AIRLOCK_TEST_RESOLVE address: %v", err)
+	}
+	for host, want := range map[string]netip.Addr{
+		"s.airlock.test": netip.MustParseAddr("2001:db8::1"),
+		"t.airlock.test": netip.MustParseAddr("127.0.0.2"),
+	} {
+		if got := cfg.AirlockTestResolve[host]; got != want {
+			t.Errorf("BROKER_AIRLOCK_TEST_RESOLVE read %s as %v; want %v, with no zone and unmapped", host, got, want)
+		}
+	}
+	for _, issuer := range []string{"http://[::1%25lo]:8080", "http://[::1]:8080", "http://127.0.0.1:8080"} {
+		if !signInIssuerOK(issuer) {
+			t.Errorf("signInIssuerOK(%q) = false; want true: it is a loopback address", issuer)
+		}
+	}
+	for _, issuer := range []string{"http://[2001:db8::1%25lo]:8080", "http://[fe80::1%25eth0]:8080", "http://example.com"} {
+		if signInIssuerOK(issuer) {
+			t.Errorf("signInIssuerOK(%q) = true; want false: it is no loopback address", issuer)
+		}
+	}
+	e = validEnv()
+	e["BROKER_AIRLOCK_CLUSTER_RANGES"] = "2001:db8:5::%eth0/48"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "element 1 is not a CIDR prefix") {
+		t.Fatalf("Load(a zoned prefix) = %v; want the refusal naming element 1", err)
+	}
+}
+
 // TestLoadReadsTheRegisteredServices pins BROKER_SERVICES: whitespace-separated
 // name=<service-account subject> entries keyed by subject, none when unset. A name is one a
 // machine login's service can take ([a-z0-9-]{1,64}) and not the owner tag's own "shared"; a

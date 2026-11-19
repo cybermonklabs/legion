@@ -156,7 +156,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	if main.Buttons {
 		printed = append(printed, id)
 	}
-	pending, err := p.cfg.Machine.PendingForApprover(r.Context(), sess.Login)
+	pending, err := p.cfg.Machine.PendingForApprover(r.Context(), sess.Login, requests.PendingStates{})
 	if err != nil {
 		writeUnavailable(w, "list the pending requests", err)
 		return

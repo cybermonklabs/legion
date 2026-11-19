@@ -17,10 +17,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,13 +89,14 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		podAccount   = "system:serviceaccount:example:example-worker"
 		secretName   = "AIRLOCK_TOKEN"
 		// boundHost is a name no resolver answers, which BROKER_AIRLOCK_TEST_RESOLVE gives
-		// boundAddress, a public address, so that the CONNECT this row makes is neither refused
-		// as a local address nor dependent on a resolver this process may not have. The entry
-		// binds the name rather than the address, since the rules validation refuses an address
-		// literal: a TLS client sends no server name for one, and the airlock refuses a request
-		// whose server name is not its CONNECT host.
+		// boundAddress, RFC 5737's TEST-NET-1, so that the CONNECT this row makes is neither
+		// refused as a local address nor dependent on a resolver this process may not have, and
+		// no request of this test can reach the internet. The entry binds the name rather than
+		// the address, since the rules validation refuses an address literal: a TLS client sends
+		// no server name for one, and the airlock refuses a request whose server name is not its
+		// CONNECT host.
 		boundHost    = "reread.airlock.test"
-		boundAddress = "93.184.216.34"
+		boundAddress = "192.0.2.1"
 	)
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
@@ -168,10 +171,12 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 			t.Fatalf("GET %s through the airlock's proxy: %v", path, err)
 		}
 		defer answer.Body.Close()
-		// The rules file allows no method or path, so the decision refuses every request -
-		// after the values the decision needs have been read, which is what this row counts.
-		if answer.StatusCode != http.StatusForbidden {
-			t.Fatalf("GET %s through the airlock's proxy = %d, want 403: the rules allow nothing", path, answer.StatusCode)
+		// The entry's allow list is empty, which allows nothing, so the decision refuses every
+		// request - after the values the decision needs have been read, which is what this row
+		// counts - and nothing is forwarded or dialled.
+		body, _ := io.ReadAll(answer.Body)
+		if answer.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "not allowed by rule") {
+			t.Fatalf("GET %s through the airlock's proxy = %d %q, want 403 naming \"not allowed by rule\": the entry allows nothing", path, answer.StatusCode, body)
 		}
 	}
 

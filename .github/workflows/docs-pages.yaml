@@ -107,6 +107,7 @@ on:
       - 'packages/daemon/internal/record/*'
       - 'packages/daemon/internal/registry/*'
       - 'packages/daemon/internal/repocache/*'
+      - 'packages/daemon/internal/reviewround/*'
       - 'packages/daemon/internal/runtime/*'
       - 'packages/daemon/internal/runtime/sandbox/*'
       - 'packages/daemon/internal/runtime/shellprefix/*'
@@ -134,6 +135,7 @@ on:
       - 'packages/envoy/internal/dispatch/pmdoc/**'
       - 'packages/envoy/internal/dispatch/text/*'
       - 'packages/envoy/internal/googleidentity/*'
+      - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'
       - 'packages/envoy/migrationid/*'
       - 'packages/envoy/roleholder/*'
@@ -209,6 +211,7 @@ on:
       - 'packages/envoy/internal/serverwait/*'
       - 'packages/envoy/internal/session/*'
       - 'packages/envoy/internal/store/*'
+      - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'
       # The docs filter's own:
       # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
@@ -230,6 +233,7 @@ on:
       - 'packages/envoy/internal/broker/judge/*'
       - 'packages/envoy/internal/broker/leasetime/*'
       - 'packages/envoy/internal/broker/machine/*'
+      - 'packages/envoy/internal/broker/netaddr/*'
       - 'packages/envoy/internal/broker/oauth/*'
       - 'packages/envoy/internal/broker/oauthstore/*'
       - 'packages/envoy/internal/broker/oauthwire/*'

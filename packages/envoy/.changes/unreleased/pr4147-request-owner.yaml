@@ -10,6 +10,6 @@ body: |-
   value reach the role's next pod, and that pod's equal request joins the pending one.
   `POST /v1/enrollments` takes a pod-only `claim`; a claim on a session, on a pod enrolling itself,
   on a pod under a service login a person approved, or in any other shape than
-  `^[a-z][a-z0-9-]{0,127}$` is `400 INVALID_CLAIM`. Migration `0034_enrollment_owner` adds
+  `^[a-z][a-z0-9-]{0,127}$` is `400 INVALID_CLAIM`. Migration `0035_enrollment_owner` adds
   `enrollments.owner` and `enrollments.claim`; an enrollment from before it keeps its requests to
   itself, as every enrollment did.

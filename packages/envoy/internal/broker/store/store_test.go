@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -658,5 +659,101 @@ func TestMigrationTwentySixRetiresVMEnrollmentsAndDropsTheKind(t *testing.T) {
 	const want = `CHECK ((kind = ANY (ARRAY['session'::text, 'pod'::text])))`
 	if definition != want {
 		t.Fatalf("enrollments_kind_check after 0026 = %q, want %q", definition, want)
+	}
+}
+
+// TestMigrationThirtyThreeDismissesWhatTheSweepAlreadyTookOut runs 0033 over a database 0032 left,
+// holding one record of each shape the backfill must tell apart, and finds a dismissal by broker
+// for exactly the three records the old expiry sweep had already taken out of the approvers'
+// lists: a secret request expired, a secret request cancelled after its deadline and a machine
+// login with an expired event. A secret request cancelled before its deadline never reached it;
+// a pending secret request, overdue or live, and a machine login past its deadline with no event
+// are still listed, as they were before 0033; and a decided record has nothing to dismiss. None of
+// them gets a row. The table's foreign key, which 0033 adds after the backfill, refuses a
+// dismissal of a record the broker does not have.
+func TestMigrationThirtyThreeDismissesWhatTheSweepAlreadyTookOut(t *testing.T) {
+	ctx := context.Background()
+	tx, apply := migrationSchema(t, "migration_thirtythree_dismissals", 33)
+	const credential, enrollment = "00000000-0000-0000-0000-0000000000c1", "00000000-0000-0000-0000-0000000000e1"
+	if _, err := tx.Exec(ctx, `insert into launcher_credentials (id, operator, host, key_thumbprint, public_jwk, expires_at)
+		values ($1, 'ada@example.com', 'example-host-devbox', 'tp-launcher', '{}'::jsonb, now() + interval '1 day')`, credential); err != nil {
+		t.Fatalf("insert launcher credential: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `insert into enrollments (id, kind, runtime_id, thumbprint, launcher_credential_id, lease_expires_at)
+		values ($1, 'session', 'session-1', 'tp-session', $2, now() + interval '1 hour')`, enrollment, credential); err != nil {
+		t.Fatalf("insert enrollment: %v", err)
+	}
+	// Each time is minutes from the transaction's now(): deadline is the record's and its request's
+	// pending_expires_at, decided the request's decided_at (nil for one still pending), and event
+	// the record's terminal event ("" for none).
+	event := func(recordID, name string) {
+		t.Helper()
+		if name == "" {
+			return
+		}
+		if _, err := tx.Exec(ctx, `insert into credential_request_events (record_id, event, actor) values ($1, $2, 'broker')`, recordID, name); err != nil {
+			t.Fatalf("insert %s event of %s: %v", name, recordID, err)
+		}
+	}
+	secret := func(recordID, requestID, state string, deadline int, decided *int, terminal string) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, `insert into credential_requests (id, body, kind, approver, enrollment_id, expires_at)
+			values ($1, 'body', 'agent_secret', 'ada@example.com', $2, now() + make_interval(mins => $3))`, recordID, enrollment, deadline); err != nil {
+			t.Fatalf("insert record %s: %v", recordID, err)
+		}
+		if _, err := tx.Exec(ctx, `insert into requests (id, enrollment_id, reason, state, rules_version, lifetime_seconds, pending_expires_at, decided_at, record_id)
+			values ($1, $2, 'why', $3, 'v1', 3600, now() + make_interval(mins => $4), now() + make_interval(mins => $5), $6)`,
+			requestID, enrollment, state, deadline, decided, recordID); err != nil {
+			t.Fatalf("insert request of %s: %v", recordID, err)
+		}
+		event(recordID, terminal)
+	}
+	login := func(recordID string, deadline int, terminal string) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, `insert into credential_requests (id, body, kind, approver, code, expires_at)
+			values ($1, 'body', 'launcher_credential', 'ada@example.com', $1, now() + make_interval(mins => $2))`, recordID, deadline); err != nil {
+			t.Fatalf("insert machine login %s: %v", recordID, err)
+		}
+		event(recordID, terminal)
+	}
+	secret("expired-secret", "00000000-0000-0000-0000-0000000000a1", "expired", -120, new(-60), "expired")
+	secret("cancelled-after-its-deadline", "00000000-0000-0000-0000-0000000000a2", "cancelled", -120, new(-60), "cancelled")
+	secret("cancelled-before-its-deadline", "00000000-0000-0000-0000-0000000000a3", "cancelled", -60, new(-120), "cancelled")
+	secret("overdue-pending-secret", "00000000-0000-0000-0000-0000000000a4", "pending", -60, nil, "")
+	secret("live-pending-secret", "00000000-0000-0000-0000-0000000000a5", "pending", 60, nil, "")
+	secret("granted-secret", "00000000-0000-0000-0000-0000000000a6", "granted", 60, new(-10), "approved")
+	login("expired-login", -60, "expired")
+	login("overdue-pending-login", -60, "")
+	login("denied-login", 60, "denied")
+
+	apply("0033_credential_request_dismissals.up.sql")
+
+	rows, err := tx.Query(ctx, `select record_id from credential_request_dismissals
+		where dismissed_by = 'broker' and dismissed_at = now() order by record_id`)
+	if err != nil {
+		t.Fatalf("read the dismissals: %v", err)
+	}
+	dismissed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the dismissals: %v", err)
+	}
+	var total int
+	if err := tx.QueryRow(ctx, `select count(*) from credential_request_dismissals`).Scan(&total); err != nil {
+		t.Fatalf("count the dismissals: %v", err)
+	}
+	want := []string{"cancelled-after-its-deadline", "expired-login", "expired-secret"}
+	if !slices.Equal(dismissed, want) || total != len(want) {
+		t.Fatalf("records 0033 dismissed by broker = %q of %d rows, want exactly %q", dismissed, total, want)
+	}
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = sp.Exec(ctx, `insert into credential_request_dismissals (record_id, dismissed_by) values ('no-such-record', 'ada@example.com')`)
+	if rollback := sp.Rollback(ctx); rollback != nil {
+		t.Fatalf("roll back the refused dismissal's savepoint: %v", rollback)
+	}
+	if err == nil || !strings.Contains(err.Error(), "credential_request_dismissals_record_id_fkey") {
+		t.Fatalf("a dismissal of a record the broker does not have after 0033 = %v, want a violation of credential_request_dismissals_record_id_fkey", err)
 	}
 }

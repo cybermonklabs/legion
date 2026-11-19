@@ -5,15 +5,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-type Interest struct {
-	SessionID string   `json:"session_id"`
-	MachineID string   `json:"machine_id"`
-	Dir       string   `json:"dir"`
-	Topics    []string `json:"topics"`
-	UpdatedAt int64    `json:"updated_at"`
-}
+// Interest is one session's persisted interest record, the value the interest bucket stores and
+// the listener's interest routes answer, which the listener's wire package declares
+// (listenerwire.Interest).
+type Interest = listenerwire.Interest
 
 func Merge(item Interest, topics []string) Interest {
 	seen := map[string]bool{}

@@ -129,7 +129,7 @@ func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 	if stdout, stderr, exit := machine("revoke", strings.ToUpper(own)); exit != 0 || stdout != "revoked "+strings.ToUpper(own)+at || stderr != ownWarning {
 		t.Fatalf("machine revoke this machine's own login in upper case: exit %d, stdout %q, stderr %q; want %q", exit, stdout, stderr, ownWarning)
 	}
-	refused := "agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's login to " + brokerSource(brokeraddr.New(rig.URL)).String() + " is expired or revoked (run: agent-secrets machine login)\n"
+	refused := "agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's launcher credential at " + brokerSource(brokeraddr.New(rig.URL)).String() + " is expired or revoked; run: agent-secrets machine login, and have a human approve it\n"
 	if stdout, stderr, exit := machine("list"); exit != 1 || stdout != "" || stderr != refused {
 		t.Fatalf("machine list after revoking this machine's own login: exit %d, stdout %q, stderr %q; want 1, %q", exit, stdout, stderr, refused)
 	}
@@ -228,7 +228,7 @@ func TestMachineAndGrantCommandsOnAMachineNotLoggedIn(t *testing.T) {
 	_, sock := serveRealHelper(t, "http://127.0.0.1:1", "ada@example.com")
 	for _, args := range [][]string{{"machine", "list"}, {"machine", "revoke", uuid.NewString()}, {"grant", "list"}, {"grant", "revoke", uuid.NewString()}} {
 		stdout, stderr, exit := runAgentSecrets(t, binary, "http://127.0.0.1:1", t.TempDir(), []string{"AGENT_SECRETS_HELPER_SOCK=" + sock}, args...)
-		want := "agent-secrets " + args[0] + " " + args[1] + ": this machine is not logged in to the secrets broker; run: agent-secrets machine login\n"
+		want := "agent-secrets " + args[0] + " " + args[1] + ": this machine's agent-secrets-helper holds no credential at the secrets broker (the helper: no machine credential; run: agent-secrets machine login, and have a human approve it)\n"
 		if exit != 1 || stdout != "" || stderr != want {
 			t.Fatalf("%v with no machine login: exit %d, stdout %q, stderr %q; want 1, %q", args, exit, stdout, stderr, want)
 		}

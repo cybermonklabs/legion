@@ -83,8 +83,10 @@ const ROWS = [
   }),
 ];
 
-/** The secrets broker's pending list as Dispatch relays it: one secret request with both session
- *  ids and its page on the broker, and one machine login with neither. */
+/** The secrets broker's list as Dispatch relays it, pending rows first: one secret request with
+ *  both session ids, its page on the broker and the state and deadline a current broker names;
+ *  one machine login with no session, no page and no state, as an older broker sends it, which
+ *  is pending; and one secret request whose deadline passed before anybody decided it. */
 const PENDING = [
   {
     record_id: "rec-1",
@@ -93,6 +95,8 @@ const PENDING = [
     requested_at: "2026-11-02T09:00:00Z",
     session: { request: "ses-7", enrollment: "ses-8" },
     approve_url: "https://broker.theorem.dev/approve/rec-1",
+    state: "pending",
+    expires_at: "2026-11-02T09:30:00Z",
   },
   {
     record_id: "rec-2",
@@ -100,7 +104,22 @@ const PENDING = [
     identifiers: ["runner-12"],
     requested_at: "2026-11-02T10:00:00Z",
   },
+  {
+    record_id: "rec-3",
+    kind: "agent_secret",
+    identifiers: ["stripe/key"],
+    requested_at: "2026-11-01T08:00:00Z",
+    session: { request: "ses-7", enrollment: null },
+    approve_url: "https://broker.theorem.dev/approve/rec-3",
+    state: "expired",
+    expires_at: "2026-11-01T08:30:00Z",
+  },
 ];
+
+/** The line `rec-3` prints: the request time, then the mark and the deadline, and no page to
+ *  decide it on, though the broker still names one. */
+const EXPIRED_LINE =
+  "- agent_secret · stripe/key · 2026-11-01T08:00:00Z · expired 2026-11-01T08:30:00Z · session request=ses-7, enrollment=-";
 
 /** A time `ms` before `now`, as the server writes one. */
 function ago(now: number, ms: number): string {
@@ -256,7 +275,8 @@ describe("dispatch inbox", () => {
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(stdout.trimEnd().split("\n")).toEqual([
-      // Needs you: the two asks waiting on the person, and the two credential requests.
+      // Needs you: the two asks waiting on the person, and the two credential requests still
+      // waiting on a decision; the expired one waits on nobody.
       "Needs you 4",
       "- DSP-1 · P1 · question · Which store do we keep? · dispatch://DSP-1/ask/11111111-1111-4111-8111-111111111111",
       `- DSP-2 · P2 · approval · Approve spec.md (version 3)? ${"x".repeat(51)}… · dispatch://DSP-2/ask/22222222-2222-4222-8222-222222222222`,
@@ -272,9 +292,12 @@ describe("dispatch inbox", () => {
       "- DSP-6 · comment · The staging box lost its disk again · user bob@theorem.dev · 5m · /issues/DSP-6/comments/66666666-6666-4666-8666-666666666666",
       "- legion-implementer · agent · Can you take the migration next? · session ses-5 · 1h · /agents/ses-5/live",
       "",
-      "Credential requests 2",
+      // Every request the broker lists, the expired one included, in the broker's order. A
+      // pending row prints no deadline, even one the broker names.
+      "Credential requests 3",
       "- agent_secret · github/token, aws/role · 2026-11-02T09:00:00Z · session request=ses-7, enrollment=ses-8 · https://broker.theorem.dev/approve/rec-1",
       "- launcher_credential · runner-12 · 2026-11-02T10:00:00Z",
+      EXPIRED_LINE,
     ]);
     // The caller's own credential, on the four routes the Inbox page reads and no other.
     expect(requests.sort()).toEqual([
@@ -311,6 +334,56 @@ describe("dispatch inbox", () => {
     expect(code).toBe(0);
     expect(stdout).toContain("Needs you 2\n");
     expect(stdout.trimEnd().endsWith("Credential requests 0")).toBe(true);
+  });
+
+  test("an expired request with no deadline is marked expired alone, and Needs you counts none of a list of expired requests", async () => {
+    pendingAnswer = {
+      status: 200,
+      body: {
+        pending: [
+          {
+            record_id: "rec-9",
+            kind: "launcher_credential",
+            identifiers: ["runner-9"],
+            requested_at: "2026-11-01T07:00:00Z",
+            state: "expired",
+          },
+        ],
+      },
+    };
+
+    const { code, stdout, stderr } = await runInbox();
+
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    // The two asks waiting on the person, and no credential request.
+    expect(stdout).toContain("Needs you 2\n");
+    expect(
+      stdout
+        .trimEnd()
+        .endsWith(
+          "Credential requests 1\n- launcher_credential · runner-9 · 2026-11-01T07:00:00Z · expired"
+        )
+    ).toBe(true);
+  });
+
+  // dispatch://INFRA-3921 R1: the Inbox gives an expired request no control to approve or deny
+  // it, and the web Inbox links an expired row nowhere (CredentialRequestsSection's
+  // ExpiredRowLines). The command is a reader of that same list, so an expired secret request's
+  // line names no broker page to decide it on, while a pending one's still does.
+  test("an expired secret request's line names no page where it could be decided, and a pending one's still does", async () => {
+    const { code, stdout, stderr } = await runInbox();
+
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    const lines = stdout.trimEnd().split("\n");
+    const expired = lines.find((line) => line.includes("stripe/key"));
+    const pending = lines.find((line) => line.includes("github/token"));
+    expect(expired).toBe(
+      "- agent_secret · stripe/key · 2026-11-01T08:00:00Z · expired 2026-11-01T08:30:00Z · session request=ses-7, enrollment=-"
+    );
+    expect(stdout).not.toContain("https://broker.theorem.dev/approve/rec-3");
+    expect(pending?.endsWith(" · https://broker.theorem.dev/approve/rec-1")).toBe(true);
   });
 
   // The two reads a scope can refuse. GET /api/v1/whoami needs none — it answers every caller
@@ -408,7 +481,8 @@ describe("dispatch inbox", () => {
       "utf-8"
     ).trim();
     const entry = JSON.parse(ledger) as { details?: Record<string, unknown> };
-    expect(entry.details).toMatchObject({ asks: 5, unread_threads: 2, credential_requests: 2 });
+    // Every credential request the broker lists, the expired one included.
+    expect(entry.details).toMatchObject({ asks: 5, unread_threads: 2, credential_requests: 3 });
   });
 
   test("a failed replies read warns on stderr, counts no threads and prints the rest", async () => {
@@ -424,9 +498,7 @@ describe("dispatch inbox", () => {
     // The asks and the credential requests are read apart from the threads, and still print.
     expect(stdout).toContain("Needs you 4\n");
     expect(stdout).toContain("Later 1\n");
-    expect(
-      stdout.trimEnd().endsWith("- launcher_credential · runner-12 · 2026-11-02T10:00:00Z")
-    ).toBe(true);
+    expect(stdout.trimEnd().endsWith(EXPIRED_LINE)).toBe(true);
   });
 
   test("a scope refusal from the replies read exits 1 naming the code and the scope", async () => {

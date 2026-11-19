@@ -294,7 +294,7 @@ func TestTheRuntimeRefusesAnOperatorPodCollidingWithLegionsOwn(t *testing.T) {
 	}
 }
 
-// imageEnv is exactly what the worker image's final stage sets with ENV: a variable the image adds
+// ImageEnv is exactly what the worker image's final stage sets with ENV: a variable the image adds
 // and the list lacks is one an operator could override unrefused; one the list keeps that the
 // image dropped is refused for nothing.
 func TestImageEnvIsWhatTheWorkerImageSets(t *testing.T) {
@@ -338,7 +338,7 @@ func TestImageEnvIsWhatTheWorkerImageSets(t *testing.T) {
 		}
 	}
 	slices.Sort(set)
-	if len(set) == 0 || !slices.Equal(set, imageEnv) {
-		t.Errorf("the worker image's final stage sets %v, and imageEnv is %v", set, imageEnv)
+	if len(set) == 0 || !slices.Equal(set, ImageEnv) {
+		t.Errorf("the worker image's final stage sets %v, and ImageEnv is %v", set, ImageEnv)
 	}
 }

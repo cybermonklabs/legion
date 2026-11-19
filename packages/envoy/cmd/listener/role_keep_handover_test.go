@@ -777,7 +777,7 @@ func claimRoleBeyondTheSessionCache(t *testing.T, harness listenerDeliveryHarnes
 		t.Fatalf("warm the session cache: %v", err)
 	}
 	harness.sessions.StopWatch()
-	writer, err := session.OpenSessionRegistry(harness.client.Conn, session.WithSessionReplicas(1))
+	writer, err := session.OpenSessionRegistry(t.Context(), harness.client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry that registers the holder: %v", err)
 	}

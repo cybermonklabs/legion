@@ -183,7 +183,7 @@ func TestASessionThatRacesADeleteThroughItsEntryWriteIsOfferedNothingItAcked(t *
 	sessionID := "ses_entry_write_race_" + id.New()
 	agent := contracts.LegacyAgentSubject(sessionID)
 	hub := testnats.StartProxy(t, rig.url, testnats.ProxyLatency(sessionEntryWriteDelay))
-	slow, err := session.OpenSessionRegistry(testnats.Connect(t, hub.URL()), session.WithSessionReplicas(1))
+	slow, err := session.OpenSessionRegistry(t.Context(), testnats.Connect(t, hub.URL()), session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry the entry write that races the delete is made through: %v", err)
 	}
