@@ -47,9 +47,32 @@ const noticesReleasedMessage = "outbox notices released: their architect is read
 // the daemon's guarded pool (store.Pool), closed before the proxy and the clone at the test's end.
 func faultedPools(t *testing.T) (direct, faulted *store.Pool, fault *testdb.CommitFault) {
 	t.Helper()
-	dsn := testpg.Clone(t, "legion_commit_outcome_test")
-	proxied, fault := testdb.CommitFaults(t, dsn)
-	return openGuardedPool(t, dsn), openGuardedPool(t, proxied), fault
+	direct = openGuardedPool(t, testpg.Clone(t, "legion_commit_outcome_test"))
+	faulted, fault = faultedPoolOf(t, direct)
+	return direct, faulted, fault
+}
+
+// faultedPoolOf is direct's database through a proxy whose armed fault holds or cuts one
+// transaction's commit, as the daemon's guarded pool, closed before the proxy at the test's end.
+func faultedPoolOf(t *testing.T, direct *store.Pool) (*store.Pool, *testdb.CommitFault) {
+	t.Helper()
+	proxied, fault := testdb.CommitFaults(t, direct.Config().ConnString())
+	return openGuardedPool(t, proxied), fault
+}
+
+// faultedStoreOf is st's database opened as a second store through a proxy whose armed fault holds
+// or cuts one transaction's commit, closed before the proxy at the test's end. A runtime that
+// takes it in place of st takes its Pool in place of st's too, since an owner opens its
+// transaction on its store's pool and the store's methods join it there.
+func faultedStoreOf(t *testing.T, st *store.Store) (*store.Store, *testdb.CommitFault) {
+	t.Helper()
+	proxied, fault := testdb.CommitFaults(t, st.Pool().Config().ConnString())
+	opened, err := store.Open(context.Background(), proxied)
+	if err != nil {
+		t.Fatalf("open the store through the fault proxy: %v", err)
+	}
+	t.Cleanup(opened.Close)
+	return opened, fault
 }
 
 // openGuardedPool is the daemon's guarded pool on dsn, closed when the test ends.

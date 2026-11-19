@@ -531,6 +531,45 @@ func TestAnOutcomeStillInProgressIsUnknownUntilItEnds(t *testing.T) {
 	}
 }
 
+// A transaction still in progress when its reply is lost, which then aborts: the outcome is
+// unknown at first, and the watcher reads the abort and drops the hooks. Every status is
+// PostgreSQL's own; only the lost reply's error is given.
+func TestTheWatcherDropsTheHooksOfATransactionThatAborts(t *testing.T) {
+	rig := newCommitRig(t)
+	log := captureCommitLog(t)
+	ctx := context.Background()
+	open, err := rig.observer.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the direct transaction: %v", err)
+	}
+	defer func() { _ = open.Rollback(ctx) }()
+	if _, err := open.Exec(ctx, "insert into commit_probe values (1)"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	var xid string
+	if err := open.QueryRow(ctx, "select pg_current_xact_id()::text").Scan(&xid); err != nil {
+		t.Fatalf("read the direct transaction's id: %v", err)
+	}
+	err = settleLostReply(ctx, rig.pool, xid, []func(){func() { rig.hooks.Add(1) }}, io.ErrUnexpectedEOF)
+	if !errors.Is(err, ErrCommitOutcomeUnknown) {
+		t.Fatalf("the reply lost while the transaction is in progress = %v, want %v", err, ErrCommitOutcomeUnknown)
+	}
+	rig.wantHooks(t, 0)
+	if n := logged(log, lostReplyUnknown, "transaction="+xid+" "); n != 1 {
+		t.Fatalf("the log holds %d lines %q naming transaction %s, want 1", n, lostReplyUnknown, xid)
+	}
+	if err := open.Rollback(ctx); err != nil {
+		t.Fatalf("roll the direct transaction back: %v", err)
+	}
+	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the watcher to read the abort and drop the hooks", func() bool {
+		return logged(log, unknownAborted, "transaction="+xid+" ") == 1
+	})
+	rig.wantHooks(t, 0)
+	if n := rig.rows(t); n != 0 {
+		t.Fatalf("the rolled-back transaction left %d rows, want 0", n)
+	}
+}
+
 func TestTheOutcomeWatchEndsWhenThePoolCloses(t *testing.T) {
 	rig := newCommitRig(t)
 	log := captureCommitLog(t)
