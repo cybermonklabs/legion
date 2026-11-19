@@ -1302,7 +1302,8 @@ func judgeDispatch(cfg config.Config) *judge.Dispatch {
 // fails this build rather than a deployment's first judged request.
 var _ judge.Requests = (*requests.Machine)(nil)
 
-// judgeDispatchTimeout bounds each of the judge's two Dispatch GETs. A run's own 30-second
+// judgeDispatchTimeout bounds each of the judge's Dispatch GETs (the issue, its spec document and
+// the ask the reason cites). A run's own 30-second
 // budget already ends a read whose server never answers, but that budget is shared with the
 // 20-second model call, so a client with no timeout of its own would let one stalled read eat
 // the whole run. Ten seconds is wake.Envoy's own bound for the same kind of call, an authorized

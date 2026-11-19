@@ -407,7 +407,7 @@ func TestTheEndOnAReusedGrantNamesItsRequest(t *testing.T) {
 }
 
 // TestAnAskRefusedBeforeAnythingIsWrittenLogsNoEnd: R5 v9's seventh case. An ask refused before
-// Create writes anything ends nothing, so it writes no end line and no request.cancelled line.
+// Create writes a request ends nothing, so it writes no end line and no request.cancelled line.
 func TestAnAskRefusedBeforeAnythingIsWrittenLogsNoEnd(t *testing.T) {
 	for _, c := range askRefusedBeforeAnyWrite {
 		t.Run(c.name, func(t *testing.T) {

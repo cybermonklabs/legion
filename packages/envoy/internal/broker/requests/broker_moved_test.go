@@ -11,7 +11,7 @@
 // detail for its two phrases rather than its whole text, so the same file compiles and runs
 // against the code from before the change: there every case of a request signed for another
 // broker address fails, and the two cases that read what today's rule already did pass, the one
-// of a request signed for this broker and the one of an ask refused before anything is written.
+// of a request signed for this broker and the one of an ask refused before a request is written.
 package requests
 
 import (
@@ -514,7 +514,7 @@ func TestAStaleRequestEndsWhenALiveGrantAnswersTheAsk(t *testing.T) {
 }
 
 // askRefusedBeforeAnyWrite is R5 v9's seventh case's asks, each overlapping a stale request for
-// DEEL_API_KEY and each refused before Create writes anything: a name the policy does not serve,
+// DEEL_API_KEY and each refused before Create writes a request: a name the policy does not serve,
 // two approvers in one request (ErrMixedApprovers), and a request object signed for another broker
 // address, which this broker does not verify.
 var askRefusedBeforeAnyWrite = []struct {
@@ -536,7 +536,7 @@ var askRefusedBeforeAnyWrite = []struct {
 }
 
 // TestAnAskRefusedBeforeAnythingIsWrittenEndsNothing: R5 v9's seventh case. An ask that Create
-// refuses before it writes anything ends no stale request: no request of that ask exists for the
+// refuses before it writes a request ends no stale request: no request of that ask exists for the
 // end to name, and the session's next valid ask ends it.
 func TestAnAskRefusedBeforeAnythingIsWrittenEndsNothing(t *testing.T) {
 	for _, c := range askRefusedBeforeAnyWrite {

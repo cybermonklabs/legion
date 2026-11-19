@@ -59,7 +59,7 @@ const NarrowingRefusedMessage = "broker: narrowing refused"
 // Create ends it on its session's next ask of this broker for one of its names that writes a
 // request, pending or decided at once, or that a live grant answers, whatever its age beside a
 // request of this broker (RequestEndedBrokerMovedMessage), while its deadline has not passed. An
-// ask Create refuses before it writes anything ends nothing, and a request that no valid ask
+// ask Create refuses before it writes a request ends nothing, and a request that no valid ask
 // reaches before its deadline is expired by the sweep.
 const PendingLeftOutMessage = "broker: a pending request's record does not verify for this broker; it is left out of the pending list"
 
@@ -942,7 +942,8 @@ type pendingRequestRow struct {
 // before it asks (lockPendingNames), so no other Create of the enrollment can pass the lookup and
 // open another record for one of those names, and one read sees every overlapping request there
 // is. endBesideReusedGrant first reads straight on the pool, under no lock, only to tell whether
-// any request is signed for another broker, and ends what a second read under those locks finds.
+// any request is signed for another broker address, and ends what a second read under those locks
+// finds.
 // A request past its deadline, though the sweep has not ended it yet, is neither kept, ended
 // nor in the way: every decision of it answers ErrExpired, so a session coalesced onto it would
 // wait on an answer that can never come, its approver seeing only a request nobody can approve,

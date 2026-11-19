@@ -527,9 +527,10 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // read in no transaction tells whether any of them is signed for another broker address, and only
 // when one is does a short transaction of its own, under the advisory locks of the asked names and
 // the enrollment's lock, end them, commit and then log each end naming the reused grant's request.
-// With none it opens no transaction and writes nothing, so such an ask waits on no writer of the
-// enrollment row. An error of that read or of that transaction is the ask's. An ask Create refuses
-// before it writes anything ends nothing: an invalid or replayed request object, an unknown name
+// With none it opens no transaction and writes nothing beyond the jti Replay already wrote, so
+// such an ask waits on no writer of the enrollment row. An error of that read or of that
+// transaction is the ask's. An ask Create refuses before it writes a request ends nothing: an
+// invalid or replayed request object, an unknown name
 // (policy.ErrUnknownSecret, which the evaluation answers), a name whose value is pending, a
 // lifetime over a name's max-grant, a narrowing refusal or ErrMixedApprovers (the evaluation's
 // too). Each of them returns before any end runs, since the main transaction ends requests only
@@ -844,20 +845,22 @@ func (m *Machine) endSignedForAnotherBroker(ctx context.Context, tx pgx.Tx, enro
 // broker address, commits, and then logs each end naming reused, the reused grant's request, as
 // the request the session is referred to (logBrokerMoved).
 // It reads those requests first straight on the pool, in no transaction (pendingRequests), and
-// when none is signed for another broker (signedForAnotherBroker) it answers nil: no
+// when none is signed for another broker address (signedForAnotherBroker) it answers nil: no
 // transaction, no lock and no log line. Most asks a live grant answers find none, and a
 // transaction would cost each of them: the enrollment's lock for share assigns it a transaction
-// id, so it would commit durably and wait behind any writer of the enrollment row, where the ask
-// otherwise writes nothing. Only when that read finds such a request does it open a short
+// id, so it would commit durably a second time, beside the jti Replay writes, and wait behind any
+// writer of the enrollment row. Only when that read finds such a request does it open a short
 // transaction of its own, take the advisory locks of sorted (lockPendingNames) and then the
 // enrollment's row lock for share, in the order Create's transaction takes them, and end what
 // endSignedForAnotherBroker, reading again under those locks, finds; that second read decides
-// what is ended. The read without locks misses nothing the locked one would end. Create writes
-// only requests whose aud is this broker's (record.VerifyRequestObject with Machine.Audience), so
-// no request another Create of this broker writes meanwhile is signed for another broker, and an
-// adoption moves requests onto an enrollment only as it creates that enrollment (enroll's adopt),
-// before its first ask. A request the broker it was signed for decides between the two reads is
-// no longer pending at the locked read, which ends nothing for it.
+// what is ended. The read without locks can miss only a request that reaches the enrollment after
+// it, which the session's next ask ends, as it would had that request arrived just after the
+// locked read. Create writes only requests whose aud is this broker's (record.VerifyRequestObject
+// with Machine.Audience); an adoption moves requests onto an enrollment only as it creates that
+// enrollment (enroll's adopt); and a hand-over (enroll's handOver), the end of another pod of the
+// same Legion claim, can move that pod's requests onto this one at any time. A request the broker
+// it was signed for decides between the two reads is no longer pending at the locked read, which
+// ends nothing for it.
 // The enrollment's lock is what keeps an enrollment's end (enroll's endEnrollment), which updates
 // the enrollment and then ends all its pending requests in one statement, in whatever order that
 // statement reaches them, from holding one of these requests while this transaction holds

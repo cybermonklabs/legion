@@ -711,7 +711,7 @@ The broker evaluates every name
   that waits for a decision the rule then applies to what is left. A request whose deadline has
   passed is expired rather than pending, whichever broker address it is signed for: the ask
   neither joins it nor is refused for it, and the broker's sweep ends it. An ask refused before
-  the broker writes anything (an unknown name, a lifetime over the secret's maximum, two
+  the broker writes a request (an unknown name, a lifetime over the secret's maximum, two
   approvers) ends nothing, and a request signed for another broker address that no such ask
   reaches waits for its expiry.
   The broker's answer names the approver the record names and the request's page on the broker
