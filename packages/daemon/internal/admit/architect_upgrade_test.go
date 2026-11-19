@@ -650,8 +650,17 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					Scan(&markColumn); err != nil {
 					t.Fatalf("look for the phases row's mark after the way back: %v", err)
 				}
+				// The rows the blocks delete are read by name too: once a migration stands above
+				// all of them, the version the store reports is that migration's whether or not a
+				// block deleted its rows. The set is read from the blocks' own statements, and held
+				// to the five this test means: this migration's block deletes the four of contract
+				// 146, and the phase entry's block its own.
 				standing, deleted := leftStandingVersion(t, wayBack, headerWayBack(t, phaseEntryVersion))
 				t.Logf("the highest embedded migration neither way back deletes is %d, and the blocks delete %v", standing, deleted)
+				want := []int{phaseEntryVersion, stalledNoticesVersion, architectUpgradeVersion, claimHandshakeVersion, entryVerbatimVersion}
+				if !slices.Equal(deleted, want) {
+					t.Fatalf("the two ways back delete the version rows %v, want %v", deleted, want)
+				}
 				var undeleted int
 				if err := pool.QueryRow(ctx, `select count(*) from schema_version where version = any($1)`, deleted).Scan(&undeleted); err != nil {
 					t.Fatalf("count the version rows the ways back delete: %v", err)

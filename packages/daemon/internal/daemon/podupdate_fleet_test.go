@@ -450,6 +450,9 @@ func (d *fleetHandoffs) ApprovedVersionBefore(context.Context, string, int) (int
 	return 0, nil
 }
 func (d *fleetHandoffs) PutGatedSteps(context.Context, string, []string) error { return nil }
+func (d *fleetHandoffs) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
 func (d *fleetHandoffs) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }

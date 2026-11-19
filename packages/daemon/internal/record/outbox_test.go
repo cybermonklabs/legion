@@ -224,14 +224,21 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 
 // Every kind the outbox stores runs on exactly one lane, and LaneOf names the lane whose kinds
 // list it: a kind on neither lane would be queued and never run, one on both would run twice over.
+// The kinds and the lanes named here are this test's own, the oracle, and the kinds are read from
+// the outbox's own lanes (OutboxLanes): a lane added there with its kinds and not named here fails
+// both the count of lanes and the count of kinds.
 func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish}
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish, OutboxKindStepRecord}
+	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
+	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
+		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
+	}
 	lanes := map[OutboxKind][]OutboxLane{}
-	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim, LaneDocuments} {
+	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
 			lanes[kind] = append(lanes[kind], lane)
 		}

@@ -84,6 +84,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/asks/{id}/asked-of",
 	"PUT /api/v1/issues/{key}/design-gates",
 	"PUT /api/v1/issues/{key}/role-holders",
+	"PUT /api/v1/issues/{key}/steps/{id}",
 	"PUT /api/v1/me/agents/{session_id}/state",
 	"PUT /api/v1/me/asks/{id}/snooze",
 	"PUT /api/v1/me/documents/{id}/read",

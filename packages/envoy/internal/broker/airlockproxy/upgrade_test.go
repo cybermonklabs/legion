@@ -555,7 +555,7 @@ func TestAGrantReadThatFailedLeavesAJoinedConnectionAlone(t *testing.T) {
 // holding a minted name re-mints it, and a minter that could not ask its upstream - no answer,
 // a 5xx, a rate limit - refuses with ErrMintUpstream inside an ErrMintFailed. That is a
 // refusal of the requests package and no answer about this grant: the grant is live and the
-// command's placeholder still opens it. GCLOUD_SAMI, AZURE_ADMIN and GWS_THEOREM_ADMIN_OAUTH
+// command's placeholder still opens it. GCLOUD_DEMO, AZURE_ADMIN and GWS_THEOREM_ADMIN_OAUTH
 // are minted names this deployment puts behind the airlock, so a bad minute of Google's or
 // GitHub's would otherwise cut every WebSocket the airlock carries for them.
 func TestAJoinedConnectionSurvivesAMintWhoseUpstreamCouldNotBeAsked(t *testing.T) {

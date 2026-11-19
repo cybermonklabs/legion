@@ -467,6 +467,39 @@ const ASK_BOUND_RULE =
  */
 export const DISPATCH_HANDOFF_BODY_MAX = 262144;
 
+/** The words of a step record, written once for Dispatch's store and the Legion daemon, a Go module
+ *  of its own that reads them through `github.com/sjawhar/envoy/steprecord`. A word one side drifts
+ *  on is a `400 STEP_INPUT` the daemon's outbox ends the row on, and the record is lost.
+ *
+ *  The kinds of a run: a step a plan names, at its place from 1, and the retro and the merge,
+ *  acts of Legion that no plan names, at the place 0. Generated into Go as
+ *  `contracts.StepKindStep`, `contracts.StepKindRetro` and `contracts.StepKindMerge`. */
+export const STEP_KINDS = ["step", "retro", "merge"] as const;
+
+/** The results of a run that ended: generated into Go as `contracts.StepResultPassed`,
+ *  `contracts.StepResultFailed` and `contracts.StepResultStopped`. A run that still runs has none. */
+export const STEP_RESULTS = ["passed", "failed", "stopped"] as const;
+
+/** The codes of the step write's refusals that no retry changes: a value outside its form, a writer
+ *  that is not the daemon's session, and an id whose record is a run of another issue. Generated
+ *  into Go as `contracts.StepInputCode`, `contracts.StepWriterCode` and
+ *  `contracts.StepOtherIssueCode`, which the route answers and the daemon ends a row on. */
+export const STEP_INPUT_CODE = "STEP_INPUT";
+export const STEP_WRITER_CODE = "STEP_WRITER";
+export const STEP_OTHER_ISSUE_CODE = "STEP_OTHER_ISSUE";
+
+/** The form of the agent, the session and the model a step record names: printable ASCII with no
+ *  space, from 1 to 128 characters. The session and the model come from the agent's own frames,
+ *  and `dispatch steps` joins a record's fields with spaces, so a space or a control character in
+ *  one would shift its columns or forge a line. Generated into Go as
+ *  `contracts.StepAgentTextPattern`: Dispatch refuses a step write that names text outside it,
+ *  and the Legion daemon leaves such text out of the record it writes. */
+export const STEP_AGENT_TEXT_PATTERN = /^[!-~]{1,128}$/;
+
+/** STEP_AGENT_TEXT_PATTERN's rule in words, which Dispatch's refusal gives: generated into Go as
+ *  `contracts.StepAgentTextRule`. */
+export const STEP_AGENT_TEXT_RULE_WORDS = "printable ASCII with no space, from 1 to 128 characters";
+
 /** A handoff's phase, the `{phase}` segment of the handoff routes: a lowercase slug. Legion writes
  *  `plan`, `implement`, `test` and `review`. Generated into Go as `contracts.HandoffPhasePattern`,
  *  which the server compiles; the `handoffs.phase` check constraint holds the same rule. */
@@ -2269,6 +2302,27 @@ export const dispatchToolSpecs = [
         .optional(),
     }),
     validation: handoffValidation,
+    strict: true,
+  },
+  {
+    name: "dispatch_steps",
+    example: { issue: "DSP-1" },
+    description:
+      "Print each step that ran on an issue, as the Legion daemon recorded it at the step's " +
+      "start and at its end. The first line is `<KEY>: <n> steps in <m> tasks`. Then each run " +
+      "of a step prints one line, task by task, in the order each task first ran: `<task> " +
+      "<step> <kind> <role> <type> attempt <attempt> <agent> <model> <started_at> <ended_at> " +
+      "<result>`. kind is step, retro or merge. step is the step's place in its task, from 1, " +
+      "and 0 for a retro or a merge. attempt counts the runs of the same task, step and kind, " +
+      "from 1. agent is the claim of the role that ran the step, and model is the model that " +
+      "answered it, as provider/model. result is passed, failed or stopped. A field with no " +
+      "value prints -, and a run that has not ended prints running for its end and its result. " +
+      "A closed issue's steps read too. An issue that no step ran on prints 0 steps in 0 tasks, " +
+      "and a key Dispatch does not hold fails as dispatch read fails for it, NOT_FOUND: not " +
+      `found. ${ISSUE_REFERENCE}`,
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_REFERENCE),
+    }),
     strict: true,
   },
   {

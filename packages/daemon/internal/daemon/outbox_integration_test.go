@@ -295,6 +295,9 @@ func (d *blockingDispatch) ApprovedVersionBefore(context.Context, string, int) (
 func (d *blockingDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
 }
+func (d *blockingDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
 func (d *blockingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -488,6 +491,9 @@ func (d *refusingDispatch) ApprovedVersionBefore(context.Context, string, int) (
 func (d *refusingDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
 }
+func (d *refusingDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
 func (d *refusingDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -546,6 +552,9 @@ func (d *boardDispatch) ApprovedVersionBefore(context.Context, string, int) (int
 	return 0, nil
 }
 func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error { return nil }
+func (d *boardDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
 func (d *boardDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }

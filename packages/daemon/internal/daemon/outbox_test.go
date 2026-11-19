@@ -202,6 +202,9 @@ func (d *outboxDispatch) PutGatedSteps(_ context.Context, project string, steps 
 	d.gatedSteps = append(d.gatedSteps, append(make([]string, 0, len(steps)), steps...))
 	return d.gatedStepsErr
 }
+func (d *outboxDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
 func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }

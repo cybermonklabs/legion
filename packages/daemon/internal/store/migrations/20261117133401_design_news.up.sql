@@ -103,18 +103,21 @@
 --
 -- The outbox kind design_changes is the row that runs that reconcile for one tree. The check is
 -- one list, so it is rewritten whole naming every kind, as 20261110235320 did: the list of
--- 20261116165926, which stands below this one and added role_holders_publish to the merge-queue
--- kinds' list of 20261114031356, with design_changes added. Its version stands above
--- 20261116165926 on purpose. Migrate applies every unrecorded migration in version order, so the
--- list with the higher version is the last word on any database. Numbered below it, this list
--- would run first on a fresh database, and the list of 20261116165926, which does not name
--- design_changes, would then refuse every reconcile row. This file was numbered below such a list
--- twice, and moved above it at the forward merge that brought the list in: first 20261113212423,
--- below the merge-queue kinds' 20261114031356, then 20261114082752, below the role-holders kind's
--- 20261116165926. No release carries either version and main never merged them, so no
--- deployment's database records them. Only a database that a build of this branch migrated before
--- a forward merge does, and such a database is a test's own: it would apply this file a second
--- time and fail on the first create table below, so make it again rather than upgrade it.
+-- 20261117000528, which stands below this one and added step_record to the role-holders list of
+-- 20261116165926, itself the merge-queue kinds' list of 20261114031356 with role_holders_publish
+-- added, with design_changes added. Its version stands above both on purpose. Migrate applies
+-- every unrecorded migration in version order, so the list with the higher version is the last
+-- word on any database. Numbered below either, this list would run first on a fresh database, and
+-- the list above it, which does not name design_changes, would then refuse every reconcile row.
+-- A list here that left out step_record would refuse every step record, and fail the upgrade of a
+-- database that holds one pending. This file was numbered below such a list twice, and moved above
+-- it at the forward merge that brought the list in: first 20261113212423, below the merge-queue
+-- kinds' 20261114031356, then 20261114082752, below the role-holders kind's 20261116165926. It
+-- stood above the step record's 20261117000528 when that list came in. No release carries either
+-- earlier version and main never merged them, so no deployment's database records them. Only a
+-- database that a build of this branch migrated before a forward merge does, and such a database
+-- is a test's own: it would apply this file a second time and fail on the first create table
+-- below, so make it again rather than upgrade it.
 -- design_history_unread, design_changes.unchanged with its check, design_news_told.opening_seq and
 -- unreached, the functions below, and the columns pending_task_deliveries.carried_news,
 -- carried_ran and news_only were added to this file before any release carried it, so they are
@@ -124,8 +127,8 @@
 --
 -- 20261116165926 also creates outbox_role_holders_publish_issue_unique, a unique index on the
 -- outbox's issue over role_holders_publish rows alone. Nothing below reads or writes that index or
--- a row of that kind; the kind check below names role_holders_publish so that such a row stands
--- through the rewrite and is still taken after it.
+-- a row of that kind, or a step_record row; the kind check below names role_holders_publish and
+-- step_record so that such a row stands through the rewrite and is still taken after it.
 --
 -- Rolling the image back to the release before this one needs no restore of the schema, but it
 -- needs four statements first, run with this release's daemon stopped: that release refuses an
@@ -362,7 +365,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'design_changes'));
+  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'design_changes'));
 
 -- The seed. Each tree root holding gate rows, with the approved version of each row that holds
 -- one (versions) and whether it holds any (approved). A row whose approval a changes request

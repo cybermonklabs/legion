@@ -981,9 +981,9 @@ esac
 // legion.issue nor legion.role, and the probe's minutes are billed under the deployment's own
 // attributes rather than under some launch's issue.
 func TestTheGateIsToldTheOperatorsSpendAttributesAlone(t *testing.T) {
-	// The live deployment's own value, the shape an operator writes: the project, the lane, the
-	// credential the gateway bills and the person who owns the spend.
-	const operator = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@theorem.dev"
+	// The live deployment's shape, with a placeholder person, as an operator writes it: the
+	// project, the lane, the credential the gateway bills and the person who owns the spend.
+	const operator = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@example.com"
 	block := &config.Tmux{PaneEnv: map[string]string{runtime.SpendAttributesVariable: operator}}
 	env, err := gateEnvironment([]string{"HOME=" + t.TempDir()}, t.TempDir(), "", block)
 	if err != nil {

@@ -23,9 +23,10 @@ const liveRepo = "acme/widgets"
 // before a status write, a release's walk up an issue's parent chain, an event's walk up its
 // Dispatch chain to the top) and 404s an issue it does not hold, records every status and message
 // the daemon posted, so a step can read back what the daemon told Dispatch and tell a write that
-// never came from one it cannot see, and serves the handoff records a step seeds (handoff), which a
-// phase completion names and the daemon reads back. Anything else is a call a live proof does not
-// expect, and fails the test as workflowConfig's stand-in does.
+// never came from one it cannot see, serves the handoff records a step seeds (handoff), which a
+// phase completion names and the daemon reads back, and takes each write of a step record from the
+// daemon's own session alone (putStep). Anything else is a call a live proof does not expect, and
+// fails the test as workflowConfig's stand-in does.
 type liveDispatch struct {
 	t       *testing.T
 	project string
@@ -147,6 +148,8 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	case req.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/artifacts/") && strings.HasSuffix(path, "/changes"):
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"code":"`+dispatch.ArtifactNotFound+`","error":"artifact not found"}`)
+	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/"):
+		b.putStep(key, req, w)
 	default:
 		b.t.Errorf("Dispatch request = %s %s", req.Method, path)
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -211,6 +214,33 @@ func (b *liveDispatch) showHandoff(id string, w http.ResponseWriter) {
 	if err := json.NewEncoder(w).Encode(handoff); err != nil {
 		b.t.Errorf("write the Dispatch handoff %s: %v", id, err)
 	}
+}
+
+// putStep takes one write of a step record of key from its writer as Dispatch's PUT
+// /api/v1/issues/{key}/steps/{id} does: only the session legion-daemon:<project> writes one, and any
+// other writer is refused 403 STEP_WRITER. Every other write is answered 200 {} and nothing of it
+// is kept, because the daemon reads no answer of a step write (dispatch.HTTPClient.PutStep). What
+// the route keeps, merges and refuses besides is the real route's to show: the walk of
+// step_records_test.go runs against it.
+func (b *liveDispatch) putStep(key string, req *http.Request, w http.ResponseWriter) {
+	var write struct {
+		Actor struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		} `json:"actor"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&write); err != nil {
+		b.t.Errorf("decode the step write to %s: %v", req.URL.Path, err)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if write.Actor.Kind != "session" || write.Actor.ID != dispatch.DaemonSession(key) {
+		project, _, _ := strings.Cut(key, "-")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprintf(w, `{"code":"STEP_WRITER","error":"only the session legion-daemon:%s writes a step record of %s"}`, project, key)
+		return
+	}
+	_, _ = io.WriteString(w, `{}`)
 }
 
 // decode is the write's status or body, whichever the daemon sent.

@@ -48,12 +48,12 @@ import (
 // stand above all of them and are applied after them, in version order: the kind list with the
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list.
 // dispatch://INFRA-175's design news (20261117133401) stands above those four and is named here
-// the same way. It is the last word of outbox_kind_check: the upgrade applies it last, after
-// 20261029120800 has deleted main's merge-lane rows, and it names every other kind main's daemon
-// writes (mainsOutboxKinds), with update_ask, the two merge-queue kinds, role_holders_publish and
-// design_changes besides, which main's daemon never writes. INFRA-3036's 20261111214351 and
-// INFRA-3276's 20261113082415 each add one column, to issues and to claims, and leave the check
-// as it stands.
+// the same way. It is the last word of outbox_kind_check: the upgrade applies it last of the kind
+// lists, after 20261029120800 has deleted main's merge-lane rows, and it names every other kind
+// main's daemon writes (mainsOutboxKinds), with update_ask, the two merge-queue kinds,
+// role_holders_publish, step_record and design_changes besides, which main's daemon never writes.
+// INFRA-3036's 20261111214351 and INFRA-3276's 20261113082415 each add one column, to issues and
+// to claims, and leave the check as it stands.
 // And so is dispatch://INFRA-3146's `phases.entry_moved_back` (20261113090512), which stands
 // between INFRA-2981's two and adds one column beside the phase entry's, true on every row it
 // finds and false by default after, and so needs no row of its own here
@@ -83,13 +83,20 @@ import (
 // columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
 // outbox_kind_check.
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
-// the reviewer's reviewed commit, dispatch://INFRA-1997's 20261117112334, the design news and
-// dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337): it names every kind the
-// merge-queue list names and its own, and the design news's list, applied after the reviewed commit
-// and the commit statuses and the last of them to rewrite outbox_kind_check, names those and
-// design_changes. The other three touch no outbox_kind_check: the reviewed commit and the commit
-// statuses each add a column at its default, and the cutover, applied after the design news,
-// clears a claim's ask mark where that claim's ask is still queued.
+// the reviewer's reviewed commit, the step records' three, dispatch://INFRA-1997's 20261117112334,
+// the design news and dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337): it
+// names every kind the merge-queue list names and its own.
+// The kind list with the step record (20261117000528) is named here too: it stands above the
+// role-holders publication's and the reviewer's reviewed commit, and it restates
+// 20261116165926's kinds with step_record. The design news's list, applied after it, after the
+// count of starts of each step (20261117004117), its roll forward (20261117064152) and the commit
+// statuses, is the last of them to rewrite outbox_kind_check: it names those kinds and
+// design_changes. The count of starts creates tables and a function of its own, and its roll
+// forward changes nothing on a database no rollback touched; neither touches outbox_kind_check,
+// nor do the reviewed commit and the commit statuses, which each add a column at its default.
+// dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
+// of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
+// is still queued.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -97,7 +104,8 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261116165926, 20261116234034, 20261117112334, 20261117133401, 20261117200337,
+	20261114061900, 20261116165926, 20261116234034, 20261117000528, 20261117004117, 20261117064152,
+	20261117112334, 20261117133401, 20261117200337,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -108,10 +116,12 @@ var thisBranchsMigrations = []int{
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
 // 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the role-holders
-// publication's 20261116165926, the reviewer's reviewed commit, 20261116234034,
-// dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-175's 20261117133401 and
-// dispatch://INFRA-4109's 20261117200337, which is why the loop below holds the list rather than
-// counting it, so that a version added above any of them is named here rather than read as main's.
+// publication's 20261116165926, the reviewer's reviewed commit, 20261116234034, the step records'
+// three: the kind list with the step record (20261117000528), the count of starts of each step
+// (20261117004117) and its roll forward (20261117064152), dispatch://INFRA-1997's 20261117112334,
+// dispatch://INFRA-175's 20261117133401 and dispatch://INFRA-4109's 20261117200337. That is why
+// the loop below holds the list rather than counting it, so that a version added above any of them
+// is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

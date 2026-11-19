@@ -301,7 +301,8 @@ func (d *tickDispatch) ArtifactChanges(context.Context, string, int, int) (dispa
 func (d *tickDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
 	return 0, nil
 }
-func (d *tickDispatch) PutGatedSteps(context.Context, string, []string) error { return nil }
+func (d *tickDispatch) PutGatedSteps(context.Context, string, []string) error             { return nil }
+func (d *tickDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
 func (d *tickDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }

@@ -1832,6 +1832,29 @@ type Store interface {
 	// Dispatch holds for that issue is the one those rows recorded.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
+	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
+	// the write of that start's record, which run builds from the count with that start in it:
+	// the start of a step's record raises it in its own transaction (workflow's startStep), and
+	// the row keeps the agent, the moment and the identity that write carries. ClearGeneration
+	// and ClearTreeGeneration leave the count: the generation is part of the record's id already,
+	// and the count only rises.
+	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error)
+	// StepStarts is the count of starts of place on issue with the agent, the moment and the run
+	// of the latest, unchanged: the zero StepStart where the place has no row.
+	StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error)
+	// EndStepStart marks the open run of place on issue ended and answers its start and true, in
+	// the transaction that writes the run's end (workflow's endStep); false where that run has its
+	// end already, so one run gets one end.
+	EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, bool, error)
+	// OpenUncountedStep marks open, at the daemon's boot, the row of a run at place that no start
+	// of this release counted — at the count 0 for a place with no row, the next count for one
+	// that reads RunUncounted — keeping the write run builds from that count as a start keeps its
+	// own, and answers true; it queues nothing (workflow's OpenUncountedRuns). False, and nothing
+	// written, where the place's row is open or ended.
+	OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (bool, error)
+	// StepRuns is every row of starts of each of issues, by issue and place, in one read: what the
+	// end of a step's run reads of the issues one fact touched (workflow's settleRuns).
+	StepRuns(ctx context.Context, tx pgx.Tx, issues []string) ([]IssueStepRun, error)
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.

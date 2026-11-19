@@ -290,6 +290,9 @@ func (d *pilotDispatch) ApprovedVersionBefore(context.Context, string, int) (int
 	return 0, nil
 }
 func (d *pilotDispatch) PutGatedSteps(context.Context, string, []string) error { return nil }
+func (d *pilotDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
 func (d *pilotDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -359,6 +362,9 @@ func (d *filteringDispatch) ApprovedVersionBefore(context.Context, string, int) 
 	return 0, nil
 }
 func (d *filteringDispatch) PutGatedSteps(context.Context, string, []string) error {
+	return nil
+}
+func (d *filteringDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
 	return nil
 }
 func (d *filteringDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
@@ -731,7 +737,8 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 }
 
 // reconcileAdmission runs admission's boot reconcile as the workflow runtime does (reconcile): in
-// its own transaction, running the commit hooks it registered once that commits.
+// its own transaction, settling the runs its writes end before it commits, and running the commit
+// hooks it registered once that commits.
 func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admission, summaries []dispatch.IssueSummary, target int64, position intake.DispatchConsumerPosition) {
 	t.Helper()
 	listed := make([]intake.DispatchIssue, len(summaries))
@@ -739,8 +746,12 @@ func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admissi
 		listed[i] = intake.ListedIssue(summary)
 	}
 	scoped, committed := intake.WithCommitHooks(context.Background())
+	scoped, settle := intake.OpenSettlers(scoped, admission)
 	if err := pgx.BeginFunc(scoped, pool, func(tx pgx.Tx) error {
-		return admission.Reconcile(scoped, tx, listed, target, position)
+		if err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+			return err
+		}
+		return settle(scoped, tx)
 	}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
