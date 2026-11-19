@@ -496,10 +496,11 @@ type PodSessionRegistration struct {
 // registrar is refused, since a row naming none would admit nothing.
 //
 // A row of the pod and name that is released, that names another registrar, or that names none
-// (a row written before this registrar bound the name, such as one a broker of the build before
-// registrars wrote) is taken whole: its registrar, key, generation and expiry become this write's
-// and its release mark is cleared. A release ends a registration, so neither its key nor its
-// generation carries over to the next, whose claim may count its generations from lower; nor does
+// (one a broker of the build before registrars wrote, before this registrar bound the name or,
+// from a replica of that build while the broker rolls, after it) is taken whole: its registrar,
+// key, generation and expiry become this write's and its release mark is cleared. A release
+// ends a registration, so neither its key nor its generation carries over to the next, whose
+// claim may count its generations from lower; nor does
 // another registrar's. A row of this registrar's own that it has not released, live or lapsed,
 // keeps the rules below.
 //
@@ -629,9 +630,10 @@ func (s *Store) writePodSession(ctx context.Context, registrar, podUID, session,
 	var row pgx.Row
 	switch {
 	case locked.released || locked.registrar != registrar:
-		// A release ended the row's registration, or it is another registrar's or no registrar's,
-		// written before registrar bound the name: nothing of it carries over, so the write sets
-		// it as a first write would.
+		// A release ended the row's registration, or it is another registrar's or no registrar's (a
+		// broker of the build before registrars writes a row of none, before registrar bound the name
+		// or, while the broker rolls, after it): nothing of it carries over, so the write sets it as a
+		// first write would.
 		row = s.db(ctx).QueryRow(ctx, `update oauth_pod_sessions
 			set registrar = $3, expires_at = $4, jkt = nullif($5, ''), generation = $6, released_at = null
 			where pod_uid = $1 and session = $2
