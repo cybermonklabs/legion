@@ -892,10 +892,10 @@ func populatedState(t *testing.T) State {
 		// its last health read answered; sjawhar/legion, which the records keep under its name
 		// before a configured transfer and the rename rule serves as cybermonklabs/legion, both
 		// Apps installed there; zeta/archive, whose implement App read GitHub did not answer, so it
-		// carries why and no answer of the Apps at all; and zeta/tools, both Apps installed, its
-		// cache failing, and Dispatch's GitHub App not installed on it, which serves it all the
-		// same. acme/legacy, which no live record names any more, keeps its cache until its
-		// retention ends.
+		// carries why and no answer of the Apps at all; and zeta/tools, both Apps installed and its
+		// cache failing, which withoutWebhookApp names as Dispatch's GitHub App not installed on
+		// it, served all the same. acme/legacy, which no live record names any more, keeps its
+		// cache until its retention ends.
 		Repositories: RepositoriesView{
 			Live: []LiveRepositoryView{
 				{Repo: "acme/gadgets", Apps: &AppInstallationsView{Implement: true}},
@@ -907,13 +907,16 @@ func populatedState(t *testing.T) State {
 				{Repo: "zeta/archive", ReadError: "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"},
 				{
 					Repo: "zeta/tools", Apps: &AppInstallationsView{Implement: true, Review: true},
-					WebhookApp: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
 					Cache: &CacheView{
 						Repo: "zeta/tools", Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "failing",
 						Reason: "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
 					},
 				},
 			},
+			WithoutWebhookApp: []WebhookAppGapView{{
+				Repo:   "zeta/tools",
+				Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
+			}},
 			Caches: []CacheView{{
 				Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
 			}},

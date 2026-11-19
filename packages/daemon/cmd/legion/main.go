@@ -584,7 +584,7 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	for _, line := range repositoryLines(state.Repositories.Live) {
 		fmt.Fprintln(stdout, line)
 	}
-	for _, line := range webhookAppLines(state.Repositories.Live) {
+	for _, line := range webhookAppLines(state.Repositories.WithoutWebhookApp) {
 		fmt.Fprintln(stdout, line)
 	}
 	for _, line := range consumerLines(state.Consumers, state.Daemon.StartedAt, time.Now()) {
@@ -1393,18 +1393,21 @@ func repositoryLines(live []api.LiveRepositoryView) []string {
 }
 
 // webhookAppLines are the lines an operator reads for the repositories the live records name that
-// Dispatch's GitHub App is not known to be installed on (api.LiveRepositoryView.WebhookApp): GitHub
-// sends Legion no event of such a repository. One line per repository with why, in the state's
-// order; with none the one line says so.
-func webhookAppLines(live []api.LiveRepositoryView) []string {
-	var lines []string
-	for _, repo := range live {
-		if repo.WebhookApp != "" {
-			lines = append(lines, "webhook App missing on "+repo.Repo+": "+repo.WebhookApp)
-		}
+// Dispatch's GitHub App is not known to be installed on (api.RepositoriesView.WithoutWebhookApp,
+// which a daemon of contract 152 writes too): GitHub sends Legion no event of such a repository.
+// One line per repository with why, in the state's order. Only a list that is present and empty
+// gives the one line that says none is missing; a daemon that wrote no list (gaps nil) says
+// nothing of the webhook App, so the CLI prints no line for it.
+func webhookAppLines(gaps []api.WebhookAppGapView) []string {
+	if gaps == nil {
+		return nil
 	}
-	if len(lines) == 0 {
+	if len(gaps) == 0 {
 		return []string{"webhook App missing: none"}
+	}
+	lines := make([]string, len(gaps))
+	for i, gap := range gaps {
+		lines[i] = "webhook App missing on " + gap.Repo + ": " + gap.Reason
 	}
 	return lines
 }

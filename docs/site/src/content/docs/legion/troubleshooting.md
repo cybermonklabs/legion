@@ -1830,15 +1830,15 @@ notice comes once per handoff commit, from whichever read finds it first.
   already applied, so that rate counts no redelivery of an event that carries no fact, and none of
   an event not yet applied. A recreated consumer's replay reads 1 and stands outside the rate,
   although JetStream did hand the fact over twice.
-- **`webhook App missing on <repo>: <reason>`** in `legion state` (the entry's `webhookApp` under
-  `repositories.live` in `--json`). Dispatch's GitHub App, the Envoy App whose webhook carries
-  GitHub's events, is not known to be installed on a repository a live record names. With
-  `Dispatch's GitHub App is not installed on <repo>: …`, GitHub sends Legion none of that
-  repository's events and nothing redelivers them: the repository is worked, and nothing brings
-  its pull requests' changes in, so its issues stand still. An operator installs Dispatch's GitHub
-  App on the repository ([The GitHub Apps](/legion/legion/running-legion/#the-github-apps)); the
-  daemon asks Dispatch again on its own, 30 s doubling to 10 min, and the line goes at the first
-  answer that the App is installed.
+- **`webhook App missing on <repo>: <reason>`** in `legion state` (its entry in
+  `repositories.withoutWebhookApp` in `--json`). Dispatch's GitHub App, the Envoy App whose
+  webhook carries GitHub's events, is not known to be installed on a repository a live record
+  names. With `Dispatch's GitHub App is not installed on <repo>: …`, GitHub sends Legion none of
+  that repository's events and nothing redelivers them: the repository is worked, and nothing
+  brings its pull requests' changes in, so its issues stand still. An operator installs Dispatch's
+  GitHub App on the repository ([The GitHub Apps](/legion/legion/running-legion/#the-github-apps));
+  the daemon asks Dispatch again on its own, 30 s doubling to 10 min, and the line goes at the
+  first answer that the App is installed.
   `the webhook App check failed: GITHUB_APP_UNCONFIGURED: …` is a Dispatch that holds no App key
   (`DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64`); `GITHUB_UNREADABLE` is Dispatch's read of
   GitHub failing; `this Dispatch does not answer the webhook App check` is a Dispatch older than

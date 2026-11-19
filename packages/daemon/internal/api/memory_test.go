@@ -207,8 +207,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// not.
 		times bool
 		// repos is whether the caller is served the repositories block this contract writes,
-		// `live` beside `caches` (repositoriesLiveContract), so a pod at it is served that block
-		// and every pod below it the block in contract 152's shape, from the same entries.
+		// `live` beside `caches` and `withoutWebhookApp` (repositoriesLiveContract), so a pod at
+		// it is served that block and every pod below it the block in contract 152's shape, from
+		// the same entries.
 		repos bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},

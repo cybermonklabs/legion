@@ -96,11 +96,13 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
 number is the one `DaemonAPIVersion` declares, last bumped by contract 173 (dispatch://INFRA-4401:
-the `repositories` block of `GET /legion/v1/state` is `{live, caches}`, one `live` entry for each
-repository a live record names with `servedAs`, `apps`, `readError`, `webhookApp` and `cache`, each
-absent until it holds something, in place of `owners`, `mapped`, `refused` and `withoutWebhookApp`,
-and a caller below 173 is served the block in contract 152's shape, written from the same
-entries), after contract 146 (dispatch://INFRA-2614:
+the `repositories` block of `GET /legion/v1/state` is `{live, caches, withoutWebhookApp}`, one
+`live` entry for each repository a live record names with `servedAs`, `apps`, `readError` and
+`cache`, each absent until it holds something, in place of `owners`, `mapped` and `refused`;
+`withoutWebhookApp`, `{repo, reason}` for each of those Dispatch's webhook App is not known to be
+installed on, is the block's one report of the webhook App and keeps contract 152's shape for
+every caller, and a caller below 173 is served the block in contract 152's shape, written from the
+same entries), after contract 146 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its

@@ -493,6 +493,17 @@ func liveEntry(w *workflowRuntime, repo string) (api.LiveRepositoryView, bool) {
 	return api.LiveRepositoryView{}, false
 }
 
+// webhookGap is the reason the state's withoutWebhookApp gives for repo, compared without case,
+// and "" where the list does not name it: what the state says of Dispatch's GitHub App on repo.
+func webhookGap(w *workflowRuntime, repo string) string {
+	for _, gap := range liveView(w).WithoutWebhookApp {
+		if strings.EqualFold(gap.Repo, repo) {
+			return gap.Reason
+		}
+	}
+	return ""
+}
+
 // notInstalledWebhookApp is the state's webhook App gap for repo while Dispatch's GitHub App is not
 // installed on it (checkWebhookApp).
 func notInstalledWebhookApp(repo string) string {
@@ -514,8 +525,8 @@ func TestARepositoryWithoutTheWebhookAppIsWorkedAndNamed(t *testing.T) {
 	if !recordsOn(w, "acme/widgets") || recordsOn(w, "zeta/tools") {
 		t.Fatalf("recorded on acme/widgets %v, zeta/tools %v; want acme/widgets alone", recordsOn(w, "acme/widgets"), recordsOn(w, "zeta/tools"))
 	}
-	if entry, _ := liveEntry(w, "acme/widgets"); entry.WebhookApp != notInstalledWebhookApp("acme/widgets") {
-		t.Fatalf("state's entry for acme/widgets = %+v, want it named without Dispatch's GitHub App", entry)
+	if gap := webhookGap(w, "acme/widgets"); gap != notInstalledWebhookApp("acme/widgets") {
+		t.Fatalf("state's webhook App gap for acme/widgets = %q, want it named without Dispatch's GitHub App", gap)
 	}
 	if entry, _ := liveEntry(w, "zeta/tools"); entry.NotInstalled() != "the review App is not installed on zeta/tools" {
 		t.Fatalf("state's entry for zeta/tools = %+v, want the review App it lacks named", entry)
@@ -523,8 +534,7 @@ func TestARepositoryWithoutTheWebhookAppIsWorkedAndNamed(t *testing.T) {
 
 	standIn.install("acme/widgets")
 	testwait.Eventually(t, "acme/widgets named without Dispatch's GitHub App no longer", func() bool {
-		entry, _ := liveEntry(w, "acme/widgets")
-		return entry.WebhookApp == ""
+		return webhookGap(w, "acme/widgets") == ""
 	})
 	if asked := standIn.checks("zeta/tools"); asked != 0 {
 		t.Fatalf("Dispatch was asked %d times of its webhook App on zeta/tools, want never: the review App is not installed there", asked)
@@ -545,8 +555,8 @@ func TestAFailedWebhookAppCheckIsNamedAndCheckedAgainWhileTheRepositoryIsWorked(
 		t.Fatalf("recorded on acme/widgets %v, zeta/tools %v; want both", recordsOn(w, "acme/widgets"), recordsOn(w, "zeta/tools"))
 	}
 	want := "the webhook App check failed: GITHUB_UNREADABLE: " + message
-	if entry, _ := liveEntry(w, "acme/widgets"); entry.WebhookApp != want {
-		t.Fatalf("state's entry for acme/widgets = %+v, want the webhook App gap %q", entry, want)
+	if gap := webhookGap(w, "acme/widgets"); gap != want {
+		t.Fatalf("state's webhook App gap for acme/widgets = %q, want %q", gap, want)
 	}
 	testwait.Eventually(t, "acme/widgets' webhook App checked again while the check fails", func() bool { return standIn.checks("acme/widgets") >= 3 })
 	if !recordsOn(w, "acme/widgets") {
@@ -554,8 +564,7 @@ func TestAFailedWebhookAppCheckIsNamedAndCheckedAgainWhileTheRepositoryIsWorked(
 	}
 	standIn.answer("acme/widgets")
 	testwait.Eventually(t, "acme/widgets named with no gap once Dispatch answers", func() bool {
-		entry, _ := liveEntry(w, "acme/widgets")
-		return entry.WebhookApp == ""
+		return webhookGap(w, "acme/widgets") == ""
 	})
 }
 
@@ -568,8 +577,8 @@ func TestAnOlderDispatchWithoutTheWebhookAppRouteIsNamed(t *testing.T) {
 		t.Fatalf("recorded on acme/widgets %v, zeta/tools %v; want both", recordsOn(w, "acme/widgets"), recordsOn(w, "zeta/tools"))
 	}
 	for _, repo := range []string{"acme/widgets", "zeta/tools"} {
-		if entry, _ := liveEntry(w, repo); entry.WebhookApp != "this Dispatch does not answer the webhook App check" {
-			t.Fatalf("state's entry for %s = %+v, want it named for the check this Dispatch does not answer", repo, entry)
+		if gap := webhookGap(w, repo); gap != "this Dispatch does not answer the webhook App check" {
+			t.Fatalf("state's webhook App gap for %s = %q, want it named for the check this Dispatch does not answer", repo, gap)
 		}
 	}
 }
@@ -594,16 +603,16 @@ func TestARepositoryOnlyARecordNamesWithoutTheWebhookAppIsWorkedAndNamed(t *test
 		t.Fatalf("%s = %+v, want it recorded on %s whatever Dispatch's GitHub App", key, got, strangerNamed)
 	}
 	entry, listed := liveEntry(w, strangerNamed)
-	if !listed || entry.WebhookApp != notInstalledWebhookApp(strangerNamed) || entry.Apps == nil || !entry.Apps.Implement || !entry.Apps.Review {
-		t.Fatalf("state's entry for %s = %+v (listed %v), want both Apps installed and Dispatch's GitHub App named missing", strangerNamed, entry, listed)
+	if gap := webhookGap(w, strangerNamed); !listed || gap != notInstalledWebhookApp(strangerNamed) || entry.Apps == nil || !entry.Apps.Implement || !entry.Apps.Review {
+		t.Fatalf("state's entry for %s = %+v (listed %v), webhook App gap %q, want both Apps installed and Dispatch's GitHub App named missing", strangerNamed, entry, listed, gap)
 	}
 
 	client.mu.Lock()
 	client.webhookMissing = nil
 	client.mu.Unlock()
 	testwait.Eventually(t, "the state naming "+strangerNamed+" with no gap once Dispatch's GitHub App is installed on it", func() bool {
-		entry, listed := liveEntry(w, strangerNamed)
-		return listed && entry.WebhookApp == ""
+		_, listed := liveEntry(w, strangerNamed)
+		return listed && webhookGap(w, strangerNamed) == ""
 	})
 }
 
@@ -623,8 +632,8 @@ func TestARepositoryALiveRecordNamesIsNamedWithoutTheWebhookAppAfterARestart(t *
 		}
 	})
 	testwait.Eventually(t, "the state naming "+strangerNamed+" without Dispatch's GitHub App from the first job", func() bool {
-		entry, listed := liveEntry(w, strangerNamed)
-		return listed && entry.WebhookApp == notInstalledWebhookApp(strangerNamed)
+		_, listed := liveEntry(w, strangerNamed)
+		return listed && webhookGap(w, strangerNamed) == notInstalledWebhookApp(strangerNamed)
 	})
 	if reads := installs.reads("implement " + strangerNamed); reads != 1 {
 		t.Fatalf("the restarted daemon made %d installation reads of %s, want the first job's one", reads, strangerNamed)
@@ -766,6 +775,32 @@ func TestTheStatesRepositoriesAreTheOnesTheLiveRecordsName(t *testing.T) {
 	}
 	if view.Caches != nil {
 		t.Fatalf("state's caches = %+v, want none", view.Caches)
+	}
+}
+
+// The state's withoutWebhookApp is each repository the live records name whose served name's entry
+// holds Dispatch's webhook App gap, under the name the records keep it under with that gap as its
+// reason, in the order of the block's live entries: the one place the block reports Dispatch's
+// webhook App (INFRA-4401 A6). A gap kept for a repository no live record names is in no list, and
+// a state whose live repositories hold no gap lists none.
+func TestTheStatesWebhookAppGapsAreTheLiveRepositoriesThatHoldOne(t *testing.T) {
+	repos := newRepositories("LEGION", ghrepo.Renames{})
+	repos.fill(ghrepo.MustParse("Acme/Widgets"), ghrepo.MustParse("zeta/tools"), ghrepo.MustParse("orbit/gadgets"))
+	failed := "the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"
+	repos.keepWebhookAnswer(ghrepo.MustParse("zeta/tools"), notInstalledWebhookApp("zeta/tools"))
+	repos.keepWebhookAnswer(ghrepo.MustParse("acme/widgets"), failed)
+	repos.keepWebhookAnswer(ghrepo.MustParse("orbit/gadgets"), "")
+	repos.keepWebhookAnswer(ghrepo.MustParse("stranger/tools"), notInstalledWebhookApp("stranger/tools"))
+	view := repos.view(liveOf(t, "zeta/tools", "Acme/Widgets", "orbit/gadgets"), nil)
+	want := []api.WebhookAppGapView{
+		{Repo: "Acme/Widgets", Reason: failed},
+		{Repo: "zeta/tools", Reason: notInstalledWebhookApp("zeta/tools")},
+	}
+	if !reflect.DeepEqual(view.WithoutWebhookApp, want) {
+		t.Fatalf("state's withoutWebhookApp = %+v\nwant %+v", view.WithoutWebhookApp, want)
+	}
+	if gaps := repos.view(liveOf(t, "orbit/gadgets"), nil).WithoutWebhookApp; len(gaps) != 0 {
+		t.Fatalf("state's withoutWebhookApp over orbit/gadgets alone = %+v, want none", gaps)
 	}
 }
 

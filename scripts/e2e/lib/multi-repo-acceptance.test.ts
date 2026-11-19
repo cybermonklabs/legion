@@ -637,6 +637,7 @@ describe("cache: pod binding and the producer's exact, anchored success line", (
           cache: { repo: "acme/widgets", sandbox: "s", state: "ready", ready: true },
         },
       ],
+      withoutWebhookApp: [],
       caches: [],
     },
   });

@@ -2451,33 +2451,43 @@ func TestPlainStateNamesTheWakesThePacingHolds(t *testing.T) {
 
 // An operator reading plain `legion state` is told each repository a live record names that
 // Dispatch's GitHub App is not known to be installed on, one line each with why, as the daemon
-// serves the state; with none the one line says so. The body is the one this contract serves: each
-// entry of `repositories.live` carries its own `webhookApp` where Dispatch's App is not known to
-// be installed on it.
+// serves the state; with none the one line says so. The body is the one this contract serves:
+// `withoutWebhookApp` lists each such repository with its reason, in contract 152's shape, and is
+// the block's one report of the webhook App, so it is the list the lines are read from. A block
+// with no such list says nothing of the webhook App and gets no line at all.
 func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
 	missing := "Dispatch's GitHub App is not installed on acme/widgets: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
+	failed := "the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"
 	both := `"apps":{"implement":true,"review":true}`
+	live := `[{"repo":"acme/tools",` + both + `},{"repo":"acme/widgets",` + both + `},{"repo":"zeta/tools",` + both + `}]`
 	for _, tc := range []struct {
-		name, live, want string
+		name, block, want string
 	}{
 		{
 			name: "two repositories",
-			live: `[{"repo":"acme/tools",` + both + `},{"repo":"acme/widgets",` + both + `,"webhookApp":"` + missing + `"},` +
-				`{"repo":"zeta/tools",` + both + `,"webhookApp":"the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"}]`,
+			block: `{"live":` + live + `,"withoutWebhookApp":[{"repo":"acme/widgets","reason":"` + missing + `"},` +
+				`{"repo":"zeta/tools","reason":"` + failed + `"}],"caches":[]}`,
 			want: "webhook App missing on acme/widgets: " + missing + "\n" +
-				"webhook App missing on zeta/tools: the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500\n",
+				"webhook App missing on zeta/tools: " + failed + "\n",
 		},
-		{name: "none", live: `[{"repo":"acme/widgets",` + both + `}]`, want: "webhook App missing: none\n"},
+		{name: "none", block: `{"live":` + live + `,"withoutWebhookApp":[],"caches":[]}`, want: "webhook App missing: none\n"},
+		{name: "a block with no list", block: `{"live":` + live + `,"caches":[]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out := plainStateOf(t, "{"+daemon+`,"repositories":{"live":`+tc.live+`,"caches":[]}}`)
+			out := plainStateOf(t, "{"+daemon+`,"repositories":`+tc.block+"}")
+			if tc.want == "" {
+				if strings.Contains(out, "webhook App missing") {
+					t.Fatalf("legion state printed %q, want no webhook App line from a block with no withoutWebhookApp", out)
+				}
+				return
+			}
 			if !strings.Contains(out, tc.want) {
 				t.Fatalf("legion state printed %q, want the lines %q", out, tc.want)
 			}
 			if strings.Contains(out, "webhook App missing on acme/tools") {
-				t.Fatalf("legion state printed %q, which names acme/tools, whose entry carries no webhookApp", out)
+				t.Fatalf("legion state printed %q, which names acme/tools, which withoutWebhookApp does not list", out)
 			}
 		})
 	}

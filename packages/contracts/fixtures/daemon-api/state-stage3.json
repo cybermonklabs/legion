@@ -50,6 +50,7 @@
   "capabilities": [],
   "repositories": {
     "live": [],
+    "withoutWebhookApp": [],
     "caches": []
   },
   "settings": {

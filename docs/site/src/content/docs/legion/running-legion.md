@@ -98,8 +98,8 @@ repository, and a read of the live records asks it of each repository the read a
 preparation checked. A repository it is not installed on is worked all the same, but GitHub sends
 Legion none of its events and Dispatch has no delivery of it to redeliver, so nothing brings its
 pull requests' changes in and its issues stand still. `legion state` names each such repository
-on a `webhook App missing on <repo>: <reason>` line, and `--json` gives the reason as the entry's
-`webhookApp` under `repositories.live`: the App is not installed, `the webhook App check failed:
+on a `webhook App missing on <repo>: <reason>` line, and `--json` lists it with its `reason` under
+`repositories.withoutWebhookApp`: the App is not installed, `the webhook App check failed:
 <error>` (Dispatch holds no App key, `GITHUB_APP_UNCONFIGURED`, or its read of GitHub failed,
 `GITHUB_UNREADABLE`), or `this Dispatch does not answer the webhook App check` (a Dispatch older
 than the check). The check never leaves a repository out and never fails the boot. It reads only
@@ -1561,10 +1561,13 @@ Closing the terminal leaves the project without one, and the daemon logs
   its `repo`, as the records keep it; `servedAs`, the other name of its `repository_renames` pair
   where the daemon calls GitHub under that one; `apps` — `{"implement": bool, "review": bool}`,
   each role App's installation on it, once GitHub answered both reads; `readError`, why GitHub's
-  last read did not name it; `webhookApp`, why Dispatch's GitHub App is not known to be installed
-  on it; and `cache`, its repository cache under the Kubernetes runtime, each left out while it
-  holds nothing — and `caches`, the caches of repositories no live record names, each kept until
-  its `retainedUntil`; a plugin of an earlier contract is served the block in the shape it reads),
+  last read did not name it; and `cache`, its repository cache under the Kubernetes runtime, each
+  left out while it holds nothing — `withoutWebhookApp`, `{repo, reason}` for each of those
+  repositories Dispatch's GitHub App is not known to be installed on, in `live`'s order and in
+  contract 152's shape, the block's one report of the webhook App, which `legion state` reads its
+  `webhook App missing` lines from, this release's and one of contract 152's alike — and `caches`,
+  the caches of repositories no live record names, each kept until its `retainedUntil`; a plugin
+  of an earlier contract is served the block in the shape it reads),
   `consumers` (each durable consumer's `name`; `waiting`; `oldestAt` and `oldestAgeSeconds`, the
   stream time of the oldest waiting message and its age in whole seconds, both null when nothing
   waits or that message could not be read; `lastHandledAt`, null before the first; `stalled`; and

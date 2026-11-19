@@ -2385,26 +2385,32 @@ package api
 //
 // 173: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
 // block of `GET /legion/v1/state` becomes the repositories the project's live records name, read
-// in the state's own snapshot. The block is `{live, caches}`. `live` holds one entry for each
-// repository a live record names, under the name the records keep, sorted by its lowercased
-// `<owner>/<name>`: `repo`; `servedAs`, the other name of its configured pair where the rename
-// rule serves it under that one; `apps`, each role App's installation on the name it is served
-// under, once GitHub answered both reads; `readError`, why GitHub's last read did not name it;
-// `webhookApp`, why Dispatch's webhook App is not known to be installed on it; and `cache`, its
-// repository cache under the Kubernetes runtime; each but `repo` absent until it holds something.
-// `caches` is unchanged: the caches of repositories no live record names. `owners`, `mapped`,
-// `refused` and `withoutWebhookApp` are gone, and with them each entry's `default`, which the
-// daemon no longer knows. A plugin of 152 reads the block with a schema that requires those four
-// keys and would refuse the whole state without them, so a caller in a pod whose claims record a
-// contract below 173 is served the block in 152's shape, written from the same entries (api's
-// repositoriesLiveContract and withoutRepositoriesLive): `owners` and `mapped` are the entries
-// both role Apps are installed on, under the name each is served under, every `default` false;
-// `refused` is each other entry with its `readError`, the App not installed on it, or "GitHub has
-// not answered for it yet"; and `withoutWebhookApp` is each entry with a `webhookApp`. A caller the
-// daemon cannot place in a pod — the operator's `legion state`, `legion controller start`, a tmux
-// pane — is served the new block whatever its plugin, and the boot gate and `legion probe-image`
-// keep a tmux pane's plugin at this contract. `packages/contracts/src/legion-api.ts` mirrors the
-// new block, and the fixture `state-narrowed-repositories.json` is the body a pod at 172 is served.
+// in the state's own snapshot. The block is `{live, caches, withoutWebhookApp}`. `live` holds one
+// entry for each repository a live record names, under the name the records keep, sorted by its
+// lowercased `<owner>/<name>`: `repo`; `servedAs`, the other name of its configured pair where the
+// rename rule serves it under that one; `apps`, each role App's installation on the name it is
+// served under, once GitHub answered both reads; `readError`, why GitHub's last read did not name
+// it; and `cache`, its repository cache under the Kubernetes runtime; each but `repo` absent until
+// it holds something. `caches` is unchanged: the caches of repositories no live record names.
+// `withoutWebhookApp` is kept in 152's shape for every caller, `{repo, reason}` for each live
+// repository Dispatch's webhook App is not known to be installed on, under the name the records
+// keep, in `live`'s order and never null, and it is the block's one report of the webhook App: no
+// `live` entry carries a copy of it. The daemon places an operator's `legion state` in no pod and
+// cannot narrow the body for it, and a `legion state` of 152 reads its webhook App lines from this
+// list, so without it that binary would print that no repository lacks the webhook App whatever
+// the live records hold. `owners`, `mapped` and `refused` are gone, and with them each entry's
+// `default`, which the daemon no longer knows. A plugin of 152 reads the block with a schema that
+// requires those three keys and would refuse the whole state without them, so a caller in a pod
+// whose claims record a contract below 173 is served the block in 152's shape, written from the
+// same entries (api's repositoriesLiveContract and withoutRepositoriesLive): `owners` and `mapped`
+// are the entries both role Apps are installed on, under the name each is served under, every
+// `default` false; `refused` is each other entry with its `readError`, the App not installed on
+// it, or "GitHub has not answered for it yet"; and `withoutWebhookApp` is the same list as on the
+// new block. A caller the daemon cannot place in a pod — the operator's `legion state`, `legion
+// controller start`, a tmux pane — is served the new block whatever its plugin, and the boot gate
+// and `legion probe-image` keep a tmux pane's plugin at this contract.
+// `packages/contracts/src/legion-api.ts` mirrors the new block, and the fixture
+// `state-narrowed-repositories.json` is the body a pod at 172 is served.
 // (This change takes 173, the lowest number above main's 160 that no open pull request declares:
 // a census of `const DaemonAPIVersion` at refs/pull/<n>/head over all 236 open pull requests of
 // this repository, taken at 2026-11-19T14:55:51Z, reads above main's 160: 161 (#4180 and #4259),

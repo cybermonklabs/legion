@@ -99,8 +99,9 @@ type State struct {
 	// gap is reported here, never refused (contract 16).
 	Capabilities []CapabilityState `json:"capabilities"`
 	// Repositories is the repositories the project's live records name, each with what GitHub and
-	// Dispatch answered of it and its cache, and the caches of repositories no live record names
-	// (RepositoriesView). Never null: a daemon with no workflow reports none.
+	// Dispatch answered of it and its cache, the ones of them Dispatch's webhook App is not known to
+	// be installed on, and the caches of repositories no live record names (RepositoriesView). Never
+	// null: a daemon with no workflow reports none.
 	Repositories RepositoriesView `json:"repositories"`
 	// Settings is the daemon's resolved legion.yaml with every credential, credential source and
 	// credential file path left out, keyed as the file is (SettingsOf). Required, never null
@@ -169,42 +170,49 @@ func ConsumerLagViewsOf(lags []intake.ConsumerLag) []ConsumerLagView {
 // RepositoriesView is the repositories the daemon works in, as legion state reports them
 // (INFRA-4401 A6): Live, one entry for each repository the project's live records name — the
 // records of the state's own read, so the list and the issues beside it come from one snapshot —
-// and Caches, the repository caches of repositories no live record names, each kept until its
-// RetainedUntil (contract 32). Both are never null, Live sorted by each repository's lowercased
-// <owner>/<name> and Caches as the runtime lists them. A repository is served once GitHub answered
-// that both role Apps are installed on it, whatever names it, so no entry is reported as a
-// project's default or as refused for want of a listing in Dispatch.
+// WithoutWebhookApp, each of those that Dispatch's webhook App is not known to be installed on,
+// with why, and Caches, the repository caches of repositories no live record names, each kept until
+// its RetainedUntil (contract 32). All three are never null on the wire, Live sorted by each
+// repository's lowercased <owner>/<name>, WithoutWebhookApp in Live's order and Caches as the
+// runtime lists them. A repository is served once GitHub answered that both role Apps are installed
+// on it, whatever names it, so no entry is reported as a project's default or as refused for want
+// of a listing in Dispatch.
+//
+// WithoutWebhookApp is the block's one report of Dispatch's webhook App, and no Live entry carries
+// a copy of it. It keeps the shape contract 152 gave it for every caller: the route places an
+// operator's `legion state` in no pod, so it cannot narrow the body for one, and a `legion state`
+// of 152 reads its webhook App lines from this list alone. A body without the key, as a daemon
+// before contract 43 serves, decodes nil.
 //
 // narrowed is set on the copy the state route serves a caller below server.go's
 // repositoriesLiveContract (api's withoutRepositoriesLive): that caller's plugin reads the block
 // with the schema of contract 152, which requires `owners`, `mapped`, `refused` and
 // `withoutWebhookApp` beside `caches` and knows no `live`, so it would refuse the whole state for
-// the block this contract writes. MarshalJSON writes that one body in the shape contract 152
-// gave the block, from these same entries (at152), rather than this block with keys taken out,
-// since no part of it is a block that schema parses.
+// the block this contract writes, which lacks the first three. MarshalJSON writes that one body in
+// the shape contract 152 gave the block, from these same entries (at152), rather than this block
+// with keys taken out, since no part of it is a block that schema parses.
 type RepositoriesView struct {
-	Live     []LiveRepositoryView `json:"live"`
-	Caches   []CacheView          `json:"caches"`
-	narrowed bool
+	Live              []LiveRepositoryView `json:"live"`
+	WithoutWebhookApp []WebhookAppGapView  `json:"withoutWebhookApp"`
+	Caches            []CacheView          `json:"caches"`
+	narrowed          bool
 }
 
 // LiveRepositoryView is one repository a live record names: Repo, the name the records keep it
 // under (GitHub's spelling, as the record holds it); ServedAs, the other name of its configured
 // pair (`repository_renames`) where the rename rule serves it under that one, absent otherwise;
-// and, from what GitHub and Dispatch last answered for the name it is served under, Apps, each
-// role App's installation on it, absent until GitHub answered both reads; ReadError, why GitHub's
-// last read did not name it — a refusal such as a 404, or a read that did not answer — absent once
-// a read named it; WebhookApp, why Dispatch's webhook App is not known to be installed on it (not
-// installed, the check failed, or Dispatch does not answer the check), absent while it is known to
-// be; and, under the Kubernetes runtime, Cache, its repository cache once the runtime has made one
-// (absent before, and under tmux).
+// and, from what GitHub last answered for the name it is served under, Apps, each role App's
+// installation on it, absent until GitHub answered both reads; ReadError, why GitHub's last read
+// did not name it — a refusal such as a 404, or a read that did not answer — absent once a read
+// named it; and, under the Kubernetes runtime, Cache, its repository cache once the runtime has
+// made one (absent before, and under tmux). What Dispatch answered of its webhook App is in the
+// block's WithoutWebhookApp alone.
 type LiveRepositoryView struct {
-	Repo       string                `json:"repo"`
-	ServedAs   string                `json:"servedAs,omitempty"`
-	Apps       *AppInstallationsView `json:"apps,omitempty"`
-	ReadError  string                `json:"readError,omitempty"`
-	WebhookApp string                `json:"webhookApp,omitempty"`
-	Cache      *CacheView            `json:"cache,omitempty"`
+	Repo      string                `json:"repo"`
+	ServedAs  string                `json:"servedAs,omitempty"`
+	Apps      *AppInstallationsView `json:"apps,omitempty"`
+	ReadError string                `json:"readError,omitempty"`
+	Cache     *CacheView            `json:"cache,omitempty"`
 }
 
 // NotInstalled is the sentence naming each role App GitHub answered is not installed on the name r
@@ -264,8 +272,9 @@ type CacheView struct {
 	RetainedUntil time.Time `json:"retainedUntil,omitzero"`
 }
 
-// MarshalJSON keeps the two lists arrays on the wire, and writes the block in contract 152's shape
-// on the copy the route narrows for a caller below repositoriesLiveContract (narrowed, at152).
+// MarshalJSON keeps the three lists arrays on the wire, and writes the block in contract 152's
+// shape on the copy the route narrows for a caller below repositoriesLiveContract (narrowed,
+// at152).
 func (r RepositoriesView) MarshalJSON() ([]byte, error) {
 	if r.narrowed {
 		return json.Marshal(r.at152())
@@ -274,6 +283,9 @@ func (r RepositoriesView) MarshalJSON() ([]byte, error) {
 	out := wire(r)
 	if out.Live == nil {
 		out.Live = []LiveRepositoryView{}
+	}
+	if out.WithoutWebhookApp == nil {
+		out.WithoutWebhookApp = []WebhookAppGapView{}
 	}
 	if out.Caches == nil {
 		out.Caches = []CacheView{}
@@ -287,7 +299,7 @@ type repositoriesAt152 struct {
 	Owners            []string                 `json:"owners"`
 	Mapped            []servedRepositoryAt152  `json:"mapped"`
 	Refused           []refusedRepositoryAt152 `json:"refused"`
-	WithoutWebhookApp []webhookAppGapAt152     `json:"withoutWebhookApp"`
+	WithoutWebhookApp []WebhookAppGapView      `json:"withoutWebhookApp"`
 	Caches            []CacheView              `json:"caches"`
 }
 
@@ -309,9 +321,11 @@ type refusedRepositoryAt152 struct {
 	Apps   *AppInstallationsView `json:"apps,omitempty"`
 }
 
-// webhookAppGapAt152 is an entry of contract 152's `withoutWebhookApp`: a repository Dispatch's
-// webhook App is not known to be installed on, with why.
-type webhookAppGapAt152 struct {
+// WebhookAppGapView is an entry of `withoutWebhookApp`, in the shape contract 152 gave it and this
+// contract keeps: a live repository Dispatch's webhook App is not known to be installed on, under
+// the name the records keep it under, with why (not installed, the check failed, or Dispatch does
+// not answer the check). The daemon works it all the same.
+type WebhookAppGapView struct {
 	Repo   string `json:"repo"`
 	Reason string `json:"reason"`
 }
@@ -325,20 +339,20 @@ const notAnsweredAt152 = "GitHub has not answered for it yet"
 // sorted; mapped, each of those entries under that name, with its Apps and its cache and a false
 // `default`, sorted by that name; refused, each other entry under its own name, with its Apps
 // where GitHub answered both reads and why — its ReadError, the Apps not installed on it
-// (NotInstalled), or GitHub's answer not come yet; withoutWebhookApp, each entry with a
-// WebhookApp, under its own name; and caches, as r holds them.
+// (NotInstalled), or GitHub's answer not come yet; and withoutWebhookApp and caches, as r holds
+// them.
 func (r RepositoriesView) at152() repositoriesAt152 {
 	block := repositoriesAt152{
 		Owners: []string{}, Mapped: []servedRepositoryAt152{}, Refused: []refusedRepositoryAt152{},
-		WithoutWebhookApp: []webhookAppGapAt152{}, Caches: r.Caches,
+		WithoutWebhookApp: r.WithoutWebhookApp, Caches: r.Caches,
+	}
+	if block.WithoutWebhookApp == nil {
+		block.WithoutWebhookApp = []WebhookAppGapView{}
 	}
 	if block.Caches == nil {
 		block.Caches = []CacheView{}
 	}
 	for _, repo := range r.Live {
-		if repo.WebhookApp != "" {
-			block.WithoutWebhookApp = append(block.WithoutWebhookApp, webhookAppGapAt152{Repo: repo.Repo, Reason: repo.WebhookApp})
-		}
 		if repo.Apps != nil && repo.Apps.Implement && repo.Apps.Review {
 			served := repo.servedName()
 			owner, _, _ := strings.Cut(served, "/")

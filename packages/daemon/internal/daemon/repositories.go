@@ -453,11 +453,13 @@ func (r *repositories) uncheckedLive(before map[string]ghrepo.Repository) []ghre
 // (repositoriesOf, source.State): one entry for each, sorted by that key, under the name the
 // records keep it under; the name the rename rule serves it under, where that is the other name
 // of its configured pair; from the served name's own entry, each role App's installation once
-// GitHub answered both reads, readError and webhookApp; and its repository cache from caches,
-// matched whatever the case, where the Kubernetes runtime has made one. The rest of caches, each
-// cache of a repository no live record names, kept until its retention ends
-// (workflowRuntime.cacheRepositories), is the block's caches. It reads the entries alone and
-// performs no I/O.
+// GitHub answered both reads and readError; and its repository cache from caches, matched
+// whatever the case, where the Kubernetes runtime has made one. Each of those whose served name's
+// entry holds a webhookApp is the block's withoutWebhookApp, under the name the records keep it
+// under with that as its reason, in the same order: the one place the block reports Dispatch's
+// webhook App. The rest of caches, each cache of a repository no live record names, kept until
+// its retention ends (workflowRuntime.cacheRepositories), is the block's caches. It reads the
+// entries alone and performs no I/O.
 func (r *repositories) view(live map[string]ghrepo.Repository, caches []sandbox.CacheStatus) api.RepositoriesView {
 	byRepo := make(map[string]sandbox.CacheStatus, len(caches))
 	for _, cache := range caches {
@@ -476,7 +478,10 @@ func (r *repositories) view(live map[string]ghrepo.Repository, caches []sandbox.
 			if held.answered() {
 				entry.Apps = &api.AppInstallationsView{Implement: held.implement.installed, Review: held.review.installed}
 			}
-			entry.ReadError, entry.WebhookApp = held.readError, held.webhookApp
+			entry.ReadError = held.readError
+			if held.webhookApp != "" {
+				view.WithoutWebhookApp = append(view.WithoutWebhookApp, api.WebhookAppGapView{Repo: entry.Repo, Reason: held.webhookApp})
+			}
 		}
 		if cache, held := byRepo[key]; held {
 			entry.Cache = new(cacheView(cache))

@@ -1052,35 +1052,45 @@ const legionAppInstallations = z.object({ implement: z.boolean(), review: z.bool
 
 /** `api.LiveRepositoryView` — one repository a live record names (contract 173): `repo`, the name
  * the records keep it under; `servedAs`, the other name of its configured pair
- * (`repository_renames`) where the rename rule serves it under that one; and, from what GitHub and
- * Dispatch last answered for the name it is served under, `apps`, each role App's installation on
- * it once GitHub answered both reads; `readError`, why GitHub's last read did not name it (a
- * refusal such as a 404, or a read that did not answer); `webhookApp`, why Dispatch's GitHub App is
- * not known to be installed on it (not installed, the check failed, or Dispatch does not answer the
- * check; contract 43); and `cache`, its repository cache under the Kubernetes runtime. Each key but
- * `repo` is absent until it holds something. */
+ * (`repository_renames`) where the rename rule serves it under that one; and, from what GitHub last
+ * answered for the name it is served under, `apps`, each role App's installation on it once GitHub
+ * answered both reads; `readError`, why GitHub's last read did not name it (a refusal such as a
+ * 404, or a read that did not answer); and `cache`, its repository cache under the Kubernetes
+ * runtime. Each key but `repo` is absent until it holds something. What Dispatch answered of its
+ * webhook App is in the block's `withoutWebhookApp` alone. */
 const legionLiveRepository = z.object({
   repo: nonEmptyString,
   servedAs: nonEmptyString.optional(),
   apps: legionAppInstallations.optional(),
   readError: nonEmptyString.optional(),
-  webhookApp: nonEmptyString.optional(),
   cache: legionCacheView.optional(),
 });
 
+/** `api.WebhookAppGapView` — an entry of `withoutWebhookApp` (contract 43, kept in contract 152's
+ * shape by 173): a live repository Dispatch's GitHub App is not known to be installed on, under
+ * the name the records keep it under, with why (not installed, the check failed, or Dispatch does
+ * not answer the check). The daemon works it all the same. */
+const legionWebhookAppGap = z.object({ repo: nonEmptyString, reason: nonEmptyString });
+
 /** `api.RepositoriesView` — the repositories the daemon works in (contract 173): `live`, one entry
  * for each repository the project's live records name, read in the state's own snapshot and sorted
- * by its lowercased `<owner>/<name>`, and `caches`, the repository caches of repositories no live
- * record names, each kept until its `retainedUntil` (contract 32); both never null. A repository is
- * served once GitHub answered that both role Apps are installed on it, whatever names it.
+ * by its lowercased `<owner>/<name>`; `withoutWebhookApp`, each of those that Dispatch's GitHub App
+ * is not known to be installed on, in `live`'s order; and `caches`, the repository caches of
+ * repositories no live record names, each kept until its `retainedUntil` (contract 32); all three
+ * never null. A repository is served once GitHub answered that both role Apps are installed on it,
+ * whatever names it.
  *
- * A plugin of an earlier contract reads the block with that contract's own schema, which requires
- * `owners`, `mapped`, `refused` and `withoutWebhookApp`, so the route serves a caller in a pod
- * below 173 that older block, written from the same entries (`api.stateFor`,
- * `withoutRepositoriesLive`). That body is never served to a plugin of this contract, so this
- * schema reads only this block. */
+ * `withoutWebhookApp` is the block's one report of Dispatch's webhook App, and no `live` entry
+ * carries a copy of it. It keeps contract 152's shape for every caller: the daemon places an
+ * operator's `legion state` in no pod, so it cannot narrow the body for one, and a `legion state`
+ * of 152 reads its webhook App lines from that list. A plugin of an earlier contract reads the
+ * block with that contract's own schema, which also requires `owners`, `mapped` and `refused`, so
+ * the route serves a caller in a pod below 173 that older block, written from the same entries
+ * (`api.stateFor`, `withoutRepositoriesLive`). That body is never served to a plugin of this
+ * contract, so this schema reads only this block. */
 const legionRepositories = z.object({
   live: z.array(legionLiveRepository),
+  withoutWebhookApp: z.array(legionWebhookAppGap),
   caches: z.array(legionCacheView),
 });
 
@@ -1110,7 +1120,8 @@ const legionConsumerLag = z.object({
  * claim nothing will wake, by issue and then role, never null (contract 23); `heldOutboxRows` is
  * every due lifecycle outbox row held behind its issue's running one, by when it came due and then
  * id, never null (contract 28); `repositories` is the repositories the project's live records
- * name, with the caches of the rest (contracts 31, 173); `settings` is the daemon's resolved
+ * name, the ones of them Dispatch's webhook App is not known to be installed on, and the caches of
+ * the rest (contracts 31, 43, 173); `settings` is the daemon's resolved
  * legion.yaml with no credential, credential source or credential file path, required, and loose
  * like `payload` above, so a legion.yaml key added later is no contract change (contract 35);
  * being `z.looseObject` it keeps

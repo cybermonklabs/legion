@@ -548,6 +548,7 @@ const MOVED_ON = {
   capabilities: [],
   repositories: {
     live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
+    withoutWebhookApp: [],
     caches: [],
   },
   settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },

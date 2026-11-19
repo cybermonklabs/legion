@@ -1188,12 +1188,13 @@ const entryTimesContract = 146
 
 // repositoriesLiveContract is the daemon contract that made the state's `repositories` block the
 // repositories the project's live records name (version.go's 173, dispatch://INFRA-4401): `live`,
-// one entry per repository with what GitHub and Dispatch answered of it, beside `caches`, in
-// place of `owners`, `mapped`, `refused` and `withoutWebhookApp`. A plugin before it reads the
-// block with the schema of contract 152, which requires those four keys, so the block this
-// contract writes refuses that plugin's whole state, as surely as a key a strict reader does not
-// name. That caller is served the block in contract 152's shape, written from the same entries
-// (withoutRepositoriesLive), and every other caller the block this contract writes.
+// one entry per repository with what GitHub and Dispatch answered of it, beside `caches` and
+// `withoutWebhookApp`, which it keeps in contract 152's shape for every caller, in place of
+// `owners`, `mapped` and `refused`. A plugin before it reads the block with the schema of contract
+// 152, which requires those three keys, so the block this contract writes refuses that plugin's
+// whole state, as surely as a key a strict reader does not name. That caller is served the block in
+// contract 152's shape, written from the same entries (withoutRepositoriesLive), and every other
+// caller the block this contract writes.
 const repositoriesLiveContract = 173
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
@@ -1655,9 +1656,10 @@ func withoutClaimsToRefresh(state State) State {
 }
 
 // carriesRepositoriesLive is whether state carries the block repositoriesLiveContract gave
-// `repositories`: `live` beside `caches`. It carries that block whatever the daemon holds, since
-// the state writes `live` on every body, empty rather than null (RepositoriesView.MarshalJSON),
-// and contract 152's schema refuses the block for the four keys it lacks whatever `live` names.
+// `repositories`: `live` beside `caches` and `withoutWebhookApp`. It carries that block whatever
+// the daemon holds, since the state writes `live` on every body, empty rather than null
+// (RepositoriesView.MarshalJSON), and contract 152's schema refuses the block for the three keys it
+// lacks whatever `live` names.
 // So this is true of every state the route writes; it is asked beside the other rows' questions
 // all the same, because stateFor puts the same question to every row of stateNarrowings.
 func carriesRepositoriesLive(State) bool { return true }
