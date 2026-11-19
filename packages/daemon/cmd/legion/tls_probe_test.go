@@ -109,10 +109,10 @@ func TestTLSCertificateErrorRecognizesClientRefusals(t *testing.T) {
 }
 
 // curl names one refusal in several ways, by version and by TLS backend, and an image may carry
-// any of them: an image built on another distribution keeps that distribution's curl. git's https
-// transport, through libcurl's GnuTLS build, printed the Ubuntu row in the image probe of a worker
-// image built on Ubuntu 26.04 (git 2.53.0) on 2026-11-19. Read as no certificate error, a positive
-// control's refusal is "unavailable" and the probe fails an image that is safe.
+// any of them: an image built on another distribution keeps that distribution's curl. git 2.53.0's
+// https transport, through libcurl's GnuTLS build, printed the Ubuntu row in the image probe of a
+// worker image built on Ubuntu 26.04 on 2026-11-19. Read as no certificate error, a refusal is
+// "unavailable" and the probe fails an image that is safe.
 func TestTLSCertificateErrorRecognizesEachCurlRefusal(t *testing.T) {
 	for _, testCase := range []struct {
 		name, detail string
