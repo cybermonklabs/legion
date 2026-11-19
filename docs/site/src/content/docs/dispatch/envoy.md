@@ -699,12 +699,16 @@ does not count a message with another source, such as Dispatch's (`dispatch`) or
 (`envoy`). It does not count a message with no sender either, which is how the Legion daemon sends
 its notices.
 
-So the count is bound to a session only where callers present secrets-broker tokens. A caller
-that presents one and names another session in the body gets `403`. A caller that the listener
-admits on a bearer, or with no credential where `/v1` is open, names the sender itself in
-`source_session`. Such a caller can send under another session's id and spend that session's
-count, which then takes up to `burst × 60 ÷ rate` seconds to fill again. That caller can already
-send messages as that session.
+A secrets-broker token names the session that the listener counts. A caller that presents one
+and names another session in the body gets `403`. A caller that the listener admits on a bearer, or
+with no credential where `/v1` is open, names the sender itself in `source_session`. Such a caller
+can send under another session's id and spend that session's count, which then takes up to
+`burst × 60 ÷ rate` seconds to fill again. That caller can already send messages as that session.
+
+A token does not make a message with another `source` count. The agents' own Envoy tools send
+the source `agent` and give the agent no argument for it, so the limit counts each of their
+messages that has a sender. A caller that writes its own request can give another source, so the
+limit is not a security boundary.
 
 A counted message costs one when the listener stores it, may have stored it or reports a wake for
 it, whatever the answer is. A role send answered `504` costs one whether or not a forward went
@@ -726,9 +730,9 @@ count at 0 is refused as a new message is, because the listener reads the count 
 Each listener process keeps its counts in its own memory. So each replica of a listener keeps its
 own count for a session, and a restart fills each count again. The start log states the limit in
 one line, `listener sender limit: <rate> messages a minute, <burst> at once, for each agent session
-in this process`, or `listener sender limit: none`. The `envoy-infra` components take the two
-values as the inputs `senderMessagesPerMinute` and `senderMessageBurst`
-([With Pulumi](#with-pulumi)).
+in this process`, or `listener sender limit: none`. Where the rate is 1, the line reads
+`1 message a minute`. The `envoy-infra` components take the two values as the inputs
+`senderMessagesPerMinute` and `senderMessageBurst` ([With Pulumi](#with-pulumi)).
 
 ### With Pulumi
 

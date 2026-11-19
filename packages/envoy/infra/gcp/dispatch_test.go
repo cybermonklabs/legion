@@ -790,6 +790,7 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed as the sign-in client ID", "signInClientId", func(a *gcp.DispatchArgs) { a.SignInClientId = seed }},
 		{"a seed inside the sign-in domain", "signInDomain", func(a *gcp.DispatchArgs) { a.SignInDomain = lower + ".example.com" }},
 		{"a seed inside the outside origin", "outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = "https://" + lower + ".example.com" }},
+		{"a seed inside the public origin", "publicOrigin", func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://" + lower + ".example.com" }},
 		{"a seed in the database version", "databaseVersion", func(a *gcp.DispatchArgs) { a.DatabaseVersion = pulumi.StringRef(seed) }},
 		{"a seed in the database tier", "databaseTier", func(a *gcp.DispatchArgs) { a.DatabaseTier = pulumi.StringRef(seed) }},
 		{"a seed as the database availability type", "databaseAvailabilityType", func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef(seed) }},
