@@ -6843,3 +6843,57 @@ func TestMemoryGuardReadsOnTheHeldNewProcessesBeforeTheHeldForks(t *testing.T) {
 		t.Fatalf("at the urgent reading at the mark the guard ended %+v, want %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
 	}
 }
+
+// At an urgent reading at the mark in a stay with history, the guard ends for urgency every
+// grower and every process new to the stay with memory of its own, and not a fork new to the stay
+// whose parent's size covers its own: it ranks at nothing (INFRA-3531 R1 of spec version 43, "a
+// fork that ranks at nothing does not"). Pid 700, python3 latepool, holds its block through the
+// band and grows 40 MiB at each of its readings, so the stay has history and pid 700 grew over the
+// window. Before the band's last reading six growers start, pids 800 to 805, at 8 MiB each, and
+// three sleeping forks of pid 700, pids 806 to 808, which run its program and report its block as
+// their own. Each grower then takes a 64 MiB step, and the reading at the mark is 92.53%. The reads
+// cost nothing, so the guard reads every process at that reading: it ends pid 700 and the six
+// growers, and leaves the three forks.
+func TestMemoryGuardEndsForUrgencyNoForkThatRanksAtNothingInAStayWithHistory(t *testing.T) {
+	at := func(hundredths uint64) uint64 { return podLimit / 10000 * hundredths >> 10 << 10 }
+	pod := newFakePod(t)
+	parent := fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock - 160*mib}
+	pod.add(agent(podLimit/4), parent)
+	pod.setAnon(at(7600))
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	growers := make([]*fakeProcess, 6)
+	for i, r := range []uint64{8000, 8400, 8440} {
+		pod.resize(&parent, parent.anon+40*mib)
+		if i == 2 {
+			for j := range growers {
+				growers[j] = &fakeProcess{pid: 800 + j, ppid: 700, start: uint64(6000 + j), exe: "/usr/bin/python3.13", args: growArgs, anon: 8 * mib}
+				pod.add(*growers[j])
+			}
+			for j := range 3 {
+				pod.add(fakeProcess{pid: 806 + j, ppid: 700, start: uint64(6100 + j), exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock})
+			}
+		}
+		pod.setAnon(at(r))
+		h.tick()
+	}
+	h.requireKilled()
+	pod.resize(&parent, parent.anon+40*mib)
+	for j, g := range growers {
+		pod.resize(g, uint64(72+j)*mib)
+	}
+	pod.setAnon(at(9253))
+	h.tick()
+	killed := h.signal.kills()
+	for _, pid := range []int{700, 800, 801, 802, 803, 804, 805} {
+		if !slices.Contains(killed, pid) {
+			t.Fatalf("at the urgent reading at the mark the guard killed %v, want pid %d among them; the log:\n%s", killed, pid, strings.Join(h.log.all(), "\n"))
+		}
+	}
+	for _, pid := range []int{806, 807, 808} {
+		if slices.Contains(killed, pid) {
+			t.Fatalf("at the urgent reading at the mark the guard killed %v, the fork %d among them, which ranks at nothing; the log:\n%s", killed, pid, strings.Join(h.log.all(), "\n"))
+		}
+	}
+}
