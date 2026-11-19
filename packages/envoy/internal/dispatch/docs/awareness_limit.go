@@ -49,11 +49,11 @@ import (
 // back - and a page of an earlier build may name no id Dispatch gave anyone. A cursor or a
 // presence is the same act under a client id as an edit is, and the same rule refuses it.
 //
-// The same filter is where a sync step 2 is known as one: ygo hands the peer update hook a step 2
-// and an incremental update alike, as bytes, and only the Hocuspocus header says which. So a sync
-// step 2 is read whole here and handed on with the structs under another person's client ids cut
-// out of it (collectStepTwo, Service.stepTwoCut), which ygo then applies, relays and answers as
-// the step 2 it is.
+// Every other message reaches ygo as it arrived, a sync step 2 among them: the filter reads no
+// more of one than its Hocuspocus header. ygo hands the peer update hook a step 2 and an
+// incremental update alike, and the hook judges both the same way (judgeClients), under the load
+// slot an update past unslottedApplyBytes takes (weighPeerUpdate), so the filter decodes nothing
+// of a document's content outside that slot.
 
 const (
 	// maxAwarenessClientsPerSocket is how many awareness clients one document socket may hold at
@@ -93,12 +93,6 @@ const (
 	maxFrameHeader = 14
 	// hocuspocusAwareness is the Hocuspocus message type of an awareness update.
 	hocuspocusAwareness = 1
-	// hocuspocusSync and hocuspocusSyncReply are the Hocuspocus message types that carry a Yjs
-	// sync message, and syncStepTwo the sync message type of a whole-state answer: the sync step 2
-	// a provider sends in answer to the room's sync step 1 (y-protocols sync, messageYjsSyncStep2).
-	hocuspocusSync      = 0
-	hocuspocusSyncReply = 4
-	syncStepTwo         = 1
 )
 
 // noAwarenessChange is an awareness update naming no client - y-protocols' encoding of an update
@@ -122,9 +116,6 @@ const (
 	// limitSkipping: an awareness message past maxAwarenessMessageBytes; its bytes are discarded
 	// and ygo is given an awareness message naming no client in its place.
 	limitSkipping
-	// limitStepTwo: a sync step 2 is being read whole, to be handed on with the structs under
-	// another person's client ids cut out of it (awarenessLimitConn.cut).
-	limitStepTwo
 )
 
 // awarenessLimitWriter is a document socket's response writer: the connection ygo's websocket
@@ -141,9 +132,6 @@ type awarenessLimitWriter struct {
 	// clients is the ids the socket may announce under, nil for a socket no admission decided
 	// them for, whose entries only the count holds.
 	clients *socketClients
-	// cut is what the filter does to the update of each sync step 2 the socket sends before ygo
-	// reads it, nil for none (Service.stepTwoCut).
-	cut func(update []byte) []byte
 }
 
 func (w *awarenessLimitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -162,7 +150,6 @@ func (w *awarenessLimitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	}
 	filtered := newAwarenessLimitConn(conn, w.room, pending)
 	filtered.clients = w.clients
-	filtered.cut = w.cut
 	buffers.Reader.Reset(filtered)
 	return filtered, buffers, nil
 }
@@ -172,30 +159,23 @@ func (w *awarenessLimitWriter) Unwrap() http.ResponseWriter { return w.ResponseW
 
 // awarenessLimitConn is a document socket's connection under ygo's websocket reader. It reads the
 // frames the socket's peer sends and hands ygo an awareness message holding only the clients the
-// socket may hold, and a sync step 2 with the structs under another person's client ids cut out
-// of it (collectStepTwo); every other message reaches ygo as it arrived.
+// socket may hold; every other message reaches ygo as it arrived.
 type awarenessLimitConn struct {
 	net.Conn
 	room string
 	// clients is the ids the socket may announce under (awarenessLimitWriter.clients).
 	clients *socketClients
-	// cut is what the filter does to the update of each sync step 2 (awarenessLimitWriter.cut);
-	// kind is the Hocuspocus type of the sync step 2 being read, which the rewritten message keeps.
-	cut  func(update []byte) []byte
-	kind uint64
 	// live is the awareness clients this socket holds now: a client announced takes a place and a
 	// client taken away gives it back, so a socket that announces and removes one client at a
 	// time is never refused.
 	live map[uint64]struct{}
 	src  *bufio.Reader
-	// out is the rewritten bytes ygo's reader has yet to take. A buffer a sync step 2 grew past
-	// what any other message needs is let go once ygo has taken it all (Read).
+	// out is the rewritten bytes ygo's reader has yet to take.
 	out bytes.Buffer
 	// through is how much of the frame being read reaches ygo unread, straight from src.
 	through int64
 	// message is the payload of the message being read, unmasked: its Hocuspocus header while the
-	// filter is deciding what the message is, and the whole of it for an awareness message, or of
-	// its sync message for a sync step 2.
+	// filter is deciding what the message is, and the whole of it for an awareness message.
 	message []byte
 	mode    awarenessLimitMode
 	// name is the document the message being read names, which the rewritten message carries.
@@ -224,11 +204,7 @@ func (c *awarenessLimitConn) Read(p []byte) (int, error) {
 		}
 	}
 	if c.out.Len() > 0 {
-		read, err := c.out.Read(p)
-		if c.out.Len() == 0 && c.out.Cap() > maxAwarenessMessageBytes+maxFrameHeader {
-			c.out = bytes.Buffer{}
-		}
-		return read, err
+		return c.out.Read(p)
 	}
 	if int64(len(p)) > c.through {
 		p = p[:c.through]
@@ -274,8 +250,6 @@ func (c *awarenessLimitConn) readFrame() error {
 		return c.skip(payload, final)
 	case limitAwareness:
 		return c.collect(payload, final)
-	case limitStepTwo:
-		return c.collectStepTwo(payload, final)
 	default:
 		return c.decide(payload, final)
 	}
@@ -283,9 +257,8 @@ func (c *awarenessLimitConn) readFrame() error {
 
 // decide reads as much of the frame as it takes to learn what the message is - the document it
 // names and its type - and sets the mode the rest of the message is read in. A message that is
-// neither awareness nor a sync step 2 the filter cuts is handed to ygo as it stands: the bytes
-// already read go out as one frame and the rest of the frame is copied through unread. A message
-// that ends without naming both, or that
+// not awareness is handed to ygo as it stands: the bytes already read go out as one frame and the
+// rest of the frame is copied through unread. A message that ends without naming both, or that
 // has not named them within maxDocumentMessageHeader bytes, ends the connection: whatever its
 // length, it is not a message this service reads, and ygo, which reads the same header, would
 // make nothing of it either.
@@ -299,9 +272,12 @@ func (c *awarenessLimitConn) decide(payload int64, final bool) error {
 	if want <= 0 {
 		return fmt.Errorf("dispatch: a document socket's message does not name its document and type within %d bytes", maxDocumentMessageHeader)
 	}
-	if err := c.readMessage(want); err != nil {
+	start := len(c.message)
+	c.message = append(c.message, make([]byte, want)...)
+	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
 		return err
 	}
+	c.unmask(start)
 	rest := payload - want
 	name, kind, read, named := documentMessageKind(c.message)
 	switch {
@@ -320,57 +296,11 @@ func (c *awarenessLimitConn) decide(payload int64, final bool) error {
 		c.message = append(c.message[:0], c.message[read:]...)
 		c.mode = limitAwareness
 		return c.collect(rest, final)
-	case c.cut != nil && (kind == hocuspocusSync || kind == hocuspocusSyncReply) &&
-		read < len(c.message) && c.message[read] == syncStepTwo:
-		// A whole-state answer, read whole and handed on cut (collectStepTwo). One whose sync
-		// type the first frame does not hold passes as it arrived, and the peer update hook
-		// refuses whatever of it is not the sender's.
-		c.name, c.kind = name, kind
-		c.message = append(c.message[:0], c.message[read+1:]...)
-		c.mode = limitStepTwo
-		return c.collectStepTwo(rest, final)
 	default:
-		// Not an awareness message nor a sync step 2: ygo reads it as it arrived.
+		// Not an awareness message: ygo reads it as it arrived.
 		c.pass(rest, final)
 		return nil
 	}
-}
-
-// collectStepTwo reads the rest of a sync step 2 - n more bytes of the frame in hand, and the
-// frames after it - and, once it ends, hands ygo the sync step 2 of the update cut makes of its
-// update: the structs under another person's client ids taken out, so they never reach the apply
-// while the rest of the answer lands (Service.stepTwoCut). A message past the most one may carry
-// (maxMessageBytes) ends the connection, as ygo's reader would refuse it, and one whose update
-// does not read reaches ygo as it arrived. The message is held whole until it ends, beside the
-// copy ygo's reader holds once it is handed on, so its buffer is let go then rather than kept for
-// the socket's next message, and so is the rewritten copy once ygo has taken it (Read).
-func (c *awarenessLimitConn) collectStepTwo(n int64, final bool) error {
-	if int64(len(c.message))+n > maxMessageBytes {
-		return fmt.Errorf("dispatch: a document socket's sync step 2 is past the %d bytes one message may carry", maxMessageBytes)
-	}
-	if err := c.readMessage(n); err != nil {
-		return err
-	}
-	if !final {
-		return nil
-	}
-	c.mode = limitIdle
-	update, err := encoding.NewDecoder(c.message).ReadVarBytes()
-	if err == nil {
-		update = c.cut(update)
-	}
-	c.writeFrame(gws.BinaryMessage, true, encoding.EncodeBytes(func(encoder *encoding.Encoder) {
-		encoder.WriteVarString(c.name)
-		encoder.WriteVarUint(c.kind)
-		encoder.WriteVarUint(syncStepTwo)
-		if err != nil {
-			encoder.WriteRaw(c.message)
-			return
-		}
-		encoder.WriteVarBytes(update)
-	}))
-	c.message = nil
-	return nil
 }
 
 // collect reads the rest of an awareness message - n more bytes of the frame in hand, and the
@@ -382,9 +312,12 @@ func (c *awarenessLimitConn) collect(n int64, final bool) error {
 		c.message = c.message[:0]
 		return c.skip(n, final)
 	}
-	if err := c.readMessage(n); err != nil {
+	start := len(c.message)
+	c.message = append(c.message, make([]byte, n)...)
+	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
 		return err
 	}
+	c.unmask(start)
 	c.mode = limitAwareness
 	if !final {
 		return nil
@@ -426,19 +359,12 @@ func (c *awarenessLimitConn) pass(rest int64, final bool) {
 	}
 }
 
-// readMessage reads n more bytes of the frame in hand onto the message and takes the mask off
-// them: each stands at its own offset within that frame, which the key repeats over every four
-// bytes.
-func (c *awarenessLimitConn) readMessage(n int64) error {
-	start := len(c.message)
-	c.message = append(c.message, make([]byte, n)...)
-	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
-		return err
-	}
+// unmask takes the mask off the message's bytes from start, the first of the frame in hand: each
+// stands at its own offset within that frame, which the key repeats over every four bytes.
+func (c *awarenessLimitConn) unmask(start int) {
 	for i := start; i < len(c.message); i++ {
 		c.message[i] ^= c.key[(i-start)%4]
 	}
-	return nil
 }
 
 // allowed is the awareness update a socket may send of the one it sent: the entries of the
@@ -501,10 +427,8 @@ func (c *awarenessLimitConn) writeAwareness(update []byte) {
 // as every frame a client sends is.
 func (c *awarenessLimitConn) writeFrame(opcode byte, final bool, payload []byte) {
 	c.out.Write(frameHeader(opcode, final, int64(len(payload)), c.key[:]))
-	c.out.Write(payload)
-	masked := c.out.Bytes()[c.out.Len()-len(payload):]
-	for i := range masked {
-		masked[i] ^= c.key[i%4]
+	for i, b := range payload {
+		c.out.WriteByte(b ^ c.key[i%4])
 	}
 }
 

@@ -58,6 +58,16 @@ import (
 // a row names never changes, so a binding read at any moment before an apply is the binding at
 // that apply.
 //
+// A sync step 2 is judged as an incremental update is: ygo hands the hook both alike, and a large
+// one is judged inside the load slot its apply takes (weighPeerUpdate). Structs the room already
+// holds land nothing whoever sends them, so a step 2 that hands back what the room holds passes
+// (beyondHeld, heldDuplicates). One that carries another person's structs past what the room
+// holds - an edit the room relayed to the sender and then lost before its store - is refused
+// whole, and nothing of it lands: the person whose edit it was resends it from their own browser,
+// which kept it unsaved, and the sender's editor rebuilds the document from the room and replays
+// its own saved edits. A step 2 answered applied with those structs taken out of it would tell
+// the sender's editor that every edit it had recorded was saved, and the editor would delete them.
+//
 // Dispatch draws the ids it gives out at mintedClientFloor or above. A browser of a build from
 // before this one drew its own below it, as Yjs does (lib0 random.uint32), and so does every
 // write of the server's own: ygo draws a document's client id the same way (crdt.NewClientID),
@@ -997,64 +1007,11 @@ func (s *Service) refusedDuplicate(info websocket.PeerUpdateInfo, connection *co
 	return s.refuseClient(info, connection, client, "it carries an edit at clocks another person claimed first that differs from what the room holds there")
 }
 
-// stepTwoCut is the cut the socket's filter makes of each sync step 2 it sends
-// (awarenessLimitConn.collectStepTwo): the structs under client ids the table names another
-// person for, of the clients whose clocks reach past what the room holds (beyondHeld), are taken
-// out of the update with ygo's own diff (crdt.DiffUpdateV1, against a state vector that holds
-// each such client complete), and the rest - the sender's own structs, those of ids no row names,
-// structs the room holds already, and every deletion - goes on to the apply, which the peer
-// update hook judges as any other (judgeClients). A whole-state answer carries what the room
-// lacks, and that can be another person's edits the sender holds and the room does not: ones the
-// room relayed and then lost, or ones it holds only parked. Those are not the sender's to give, so
-// they are dropped rather than the answer refused, which would refuse an honest editor. An
-// incremental update under another person's id is still refused whole: an editor sends no such
-// update. An update whose header does not read, or whose ids the table cannot be read for, goes
-// on as it is, and the hook refuses what it must of it.
-func (s *Service) stepTwoCut(ctx context.Context, room string, actor model.Actor, clients *socketClients) func([]byte) []byte {
-	return func(update []byte) []byte {
-		// A step 2 carrying no structs, or only the socket's own, has nothing to cut, as judgeClients
-		// reads it: it costs no state vector of the room.
-		if groups, client, read := soleClient(update); read && (groups == 0 || groups == 1 && clients.holds(client)) {
-			return update
-		}
-		from, to, err := crdt.ParseUpdateMeta(update)
-		if err != nil {
-			return update
-		}
-		asked := beyondHeld(heldBy(s.srv.GetDoc(room)), from, to, clients)
-		if len(asked) == 0 {
-			return update
-		}
-		ctx, cancel := context.WithTimeout(ctx, clientCheckTimeout)
-		defer cancel()
-		owners, err := s.clientOwners(ctx, room, asked)
-		if err != nil {
-			return update
-		}
-		complete := crdt.StateVector{}
-		for _, client := range asked {
-			if owner, bound := owners[client]; bound && !owner.is(actor) {
-				complete[crdt.ClientID(client)] = to[crdt.ClientID(client)]
-			}
-		}
-		if len(complete) == 0 {
-			return update
-		}
-		cut, err := crdt.DiffUpdateV1(update, complete)
-		if err != nil {
-			return update
-		}
-		slog.Info("dispatch: cut another person's edits out of a browser's sync step 2",
-			"room", room, "clients", len(complete), "update_bytes", len(update), "cut_bytes", len(cut))
-		return cut
-	}
-}
-
 // beyondHeld is the clients of an update, from and to as crdt.ParseUpdateMeta reads them, that
 // clients does not hold as the socket's own and whose structs reach past held, what the room
 // holds: the clients the update can land anything under. Structs the room holds already are
-// duplicates that land nothing whoever sends them, so they are neither judged for their id nor
-// cut, and the ids of a history a browser hands back whole cost no lookup.
+// duplicates that land nothing whoever sends them, so they are not judged for their id, and the
+// ids of a history a browser hands back whole cost no lookup.
 func beyondHeld(held, from, to crdt.StateVector, clients *socketClients) []uint64 {
 	var beyond []uint64
 	for client := range from {

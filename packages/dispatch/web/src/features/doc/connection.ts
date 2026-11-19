@@ -111,15 +111,19 @@ export function reconnectingNotice(
  *
  * The rebuilt document's notice promises no other edit is kept, because none typed against the
  * replaced history is: the restore drops each of those rows and reports when they were saved
- * (`pending-sync.ts`, `addsParking`). The client id refusal names how many edits went, `dropped`:
- * every saved row under the refused id goes with the refused edit, since each would meet the same
- * refusal (`dropClientRows`), so its notice says no more than that. Where none went, the notice
- * names no edit as lost and says only that what reached Dispatch is kept: the browser held no
- * saved row under that id, as when every edit the page made under it had reached Dispatch before a
- * later socket would not give the id back (`takeClientId`). A browser that keeps no rows
- * (`PendingState.stored`) counts none either, whatever its document held unsent. Of these refusals
- * the page offers a rebuild only for `DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`, the one a rebuild
- * helps (`ProofDocument`); a rebuild of a document just rebuilt is answered 409.
+ * (`pending-sync.ts`, `admit`). The client id refusal names how many edits went, `dropped`: every
+ * saved row under the refused id goes with the refused edit, since each would meet the same refusal
+ * (`dropClientRows`), so its notice says no more than that. Where none went, the notice names no
+ * edit as lost: the page held edits under an id Dispatch did not give its person, and the browser
+ * held no saved row under it. Either every edit the page made under that id had reached Dispatch
+ * before a later socket would not give the id back (`takeClientId`), or the refused frame was the
+ * page's SyncStep2, which names no row of its own: one that hands back another person's edit the
+ * room relayed to this page and then lost before its store. The rebuilt document replays every
+ * saved row that is left, a row that waits on that lost edit included, so the notice says those are
+ * sent again. A browser that keeps no rows (`PendingState.stored`) counts none either, whatever its
+ * document held unsent. Of these refusals the page offers a rebuild only for
+ * `DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`, the one a rebuild helps (`ProofDocument`); a rebuild of a
+ * document just rebuilt is answered 409.
  */
 export function refusedEditNotice(reason: string, dropped?: number): string {
   switch (reason) {
@@ -133,7 +137,7 @@ export function refusedEditNotice(reason: string, dropped?: number): string {
       return "Your last edit was not saved: it holds content this document does not take.";
     case DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON: {
       if (dropped === 0) {
-        return "Dispatch has reloaded the document: this page had it open under an editing identity Dispatch did not give you. Every edit of yours that reached Dispatch is kept.";
+        return "Dispatch has reloaded the document: this page held edits under an editing identity Dispatch did not give you. Every edit of yours that reached Dispatch is kept, and those saved in this browser are sent again.";
       }
       const count = dropped ?? 1;
       return count === 1
@@ -648,6 +652,9 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
       doc,
       onChange: callbacks.onPending,
       remoteOrigin: provider,
+      // A restored row that parks goes out as an Update of its own: the provider's handler of the
+      // document's updates writes one for any origin but its own.
+      send: (update) => provider.documentUpdateHandler(update, null),
       // The store opens at once, so the rows earlier pages saved are named while no socket has
       // answered yet - a reload with the network down shows them. The rows this document saves
       // are keyed by the first id it takes, which its first socket gives it (`clientId`); no edit

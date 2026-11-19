@@ -5323,8 +5323,8 @@ Each item below names a status and code, then its meaning.
   a socket that presents no `client_id` may claim an id the stored history does not name at any time, up to 64 such claims a socket and 64 claims a person in one document in one UTC day, counted from `document_client_ids`, past which the update is refused and nothing in it is claimed;
   an id the stored history names may be claimed for 30 days from the first boot of a build that gives client ids out (`document_client_ids_since`, set once and never moved), and only by a person a version or a pending author row lists as having edited the document since the history first named it;
   and a page that presents a `client_id` claims an id only within those 30 days, its admission's claim stored as landed and counted in those 64 a day, and a fresh id given where it is refused.
-  A sync step 2 is not refused for another person's client id: the structs under it are cut out of the step 2 before the apply (`DiffUpdateV1`), and the rest of it, deletions included, applies;
-  an incremental update under another person's id is refused whole.
+  A sync step 2 is judged as an incremental update is: one carrying another person's structs past what the room holds - a browser handing back on its reconnect an edit the room relayed to it and then lost before its store - is refused whole and nothing of it lands, so no answer tells the browser that edit is saved.
+  The person whose edit it was resends it from their own browser, which kept it unsaved.
   Deletions are not judged: a person deletes other people's text.
   Nor are structs the room already holds, which land nothing whoever sends them, so a browser may hand back the whole history it holds,
   with one exception that keeps a lost edit from passing in silence: structs under an id below 2^32 that another person claimed are compared, from the clock the claim started at (`claimed_from`), with what the room holds at the same clocks, and refused where they differ.
@@ -5334,6 +5334,7 @@ Each item below names a status and code, then its meaning.
   A client id no edit landed under and no admission presented for 30 days is deleted by the hourly compaction sweep, and a page that presents it after that is given a fresh one.
   The socket's awareness carries presence only under the id its page was given, so a cursor cannot be announced under another person's id either.
   Permanent like `DOC_TOO_LARGE`: the dashboard drops the refused edit and every edit it saved under the same id, which would each meet the same refusal, says how many it dropped, re-reads the document and takes a fresh client id with it.
+  A refused sync step 2 drops no saved edit, since it names none: the re-read document replays each edit the browser saved as an update of its own, one that waits on the lost edit included, which the room holds back and answers not applied until that edit lands, and an edit there under an id the browser's person does not hold is refused and dropped as above.
 
 - `4503 DOC_BUSY`
 

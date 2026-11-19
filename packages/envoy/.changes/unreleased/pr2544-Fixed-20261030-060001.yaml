@@ -53,12 +53,16 @@ body: |-
     Each page is now given a client id of its own for each document, from 2^32 up, in the socket's
     first frame, and the id is stored with the person it was given to. An update carrying edits
     under an id given to another person, or under an id from 2^32 up that no admission gave out, is
-    refused `4413 DOC_CLIENT_ID_REFUSED`, and nothing of it is stored or relayed; a sync step 2 has
-    another person's edits cut out instead, and the rest of it applies. The dashboard then drops
-    every saved edit under that id, reloads the document and takes a fresh id. A socket given an id
-    carries presence only under that id. A socket that presents no id, such as a page of an earlier
-    build, still writes: it claims an id below 2^32 that no stored history names, at most 64 a
-    socket and 64 a person a document a UTC day, and past either its update is refused the same
+    refused `4413 DOC_CLIENT_ID_REFUSED`, and nothing of it is stored or relayed. A sync step 2 is
+    judged the same way, so a reconnect that hands back another person's edit the room relayed and
+    then lost is refused too, rather than answered saved without it. The dashboard then drops every
+    saved edit under the refused id, reloads the document, takes a fresh id and sends its own saved
+    edits again; after a refused sync step 2 it drops none, since the step 2 names no edit of its
+    own, and an edit of its own that waits on the lost one is held by the room, answered not
+    applied, and lands once the other person's browser sends the lost edit again. A socket given an
+    id carries presence only under that id. A socket that presents no id, such as a page of an
+    earlier build, still writes: it claims an id below 2^32 that no stored history names, at most 64
+    a socket and 64 a person a document a UTC day, and past either its update is refused the same
     way. An id the stored history names may be claimed only by a person who edited the document
     after the history first named it, and only for 30 days after the database first served this
     build. An edit under an id another person claimed, at clocks the room holds with different

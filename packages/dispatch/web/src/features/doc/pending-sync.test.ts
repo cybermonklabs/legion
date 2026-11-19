@@ -62,6 +62,8 @@ async function admit(sync: PendingSync, readOnly: boolean): Promise<void> {
 interface Scripted {
   artifact: string;
   doc: Y.Doc;
+  /** Each update the sync sent on its own (`PendingSyncOptions.send`), in order. */
+  sent: Uint8Array[];
   states: PendingState[];
   sync: PendingSync;
   /** Types `text` at the end of the document's paragraph, as a local edit, and returns its update. */
@@ -83,16 +85,19 @@ async function scripted(
   }
   const store = wrapStore(await storeFor(artifact, doc.clientID));
   const states: PendingState[] = [];
+  const sent: Uint8Array[] = [];
   const sync = startPendingSync({
     doc,
     onChange: (state) => states.push(state),
     remoteOrigin: SERVER,
+    send: (update) => sent.push(update),
     store: Promise.resolve(store),
   });
   cleanups.push(() => sync.destroy());
   return {
     artifact,
     doc,
+    sent,
     states,
     sync,
     type(text) {
@@ -612,14 +617,16 @@ test("a later writable admission keeps this tab's own unacknowledged rows", asyn
   expect(await rowsOf(artifact)).toEqual(mine);
 });
 
-test("a restore that parks on a scratch document is dropped, reported, and leaves the live document alone", async () => {
+test("a restore that parks on a client the rebuild retired is dropped, reported, and leaves the live document alone", async () => {
   const artifact = artifactId();
   // The edit was typed against a history the server no longer has: a rebuild reseeded the same
-  // text from a fresh document, so the items the edit sits beside are gone.
+  // text from a fresh document and lists the replaced history's clients as retired, so the items
+  // the edit sits beside are gone for good.
   const before = Date.now();
-  await savedEdit(artifact, serverWith("shared", 100), " saved");
-  const rebuilt = serverWith("shared", 200);
-  const { doc, states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(rebuilt));
+  const lost = serverWith("shared", 100);
+  await savedEdit(artifact, lost, " saved");
+  const rebuilt = rebuiltRoom(lost, "shared", 200);
+  const { doc, sent, states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(rebuilt));
   const stateVector = Y.encodeStateVector(doc);
 
   await admit(sync, false);
@@ -628,6 +635,7 @@ test("a restore that parks on a scratch document is dropped, reported, and leave
   expect(doc.store.pendingStructs).toBeNull();
   expect(paragraphText(doc).toString()).toBe("shared");
   expect(await rowsOf(artifact)).toEqual([]);
+  expect(sent).toEqual([]);
   const reported = states.at(-1);
   expect(reported?.count).toBe(0);
   expect(reported?.rebuiltAt).toBeGreaterThanOrEqual(before);
@@ -672,8 +680,9 @@ test("a restore that merges is recorded under the new client and the old rows ar
 
 test("a stale saved row does not discard another row that still applies", async () => {
   const artifact = artifactId();
-  await savedEdit(artifact, serverWith("shared", 100), " stale");
-  const server = serverWith("shared", 200);
+  const lost = serverWith("shared", 100);
+  await savedEdit(artifact, lost, " stale");
+  const server = rebuiltRoom(lost, "shared", 200);
   await savedEdit(artifact, server, " valid");
   const { doc, states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
 
@@ -692,7 +701,7 @@ test("a stale row does not let a later row from the same lost history through", 
   const lost = serverWith("shared", 100);
   await savedEdit(artifact, lost, " stale one");
   await savedEdit(artifact, lost, " stale two");
-  const server = serverWith("shared", 200);
+  const server = rebuiltRoom(lost, "shared", 200);
   await savedEdit(artifact, server, " valid");
   const { doc, states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
 
@@ -702,6 +711,61 @@ test("a stale row does not let a later row from the same lost history through", 
   expect(doc.store.pendingStructs).toBeNull();
   expect(await rowsOf(artifact)).toEqual([[artifact, doc.clientID, 1]]);
   expect(states.at(-1)?.rebuiltAt).toBeDefined();
+});
+
+// A row that builds on another person's edit the room relayed to this browser and then lost before
+// its store - that person's browser kept it and sends it again - parks on a client no rebuild
+// retired. It is no row of a replaced history: the restore keeps it, records it again and sends it,
+// it stays saved while the server holds it back and answers it not applied, and it clears on the
+// applied answer that covers it, the SyncStep2 that answers the room's resync once the lost edit
+// and the row have landed.
+test("a restored row that parks on a client no rebuild retired is sent, stays saved while it parks, and clears on the answer that covers it", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const alice = new Y.Doc();
+  alice.clientID = 300;
+  Y.applyUpdate(alice, Y.encodeStateAsUpdate(server));
+  typeInto(alice, " L");
+  const lostEdit = Y.encodeStateAsUpdate(alice, Y.encodeStateVector(server));
+  const relayed = new Y.Doc();
+  Y.applyUpdate(relayed, Y.encodeStateAsUpdate(server));
+  Y.applyUpdate(relayed, lostEdit);
+  const [saved] = await savedChanges(artifact, relayed, (browser) => typeInto(browser, " D"));
+  if (saved === undefined) {
+    throw new Error("one change saves one row");
+  }
+  const { doc, sent, states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
+
+  await admit(sync, false);
+
+  // Kept, recorded again under this tab's client, and sent, though the document shows nothing of
+  // it while what it builds on is missing.
+  expect(sent).toEqual([saved.update]);
+  expect(await rowsOf(artifact)).toEqual([[artifact, doc.clientID, 1]]);
+  expect(paragraphText(doc).toString()).toBe("shared");
+  expect(doc.store.pendingStructs).not.toBeNull();
+  expect(states.at(-1)).toEqual({
+    count: 1,
+    readOnly: false,
+    rebuiltAt: undefined,
+    stored: true,
+    unsent: false,
+  });
+
+  // The server parks it and answers it not applied: the row stays.
+  sync.socketOpened();
+  sync.frameWritten(updateFrame(saved.update));
+  await sync.frameReceived(syncStatusFrame(false));
+  expect(await rowsOf(artifact)).toEqual([[artifact, doc.clientID, 1]]);
+
+  // The lost edit lands, and the row with it; the room relays both and resyncs this browser, whose
+  // SyncStep2 is answered applied, which covers the row.
+  Y.applyUpdate(doc, lostEdit, SERVER);
+  expect(paragraphText(doc).toString()).toBe("shared L D");
+  sync.frameWritten(syncStep2Frame(Y.encodeStateAsUpdate(doc)));
+  await sync.frameReceived(syncStatusFrame(true));
+  expect(await rowsOf(artifact)).toEqual([]);
+  await waitFor(() => expect(states.at(-1)?.count).toBe(0));
 });
 
 // A rebuilt document lists the clients of the history it replaced (the server's `rebuiltSeed`).
@@ -819,8 +883,9 @@ test("a pending paste a restore can no longer record is kept and named, not dele
 
 test("a first sync deletes every row it handled in one IndexedDB write", async () => {
   const artifact = artifactId();
-  await savedEdit(artifact, serverWith("shared", 100), " stale");
-  const server = serverWith("shared", 200);
+  const lost = serverWith("shared", 100);
+  await savedEdit(artifact, lost, " stale");
+  const server = rebuiltRoom(lost, "shared", 200);
   await savedEdit(artifact, server, " one");
   await savedEdit(artifact, server, " two");
   const doc = new Y.Doc();
@@ -838,6 +903,7 @@ test("a first sync deletes every row it handled in one IndexedDB write", async (
     doc,
     onChange() {},
     remoteOrigin: SERVER,
+    send() {},
     store: Promise.resolve(store),
   });
   cleanups.push(() => sync.destroy());
@@ -872,6 +938,7 @@ test("a later SyncStep2 acknowledgement retries an earlier row whose individual 
     doc,
     onChange() {},
     remoteOrigin: SERVER,
+    send() {},
     store: Promise.resolve(store),
   });
   cleanups.push(() => sync.destroy());

@@ -7,13 +7,16 @@ package docs
 // each local edit is a row; every SyncStep2 or Update the page writes is queued, and each
 // SyncStatus pops one; an applied Update clears the row with its exact bytes (clearUpdate), an
 // applied SyncStep2 clears every row recorded before it was written (clearThrough), and a
-// not-applied answer clears nothing.
+// not-applied answer clears nothing. A page rebuilt after a refusal is a fresh document from the
+// room with no row of its own yet, which replays each row the browser saved as an Update of its
+// own and records it again, as the dashboard's restore does (pending-sync.ts, admit).
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,6 +63,11 @@ type lcPage struct {
 	ended       chan struct{}
 	lines       *[]string
 	linesMu     *sync.Mutex
+	// answered is each SyncStatus the page heard, as what it answered and whether it applied.
+	answered []string
+	// closed is the close frame the room ended the socket with, nil for any other end. It is
+	// written before ended closes, and read after.
+	closed *gws.CloseError
 }
 
 func (p *lcPage) logf(format string, args ...any) {
@@ -150,6 +158,7 @@ func (p *lcPage) read() {
 		if err != nil {
 			var closed *gws.CloseError
 			if errors.As(err, &closed) {
+				p.closed = closed
 				p.logf("closed %d %s", closed.Code, closed.Text)
 			} else {
 				p.logf("ended: %v", err)
@@ -218,6 +227,7 @@ func (p *lcPage) read() {
 				p.rows = kept
 			}
 			rows := len(p.rows)
+			p.answered = append(p.answered, fmt.Sprintf("%s applied=%t", s.what, flag == 1))
 			p.mu.Unlock()
 			p.logf("%s answered applied=%t; rows saved in the browser now %d", s.what, flag == 1, rows)
 		}
@@ -228,6 +238,40 @@ func (p *lcPage) rowsHeld() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.rows)
+}
+
+// savedRows is a copy of the rows the page's browser holds.
+func (p *lcPage) savedRows() []lcRow {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]lcRow(nil), p.rows...)
+}
+
+// heard is a copy of each SyncStatus the page heard, in order (answered).
+func (p *lcPage) heard() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.answered...)
+}
+
+// replay is the restore of a rebuilt page: each of rows, saved by an earlier page of the browser,
+// is applied to the page's document, recorded again as a row of this page and sent as an Update
+// of its own. A row that waits on content the room lacks parks in the document as it does in the
+// room, and is sent all the same: the room holds it back and answers it not applied.
+func (p *lcPage) replay(rows []lcRow) {
+	for _, saved := range rows {
+		if err := crdt.ApplyUpdateV1(p.doc, saved.update, "restored"); err != nil {
+			p.logf("apply the saved row %d failed: %v", saved.ordinal, err)
+			continue
+		}
+		p.mu.Lock()
+		p.nextOrdinal++
+		p.rows = append(p.rows, lcRow{ordinal: p.nextOrdinal, update: saved.update})
+		ordinal := p.nextOrdinal
+		p.mu.Unlock()
+		p.logf("replays the saved row %d as row %d (%d bytes)", saved.ordinal, ordinal, len(saved.update))
+		p.write(ygsync.EncodeUpdate(saved.update), &lcSent{update: saved.update, what: "replayed row"})
+	}
 }
 
 // lcText is the first paragraph's text of doc, a page's or the room's. It reads a copy of doc's
@@ -256,12 +300,17 @@ func lcWait(t *testing.T, what string, within time.Duration, done func() bool) b
 }
 
 // Alice's edit is integrated, relayed to bob and lost before it is stored: the database refuses
-// its append, the room fails, and alice is answered not applied and keeps her row. Bob reconnects
-// first, his SyncStep2 has alice's structs cut (stepTwoCut), and he types right after her lost
-// text, so his edit parks, is answered not applied and stays unsaved in his browser. When alice
-// comes back and resends her row, the commit that lands it lands bob's edit too, and once it is
-// stored the room resyncs bob, whose answer clears his row. While she never comes back, bob's edit
-// is neither stored nor cleared: his row stays, and so does the notice, truthfully, across his own
+// its append, the room fails, and alice is answered not applied and keeps her row. Bob, offline,
+// types right after her lost text, and his browser saves the row. His reconnect's SyncStep2
+// carries her lost structs beside his own, so the room refuses it whole, visibly: it is answered
+// not applied and the socket is closed 4413 DOC_CLIENT_ID_REFUSED, and nothing of it lands. His
+// row stays, and his editor rebuilds as the dashboard does, a fresh page from the room that replays
+// his saved row as an Update of its own. The row names alice's lost text, so it parks, is answered
+// not applied and stays unsaved in his browser. When alice comes back and resends her row, the
+// commit that lands it lands bob's row too, and once it is stored the room resyncs bob, whose
+// answer clears his row: the store holds both people's text, and nothing of either was lost or
+// dropped in silence. While she never comes back, bob's row is neither stored nor cleared, and
+// nothing answers it applied: it stays, and so does the notice, truthfully, across his own
 // reconnect.
 func TestAnEditParkedBehindALostCommitIsUnsavedUntilTheCommitThatLandsItIsStored(t *testing.T) {
 	for _, aliceReturns := range []bool{true, false} {
@@ -344,28 +393,68 @@ func TestAnEditParkedBehindALostCommitIsUnsavedUntilTheCommitThatLandsItIsStored
 				}
 			})
 			note("after the lost append: room %s; stored holds alice to clock %d of %d", room(), stored(aliceID), alice.doc.StateVector().Clock(aliceID))
+			if rows := alice.rowsHeld(); rows != 1 {
+				t.Fatalf("alice holds %d rows after her append was lost, want her edit kept", rows)
+			}
 
-			// Bob reconnects first, with the document he kept (holding alice's L), and types right
-			// after her lost text.
+			// Bob, offline with the document he kept (holding alice's L), types right after her lost
+			// text; his browser saves the row, and the frame goes nowhere.
+			at := strings.Index(lcText(bob.doc), "L") + 1
+			bob.typeAt(at, "D")
+			// He reconnects first: his SyncStep2 answers the room's SyncStep1 with alice's L and his
+			// D, which the room lacks.
 			bob2 := lcDial(t, serverURL, artifactID, "bob", bob, start, &lines, &linesMu)
-			<-bob2.synced
-			lcWait(t, "bob's SyncStep2 to be answered", 5*time.Second, func() bool {
-				bob2.mu.Lock()
-				defer bob2.mu.Unlock()
-				return len(bob2.sent) == 0
-			})
-			note("bob reconnected: room %s", room())
-			at := strings.Index(lcText(bob2.doc), "L") + 1
-			bob2.typeAt(at, "D")
-			lcWait(t, "bob's D to be answered", 5*time.Second, func() bool {
-				bob2.mu.Lock()
-				defer bob2.mu.Unlock()
-				return len(bob2.sent) == 0
-			})
-			note("bob typed D after L: bob's page reads %q and holds %d row(s); room %s; stored holds bob to clock %d of %d",
-				lcText(bob2.doc), bob2.rowsHeld(), room(), stored(bobID), bob2.doc.StateVector().Clock(bobID))
+			if !lcWait(t, "bob's reconnect to be refused", 10*time.Second, func() bool {
+				select {
+				case <-bob2.ended:
+					return true
+				default:
+					return false
+				}
+			}) {
+				t.Fatal("bob's reconnect, whose SyncStep2 carries alice's lost edit, stayed connected")
+			}
+			note("bob's reconnect was refused: bob holds %d row(s); room %s", bob2.rowsHeld(), room())
+			if closed := bob2.closed; closed == nil || closed.Code != contracts.DocumentTooLargeCloseCode || closed.Text != contracts.DocumentClientIdRefusedCloseReason {
+				t.Fatalf("bob's reconnect ended with %v, want %d %s", closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentClientIdRefusedCloseReason)
+			}
+			if heard, want := bob2.heard(), []string{"SyncStep2 applied=false"}; !slices.Equal(heard, want) {
+				t.Fatalf("bob's reconnect heard %q, want %q", heard, want)
+			}
+			if live := service.srv.GetDoc(artifactID); live != nil && strings.ContainsAny(lcText(live), "LD") {
+				t.Fatalf("the room reads %q after bob's refused SyncStep2: something of it landed", lcText(live))
+			}
+			if clock := stored(bobID); clock != 0 {
+				t.Fatalf("the store holds bob to clock %d after his refused SyncStep2, want 0", clock)
+			}
 			if rows := bob2.rowsHeld(); rows != 1 {
-				t.Fatalf("bob holds %d rows after his edit typed after alice's lost text, want it kept, answered not applied", rows)
+				t.Fatalf("bob holds %d rows after his refused SyncStep2, want his edit kept", rows)
+			}
+
+			// The rebuild: a fresh page from the room, which replays bob's saved row.
+			bob3 := lcDial(t, serverURL, artifactID, "bob", nil, start, &lines, &linesMu)
+			<-bob3.synced
+			lcWait(t, "bob's rebuilt page's SyncStep2 to be answered", 5*time.Second, func() bool {
+				bob3.mu.Lock()
+				defer bob3.mu.Unlock()
+				return len(bob3.sent) == 0
+			})
+			bob3.replay(bob2.savedRows())
+			lcWait(t, "bob's replayed row to be answered", 5*time.Second, func() bool {
+				bob3.mu.Lock()
+				defer bob3.mu.Unlock()
+				return len(bob3.sent) == 0
+			})
+			note("bob's rebuilt page replayed his row: it reads %q and holds %d row(s); room %s; stored holds bob to clock %d of %d",
+				lcText(bob3.doc), bob3.rowsHeld(), room(), stored(bobID), bob2.doc.StateVector().Clock(bobID))
+			if heard := bob3.heard(); len(heard) == 0 || heard[len(heard)-1] != "replayed row applied=false" {
+				t.Fatalf("bob's rebuilt page heard %q, want its replayed row, which waits on alice's lost text, answered not applied", heard)
+			}
+			if rows := bob3.rowsHeld(); rows != 1 {
+				t.Fatalf("bob's rebuilt page holds %d rows, want his edit typed after alice's lost text kept, answered not applied", rows)
+			}
+			if parked := service.srv.GetDoc(artifactID).PendingStats(); parked.Items == 0 {
+				t.Fatalf("the room parks nothing (%+v), want bob's replayed row waiting on alice's lost text", parked)
 			}
 
 			if aliceReturns {
@@ -379,35 +468,52 @@ func TestAnEditParkedBehindALostCommitIsUnsavedUntilTheCommitThatLandsItIsStored
 				landed := time.Now()
 				note("alice resent: alice holds %d row(s); room %s; stored holds alice to %d, bob to %d of %d",
 					alice2.rowsHeld(), room(), stored(aliceID), stored(bobID), bob2.doc.StateVector().Clock(bobID))
-				if !lcWait(t, "bob's rows to clear", 5*time.Second, func() bool { return bob2.rowsHeld() == 0 }) {
+				if rows := alice2.rowsHeld(); rows != 0 {
+					t.Fatalf("alice holds %d rows after her resend was answered, want her edit stored and cleared", rows)
+				}
+				if !lcWait(t, "bob's rows to clear", 5*time.Second, func() bool { return bob3.rowsHeld() == 0 }) {
 					t.Fatal("bob's edit landed with alice's resent row and is stored, and his browser still holds it as unsaved")
 				}
-				note("%.1f ms after alice's resend was answered: bob holds %d row(s)", float64(time.Since(landed).Microseconds())/1000, bob2.rowsHeld())
-				if clock := stored(bobID); clock != bob2.doc.StateVector().Clock(bobID) {
-					t.Fatalf("the store holds bob to clock %d of the %d he wrote, and his row cleared", clock, bob2.doc.StateVector().Clock(bobID))
+				note("%.1f ms after alice's resend was answered: bob holds %d row(s)", float64(time.Since(landed).Microseconds())/1000, bob3.rowsHeld())
+				if clock, wrote := stored(aliceID), alice.doc.StateVector().Clock(aliceID); clock != wrote {
+					t.Fatalf("the store holds alice to clock %d of the %d she wrote, and her row cleared", clock, wrote)
+				}
+				if clock, wrote := stored(bobID), bob2.doc.StateVector().Clock(bobID); clock != wrote {
+					t.Fatalf("the store holds bob to clock %d of the %d he wrote, and his row cleared", clock, wrote)
+				}
+				if text := lcText(service.srv.GetDoc(artifactID)); !strings.Contains(text, "LD") {
+					t.Fatalf("the room reads %q, want alice's L and bob's D after it", text)
 				}
 			} else {
 				time.Sleep(time.Second)
 				note("alice never returns: bob holds %d row(s); room %s; stored holds bob to %d of %d",
-					bob2.rowsHeld(), room(), stored(bobID), bob2.doc.StateVector().Clock(bobID))
-				if rows := bob2.rowsHeld(); rows != 1 {
+					bob3.rowsHeld(), room(), stored(bobID), bob2.doc.StateVector().Clock(bobID))
+				if rows := bob3.rowsHeld(); rows != 1 {
 					t.Fatalf("bob holds %d rows while his edit waits on alice's lost text, want it kept", rows)
+				}
+				if clock := stored(bobID); clock != 0 {
+					t.Fatalf("the store holds bob to clock %d while his edit waits on alice's lost text, want 0", clock)
+				}
+				for _, heard := range bob3.heard() {
+					if heard == "replayed row applied=true" {
+						t.Fatalf("bob's replayed row was answered applied while it waits on alice's lost text: %q", bob3.heard())
+					}
 				}
 			}
 			// Bob's next socket: his SyncStep2 carries his edit again where it has not landed, and
 			// the room answers it as it answered the edit.
-			_ = bob2.conn.Close()
-			<-bob2.ended
-			bob3 := lcDial(t, serverURL, artifactID, "bob", bob2, start, &lines, &linesMu)
-			<-bob3.synced
+			_ = bob3.conn.Close()
+			<-bob3.ended
+			bob4 := lcDial(t, serverURL, artifactID, "bob", bob3, start, &lines, &linesMu)
+			<-bob4.synced
 			lcWait(t, "bob's next SyncStep2 to be answered", 5*time.Second, func() bool {
-				bob3.mu.Lock()
-				defer bob3.mu.Unlock()
-				return len(bob3.sent) == 0
+				bob4.mu.Lock()
+				defer bob4.mu.Unlock()
+				return len(bob4.sent) == 0
 			})
-			note("after bob's next reconnect: bob holds %d row(s); room %s", bob3.rowsHeld(), room())
-			if want := map[bool]int{true: 0, false: 1}[aliceReturns]; bob3.rowsHeld() != want {
-				t.Fatalf("after bob's reconnect he holds %d rows, want %d", bob3.rowsHeld(), want)
+			note("after bob's next reconnect: bob holds %d row(s); room %s", bob4.rowsHeld(), room())
+			if want := map[bool]int{true: 0, false: 1}[aliceReturns]; bob4.rowsHeld() != want {
+				t.Fatalf("after bob's reconnect he holds %d rows, want %d", bob4.rowsHeld(), want)
 			}
 		})
 	}

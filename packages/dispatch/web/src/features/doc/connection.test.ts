@@ -1498,7 +1498,7 @@ test("a page refused its client id after the room took every edit under it is to
     await waitFor(() => expect(refusals).toEqual([DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON]));
     expect(dropped).toEqual([0]);
     expect(refusedEditNotice(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, dropped[0])).toBe(
-      "Dispatch has reloaded the document: this page had it open under an editing identity Dispatch did not give you. Every edit of yours that reached Dispatch is kept."
+      "Dispatch has reloaded the document: this page held edits under an editing identity Dispatch did not give you. Every edit of yours that reached Dispatch is kept, and those saved in this browser are sent again."
     );
   });
 });
@@ -1672,5 +1672,127 @@ test("a refusal of a row under another person's client id drops every row under 
     expect(refusedEditNotice(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, 2)).toBe(
       "2 of your edits were not saved: they were made under an editing identity Dispatch did not give you, so they cannot be sent. Dispatch has reloaded the document."
     );
+  });
+});
+
+/** The step (0 SyncStep1, 1 SyncStep2, 2 Update) of each Sync frame a socket wrote, in order. */
+function syncSteps(socket: OpenSocket, name: string): number[] {
+  const prefix = frame(name, [0]);
+  return socket.sent
+    .filter((written) => prefix.every((byte, index) => written[index] === byte))
+    .map((written) => {
+      const decoder = createDecoder(written);
+      readVarString(decoder); // the document name
+      readVarUint(decoder); // Sync
+      return readVarUint(decoder);
+    });
+}
+
+/** A Sync Update frame the room sends: what it relays of another browser's edit. */
+function relayedFrame(update: Uint8Array, name: string): Uint8Array {
+  return frame(name, [0, 2], varBytes(update));
+}
+
+// The room relayed another person's edit to this page and then lost it before its store, and the
+// page's person typed right after it while the socket was down. The reconnect's SyncStep2 hands
+// back the lost edit beside the person's own, and the room refuses it whole as an edit under an id
+// Dispatch did not give this person (client_ids.go, judgeClients). A SyncStep2 names no saved row,
+// so none goes: the row is kept, and the notice says the document was reloaded and the person's
+// saved edits are sent again. The document read afresh from the room (ProofDocument's
+// `onEditRefused`) does send it: the row parks there on the other person's lost edit, which no
+// rebuild retired, so the restore records it again and sends it as an Update of its own. The room
+// holds it back and answers it not applied, and the row stays saved until the room has landed it
+// beside the resent edit and the SyncStep2 that answers the room's resync is answered applied.
+test("a SyncStep2 refused for another person's lost edit keeps the page's own row, and the document read afresh sends it until it lands", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const given = 2 ** 32 + 41;
+  const alice = new Y.Doc();
+  alice.clientID = 2 ** 32 + 42;
+  Y.applyUpdate(alice, Y.encodeStateAsUpdate(server));
+  typeInto(alice, " L");
+  const lostEdit = Y.encodeStateAsUpdate(alice, Y.encodeStateVector(server));
+  await withProvider(artifact, async ({ connection, dropped, refusals, socket, synced }) => {
+    const first = await socket(0);
+    first.receive(clientIdFrame(given, artifact));
+    serveInYgoOrder(first, server, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    // The room relays alice's edit, and then loses it before its store: its socket drops.
+    first.receive(relayedFrame(lostEdit, artifact));
+    await waitFor(() => expect(paragraphText(connection.doc).toString()).toBe("shared L"));
+    first.drop();
+    typeInto(connection.doc, " D");
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([[artifact, given, 1]]));
+
+    // The reconnect: the room, which lacks alice's edit, asks for what the page holds.
+    const second = await socket(1);
+    second.receive(clientIdFrame(given, artifact));
+    second.receive(syncStep1Frame(Y.encodeStateVector(server), artifact));
+    second.receive(syncStep2Frame(Y.encodeStateAsUpdate(server), artifact));
+    second.receive(awarenessFrame(artifact));
+    const handed = syncPayloads(second, artifact, 1).at(-1);
+    if (handed === undefined) {
+      throw new Error("the provider answers the room's SyncStep1 with a SyncStep2");
+    }
+    expect(Y.decodeUpdate(handed).structs.map((struct) => struct.id.client)).toContain(
+      alice.clientID
+    );
+    // The room answers the frames in order: the queued Update of the typing parks, not applied,
+    // and the SyncStep2 is refused and the socket closed.
+    for (const step of syncSteps(second, artifact).filter((written) => written !== 0)) {
+      second.receive(syncStatusFrame(false, artifact));
+      if (step === 1) {
+        break;
+      }
+    }
+    second.dispatchEvent(
+      new CloseEvent("close", {
+        code: DOCUMENT_TOO_LARGE_CLOSE_CODE,
+        reason: DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON,
+      })
+    );
+    await waitFor(() => expect(refusals).toEqual([DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON]));
+    expect(dropped).toEqual([0]);
+    expect(await rowsOf(artifact)).toEqual([[artifact, given, 1]]);
+    expect(refusedEditNotice(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, dropped[0])).toBe(
+      "Dispatch has reloaded the document: this page held edits under an editing identity Dispatch did not give you. Every edit of yours that reached Dispatch is kept, and those saved in this browser are sent again."
+    );
+  });
+
+  // The document read afresh from the room, under a fresh id.
+  const rebuiltGiven = 2 ** 32 + 43;
+  await withProvider(artifact, async ({ connection, pending, socket, synced }) => {
+    const first = await socket(0);
+    first.receive(clientIdFrame(rebuiltGiven, artifact));
+    serveInYgoOrder(first, server, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    await waitFor(() => expect(updateClients(first, artifact)).toEqual([given]));
+    await waitFor(async () =>
+      expect(await rowsOf(artifact)).toEqual([[artifact, rebuiltGiven, 1]])
+    );
+    await waitFor(() => expect(pending.at(-1)).toMatchObject({ count: 1, rebuiltAt: undefined }));
+    expect(paragraphText(connection.doc).toString()).toBe("shared");
+
+    // The room holds the replayed row back, behind alice's lost edit.
+    first.receive(syncStatusFrame(false, artifact));
+    expect(await rowsOf(artifact)).toEqual([[artifact, rebuiltGiven, 1]]);
+
+    // Alice's browser sends her edit again: the room lands it and the row, relays both, and once
+    // it has stored them resyncs this page, whose SyncStep2 it answers applied.
+    const [replayed] = syncPayloads(first, artifact, 2);
+    if (replayed === undefined) {
+      throw new Error("the document read afresh sends the saved row as an Update");
+    }
+    const held = Y.encodeStateVector(connection.doc);
+    Y.applyUpdate(server, lostEdit);
+    Y.applyUpdate(server, replayed);
+    first.receive(relayedFrame(Y.encodeStateAsUpdate(server, held), artifact));
+    await waitFor(() => expect(paragraphText(connection.doc).toString()).toBe("shared L D"));
+    expect(await rowsOf(artifact)).toEqual([[artifact, rebuiltGiven, 1]]);
+    first.receive(syncStep1Frame(Y.encodeStateVector(server), artifact));
+    await waitFor(() => expect(syncPayloads(first, artifact, 1).length).toBeGreaterThan(1));
+    first.receive(syncStatusFrame(true, artifact));
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([]));
+    await waitFor(() => expect(pending.at(-1)?.count).toBe(0));
   });
 });

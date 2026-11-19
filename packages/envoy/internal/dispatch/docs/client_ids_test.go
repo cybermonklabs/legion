@@ -913,49 +913,172 @@ func sendStepTwo(t *testing.T, page *docstest.Peer, update []byte) {
 	}
 }
 
-// A forger's sync step 2 carrying structs under alice's client id beside the forger's own: the
-// structs under alice's id are cut out of it before the apply and the room holds none of them,
-// the forger's own land, the forger is not closed for it, and alice's next keystroke lands where
-// she typed it.
-func TestAForgersSyncStep2HasAnotherPersonsStructsCutAndItsOwnLand(t *testing.T) {
-	service, artifactID, serverURL := clientIDRoom(t)
-	alice := openPage(t, serverURL, artifactID, "alice")
-	awaitAnswer(t, alice, "the document")
-	mallory := openPage(t, serverURL, artifactID, "mallory")
-	awaitAnswer(t, mallory, "the document")
-	victim := alice.Doc.ClientID()
-	sendTyped(t, alice, 0, "a")
-	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
-	awaitRendering(t, func() *crdt.Doc { return mallory.Doc }, "# Title\n\naAlice's paragraph.\n", "mallory's page")
-	next := mallory.Doc.StateVector().Clock(victim)
-	forged := forgedUnder(t, mallory.Doc, "EVIL", victim, next)
-	own := typeAt(t, mallory.Doc, 0, "M")
-	answer, err := crdt.MergeUpdatesV1(forged, own)
-	if err != nil {
+// hearFromNow has page keep what it hears from here on (docstest.Peer.Hear), once the room has
+// answered the frames page sent before, each of which committed nothing: the room reads a
+// socket's frames in order and answers one that commits nothing as it reads it, so the answer to a
+// sync step 1 sent after them comes after theirs.
+func hearFromNow(t *testing.T, page *docstest.Peer, who string) {
+	t.Helper()
+	if err := page.AskForDocument(); err != nil {
 		t.Fatal(err)
 	}
-	sendStepTwo(t, mallory, answer)
-	waitForRoomRendering(t, room, func(rendering string) bool {
-		return strings.Contains(rendering, "M")
-	}, "the room holding the forger's own struct")
-	if rendering := renderedBy(t, room()); strings.Contains(rendering, "EVIL") {
-		t.Fatalf("the room holds the struct forged under alice's id: %q", rendering)
+	awaitAnswer(t, page, "the document again in "+who)
+	page.Hear()
+}
+
+// requireNothingApplied requires page, which the room has closed, to have been answered nothing
+// applied since it began to keep what it heard (docstest.Peer.Hear): one SyncStatus 0 at least,
+// for the frame the room refused, and no SyncStatus 1.
+func requireNothingApplied(t *testing.T, page *docstest.Peer, who string) {
+	t.Helper()
+	<-page.Ended
+	var heard []string
+	refused := false
+	for _, h := range page.Heard() {
+		heard = append(heard, h.What)
+		switch {
+		case strings.HasPrefix(h.What, "SyncStatus 1"):
+			t.Fatalf("%s was answered applied: it heard %q", who, heard)
+		case strings.HasPrefix(h.What, "SyncStatus 0"):
+			refused = true
+		}
 	}
-	if clock := room().StateVector().Clock(victim); clock != next {
-		t.Fatalf("the room holds alice's client to clock %d, want %d", clock, next)
+	if !refused {
+		t.Fatalf("%s was never answered not applied: it heard %q", who, heard)
 	}
-	requireConnected(t, mallory, "mallory")
-	awaitRendering(t, func() *crdt.Doc { return alice.Doc }, "# Title\n\nMaAlice's paragraph.\n", "alice's page")
-	sendTyped(t, alice, 2, "b")
-	awaitRendering(t, room, "# Title\n\nMabAlice's paragraph.\n", "the room after alice's next keystroke")
-	requireConnected(t, alice, "alice")
+}
+
+// awaitHeardStatus waits for page to hear a SyncStatus answer since it began to keep what it heard
+// (docstest.Peer.Hear), and returns each it heard.
+func awaitHeardStatus(t *testing.T, page *docstest.Peer, answers int, who string) []string {
+	t.Helper()
+	var heard []string
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		heard = heard[:0]
+		for _, h := range page.Heard() {
+			if strings.HasPrefix(h.What, "SyncStatus") {
+				heard = append(heard, h.What)
+			}
+		}
+		if len(heard) >= answers {
+			return heard
+		}
+	}
+	t.Fatalf("%s heard %d SyncStatus answers within 30s, want %d: %q", who, len(heard), answers, heard)
+	return nil
+}
+
+// A sync step 2 is judged as an incremental update is (judgeClients). A forger's step 2 carrying,
+// beside a struct of her own, a struct past what the room holds under another person's client id
+// - one an admission gave alice's page, or one alice's tab of the earlier build claimed - is
+// refused whole: the forger is answered nothing applied and closed with the client id refusal,
+// nothing of the step 2 lands, her own struct included, and alice's next keystroke lands where
+// she typed it.
+func TestAForgersSyncStep2CarryingAnotherPersonsStructsIsRefusedWhole(t *testing.T) {
+	for _, victim := range []struct {
+		name   string
+		legacy bool
+	}{
+		{name: "the id an admission gave alice's page"},
+		{name: "the id alice's tab of the earlier build claimed", legacy: true},
+	} {
+		t.Run(victim.name, func(t *testing.T) {
+			service, artifactID, serverURL := clientIDRoom(t)
+			room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
+			var alice *docstest.Peer
+			if victim.legacy {
+				alice = docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("alice"), artifactID, crdt.New(crdt.WithClientID(1_234_569_201)))
+			} else {
+				alice = openPage(t, serverURL, artifactID, "alice")
+			}
+			awaitAnswer(t, alice, "the document")
+			mallory := openPage(t, serverURL, artifactID, "mallory")
+			awaitAnswer(t, mallory, "the document")
+			client := alice.Doc.ClientID()
+			sendTyped(t, alice, 0, "a")
+			awaitRendering(t, func() *crdt.Doc { return mallory.Doc }, "# Title\n\naAlice's paragraph.\n", "mallory's page")
+			if owners := storedClientIDs(t, service, artifactID, client); owners != 1 {
+				t.Fatalf("%d rows store alice's client id, want the one that makes it hers", owners)
+			}
+			next := mallory.Doc.StateVector().Clock(client)
+			forged := forgedUnder(t, mallory.Doc, "EVIL", client, next)
+			own := typeAt(t, mallory.Doc, 0, "M")
+			answer, err := crdt.MergeUpdatesV1(forged, own)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := renderedBy(t, room())
+			hearFromNow(t, mallory, "mallory's page")
+			sendStepTwo(t, mallory, answer)
+			awaitRefused(t, mallory, "mallory")
+			requireNothingApplied(t, mallory, "mallory's sync step 2 carrying a struct under "+victim.name)
+			if after := renderedBy(t, room()); after != before {
+				t.Fatalf("the room renders %q after the refused step 2, want %q as before it", after, before)
+			}
+			if clock := room().StateVector().Clock(client); clock != next {
+				t.Fatalf("the room holds alice's client to clock %d, want %d", clock, next)
+			}
+			if clock := room().StateVector().Clock(mallory.Given); clock != 0 {
+				t.Fatalf("the room holds mallory's own client to clock %d, want 0: her struct in the refused step 2 landed", clock)
+			}
+			sendTyped(t, alice, 1, "b")
+			awaitRendering(t, room, "# Title\n\nabAlice's paragraph.\n", "the room after alice's next keystroke")
+			requireConnected(t, alice, "alice")
+		})
+	}
+}
+
+// A sync step 2 that hands back what the room holds passes, whoever's structs it carries. Carol's
+// page hands back the room's whole history - a struct under the id an admission gave alice's
+// page, one under the id alice's tab of the earlier build claimed, and bob's - beside a struct of
+// her own: the first all fall at clocks the room holds, so none is judged for its id (beyondHeld),
+// and the claimed id's is compared with what the room holds there and found equal
+// (heldDuplicates, refusedDuplicates). Carol is answered applied, stays connected, and her own
+// struct lands.
+func TestASyncStep2HandingBackWhatTheRoomHoldsPasses(t *testing.T) {
+	service, artifactID, serverURL := clientIDRoom(t)
+	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
+	alice := openPage(t, serverURL, artifactID, "alice")
+	awaitAnswer(t, alice, "the document")
+	const claimed = crdt.ClientID(1_234_569_301)
+	tab := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("alice"), artifactID, crdt.New(crdt.WithClientID(claimed)))
+	awaitAnswer(t, tab, "the document")
+	bob := openPage(t, serverURL, artifactID, "bob")
+	awaitAnswer(t, bob, "the document")
+	sendTyped(t, alice, 0, "a")
+	awaitRendering(t, room, "# Title\n\naAlice's paragraph.\n", "the room holding alice's page's edit")
+	sendTyped(t, tab, 0, "c")
+	awaitHeld(t, room, []crdt.ClientID{claimed}, "the edit of alice's tab of the earlier build")
+	sendTyped(t, bob, 0, "b")
+	awaitHeld(t, room, []crdt.ClientID{bob.Given}, "bob's edit")
+	carol := openPage(t, serverURL, artifactID, "carol")
+	awaitAnswer(t, carol, "the document")
+	held := renderedBy(t, room())
+	awaitRendering(t, func() *crdt.Doc { return carol.Doc }, held, "carol's page")
+	typeAt(t, carol.Doc, 0, "C")
+	handback := crdt.EncodeStateAsUpdateV1(carol.Doc, nil)
+	for _, client := range []crdt.ClientID{alice.Given, claimed, bob.Given, carol.Given} {
+		if carol.Doc.StateVector().Clock(client) == 0 {
+			t.Fatalf("carol's page holds nothing under client %d, so the step 2 hands back less than the history", client)
+		}
+	}
+	hearFromNow(t, carol, "carol's page")
+	sendStepTwo(t, carol, handback)
+	if heard := awaitHeardStatus(t, carol, 1, "carol's page"); !strings.HasPrefix(heard[0], "SyncStatus 1") {
+		t.Fatalf("carol's step 2 handing back the room's history beside her own struct was answered %q, want applied", heard)
+	}
+	awaitRendering(t, room, "# Title\n\nC"+strings.TrimPrefix(held, "# Title\n\n"), "the room holding carol's own struct")
+	requireConnected(t, carol, "carol")
 }
 
 // Bob holds an edit of alice's the room relayed and then lost, and reconnects: his sync step 2
-// carries alice's lost structs beside his own. Alice's are cut, so the room holds none of them,
-// bob is not closed, and his own edit that builds on nothing of hers lands; his edit typed after
-// her lost text names an item the room does not hold and parks.
-func TestASyncStep2CarryingAnotherPersonsLostEditLandsTheSendersOwnAndCutsHers(t *testing.T) {
+// carries alice's lost structs beside his own, so it is refused whole and nothing of it lands -
+// neither her lost edit nor his own two. His editor then rebuilds as the dashboard does: a fresh
+// page replays each of his saved edits as an update of its own. The one that builds on nothing of
+// hers lands, and the one typed right after her lost text names an item the room does not hold,
+// so it parks and is answered not applied, until alice's browser, which kept her edit, sends it
+// again: that lands her edit and his together.
+func TestASyncStep2CarryingAnotherPersonsLostEditIsRefusedWholeAndTheRebuildReplaysTheSendersOwn(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
 	alice := openPage(t, serverURL, artifactID, "alice")
 	awaitAnswer(t, alice, "the document")
@@ -971,19 +1094,47 @@ func TestASyncStep2CarryingAnotherPersonsLostEditLandsTheSendersOwnAndCutsHers(t
 	if err := crdt.ApplyUpdateV1(bob.Doc, lost, nil); err != nil {
 		t.Fatal(err)
 	}
-	typeAt(t, bob.Doc, 0, "B") // builds on nothing of alice's lost edit
-	typeAt(t, bob.Doc, 3, "D") // typed right after alice's lost "L"
+	builtOnNothing := typeAt(t, bob.Doc, 0, "B") // builds on nothing of alice's lost edit
+	builtOnLost := typeAt(t, bob.Doc, 3, "D")    // typed right after alice's lost "L"
+	before := renderedBy(t, room())
+
+	// Bob's reconnect answers the room's sync step 1 with everything his page holds that the room
+	// lacks: alice's "L" and his "B" and "D".
 	back := reopenPage(t, serverURL, artifactID, "bob", bob.Doc)
-	awaitAnswer(t, back, "the document after bob's reconnect")
-	waitForRoomRendering(t, room, func(rendering string) bool {
-		return strings.Contains(rendering, "B")
-	}, "the room holding bob's own edit")
-	requireConnected(t, back, "bob")
-	rendering := renderedBy(t, room())
-	if strings.Contains(rendering, "L") || strings.Contains(rendering, "D") {
-		t.Fatalf("the room renders %q: alice's lost edit, or bob's edit built on it, landed", rendering)
+	awaitRefused(t, back, "bob")
+	if after := renderedBy(t, room()); after != before {
+		t.Fatalf("the room renders %q after bob's refused step 2, want %q as before it", after, before)
 	}
-	t.Logf("the room renders %q and parks %+v: bob's edit built on alice's lost one waits for it", rendering, room().PendingStats())
+	if clock := room().StateVector().Clock(bob.Doc.ClientID()); clock != 0 {
+		t.Fatalf("the room holds bob's client to clock %d after his refused step 2, want 0", clock)
+	}
+
+	// The rebuild: a fresh page under a fresh id replays bob's saved edits, one update each.
+	rebuilt := openPage(t, serverURL, artifactID, "bob")
+	awaitAnswer(t, rebuilt, "the document in bob's rebuilt page")
+	hearFromNow(t, rebuilt, "bob's rebuilt page")
+	for _, saved := range [][]byte{builtOnNothing, builtOnLost} {
+		if err := rebuilt.Write(ygsync.EncodeUpdate(saved)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	heard := awaitHeardStatus(t, rebuilt, 2, "bob's rebuilt page")
+	if !strings.HasPrefix(heard[0], "SyncStatus 1") || !strings.HasPrefix(heard[1], "SyncStatus 0") {
+		t.Fatalf("bob's replayed edits were answered %q, want the one built on nothing of alice's applied and the one after her lost text not applied", heard)
+	}
+	awaitRendering(t, room, "# Title\n\nBaAlice's paragraph.\n", "the room holding bob's edit that builds on nothing of alice's")
+	if parked := room().PendingStats(); parked.Items == 0 {
+		t.Fatalf("the room parks nothing (%+v), want bob's edit typed after alice's lost text waiting for it", parked)
+	}
+	requireConnected(t, rebuilt, "bob's rebuilt page")
+
+	// Alice's browser kept her edit, and sends it again.
+	if err := alice.Write(ygsync.EncodeUpdate(lost)); err != nil {
+		t.Fatal(err)
+	}
+	awaitRendering(t, room, "# Title\n\nBaLDAlice's paragraph.\n", "the room holding alice's resent edit and bob's typed after it")
+	requireConnected(t, alice, "alice")
+	requireConnected(t, rebuilt, "bob's rebuilt page")
 }
 
 // waitForRoomRendering waits for room's rendering to satisfy holds.

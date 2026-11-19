@@ -36,7 +36,10 @@ body: |-
       edit under a client id that is not the sender's, or an edit at clocks another person claimed
       first that differs from what the document holds there. Nothing of it is stored or relayed.
       The dashboard drops every saved edit under that id, says how many were not saved, re-reads
-      the document and takes a fresh client id with it.
+      the document and takes a fresh client id with it. A sync step 2 is refused the same way when
+      it hands back another person's edit the document does not hold; it names no saved edit, so
+      the dashboard drops none, says it has reloaded the document, and sends the person's saved
+      edits again.
     - `DOCUMENT_BUSY_CLOSE_CODE` (4503) with `DOCUMENT_BUSY_CLOSE_REASON` (`DOC_BUSY`) is
       transient: most often the memory budget over the documents Dispatch holds open is full and no
       room can be closed. The dashboard keeps the edit it could not send and retries on its own

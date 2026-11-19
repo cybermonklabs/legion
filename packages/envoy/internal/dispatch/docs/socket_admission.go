@@ -358,11 +358,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w = &clientIDWriter{ResponseWriter: w, frame: clientIDFrame(room, clients.own)}
 	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
-	// frames, to the ids the socket may announce under, and each sync step 2 it sends reaches ygo
-	// with another person's structs cut out (awareness_limit.go, stepTwoCut).
-	s.srv.ServeHTTP(&awarenessLimitWriter{
-		ResponseWriter: w, room: room, clients: clients, cut: s.stepTwoCut(ctx, room, actor, clients),
-	}, r.WithContext(ctx))
+	// frames, to the ids the socket may announce under (awareness_limit.go). Every other frame
+	// reaches ygo unread, a sync step 2 among them, which the peer update hook judges as it judges
+	// an update (judgeClients).
+	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room, clients: clients}, r.WithContext(ctx))
 }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above

@@ -99,6 +99,12 @@ export interface PendingSyncOptions {
   onChange(state: PendingState): void;
   /** Updates received from the provider must never be stored as local edits. */
   remoteOrigin: unknown;
+  /**
+   * Sends `update` to the server as an Update frame on the current socket. A restored row that
+   * builds on content neither this document nor the server holds yet parks as it is applied, and
+   * a parked update is no change the document announces, so nothing else would send it (`admit`).
+   */
+  send(update: Uint8Array): void;
   /** Opening IndexedDB must not delay constructing the provider. */
   store: Promise<PendingEdits | undefined>;
 }
@@ -140,28 +146,29 @@ function covers(
   return false;
 }
 
-/** Whether applying an update added a parked delete that the live document did not already hold. */
-function addsPendingDeletes(before: Uint8Array | null, after: Uint8Array | null): boolean {
+/** The clients of the parked deletes applying an update added that the live document did not hold. */
+function addedPendingDeletes(before: Uint8Array | null, after: Uint8Array | null): number[] {
   if (after === null) {
-    return false;
+    return [];
   }
-  if (before === null) {
-    return true;
-  }
-  const beforeDeletes = Y.decodeUpdateV2(before).ds.clients;
-  const afterDeletes = Y.decodeUpdateV2(after).ds.clients;
-  for (const [client, afterRanges] of afterDeletes) {
+  const beforeDeletes =
+    before === null
+      ? new Map<number, { clock: number; len: number }[]>()
+      : Y.decodeUpdateV2(before).ds.clients;
+  const added: number[] = [];
+  for (const [client, afterRanges] of Y.decodeUpdateV2(after).ds.clients) {
     const beforeRanges = beforeDeletes.get(client) ?? [];
-    for (const range of afterRanges) {
-      if (!covers(beforeRanges, range.clock, range.len)) {
-        return true;
-      }
+    if (afterRanges.some((range) => !covers(beforeRanges, range.clock, range.len))) {
+      added.push(client);
     }
   }
-  return false;
+  return added;
 }
 
-/** A copy of `doc` to test restored rows on, so the live document never takes a row that parks. */
+/**
+ * A copy of `doc` to test restored rows on, so the live document never takes a row typed against
+ * a history a rebuild replaced.
+ */
 function scratchOf(doc: Y.Doc): Y.Doc {
   const scratch = new Y.Doc();
   Y.applyUpdate(scratch, Y.encodeStateAsUpdate(doc));
@@ -169,23 +176,30 @@ function scratchOf(doc: Y.Doc): Y.Doc {
 }
 
 /**
- * Applies a restored row to `scratch` and says whether it parked something the scratch did not
- * already park: a missing client, or a delete of items it does not hold, which is what a row typed
- * against a history the server rebuilt since does. yjs 13.6.32 exposes parked structs and deletes
- * only through these `StructStore` internals. `encodeStateAsUpdate` carries the live document's
- * own parked structs and deletes into the scratch, so only what the row adds counts.
+ * Applies a restored row to `scratch` and answers the clients it parked on that the scratch did not
+ * already park on: a client whose content its structs build on and the scratch lacks, or whose
+ * items it deletes and the scratch does not hold. A row typed against a history the server rebuilt
+ * since parks on that history's clients; one typed after another person's edit the server never
+ * stored parks on that person's. yjs 13.6.32 exposes parked structs and deletes only through these
+ * `StructStore` internals. `encodeStateAsUpdate` carries the live document's own parked structs and
+ * deletes into the scratch, so only what the row adds counts.
  */
-function addsParking(scratch: Y.Doc, update: Uint8Array): boolean {
+function parkedClients(scratch: Y.Doc, update: Uint8Array): Set<number> {
   const beforeMissing = new Set(scratch.store.pendingStructs?.missing.keys() ?? []);
   const beforeDeletes = scratch.store.pendingDs;
 
   Y.applyUpdate(scratch, update);
 
-  const afterMissing = scratch.store.pendingStructs?.missing;
-  const addsMissingClient = [...(afterMissing?.keys() ?? [])].some(
-    (client) => !beforeMissing.has(client)
-  );
-  return addsMissingClient || addsPendingDeletes(beforeDeletes, scratch.store.pendingDs);
+  const parked = new Set<number>();
+  for (const client of scratch.store.pendingStructs?.missing.keys() ?? []) {
+    if (!beforeMissing.has(client)) {
+      parked.add(client);
+    }
+  }
+  for (const client of addedPendingDeletes(beforeDeletes, scratch.store.pendingDs)) {
+    parked.add(client);
+  }
+  return parked;
 }
 
 /**
@@ -317,7 +331,7 @@ function changesNothing(doc: Y.Doc, updates: readonly Uint8Array[]): boolean {
   const scratch = scratchOf(doc);
   const before = readable(scratch);
   return (
-    updates.every((update) => !addsParking(scratch, update)) &&
+    updates.every((update) => parkedClients(scratch, update).size === 0) &&
     [...scratch.share.keys()].every((name) => name === FRAGMENT_NAME || name === MARKS_MAP_NAME) &&
     readable(scratch) === before
   );
@@ -368,6 +382,7 @@ export function startPendingSync({
   doc,
   onChange,
   remoteOrigin,
+  send,
   store,
 }: PendingSyncOptions): PendingSync {
   let destroyed = false;
@@ -727,6 +742,10 @@ export function startPendingSync({
       // only after a row it refused, whose parked structs would otherwise hide the next stale
       // row from the same lost history. One document encode, plus one per refused row.
       let scratch = scratchOf(doc);
+      // The clients whose content marks a row as typed against a history a rebuild replaced: the
+      // ones the rebuilt document lists as retired, which the room refuses for good, and the
+      // clients of each row this restore drops as such, whose later rows continue its clock.
+      const replaced = new Set(retiredClients(doc).keys());
       const handled: PendingKey[] = [];
       const rerecorded: Promise<void>[] = [];
       for (const row of restored) {
@@ -742,9 +761,29 @@ export function startPendingSync({
           break;
         }
         handled.push(row.key);
-        if (addsParking(scratch, row.update)) {
+        const parked = parkedClients(scratch, row.update);
+        if ([...parked].some((client) => replaced.has(client))) {
           rebuiltAt = Math.min(rebuiltAt ?? row.at, row.at);
+          for (const client of Y.parseUpdateMeta(row.update).from.keys()) {
+            replaced.add(client);
+          }
           scratch = scratchOf(doc);
+          continue;
+        }
+        if (parked.size > 0) {
+          // The row builds on content neither this document nor the server holds yet, and no
+          // rebuild retired: another person's edit the room relayed to this browser and then lost
+          // before its store, which that person's browser kept and sends again. It parks here as
+          // it does on the scratch, and on the server, which answers it not applied and holds it
+          // until that edit lands. A parked update changes nothing the document announces, so the
+          // live document takes it as the server's own, which neither this listener records nor
+          // the provider sends, and it is recorded again and sent here instead. Its row clears once
+          // an applied answer covers it: the SyncStep2 that answers the resync the room sends once
+          // it has stored what the row waited on.
+          Y.applyUpdate(doc, row.update, remoteOrigin);
+          nextOrdinal += 1;
+          rerecorded.push(record(row.update, nextOrdinal).written);
+          send(row.update);
           continue;
         }
         const before = recorded.length;
