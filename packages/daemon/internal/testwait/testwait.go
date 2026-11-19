@@ -15,29 +15,59 @@ import (
 )
 
 // Cleanup is the part of the test binary's deadline a call bounded by Answered leaves for what
-// the test does after it gives up: its own failure, its t.Cleanup functions (a rollback, a pool's
-// close, a database's drop, a container's removal) and the report, so a call that never answers
-// fails the test, naming the call, while the test still has that long to clean up. A database's
-// drop forces a checkpoint, which on a host whose disk is busy took more than 10 s, so the
-// allowance is 30 s; the envoy module's copy says where that was measured. A cleanup slower than
-// that still ends in the binary's panic, after the failure has named the call.
-const Cleanup = 30 * time.Second
+// the test does after the call gives up: its own failure, its t.Cleanup functions (a rollback, a
+// pool's close, a database's drop, a container's removal) and the report, so a call that never
+// answers fails the test naming the call, and the test still cleans up before the binary's own
+// deadline ends it in a panic. It is a reserve, not a timeout: it decides only whether a test that
+// already failed names its call or panics. It is the slowest step of that cleanup measured, a
+// database's drop, 77.243 s on the dev box (2026-11-19 19:33Z, load average about 600), times
+// 1.15; the envoy module's copy of this package gives the measurement and why a CI runner's could
+// not be read. Each module keeps its own copy of this package.
+const Cleanup = 88829 * time.Millisecond
+
+// remaining is what the test binary's deadline leaves t's call after Cleanup, and whether t has a
+// deadline. When the deadline leaves the call nothing, it fails t by name, the deadline, the reserve
+// and the shortfall, so a test whose `-timeout` is too short for the reserve fails in its setup
+// rather than handing its call a deadline that has already passed.
+func remaining(t testing.TB) (time.Time, time.Duration, bool) {
+	deadlined, ok := t.(interface{ Deadline() (time.Time, bool) })
+	if !ok {
+		return time.Time{}, 0, false
+	}
+	deadline, set := deadlined.Deadline()
+	if !set {
+		return time.Time{}, 0, false
+	}
+	left := time.Until(deadline) - Cleanup
+	if left <= 0 {
+		t.Helper()
+		t.Fatalf("testwait: the test binary's deadline, %s, is %s away, which leaves its call no time after the %s testwait.Cleanup keeps for the test's cleanup: %s short; run the test with a -timeout at least that much longer",
+			deadline.Format(time.RFC3339), time.Until(deadline).Round(time.Millisecond), Cleanup, (-left).Round(time.Millisecond))
+	}
+	return deadline, left, true
+}
 
 // Answered is parent with the deadline a test gives a call it only needs answered — a query, a
 // connection, a transaction's begin, a lock it takes to set a scene — whose timing the test does
 // not test: what the test binary's own deadline leaves, less Cleanup. No literal bounds it, so a
 // loaded machine on which the call is slow but answers passes, and a call that never answers still
 // fails, at the test's deadline, naming the call. With no test deadline (`go test -timeout 0`)
-// the call has none but parent's. A call whose bound is the test's own subject (a lock wait the
-// test expects refused, a latency it claims) keeps its bound instead. The envoy module's testwait
-// holds the same function: each module keeps its own copy of this package.
+// the call has none but parent's. A deadline that leaves the call nothing after Cleanup fails the
+// test by name (remaining); the context it then answers is already cancelled, for a TB whose Fatalf
+// returns. A call whose bound is the test's own subject (a lock wait the test expects refused, a
+// latency it claims) keeps its bound instead.
 func Answered(t testing.TB, parent context.Context) (context.Context, context.CancelFunc) {
-	if deadlined, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
-		if deadline, set := deadlined.Deadline(); set {
-			return context.WithDeadline(parent, deadline.Add(-Cleanup))
-		}
+	t.Helper()
+	deadline, left, set := remaining(t)
+	if !set {
+		return context.WithCancel(parent)
 	}
-	return context.WithCancel(parent)
+	if left <= 0 {
+		ctx, cancel := context.WithCancel(parent)
+		cancel()
+		return ctx, cancel
+	}
+	return context.WithDeadline(parent, deadline.Add(-Cleanup))
 }
 
 // Poll is how often a condition is asked. It is short enough that a test which passes in
