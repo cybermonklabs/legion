@@ -26,17 +26,21 @@ import (
 // apart from the cluster half, so the network, its peering and the project lookup hang on no
 // cluster: the cluster half takes the network, never the other way round.
 type dispatchNetwork struct {
-	// network is the VPC the cluster's nodes and the database's private IP are on, and subnetwork
-	// the range in region the component's own cluster takes its nodes' and pods' addresses from.
+	// network is the VPC the cluster's nodes are on, the component's own cluster's or the one
+	// existingCluster names (newDispatchExistingCluster refuses a cluster on another network), and
+	// the component's own Cloud SQL instance takes its private IP on; subnetwork is the range in
+	// region the component's own cluster takes its nodes' and pods' addresses from.
 	// With regionalNetwork false the network half registers no subnetwork and subnetwork is nil:
 	// the resolvers allow that only beside existingCluster, where the component makes no cluster.
 	network    *compute.Network
 	subnetwork *compute.Subnetwork
-	// connection is the private services peering the Cloud SQL instance takes its private IP
-	// through. clusterOnly builds no database, so it registers no peering and connection is nil.
+	// connection is the private services peering the component's own Cloud SQL instance takes its
+	// private IP through. It registers beside existingDatabaseInstance too, unchanged, so naming an
+	// instance the component does not make removes no peering. clusterOnly builds no database, so
+	// it registers no peering and connection is nil.
 	connection *servicenetworking.Connection
-	// project is the project whose number and id name the principal, the Workload Identity pool
-	// and the issuer.
+	// project is the project whose number and id name the principal and the issuer, and whose id
+	// names the Workload Identity pool of the component's own cluster.
 	project organizations.LookupProjectResultOutput
 }
 
@@ -45,7 +49,9 @@ type dispatchNetwork struct {
 // resources a child that reaches the cluster waits for, and what the component's Kubernetes
 // provider identifies the cluster by. The cluster is the component's own (newDispatchCluster) or
 // the one existingCluster names (newDispatchExistingCluster). Both modes build the cluster half,
-// so every field here is set in either mode, clusterIdentifier aside.
+// clusterOnly always on the component's own cluster, so every field here is set in either mode,
+// but waitFor, which holds nothing for a cluster existingCluster names, and clusterIdentifier,
+// which is nil for the component's own.
 type dispatchCluster struct {
 	// name is the cluster's name, which the component exports as clusterName.
 	name pulumi.StringOutput
@@ -70,9 +76,10 @@ type dispatchCluster struct {
 	clusterIdentifier pulumi.StringPtrInput
 }
 
-// dispatchDatabase is what the component's database resources give the rest of it: the Cloud SQL
-// instance the proxy connects to, the generated secrets, and the pods' principal with the grants
-// it holds. clusterOnly registers none of them, so that mode builds no dispatchDatabase at all.
+// dispatchDatabase is what the database half gives the rest of the component: the Cloud SQL
+// instance the proxy connects to, the component's own or the one existingDatabaseInstance names,
+// the generated secrets, and the pods' principal with the grants it holds. clusterOnly registers
+// none of them, so that mode builds no dispatchDatabase at all.
 type dispatchDatabase struct {
 	// connectionName is the Cloud SQL instance's connection name, <project>:<region>:<instance>,
 	// which the app pod's cloud-sql-proxy sidecar connects to and the component exports as
@@ -121,11 +128,13 @@ func providerFor(ctx context.Context, pkg string, opts ...pulumi.ResourceOption)
 // is false, its subnetwork and the router and Cloud NAT that private nodes reach the internet
 // through, Subnetwork, Router and RouterNat <hostname>; and, outside clusterOnly, which builds no
 // database, the private services range and its peering, GlobalAddress and Connection
-// <hostname>-services, through which the Cloud SQL instance takes its private IP. The Network, the
-// GlobalAddress and the Connection register identically whatever regionalNetwork says, so turning
-// it false deletes the regional three alone. It also looks the project up through the gcp
-// provider. The cluster half takes the network and the subnetwork from it, and the database half
-// the network, the connection and the project.
+// <hostname>-services, through which the component's own Cloud SQL instance takes its private IP.
+// Each registers identically whether the component makes its cluster and its instance or runs on
+// the ones existingCluster and existingDatabaseInstance name, and the Network, the GlobalAddress
+// and the Connection whatever regionalNetwork says too, so turning it false deletes the regional
+// three alone. It also looks the project up through the gcp provider. The cluster half takes the
+// network and the subnetwork from it, and the database half the network, the connection and the
+// project.
 func newDispatchNetwork(ctx *pulumi.Context, comp *Dispatch, s dispatchSettings, opts ...pulumi.ResourceOption) (*dispatchNetwork, error) {
 	gcpProvider, err := providerFor(ctx.Context(), "gcp", opts...)
 	if err != nil {
@@ -326,9 +335,11 @@ func newDispatchExistingCluster(name string, vpc *dispatchNetwork, cluster *disp
 	}
 }
 
-// dispatchKubeconfig renders the cluster's exec-plugin kubeconfig, which the component exports and
-// its Kubernetes provider takes. The cluster half computes it, so a cluster-only component, which
-// registers no Kubernetes provider and no Kubernetes object, still exports it.
+// dispatchKubeconfig renders the exec-plugin kubeconfig of the component's own cluster, which the
+// component exports and its Kubernetes provider takes; newDispatchExistingCluster renders the one
+// of a cluster existingCluster names from the lookup instead. The cluster half computes it, so a
+// cluster-only component, which registers no Kubernetes provider and no Kubernetes object, still
+// exports it.
 func dispatchKubeconfig(dispatch string, cluster *container.Cluster) pulumi.StringOutput {
 	return pulumi.All(cluster.Endpoint, cluster.MasterAuth.ClusterCaCertificate(), cluster.Name).ApplyT(func(values []interface{}) (string, error) {
 		parts, err := outputStrings(dispatch, values, "the cluster's endpoint", "the cluster's CA certificate", "the cluster's name")
@@ -445,13 +456,14 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	// The principal lives in the cluster's Workload Identity pool, which Google creates with the
 	// cluster. It is built from the pool the cluster half reports, the cluster's own
 	// WorkloadIdentityConfig, so it resolves only once the pool exists, and the component's own
-	// seed grant below, built from it, waits for the cluster half's resources, the cluster: IAM may
-	// refuse a member of a pool that does not exist yet (unproven: the plan's hardening ledger). A
-	// consumer's grant taken from the `principal` output would resolve later still, once every
-	// child has registered, the app Deployment's readiness wait included, and that wait needs
-	// roles/cloudsql.client already granted, so the consumer grants that role from the principal's
-	// known form, not from the output; whether IAM accepts it before the pool exists is the same
-	// unproven question.
+	// seed grant below, built from it, waits for the cluster half's resources: the component's own
+	// Cluster, since IAM may refuse a member of a pool that does not exist yet (unproven: the
+	// plan's hardening ledger), and nothing for a cluster existingCluster names, whose pool exists
+	// before the component runs. A consumer's grant taken from the `principal` output would
+	// resolve later still, once every child has registered, the app Deployment's readiness wait
+	// included, and that wait needs roles/cloudsql.client already granted, so the consumer grants
+	// that role from the principal's known form, not from the output; whether IAM accepts it
+	// before the pool exists is the same unproven question.
 	principal := pulumi.All(project.Number(), cloud.pool).ApplyT(func(values []interface{}) (string, error) {
 		parts, err := outputStrings(dispatch, values, "the project's number", "the cluster's Workload Identity pool")
 		if err != nil {

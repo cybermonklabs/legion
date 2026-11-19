@@ -10,7 +10,6 @@ import (
 
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
-	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 )
 
 // dispatchResourceName is one registration of the component's, by its type and name.
@@ -66,25 +65,13 @@ func dispatchNoRegionalNetworkGolden(t *testing.T) string {
 	return kept.String()
 }
 
-// requireSameRegistration holds the registration of typ named name in got to the one in want: the
-// same inputs, parent, provider and dependencies, so the engine has nothing to change in it
-// between a run of want's arguments and one of got's.
-func requireSameRegistration(t *testing.T, want, got *pulumitest.Mocks, typ, name string) {
-	t.Helper()
-	before, after := want.Named(t, typ, name), got.Named(t, typ, name)
-	require.Equal(t, before.Inputs, after.Inputs, "%s %s's inputs", typ, name)
-	require.Equal(t, before.RPC.GetParent(), after.RPC.GetParent(), "%s %s's parent", typ, name)
-	require.Equal(t, before.RPC.GetProvider(), after.RPC.GetProvider(), "%s %s's provider", typ, name)
-	require.ElementsMatch(t, before.RPC.GetDependencies(), after.RPC.GetDependencies(), "%s %s's dependencies", typ, name)
-}
-
 // With existingCluster and regionalNetwork false the component registers exactly what the default
 // inputs register, less its own Cluster and the regional part of its network: no Subnetwork,
 // Router or RouterNat registers. The comparison is of the whole registration set, so any of the
 // three, or any resource the default does not register, is a line it does not hold. The Network,
-// the GlobalAddress and the Connection register with the inputs, parent, provider and dependencies
-// they have beside existingCluster with regionalNetwork unset, so the Cloud SQL instance keeps its
-// private address while the region empties.
+// the GlobalAddress and the Connection register as they do beside existingCluster with
+// regionalNetwork unset, each a same step from that run to this one (dispatchPlanBetween), so the
+// Cloud SQL instance keeps its private address while the region empties.
 func TestDispatchRegionalNetworkFalseRegistersNoRegionalNetwork(t *testing.T) {
 	m, err := runDispatch(t, existingClusterRegionalNetworkArgs(false), true)
 	require.NoError(t, err)
@@ -92,23 +79,28 @@ func TestDispatchRegionalNetworkFalseRegistersNoRegionalNetwork(t *testing.T) {
 
 	unset, err := runDispatch(t, existingClusterArgs(), true)
 	require.NoError(t, err)
+	same := map[dispatchResourceName]string{}
 	for _, r := range dispatchNetworkKept {
-		requireSameRegistration(t, unset, m, r.typ, r.name)
+		same[r] = stepSame
 	}
+	requireDispatchPlan(t, dispatchPlanBetween(t, unset, m), same)
 }
 
 // regionalNetwork true is its value when unset, so beside existingCluster it registers exactly what
 // existingCluster with the input unset registers: the same registration set, and the network half,
-// the regional part with the rest, with the same inputs, parent, provider and dependencies.
+// the regional part with the rest, registered as it is there, each resource a same step from that
+// run to this one (dispatchPlanBetween).
 func TestDispatchRegionalNetworkTrueRegistersWhatUnsetDoes(t *testing.T) {
 	unset, err := runDispatch(t, existingClusterArgs(), true)
 	require.NoError(t, err)
 	m, err := runDispatch(t, existingClusterRegionalNetworkArgs(true), true)
 	require.NoError(t, err)
 	require.Equal(t, dispatchRegistrations(unset), dispatchRegistrations(m))
+	same := map[dispatchResourceName]string{}
 	for _, r := range slices.Concat(dispatchNetworkKept, dispatchNetworkRegional) {
-		requireSameRegistration(t, unset, m, r.typ, r.name)
+		same[r] = stepSame
 	}
+	requireDispatchPlan(t, dispatchPlanBetween(t, unset, m), same)
 }
 
 // regionalNetwork false without existingCluster would leave the component's own cluster no
