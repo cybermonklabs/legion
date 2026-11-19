@@ -1914,8 +1914,8 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 // undelivered on these events alone:
 //
 //  1. a pod release of the issue recorded after that stop (store.StoppedByAPause);
-//  2. a takeover suspension: the claim suspended by any source but the release, an operator's or
-//     the daemon's among them;
+//  2. a takeover suspension: the claim suspended by any source but the release, an operator's,
+//     the daemon's and a root's own exit among them;
 //  3. a failure;
 //  4. a retirement;
 //  5. the issue leaving the workflow, a lingering tree included: a released claim is owed only
@@ -1923,9 +1923,11 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 //     reads it (workflow.wakeReleased).
 //
 // Events 2 to 4 leave the claim gone (supervise.Claim.Gone) and not released; every claim not
-// gone, launch_uncertain among them, is on its way back or live. A later pause's stop of the role
-// changes nothing, whether it is open, cancelled or ended any other way. A claim this daemon does
-// not supervise has the zero view, whose issue is empty, and answers 0.
+// gone, launch_uncertain among them, is on its way back or live. A later stop of the role that is
+// still open, or that ended cancelled, taken over or failed, changes nothing; a later stop that
+// ended `stopped` carries the debt itself, under its own pause and with its own pod-release
+// comparison. A claim this daemon does not supervise has the zero view, whose issue is empty, and
+// answers 0.
 func (r *outbox) heldMessageOwed(ctx context.Context, row record.OutboxRow, view supervise.ClaimView) (int64, error) {
 	if row.HeldByPause == 0 || view.Issue == "" {
 		return 0, nil
