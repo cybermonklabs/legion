@@ -42,7 +42,9 @@ import (
 // that put it first, or the urgent rule for a process ended beside the first at a reading at or
 // above the urgent share, one that grew over the window or, where the decision holds a process that
 // is not new to the stay, one new to it with memory of its own, which at the reading at the mark
-// the read-on after the first kill can read (ruleUrgent, spec versions 39, 41, 42 and 43), and
+// the read-on after the first kill can read (ruleUrgent, spec versions 39, 41, 42 and 43), or,
+// at such a reading after a kill, one the guard read at the reading before that grew since that
+// kill, which the reads again before the full read end (endKnown, spec version 43), and
 // sizes where the sizes the guard chose it by came from: the decision's for each kill of the
 // reading. Its less_parent, after sizes, is how much of its size its rank did not count
 // (INFRA-3531 R1 of spec version 33): for a fork that runs its parent's executable with its
@@ -92,12 +94,15 @@ const (
 // reading the guard would end a process at, the processes it may end hold less than the floor
 // between them, or there are none. It is given up with reasonNotFallen where the wait after a
 // kill has passed with the reading not below the reading at the kill, and either no process the
-// guard may end has grown since that kill (grownSinceKill) or they hold less than the floor:
-// the guard goes on after a kill that lowered nothing only while one of them has grown since it
-// (INFRA-3531 R1 of spec version 25), so below the urgent share a rise that is a protected
-// process's own, which no kill of the guard's lowers, ends at most one process before this reason;
-// at or above it, in a stay with history, the urgent rule can end beside that one each process new
-// to the stay with memory of its own (spec version 43).
+// guard may end has grown since that kill (grownSinceKill) and, at a reading at or above the urgent
+// share in a stay with history, none is new to the stay with memory of its own (urgentNew), or
+// they hold less than the floor: the guard goes on after a kill that lowered nothing only while
+// one of them has grown since it (INFRA-3531 R1 of spec version 25) or, at such a reading, one is
+// new to the stay with memory of its own, which the urgent rule ends (spec version 43,
+// verification version 36). So below the urgent share a rise that is a protected process's own,
+// which no kill of the guard's lowers, ends at most one process before this reason; at or above
+// it, in a stay with history, it can also end each process new to the stay with memory of its own,
+// at the reading of that kill or at a later reading of the wait at or above that share.
 const (
 	reasonNotFallen    = "not fallen"
 	reasonNothingToEnd = "nothing to end"
@@ -120,6 +125,10 @@ const (
 // rule, whichever of the two groups it is of (endUrgent, INFRA-3531 R1 of spec versions 39, 41 and
 // 42; `4g-latepool-4tpqx`), and, at the reading at the mark, those the read-on after the first
 // kill reads up to one interval from the reading (readOn, spec version 43; `4g-t4latepool-r3`).
+// At such a reading after a kill the guard also ends by this rule, as it reads them again before
+// the full read, the processes it read at the reading before that grew since that kill, but the
+// first of its kills, whose line names its own tier (endKnown, spec version 43; the tester's run
+// r17 at 41d4f45b).
 // Where every process is new to the stay, it ends the window's growers alone beside the first.
 // ruleKernel is a process the guest kernel killed (Guest), which the kernel chose by rules of its
 // own.
@@ -137,7 +146,9 @@ const (
 // and the smaps of held processes read again at that reading (rereadHeld); sizesSearch, those and
 // the smaps of processes started since the band's last reading that the reading at the mark found
 // (startedSince); sizesReading, the assessment of the reading the kill is sent at (act), as every
-// kill after a kill of the rise and every first kill the band's reads cannot decide has.
+// kill after a kill of the rise and every first kill the band's reads cannot decide has; at an
+// urgent reading of the wait the smaps the guard reads again before the full read are among them,
+// since that reading's assessment takes them (endKnown).
 // sizesKernel is a process the guest kernel killed, by sizes of its own.
 const (
 	sizesBand    = "band"

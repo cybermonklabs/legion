@@ -88,11 +88,12 @@ It carries:
   The launcher installs it once per launcher process, before any role starts:
   it unpacks the check into a staging directory, records the tag there, runs the check once with `--help` to see that it names its own shapes, and renames the result over `/legion/scratch/leak-check/` (`checkInstall`, `internal/launcher/leakcheck.go`).
   Every role is told that copy as `PUBLIC_LEAK_CHECK` (`mainEnvironment`, `internal/runtime/sandbox/manifest.go`, which names the install's own constant).
-  Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent or records another tag (`spawnOnce`, `internal/shim/shim.go`).
+  Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent, records another tag or its tag file is refused (`spawnOnce`, `internal/shim/shim.go`).
   Where the environment names no check, the shim names the install for everything it starts.
   The pod holds no credential for that repository and reads no repository mapping.
   A launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
   A new launcher process installs over what the directory held, so the controller's persistent volume never keeps an old check.
+  The tag file is read without following a link or waiting on a fifo, and one that is no regular file or is past 256 bytes is read as no install of the pin (`installedTag`).
   A start whose check could not be installed is never sent, and is charged as a launch failure.
   The claim then carries the refusal's sentence as `leakCheckCause`, which begins `the shared public leak check could not be installed:` and says what failed.
   The daemon and the image pins move together, and a rollback of one is a rollback of the other:
@@ -1163,6 +1164,10 @@ A save the database refuses is logged and tried again at the next save, and the 
 A resume looks the transcript's row up first, so the recreated-workspace notice below is decided from its last save.
 Then the launcher writes each row to its path, but only where the file is missing or holds part of the row:
 a longer file, which a relaunch into the same pod leaves, is not shortened.
+The launcher reads a file there only as a regular file, and no further than one byte past its row, which is all that decision needs;
+it opens a file it saves, and writes the marker below, the same way.
+So a link, a fifo or anything else that is no regular file at one of those paths is refused at once in words naming it:
+a resume over it fails, and a save is tried again at the next save.
 Then Claude Code starts.
 On a fresh session the launcher writes `<transcript>.legion-saved` beside the transcript once its first save has committed, and the claim boot of claude-envoy waits for that file as well as the transcript before it registers the session.
 A transcript the daemon has recorded is then always in the table: otherwise the next pod's resume would be refused, and three refusals retire the claim.
@@ -2210,7 +2215,7 @@ A Dispatch without the route answers `404 NOT_FOUND` "no route for …", and the
 While it waits, each issue's row logs `outbox row waits` and no ERROR line: INFO at its first run, DEBUG after, and from its seventh retry, about two minutes after the first run, one WARN line at each run.
 That WARN line means a fault only once the Dispatch release that has the route is live: then the daemon reaches a Dispatch that does not serve the route.
 The daemon retries a `5xx` as a failure, with one ERROR line `outbox row failed` at each run.
-A refusal no retry changes ends the row (`stepRecordRefused` in `internal/daemon/outbox.go`): `404 ISSUE_NOT_FOUND`, a coded `400` such as `STEP_INPUT`, `403 STEP_WRITER` and `409 STEP_OTHER_ISSUE`; the record keeps what reached Dispatch before it.
+A refusal no retry changes ends the row (`recordRefused` in `internal/daemon/outbox.go`): `404 ISSUE_NOT_FOUND`, a coded `400` such as `STEP_INPUT`, `403 STEP_WRITER` and `409 STEP_OTHER_ISSUE`; the record keeps what reached Dispatch before it.
 
 The rollback needs no statement for the kind's rows: they stay in the outbox.
 An earlier release puts the kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and a row left in place holds back no other row.
@@ -2254,6 +2259,39 @@ The block above witnesses every project's issues with a row in `step_starts`, an
 A daemon left on this release while another rolls back would read the other project's witnesses as its own: it would end a run of its own that started after the rollback at the moment of that rollback, before its own start, and a later end would land on an earlier record's id.
 No statement can scope the roll forward to one project, since the database records each migration once.
 Roll back and roll forward every daemon of one database in the same change, and run the block above only when all of them are stopped.
+
+#### Rolling back the release that rates each plan
+
+This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
+That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so it writes the list last on any database.
+A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts.
+This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
+That migration changes no column.
+The daemon and Dispatch deploy in either order: a Dispatch without the plan route or the rating route answers `404 NOT_FOUND` "no route for …", and the row waits as a role holders' publication does ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)), logging `outbox row waits` and no ERROR line, until Dispatch has the route.
+
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
+
+```sql
+-- The writes of the runs' plans and of the retros' ratings onto Dispatch, of one project.
+delete from outbox where kind = 'plan_record' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'step_record' and payload->>'rating' is not null
+  and split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+The header of `20261117023932_outbox_kinds_with_the_plan_record.up.sql` carries this same block.
+
+**Each project rolls back on its own.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the outbox is one table for all of them, but each daemon runs only its own project's rows (`DueRows` in `record/store.go`).
+So one project can roll back while another stays on this release, and each delete names the project: a daemon left on this release still sends its own plans and ratings.
+
+Each deleted row is a write the daemon does not send again; the rollback deletes no node of Dispatch.
+A deleted `plan_record` row whose plan had not reached Dispatch leaves that run with no plan: the read of the project's finished issues then shows the plan of the highest generation Dispatch holds for the issue, whether that run came before the deleted one or after it (`madePlan.newerThan` in `workflowstore/read.go`), and no plan where Dispatch holds none.
+A deleted rating row whose rating had not reached Dispatch leaves that retro's record with no rating, and nothing else of the issue changes.
+A row can stand after its write reached Dispatch, when the daemon stopped, or failed to record the row as done, after the write (it runs such a row again when its lease expires, `settle` in `daemon/outbox.go`); that plan or rating stays in Dispatch.
+An earlier release puts `plan_record` in no outbox lane (`laneKinds` in `record/outbox.go`), so a `plan_record` row left in place is never decoded or run, and it writes its plan at the roll forward.
+A rating row left in place is not harmless in the same way: the release that records each step decodes a `step_record` row strictly and knows no `rating`, so it fails that row's decode at every attempt, logs the failure each time and retries it on its backoff until the roll forward.
+
+The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
 #### Rolling back the release whose update round ends at its bound
 
@@ -2403,9 +2441,10 @@ The same log names each pod running as a ServiceAccount other than `runtime.kube
 — `sandbox runtime: <sandbox> runs as ServiceAccount <account>, the configured ServiceAccount is
 <account>; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does` (`accountDrift`, warned by the same function)
 — one warning per Sandbox per kind of drift, so a pod holding both is named twice.
-A pod runs as the account it was created with for its whole life, so changing `service_account` reaches a running pod only by replacing it, and which replacement that is follows the pod's kind (`accountDrift` in `relaunch.go`, `roundCovers` in `drift.go`):
+A pod runs as the account it was created with for its whole life, so changing `service_account` reaches a running pod only by replacing it, and which replacement that is follows the pod's kind (`accountDrift` in `sandbox.go`, read by `relaunch` in `relaunch.go`, `roundCovers` in `drift.go`):
 a pod an update round covers — every issue pod — is replaced by that round, which asks every role in it to push its work and ends the pod once every role has answered or at the round's bound, and a pod no round covers — the project controller's — by the next launch of any of its roles, which interrupts the roles live in it once: they end with the pod and resume in the new one, as a moved worker stream already makes them (below).
 Its agents hold the old account's identity until then.
+Under the secrets broker, `BROKER_SESSION_ACCOUNT_PAIRS` has to be live on the broker before the change, pairing the old account with the new, or the broker refuses each live role's session name to its pod on the new account (`403 SESSION_HELD`) and the role's grants, pending requests and withheld secrets stay behind (the item on moving the daemon's pods in [Operator configuration](#operator-configuration)).
 For the account, the pod's kind decides, not the exemption a stale-plugin install has for the pod's shape (below): such a launch keeps a pod a round covers for the account as for every other drift, and replaces a pod no round covers for the account whatever it is installing, since no round will ever come for such a pod.
 The daemon-launched controller's pod is in scope for both warnings, and for the account's replacement, which happens only when the controller's process is being started anyway.
 An unset `service_account` is read as the namespace's `default` on both sides, so a pod running as `default` under a deployment that names none has not drifted at all.
@@ -2754,7 +2793,8 @@ Neither has cybermonklabs/legion#3983, which landed after it at the same contrac
 Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
 Contract 123, cybermonklabs/legion#3793, has no section of its own here either: the header of its migration, `20261113090512_phase_entry_moved_back.up.sql`, gives its steps, which are none at the rollback and one statement, `update phases set entry_moved_back = true;`, before a roll-forward across it.
 To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
-A rollback of the release that records each step to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), whose way back runs first: its witness reads `phases.entry`, which the phase entry's block, the eleven statements of the rollback to contract 87 below, drops.
+A rollback of the release that rates each plan to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan).
+A rollback of the release that records each step to any release before it also takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), whose way back runs first: its witness reads `phases.entry`, which the phase entry's block, the eleven statements of the rollback to contract 87 below, drops.
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
@@ -2879,6 +2919,7 @@ The migrations recorded above this one are these.
 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and `pending_task_deliveries.round_named`, and appends the review round's two sentences to each task a reviewer's row stores in `phases.entry_task`, one of the six, building nothing on it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the two columns again at their defaults and, after this block's own roll-forward fills the tasks afresh, appends the sentences to them.
 20261117000528_outbox_kinds_with_the_step_record writes the outbox's kind check again with `step_record` added to the role-holders publication's list and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
 20261117004117_step_starts adds the tables `step_starts` and `step_starts_rollback` and the function `step_run_witness`, which reads `phases.entry` and writes none of the six, so the block holds over it and leaves the three standing, which the earlier release names in no statement; the way back of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), runs before the block, while `phases.entry` stands.
+20261117023932_outbox_kinds_with_the_plan_record writes the outbox's kind check again with `plan_record` added to the step record's list and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan).
 20261117064152_step_starts_roll_forward writes `step_starts`, `step_starts_rollback` and the `step_record` rows it adds to `outbox`, reads `phases.entry` through `step_run_witness` and writes none of the six, so the block holds over it, and the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), re-arm it for the roll forward.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
@@ -3027,6 +3068,8 @@ Its other calls get the same sentence — a claim route answers `{"error": …}`
 the operator's own controller instead gets `…: run legion controller start from the release built with this daemon`, since there is no pod for the daemon to relaunch it in.
 A claim whose launch installs no plugin (a Claude Code role in a pod) is never refused on its contract: nothing relaunches it, so it is served on its old contract until the update round over its pod brings a new image.
 Every other undecodable request body is logged `api: refused an undecodable request body` naming the route and the decoder's error.
+A string anywhere in a request body, a member's name or its value, that holds a NUL character (U+0000), which PostgreSQL's text and jsonb cannot hold, makes the body undecodable too:
+its route acts on nothing in it, and it is answered 400 `invalid request body: <place> holds a NUL character (U+0000) at character <n>, which the daemon cannot store` (or a stale caller's refusal, as any undecodable body is), naming the string's place in the body (`planReason`, `tasks[0].text`) and the character's place in the string, counted from 1 in code points, and never the string itself.
 A relaunched process that registers still on the old contract is charged as a launch failure (the claim remembers `PluginRelaunchFor`), ending, like any other exhausted budget, in a `worker-died`.
 The contract shows on every claim view — `GET /legion/v1/state`, `legion state --json`, `read_record`'s `pluginContract` field
 — on `legion claims list`'s line, whose last three columns are the claim's `updateRound`, the `updateHead` its worker reported (`-` for neither) and the tool call its agent is in (`-` for none), and on the state's controller locator.
@@ -3820,7 +3863,7 @@ The loader refuses it in every deployment, one that runs only gVisor pods and se
 `runtime.kubernetes.pod.volumes[<i>].name workload-identity-token is a volume Legion puts in every pod`, where `<i>` is the volume's place in the list, from 0 (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
 A daemon of that release does not start on a file it refuses, so run that release's `legion config check` on the file before the rollout.
 Where the check refuses the name, give that volume another name, in `volumes` and in each `volume_mounts` entry whose `volume` names it.
-The release that runs the controller's pod in the project's sandbox, daemon API contract 171 (the entry for `dispatch://INFRA-4567`), refuses one mount path that the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at or under `/var/run/legion/workload-identity`.
+The release that runs the controller's pod in the project's sandbox, the one with the entry for `dispatch://INFRA-4567` ("Rolling back", below), refuses one mount path that the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at or under `/var/run/legion/workload-identity`.
 The path is now the daemon's own, where a microVM controller pod mounts the metadata endpoint's token (`ControllerWorkloadIdentityDir`, `names.go`).
 The loader reserves it in every deployment, one that runs only gVisor pods included (`legionMountPaths`, `manifest.go`), and refuses such a mount at boot:
 `runtime.kubernetes.pod.volume_mounts[<i>].mount_path <path> overlaps /var/run/legion/workload-identity, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's`, where `<i>` is the mount's place in the list, from 0, and `<path>` is its `mount_path` (`CheckPod`, `operatorpod.go`).
@@ -5023,8 +5066,8 @@ the daemon asks its `/healthz` first, whose `streams` counts the tars it is send
 stream` and leaves the pod to a later sweep, because the replacement would end every one of those tars, failing each fetch reading one and making its issue pod again.
 A cache of an earlier release answers no `streams`, and one whose `/healthz` cannot be read is replaced at once, as before.
 A launch whose cache cannot be made fails, naming why.
-The cache of a repository the mapping no longer names is annotated `legion.dev/cache-unmapped-at` at the sweep that finds it so, kept for `runtime.kubernetes.repository_cache.retain_hours` (168 by default), and then deleted with its volume and Secret;
-mapped again before that, it loses the annotation and stays.
+The cache of a repository that neither the mapping nor a live issue record of the project names any more is annotated `legion.dev/cache-unmapped-at` at the sweep that finds it so, kept for `runtime.kubernetes.repository_cache.retain_hours` (168 by default), and then deleted with its volume and Secret (`Options.Mapped`, `internal/runtime/sandbox/types.go`, which the daemon fills from the mapping and the live records, `refreshCacheRepositories`);
+named again before that, by the mapping or by a record, it loses the annotation and stays.
 A cache the sweep cannot make or repair — its owner's token cannot be minted, say — is a warning naming it, tried again at the next sweep.
 The boot census refuses a Sandbox labelled `legion.dev/cache` that is not one this runtime builds (no repository annotation, or another container or claim template), by name.
 
@@ -5919,6 +5962,7 @@ One read of the counter took about 18 ms at the median in a running INFRA issue 
 In the band below the mark, at or above the mark and after a kill it also lists the container's processes and reads the sizes of those it may end, by which it chooses what to end ("What it ends", below);
 at the first reading at or above the mark, where the band read sizes, it reads before its kill at most the `smaps` of the processes the band found, with the `exe` link and arguments of those the band read running their parent's program, and, where those show no growth or the reading is at or above the urgent share, one listing of the processes and, within half an interval, the files of the newest of those started since the band's last reading, and it reads every size only after its kill.
 At or above the urgent share, where the processes it may end at that reading hold one that is not new to the stay, it reads on after its kills, up to one interval from the reading at the mark, the files and `smaps` of the processes new to the stay that those reads did not reach ("What it ends", below).
+At or above the urgent share after a kill, once the processes it killed have exited or the wait has passed, it reads the `smaps` of the processes it read at the reading before first, and lists the processes and reads the rest only after the kills those reads send ("After a kill: the rise rule", below).
 Where `AnonPages` or the limit cannot be read, where the limit reads as no limit (2^62 bytes or more), where the system has no `pidfd_open`, through which the guard ends a process, or where the guard cannot list the processes of `/proc`, the guard writes one `off` line and does nothing more while the launcher runs.
 
 **What it ends.**
@@ -6039,6 +6083,7 @@ A fork that ranks at nothing, whose parent's size covers its own, is not ended f
 The processes new to the stay end so only where the processes the guard may end at that decision, once the reads at the mark have left out those they could not read or that have ended, hold one that is not new to the stay:
 where the stay holds fewer than two readings before the one decided at, at the guard's first reading, at a reading that crossed the band within one interval or after a single reading in the band, every process is new to it, so there the kills beside the first are the processes that grew over the window alone, and a burst with no readings in the band before it costs one kill a reading beyond those.
 That holds at every reading it kills at: the first reading at or above the mark, a reading after a kill and a reading it decides on by its own sizes.
+At such a reading after a kill, once the processes killed there have exited or the wait has passed, the guard first ends, as it reads them again, the processes it read at the reading before that grew since that kill, the first with its own rule and each other by `urgent`, and only then lists the processes and adds the kills above for the rest ("After a kill: the rise rule", below).
 Where none of these is beside the first, it ends one process, as it does at every kill below the urgent share.
 At the first reading at or above the mark the half interval, and the reads on past it for memory of its own, bound only the reads that choose the first kill, so those reads can reach only some of the processes new to the stay.
 So at or above the urgent share, where the decision holds a process that is not new to the stay, the guard reads on once the first kill and the kills beside it that those reads chose are sent, one process at a time, through the processes new to the stay that no read at the mark has reached, in the order of those reads:
@@ -6048,6 +6093,7 @@ It ends each process it so reads that grew over the window or holds memory of it
 a fork whose read parent covers it is not ended, a fork whose parent the same step reads after it waits for that read, a process it protects or cannot place is neither read nor ended, and the floor is not read again.
 Below the urgent share, and where every process is new to the stay, it reads nothing after the first kill.
 It reads on because at `4d6665d5`, in INFRA-3531's tester's run `4g-t4latepool-r3`, six growers started after the band's last reading, the first reading at the mark was at or above the urgent share, and its search started after half an interval with each `smaps` read taking 22 ms, so it read one grower before the kill, the guard ended that one alone, and the host ended the pod with the highest reading 25.5 MiB below the kill point (INFRA-3531 R1 of spec version 43).
+The read-on itself is bounded by that interval: in INFRA-3531's tester's replay of that run with each `smaps` read taking 22 ms after the first kill too, it reached one grower more within one interval, and the guard ends the four it did not reach at the next reading at or above the urgent share, as "After a kill: the rise rule" below says (dispatch://INFRA-3531/artifact/tester-evidence-41d4f45b-2026-11-19-tar-gz, INFRA-3531 R1 of spec version 43).
 The floor is read once, on all the processes it may end, before the first kill; one of the others that has ended or whose pid now names another process is skipped with no line, one whose kill fails is logged and counts unread as above while the others still go, and where the first is not killed none of them is, and the guard decides again as above.
 It sends every kill of the reading before it reads the cgroup's counter and `Shmem` and writes the kills' lines and reports, in the order of the kills, since a counter read can take about 18 ms under gVisor and the kills beside the first would otherwise wait behind it.
 It ends them all because near the limit one kill a reading cannot absorb a burst of several growers: at `8023d298`, in INFRA-3531's tester's run `4g-t4latepool-r2`, a reading came 148 ms late on a pod of 1.5 CPU, so six growers' first 64 MiB steps landed before the first reading at the mark, which read 93.88% of the limit, and one kill a reading then left the pod 2.8 MiB from the kill point (dispatch://INFRA-3531/comment/c8c0822e-4ee4-429b-ae24-a017d4a0d962, dispatch://INFRA-3531/artifact/tester-evidence-8023d298-2026-11-18-tar-gz).
@@ -6061,19 +6107,26 @@ A reading below the mark ends the rise.
 Once every process killed at that reading has exited, or once the wait has passed where one has not, the guard decides at each reading by that reading's sizes, in the order of "What it ends" above.
 The reading has fallen when it is below the reading at the kill by any amount, at that reading or at an earlier one since the kill.
 When it has fallen and is still at or above the mark, the guard ends the next process in its order.
-So a pool of forked workers, which share their parent's pages and each count them whole (`make -j`, `lake build`), is ended one worker at a time while the reading stays at the mark, rather than left for the kernel to stop the whole sandbox; at or above the urgent share the workers that grew over the window, or are new to the stay with memory of their own, are ended together.
-When it has not fallen, the guard ends the next process in its order at once, but only while a process it may end has grown by 1 MiB or more since the previous kill and the processes it may end hold at least the floor between them.
+So a pool of forked workers, which share their parent's pages and each count them whole (`make -j`, `lake build`), is ended one worker at a time while the reading stays at the mark, rather than left for the kernel to stop the whole sandbox; at or above the urgent share the workers that grew over the window or since the kill, or are new to the stay with memory of their own, are ended together.
+When it has not fallen, the guard ends the next process in its order at once, but only while the processes it may end hold at least the floor between them and one of them has grown by 1 MiB or more since the previous kill or, at a reading at or above the urgent share where they hold one that is not new to the stay, one of them is new to the stay and holds memory of its own.
 A process's growth since the kill is its size at this reading less its size at the reading the kill was sent at, or less its first size read after the kill for a process the guard first read then, which has not grown at that first read.
 For a kill chosen at the mark, its size at that reading is the size the decision used: the band's last read of it, its `smaps` read again at the mark, or the search's read of it, and never a read made after the kill but in the one case below.
 At `7356e0f6`, which took that size from a read after the kill, `8g-latepool-q56hm`'s growers stepped between the reading at the mark and that read, so the next two readings, not fallen and 28 MiB above the kill's, showed no growth, and the guard went on one reading late (dispatch://INFRA-3531/artifact/t17l-2026-11-18-tar-gz).
 The one case is a process whose executable or arguments after the kill differ from those the decision read, which takes its first read after the kill: the band read it before its exec, at its parent's size under gVisor, and a growth measured from that size would show none until it outgrew its parent.
-Growth since the kill decides this, not the 300 ms window, so a process that grows in steps wider than the window counts as grown, and several processes that together grow faster than one kill frees are ended one after another below the urgent share, each once the one before has exited, and at or above it at one reading, where they grew over the window or are new to the stay with memory of their own ("What it ends", above).
+Growth since the kill decides this, not the 300 ms window, so a process that grows in steps wider than the window counts as grown, and several processes that together grow faster than one kill frees are ended one after another below the urgent share, each once the one before has exited, and at or above it at one reading, where they grew over the window or since the kill, or are new to the stay with memory of their own ("What it ends", above, and below).
 The order ranks by growth since the stay's first kill instead ("What it ends", above), so where the readings come more than 300 ms apart, or a grower's steps fall between the reads after a kill, or the reading dips below the mark in the band and comes back, a process that grew since that first kill still comes before a larger one that never grew; growth since the previous kill decides only whether the guard goes on.
-Where neither holds, the guard ends nothing at that reading and reads again, and once the wait has passed it gives the rise up with a `stopped for this rise` line, `reason=not fallen`.
-So a rise that is a protected process's own, such as an agent's, in which nothing the guard may end grows, costs at most one kill below the urgent share; at or above it, the kill at that reading also ends every process new to the stay that holds memory of its own, where the decision holds one that is not new ("What it ends", above).
+At a reading at or above the urgent share where the processes it may end hold one that is not new to the stay, the urgent rule ends each process new to the stay that holds memory of its own though it has not grown since the kill ("What it ends", above), so those that the read-on at the mark did not reach end at the next such reading: at `4d6665d5`, in `4g-t4latepool-r3`, the next reading read 92.55% of the limit with no grower grown since the kill, so the guard waited there and the host ended the pod a reading later (INFRA-3531 R1 of spec version 43).
+Where none of these holds, the guard ends nothing at that reading and reads again, and once the wait has passed it gives the rise up with a `stopped for this rise` line, `reason=not fallen`.
+So a rise that is a protected process's own, such as an agent's, in which nothing the guard may end grows, costs at most one kill below the urgent share; at or above it, where the processes the guard may end hold one that is not new to the stay, it can also cost every process new to the stay that holds memory of its own, which the urgent rule ends at the reading of that kill or at a later reading of the wait at or above that share ("What it ends", above).
 It gives the rise up with `reason=nothing to end` when the processes it may end hold less than the floor at a reading it would end one at.
 A stop that repeats writes that line at most once a minute ("The lines", below), and once a rise is given up the guard ends nothing more for it:
 it acts again only after the reading has gone below the mark.
+At a reading at or above the urgent share, once every process killed at the reading of the kill has exited or the wait has passed, the guard first reads again, one at a time, the `smaps` of the processes it read at the reading before, in the order that reading put them in, and ends each one that grew by 1 MiB or more since the previous kill as soon as it has read it, before its next read and before it lists the processes (INFRA-3531 R1 of spec version 43, verification version 36).
+The first of those kills names its own rule, and goes only where the processes it read at the reading before hold the floor at their sizes there, with the sizes read again; each other is `urgent`.
+Only then does it list the processes and read the `smaps` of those it did not read again, and that reading's sizes decide the rest: it adds the kills "What it ends" above asks for beside them, of the processes that grew over the window and, where the processes it may end hold one that is not new to the stay, of those new to it with memory of their own, and the sizes as of these kills are that reading's, the reads again among them.
+The reads again are reads that reading makes anyway, so the order adds no read.
+It reads them first because in INFRA-3531's tester's probe run r17 at `41d4f45b` the two readings after the kill at 89.96% of the limit showed nothing grown since that kill, the growers stepped before the next reading, 95.16%, and the guard read every process there for 205 ms before it ended the four growers left; the reading came 12.3 MiB from the 4 GiB kill point.
+Where none of them grew since the kill, or below the urgent share, the guard decides at that reading as above.
 
 **What it protects, and why.**
 The guard never ends a process whose end would cost a role its turn, or cost every role theirs: ending an agent ends that role's turn, and ending a command the agent ran does not.
@@ -6166,7 +6219,7 @@ For a process started since the band's last reading it is the `smaps` the readin
 `new`, none grew so, and it is the largest of the processes new to the stay that hold memory of their own;
 `grew-since-kill`, none grew or is in the new tier, and it grew the most since the first kill of this stay in the band, which a dip below the mark that stays in the band does not end;
 `largest`, none of these applies and it is the largest.
-`urgent`, the reading was at or above the urgent share and it grew over the window or is new to the stay with memory of its own, though it was not the first: a kill beside the first at that reading, whose line names its own rule ("What it ends", above).
+`urgent`, the reading was at or above the urgent share and it grew over the window, or, at a reading after a kill, it was read at the reading before and grew since that kill, or it is new to the stay with memory of its own, though it was not the first: a kill beside the first at that reading, whose line names its own rule ("What it ends" and "After a kill: the rise rule", above).
 `sizes` says where the sizes it was chosen by came from:
 `band`, the band's sizes alone, at the first reading at or above the mark;
 `reread`, those and the `smaps` read again at that reading;
@@ -6255,19 +6308,20 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
   Where a process holds a written memfd and an unwritten one, or two processes hold different ones, each counts up to the whole `Shmem` reading, so their sizes may together count the same pages more than once.
   The guard can then end a holder whose end frees less than its size said.
 
-- It does not act again while memory it may not end holds the pod above the mark, or once the wait after a kill has passed with the reading not fallen and nothing it may end grown since that kill.
-  When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing and nothing it may end grew since it, or what it may end holds less than the floor, `reason=not fallen`.
+- It does not act again while memory it may not end holds the pod above the mark, or once the wait after a kill has passed with the reading not fallen, nothing it may end grown since that kill and, at a reading at or above the urgent share where it may end a process that is not new to the stay, no process new to the stay that holds memory of its own.
+  When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing and nothing it may end grew since it or, at such a reading, is new to the stay with memory of its own, or what it may end holds less than the floor, `reason=not fallen`.
   Either way it ends nothing more until the reading has gone below the mark: a process that grows meanwhile is not ended, and the kernel can still stop the sandbox before then.
   A reading that keeps crossing the mark has at most one such line a minute, with the stops left out counted in `left_out`, and a crossing at which the processes it may end hold the floor is still acted on at once.
 
 - It does not stop a fill faster than its margin.
   Between the mark and the point where the kernel stops the sandbox, measured at 95.5% to 99.4% of the limit in the tester's result at `bebc420b` and as low as 95.4% in an earlier run (above), the guard must take a reading at or above the mark and end the process.
   A process that crosses that margin before the guard's kill is not stopped in time: the container ends `OOMKilled` and every role's turn ends with it, as before the guard.
-  Where several processes cross it together, the guard ends one of them a reading below the urgent share, and at or above it every one that grew over the window or is new to the stay with memory of its own at that reading ("What it ends", above), so near the limit a burst of growers costs one reading and not one each.
+  Where several processes cross it together, the guard ends one of them a reading below the urgent share, and at or above it every one that grew over the window, or, after a kill, grew since that kill, or is new to the stay with memory of its own at that reading ("What it ends" and "After a kill: the rise rule", above), so near the limit a burst of growers costs one reading and not one each.
   That time is one interval and the band reading's scan before the reading at the mark, with, where none of the processes the band found grew or where the reading is at or above the urgent share, the `smaps` of those it reads again, with the `exe` link and arguments of those the band read running their parent's program, and, where those show no growth or the reading is at or above the urgent share, one listing of the processes, the files of the newest of those started since the band's last reading and the `smaps` of the forks new to the stay that ranked at nothing at their band read, and, where the band held no size, that reading's own scan before its kill.
   Of those reads at the mark, the `smaps` read again with the programs read again, the new processes' files and their `smaps` stop after the read in hand once half an interval from the reading at the mark has passed; past it the guard reads only the first `smaps` read again and, where it has read none yet that it may end and that holds memory of its own, processes new to the stay, one at a time, in the order of those reads, each group the newest first, up to one interval from the reading at the mark once it has read any ("What it ends", above).
   The listing of the processes has no bound of its own, and the guard skips it once the half interval has passed with such a process read; a stall of the throttled pod's CPU that delays one of those reads, or a search for processes started since the band's last reading, can still put the first kill past one interval, though within two.
   At or above the urgent share, where the processes it may end hold one that is not new to the stay, the guard reads on after the first kill through the processes new to the stay that those reads did not reach, up to one interval from the reading at the mark, and ends each with memory of its own as it reads it ("What it ends", above): those reads come after the first kill and do not delay it.
+  After a kill, at or above the urgent share, the guard ends each process it read at the reading before that grew since that kill as it reads it again, before it lists the processes, so the time it takes to read the others does not delay those kills ("After a kill: the rise rule", above).
   A reading can also come late: in one gVisor test run at 8 GiB, of shared anonymous growth on 2026-11-14 (the tester's at `8c24499c`), the longest gap between two readings was 1082 ms, where the longest gap of any growth run was 115.8 ms in the tester's result at `bebc420b` and 228.9 ms in the implementer's result at that head;
   the kill still came at 85.23% of the limit, below every kill point measured in those results (95.4% and above).
 
@@ -6463,7 +6517,8 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
   A pod the launch finds suspended, ended, with a failed init container, with a role's launcher Secret that no longer binds it, or on a Sandbox of the disk shape before this release is replaced too ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses), [Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk)).
   The account the pod runs as is not one of those, though it is fixed for the pod's life: a round covers every issue pod, so a change of `runtime.kubernetes.pod.service_account` is answered by each pod's own update round, the end below, which asks every role in it to push and replaces the pod once every role has answered or at the round's bound.
   Such a change therefore costs an issue pod only the work its roles did not push before the pod went, and a deployment moving its pods to another account need not drain its trees by hand first.
-  It still costs the identity: until its round has replaced it a pod's agents hold the identity the old account grants, so an old account is deleted only once no live pod of it is left, and how fast a fleet moves is what `pod_update_max_open_rounds` and `pod_update_rounds_per_minute` bound, each round also waiting, until its bound, for every running turn in its pod to end (below);
+  It still costs the identity: until its round has replaced it a pod's agents hold the identity the old account grants, so an old account is deleted only once no live pod of it is left, and how fast a fleet moves is what `pod_update_max_open_rounds` and `pod_update_rounds_per_minute` bound, each round also waiting, until its bound, for every running turn in its pod to end (below).
+  Under the secrets broker, `BROKER_SESSION_ACCOUNT_PAIRS` has to be live on the broker before the change, pairing the old account with the new, or the broker refuses each live role's session name to its pod on the new account (`403 SESSION_HELD`) and the role's grants, pending requests and withheld secrets stay behind (the item on moving the daemon's pods in [Operator configuration](#operator-configuration));
 
 - **an update round replaces the pod**, once every role in it has answered or at the round's bound (below).
   A live pod whose configuration has merely drifted is never replaced where it is found, because that would end every role's turn in it and delete the disk with everything unpushed on it;
@@ -7360,7 +7415,7 @@ each issue's pod (every role of it alike) and the image probe's.
   a projected `service_account_token` must last at least 600 s, the least the API server issues, and its `audience` may not still hold a `${…}` placeholder, which nothing expands.
   `volume_mounts` are read-only unless `read_only: false`, and may use `sub_path`.
   `service_account` is the pods' ServiceAccount (unset, pods run as the namespace's `default` ServiceAccount); it may not still hold a `${…}` placeholder, which nothing expands, as a projected token's `audience` may not.
-  Changing it replaces each live issue or controller pod at the next launch of one of its roles, and each repository cache's pod at the first boot, sweep or new issue pod of its repository that finds it serving no stream; an issue pod's disk goes with its pod ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
+  Changing it reaches a running pod only by replacing it, which the item after this one describes.
   A name or path that collides with Legion's own is refused at load, naming both:
   a variable the runtime, the worker image's `ENV` or every launch sets, a volume name Legion uses, or a mount at, under or above a path Legion mounts, the image owns, or a tool runs from, or `workspace-init`'s state home (`/home/legion/.local/state`, where `workspace-init` keeps the XDG state it provisions the issue under:
   no role's agent keeps its Oh My Pi state there any more
@@ -7378,6 +7433,13 @@ each issue's pod (every role of it alike) and the image probe's.
   [`deploy/kubernetes/operator-route/`](../deploy/kubernetes/operator-route/README.md) is an example of one, the one the Go live harnesses run on:
   a `models.yml` and a settings overlay from a ConfigMap, and a mounted token its key command reads.
   Its README lists what an operator supplies and how `pod` and `provider_keys` compose.
+
+- **A change of `runtime.kubernetes.pod.service_account`** reaches a running pod only by replacing it ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)):
+  an update round replaces each issue pod a claim names, the next launch of the controller's role replaces the controller's pod, and a repository cache's pod is replaced at the first boot, sweep or new issue pod of its repository that finds it serving no stream;
+  the sweep does not replace the pod of the cache of a repository that neither the mapping nor a live issue record of the project names any more, and that pod goes when the cache's retention deletes the cache ([The repository cache](#the-repository-cache)).
+  An issue pod's disk goes with its pod.
+  Under the secrets broker the replacement also costs each live role its session name, until `BROKER_SESSION_ACCOUNT_PAIRS` pairs the old account with the new:
+  the broker refuses that name to the role's pod on the new account (`403 SESSION_HELD`), so the role's grants, pending requests and withheld secrets stay behind, and the setting has to be live on the broker before the change (the `BROKER_SERVICES` item below, and the item after it).
 
 - **Dispatch's public dashboard.**
   Every pod reaches Dispatch at `dispatch_url`, usually an in-cluster address nobody outside the cluster can open.
@@ -7840,7 +7902,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - The daemon logs in as the service `legion-daemon`, and its pods run as the ServiceAccount `runtime.kubernetes.pod.service_account` names (`default` when unset, above).
   A broker configured with that account for `legion-daemon`, such as `BROKER_SERVICES=legion-daemon=system:serviceaccount:legion:<the account the pods run as>`, gives a secret tagged `owner=legion-daemon` to every such pod at once and to no other session (the broker's concepts page, "Owner and tier").
-  When the daemon's pods run as several accounts, the setting names each in a `legion-daemon=` entry of its own.
+  When the daemon's pods run as several accounts, as they do while a change of `service_account` moves them, the setting names each in a `legion-daemon=` entry of its own.
   The broker refuses to start with a namespace's `default` account in `BROKER_SERVICES`, since every pod there that names no account runs as it, so pods that receive service-owned secrets name a dedicated account.
   The daemon's own ServiceAccount, which logs in, is a different account from its pods', and it is named in `BROKER_SERVICE_LOGINS`, not `BROKER_SERVICES`;
   the broker refuses to start with an account in `BROKER_SERVICE_LOGINS` that is a namespace's `default`, since every pod running as it could then log in as the daemon.
@@ -7859,6 +7921,23 @@ each issue's pod (every role of it alike) and the image probe's.
   So the enrollment can stay live until the pod is replaced, at the latest when its issue closes, plus one lease (`BROKER_LEASE_SECONDS`).
   To end it at once, anyone signed in to Dispatch revokes the daemon's login on Dispatch's machine-login page (`/credentials/machine`), the row `legion-daemon on <namespace>/<account>` whose **Approved by** reads `No one:` and the daemon's ServiceAccount, which ends every session it enrolled;
   the daemon logs in again with its token under a new credential, which enrolls the pods it launches next, and a pod already running stays without secrets until it is replaced (`docs/site/src/content/docs/broker/guides/revoke-a-session.md`, "End a machine's login").
+
+- **Moving the daemon's pods to another ServiceAccount under the secrets broker.**
+  The broker holds each session name for the principal that claimed it, and a pod's principal is the account its projected token proves, so a role whose next pod runs as the new account is refused its own session name (`403 SESSION_HELD`):
+  the daemon logs `supervise: agent-secrets: enrollment refused; waiting for the shim's next hello`, the pod runs with no enrollment, and the role's grants, pending requests and withheld secrets stay on the old account's enrollment.
+  `BROKER_SESSION_ACCOUNT_PAIRS` pairs two accounts, in whitespace-separated `<account>=<account>` entries such as `system:serviceaccount:legion:legion-worker=system:serviceaccount:legion:<project>-worker`, and either account of a pair takes a session name the other holds:
+  the role's next pod on the new account enrolls under its own name, its enrollment takes the grants, pending requests and withheld secrets the old account's enrollments of that name hold where a login of the daemon's own account enrolled them, since a pod's grants follow its account and the account of the login that enrolled it (the broker's concepts page, "Requests and grants"), and the broker logs the take at WARN, `broker: an enrollment took a session name from the account paired with its own`,
+  or `broker: the token exchange took a session name from the account paired with its own` where the pod's own token exchange took the name before the pod enrolled, and the enrollment then logs no take of its own.
+  So before changing `service_account`, give the broker both settings and redeploy it:
+  the new account's `legion-daemon=` entry in `BROKER_SERVICES` (above), without which the broker refuses each pod of that account `403 POD_NOT_LAUNCHED`, and the pair, which its start line then names, `session account pairs state=on pairs=<pairs>`.
+  Where `runtime.kubernetes.agent_secrets.exchange_audience` is set (below), the new account also needs an entry of its own in `BROKER_EXCHANGE_ACCOUNTS`, without which the broker refuses the daemon's registration of each of its pods' sessions `403 POD_ACCOUNT_NOT_LISTED`, and refuses each token those pods trade.
+  A pair works both ways, so moving the pods back needs no change of the setting.
+  A pair added after a role's enrollment was refused takes effect at that role's next enrollment, which the daemon makes at the shim's next hello, on a redial of its connection or at the claim's next generation (above):
+  the old enrollment's grants and pending requests come across while the broker still keeps them, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default) after that enrollment ended, and its withheld secrets come across at that next enrollment whenever it comes.
+  While a pair stands, a pod of either account can claim any session name the other holds, not only its own role's, so where several projects' pods shared the old account, a pod of one project's new account can claim a name the old account holds for another project's role, and takes none of what that role's session holds, which another daemon's login enrolled.
+  Two things bound this: the daemon gives each role only its own name, and a name leaves the old account once its role's pod has moved.
+  So move the pods' account alone: a daemon whose own login moves to another account in the same change enrols the new pods under another launcher, and they take none of what the old pods held.
+  Remove the pairs with the old account once no live pod runs as it.
 
 - **`runtime.kubernetes.agent_secrets.exchange_audience`** gives every enrolled pod an identity the broker's exchange trades for a broker token of a session's own (dispatch://INFRA-840).
   Each pod then also carries a projected token of its ServiceAccount for that audience, an hour long, in a volume of its own (`agent-secrets-exchange`), mounted read-only at `/var/run/legion/agent-secrets-exchange/token` in the container its roles run in, and every role is told `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE` naming that file, beside the enrollment it already holds.
@@ -8014,10 +8093,12 @@ A `named` token naming a project fails until every broker replica, Dispatch and 
 The grant issues no refresh token, so each renewal is a fresh trade that Dispatch is asked about again.
 
 A session name belongs to one principal — the service account, the workflow, the Google account, or the person
-— and the broker refuses `invalid_grant` to another principal that names it (`claimSession`, `packages/envoy/internal/broker/oauth/exchange.go`).
-A claim holds the name for `oauthstore.SessionRetention`, 90 days, past the expiry of the token the claim was made for (`BindSession`, `packages/envoy/internal/broker/oauthstore/exchange.go`).
+— and the broker refuses `invalid_grant` to another principal that names it (`claimSession`, `packages/envoy/internal/broker/oauth/exchange.go`), but for a service account `BROKER_SESSION_ACCOUNT_PAIRS` pairs with a holding service account:
+that account's claim takes the name, which the broker logs at WARN as `broker: the token exchange took a session name from the account paired with its own` (the item on moving the daemon's pods in [Operator configuration](#operator-configuration)).
+A claim, a pair's take among them, holds the name for `oauthstore.SessionRetention`, 90 days, past the expiry of the token the claim was made for (`BindSession`, `packages/envoy/internal/broker/oauthstore/exchange.go`).
 A name an entry fixes is held for that entry with no expiry:
 the broker reserves it for the entry unless another principal holds it (`ReserveSessions`, the same file), and the entry's own exchange takes it from any other holder.
+No pair takes a name an entry fixes, whoever holds it.
 
 A resource server reads such a token back with `POST /v1/oauth/introspect` (`packages/envoy/internal/broker/api/handlers_introspect.go`).
 It authenticates with its own Kubernetes service-account token, or, on a machine that holds no Kubernetes token, with that machine's own Google identity token, of an account the broker lists in `BROKER_API_ACCOUNTS` (`<caller>=system:serviceaccount:<namespace>:<name>`, or `<caller>=google:<service account email>`).

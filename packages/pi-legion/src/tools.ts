@@ -250,6 +250,8 @@ function toolSchema(pi: PiApi): unknown {
     summary: phaseOp.summary,
     verdict: phaseOp.verdict,
     wake_at: phaseOp.wake_at,
+    plan_rating: phaseOp.plan_rating,
+    plan_reason: phaseOp.plan_reason,
     round: phaseOp.round,
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),

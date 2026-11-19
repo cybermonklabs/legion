@@ -71,7 +71,7 @@ const Header = "X-Broker-Answer-Id"
 // carries as correlation_id, at most FieldBytes of it.
 const correlationHeader = "X-Correlation-Id"
 
-// FieldBytes bounds each text field of a line the broker writes about a request (clip,
+// FieldBytes bounds each text field of a line the broker writes about a request (Clip,
 // ClipFields): whatever the caller wrote into it - the method, the path, the host, a reason or
 // an error that quotes the host or its address, the correlation id, each secret name, a form
 // field or an approver a relay names - is at most this many bytes of it. It is exported for a
@@ -289,7 +289,7 @@ func (rec *Recorder) NoteSecrets(names ...string) {
 }
 
 // SecretNames is the secret names a request named as a refusal's line lists them: the first of
-// them, in the request's order and each cut by clip, up to secretNamesBytes of names as the line
+// them, in the request's order and each cut by Clip, up to secretNamesBytes of names as the line
 // writes them (listedBytes), and a count of the names after them. The first name that would pass
 // the bound ends the list, so the list is always a prefix of what the request named, and the
 // names it leaves out are counted, never kept. Middleware's Recorder notes the API port's names on
@@ -307,7 +307,7 @@ type SecretNames struct {
 func (n *SecretNames) Note(names ...string) {
 	for _, name := range names {
 		if n.omitted == 0 {
-			name = clip(name)
+			name = Clip(name)
 			if written := listedBytes(name); n.bytes+written <= secretNamesBytes {
 				n.listed = append(n.listed, name)
 				n.bytes += written
@@ -398,7 +398,7 @@ type RefusalLine struct {
 // either; the airlock's proxy port names its host, reason and path as extras, and its issue and
 // slot as trailing.
 //
-// Every text field of the line, extras and trailing included, is cut by clip here (ClipFields),
+// Every text field of the line, extras and trailing included, is cut by Clip here (ClipFields),
 // where it enters the line, rather than by each writer: the method, the host and the path are
 // the caller's own text, and a reason may quote the host, so a field a writer adds later is cut
 // with them. The secret names are a list, which SecretNames bounds.
@@ -731,18 +731,19 @@ func CorrelationID(r *http.Request) string {
 	return string(kept)
 }
 
-// clip keeps caller-written text of at most FieldBytes as it came, and cuts longer text to its
+// Clip keeps caller-written text of at most FieldBytes as it came, and cuts longer text to its
 // first FieldBytes, dropping every invalid UTF-8 run in the bytes it keeps (strings.ToValidUTF8),
 // a rune the cut splits among them: what a line written for an answer keeps of each text field
-// (ClipFields), and a refusal's line of each secret name (SecretNames).
-func clip(text string) string {
+// (ClipFields), a refusal's line of each secret name (SecretNames), and the broker's standard
+// logger of the first line of each write to it (logmask.StandardLog).
+func Clip(text string) string {
 	if len(text) <= FieldBytes {
 		return text
 	}
 	return strings.ToValidUTF8(text[:FieldBytes], "")
 }
 
-// ClipFields cuts each text value of fields, a line's attributes as slog takes them, by clip, in
+// ClipFields cuts each text value of fields, a line's attributes as slog takes them, by Clip, in
 // place, and answers fields. It is where the caller's text enters a line the broker writes about
 // a request: the refusal line of either port (RefusalLine.Fields), the airlock's call line, its
 // joined connection's line, its upstream failure line and the line net/http writes through its
@@ -776,11 +777,11 @@ func clipValue(value any) any {
 	switch held := value.(type) {
 	case string:
 		if len(held) > FieldBytes {
-			return clip(held)
+			return Clip(held)
 		}
 	case error:
 		if text := held.Error(); len(text) > FieldBytes {
-			return clip(text)
+			return Clip(text)
 		}
 	case slog.Attr:
 		// An Attr's error is a KindAny the handler writes as its text, as it writes the error
@@ -788,12 +789,12 @@ func clipValue(value any) any {
 		switch held.Value.Kind() {
 		case slog.KindString:
 			if text := held.Value.String(); len(text) > FieldBytes {
-				return slog.String(held.Key, clip(text))
+				return slog.String(held.Key, Clip(text))
 			}
 		case slog.KindAny:
 			if err, ok := held.Value.Any().(error); ok {
 				if text := err.Error(); len(text) > FieldBytes {
-					return slog.String(held.Key, clip(text))
+					return slog.String(held.Key, Clip(text))
 				}
 			}
 		}
