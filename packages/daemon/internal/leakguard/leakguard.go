@@ -17,8 +17,8 @@
 // What the guard reports is the record and the class: never the text that matched, never the
 // component of a path that matched, and never anything the detection engine itself printed. The
 // classes are the descriptions of the rules in private-names.toml, and a path in a report has
-// every component the repository and company rules match replaced by "<name>", the masking that
-// .github/scripts/check-private-names.sh's `mask` function does for those rules.
+// every component the repository and company rules match replaced by "<name>", the masking
+// .github/scripts/check-private-names.sh does (its lines 145-154).
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
@@ -148,23 +148,16 @@ func (g *Guard) Rules(ctx context.Context, records ...Record) error {
 	return g.rules(ctx, "the write", records)
 }
 
-// rules is the rule-file pass over records, and the deployment's term list (Terms) over the same
-// records where the environment holds one, reported as a refusal of what. A list the environment
-// names and the guard cannot read refuses the write, as a setup failure.
+// rules is the rule-file pass over records, reported as a refusal of what.
 func (g *Guard) rules(ctx context.Context, what string, records []Record) error {
 	engine, err := compiled()
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the private-name rules could not be read", Err: err}
 	}
-	terms, err := Terms(g.base())
-	if err != nil {
-		return &SetupFailure{What: what, Why: "the deployment's term list could not be read", Err: err}
-	}
 	lines, err := engine.scan(ctx, records)
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: err}
 	}
-	lines = append(lines, scanTerms(engine, termMatcher(terms), records)...)
 	if len(lines) == 0 {
 		return nil
 	}

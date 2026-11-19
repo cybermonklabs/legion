@@ -39,7 +39,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -1758,13 +1757,12 @@ func TestTheTmuxOptionsCarryTheTakeOver(t *testing.T) {
 }
 
 // Every launch secret's pointer is a pane variable the operator may not set
-// (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch: the
-// Envoy bearer's, the deployment's term list's and the pane NATS seed's.
+// (runtime.PaneVariableRefusal), refused at load and at boot rather than at every launch.
 func TestEveryLaunchSecretsPointerIsRefusedAsAPaneVariable(t *testing.T) {
 	cfg := config.Config{EnvoyTokenFile: "/var/run/legion/ENVOY_TOKEN", NatsNkeySeedFile: "/var/run/legion/NATS_NKEY_SEED"}
-	names := launchSecretNames(cfg, lookup(map[string]string{leakguard.TermsVar: "a-placeholder-term\n"}))
-	if want := []string{"ENVOY_TOKEN", leakguard.TermsVar, "NATS_NKEY_SEED"}; !slices.Equal(names, want) {
-		t.Fatalf("launchSecretNames = %v, want %v, every launch secret of a daemon configured with each, in name order", names, want)
+	names := launchSecretNames(cfg, lookup(nil))
+	if len(names) != 2 {
+		t.Fatalf("launchSecretNames = %v, want both launch secrets of a daemon configured with each", names)
 	}
 	for _, name := range names {
 		if runtime.PaneVariableRefusal(name+"_FILE", "/etc/acme/secret") == "" {

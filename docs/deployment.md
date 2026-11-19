@@ -262,17 +262,6 @@ every launch secret to a 0600 file of its own under `<state_dir>/secrets` and te
 matching `<NAME>_FILE` pointer, here `ENVOY_TOKEN_FILE` (`secretFiles`, `WriteSecretFiles` and
 `panePairs`, `packages/daemon/internal/runtime/tmux/spawn.go`).
 
-The deployment's private-name term list reaches a pane the same way, when the daemon's environment
-holds one. The deployment sets `LEGION_PRIVATE_NAME_TERMS` in the daemon's environment from its own
-configuration, as it sets the daemon's other settings, with the same one-term-a-line list as the
-`PRIVATE_NAME_TERMS` Actions secret CI's private-name check reads. The daemon hands it to every
-launch as a launch secret of that name (`deploymentTerms`,
-`packages/daemon/internal/daemon/private_terms.go`), so a pane holds it behind
-`LEGION_PRIVATE_NAME_TERMS_FILE`, and every role's leak guard refuses a push or `gh` write to a
-public destination whose text or file path names a term (`leakguard.Terms`,
-`packages/daemon/internal/leakguard/terms.go`). With no list, the daemon logs once at boot that the
-guard runs this repository's own rules alone.
-
 When `dispatch_token_file` holds one of the deployment's shared agent tokens
 (`DISPATCH_AGENT_TOKEN`), Dispatch matches the bearer against them (`MatchesSharedAgentToken`,
 `packages/envoy/internal/dispatch/auth/agent_token.go`) and reads no person, no service and no
@@ -423,10 +412,9 @@ provider_keys:
   `LEGION_CONTROLLER`, `LEGION_SLACK_CHANNELS`), the variables it sets on every Claude Code pane
   (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the git
   identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the pointers to the secrets every launch
-  gets as a file of its own (`ENVOY_TOKEN_FILE`, `LEGION_PRIVATE_NAME_TERMS_FILE`,
-  `NATS_NKEY_SEED_FILE`), the variables that place the session a resume reads
-  (`OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`, `OMP_SESSION_SQL_DSN_FILE`, `PI_CODING_AGENT_DIR`,
-  `PI_CONFIG_DIR`), a provider key or its
+  gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the variables that place
+  the session a resume reads (`OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
+  `OMP_SESSION_SQL_DSN_FILE`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
   `_FILE` pointer, any credential-shaped name (`…_TOKEN`, `…_KEY`, `…_SECRET`, `…_SEED`,
   `…_PASSWORD`, `…_PAT`, `…_GRANT`, `…_CREDENTIALS`, `PRIVATE_KEY`), and any value holding a URL
   with a password in it (`scheme://user:password@…`). A value on tmux's command line is readable by

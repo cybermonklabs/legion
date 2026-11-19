@@ -1,5 +1,0 @@
-kind: Added
-body: Every role's leak guard refuses a push or `gh` write to a public destination whose text or file path names a term of the deployment's own private-name list, the list CI's private-name check reads from its `PRIVATE_NAME_TERMS` secret. The deployment hands it to the daemon as `LEGION_PRIVATE_NAME_TERMS` in the daemon's environment, one term a line (blank lines and `key:` lines are no term); the daemon hands it to every launch as a launch secret, so a role reads it behind `LEGION_PRIVATE_NAME_TERMS_FILE`, and a refusal names the record and the class, never the term. With no list, the guard runs this repository's own rules alone, and the daemon says so once at boot.
-time: 2026-11-17T22:04:28.187222375Z
-custom:
-    Issue: pr4256

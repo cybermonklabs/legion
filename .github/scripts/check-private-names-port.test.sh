@@ -22,8 +22,8 @@
 # The corpus is .github/scripts/check-private-names.test.sh's, case for case: its 16 rule cases
 # are ported here with the mapping table below, and its 13 argument-handling cases are run too,
 # each one recording what the engine does instead of the frozen script's own path handling, which
-# the engine replaces rather than inherits. Its pull-request-text cases belong to check-pr-text.sh;
-# its term-list cases are compared with the engine's own term list (below). Beyond the corpus the five rules are
+# the engine replaces rather than inherits. Its pull-request-text cases belong to check-pr-text.sh,
+# and its term-list cases to a rule with no port (below). Beyond the corpus the five rules are
 # driven over a file's content and over a file's path, the conditional allow-list with each half
 # holding alone, and the frozen script's own selection rules one by one.
 #
@@ -81,18 +81,15 @@ chmod +x "$PUBLIC_LEAK_CHECK"
 # public (its fail-closed answer) and scans, without a gh call.
 remote_url="$work/remote.git"
 
-# The frozen script's fifth rule, the deployment's own term list, is read from PRIVATE_NAME_TERMS
-# (an Actions secret), and the engine's from LEGION_PRIVATE_NAME_TERMS (the daemon's launch secret,
-# or its file behind LEGION_PRIVATE_NAME_TERMS_FILE): no rule file of a public repository can spell
-# those terms, and this job holds no secret. So every case runs the frozen script with no list on
-# a pull request's event, where it runs the four rules it spells and warns that it did (a line
-# read_frozen does not read), and the engine with no list either; the term-list cases near the
-# end set placeholder terms on both sides for themselves. Whatever list or event the job's own
-# environment holds is replaced, never read, and with no tracing, which would print a term once a
-# case sets one.
+# The frozen script's fifth rule, the deployment's own term list (PRIVATE_NAME_TERMS, an Actions
+# secret), has no port: no rule file of a public repository can spell those terms, and this job
+# holds no secret. So every case runs the frozen script with no list on a pull request's event,
+# where it runs the four rules it spells and warns that it did (a line read_frozen does not read).
+# Whatever list or event the job's own environment holds is replaced, never read, and with no
+# tracing, which would print a term once a case sets one.
 set +x
 export GITHUB_EVENT_NAME=pull_request
-unset PRIVATE_NAME_TERMS LEGION_PRIVATE_NAME_TERMS LEGION_PRIVATE_NAME_TERMS_FILE
+unset PRIVATE_NAME_TERMS
 
 # The names the rules hunt are assembled from the pieces below, so this file holds none of them
 # whole and the guard scans it like any other file. The two that are this repository's own are
@@ -145,10 +142,6 @@ rules_of() { # rules_of <label>: the rule ids of the port that carry that label,
     'names a Tailscale MagicDNS host') echo "tailnet_host_rule" ;;
     'names the private deployment repository or its Dispatch project key in its path') echo "repository_rule_path" ;;
     'names the company in its path') echo "company_rule_path proper_noun_rule_path" ;;
-    # The fifth rule has no row of the rule file: the engine reads the deployment's list from its
-    # environment (leakguard's terms.go) and labels a finding as the script does, word for word.
-    "names a term of the deployment's own list (PRIVATE_NAME_TERMS)") echo "deployment_terms" ;;
-    "names a term of the deployment's own list (PRIVATE_NAME_TERMS) in its path") echo "deployment_terms_path" ;;
     *) return 1 ;;
   esac
 }
@@ -548,25 +541,6 @@ git -C "$root" commit -q -m "chore: add a binary"
 push_door "$root"
 frozen_tree "$root"
 agree skipped-binary
-
-echo "term-list cases: the frozen script reads PRIVATE_NAME_TERMS, the engine LEGION_PRIVATE_NAME_TERMS"
-# Placeholder terms that name nothing, set on both sides and on these cases alone: a term in a
-# text, in a file's content and in its path, each in another case than it is listed in, and a
-# clean text, each one verdict and one class. The cases are named by label, never by the text.
-port_terms=$(printf '%s\n' "zephyr-orchard" "lanternfish/harbor-map")
-export PRIVATE_NAME_TERMS=$port_terms LEGION_PRIVATE_NAME_TERMS=$port_terms
-compare terms-text-hit "See the ZEPHYR-ORCHARD runbook."
-compare terms-text-clean "Nothing private here."
-root=$(push_fixture terms-content)
-compare_file terms-content "$root" "docs/notes.md" "The lanternfish/harbor-map notes."
-root=$(push_fixture terms-path)
-compare_file terms-path "$root" "docs/Zephyr-Orchard-notes/readme.md" "clean text"
-check "the frozen script masks the path's part" "$(contains "$frozen_out" 'docs/<name>/readme.md')"
-check "the engine masks it too" "$(contains "$door_out" 'docs/<name>/readme.md')"
-for out in "$frozen_out" "$door_out"; do
-  check "neither prints a planted term" "$(is "$(grep -c -i -E 'zephyr|lanternfish|harbor-map' <<< "$out")" 0)"
-done
-unset PRIVATE_NAME_TERMS LEGION_PRIVATE_NAME_TERMS
 
 # ---------------------------------------------------------------------------------------------
 # The 13 argument-handling cases of check-private-names.test.sh. They are the frozen script's own

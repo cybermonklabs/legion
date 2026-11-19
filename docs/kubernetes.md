@@ -3596,7 +3596,6 @@ So a `printenv` run by `kubectl exec` into the container finds none of them but 
 one the role's own agent runs prints each of them the runtime sets, and exits 1 for the four it does not.
 They are an issue pod's role's; `<generation>` is the role's own generation counter, which differs between the roles of one pod and rises on each relaunch of that role in it, and every path under `/var/run/legion` is the role's own directory, bound there in its namespaces.
 `DISPATCH_TOKEN_FILE` and `ENVOY_TOKEN_FILE` are stated without condition because configuration load refuses a `runtime: kubernetes` daemon that sets no `envoy_token_file` and one that sets no `dispatch_url` (`packages/daemon/internal/config/kubernetes.go`), and refuses a configured `dispatch_url` with no `dispatch_token_file` (`missingDispatchTokenFile`, `packages/daemon/internal/config/stage3.go`), so every pod carries both.
-`LEGION_PRIVATE_NAME_TERMS_FILE` is the one row with a condition: a role carries it only when the daemon's environment holds the deployment's term list (`LEGION_PRIVATE_NAME_TERMS`), and `printenv` exits 1 for it otherwise.
 
 | variable | value | renderer |
 | :--- | :--- | :--- |
@@ -3611,12 +3610,11 @@ They are an issue pod's role's; `<generation>` is the role's own generation coun
 | `LEGION_BOOT_TOKEN_FILE` | `/var/run/legion/private/g<generation>/LEGION_BOOT_TOKEN` | `launcherCommand`, `launcher.go` |
 | `LEGION_TERMINATION_GRACE_SECONDS` | the runtime sets it in no container; the pod's grace reaches the shim as its `--stop-grace` argument | `launcherCommand`, `launcher.go` |
 | `ENVOY_TOKEN_FILE` | `/var/run/legion/private/g<generation>/ENVOY_TOKEN` | `manifest.go` |
-| `LEGION_PRIVATE_NAME_TERMS_FILE` | `/var/run/legion/private/g<generation>/LEGION_PRIVATE_NAME_TERMS`, the deployment's term list, which the role's leak guard reads (`leakguard.Terms`) | `launchSecrets`, `internal/daemon/launchsecrets.go`; `manifest.go` |
 
 `<owner>`, `<repo>`, `<key-lower>` and `<generation>` are the pod's own:
 the owner and repository of the issue's repository, the issue key in lower case, and the role's generation counter.
 The daemon-launched controller's container differs:
-of these twelve names its agent carries no `LEGION_WORKSPACE`, because it is told no tree, issue or checkout (`controllerPod.agentEnv`, `podkind.go`), and its `GH_CONFIG_DIR` is its bundle's first owner's directory, because its launch names no repository: the default is then the project's owners sorted and the first taken, and the bundle is one read-only directory per owner with none for a repository (`appauth.GitHubCredential`, `credential.go`);
+of these eleven names its agent carries no `LEGION_WORKSPACE`, because it is told no tree, issue or checkout (`controllerPod.agentEnv`, `podkind.go`), and its `GH_CONFIG_DIR` is its bundle's first owner's directory, because its launch names no repository: the default is then the project's owners sorted and the first taken, and the bundle is one read-only directory per owner with none for a repository (`appauth.GitHubCredential`, `credential.go`);
 [Daemon-launched controller](#daemon-launched-controller) has the rest of it.
 
 The token behind `DISPATCH_TOKEN_FILE` is the daemon's own, not the role's.
