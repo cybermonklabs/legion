@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -37,7 +38,7 @@ var liveToolPins = sync.OnceValues(func() (map[string]string, error) { return re
 // fetch from the module proxy or the checksum database while a test runs would fail the test
 // whenever that service fails, on a change that touched nothing it tests. A tool that is absent,
 // or that is another build than its line, fails the test with the command that installs it.
-func liveTool(t *testing.T, binary string) string {
+func liveTool(t testing.TB, binary string) string {
 	t.Helper()
 	pins, err := liveToolPins()
 	require.NoError(t, err)
@@ -155,13 +156,16 @@ func liveToolBinary(pin string) (string, error) {
 // The tool lookup the live tests run their tools through: a pinned tool is taken from the live
 // tools' directory only when its binary is the build its line pins, and a tool that is absent or
 // another build is refused with the command that installs it. The lookup rows run lookupLiveTool,
-// the whole of what liveTool does, under a stand-in go first on PATH that answers `go env GOPATH`
-// with the row's own directory, records every call and runs nothing else. So the rows fail when
-// the lookup accepts a binary by its name alone (the another-build row), when it runs any go
-// command but `go env GOPATH` - an install of what is missing among them - or installs anything
-// into the directory by another way (the absent row: its tool is nats-server at its real pin,
-// which a `go install` from the module cache the fetch step filled would put there), and when
-// its message stops naming the install command.
+// and the liveTool row liveTool itself, through a testing.TB that records the failure liveTool
+// would fail its test with; each under a stand-in go, first on PATH and as GOROOT's bin/go, that
+// answers `go env GOPATH` with the row's own directory, records every call and runs nothing else.
+// So the rows fail when the lookup accepts a binary by its name alone (the another-build row),
+// when the lookup, or liveTool before or after it, runs any go command but `go env GOPATH` - an
+// install of what is missing among them, by the go on PATH or the toolchain's by its path - or
+// installs anything into the directory by another way (the absent rows: their tool is nats-server
+// at its real pin, which a `go install` from the module cache the fetch step filled would put
+// there), when liveTool stops failing its test on an absent tool, and when the message stops
+// naming the install command.
 func TestALiveToolIsTakenFromItsDirectoryOnlyAtItsPin(t *testing.T) {
 	self, err := os.Executable()
 	require.NoError(t, err)
@@ -215,6 +219,26 @@ func TestALiveToolIsTakenFromItsDirectoryOnlyAtItsPin(t *testing.T) {
 		}
 		require.Empty(t, entries, "the lookup installs nothing into %s", dir)
 	})
+	t.Run("liveTool fails its test on an absent tool and installs nothing", func(t *testing.T) {
+		pins, err := liveToolPins()
+		require.NoError(t, err)
+		absent := pins["nats-server"]
+		require.NotEmpty(t, absent, "%s pins nats-server", liveToolsFile)
+		gopath, calls := standInGo(t)
+		dir := filepath.Join(gopath, liveToolsDirName)
+		path, failed := runLiveTool(t, "nats-server")
+		require.Empty(t, path, "liveTool returns no path for an absent tool")
+		message := strings.Join(failed, "\n")
+		require.Contains(t, message, "nats-server is not installed in "+dir, "liveTool fails its test, naming the tool")
+		require.Contains(t, message, "GOBIN="+dir+" go install "+absent)
+		require.Contains(t, message, ".github/scripts/go-fetch.sh tools packages/envoy/infra/gcp/"+liveToolsFile)
+		require.Equal(t, []string{"env GOPATH"}, calls(), "liveTool's go commands: it installs nothing")
+		entries, err := os.ReadDir(dir)
+		if !errors.Is(err, fs.ErrNotExist) {
+			require.NoError(t, err)
+		}
+		require.Empty(t, entries, "liveTool installs nothing into %s", dir)
+	})
 	t.Run("the lookup refuses a name the list does not pin, before any go command", func(t *testing.T) {
 		_, calls := standInGo(t)
 		_, err := lookupLiveTool(t.TempDir(), map[string]string{name: pin}, "absent-tool")
@@ -223,18 +247,22 @@ func TestALiveToolIsTakenFromItsDirectoryOnlyAtItsPin(t *testing.T) {
 	})
 }
 
-// standInGo puts a go first on PATH that answers `go env GOPATH` with a directory of the test's
-// own, then a second one, records each call's arguments, and fails every other call without
-// running it. It returns the first directory and the calls so far.
+// standInGo puts a go first on PATH, and as the bin/go of GOROOT, that answers `go env GOPATH`
+// with a directory of the test's own, then a second one, records each call's arguments, and fails
+// every other call without running it: so a go command run by its name or by the toolchain's path
+// is recorded alike. It returns the first directory and the calls so far.
 func standInGo(t *testing.T) (string, func() []string) {
 	t.Helper()
-	bin, gopath := t.TempDir(), t.TempDir()
+	root, gopath := t.TempDir(), t.TempDir()
+	bin := filepath.Join(root, "bin")
 	record := filepath.Join(t.TempDir(), "calls")
 	script := "#!/bin/sh\necho \"$*\" >> \"$LIVE_TOOL_TEST_CALLS\"\n" +
 		"if [ \"$*\" = \"env GOPATH\" ]; then echo \"$LIVE_TOOL_TEST_GOPATH\"; exit 0; fi\n" +
 		"echo \"the stand-in go runs nothing but go env GOPATH: go $*\" >&2\nexit 1\n"
+	require.NoError(t, os.Mkdir(bin, 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte(script), 0o700))
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GOROOT", root)
 	t.Setenv("LIVE_TOOL_TEST_CALLS", record)
 	t.Setenv("LIVE_TOOL_TEST_GOPATH", gopath+string(os.PathListSeparator)+t.TempDir())
 	return gopath, func() []string {
@@ -246,6 +274,44 @@ func standInGo(t *testing.T) (string, func() []string) {
 		return strings.Split(strings.TrimRight(string(b), "\n"), "\n")
 	}
 }
+
+// runLiveTool runs liveTool for binary as a live test does, but through failures in a goroutine of
+// its own, and returns the path liveTool returned and what it would have failed its test with.
+func runLiveTool(t *testing.T, binary string) (string, []string) {
+	t.Helper()
+	recorded := &failures{TB: t}
+	var path string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		path = liveTool(recorded, binary)
+	}()
+	<-done
+	return path, recorded.messages
+}
+
+// failures is a testing.TB that records each failure rather than failing the test, and ends the
+// goroutine of a call that would stop the test, as testing.T's FailNow ends the test's own.
+type failures struct {
+	testing.TB
+	messages []string
+}
+
+func (f *failures) Helper() {}
+
+func (f *failures) Fail() { f.messages = append(f.messages, "Fail") }
+
+func (f *failures) Error(args ...any) { f.messages = append(f.messages, fmt.Sprint(args...)) }
+
+func (f *failures) Errorf(format string, args ...any) {
+	f.messages = append(f.messages, fmt.Sprintf(format, args...))
+}
+
+func (f *failures) Fatal(args ...any) { f.Error(args...); f.FailNow() }
+
+func (f *failures) Fatalf(format string, args ...any) { f.Errorf(format, args...); f.FailNow() }
+
+func (f *failures) FailNow() { runtime.Goexit() }
 
 // A tool's binary is the last element of its package path, or the one before a major-version
 // suffix, as `go install` names it; the pinned list holds the four tools the live tests run.
