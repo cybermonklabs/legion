@@ -880,7 +880,7 @@ describe("executeDispatchTool", () => {
     expect(failure).toBeInstanceOf(ToolInputError);
     if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
     expect(failure.problems).toEqual([
-      `ask ids are uuids. Write the whole id, or at least its first 8 characters. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… A third release. When?.`,
+      `ask ids are uuids. Write the whole id, or at least its first 8 hex digits. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… A third release. When?.`,
     ]);
     // The problem is the id, not which flags the command takes (INFRA-1522 R16).
     expect(failure.message).not.toContain("Allowed flags");
@@ -888,7 +888,7 @@ describe("executeDispatchTool", () => {
     expect(requests).toEqual(["/api/v1/issues/DSP-41"]);
   });
 
-  test("replies under the ask an 8-character prefix names", async () => {
+  test("replies under the ask a prefix of 8 hex digits names", async () => {
     const requests: string[] = [];
 
     const result = await replyToAsk("89abcdef", replyToAskServer(requests));
@@ -14957,7 +14957,7 @@ describe("executeDispatchTool", () => {
     }
   });
 
-  test("resolves an 8-character ask id prefix against the issue's asks", async () => {
+  test("resolves an ask id prefix of 8 hex digits against the issue's asks", async () => {
     const full = "7430fab3-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
     const requested: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {

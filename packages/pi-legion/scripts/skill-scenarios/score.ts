@@ -286,7 +286,7 @@ function askRow(
     `asks=${asks.length}`,
     ...verdicts.map(
       (v, i) =>
-        `ask${i + 1}: ${v.notes} options=${v.options.length} recommends=${/\brecommend/i.test(v.question)} chars=${v.question.length}`
+        `ask${i + 1}: ${v.notes} options=${v.options.length} recommends=${/\brecommend/i.test(v.question)} chars=${[...v.question].length}`
     ),
     `otherWrites=[${other.join(", ")}]`,
     `reads=[${skillReads.join(",")}]`,
