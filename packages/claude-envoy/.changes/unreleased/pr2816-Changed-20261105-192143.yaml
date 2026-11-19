@@ -8,7 +8,7 @@ body: |-
   `claude plugin update claude-envoy@legion-plugins`, takes this release and each one after it.
   The built `dist/` and `legion/` are committed nowhere any more; the release builds them and
   packs them into the tarball it publishes. The version a session reports is the published
-  version rather than the first 12 characters of a commit.
+  version rather than the first 12 hex digits of a commit.
 time: 2026-11-05T19:21:43.069206255Z
 custom:
     Issue: pr2816

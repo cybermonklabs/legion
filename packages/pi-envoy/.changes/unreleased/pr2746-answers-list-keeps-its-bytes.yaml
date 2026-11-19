@@ -6,16 +6,17 @@ body: |-
     whenever a read missed its 800 ms deadline, and each such request wrote the whole conversation
     behind the list to the cache again. A kept list can now name an older read than the request's
     own, and show an item that has since left the 72 hours, until a person writes, edits or
-    retracts something. Words the 8,000-character limit leaves out count as new, so a long new
-    message or a comment an edit made too long still moves the list. A read with no list to give
-    takes a kept list out of its place and puts its failure line after the last message; a read that
-    fails but gives the last list read, with the same items, keeps the kept list and does not say
-    that it failed, unless the kept bytes are that read's own text, which say it; otherwise the log
-    says it instead, with the read's reason, on the first such request and not again until a read
-    has answered, so a failure that lasts is one line. A read that finds nothing for the session
-    takes a kept list out of the request when one of its items was retracted inside the 72 hours,
-    as when a person retracts the only answer there, and leaves it where it is when its items only
-    aged out; it takes an earlier failure line out instead of repeating it on every request.
+    retracts something. Words the limit of 8,000 UTF-16 code units leaves out count as new, so a
+    long new message or a comment an edit made too long still moves the list. A read with no list
+    to give takes a kept list out of its place and puts its failure line after the last message;
+    a read that fails but gives the last list read, with the same items, keeps the kept list and
+    does not say that it failed, unless the kept bytes are that read's own text, which say it;
+    otherwise the log says it instead, with the read's reason, on the first such request and not
+    again until a read has answered, so a failure that lasts is one line. A read that finds
+    nothing for the session takes a kept list out of the request when one of its items was
+    retracted inside the 72 hours, as when a person retracts the only answer there, and leaves it
+    where it is when its items only aged out; it takes an earlier failure line out instead of
+    repeating it on every request.
 time: 2026-11-15T19:18:13.000000000Z
 custom:
     Issue: pr2746

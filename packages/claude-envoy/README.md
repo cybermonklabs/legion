@@ -42,14 +42,14 @@ message from Dispatch's Agents page as that person's own turn.
   in every Bash, and reads `CLAUDE_CONFIG_DIR` itself. With Dispatch configured,
   `dist/session-hook.js dispatch-first` puts the `dispatch-first` skill into the context of every
   session on the same `SessionStart` events and of each subagent (`SubagentStart`), as a hook of
-  its own so neither output crowds the other past Claude Code's 10,000-character hook limit. On a
+  its own so neither output crowds the other past Claude Code's hook limit of 10,000, in its own count. On a
   resume or fork Claude Code adds it only when the transcript does not already hold the same text,
   so a session keeps one copy, and one opened before the skill shipped gets it. On the same
   `SessionStart` events and at each `SubagentStart`, `dist/session-hook.js answers`, a third hook of
   its own, puts what people wrote to the session in the last 72 hours (answers to its asks, replies
   to its comments, comments on documents it wrote, messages to it) into the
   context, read from `GET /api/v1/agents/{session_id}/answers` for the hook input's `session_id`,
-  which at `SubagentStart` is the parent's: the same list, under 8,000 characters, that every
+  which at `SubagentStart` is the parent's: the same list, under 8,000 UTF-16 code units, that every
   Oh My Pi model request carries (`@legion/envoy-client/session-answers`). It prints within 800 ms
   of its start, Bun's start-up included, or 150 ms after its own code begins when the start-up alone
   took longer, carrying the last list read (`answers.json` in the session's Dispatch state
@@ -219,7 +219,7 @@ command runs as the Claude Code session that called it: the `open-asks` hook nam
 which Claude Code sets fresh in every Bash command and moves to the new id on `/clear`, so a
 `DISPATCH_SESSION_ID` inherited from a parent session is ignored. A write that makes the session
 follow an ask prints `Following ask <id> on <issue>: …` once per ask, after its result; a result
-longer than 25,000 characters is written to a file the output names. It reads the envoy.json
+longer than 25,000 UTF-16 code units is written to a file the output names. It reads the envoy.json
 below on every call.
 
 Dispatch asks remain on native Dispatch.
@@ -364,7 +364,7 @@ writes into `package.json`, and its
 tarball check refuses a tarball without it: a package published with none is cached under the
 name `unknown` and no later release reads as an update (measured on Claude Code 2.1.311). The
 version a session reports is therefore the version that was published, which is what makes this
-plainer than the derivation before it, where it was the first 12 characters of the commit the
+plainer than the derivation before it, where it was the first 12 hex digits of the commit the
 plugin was installed from.
 `claude plugin marketplace update legion-plugins` then
 `claude plugin update claude-envoy@legion-plugins` installs the newest release, which the

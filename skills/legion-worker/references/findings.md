@@ -156,8 +156,8 @@ check's recorded result then names the finding as sent to the controller, or nam
 
 ## What the ask says
 
-The question stands alone, since the ask view shows no comment. It holds at most 2,000 characters,
-the `Ref: <reference>` line `--ref` appends included (about 75 characters for a comment's
+The question stands alone, since the ask view shows no comment. It holds at most 2,000 UTF-16 code
+units, the `Ref: <reference>` line `--ref` appends included (about 75 ASCII characters for a comment's
 reference). Its first line names who asks: `Clear defect from <your role token>` for a clear
 defect no controller took, else `Finding from <your role token>`. The architect's acceptance and the
 controller's catch-up find a finding ask by that line. Then it names the concrete case before any

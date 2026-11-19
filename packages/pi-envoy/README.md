@@ -178,7 +178,7 @@ any compaction summary, it sends the `dispatch-first` skill, whose text never ch
 sends what people wrote to the session in the last 72
 hours that Dispatch delivered to it: answers to its asks, replies on them and in its comment
 threads, comments on its documents and routed issues, mentions, and messages, newest first and
-word for word. A subagent reads its parent's list. The list stays under 8,000 characters (at most 7,999): the oldest
+word for word. A subagent reads its parent's list. The list stays under 8,000 UTF-16 code units (at most 7,999): the oldest
 items that do not fit are left out, and its last line says how many and that `dispatch answers`
 prints them all. It is read on every request and waits at most 800 ms for Dispatch. Past that,
 or when the read fails, the read gives the last list read, with the time it was read and why
@@ -191,8 +191,8 @@ route; and that Dispatch is not asked again for 5 minutes. Any other answer, a p
 a 200 that is no answers list included, is a failed read.
 
 The list goes after the request's last message only on the request where it first shows an item,
-new words in one, or an item taken back. Items the 8,000-character limit leaves out count too: a
-new message longer than the limit, or a comment an edit made too long to fit, moves the list,
+new words in one, or an item taken back. Items the limit of 8,000 UTF-16 code units leaves out count
+too: a new message longer than the limit, or a comment an edit made too long to fit, moves the list,
 whose last line then says how many items were left out. An answer a person retracted leaves the
 list while its time is still inside the 72 hours, and that moves the list too; an item that only
 aged out of the 72 hours does not. On every request after that the list stays right after the
