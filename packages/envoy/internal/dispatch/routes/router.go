@@ -48,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -167,6 +168,11 @@ type AppContextOptions struct {
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
+	// OutboxPublishes is that an outbox publishes this deployment's events (cmd/dispatch: every
+	// deployment but DISPATCH_NATS_DISABLED=1's); see api.Deps.OutboxPublishes.
+	OutboxPublishes bool
+	// Metrics is the process's metrics registry (cmd/dispatch's /metrics); see api.Deps.Metrics.
+	Metrics *metrics.Registry
 	// DevSignIn mounts GET /auth/_dev/signin, which issues the session cookie for any person
 	// named with no sign-in issuer exchange, and makes the whole router refuse a request whose Host
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
@@ -228,6 +234,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		HorizonStallAfter:      opts.HorizonStallAfter,
 		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
+		OutboxPublishes:        opts.OutboxPublishes,
+		Metrics:                opts.Metrics,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
 	})

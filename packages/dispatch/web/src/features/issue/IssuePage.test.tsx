@@ -34,6 +34,7 @@ import type {
   Subscriber,
   UserIssueState,
 } from "../../api/types";
+import type { ConnectionCallbacks } from "../doc/connection";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -308,6 +309,18 @@ function renderIssuePage(
   })
 ) {
   const runtime = fakeDocumentRuntime({ text: seedText });
+  // Each document connection is told once that it has synced: by the timer below if the page has
+  // opened it by then, else by a row that waits for the connection and then calls
+  // `syncOpenedDocuments` itself. The page opens a document's connection only once that document's
+  // reads have answered, which can be after the timer.
+  const told = new Set<ConnectionCallbacks>();
+  const syncOpenedDocuments = () => {
+    for (const callbacks of runtime.callbacks) {
+      if (told.has(callbacks)) continue;
+      told.add(callbacks);
+      callbacks.onSynced();
+    }
+  };
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   const view = render(
     <MemoryRouter initialEntries={[path]}>
@@ -328,8 +341,8 @@ function renderIssuePage(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  window.setTimeout(runtime.sync);
-  return { ...view, runtime };
+  window.setTimeout(syncOpenedDocuments);
+  return { ...view, runtime, syncOpenedDocuments };
 }
 
 async function openSubscribedAgents(count: number) {
@@ -676,7 +689,9 @@ test("IssuePage lists project labels with issue labels selected and filters them
     const input = await screen.findByRole("combobox", { name: "Search or create label" });
     await waitFor(() => expect(listIssues).toHaveBeenCalledWith({ project: "CORE" }));
     expect(screen.getByRole("option", { name: "bug" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("option", { name: "frontend" })).toHaveAttribute(
+    // "frontend" is a label of the project's list, which the picker draws once that request has
+    // answered, not when it is made; "bug" is the issue's own and is drawn at once.
+    expect(await screen.findByRole("option", { name: "frontend" })).toHaveAttribute(
       "aria-selected",
       "false"
     );
@@ -1310,6 +1325,10 @@ test("IssuePage keeps the Spec mounted across tabs", async () => {
 
   try {
     await screen.findByRole("tab", { name: "Spec", selected: true });
+    // The document draws its text once its connection has synced, and the page opens that
+    // connection only once the document's reads have answered.
+    await waitFor(() => expect(view.runtime.connections).toHaveLength(1));
+    act(() => view.syncOpenedDocuments());
     await waitFor(() =>
       expect(within(view.container).getByRole("article")).toHaveTextContent(
         "The mounted specification"

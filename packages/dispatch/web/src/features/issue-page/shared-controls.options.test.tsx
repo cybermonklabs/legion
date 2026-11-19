@@ -3221,7 +3221,7 @@ test("the default shapes keep main's class strings", async () => {
       "AskCard own words",
       card.getByRole("button", { name: "Add a note or answer in your own words" })
     );
-    await user.click(card.getByRole("radio", { name: /Request changes/ }));
+    await user.click(await card.findByRole("radio", { name: /Request changes/ }));
     classAt("AskCard reason label", await card.findByText("Reason (required)"));
     classAt("AskCard submit hint", card.getByText(/^Add a reason to send/));
   } finally {
@@ -3276,7 +3276,7 @@ test("the default shapes keep main's class strings", async () => {
         .closest("p")
     );
     const changed = within(caseOf(otherCards, "edited"));
-    await user.click(changed.getByRole("radio", { name: "Ship" }));
+    await user.click(await changed.findByRole("radio", { name: "Ship" }));
     await user.click(changed.getByRole("button", { name: "Answer" }));
     classAt(
       "AskCard question changed",
@@ -6322,8 +6322,8 @@ function answerBoxOf(scope: CardScope): HTMLTextAreaElement {
   return scope.getByRole("textbox", { name: "Your answer" }) as HTMLTextAreaElement;
 }
 
-function radioOf(scope: CardScope, name: string): HTMLInputElement {
-  return scope.getByRole("radio", { name }) as HTMLInputElement;
+async function radioOf(scope: CardScope, name: string): Promise<HTMLInputElement> {
+  return (await scope.findByRole("radio", { name })) as HTMLInputElement;
 }
 
 /** Types a question-shaped answer and sends it from the box, which offers to ask it back
@@ -6354,10 +6354,10 @@ async function pressOptionAgain(
 ): Promise<void> {
   await user.keyboard("{Enter}");
   const picked = control as HTMLInputElement;
-  radioOf(scope, other).click();
+  (await radioOf(scope, other)).click();
   await settleReads();
   expect(picked.checked).toBe(true);
-  expect(radioOf(scope, other).checked).toBe(false);
+  expect((await radioOf(scope, other)).checked).toBe(false);
 }
 
 const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
@@ -6382,7 +6382,7 @@ const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
     again: pressEnter,
     name: "Answer",
     press: async (scope, user) => {
-      await user.click(radioOf(scope, "Ship"));
+      await user.click(await radioOf(scope, "Ship"));
       const answer = scope.getByRole("button", { name: "Answer" });
       answer.focus();
       await user.keyboard("{Enter}");
@@ -6457,7 +6457,7 @@ const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
     again: (scope, user, control) => pressOptionAgain(scope, user, control, "Hold"),
     name: "option",
     press: async (scope, user) => {
-      const ship = radioOf(scope, "Ship");
+      const ship = await radioOf(scope, "Ship");
       await user.click(ship);
       await user.keyboard("{Enter}");
       return ship;
@@ -6468,7 +6468,7 @@ const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
     again: (scope, user, control) => pressOptionAgain(scope, user, control, "Ship"),
     name: "Other",
     press: async (scope, user) => {
-      const other = radioOf(scope, "Other");
+      const other = await radioOf(scope, "Other");
       await user.click(other);
       await user.type(answerBoxOf(scope), "Stage it first");
       other.focus();
@@ -6633,7 +6633,7 @@ test("inside NoTooltips AskCard's Answer leaves a focus the reader moved elsewhe
     try {
       const scope = within(view.container);
       await settleReads();
-      await user.click(radioOf(scope, "Ship"));
+      await user.click(await radioOf(scope, "Ship"));
       const answer = scope.getByRole("button", { name: "Answer" });
       answer.focus();
       await user.keyboard("{Enter}");
@@ -6722,7 +6722,7 @@ test("inside NoTooltips an answer that lands with no answer body keeps the ask c
       const scope = within(view.container);
       const row = scope.getByTestId("ask-row");
       await settleReads();
-      await user.click(radioOf(scope, "Ship"));
+      await user.click(await radioOf(scope, "Ship"));
       const answer = scope.getByRole("button", { name: "Answer" });
       answer.focus();
       await user.keyboard("{Enter}");
@@ -6741,7 +6741,7 @@ test("inside NoTooltips an answer that lands with no answer body keeps the ask c
         answered.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "made" }))
       );
       expect(answer.isConnected).toBe(true);
-      expect(radioOf(scope, "Ship").checked).toBe(true);
+      expect((await radioOf(scope, "Ship")).checked).toBe(true);
       if (surface === "inside") {
         // A press while the read is out sends no second answer, and Answer is still refused, the
         // box with it.
@@ -6925,7 +6925,7 @@ test("outside NoTooltips AskCard sends an answer pressed while the ask is read a
     try {
       const scope = within(view.container);
       await settleReads();
-      await user.click(radioOf(scope, "Ship"));
+      await user.click(await radioOf(scope, "Ship"));
       await user.type(answerBoxOf(scope), "Stage it before the release");
       await user.click(scope.getByRole("button", { name: "Ask back" }));
       await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
@@ -6934,7 +6934,7 @@ test("outside NoTooltips AskCard sends an answer pressed while the ask is read a
       // The question back lands and empties the box, and the read of the ask after it is held.
       const answerReread = await landHeld(reads.read, () => said.resolve({} as Comment));
       expect(answerBoxOf(scope).value).toBe("");
-      expect(radioOf(scope, "Ship").checked).toBe(true);
+      expect((await radioOf(scope, "Ship")).checked).toBe(true);
       const answer = scope.getByRole("button", { name: "Answer" });
       if (surface === "inside") {
         // A press while the read is out sends nothing; once the read is drawn, a press sends.

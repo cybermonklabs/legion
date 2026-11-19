@@ -1700,8 +1700,8 @@ reads included.
 transports are intercepted apart, because happy-dom's `XMLHttpRequest` — which an upload goes
 through — has a `Fetch` of its own rather than `globalThis.fetch`.
 A request no handler answers is errored and recorded with its method and path; the preload's
-`afterEach(reportReachedNetwork)` fails the test with what was recorded, and its one `afterAll`, at
-the end of `setup.ts` beside the act check, fails the file, so a read the page swallowed in a
+last `afterEach` fails the test with what was recorded, and its one `afterAll` fails the file,
+both at the end of `setup.ts` with the act check, so a read the page swallowed in a
 `catch`, and a write still retrying after a file's last test, are reported all the same.
 The module answers six routes with the API's empty shape: the five the application shell reads on
 every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
@@ -1744,9 +1744,9 @@ lists as `(fail) (unnamed)` under the file; the hook order this rests on, and wh
 charged to the next row or to the file rather than to the row that printed it, are in the comment
 above the last block of `web/src/__tests__/setup.ts`.
 `__tests__/act-warnings.test.ts` proves the rule through the `test:web` command: it runs each of
-the five `__tests__/act-rule*.fixture.tsx` files in a child of its own and reads each failure by
-its row; four draw React's act messages, and `act-rule-quiet-restore.fixture.tsx` proves that the
-preload puts back a spy of `quietConsoleError()` that a row leaves in place.
+the six `__tests__/act-rule*.fixture.tsx` files in a child of its own and reads each failure by
+its row; four draw React's act messages, and two prove what the preload puts back after a row
+(`docs/testing.md`, "A Dispatch unit test runs in random order").
 The failure names each message's kind, its component when React names one, and up to three
 frames when the stack holds them, the test's own first (a `*.test.*` file or one under
 `web/src/__tests__/`) and then the product code under `web/src/`, as
@@ -1768,8 +1768,8 @@ after that wait, outside `act`.
 Silencing is not a fix: a row whose code logs on purpose keeps `console.error` quiet only through
 `quietConsoleError()` in `__tests__/act-warnings.ts`, which drops the row's output until the preload
 puts `console.error` back after the row, and still records each act message, so the rule still
-fails the row; after a row in which an `afterEach` before the preload's restore throws (the row's
-own, or the preload's `reportReachedNetwork`), `console.error` comes back only when the next row
+fails the row; after a row in which one of the row's own `afterEach` hooks throws, `console.error`
+comes back only when the next row
 starts, and when that row is a file's last, it stays quiet through that file's `afterAll`, yet the
 act messages are still recorded, so the file still fails; any other replacement of
 `console.error`, or a spy on it with a `mockImplementation`, is not allowed, because it drops the

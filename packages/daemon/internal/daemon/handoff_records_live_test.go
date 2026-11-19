@@ -774,11 +774,19 @@ type cliShell struct {
 // answers both streams and the exit code.
 func (s cliShell) bun(extra []string, program string, args ...string) (cliOutput, int) {
 	s.t.Helper()
+	return s.run(extra, "bun", append([]string{program}, args...)...)
+}
+
+// run runs `name args...` in the shell, with extra after the shell's own variables, where a
+// variable extra names again replaces the shell's (os/exec keeps the last), and answers both
+// streams and the exit code.
+func (s cliShell) run(extra []string, name string, args ...string) (cliOutput, int) {
+	s.t.Helper()
 	home := filepath.Join(s.dir, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		s.t.Fatal(err)
 	}
-	command := exec.Command("bun", append([]string{program}, args...)...)
+	command := exec.Command(name, args...)
 	command.Dir = s.dir
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -802,7 +810,7 @@ func (s cliShell) bun(extra []string, program string, args ...string) (cliOutput
 	if err != nil {
 		exit, ok := err.(*exec.ExitError)
 		if !ok {
-			s.t.Fatalf("run %s under bun: %v", program, err)
+			s.t.Fatalf("run %s %s: %v", name, strings.Join(args, " "), err)
 		}
 		code = exit.ExitCode()
 	}
