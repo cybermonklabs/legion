@@ -2779,7 +2779,7 @@ client speaks TLS to every endpoint, so a seed is never sent in plain text.
    ```
 
    ```text
-   public key: U<55 more characters>
+   public key: U<55 more base32 characters>
    version id: <version id>
    ```
 
@@ -2838,7 +2838,7 @@ envoy-infra seed verify --store gcp-secret-manager --name projects/example-proje
 
 ```text
 projects/example-project/secrets/envoy-nats-seed-example-host-a: present; latest: no
-public key: U<55 more characters>
+public key: U<55 more base32 characters>
 version id: 1
 projects/example-project/secrets/envoy-nats-seed-example-host-a latest (version 1) derives <the public key>: yes
 ```
@@ -3051,13 +3051,13 @@ none.
 
 | Input | What it is |
 | --- | --- |
-| `users[].name` | The user's name: lowercase letters, digits and hyphens, 1 to 48 characters, starting and ending with a letter or digit. |
-| `users[].nkey` | The user's public key, `U` and 55 more characters, as `envoy-infra seed generate` prints it. Empty for a pending user. |
+| `users[].name` | The user's name: lowercase letters, digits and hyphens, 1 to 48 ASCII characters, starting and ending with a letter or digit. |
+| `users[].nkey` | The user's public key, `U` and 55 more base32 characters, as `envoy-infra seed generate` prints it. Empty for a pending user. |
 | `users[].publish`, `users[].subscribe` | Each an `allow` list and an optional `deny` list of subject patterns. A subscribe `allow` entry may instead be `<subject> <queue>`, which scopes it to that queue group. |
 | `users[].hasSeed` | The consumer stores a seed for this user. |
 | `noAuthUser` | Optional: the name of a keyed user without a seed, whom a client presenting no credential becomes. |
-| `callout.issuer` | With a callout: the public key of the account, `A` and 55 more characters, whose seed signs the auth service's answers. The server admits only a user whose JWT that key issued. |
-| `callout.xkey` | With a callout: a curve public key, `X` and 55 more characters. The server seals each request to the auth service with it, so only the service reads a client's token. Required: without it nats-server sends each connecting client's token to the auth service unsealed, on `$SYS.REQ.USER.AUTH`. |
+| `callout.issuer` | With a callout: the public key of the account, `A` and 55 more base32 characters, whose seed signs the auth service's answers. The server admits only a user whose JWT that key issued. |
+| `callout.xkey` | With a callout: a curve public key, `X` and 55 more base32 characters. The server seals each request to the auth service with it, so only the service reads a client's token. Required: without it nats-server sends each connecting client's token to the auth service unsealed, on `$SYS.REQ.USER.AUTH`. |
 | `callout.serviceUser` | With a callout: the name of the keyed user the auth service connects as. |
 | `privateProjects` | Optional: the deployment may make a Dispatch project private ([dispatch://INFRA-3862](dispatch://INFRA-3862), R12). It needs `callout`, no user but the auth service's, and that user granted no more than the auth service's grant. |
 

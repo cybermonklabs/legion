@@ -96,13 +96,13 @@ The second form is `##[` anywhere in a line.
 Each line that holds text from the directory starts with the fixed text of the command, `architecture-check: `.
 The command writes every control character in each line that it prints as an escape, such as `\n`, `\r` or `\x1b`.
 It also writes the line separator U+2028 as `\u2028` and the paragraph separator U+2029 as `\u2029`.
-The runner does not end a line at these two characters, because `ProcessInvoker` reads each line with `StreamReader.ReadLine` ([`src/Runner.Sdk/ProcessInvoker.cs`](https://github.com/actions/runner/blob/8cfa1049f86781d141056082d73802d56cd2b433/src/Runner.Sdk/ProcessInvoker.cs)).
+The runner does not end a line at these two code points, because `ProcessInvoker` reads each line with `StreamReader.ReadLine` ([`src/Runner.Sdk/ProcessInvoker.cs`](https://github.com/actions/runner/blob/8cfa1049f86781d141056082d73802d56cd2b433/src/Runner.Sdk/ProcessInvoker.cs)).
 But a log viewer can show a line break at them, so the command escapes them for the person who reads the log, as it escapes format characters.
 So no line break from the directory gets into the log, and text from the directory cannot start a new line.
 The command also writes the `[` of every `##[` as `\x5b`.
 The escapes hold no `#` and no `[`, so no `##[` stays in a line.
 The runner finds `##[` with a search that can ignore some characters, such as U+034F.
-But it reads the command name at a fixed three characters after the start of the match.
+But it reads the command name at a fixed three UTF-16 code units after the start of the match.
 It accepts only a name of its registered commands, and it compares the name without regard to case.
 So if the match includes an ignored character, the name starts with `#`, `[` or that character, and no command that the runner defines has that name.
 In `actions/runner` at commit `8cfa1049f86781d141056082d73802d56cd2b433`, `ActionCommand.TryParse` reads the name at `cmdIndex = prefixIndex + Prefix.Length` ([`src/Runner.Common/ActionCommand.cs`](https://github.com/actions/runner/blob/8cfa1049f86781d141056082d73802d56cd2b433/src/Runner.Common/ActionCommand.cs)).

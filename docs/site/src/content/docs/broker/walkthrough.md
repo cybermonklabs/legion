@@ -83,8 +83,8 @@ The waiting command checks the broker every few seconds, waiting at most 10 seco
 checks, so it carries on within seconds of the approval: it receives `DEMO_API_KEY` in its
 environment and runs. The video shortens that wait. In the recording 11.7 seconds passed between
 the click and the command's output on screen: one such interval, plus the grant the command then
-collected and the work it then did. The demo command prints the key's length and last four
-characters to show it arrived. `agent-secrets status <request>` names who decided the request.
+collected and the work it then did. The demo command prints the key's length and last four bytes
+to show it arrived. `agent-secrets status <request>` names who decided the request.
 
 ## 6. The live grant
 
