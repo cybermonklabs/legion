@@ -444,7 +444,7 @@ func (l *link) end() {
 func readyForQuery(answer []byte) bool {
 	for len(answer) >= 5 {
 		length := int(binary.BigEndian.Uint32(answer[1:5]))
-		if length < 4 || len(answer) < 1+length {
+		if len(answer) < 1+length {
 			return false
 		}
 		if answer[0] == 'Z' {
