@@ -88,11 +88,12 @@ It carries:
   The launcher installs it once per launcher process, before any role starts:
   it unpacks the check into a staging directory, records the tag there, runs the check once with `--help` to see that it names its own shapes, and renames the result over `/legion/scratch/leak-check/` (`checkInstall`, `internal/launcher/leakcheck.go`).
   Every role is told that copy as `PUBLIC_LEAK_CHECK` (`mainEnvironment`, `internal/runtime/sandbox/manifest.go`, which names the install's own constant).
-  Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent or records another tag (`spawnOnce`, `internal/shim/shim.go`).
+  Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent, records another tag or its tag file is refused (`spawnOnce`, `internal/shim/shim.go`).
   Where the environment names no check, the shim names the install for everything it starts.
   The pod holds no credential for that repository and reads no repository mapping.
   A launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
   A new launcher process installs over what the directory held, so the controller's persistent volume never keeps an old check.
+  The tag file is read without following a link or waiting on a fifo, and one that is no regular file or is past 256 bytes is read as no install of the pin (`installedTag`).
   A start whose check could not be installed is never sent, and is charged as a launch failure.
   The claim then carries the refusal's sentence as `leakCheckCause`, which begins `the shared public leak check could not be installed:` and says what failed.
   The daemon and the image pins move together, and a rollback of one is a rollback of the other:
@@ -1163,6 +1164,10 @@ A save the database refuses is logged and tried again at the next save, and the 
 A resume looks the transcript's row up first, so the recreated-workspace notice below is decided from its last save.
 Then the launcher writes each row to its path, but only where the file is missing or holds part of the row:
 a longer file, which a relaunch into the same pod leaves, is not shortened.
+The launcher reads a file there only as a regular file, and no further than one byte past its row, which is all that decision needs;
+it opens a file it saves, and writes the marker below, the same way.
+So a link, a fifo or anything else that is no regular file at one of those paths is refused at once in words naming it:
+a resume over it fails, and a save is tried again at the next save.
 Then Claude Code starts.
 On a fresh session the launcher writes `<transcript>.legion-saved` beside the transcript once its first save has committed, and the claim boot of claude-envoy waits for that file as well as the transcript before it registers the session.
 A transcript the daemon has recorded is then always in the table: otherwise the next pod's resume would be refused, and three refusals retire the claim.
@@ -2104,6 +2109,39 @@ So after the rollback a merger learns of a removal only when it reads the pull r
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
 
+#### Rolling back the release that merges a conflicting head forward in its phase
+
+This release stops a conflict from sending an issue back to `implementing`.
+Its migration `20261119003157_conflict_reads_and_merge_forward` adds two outbox kinds to the kind check (`outbox_kind_check`), keeps `phase_ended` in it, deletes every queued `phase_ended` row, and adds two nullable columns to `pull_requests`.
+A `conflict_confirm` row is the second read of a head a first read found conflicting, due a minute after it, and `pull_requests.conflict_read` holds that first read.
+A `merge_forward` row is one message to one role about a conflict the daemon acted on, and `pull_requests.merge_forward` holds the ask that the implementer merge the base forward.
+
+**The rows of the two new kinds, and the two columns, must be cleared before the earlier image is pinned.**
+An earlier release puts neither kind in an outbox lane (`laneKinds` in `record/outbox.go`), so it never runs a row of either kind, and such a row would wait through the rollback and run at the roll forward, when the head it names has long moved.
+The earlier release never names the two columns either, so it neither reads nor clears them, and a first read or an ask it left standing would name a head its own moves have overtaken by the roll forward.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+begin;
+-- The second reads of conflicting heads, and the merge-forward messages.
+delete from outbox where kind in ('conflict_confirm', 'merge_forward');
+update pull_requests set conflict_read = null, merge_forward = null
+  where conflict_read is not null or merge_forward is not null;
+commit;
+```
+
+Each deleted `conflict_confirm` row costs one second read: the earlier release reads mergeability its own way and acts on a conflict at its first read.
+Each deleted `merge_forward` row is a message that nobody delivers.
+
+The kind check keeps `phase_ended` and both new names after the rollback, so it refuses nothing the earlier release writes.
+That release queues `phase_ended` rows again when a conflict sends an issue back, and the migration that deletes them does not run a second time, since the database still records its version.
+So run this once more with the earlier release stopped, before this release starts again:
+
+```sql
+-- A phase-ended message the earlier release queued about a move this release no longer makes.
+delete from outbox where kind = 'phase_ended';
+```
+
 #### Rolling back the release that publishes each issue's role sessions to Dispatch
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
@@ -2173,7 +2211,7 @@ A Dispatch without the route answers `404 NOT_FOUND` "no route for …", and the
 While it waits, each issue's row logs `outbox row waits` and no ERROR line: INFO at its first run, DEBUG after, and from its seventh retry, about two minutes after the first run, one WARN line at each run.
 That WARN line means a fault only once the Dispatch release that has the route is live: then the daemon reaches a Dispatch that does not serve the route.
 The daemon retries a `5xx` as a failure, with one ERROR line `outbox row failed` at each run.
-A refusal no retry changes ends the row (`stepRecordRefused` in `internal/daemon/outbox.go`): `404 ISSUE_NOT_FOUND`, a coded `400` such as `STEP_INPUT`, `403 STEP_WRITER` and `409 STEP_OTHER_ISSUE`; the record keeps what reached Dispatch before it.
+A refusal no retry changes ends the row (`recordRefused` in `internal/daemon/outbox.go`): `404 ISSUE_NOT_FOUND`, a coded `400` such as `STEP_INPUT`, `403 STEP_WRITER` and `409 STEP_OTHER_ISSUE`; the record keeps what reached Dispatch before it.
 
 The rollback needs no statement for the kind's rows: they stay in the outbox.
 An earlier release puts the kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and a row left in place holds back no other row.
@@ -2217,6 +2255,39 @@ The block above witnesses every project's issues with a row in `step_starts`, an
 A daemon left on this release while another rolls back would read the other project's witnesses as its own: it would end a run of its own that started after the rollback at the moment of that rollback, before its own start, and a later end would land on an earlier record's id.
 No statement can scope the roll forward to one project, since the database records each migration once.
 Roll back and roll forward every daemon of one database in the same change, and run the block above only when all of them are stopped.
+
+#### Rolling back the release that rates each plan
+
+This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
+That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so it writes the list last on any database.
+A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts.
+This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
+That migration changes no column.
+The daemon and Dispatch deploy in either order: a Dispatch without the plan route or the rating route answers `404 NOT_FOUND` "no route for …", and the row waits as a role holders' publication does ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)), logging `outbox row waits` and no ERROR line, until Dispatch has the route.
+
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
+
+```sql
+-- The writes of the runs' plans and of the retros' ratings onto Dispatch, of one project.
+delete from outbox where kind = 'plan_record' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'step_record' and payload->>'rating' is not null
+  and split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+The header of `20261117023932_outbox_kinds_with_the_plan_record.up.sql` carries this same block.
+
+**Each project rolls back on its own.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the outbox is one table for all of them, but each daemon runs only its own project's rows (`DueRows` in `record/store.go`).
+So one project can roll back while another stays on this release, and each delete names the project: a daemon left on this release still sends its own plans and ratings.
+
+Each deleted row is a write the daemon does not send again; the rollback deletes no node of Dispatch.
+A deleted `plan_record` row whose plan had not reached Dispatch leaves that run with no plan: the read of the project's finished issues then shows the plan of the highest generation Dispatch holds for the issue, whether that run came before the deleted one or after it (`madePlan.newerThan` in `workflowstore/read.go`), and no plan where Dispatch holds none.
+A deleted rating row whose rating had not reached Dispatch leaves that retro's record with no rating, and nothing else of the issue changes.
+A row can stand after its write reached Dispatch, when the daemon stopped, or failed to record the row as done, after the write (it runs such a row again when its lease expires, `settle` in `daemon/outbox.go`); that plan or rating stays in Dispatch.
+An earlier release puts `plan_record` in no outbox lane (`laneKinds` in `record/outbox.go`), so a `plan_record` row left in place is never decoded or run, and it writes its plan at the roll forward.
+A rating row left in place is not harmless in the same way: the release that records each step decodes a `step_record` row strictly and knows no `rating`, so it fails that row's decode at every attempt, logs the failure each time and retries it on its backoff until the roll forward.
+
+The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
 #### Rolling back the release whose update round ends at its bound
 
@@ -2711,7 +2782,8 @@ Neither has cybermonklabs/legion#3983, which landed after it at the same contrac
 Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
 Contract 123, cybermonklabs/legion#3793, has no section of its own here either: the header of its migration, `20261113090512_phase_entry_moved_back.up.sql`, gives its steps, which are none at the rollback and one statement, `update phases set entry_moved_back = true;`, before a roll-forward across it.
 To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
-A rollback of the release that records each step to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), whose way back runs first: its witness reads `phases.entry`, which the phase entry's block, the eleven statements of the rollback to contract 87 below, drops.
+A rollback of the release that rates each plan to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan).
+A rollback of the release that records each step to any release before it also takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), whose way back runs first: its witness reads `phases.entry`, which the phase entry's block, the eleven statements of the rollback to contract 87 below, drops.
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
@@ -2836,9 +2908,11 @@ The migrations recorded above this one are these.
 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and `pending_task_deliveries.round_named`, and appends the review round's two sentences to each task a reviewer's row stores in `phases.entry_task`, one of the six, building nothing on it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the two columns again at their defaults and, after this block's own roll-forward fills the tasks afresh, appends the sentences to them.
 20261117000528_outbox_kinds_with_the_step_record writes the outbox's kind check again with `step_record` added to the role-holders publication's list and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
 20261117004117_step_starts adds the tables `step_starts` and `step_starts_rollback` and the function `step_run_witness`, which reads `phases.entry` and writes none of the six, so the block holds over it and leaves the three standing, which the earlier release names in no statement; the way back of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), runs before the block, while `phases.entry` stands.
+20261117023932_outbox_kinds_with_the_plan_record writes the outbox's kind check again with `plan_record` added to the step record's list and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan).
 20261117064152_step_starts_roll_forward writes `step_starts`, `step_starts_rollback` and the `step_record` rows it adds to `outbox`, reads `phases.entry` through `step_run_witness` and writes none of the six, so the block holds over it, and the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), re-arm it for the roll forward.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
+20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -2982,6 +3056,8 @@ Its other calls get the same sentence — a claim route answers `{"error": …}`
 the operator's own controller instead gets `…: run legion controller start from the release built with this daemon`, since there is no pod for the daemon to relaunch it in.
 A claim whose launch installs no plugin (a Claude Code role in a pod) is never refused on its contract: nothing relaunches it, so it is served on its old contract until the update round over its pod brings a new image.
 Every other undecodable request body is logged `api: refused an undecodable request body` naming the route and the decoder's error.
+A string anywhere in a request body, a member's name or its value, that holds a NUL character (U+0000), which PostgreSQL's text and jsonb cannot hold, makes the body undecodable too:
+its route acts on nothing in it, and it is answered 400 `invalid request body: <place> holds a NUL character (U+0000) at character <n>, which the daemon cannot store` (or a stale caller's refusal, as any undecodable body is), naming the string's place in the body (`planReason`, `tasks[0].text`) and the character's place in the string, counted from 1 in code points, and never the string itself.
 A relaunched process that registers still on the old contract is charged as a launch failure (the claim remembers `PluginRelaunchFor`), ending, like any other exhausted budget, in a `worker-died`.
 The contract shows on every claim view — `GET /legion/v1/state`, `legion state --json`, `read_record`'s `pluginContract` field
 — on `legion claims list`'s line, whose last three columns are the claim's `updateRound`, the `updateHead` its worker reported (`-` for neither) and the tool call its agent is in (`-` for none), and on the state's controller locator.
@@ -6265,9 +6341,9 @@ A release moves no issue and ends no phase.
 A wake brings the pod back and resumes, in its own session, each role the wake is for.
 The wakes are these:
 
-- a phase start, task, backward move, notice, phase-ended message, hook prompt, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
+- a phase start, task, backward move, notice, merge-forward message, hook prompt, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
 
-- a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own read of a pull request runs as the workflow runtime starts and once an agent's handoff has been recorded, on no timer).
+- a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own reads of a pull request run at the moments [Running Legion](https://cybermonklabs.github.io/legion/legion/running-legion/) names).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
 
 - a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon.
@@ -6275,13 +6351,13 @@ The wakes are these:
   If it is not, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
   While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
   One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running.
-  The daemon sets `keep: false` on each of its publishes but two, a phase-ended message and a hook prompt, which it publishes with `keep: true`.
+  The daemon sets `keep: false` on each of its publishes but one, a hook prompt, which it publishes with `keep: true`.
   Its informational role messages to a released role (`outbox.roleMessage`, above) are neither published nor sent again, so they wake nothing and no next try reaches the role.
-  Its other messages to a role (a notice, a phase-ended message, a hook prompt, a merge-queue removal message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
+  Its other messages to a role (a notice, a hook prompt, a merge-queue removal message, a merge-forward message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
   While the wake pacing holds such a resume for its turn, the claim reads `launching` with no process, and each of these messages waits rather than publishing, because a kept copy's hour runs from its publish and can end before the pod starts.
   It looks again at its turn or five minutes later, whichever comes first, so a park that ends early, through an operator's resume or a restart, delays the message by five minutes at most.
-  A phase-ended message and a hook prompt are then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy keeps each of them for that session.
-  A listener before #4079 keeps nothing for a claim whose holder is not live and answers them `404`: their outbox rows end with them undelivered when that holder is `gone`, and retry while it is `unresponsive`;
+  A hook prompt is then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy keeps it for that session; a merge-queue removal message and a merge-forward message wait instead until the woken session holds the role.
+  A listener before #4079 keeps nothing for a claim whose holder is not live and answers a hook prompt `404`: its outbox row ends with it undelivered when that holder is `gone`, and retries while it is `unresponsive`;
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 
@@ -7496,13 +7572,14 @@ each issue's pod (every role of it alike) and the image probe's.
     a Claude Code role's, whose id the daemon chose for the launch, at its shim's hello, before its agent registers;
     and a role relaunched into a new pod is registered for the session it resumes at that pod's first hello.
 
-  - The broker honours a registration for 24 hours past its last write, and every renewal of a session's broker token is a fresh exchange that checks it, so the daemon writes each live role's registration again every 6 hours, with the same thumbprint, and stops when the role's process ends.
+  - The broker honours a registration for 24 hours past its last write, unless a caller that logs in as the daemon's account releases it, and every renewal of a session's broker token is a fresh exchange that checks it, so the daemon writes each live role's registration again every 6 hours, with the same thumbprint, and stops when the role's process ends.
 
   - When a role's process ends, the daemon waits for that registration's write in flight to be answered, up to the RPC timeout, before its next process writes its own, so the session ends bound to the new process's key.
 
   - Every write also sends the claim's launch generation, which rises with every launch of the claim and is stored with the claim, so no two processes send the same one and it survives a daemon restart.
-    The broker writes a registration only when the generation sent is at least the one it holds, and answers the registration it holds, so a late write of an earlier process, one the wait above gave up on, cannot put that process's key back.
-    An answer at a later generation than the daemon sent ends that registration's writes, and the daemon logs it at error level, naming the pod, the session and both generations: as a later process's registration when the answered generation is at most the claim's current one, and as a registration this daemon never made when it is above it, since no process of the claim reached that generation (another claim registered the session id, or another service login wrote it).
+    The broker writes a registration that the daemon's account wrote and has not released only when the generation sent is at least the one it holds, and answers the registration it holds, so a late write of an earlier process, one the wait above gave up on, cannot put that process's key back.
+    It overwrites a registration the daemon's account released, one another registrar wrote and one that names no registrar, whatever generation each holds, but only of a session name bound to the daemon's account, which the name's first registration binds for good: a name bound to another account it refuses `409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR` and writes nothing, a refusal the daemon logs and does not write again (below).
+    An answer at a later generation than the daemon sent ends that registration's writes, and the daemon logs it at error level, naming the pod, the session and both generations: as a later process's registration when the answered generation is at most the claim's current one, and as a registration this daemon never made when it is above it, since no process of the claim reached that generation (another claim of this daemon registered the session id, or another process logged in as the daemon's account wrote it, such as a pod of that account where `BROKER_POD_REGISTRARS` pairs the account with itself, or another daemon of that account).
 
   - A write that fails, or that the broker refuses for a reason a retry can change, is logged naming the pod and the session and written again at 15 seconds, doubling to 5 minutes;
     that includes `403 POD_REGISTRAR_NOT_LISTED`, which a broker answers until the deployment lists the daemon's account as a registrar for its pods' account.

@@ -73,12 +73,12 @@ type TokenCredential struct {
 // to the service it logs in as: the token goes to the cluster's verifier (s.Enroll.Pod, the one
 // pod enrollment uses) and its subject must be in BROKER_SERVICE_LOGINS. It is held to
 // MaxTokenLoginLifetime from its issue, and AuthenticateLauncher reads the same setting for
-// every credential a login issues. It is both the check a token login makes and the check a
-// route whose callers are a deployment's daemons makes (api's serviceAuth class,
-// POST /v1/oauth/exchange/pod-sessions), so the two refuse the same accounts for the same
-// reasons. With no Kubernetes issuer it is ErrTokenLoginsOff. The other refusals are
-// ErrTokenExpired, ErrTokenInvalid, ErrTokenTooLongLived and ErrAccountNotListed; none repeats
-// the token.
+// every credential a login issues. It is both the check a token login makes and the check the
+// routes whose callers are a deployment's daemons make (api's serviceAuth class,
+// POST /v1/oauth/exchange/pod-sessions and POST /v1/oauth/exchange/pod-sessions/release), so
+// they refuse the same accounts for the same reasons. With no Kubernetes issuer it is
+// ErrTokenLoginsOff. The other refusals are ErrTokenExpired, ErrTokenInvalid,
+// ErrTokenTooLongLived and ErrAccountNotListed; none repeats the token.
 //
 // The answer also names the person that BROKER_POD_OPERATORS maps the account to
 // (ServiceAccount.Person), as the setting is at this call. It names no person for an account that

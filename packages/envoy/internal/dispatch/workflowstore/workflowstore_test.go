@@ -875,20 +875,26 @@ func put(t *testing.T, pool *store.Pool, write StepWrite, at time.Time) Step {
 	return written
 }
 
-// tryPut runs one write in a transaction of its own, commits it when the write is taken, and
-// rolls it back and answers the refusal when it is not.
-func tryPut(pool *store.Pool, write StepWrite, at time.Time) (Step, error) {
+// committed runs write in a transaction of its own, commits it when the write is taken, and rolls
+// it back and answers the refusal when it is not, as the route does.
+func committed[T any](pool *store.Pool, write func(ctx context.Context, tx pgx.Tx) (T, error)) (T, error) {
 	ctx := context.Background()
+	var none T
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return Step{}, err
+		return none, err
 	}
 	defer tx.Rollback(ctx)
-	written, err := PutStep(ctx, tx, write, daemon, at)
+	written, err := write(ctx, tx)
 	if err != nil {
-		return Step{}, err
+		return none, err
 	}
 	return written, tx.Commit(ctx)
+}
+
+// tryPut runs one step write in a transaction of its own (committed).
+func tryPut(pool *store.Pool, write StepWrite, at time.Time) (Step, error) {
+	return committed(pool, func(ctx context.Context, tx pgx.Tx) (Step, error) { return PutStep(ctx, tx, write, daemon, at) })
 }
 
 func issueSteps(t *testing.T, pool *store.Pool, issue string) []StepRead {

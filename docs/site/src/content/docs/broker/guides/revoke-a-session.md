@@ -379,6 +379,8 @@ a sign-in of its own. Run `agent-secrets login` on the machine to sign in again.
 The sessions above are agents'. A person's own sign-in to the broker's approval page is separate:
 it lasts a day at most, is never extended, and ends when they sign out. Nobody ends someone
 else's from a page; an operator ends every browser session one login holds by running the
-broker's own subcommand in a broker pod, `envoy-broker end-sessions <login>`
-([Ending a person's sessions](/legion/broker/operate/#ending-a-persons-sessions)). Revoking a
+broker's own subcommand, `envoy-broker end-sessions <login>`, in a one-off process of the image
+with the serving broker's settings
+([Ending a person's sessions](/legion/broker/operate/#ending-a-persons-sessions) and
+[Running a subcommand](/legion/broker/operate/#running-a-subcommand)). Revoking a
 grant or a machine login does not need a broker sign-in and never ends one.
