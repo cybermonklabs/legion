@@ -2449,57 +2449,8 @@ package api
 // held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
 // who minted it, the controller session or the operator's bearer (credential.Grant's Session and
 // Operator), which the pause records as who acted; that has no wire shape of its own.
-// (The number is the lowest above main's that no open pull request of cybermonklabs/legion
-// declares. This change took 143 against main's 141 on 2026-11-15, and took 153 at the forward
-// merge of 2026-11-16 that brought main in at 545b2116331a, which carries #4021's 144, the entry
-// right above: the reading of every open head at 2026-11-16T01:57Z found 144 (#4089), 145
-// (#3659), 146 (#3711), 147 (#4017), 148 (#3519), 149 (#2731), 150 (#4049), 151 (#4106) and 152
-// (#3730). It keeps 153 at the forward merge that brings main in at 5f658978b127, where main still
-// declares 144: the reading of every open head at 2026-11-16T07:41Z found 145 (#3659), 146
-// (#3711), 147 (#4017), 148 (#3519), 149 (#2731), 150 (#4049 and #4065), 151 (#4106) and 152
-// (#3730), and none declares 153. It keeps 153 at the forward merge that brings main in at
-// fffa9dc0c1c6, where main still declares 144: the reading at 2026-11-16T09:19Z found 145 (#3659
-// and #4175), 146 (#3711), 147 (#4017), 148 (#3519), 150 (#4049 and #4065), 151 (#4106) and 152
-// (#3730), and none declares 153. It keeps 153 at the forward merge that brings main in at
-// cd279c693142, where main still declares 144: the reading at 2026-11-16T14:11Z found the same
-// numbers on the same pull requests, and none declares 153. It keeps 153 at the forward merge that
-// brings main in at 858e96459dc3, which carries #3711's 146, the entry right above: the reading at
-// 2026-11-16T19:27Z found 145 (#3659 and #4175), 147 (#4017), 148 (#3519), 149 (#2230), 150
-// (#4049 and #4065), 151 (#4106) and 152 (#3730), and none declares 153. Read the base's own
-// number and every open pull request again at every forward merge rather than from this line.
-// It keeps 153 at the forward merge that brings main in at 34f0d8c8, which carries #4106's 151,
-// the entry right above: the reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every
-// open pull request, made between 2026-11-17T12:15:38Z and 12:17:18Z, found 152 (#3730), 154
-// (#3659), 155 (#4273) and 156 (#3993 and #4065), and none but this change declares 153.
-// It keeps 153 at the forward merge that brings main in at 0b2769e5, which carries #3730's 152,
-// the entry right above: the reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every
-// open pull request, made between 2026-11-18T05:10:45Z and 05:14:26Z, found 154 (#3659), 155
-// (#4273), 156 (#4065), 157 (#2230 and #3993), 158 (#4017, #4173, #4180 and #4193), 159 (#4049
-// and #4175) and 160 (#3519), and none but this change declares 153.
-// It moves to 171 at the forward merge that brings main in at bacd5d7e, which carries #3519's
-// 160, the entry right above: the reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
-// every open pull request, made between 2026-11-19T11:46:56Z and 11:56:03Z, found 161 (#4180,
-// #4193 and #4259), 162 (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 167
-// (#4273), 168 (#3659, #3993, #4175 and #4488), 169 (#3831, #4065, #4485 and #4493) and 170
-// (#2230, #4030, #4173 and #4495), so 171 is the lowest number above main's 160 that no open
-// head declares.
-// It moves to 175 at the forward merge that brings main in at a20e0b05, which carries #4488's
-// 168, the entry right above: the reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
-// every open pull request, made between 2026-11-19T17:04:24Z and 17:10:27Z, found 169 (#3831 and
-// #4065), 170 (#2230, #4030, #4173, #4180 and #4193), 171 (#4485 and #4495 beside this change),
-// 172 (#3659), 173 (#4493) and 174 (#4273), so 175 is the lowest number above main's 168 that no
-// other open head declares.
-// It moves back to 171 at the forward merge that brings main in at 724196ef, where main still
-// declares 168: the reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull
-// request, made between 2026-11-19T18:38:53Z and 18:54:14Z, found 169 (#4065), 170 (#2230, #4173,
-// #4180 and #4193), 172 (#3659), 173 (#4493), 174 (#3993 and #4273), 175 (#3712, #4392, #4432,
-// #4485 and #4495 beside this change) and 176 (#3831 and #4030), and none declares 171, which
-// #4485 and #4495 left for 175, so 171 is the lowest number above main's 168 that no other open
-// head declares.
-// It moves to 178 at the head after 87bb170f, where main still declares 168: #4049 took 171 at
-// 18:54:36Z, and the reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull
-// request, made between 2026-11-19T20:40:35Z and 20:45:30Z, found 169 (#4065), 170 (#2230, #4180,
-// #4182 and #4193), 171 (#4049 beside this change), 172 (#3659), 173 (#4493), 174 (#3993 and
-// #4273), 175 (#3712, #4392, #4432, #4485 and #4495), 176 (#3831, #4030 and #4173) and 177
-// (#4017), so 178 is the lowest number above main's 168 that no other open head declares.)
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
 const DaemonAPIVersion = 178

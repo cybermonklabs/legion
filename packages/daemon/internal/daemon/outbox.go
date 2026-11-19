@@ -249,15 +249,16 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 // (heldTopic), is made only while that claim holds the session it records
 // (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot could not suspend keeps
 // its process, and that process keeps the Envoy role its session claimed, so a notice, a role
-// message, a phase's end, a hook's prompt, an update ask, a merge-queue removal or a controller
-// notice would reach a process working under another claim's session, or one no claim holds
-// (review rounds 13 to 16 of #4220). Such a publish is not made and answers notify.ErrNoHolder,
-// which every executor already answers its own way — a notice is held for its architect, a
-// merge-queue removal and a controller notice wait, and a role message, a phase's end, a hook's
-// prompt and an update ask finish undelivered — so an operator's settle of the name lets a held
-// row's next attempt through (a notice, a merge-queue removal, a controller notice), while a row
-// that finished undelivered is not sent again (review round 13 of #4220, note 36). A store that
-// does not answer publishes nothing and fails the attempt, which the row's backoff retries.
+// message, a hook's prompt, an update ask, a merge-queue removal, a merge forward's message or a
+// controller notice would reach a process working under another claim's session, or one no claim
+// holds (review rounds 13 to 16 of #4220). Such a publish is not made and answers
+// notify.ErrNoHolder, which every executor already answers its own way: a notice is held for its
+// architect; a merge-queue removal, a merge forward's message, a controller notice and a role
+// message a project's pause still owes its role (heldMessageOwed) wait; and any other role
+// message, a hook's prompt and an update ask finish undelivered. So an operator's settle of the
+// name lets a waiting row's next attempt through, while a row that finished undelivered is not
+// sent again (review round 13 of #4220, note 36). A store that does not answer publishes nothing
+// and fails the attempt, which the row's backoff retries.
 //
 // HoldsItsSession takes no machine lock, so no publish waits out a decision in flight, a launch or
 // relaunch in the runtime included (LEGION-650). The gate is here rather than in the publisher

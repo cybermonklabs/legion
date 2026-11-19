@@ -18,16 +18,16 @@ body: |-
   project, is paused like any other claim. The architect-stalled wake and the stalled-tree notice
   tell nothing while the project is paused, and count no time that a pause held the project. After
   the resume, the wake of a session that the pause stopped, and the wake taken for a notice, a
-  phase's end, a hook's prompt or a merge-queue removal that the pause held, are wakes of that
-  pause, which `read_release_records` counts as `heldByPause`. An update round over a pod that the
-  pause held counts no time until the wake pacing has let out every launch that the pause held for
-  a session of the pod, those wakes included. The round's own ask is queued only for a session
-  that is ready, and an ask that the pause held wakes, after the resume, a session that the pause
-  stopped. A role message of the daemon's own that the pause held for a session that a pause
-  stopped reaches that session once it is back and holds its role, across a second pause too, and
-  its publish is what wakes the session; one held for a session that no pause stopped, such as one
-  an idle release had released before the pause, finishes undelivered and wakes nothing, as a role
-  message to a released session does.
+  hook's prompt, a merge-queue removal or a merge forward's message that the pause held, are
+  wakes of that pause, which `read_release_records` counts as `heldByPause`. An update round over
+  a pod that the pause held counts no time until the wake pacing has let out every launch that the
+  pause held for a session of the pod, those wakes included. The round's own ask is queued only for
+  a session that is ready, and an ask that the pause held wakes, after the resume, a session that
+  the pause stopped. A role message of the daemon's own that the pause held for a session that a
+  pause stopped reaches that session once it is back and holds its role, across a second pause
+  too, and its publish is what wakes the session; one held for a session that no pause stopped,
+  such as one an idle release had released before the pause, finishes undelivered and wakes
+  nothing, as a role message to a released session does.
   A production check's look that began before the pause ended counts its two hours from the
   resume, or from its session's last ready after the resume where that is later, and nothing while
   that session is still starting.
