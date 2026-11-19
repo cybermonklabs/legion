@@ -454,6 +454,18 @@ func TestAProjectScopedTokenCreatesIssuesOnlyInItsOwnProject(t *testing.T) {
 		t.Fatalf("refusal = %+v, want %s naming %s and OTH", refusal, codeProjectScope, brokerTestProject)
 	}
 
+	// An import that names no project is refused for that before the scope check, since there
+	// is no project to compare with the token's.
+	unnamed := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"external": "owner/repo#1",
+	}))
+	if unnamed.Code != http.StatusBadRequest {
+		t.Fatalf("importing an issue with no project: status=%d body=%s, want 400", unnamed.Code, unnamed.Body.String())
+	}
+	if refusal := decodeBody[refusalAnswer](t, unnamed); refusal.Code != "INVALID_ISSUE" || !strings.Contains(refusal.Error, "project is required when external is set") {
+		t.Fatalf("refusal = %+v, want INVALID_ISSUE naming project", refusal)
+	}
+
 	created := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
 		"project": brokerTestProject, "title": "Filed into its own project", "spec": "# Spec",
 	}))

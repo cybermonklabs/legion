@@ -434,12 +434,11 @@ type PriorityIssue struct {
 	MovedBy   *Actor         `json:"moved_by"`
 }
 
-// RepoProject assigns an external repository to a native Dispatch project. Default marks the one
-// mapping of the project an issue with no repository of its own, and none on its parent chain,
-// resolves to; at most one mapping of a project is its default. RenamedTo is the full
-// `owner/name` this repository is called today, null for one that was never renamed: Dispatch
-// holds both names of one repository, and the canonical name is what this field reads, else the
-// repository's own (refs.Renames.Canonical, over the pairs the boot reads).
+// RepoProject is one row of repo_projects. GET /api/v1/settings/repo-projects answers the rows
+// as the last release left them, and nothing writes them now. Default marks the row that was its
+// project's default repository. This release's migration copied it to the project's
+// default_repo. RenamedTo is the full `owner/name` this repository is called today, null for one
+// that was never renamed: the boot reads these pairs once (store.ReadRepoRenames).
 type RepoProject struct {
 	Repo      string    `json:"repo"`
 	Project   string    `json:"project"`

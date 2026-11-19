@@ -1524,6 +1524,41 @@ func TestAMethodAKnownPathDoesNotServeIsJSONNoRoute(t *testing.T) {
 	}
 }
 
+// The repository mapping's writes are gone (dispatch://INFRA-4402): a PUT or a DELETE under
+// /api/v1/settings/repo-projects answers the JSON 404 of a route the process does not serve. The
+// read of the stored rows stays mounted, so an anonymous GET of it is refused 401, not 404.
+func TestTheRepositoryMappingWritesAreNoRoute(t *testing.T) {
+	handler, _ := newTestRouter(t)
+	const path = "/api/v1/settings/repo-projects/acme/widgets"
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(method, path, strings.NewReader(`{"project":"CORE"}`)))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("%s %s status %d: %s", method, path, response.Code, response.Body.String())
+		}
+		if got := response.Header().Get("Content-Type"); got != "application/json" {
+			t.Fatalf("%s %s content type %q", method, path, got)
+		}
+		var body map[string]string
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s %s body %q: %v", method, path, response.Body.String(), err)
+		}
+		want := map[string]string{
+			"code":  "NOT_FOUND",
+			"error": "no route for " + method + " " + path,
+			"hint":  "GET /api/v1 lists every route",
+		}
+		if !reflect.DeepEqual(body, want) {
+			t.Fatalf("%s %s body = %v, want %v", method, path, body, want)
+		}
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/settings/repo-projects", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("an anonymous GET /api/v1/settings/repo-projects: status %d body %s, want 401 from the mounted read", response.Code, response.Body.String())
+	}
+}
+
 func TestStaticHandlerServesFaviconIcoAsSvg(t *testing.T) {
 	webDist := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html>"), 0o600); err != nil {

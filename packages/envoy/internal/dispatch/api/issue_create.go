@@ -47,10 +47,10 @@ type issueDuplicateError struct {
 
 // createIssueInput is the body of POST /api/v1/issues.
 type createIssueInput struct {
-	// Project and Title are not required of a caller: a create that names an external
-	// owner/repo#n takes the project from that repository's mapping and the title from the
-	// external issue (:92-127, :169-170), and only a create that names neither is refused.
-	Project   string   `json:"project"`
+	// Project is required of every create, an import of an external owner/repo#n included:
+	// Dispatch finds no project from a repository. Title is not required of a caller: an import
+	// takes the external ref as its title when it names none.
+	Project   string   `json:"project" required:"true"`
 	Title     string   `json:"title"`
 	Parent    *string  `json:"parent"`
 	BlockedBy []string `json:"blocked_by"`
@@ -100,50 +100,27 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var externalRepo, externalNumber string
-	usingDefaultProject := false
 	if input.External != "" {
+		// An import names its project in the body, as every other create does: Dispatch finds
+		// no project from a repository. The refusal comes before the scope check and before the
+		// ref is resolved, so a create that names no project reads nothing and writes nothing.
+		if input.Project == "" {
+			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, "project is required when external is set")
+			return
+		}
 		var err error
 		externalRepo, externalNumber, err = externalRef(input.External)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		project, err := s.repoProject(r.Context(), externalRepo)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		if project == "" {
-			project = s.deps.DefaultProject
-			if project == "" {
-				writeError(w, "PROJECT_UNMAPPED", http.StatusBadRequest,
-					"repository is not mapped in repository settings and DISPATCH_DEFAULT_PROJECT is not configured")
-				return
-			}
-			usingDefaultProject = true
-		}
-		if input.Project != "" && input.Project != project {
-			writeError(
-				w,
-				"EXTERNAL_PROJECT_MISMATCH",
-				http.StatusBadRequest,
-				fmt.Sprintf(
-					"external issue project %s must match repository settings project %s",
-					input.Project,
-					project,
-				),
-			)
-			return
-		}
-		input.Project = project
 	}
 	// The one write whose project its address does not name, so withinProjectScope leaves it
-	// here by its class (scopeProjectInBody). It runs the moment that project is settled —
-	// read from the body above, or from the repository the external ref names — and so before
-	// the ref is resolved to an issue already imported: a scoped caller naming one imported
-	// into another project is refused rather than answered that project's issue, which
-	// respondWithExistingExternalIssue would also record a related-check outcome on. Nothing
-	// is written before this point.
+	// here by its class (scopeProjectInBody). It runs once the body's project is read, and so
+	// before the external ref is resolved to an issue already imported: a scoped caller naming
+	// one imported into another project is refused rather than answered that project's issue,
+	// which respondWithExistingExternalIssue would also record a related-check outcome on.
+	// Nothing is written before this point.
 	// callerProject is empty for a credential that names none, which is every caller that
 	// exists today; the dependency lock step and writeBlockedBy below read it again, since a
 	// blocked_by target's project is no part of this address.
@@ -168,7 +145,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 					"EXTERNAL_PROJECT_MISMATCH",
 					http.StatusBadRequest,
 					fmt.Sprintf(
-						"external issue project %s must match repository settings project %s",
+						"%s is already linked to %s of project %s, so it cannot be imported into project %s",
+						input.External,
+						existingKey,
 						existingProject,
 						input.Project,
 					),
@@ -198,9 +177,6 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if length := itemblocks.Units16(input.Title); length > contracts.IssueTitleMax {
 		capExceeded(w, "title", length, contracts.IssueTitleMax)
 		return
-	}
-	if usingDefaultProject {
-		input.Labels = append(input.Labels, repoLabelPrefix+externalRepo)
 	}
 	labels, err := normalizeIssueLabels(input.Labels)
 	if err != nil {

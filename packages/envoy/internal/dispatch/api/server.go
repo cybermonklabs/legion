@@ -65,11 +65,6 @@ func projectKeyProblem(field, value string) string {
 	return fmt.Sprintf("%s %q is not a project key: %s", field, value, contracts.ProjectKeyRule)
 }
 
-// repoLabelPrefix marks an issue created through DISPATCH_DEFAULT_PROJECT
-// with the external repository it came from, so the repository stays
-// visible and filterable once it's no longer named by the project key.
-const repoLabelPrefix = "repo:"
-
 // ServiceTokenVerifier verifies a Kubernetes pod's projected service-account token.
 // *oidc.LazyVerifier is the one Dispatch serves with: until its issuer is discovered every Verify
 // fails with an error matching oidc.ErrIssuerUnavailable.
@@ -90,10 +85,9 @@ type AgentPublisher interface {
 
 // Deps are the API's application dependencies.
 type Deps struct {
-	Store          *store.Store
-	Identity       identity.Identity
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	Store       *store.Store
+	Identity    identity.Identity
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
 	// from the words a person typed when those words match nothing it found
 	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
@@ -215,10 +209,9 @@ const defaultStreamHeartbeat = 15 * time.Second
 
 // DepsInput contains raw boot values used to construct API dependencies.
 type DepsInput struct {
-	Store          *store.Store
-	Identity       identity.Identity
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	Store       *store.Store
+	Identity    identity.Identity
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession are the two new-issue settings; see Deps. A label longer
 	// than one an issue may carry, or a session id that is no session id, refuses startup.
 	NewIssueLabel   string
@@ -290,10 +283,6 @@ type DepsInput struct {
 
 // NewDeps parses boot configuration once and returns API dependencies.
 func NewDeps(input DepsInput) (Deps, error) {
-	defaultProject := strings.TrimSpace(input.DefaultProject)
-	if defaultProject != "" && !projectKeyPattern.MatchString(defaultProject) {
-		return Deps{}, fmt.Errorf("invalid DISPATCH_DEFAULT_PROJECT %q (expected project key)", defaultProject)
-	}
 	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
 	switch problem {
 	case "label":
@@ -342,7 +331,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Store:                  input.Store,
 		Identity:               input.Identity,
 		AgentTokens:            input.AgentTokens,
-		DefaultProject:         defaultProject,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
 		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
@@ -372,31 +360,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
 	}, nil
-}
-
-// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...).
-func ParseRepoProjects(raw string) (map[string]string, error) {
-	projects := make(map[string]string)
-	if strings.TrimSpace(raw) == "" {
-		return projects, nil
-	}
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		repo, project, ok := strings.Cut(part, "=")
-		project = strings.TrimSpace(project)
-		if !ok || repo == "" || project == "" || strings.Contains(project, "=") || !projectKeyPattern.MatchString(project) {
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
-		}
-		canonical, _, err := externalRef(repo + "#1")
-		if err != nil {
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
-		}
-		if _, exists := projects[canonical]; exists {
-			return nil, fmt.Errorf("duplicate DISPATCH_REPO_PROJECTS repository %q", canonical)
-		}
-		projects[canonical] = project
-	}
-	return projects, nil
 }
 
 type server struct {

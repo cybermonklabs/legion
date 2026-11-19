@@ -55,15 +55,14 @@ import (
 // read-only after BuildAppContext returns; per-request state lives on
 // *router.
 type AppContext struct {
-	SigningKey     auth.SigningKeys
-	WebDistDir     string
-	AssetStore     AssetStore
-	Sessions       auth.SessionStore
-	People         auth.PeopleStore
-	Identity       identity.Identity
-	Store          *store.Store
-	DefaultProject string
-	ServerURL      string
+	SigningKey auth.SigningKeys
+	WebDistDir string
+	AssetStore AssetStore
+	Sessions   auth.SessionStore
+	People     auth.PeopleStore
+	Identity   identity.Identity
+	Store      *store.Store
+	ServerURL  string
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
 	// members of a Cognito pool's group, or the people of a Google Workspace domain. A nil SignIn
 	// is a test/local header-identity or dev sign-in server, whose /auth/start and /auth/callback
@@ -100,15 +99,14 @@ type AppContextOptions struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from, which main holds in its own
 	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
-	BuildCommit    string
-	Sessions       auth.SessionStore
-	People         auth.PeopleStore
-	Identity       identity.Identity
-	SignIn         *oidc.CodeFlow
-	SignInRule     identity.SignInRule
-	Store          *store.Store
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	BuildCommit string
+	Sessions    auth.SessionStore
+	People      auth.PeopleStore
+	Identity    identity.Identity
+	SignIn      *oidc.CodeFlow
+	SignInRule  identity.SignInRule
+	Store       *store.Store
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession configure the issue the search bar files from a person's
 	// typed words (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION); empty
 	// where the deployment configured neither. See api.DepsInput.
@@ -205,7 +203,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Store:                  opts.Store,
 		Identity:               opts.Identity,
 		AgentTokens:            opts.AgentTokens,
-		DefaultProject:         opts.DefaultProject,
 		NewIssueLabel:          opts.NewIssueLabel,
 		NewIssueSession:        opts.NewIssueSession,
 		ServerURL:              opts.ServerURL,
@@ -251,7 +248,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		People:         opts.People,
 		Identity:       opts.Identity,
 		Store:          opts.Store,
-		DefaultProject: opts.DefaultProject,
 		ServerURL:      strings.TrimSuffix(opts.ServerURL, "/"),
 		SignIn:         opts.SignIn,
 		SignInRule:     opts.SignInRule,

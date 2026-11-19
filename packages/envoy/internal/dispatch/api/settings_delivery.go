@@ -47,8 +47,8 @@ type deliverySettingsInput struct {
 
 // putDeliverySettings answers PUT /api/v1/settings/delivery: set (or replace) the one
 // delivery_settings row after proving the GitHub App can read the deploy repository, the same
-// access-check-before-write shape putArchitectureSource uses. Unlike putArchitectureSource and
-// putRepoProject, this is a bare pool write with no appended event: every sibling settings route
+// access-check-before-write shape putArchitectureSource uses. Unlike putArchitectureSource, this
+// is a bare pool write with no appended event: every sibling settings route
 // scopes its event to the project it changes (projectOwner), but delivery_settings is a true
 // singleton with no project, issue, or artifact to own it, and events/broker.go's
 // eventOwnerKey refuses an event with none of those unless its payload names a specific session

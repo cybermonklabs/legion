@@ -559,3 +559,33 @@ func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, 
 		t.Fatalf("%s did not both answer within %v", what, raceDeadline)
 	}
 }
+
+// lockWaiters counts the backends of this test's own database that wait on a lock. Scoped to
+// current_database() because one Postgres serves every test in the package.
+func lockWaiters(t *testing.T, database *store.Store) int {
+	t.Helper()
+	var waiting int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from pg_stat_activity
+		where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
+	`).Scan(&waiting); err != nil {
+		t.Fatalf("read pg_stat_activity: %v", err)
+	}
+	return waiting
+}
+
+// awaitLockWaiters waits until at least count backends of this test's own database wait on a lock.
+func awaitLockWaiters(t *testing.T, database *store.Store, count int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		waiting := lockWaiters(t, database)
+		if waiting >= count {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d request(s) wait on a lock after 10s, want %d", waiting, count)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

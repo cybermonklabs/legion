@@ -25,7 +25,7 @@ func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	repo, err := repoProjectPath(r)
+	repo, err := repoPath(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -40,4 +40,11 @@ func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 	default:
 		WriteJSON(w, http.StatusOK, appInstallationResponse{Installed: installed})
 	}
+}
+
+// repoPath reads the repository the route's {owner} and {repo} name, in the canonical form
+// externalRef gives.
+func repoPath(r *http.Request) (string, error) {
+	repo, _, err := externalRef(r.PathValue("owner") + "/" + r.PathValue("repo") + "#1")
+	return repo, err
 }

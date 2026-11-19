@@ -190,17 +190,26 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 
 // A setting a release removed is refused, never silently ignored.
 func TestResolveBootConfigRefusesRemovedSettings(t *testing.T) {
-	for _, name := range []string{"DISPATCH_ALLOWED_LOGINS", "DISPATCH_APP_CLIENT_SECRET", "COHERE_API_KEY", "DISPATCH_AGENT_SECRETS_TOKEN", "DISPATCH_AGENT_SECRETS_TOKEN_FILE", "DISPATCH_ASSET_STORE_BUCKET"} {
+	for _, name := range []string{"DISPATCH_ALLOWED_LOGINS", "DISPATCH_APP_CLIENT_SECRET", "COHERE_API_KEY", "DISPATCH_AGENT_SECRETS_TOKEN", "DISPATCH_AGENT_SECRETS_TOKEN_FILE", "DISPATCH_ASSET_STORE_BUCKET", "DISPATCH_REPO_PROJECTS", "DISPATCH_DEFAULT_PROJECT"} {
 		_, err := resolveBootConfig(envGetter(signInEnvironment(map[string]string{name: "value"})))
 		if err == nil || !strings.Contains(err.Error(), name+" is no longer read") {
 			t.Errorf("%s set: err = %v, want a refusal naming it", name, err)
 		}
 	}
-	// Meaning search reaches Cohere through either place, and the refusal names both.
-	_, err := resolveBootConfig(envGetter(signInEnvironment(map[string]string{"COHERE_API_KEY": "value"})))
-	for _, want := range []string{"AWS Bedrock", "Azure AI Foundry", "DISPATCH_EMBEDDER"} {
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("COHERE_API_KEY set: err = %v, want it to name %q", err, want)
+	// Each refusal says what replaced the setting.
+	for name, wants := range map[string][]string{
+		// Meaning search reaches Cohere through either place, and the refusal names both.
+		"COHERE_API_KEY": {"AWS Bedrock", "Azure AI Foundry", "DISPATCH_EMBEDDER"},
+		// A project's default repository replaced the mapping the boot seeded.
+		"DISPATCH_REPO_PROJECTS": {"PUT /api/v1/projects/{key}/default-repository", "Settings → Projects"},
+		// An import names its own project: no project is found from a repository.
+		"DISPATCH_DEFAULT_PROJECT": {"an import names its project in the create's `project`"},
+	} {
+		_, err := resolveBootConfig(envGetter(signInEnvironment(map[string]string{name: "value"})))
+		for _, want := range wants {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("%s set: err = %v, want it to name %q", name, err, want)
+			}
 		}
 	}
 }
@@ -254,31 +263,6 @@ func TestDevSignInRefusesTheSignInSettings(t *testing.T) {
 	}
 }
 
-func TestResolveBootConfigAllowsRepositorySettingsWithoutDefaultProject(t *testing.T) {
-	boot, err := resolveBootConfig(envGetter(map[string]string{
-		"DATABASE_URL":                     "postgres://dispatch",
-		"DISPATCH_AGENT_TOKEN":             "agent-token",
-		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
-		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
-	}))
-	if err != nil || boot.DefaultProject != "" {
-		t.Fatalf("resolve boot config: boot=%#v err=%v", boot, err)
-	}
-}
-
-func TestResolveBootConfigAcceptsDefaultProjectWithoutRepoMapping(t *testing.T) {
-	_, err := resolveBootConfig(envGetter(map[string]string{
-		"DATABASE_URL":                     "postgres://dispatch",
-		"DISPATCH_AGENT_TOKEN":             "agent-token",
-		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
-		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
-		"DISPATCH_DEFAULT_PROJECT":         "TEST",
-	}))
-	if err != nil {
-		t.Fatalf("resolve boot config: %v", err)
-	}
-}
-
 func TestResolveBootConfigDisablesNATS(t *testing.T) {
 	boot, err := resolveBootConfig(envGetter(map[string]string{
 		"DATABASE_URL":                     "postgres://dispatch",
@@ -286,7 +270,6 @@ func TestResolveBootConfigDisablesNATS(t *testing.T) {
 		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
 		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
 		"DISPATCH_NATS_DISABLED":           "1",
-		"DISPATCH_REPO_PROJECTS":           "owner/repo=TEST",
 	}))
 	if err != nil {
 		t.Fatalf("resolve boot config: %v", err)

@@ -251,13 +251,13 @@ func TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET(t *testing.T) {
 		"GET /api/v1/projects/{key}/architecture",
 		"GET /api/v1/artifacts/_test/rooms",
 		"POST /api/v1/issues/{key}/comments",
-		"DELETE /api/v1/settings/repo-projects/{owner}/{repo}",
+		"DELETE /api/v1/projects/{key}/legion/daemon",
 		"PUT /api/v1/me/asks/{id}/snooze",
 		"GET /api/v1/projects/{key}/architecture/no-such-route",
 		"get /api/v1/projects/{key}/architecture",
 	})
 	want := []string{
-		"DELETE /api/v1/settings/repo-projects/{owner}/{repo}",
+		"DELETE /api/v1/projects/{key}/legion/daemon",
 		"GET /api/v1/projects/{key}/architecture/no-such-route",
 		"POST /api/v1/issues/{key}/comments",
 		"PUT /api/v1/me/asks/{id}/snooze",

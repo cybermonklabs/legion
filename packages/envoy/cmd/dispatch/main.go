@@ -79,9 +79,7 @@ type bootConfig struct {
 	DatabaseURL string
 	// AgentTokens is DISPATCH_AGENT_TOKEN parsed: every value the API accepts as the shared agent
 	// token, the first the current one.
-	AgentTokens    *auth.SharedAgentTokens
-	RepoProjects   string
-	DefaultProject string
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
 	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
 	// words carries, and the session that issue is routed to and its first message is sent to.
@@ -410,11 +408,6 @@ func main() {
 		slog.Warn("dispatch: anchored asks left out of asks_anchor_artifact_id: their anchor's artifact_id is not a lower-case document id, so settlement records no mark for them", "count", outside)
 	}
 
-	if err := validateDefaultProject(ctx, database, boot.DefaultProject); err != nil {
-		slog.Error("dispatch: validate default project", "error", err)
-		os.Exit(1)
-	}
-
 	webDistDir, err := defaultWebDistDir(boot.WebDist)
 	if err != nil {
 		slog.Error("dispatch: resolve web dist dir", "error", err)
@@ -481,12 +474,6 @@ func main() {
 	issueAskRepairDeps := api.Deps{Store: database, Docs: documentService, Events: broker}
 	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
-	// The seed appends events, so it runs after restoreDecidedWordings, which takes the copy lock:
-	// TestCopyLockComesBeforeEveryPendingRowAndEvent reads main as one transaction.
-	if err := api.SeedRepoProjects(store.WithTransactionTracking(ctx), database, broker, boot.RepoProjects); err != nil {
-		slog.Error("dispatch: seed repository projects", "error", err)
-		os.Exit(1)
-	}
 
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
@@ -646,9 +633,8 @@ func main() {
 	//     the other processes' writes and answers their room queries) and the document sockets'
 	//     schema re-check (it closes this process's own sockets).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
-	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and SeedRepoProjects
-	//     above, and the embedding coverage pass (two processes' passes at once leave what one
-	//     leaves).
+	//     retirePlainRefreshTokens, restoreDecidedWordings and repairIssueAsks above, and the
+	//     embedding coverage pass (two processes' passes at once leave what one leaves).
 	leaseCallers, err := database.Pool.Leases()
 	if err != nil {
 		slog.Error("dispatch: open the lease pool for the maintenance loops", "error", err)
@@ -1222,8 +1208,6 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	boot := bootConfig{
 		DatabaseURL:        strings.TrimSpace(env.get("DATABASE_URL")),
-		RepoProjects:       strings.TrimSpace(env.get("DISPATCH_REPO_PROJECTS")),
-		DefaultProject:     strings.TrimSpace(env.get("DISPATCH_DEFAULT_PROJECT")),
 		NewIssueLabel:      strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:    strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
 		GitHubAPIBase:      strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
@@ -1719,7 +1703,6 @@ func bootTask(ctx context.Context, timeout time.Duration, failed, done string, t
 func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.AppContextOptions {
 	built.SignInRule = signInRule(boot)
 	built.AgentTokens = boot.AgentTokens
-	built.DefaultProject = boot.DefaultProject
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
 	built.InsecureCookie = boot.InsecureCookie
@@ -1750,25 +1733,6 @@ func loadEnvoyConfig(env settingValues, options config.LoadOptions) (*config.Env
 		slog.Warn(warning.Message, "path", warning.Path, "fix", warning.Fix)
 	}
 	return cfg, nil
-}
-
-// validateDefaultProject confirms DISPATCH_DEFAULT_PROJECT names a project
-// that already exists, so a misconfigured deployment fails loudly at boot
-// instead of silently rejecting every unmapped external issue at request
-// time. An empty project (no default configured) is not validated here.
-func validateDefaultProject(ctx context.Context, database *store.Store, project string) error {
-	if project == "" {
-		return nil
-	}
-	ctx = store.WithTransactionTracking(ctx)
-	var exists bool
-	if err := database.Pool.QueryRow(ctx, `select exists(select 1 from projects where key = $1)`, project).Scan(&exists); err != nil {
-		return fmt.Errorf("query DISPATCH_DEFAULT_PROJECT %q: %w", project, err)
-	}
-	if !exists {
-		return fmt.Errorf("DISPATCH_DEFAULT_PROJECT %q does not exist", project)
-	}
-	return nil
 }
 
 // parsePort reads the port a setting names: decimal digits alone, 1-65535. The error names the

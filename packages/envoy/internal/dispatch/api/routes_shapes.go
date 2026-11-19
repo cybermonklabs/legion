@@ -556,14 +556,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/related": {
 		Status: http.StatusOK, Response: model.Suggestions{}, Request: relatedRequest{},
 	},
-	"GET /api/v1/settings/repo-projects": {Status: http.StatusOK, Response: []model.RepoProject{}},
-	"PUT /api/v1/settings/repo-projects/{owner}/{repo}": {
-		Status: http.StatusOK, Response: model.RepoProject{}, Request: putRepoProjectInput{},
-	},
-	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
-	"GET /api/v1/github/app-installation/{owner}/{repo}":   {Status: http.StatusOK, Response: appInstallationResponse{}},
-	"GET /api/v1/settings/architecture-sources":            {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
-	"GET /api/v1/projects/{key}/architecture-sources":      {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
+	"GET /api/v1/settings/repo-projects":                 {Status: http.StatusOK, Response: []model.RepoProject{}},
+	"GET /api/v1/github/app-installation/{owner}/{repo}": {Status: http.StatusOK, Response: appInstallationResponse{}},
+	"GET /api/v1/settings/architecture-sources":          {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
+	"GET /api/v1/projects/{key}/architecture-sources":    {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 	"GET /api/v1/projects/{key}/architecture-source": {
 		Status: http.StatusOK, Response: model.ArchitectureSource{},
 		// A project with no source answers 200 and the JSON literal `null`
