@@ -155,60 +155,144 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 	}
 }
 
-// The runner pins its transaction (pgmigrate.Pin) right after its advisory lock, so the statements
-// it runs before the first migration's own pin are bounded by LockTimeout too: the create table of
-// broker_schema_migrations and the first applied check. Here another connection holds ACCESS
-// EXCLUSIVE on an existing broker_schema_migrations in an open transaction. The first applied
-// check is the statement that waits: on PostgreSQL 18.6, create table if not exists takes no lock
-// on a table that exists, and the check reads the table under ACCESS SHARE. migrate gives up after
-// LockTimeout with a lock-timeout error (SQLSTATE 55P03) rather than wait for as long as the holder
-// lives.
+// The runner pins each of its transactions (pgmigrate.Pin) right after its advisory lock, so the
+// statements it runs on broker_schema_migrations before the first migration's own pin are bounded
+// by LockTimeout too. Here another connection holds ACCESS EXCLUSIVE on an existing
+// broker_schema_migrations in an open transaction. On PostgreSQL 18.6, create table if not exists
+// takes no lock on a table that exists, and neither does the read of its columns from
+// information_schema, so the statement that waits is the first that touches the table:
 //
-// Control: remove the pgmigrate.Pin call after the advisory lock in migrate, and migrate waits
-// until the test's own deadline cancels it.
-func TestMigrateBoundsTheWaitOfItsFirstAppliedCheck(t *testing.T) {
+//   - on a table an earlier runner created, the ALTER TABLE that adds the identity columns, in the
+//     runner's first transaction, under ACCESS EXCLUSIVE. That transaction is tried again on a
+//     timeout (pgmigrate.RetryVersionTableLockTimeouts), so a holder that stays fails the boot
+//     after LockTimeoutAttempts waits, and one that ends after the first, as a pg_dump does, lets
+//     the boot go on and apply its migration;
+//   - on a table this runner created, the read of every recorded row, in its second transaction,
+//     under ACCESS SHARE, which is not tried again: that transaction applies every migration.
+//
+// A boot that gives up fails with a lock-timeout error (SQLSTATE 55P03) rather than wait for as
+// long as the holder lives, and the error does not read as a refusal of the recorded rows.
+//
+// Control: remove the pgmigrate.Pin call from lockAndPin, and migrate waits until the test's own
+// deadline cancels it. Remove the retry, and the third row fails on the first attempt's timeout.
+func TestMigrateBoundsTheWaitOfItsFirstVersionTableStatement(t *testing.T) {
 	lockTimeout := pgmigrate.LockTimeout
-	ctx := context.Background()
-	s := emptySchemaStore(t)
-	if _, err := s.Pool.Exec(ctx, "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())"); err != nil {
-		t.Fatalf("create the version table: %v", err)
-	}
-	holder, err := pgx.ConnectConfig(ctx, s.Pool.Config().ConnConfig)
-	if err != nil {
-		t.Fatalf("connect the holder: %v", err)
-	}
-	t.Cleanup(func() { holder.Close(context.Background()) })
-	held, err := holder.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the holder's transaction: %v", err)
-	}
-	defer held.Rollback(ctx)
-	if _, err := held.Exec(ctx, "lock table broker_schema_migrations in access exclusive mode"); err != nil {
-		t.Fatalf("hold the version table: %v", err)
-	}
-	set := fstest.MapFS{
-		"migrations/0001_guard_first.up.sql": {Data: []byte("create table guard_first (id integer)")},
-	}
+	attempts := time.Duration(pgmigrate.LockTimeoutAttempts)
+	retried := attempts*lockTimeout + (attempts-1)*pgmigrate.LockTimeoutRetryPause
+	earlier := "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())"
+	for name, tc := range map[string]struct {
+		table   string
+		wait    time.Duration
+		release bool
+	}{
+		"an earlier runner's table":                  {table: earlier, wait: retried},
+		"this runner's table":                        {table: "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now(), " + pgmigrate.IdentityColumns + ")", wait: lockTimeout},
+		"a holder that ends after the first attempt": {table: earlier, release: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s := emptySchemaStore(t)
+			if _, err := s.Pool.Exec(ctx, tc.table); err != nil {
+				t.Fatalf("create the version table: %v", err)
+			}
+			holder, err := pgx.ConnectConfig(ctx, s.Pool.Config().ConnConfig)
+			if err != nil {
+				t.Fatalf("connect the holder: %v", err)
+			}
+			t.Cleanup(func() { holder.Close(context.Background()) })
+			held, err := holder.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the holder's transaction: %v", err)
+			}
+			if _, err := held.Exec(ctx, "lock table broker_schema_migrations in access exclusive mode"); err != nil {
+				t.Fatalf("hold the version table: %v", err)
+			}
+			released := make(chan struct{})
+			if tc.release {
+				go func() {
+					defer close(released)
+					time.Sleep(lockTimeout + pgmigrate.LockTimeoutRetryPause/2)
+					_ = held.Rollback(context.Background())
+				}()
+			} else {
+				close(released)
+				defer held.Rollback(ctx)
+			}
+			defer func() { <-released }()
+			set := fstest.MapFS{
+				"migrations/0001_guard_first.up.sql": {Data: []byte("create table guard_first (id integer)")},
+			}
 
-	bound := 6 * lockTimeout
-	bounded, cancel := context.WithTimeout(ctx, bound)
-	defer cancel()
-	started := time.Now()
-	err = s.migrate(bounded, set)
-	waited := time.Since(started)
-	if bounded.Err() != nil {
-		t.Fatalf("migrate waited %s for the held version table, until the test's own %s bound cancelled it (%v): nothing bounds the runner's first applied check", waited.Round(time.Millisecond), bound, err)
+			bound := 6 * lockTimeout
+			bounded, cancel := context.WithTimeout(ctx, bound)
+			defer cancel()
+			started := time.Now()
+			err = s.migrate(bounded, set)
+			waited := time.Since(started)
+			if bounded.Err() != nil {
+				t.Fatalf("migrate waited %s for the held version table, until the test's own %s bound cancelled it (%v): nothing bounds the runner's first statement on the version table", waited.Round(time.Millisecond), bound, err)
+			}
+			if tc.release {
+				if err != nil {
+					t.Fatalf("migrate returned %v after %s; want the attempt after the holder ended to go through", err, waited.Round(time.Millisecond))
+				}
+				if waited < lockTimeout {
+					t.Errorf("migrate returned after %s; want it to have waited out the first attempt (%s)", waited.Round(time.Millisecond), lockTimeout)
+				}
+				if left := existingTables(t, s, "guard_first"); len(left) != 1 {
+					t.Errorf("the boot that went on did not apply its migration: tables %v", left)
+				}
+				return
+			}
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+				t.Fatalf("migrate returned %v after %s; want a lock-timeout error (SQLSTATE 55P03)", err, waited.Round(time.Millisecond))
+			}
+			if waited < tc.wait || waited > tc.wait+10*time.Second {
+				t.Errorf("migrate gave up after %s, want about %s", waited.Round(time.Millisecond), tc.wait)
+			}
+			t.Logf("migrate gave up after %s: %v", waited.Round(time.Millisecond), err)
+			if pgmigrate.IsRefusal(err) || strings.Contains(err.Error(), "migrations refused") {
+				t.Errorf("migrate = %v; a lock timeout reads as a refusal of the recorded rows, whose remedy is a reset", err)
+			}
+			if left := existingTables(t, s, "guard_first"); len(left) != 0 {
+				t.Errorf("the run that gave up committed %v; want its whole transaction rolled back", left)
+			}
+		})
 	}
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
-		t.Fatalf("migrate returned %v after %s; want a lock-timeout error (SQLSTATE 55P03)", err, waited.Round(time.Millisecond))
-	}
-	if waited < lockTimeout || waited > lockTimeout+10*time.Second {
-		t.Errorf("migrate gave up after %s, want about the %s lock timeout", waited.Round(time.Millisecond), lockTimeout)
-	}
-	t.Logf("migrate gave up after %s: %v", waited.Round(time.Millisecond), err)
-	if left := existingTables(t, s, "guard_first"); len(left) != 0 {
-		t.Errorf("the run that gave up committed %v; want its whole transaction rolled back", left)
+}
+
+// On a broker_schema_migrations an earlier runner created, the ALTER TABLE that adds the identity
+// columns takes ACCESS EXCLUSIVE on the table, and a request's read of the table
+// (requests.writtenBeforeMigration13) queues behind that lock. The runner commits the ALTER in a
+// short transaction of its own, so the lock is gone before any pending migration runs: here the
+// pending migration records, while it runs, how many ACCESS EXCLUSIVE locks on the table are
+// granted, and finds none. The control is a table this runner created, which needs no ALTER and
+// reads none either; with the ALTER back in the run's one transaction, the first row reads 1.
+func TestMigrateReleasesTheVersionTablesAlterLockBeforeItsMigrations(t *testing.T) {
+	for name, table := range map[string]string{
+		"an earlier runner's table":    "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())",
+		"control: this runner's table": "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now(), " + pgmigrate.IdentityColumns + ")",
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s := emptySchemaStore(t)
+			if _, err := s.Pool.Exec(ctx, table); err != nil {
+				t.Fatalf("create the version table: %v", err)
+			}
+			set := fstest.MapFS{"migrations/0001_lock_probe.up.sql": {Data: []byte(
+				"create table lock_probe as select count(*) as held from pg_locks where relation = 'broker_schema_migrations'::regclass and mode = 'AccessExclusiveLock' and granted")}}
+			if err := s.migrate(ctx, set); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			var held int
+			if err := s.Pool.QueryRow(ctx, "select held from lock_probe").Scan(&held); err != nil {
+				t.Fatalf("read the probe: %v", err)
+			}
+			if held != 0 {
+				t.Errorf("while the pending migration ran, %d ACCESS EXCLUSIVE locks on broker_schema_migrations were granted; want 0: the ALTER's lock is held through the migrations", held)
+			}
+		})
 	}
 }
 

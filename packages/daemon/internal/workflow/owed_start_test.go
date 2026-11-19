@@ -235,10 +235,11 @@ func assertTheSlotDeliversOnce(t *testing.T, pool *pgxpool.Pool, role claim.Role
 // with its work rather than ahead of it.
 //
 // The rows are the returns the spec names that start a worker on the change again, each of
-// which starts a worker on an issue that held a slot before: a red head, a head that conflicts
-// with its base, the merge queue's failed_checks removal, a push past READY, a backward move
-// and a held worker's retry. The last, a re-admitted tree's mid-phase children, is admission's
-// own start and is proven where it lives (internal/admit's
+// which starts a worker on an issue that held a slot before: a red head, the merge queue's
+// failed_checks removal, a push past READY, a backward move and a held worker's retry. A head that
+// conflicts with its base is no return: the issue keeps its phase and owes no start
+// (TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward). The last, a re-admitted tree's
+// mid-phase children, is admission's own start and is proven where it lives (internal/admit's
 // TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot). A sign-off's start into the
 // retro waits for no slot, since the work is past its review there (record.KeepsSlot), and is
 // proven in internal/admit's TestAPhasePastReviewRunsWithNoSlot.
@@ -276,16 +277,6 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 		// from the earlier one's.
 		task string
 	}{
-		{
-			name: "a head that conflicts with its base",
-			seed: func(t *testing.T, pool *pgxpool.Pool) {
-				readyRoot(t, pool, phase.Merging, "retro")
-				seedPhase(t, pool, record.PhaseRow{Issue: returnIssue, Role: claim.RoleImplementer, Claim: "implement-claim", Entry: servedEntry})
-			},
-			fact:   intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head", Base: "main", Mergeable: record.MergeabilityConflicting},
-			engine: func() *Engine { return testEngine(config.DesignGateRootIssues, nil) },
-			role:   claim.RoleImplementer, want: phase.Implementing, status: "in_progress", task: "the head conflicts with main",
-		},
 		{
 			// Two transitions before the slot, each into a phase that keeps a row, which is
 			// what the coalescing is for: a sign-off's start waits for no row at all now

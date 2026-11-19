@@ -134,6 +134,14 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_private_names_test: check-private-names.test.sh and what it tests."
         type: string
         required: true
+      check_private_names_terms_test:
+        description: "ci.yaml's needs.changes.outputs.check_private_names_terms_test: check-private-names-terms.test.sh and what it tests."
+        type: string
+        required: true
+      check_private_names_keys_test:
+        description: "ci.yaml's needs.changes.outputs.check_private_names_keys_test: check-private-names-keys.test.sh and what it tests."
+        type: string
+        required: true
       check_plugin_names_test:
         description: "ci.yaml's needs.changes.outputs.check_plugin_names_test: check-plugin-names.test.sh and what it tests."
         type: string
@@ -396,6 +404,14 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.check_private_names_test == 'true'
         run: .github/scripts/check-private-names.test.sh
 
+      - name: Test the private-name check's term list
+        if: inputs.changes-result != 'success' || inputs.check_private_names_terms_test == 'true'
+        run: .github/scripts/check-private-names-terms.test.sh
+
+      - name: Test the private-name check's issue-key rule
+        if: inputs.changes-result != 'success' || inputs.check_private_names_keys_test == 'true'
+        run: .github/scripts/check-private-names-keys.test.sh
+
       - name: Test the plugin-name check
         if: inputs.changes-result != 'success' || inputs.check_plugin_names_test == 'true'
         run: .github/scripts/check-plugin-names.test.sh
@@ -524,6 +540,12 @@ jobs:
 
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
+
+      # scripts/e2e/lib is no workspace either: its tsconfig.json holds the plan ratings read's
+      # test, whose answer is typed to the contract, and the root package pins its TypeScript and
+      # Bun types. The test itself runs in this job's bun test of scripts/e2e/lib.
+      - name: Typecheck the plan ratings read test
+        run: bunx tsc --noEmit -p scripts/e2e/lib
 
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps

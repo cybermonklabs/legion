@@ -415,8 +415,7 @@ every third-party package they inline, written from Bun's metafile by
   dereferenced, with a fresh `dist/` and `legion/`), which is how to run an unmerged tree.
 - `bun run verify-build <tar>` (`scripts/verify-build.sh`) is that job's build step: it builds
   the plugin twice into a scratch directory outside the repository and says so when the two builds
-  differ, runs the private-name check over the first build's `dist/` and `legion/`,
-  packs the two directories into `<tar>`, which must be outside the repository, and runs
+  differ, packs the two directories into `<tar>`, which must be outside the repository, and runs
   `release-push.sh check-built` over it, the member checks a build must pass before the job
   extracts it into the checkout it packs. It writes no file of the checkout, so running it on a
   pull request's tree changes
@@ -424,7 +423,9 @@ every third-party package they inline, written from Bun's metafile by
   run it are named in its header, and the jobs that extract the checked tar into their own CI
   checkout in `release-push.sh`'s `extract-built` paragraph. Pull-request CI runs it, so a skill
   file that is executable, a symlink or named with a space, or a bundle `BUNDLE_ENTRYPOINTS` no
-  longer names, fails there instead of failing every release on main.
+  longer names, fails there instead of failing every release on main. The private-name check of
+  the build runs in a job of its own after the pack (`verify-build.sh`'s header names both), since
+  it reads the deployment's term list, which no job that runs dependency code holds.
 - The build is `Bun.build`, target `bun`, `minify: false`, no sourcemap, notices included. Minification is off entirely, not case by case: the partial-disable form (`{whitespace: false, identifiers: false, syntax: false}`) still routes through Bun 1.3.14's minifying code-generation path, which picks a non-deterministic CJS/ESM interop check on repeated builds of this exact module graph — on top of the syntax minifier's own separate bug, truncating constant-folded multi-operand string concatenation in CI builds, that made the partial form necessary before this. A plain `false` bypasses that whole path; whitespace and identifiers stay readable as a side effect, so independent changes still merge at line level.
 - The build runs only on the Bun version pinned in the repo-root `.bun-version`, because
   the bundler's own output depends on the exact Bun build, not only the declared version. Two

@@ -1,0 +1,55 @@
+name: Release Notes Names
+
+on:
+  # The private-name check of the changelog entries a release's build job rendered with
+  # `release-push.sh fold-notes`, over the very file that release's publish job writes into the
+  # GitHub release's body. release.yaml calls it as legion_names, pi_envoy_names and
+  # pi_legion_names, and release-envoy-listener.yaml as release_names, each from a job of its own
+  # that keeps that package's `needs` and `if:` (it runs whenever the package's build released)
+  # and whose result that package's publish steps need. claude_envoy_names checks the plugin's
+  # packed build too, so it runs .github/actions/private-names-release-notes itself instead.
+  #
+  # A workflow of its own, because the check reads the deployment's term list
+  # (PRIVATE_NAME_TERMS) and no build job holds it: its one job checks out the .github cone and
+  # runs that action, which downloads the entries and runs .github/scripts/check-private-names.sh
+  # over them, and no dependency code. .github/scripts/check-release-credentials.sh reads this
+  # file as it reads the release workflows. The check fails a push's or a dispatched run's scan
+  # without the list, and a missing file, so a finding, an unmapped secret or an artifact without
+  # the entries releases nothing of that package.
+  workflow_call:
+    inputs:
+      artifact:
+        description: The name of the artifact that holds the build job's rendered release-notes.md
+        type: string
+        required: true
+      notes:
+        description: The build job's `notes` output, 'true' when fold-notes rendered entries; any other value checks nothing, as there is no file to check
+        type: string
+        required: true
+    secrets:
+      PRIVATE_NAME_TERMS:
+        description: The deployment's term list, from the Actions secret of that name
+        required: false
+
+# contents: read is for the checkout; each caller grants it to its calling job.
+permissions:
+  contents: read
+
+jobs:
+  names:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.notes == 'true'
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - uses: ./.github/actions/private-names-release-notes
+        if: inputs.notes == 'true'
+        with:
+          artifact: ${{ inputs.artifact }}
+          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}

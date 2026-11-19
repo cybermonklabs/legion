@@ -6,7 +6,9 @@
 // Open clones each database from a template this test process migrates once. Running every
 // migration in its declared execution mode is most of the Postgres work a test would
 // otherwise do, so a package's wall time would scale with its test count times the speed of the
-// Postgres it runs against; a clone costs one create database.
+// Postgres it runs against; a clone costs one create database. Open's template is one of the
+// templates OpenFrom makes, each once per key by the first test that asks for it: Open's key is
+// openKey, and this tree's runner migrates it.
 //
 // A clone copies the template's files (strategy file_copy). Postgres's default from 15, strategy
 // wal_log, writes every page of the template into the write-ahead log instead: 6.4 MB of the
@@ -48,22 +50,45 @@ const DatabaseURLEnv = "DISPATCH_TEST_DATABASE_URL"
 
 var shared struct {
 	// main is set by Run before the package's tests run; Open refuses to run without it, since
-	// only Run drops the template and waits for the per-test drops.
-	main     bool
-	once     sync.Once
-	err      error
-	server   url.URL
-	admin    *pgxpool.Pool
-	template string
+	// only Run drops the templates and waits for the per-test drops.
+	main   bool
+	once   sync.Once
+	err    error
+	server url.URL
+	admin  *pgxpool.Pool
 
 	drops     sync.WaitGroup
 	dropMu    sync.Mutex
 	dropFails []string
 }
 
+// openKey is the key of the template Open clones, which this tree's runner migrates
+// (migrateWithThisTree).
+const openKey = "this tree's runner (storetest.Open)"
+
 // Open returns a store on a new database carrying every migration, dropped after t ends. It skips
 // t when DISPATCH_TEST_DATABASE_URL is unset.
 func Open(t testing.TB) *store.Store {
+	t.Helper()
+	return OpenFrom(t, openKey, migrateWithThisTree)
+}
+
+// migrateWithThisTree migrates the database databaseURL names with this tree's runner: Open's
+// template. It closes its pool before it returns, so the template is left with no connection.
+func migrateWithThisTree(databaseURL string) error {
+	ctx := context.Background()
+	database, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		return fmt.Errorf("open the database: %w", err)
+	}
+	defer database.Pool.Close()
+	return database.Migrate(ctx)
+}
+
+// ready makes sure the package's TestMain runs Run, skips t when DISPATCH_TEST_DATABASE_URL is
+// unset, and opens the admin pool, once. It makes no template: each is made by the first test that
+// asks for it (OpenFrom).
+func ready(t testing.TB) {
 	t.Helper()
 	if !shared.main {
 		t.Fatal("storetest.Open needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }, or storetest.Run around another harness's Main")
@@ -72,15 +97,19 @@ func Open(t testing.TB) *store.Store {
 	if raw == "" {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}
-	shared.once.Do(func() { shared.err = prepare(raw) })
+	shared.once.Do(func() { shared.err = openAdmin(raw) })
 	if shared.err != nil {
-		t.Fatalf("prepare migrated template database: %v", shared.err)
+		t.Fatalf("open the admin pool: %v", shared.err)
 	}
+}
 
+// clone returns a store on a new database cloned from template, dropped after t ends.
+func clone(t testing.TB, template string) *store.Store {
+	t.Helper()
 	ctx := context.Background()
 	name := randomName(t, "dispatch_test_")
-	if _, err := shared.admin.Exec(ctx, cloneStatement(name)); err != nil {
-		t.Fatalf("clone isolated database from template: %v", err)
+	if _, err := shared.admin.Exec(ctx, cloneStatement(name, template)); err != nil {
+		t.Fatalf("clone isolated database from template %s: %v", template, err)
 	}
 	t.Cleanup(func() { dropDatabase(name) })
 	database, err := store.Open(ctx, databaseURL(shared.server, name))
@@ -91,14 +120,95 @@ func Open(t testing.TB) *store.Store {
 	return database
 }
 
-// cloneStatement returns the create database that makes name a copy of the template's files
-// rather than a copy through the write-ahead log (the package comment says why).
-func cloneStatement(name string) string {
-	return "create database " + name + " template " + shared.template + " strategy file_copy"
+// Empty returns the connection string of a new database that holds nothing, not even the
+// version table, dropped after t ends: for a test that migrates it itself, as the two-build
+// suite has the builds it runs migrate theirs, in production's order. It makes no template.
+func Empty(t testing.TB) string {
+	t.Helper()
+	ready(t)
+	name := randomName(t, "dispatch_test_")
+	if _, err := shared.admin.Exec(context.Background(), "create database "+name+" strategy file_copy"); err != nil {
+		t.Fatalf("create empty database: %v", err)
+	}
+	t.Cleanup(func() { dropDatabase(name) })
+	return databaseURL(shared.server, name)
 }
 
-// Main runs the package's tests, waits for their databases to drop, then drops the template Open
-// cloned from. A package whose tests call Open uses it as its TestMain:
+// templates are the templates this test binary made, by key, each once: Open's (openKey) and each
+// OpenFrom caller's. Run drops every one of them.
+var templates = struct {
+	sync.Mutex
+	byKey map[string]*templateDatabase
+}{byKey: map[string]*templateDatabase{}}
+
+// templateDatabase is one template: once makes it, name is its database, and err is why it could
+// not be made.
+type templateDatabase struct {
+	once sync.Once
+	name string
+	err  error
+}
+
+// OpenFrom is Open for a database migrate brings to its schema instead of this tree's runner
+// alone: it returns a store on a new database cloned from the template of key, dropped after t
+// ends. The template is made once per key in the test binary, by the first test that asks: a new
+// empty database whose connection string migrate is given, which migrate migrates and leaves
+// with no connection open. A template whose migrate failed, or ended its test, fails every test
+// that asks for it again.
+func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) *store.Store {
+	t.Helper()
+	ready(t)
+	templates.Lock()
+	entry := templates.byKey[key]
+	if entry == nil {
+		entry = &templateDatabase{}
+		templates.byKey[key] = entry
+	}
+	templates.Unlock()
+	entry.once.Do(func() {
+		// Set first, and cleared only once migrate returns, so a migrate that ends its test
+		// (t.Fatal) leaves a template no later test clones.
+		entry.err = fmt.Errorf("the test that made it ended before its migrate returned")
+		suffix, err := randomSuffix()
+		if err != nil {
+			entry.err = err
+			return
+		}
+		name := "dispatch_template_" + suffix
+		ctx := context.Background()
+		// The template is a file copy of template1, for the reason each clone of it is one.
+		if _, err := shared.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+			entry.err = fmt.Errorf("create template database: %w", err)
+			return
+		}
+		// Named once it exists, so Run drops exactly the templates that were made.
+		entry.name = name
+		if err := migrate(databaseURL(shared.server, entry.name)); err != nil {
+			entry.err = fmt.Errorf("migrate template database: %w", err)
+			return
+		}
+		// Postgres refuses to clone a database another session is connected to. Refusing
+		// connections to the template keeps any stray session from making a clone wait or fail.
+		if _, err := shared.admin.Exec(ctx, "alter database "+entry.name+" with allow_connections false"); err != nil {
+			entry.err = fmt.Errorf("close template database to connections: %w", err)
+			return
+		}
+		entry.err = nil
+	})
+	if entry.err != nil {
+		t.Fatalf("prepare template database %q: %v", key, entry.err)
+	}
+	return clone(t, entry.name)
+}
+
+// cloneStatement returns the create database that makes name a copy of template's files rather
+// than a copy through the write-ahead log (the package comment says why).
+func cloneStatement(name, template string) string {
+	return "create database " + name + " template " + template + " strategy file_copy"
+}
+
+// Main runs the package's tests, waits for their databases to drop, then drops every template
+// they were cloned from. A package whose tests call Open uses it as its TestMain:
 // func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }.
 func Main(m *testing.M) int { return Run(m.Run) }
 
@@ -120,13 +230,20 @@ func Run(run func() int) int {
 			code = 1
 		}
 	}
-	if shared.template == "" {
-		return code
+	templates.Lock()
+	names := make([]string, 0, len(templates.byKey))
+	for _, entry := range templates.byKey {
+		if entry.name != "" {
+			names = append(names, entry.name)
+		}
 	}
-	if _, err := shared.admin.Exec(context.Background(), "drop database "+shared.template); err != nil {
-		fmt.Fprintf(os.Stderr, "storetest: drop template database %s: %v\n", shared.template, err)
-		if code == 0 {
-			code = 1
+	templates.Unlock()
+	for _, name := range names {
+		if _, err := shared.admin.Exec(context.Background(), "drop database "+name); err != nil {
+			fmt.Fprintf(os.Stderr, "storetest: drop template database %s: %v\n", name, err)
+			if code == 0 {
+				code = 1
+			}
 		}
 	}
 	return code
@@ -177,8 +294,9 @@ func dropDatabase(name string) {
 	})
 }
 
-// prepare opens the admin pool and migrates the template every Open clones.
-func prepare(raw string) error {
+// openAdmin opens the admin pool, on the server raw names, that every database and template is
+// created and dropped through.
+func openAdmin(raw string) error {
 	server, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", DatabaseURLEnv, err)
@@ -197,31 +315,6 @@ func prepare(raw string) error {
 		return fmt.Errorf("open admin pool: %w", err)
 	}
 	shared.admin = admin
-
-	suffix, err := randomSuffix()
-	if err != nil {
-		return err
-	}
-	name := "dispatch_template_" + suffix
-	// The template is a file copy of template1, for the reason each clone of it is one.
-	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
-		return fmt.Errorf("create template database: %w", err)
-	}
-	shared.template = name
-	database, err := store.Open(ctx, databaseURL(shared.server, name))
-	if err != nil {
-		return fmt.Errorf("open template database: %w", err)
-	}
-	err = database.Migrate(ctx)
-	database.Pool.Close()
-	if err != nil {
-		return fmt.Errorf("migrate template database: %w", err)
-	}
-	// Postgres refuses to clone a database another session is connected to. Refusing connections
-	// to the template keeps any stray session from making a clone wait or fail.
-	if _, err := admin.Exec(ctx, "alter database "+name+" with allow_connections false"); err != nil {
-		return fmt.Errorf("close template database to connections: %w", err)
-	}
 	return nil
 }
 

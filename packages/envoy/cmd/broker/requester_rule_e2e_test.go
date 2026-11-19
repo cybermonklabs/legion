@@ -36,8 +36,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -267,11 +265,7 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	db, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to the broker's database: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close(ctx) })
+	db := connectToBroker(t, databaseURL)
 
 	dispatchToken := accountToken(t, issuer, clusterKey, apiAccount)
 	reviewToken := accountToken(t, issuer, clusterKey, reviewAccount)

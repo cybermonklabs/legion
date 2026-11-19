@@ -37,9 +37,11 @@
 # and none failed, and, for a run of its own, go test passed; 1 otherwise. A run of its own also
 # prints each listed package's `pass|fail PACKAGE <seconds>s` on stderr. On a failure it prints,
 # on stderr, each failed test, each test a failed package never finished, the failed packages'
-# output (a timed-out binary's goroutine dump, a data race, and any line test2json files under a
-# test after that test's own `--- PASS` or `--- SKIP`), go test's build output and, for a run of
-# its own, its stderr.
+# output (a failed test's own lines, a timed-out binary's goroutine dump, a data race, and any line
+# test2json files under a test after that test's own `--- PASS` or `--- SKIP`), go test's build
+# output and, for a run of its own, its stderr. Each of those is read per run of a test, so a test
+# a binary runs twice under one name - with -count, or a TestMain that calls m.Run twice - that
+# fails in one run and passes in the other still has its failure's lines printed.
 set -euo pipefail
 # sort and comm compare the test lists under one collation, whatever the caller's locale.
 export LC_ALL=C
@@ -83,38 +85,48 @@ trap 'rm -rf "$work"' EXIT
 report=""
 go_test_exit=""
 
-# failures prints, on stderr, what a failed run left in the report: each failed test, each test a
-# failed package started and never ended (the one a timed-out binary was running), every output
-# line of a failed package but those of its tests that passed or skipped, every line filed under a
-# test after that test's own `--- PASS` or `--- SKIP` line, and every line from the package's first
-# `panic: ` on (so the goroutine dump of a timeout, a data race and the package's own FAIL line),
-# the build output, and, for a run of its own, go test's stderr.
+# by_run is the report's events in order, each event of a test given `_run`: its package, its name
+# and which run of it this is. A test binary can run a test more than once under one name (-count,
+# or a TestMain that calls m.Run twice, as internal/broker/airlockproxy's does, once per protocol),
+# and test2json reports every run under that one name, so what a run did is read by that key and
+# not by the name: read by the name, a test that failed in one run and passed in the other counted
+# as passed, and the failure's own lines were left out.
+# shellcheck disable=SC2016 # $e is jq's variable, not the shell's
+by_run='def by_run: foreach .[] as $e ({};
+  if $e.Test != null and $e.Action == "run" then .["\($e.Package) \($e.Test)"] += 1 else . end;
+  if $e.Test == null then $e else $e + {_run: "\($e.Package) \($e.Test) \(.["\($e.Package) \($e.Test)"] // 0)"} end);'
+
+# failures prints, on stderr, what a failed run left in the report: each failed test, each run of a
+# test a failed package started and never ended (the one a timed-out binary was running), every
+# output line of a failed package but those of the runs of its tests that passed or skipped, every
+# line filed under a run of a test after that run's own `--- PASS` or `--- SKIP` line, and every
+# line from the package's first `panic: ` on (so the goroutine dump of a timeout, a data race and
+# the package's own FAIL line), the build output, and, for a run of its own, go test's stderr.
 failures() {
-  jq -rs '
-    (reduce (.[] | select(.Test != null and (.Action == "pass" or .Action == "fail" or .Action == "skip"))) as $e ({}; .["\($e.Package) \($e.Test)"] = true)) as $ended
-    | (reduce (.[] | select(.Action == "fail" and .Test == null)) as $e ({}; .[$e.Package] = true)) as $failed
-    | .[] | select(.Test != null)
+  jq -rs "$by_run"' [by_run] as $events
+    | (reduce ($events[] | select(.Test != null and (.Action == "pass" or .Action == "fail" or .Action == "skip"))) as $e ({}; .[$e._run] = true)) as $ended
+    | (reduce ($events[] | select(.Action == "fail" and .Test == null)) as $e ({}; .[$e.Package] = true)) as $failed
+    | $events[] | select(.Test != null)
     | if .Action == "fail" then "FAIL \(.Package) \(.Test)"
-      elif .Action == "run" and $failed[.Package] and ($ended["\(.Package) \(.Test)"] | not) then "UNFINISHED \(.Package) \(.Test)"
+      elif .Action == "run" and $failed[.Package] and ($ended[._run] | not) then "UNFINISHED \(.Package) \(.Test)"
       else empty end' "$report" >&2 || true
   # test2json files each output line under the test whose framing line came last. A test's own
   # output comes before its `--- PASS` or `--- SKIP` line, so a line filed under it after that line
   # is another's: a data race report after a subtest passed, or a panic after a parallel test
   # passed. Those lines are printed, as is every line of a failed package from its first `panic: `
   # on, whatever test they are filed under.
-  jq -rsj '
-    (reduce (.[] | select(.Test != null and (.Action == "pass" or .Action == "skip"))) as $e ({}; .["\($e.Package) \($e.Test)"] = true)) as $passed
-    | (reduce (.[] | select(.Action == "fail" and .Test == null)) as $e ({}; .[$e.Package] = true)) as $failed
-    | foreach (.[] | select(.Action == "output" and $failed[.Package // ""])) as $e
+  jq -rsj "$by_run"' [by_run] as $events
+    | (reduce ($events[] | select(.Test != null and (.Action == "pass" or .Action == "skip"))) as $e ({}; .[$e._run] = true)) as $passed
+    | (reduce ($events[] | select(.Action == "fail" and .Test == null)) as $e ({}; .[$e.Package] = true)) as $failed
+    | foreach ($events[] | select(.Action == "output" and $failed[.Package // ""])) as $e
         ({panicked: {}, ended: {}, show: false};
-         "\($e.Package) \($e.Test)" as $k
-         | ($e.Output | startswith("panic: ")) as $panic
-         | .show = ($panic or .panicked[$e.Package] == true or .ended[$k] == true)
+         ($e.Output | startswith("panic: ")) as $panic
+         | .show = ($panic or .panicked[$e.Package] == true or ($e._run != null and .ended[$e._run] == true))
          | if $panic then .panicked[$e.Package] = true else . end
-         | if $e.Test != null and ($e.Output | test("^\\s*--- (PASS|SKIP): ")) then .ended[$k] = true else . end;
+         | if $e._run != null and ($e.Output | test("^\\s*--- (PASS|SKIP): ")) then .ended[$e._run] = true else . end;
          [.show, $e])
     | .[0] as $misfiled | .[1]
-    | select($misfiled or .Test == null or ($passed["\(.Package) \(.Test)"] | not))
+    | select($misfiled or .Test == null or ($passed[._run] | not))
     | .Output' "$report" >&2 || true
   jq -rj 'select(.Action == "build-output") | .Output' "$report" >&2 || true
   [ -z "$go_test_exit" ] || cat "$work/stderr" >&2
