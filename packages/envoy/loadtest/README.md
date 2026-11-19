@@ -2640,12 +2640,12 @@ is given. The guard stops a mistaken target before the first write:
    `seed-finish`'s `-pg-file` and `-token-file`, and `stub-embed`'s `-key-file`. `-token`,
    `-listener-token` and `stub-embed`'s `-key` are removed: given a value, empty or not, each is
    refused right after the flags are parsed, before the command checks, reads or opens anything
-   else, naming its file form, and the refusal holds nothing of the value. So is one given after
-   a positional argument or `--`, where the flag package stops reading flags. A `-h`, or a parse
-   error beside one (an unknown flag, a bad number, one of these flags given no value at all),
-   ends the command as the flag package ends it, with exit 0 after the usage or exit 2, and
-   prints nothing of the value either: these flags never fail their own parse, and the usage
-   shows none of their values. `-pg` still takes a URL that sets no password, as the local
+   else, naming its file form, and the refusal holds nothing of the value.
+   So is one given after a positional argument or `--`, where the flag package stops reading flags.
+   A `-h`, or a parse error beside one (an unknown flag, a bad number, one of these flags given no value at all),
+   is handled as each command handles its own flag errors,
+   and prints nothing of the value either: these flags never fail their own parse, and the usage shows none of their values.
+   `-pg` still takes a URL that sets no password, as the local
    stack's own does. Every `-pg` the command line gives is judged, not the last alone, and after
    a positional argument or `--` too, and as text, before anything reads a file it names: one
    that sets a password where pgx reads one (a `postgres://` URL's userinfo, which pgx ends at the
