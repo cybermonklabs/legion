@@ -48,6 +48,8 @@ func TestMain(m *testing.M) {
 //     result;
 //   - "handoff ok": a `legion` handoff_complete call and its result;
 //   - "say <text>": an assistant message of text;
+//   - "models <model>…": an assistant message of text for each model named, each naming its own
+//     model, as Claude Code names the model that wrote each message;
 //   - "held <name>": the re-emission only once the test releases name (rig.release);
 //   - "wait <name>": an assistant message "done" only once the test releases name;
 //   - "die": exits, never re-emitting it;
@@ -157,6 +159,24 @@ func fakeClaude() int {
 			assistant(text("completed"))
 		case strings.HasPrefix(body, "say "):
 			assistant(text(strings.TrimPrefix(body, "say ")))
+		case strings.HasPrefix(body, "models "):
+			for _, model := range strings.Fields(strings.TrimPrefix(body, "models ")) {
+				emit(map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant", "model": model,
+					"content": []map[string]any{text("answered")}}})
+			}
+		case strings.HasPrefix(body, "subagent "):
+			// The main conversation's model calls a subagent, which answers on a model of its
+			// own: Claude Code writes the subagent's messages as assistant lines that name the
+			// tool call they serve in parent_tool_use_id ("Follow subagent messages").
+			models := strings.Fields(strings.TrimPrefix(body, "subagent "))
+			emit(map[string]any{"type": "assistant", "parent_tool_use_id": nil, "message": map[string]any{"role": "assistant", "model": models[0],
+				"content": []map[string]any{{"type": "tool_use", "id": "tu-agent", "name": "Agent", "input": map[string]any{"prompt": "look"}}}}})
+			emit(map[string]any{"type": "assistant", "parent_tool_use_id": "tu-agent", "message": map[string]any{"role": "assistant", "model": models[1],
+				"content": []map[string]any{text("the subagent's answer")}}})
+			emit(map[string]any{"type": "user", "parent_tool_use_id": nil, "message": map[string]any{"role": "user", "content": []map[string]any{
+				{"type": "tool_result", "tool_use_id": "tu-agent"}}}})
+			emit(map[string]any{"type": "assistant", "parent_tool_use_id": nil, "message": map[string]any{"role": "assistant", "model": models[0],
+				"content": []map[string]any{text("answered")}}})
 		case strings.HasPrefix(body, "api-error-529 "):
 			assistant(text(strings.TrimPrefix(body, "api-error-529 ")))
 			providerFailed(529)
@@ -343,14 +363,33 @@ func (r *rig) nextRaw() map[string]any {
 	}
 }
 
-// next is the next frame the bridge wrote that is not a pane summary (tool_execution_start).
-func (r *rig) next() map[string]any {
+// nextWithSummaries is the next frame the bridge wrote that is not the name of the model that
+// answered (answerFrame), pane summaries (tool_execution_start) included.
+func (r *rig) nextWithSummaries() map[string]any {
 	r.t.Helper()
 	for {
-		if frame := r.nextRaw(); frame["type"] != "tool_execution_start" {
+		if frame := r.nextRaw(); !answerFrame(frame) {
 			return frame
 		}
 	}
+}
+
+// next is nextWithSummaries without the pane summaries: the cases that read next are about turns.
+func (r *rig) next() map[string]any {
+	r.t.Helper()
+	for {
+		if frame := r.nextWithSummaries(); frame["type"] != "tool_execution_start" {
+			return frame
+		}
+	}
+}
+
+// answerFrame is whether frame is the message_end the bridge writes for each answer of a model,
+// naming that model; the message_end of a failed turn names none.
+func answerFrame(frame map[string]any) bool {
+	message, _ := frame["message"].(map[string]any)
+	_, named := message["model"]
+	return frame["type"] == "message_end" && named
 }
 
 // expect is the next frame, which must be a typ frame carrying every field of want.
@@ -368,13 +407,20 @@ func (r *rig) expect(typ string, want map[string]any) map[string]any {
 	return frame
 }
 
-// quiet holds that the bridge writes no frame within a short while.
+// quiet holds that the bridge writes no frame within a short while, but the name of a model that
+// answered (answerFrame), which says nothing about a turn.
 func (r *rig) quiet() {
 	r.t.Helper()
-	select {
-	case frame := <-r.frames:
-		r.t.Fatalf("got %v, want no frame", frame)
-	case <-time.After(300 * time.Millisecond):
+	deadline := time.After(300 * time.Millisecond)
+	for {
+		select {
+		case frame := <-r.frames:
+			if !answerFrame(frame) {
+				r.t.Fatalf("got %v, want no frame", frame)
+			}
+		case <-deadline:
+			return
+		}
 	}
 }
 
@@ -775,7 +821,8 @@ func TestATurnClaudeCodeStartsByItselfIsATurnOfTheDaemons(t *testing.T) {
 	r.open()
 	var types []string
 	for ends := 0; ends < 2; {
-		typ, _ := r.nextRaw()["type"].(string)
+		frame := r.nextWithSummaries()
+		typ, _ := frame["type"].(string)
 		types = append(types, typ)
 		if typ == "agent_end" {
 			ends++
@@ -783,12 +830,86 @@ func TestATurnClaudeCodeStartsByItselfIsATurnOfTheDaemons(t *testing.T) {
 	}
 	// The prompt's turn carries one tool call, the background Bash command, which the bridge shows
 	// on the pane; the turn Claude Code started by itself calls no tool, so the bridge writes
-	// nothing of its own between that turn's start and its end.
+	// nothing of its own between that turn's start and its end but the names of the model that
+	// answered in it, which TestTheBridgeNamesClaudesModel reads.
 	want := []string{"agent_start", "tool_execution_start", "agent_end", "prompt_result", "agent_start", "agent_end"}
 	if !slices.Equal(types, want) {
 		t.Fatalf("the daemon saw %q, want %q", types, want)
 	}
 	r.quiet()
+}
+
+// Each answer of Claude Code's model reaches the daemon as Oh My Pi's message_end names one: the
+// model under message.model, the provider anthropic. That is what the record of a step names as
+// the model that served it, so each message names the model that wrote it: two models answering
+// in one turn are named in their order, neither as the model of the recording nor as the one before.
+// A message no model wrote — Claude Code's `<synthetic>` answer to a provider's 429 — names no model.
+func TestTheBridgeNamesClaudesModel(t *testing.T) {
+	framesUntilResult := func(r *rig) []map[string]any {
+		var frames []map[string]any
+		for {
+			frame := r.nextRaw()
+			frames = append(frames, frame)
+			if frame["type"] == "prompt_result" {
+				return frames
+			}
+		}
+	}
+
+	r := newRig(t, "-p", "--resume", sessionID)
+	r.prompt("p1", backgroundTurn)
+	answers := 0
+	for _, frame := range framesUntilResult(r) {
+		if frame["type"] != "message_end" {
+			continue
+		}
+		message, _ := frame["message"].(map[string]any)
+		if message["role"] != "assistant" || message["provider"] != "anthropic" || message["model"] != "claude-sonnet-4-5" {
+			t.Fatalf("the bridge wrote %v, want a message_end naming anthropic's claude-sonnet-4-5", frame)
+		}
+		answers++
+	}
+	if answers == 0 {
+		t.Fatal("the turn the model answered wrote no message_end naming its model")
+	}
+
+	changed := newRig(t, "-p", "--resume", sessionID)
+	changed.prompt("p1", "models claude-first-1 claude-second-2")
+	var named []any
+	for _, frame := range framesUntilResult(changed) {
+		if answerFrame(frame) {
+			message, _ := frame["message"].(map[string]any)
+			named = append(named, message["model"])
+		}
+	}
+	if want := []any{"claude-first-1", "claude-second-2"}; !slices.Equal(named, want) {
+		t.Fatalf("a turn two models answered in names %v, want %v: each message names the model that wrote it", named, want)
+	}
+
+	// A subagent answers on a model of its own, and its messages are no answer of the worker's: a
+	// turn whose main model calls one names the main model alone.
+	parent := newRig(t, "-p", "--resume", sessionID)
+	parent.prompt("p1", "subagent claude-sonnet-5 claude-haiku-4-5")
+	named = nil
+	for _, frame := range framesUntilResult(parent) {
+		if answerFrame(frame) {
+			message, _ := frame["message"].(map[string]any)
+			named = append(named, message["model"])
+		}
+	}
+	if want := []any{"claude-sonnet-5", "claude-sonnet-5"}; !slices.Equal(named, want) {
+		t.Fatalf("a turn whose model called a subagent on claude-haiku-4-5 names %v, want %v: a subagent's message is no answer of the worker's", named, want)
+	}
+
+	failed := newRig(t, "-p", "--resume", sessionID)
+	failed.prompt("p1", "replay api-error-429.jsonl")
+	failed.open()
+	for _, frame := range framesUntilResult(failed) {
+		message, _ := frame["message"].(map[string]any)
+		if frame["type"] == "message_end" && message["model"] != nil {
+			t.Fatalf("the turn no model answered wrote %v, want no message_end naming a model", frame)
+		}
+	}
 }
 
 // The three lines a background task writes when it finishes during a turn end no turn: the daemon
@@ -800,7 +921,8 @@ func TestABackgroundTaskFinishingDuringATurnDoesNotEndIt(t *testing.T) {
 	// The turn's two tool calls, the background command and the foreground one; the task's three
 	// lines come between the second call and the turn's result, which the gate holds back.
 	for i := range 2 {
-		if frame := r.nextRaw(); frame["type"] != "tool_execution_start" {
+		frame := r.nextWithSummaries()
+		if frame["type"] != "tool_execution_start" {
 			t.Fatalf("got %v, want tool call %d of the turn", frame, i+1)
 		}
 	}

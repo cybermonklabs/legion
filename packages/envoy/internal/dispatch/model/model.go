@@ -3150,6 +3150,52 @@ type HandoffRecordedEventPayload struct {
 	Version   int    `json:"version"`
 }
 
+// StepRecord is one run of one step of an issue's workflow, as the Legion daemon wrote it at the
+// run's start and at its end (PUT /api/v1/issues/{key}/steps/{id}) and as the read of the issue
+// lists it. Task is the plan's task, `default` for an issue whose owner gave no plan; Step is the
+// step's place in the task from 1, and 0 for a retro and a merge, which Kind tells apart. Type is
+// "" for those two kinds, Agent the claim token of the role that ran it ("" for a merge GitHub
+// made), Session the claim's session and Model `<provider>/<model>`, or the model alone where the
+// agent named no provider, each "" where the daemon knew none. Generation is the issue's run, and
+// Attempt, which no write stores, the place of this run among the issue's runs of the same task,
+// step and kind, from 1. Result is passed, failed or stopped, "" while the run still runs;
+// ReturnedTo is the place a failed or stopped run returned its task to, 0 being the retro's and
+// the merge's place, and Report the handoff its ending role named, each null where the run has
+// none.
+type StepRecord struct {
+	ID         string     `json:"id"`
+	Issue      string     `json:"issue"`
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind" enum:"step,retro,merge"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Session    string     `json:"session"`
+	Model      string     `json:"model"`
+	Generation int64      `json:"generation"`
+	Attempt    int        `json:"attempt"`
+	StartedAt  *time.Time `json:"started_at"`
+	EndedAt    *time.Time `json:"ended_at"`
+	Result     string     `json:"result" enum:",passed,failed,stopped"`
+	ReturnedTo *int       `json:"returned_to"`
+	Report     *string    `json:"report"`
+}
+
+// StepTask is one task of an issue with every run of its steps, in the order they ran.
+type StepTask struct {
+	Task  string       `json:"task"`
+	Steps []StepRecord `json:"steps"`
+}
+
+// IssueSteps is GET /api/v1/issues/{key}/steps: every run of every step of the issue, task by
+// task in the order of each task's first run. An issue Legion never ran answers no task; a key no
+// issue carries answers 404 NOT_FOUND, and no IssueSteps.
+type IssueSteps struct {
+	Issue string     `json:"issue"`
+	Tasks []StepTask `json:"tasks"`
+}
+
 // ReferencedBy identifies a post or artifact that mentions an artifact.
 type ReferencedBy struct {
 	Kind     string  `json:"kind"`
