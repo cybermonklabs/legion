@@ -177,7 +177,7 @@ Values selected in one column match any of them, except Labels, which uses all-o
 Different columns narrow one another.
 Each option count applies the search and every other column's filter, not its own column's picks.
 The **Search issues** box matches every word across keys, titles, epics, assignees, creators, claim holders and labels.
-A word of five or more characters can be one edit away.
+A word of five or more UTF-16 code units can be one edit away.
 
 The Board keeps the **Filters** strip: Labels requires every selected label, and Search matches keys and titles.
 The List and Board share **Needs you** (open asks) and **Unread** (unseen activity).

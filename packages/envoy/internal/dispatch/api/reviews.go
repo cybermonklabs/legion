@@ -931,7 +931,7 @@ const maxApprovalVersion = 9_999_999_999
 
 // approvalQuestion is an approval ask's question: every document and version it names, then the
 // requester's summary of what the human is approving, when one was given. A summary that would
-// take the ask past the bound its wording shares is refused naming the characters left for it.
+// take the ask past the bound its wording shares is refused naming the UTF-16 code units left for it.
 func approvalQuestion(documents []model.AskApprovalDocument, summary string) (string, error) {
 	question := docs.ApprovalQuestion(documents, summary)
 	if summary == "" {

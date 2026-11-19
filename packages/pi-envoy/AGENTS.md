@@ -1056,7 +1056,7 @@ so no `!` token command runs on the request path, and `readSessionAnswers` works
 directory from `process.env`. Position: the list goes after the request's last message only when
 it shows something the session's list before it did not (`sessionAnswersChanged` over the two
 reads' `SessionAnswersRead.words`, from `sessionAnswersWords` over every item Dispatch sent inside
-the read's 72-hour window, the ones the character cap left out of the list included: each item's
+the read's 72-hour window, the ones the UTF-16 code unit cap left out of the list included: each item's
 kind, id, author, times, options chosen and words, so an issue title, an ask's question or a
 cached list's header does not count): an item, or an answer or comment a person changed, even one
 the cap leaves out (a newest item longer than the cap, a comment an edit made too long to fit), so

@@ -146,7 +146,7 @@ function windowOf(
 /**
  * What the people wrote in each of `items`, one string per item: its kind, id, author and times,
  * the options chosen and the words. `readSessionAnswers` gives it for every item Dispatch sent
- * inside the read's 72-hour window, the ones its list shows and the ones the character cap left
+ * inside the read's 72-hour window, the ones its list shows and the ones the UTF-16 code unit cap left
  * out, so a host comparing two reads (`sessionAnswersChanged`) tells a new item, or an answer or
  * comment a person changed, from a list that only lost items to the window or changed what the
  * session or Dispatch says around them (an issue's title, an ask's question, a cached list's
@@ -445,7 +445,7 @@ export interface SessionAnswersRead {
   /** When the list shown was read (`fresh` and `cache`). */
   readonly readAt?: string;
   /** `sessionAnswersWords` of every item Dispatch sent inside the 72-hour window the list was
-   *  rendered for (`fresh` and `cache`), the ones the character cap left out included: what the
+   *  rendered for (`fresh` and `cache`), the ones the UTF-16 code unit cap left out included: what the
    *  people wrote. A `fresh` read whose window holds no item gives `[]` and no `text`, so a host
    *  still learns that the items of a list it shows left the read (`sessionAnswersChanged`). */
   readonly words?: readonly string[];

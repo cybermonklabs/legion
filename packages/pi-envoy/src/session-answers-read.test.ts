@@ -79,10 +79,10 @@ function readingDispatch(items: () => readonly SessionAnswer[], now: () => numbe
     );
 }
 
-// The character cap leaves out the first item that does not fit, and every item older than it.
+// The UTF-16 code unit cap leaves out the first item that does not fit, and every item older than it.
 // What a person wrote there still counts: the list moves, and the model reads the new list with
 // its line counting what was left out, rather than kept bytes that look current.
-test("a new item longer than the character cap moves the list", async () => {
+test("a new item longer than the UTF-16 code unit cap moves the list", async () => {
   const older = writtenBefore(2, "m-older", "Ship it.");
   let items = [older];
   const read = readingDispatch(
@@ -103,7 +103,7 @@ test("a new item longer than the character cap moves the list", async () => {
   ]);
 });
 
-test("an edit that makes a shown comment too long for the character cap moves the list", async () => {
+test("an edit that makes a shown comment too long for the UTF-16 code unit cap moves the list", async () => {
   const newer = writtenBefore(1, "m-newer", "x".repeat(3_000));
   const shipIt = writtenBefore(2, "c-1", "Ship it.", COMMENT);
   let items = [newer, shipIt];
@@ -137,7 +137,7 @@ test("an edit that makes a shown comment too long for the character cap moves th
 // A list the cap left with no item, only its header and its left-out line, shows nobody's words.
 // Each case below changes an item that list leaves out and retracts nothing, so only the words of
 // every item Dispatch sent, the left-out ones included, tell the two reads apart.
-test("a second item over the character cap moves a list the cap had already emptied", async () => {
+test("a second item over the UTF-16 code unit cap moves a list the cap had already emptied", async () => {
   const first = writtenBefore(2, "m-first", "w".repeat(9_000));
   let items = [first];
   const read = readingDispatch(

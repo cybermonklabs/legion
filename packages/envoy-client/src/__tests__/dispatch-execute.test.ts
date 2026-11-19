@@ -1880,7 +1880,7 @@ describe("executeDispatchTool", () => {
     expect(requests).toEqual(["/api/v1/search?q=the"]);
   });
 
-  test("dispatch_search rejects a one-character query before any request", async () => {
+  test("dispatch_search rejects a query of one UTF-16 code unit before any request", async () => {
     let requests = 0;
     const fetchImpl = (() => {
       requests += 1;

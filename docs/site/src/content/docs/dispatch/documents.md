@@ -180,7 +180,7 @@ to open it for search alone.
 ![The search palette with actions for the current page above search results](/legion/media/dispatch/palette.png)
 
 Search covers issue titles, the latest text of every document, comments, asks and their answers,
-and messages. A query needs at least two characters and can be up to 1,000. You can use quotes for
+and messages. A query needs at least two UTF-16 code units and can be up to 1,000. You can use quotes for
 a phrase, `OR` between words, and `-` before a word to leave it out: `"merge queue" -draft`.
 
 A very long text made almost entirely of words that each appear once, such as a list of hundreds
