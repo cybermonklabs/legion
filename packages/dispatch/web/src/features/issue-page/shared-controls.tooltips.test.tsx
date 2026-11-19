@@ -803,13 +803,12 @@ const MOUNTS: readonly Mount[] = [
       <>
         <PriorityControl issueKey="CORE-1" priority={0} />
         <PriorityControl issueKey="CORE-2" priority={null} />
-        <PriorityEditor issueKey="CORE-3" priority={1} variant="header" write={idlePriorityWrite} />
         <PriorityEditor
-          issueKey="CORE-4"
-          priority={null}
+          issueKey="CORE-3"
           variant="header"
-          write={idlePriorityWrite}
+          write={{ ...idlePriorityWrite, shown: 1 }}
         />
+        <PriorityEditor issueKey="CORE-4" variant="header" write={idlePriorityWrite} />
       </>
     ),
   },

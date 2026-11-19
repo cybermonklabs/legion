@@ -11,10 +11,14 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useIssueAssignee } from "./useIssueAssignee";
 
 /** The assignee field of CORE-1 over one app's queue, with alice signed in: the field every
- *  single-field issue write is made through (`useIssueFieldWrite`). */
+ *  single-field issue write is made through (`useIssueFieldWrite`). Its host passes no assignee,
+ *  as CORE-1 has none here. */
 function renderAssignee() {
-  return renderOnQueue(() => useIssueAssignee("CORE-1"));
+  return renderOnQueue(() => useIssueAssignee("CORE-1", null));
 }
+
+/** The assignee each issue's host passes, read from caches these rows never write. */
+const hosts: Readonly<Record<string, string | null>> = { "CORE-1": null, "CORE-2": "dave" };
 
 /** CORE-1's assignee as Dispatch holds it, answering its patches as it keeps a key
  *  (`api/request_keys.go`): the first request under a key makes the change, and each later one
@@ -114,7 +118,7 @@ test("a Retry after the control moved to another issue is of the stopped save's 
   jest.useFakeTimers();
   const { held, patchIssue } = dispatchHoldingAssignee();
   let issueKey = "CORE-1";
-  const { client, hook } = renderOnQueue(() => useIssueAssignee(issueKey));
+  const { client, hook } = renderOnQueue(() => useIssueAssignee(issueKey, hosts[issueKey] ?? null));
 
   try {
     act(() => hook.result.current.submit("alice"));
@@ -149,6 +153,64 @@ test("a Retry after the control moved to another issue is of the stopped save's 
   }
 });
 
+// A pick is drawn from its press until the host is told of it, and the host passes the field of
+// the issue it draws. Rendered for another issue by then, the control draws that issue's assignee
+// as its host passes it, through a Retry of the stopped save of the first issue too: drawn from
+// the press, that Retry would put CORE-1's alice on CORE-2 until the host is told.
+test("a Retry after the control moved to another issue draws that issue's assignee, not the retried pick", async () => {
+  jest.useFakeTimers();
+  const { held, patchIssue } = dispatchHoldingAssignee();
+  let issueKey = "CORE-1";
+  const { client, hook } = renderOnQueue(() => useIssueAssignee(issueKey, hosts[issueKey] ?? null));
+
+  try {
+    act(() => hook.result.current.submit("alice"));
+    await stopTheLateWrite(client);
+
+    issueKey = "CORE-2";
+    hook.rerender();
+    held.answering = true;
+    const { retry } = hook.result.current;
+    expect(retry).toBeDefined();
+    act(() => retry?.());
+
+    expect(hook.result.current.shown).toBe("dave");
+    await tick(1_000);
+    expect(patchIssue.mock.calls.at(-1)?.[0]).toBe("CORE-1");
+    expect(hook.result.current.shown).toBe("dave");
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    realClock();
+  }
+});
+
+// The same holds of a pick the host has not been told of yet when it draws the control for
+// another issue: the pick is CORE-1's, so CORE-2's control draws CORE-2's assignee.
+test("a pick's hold is not drawn once the host draws the control for another issue", async () => {
+  jest.useFakeTimers();
+  const patchIssue = answerIssuePatches().mockImplementation(
+    async (key, input) => ({ assignee: input.assignee ?? null, key }) as Issue
+  );
+  let issueKey = "CORE-1";
+  const { hook } = renderOnQueue(() => useIssueAssignee(issueKey, hosts[issueKey] ?? null));
+
+  try {
+    act(() => hook.result.current.submit("alice"));
+    expect(hook.result.current.shown).toBe("alice");
+    issueKey = "CORE-2";
+    hook.rerender();
+
+    expect(hook.result.current.shown).toBe("dave");
+    await tick(1_000);
+    expect(patchIssue.mock.calls.at(-1)?.[0]).toBe("CORE-1");
+  } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    realClock();
+  }
+});
+
 // A pick made during a save waits behind it in its issue's line (`issue:<KEY>`). A pick on
 // another issue goes in that issue's own line rather than in place of the one already waiting,
 // so that one is still saved, not left on screen with no save behind it. Each line sends its
@@ -159,7 +221,7 @@ test("a pick waiting behind a save is still saved when a pick on another issue w
     .mockImplementationOnce(() => first.promise)
     .mockImplementation(async (key, input) => ({ assignee: input.assignee ?? null, key }) as Issue);
   let issueKey = "CORE-1";
-  const { hook } = renderOnQueue(() => useIssueAssignee(issueKey));
+  const { hook } = renderOnQueue(() => useIssueAssignee(issueKey, null));
 
   try {
     act(() => hook.result.current.submit("alice"));
@@ -196,7 +258,7 @@ test("a refused pick of one issue after a refused save of another rolls back to 
     .mockImplementationOnce(() => first.promise)
     .mockImplementationOnce(() => second.promise);
   let issueKey = "CORE-1";
-  const { client, hook } = renderOnQueue(() => useIssueAssignee(issueKey));
+  const { client, hook } = renderOnQueue(() => useIssueAssignee(issueKey, hosts[issueKey] ?? null));
   const core1 = { assignee: null, key: "CORE-1" } as IssueDetails;
   const core2 = { assignee: "dave", key: "CORE-2" } as IssueDetails;
   client.setQueryData(["issue", "CORE-1"], core1);

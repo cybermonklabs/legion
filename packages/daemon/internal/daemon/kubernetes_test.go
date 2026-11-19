@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -608,6 +609,35 @@ func TestTheRepositoryCacheReachesTheSandboxRuntime(t *testing.T) {
 	}
 	if request, limit := cache.Resources.Requests[corev1.ResourceMemory], cache.Resources.Limits[corev1.ResourceMemory]; request.Cmp(resource.MustParse("4Gi")) != 0 || limit.Cmp(resource.MustParse("8Gi")) != 0 {
 		t.Errorf("the cache's memory is requested %s under %s, want 4Gi under 8Gi", request.String(), limit.String())
+	}
+}
+
+// runtime.kubernetes.volume_trim reaches the runtime's Options as the settings each issue pod's
+// launcher is handed on the answer to its hello — the two marks, the minimum age and the
+// interval, each in its own member — and `enabled: false` hands the runtime none at all, which
+// the launcher reads as no settings (sandbox.Options.VolumeTrim). Every number differs from the
+// others, so two members crossed read back wrong. The negative controls are Enabled inverted,
+// which hands the enabled block's runtime nothing and the disabled one's the settings, and the
+// two marks swapped.
+func TestTheVolumeTrimReachesTheSandboxRuntime(t *testing.T) {
+	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+	cfg.Runtime.Kubernetes.VolumeTrim = config.VolumeTrimConfig{Enabled: true, HighPercent: 90, LowPercent: 60, MinAgeMinutes: 45, IntervalSeconds: 30}
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions: %v", err)
+	}
+	want := shimwire.LauncherVolumeTrim{HighPercent: 90, LowPercent: 60, MinAgeMinutes: 45, IntervalSeconds: 30}
+	if opts.VolumeTrim == nil || *opts.VolumeTrim != want {
+		t.Errorf("Options.VolumeTrim = %+v, want %+v", opts.VolumeTrim, want)
+	}
+
+	cfg.Runtime.Kubernetes.VolumeTrim.Enabled = false
+	opts, err = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions with the trimmer off: %v", err)
+	}
+	if opts.VolumeTrim != nil {
+		t.Errorf("Options.VolumeTrim = %+v with volume_trim.enabled false, want none: no settings is what the launcher reads as the trimmer off", *opts.VolumeTrim)
 	}
 }
 

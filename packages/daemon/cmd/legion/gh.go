@@ -208,6 +208,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// no directory for the read's repository at all, and this routing would then refuse a
 		// read the caller's token can make, which is the second reason #4219 gives for running
 		// these reads under it (ghVisibilityRead).
+		//
+		// With no caller token, a read of a repository whose owner the bundle holds no directory
+		// for is refused below with leakguard.OwnerNotServedError's line (ownerGHConfigDir), and
+		// no gh runs. The guard reads exactly that refusal, and then reads the repository's
+		// visibility with no credential (leakguard.Guard.Visibility).
 		if ghCallerToken(env) == "" {
 			target.owner, target.repo = strings.ToLower(visibilityRead.Owner()), visibilityRead.Name()
 			target.dir, err = ghConfigDirFor(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo)
@@ -480,7 +485,9 @@ func trimGhCallLog(path string) {
 //     as a git push whose credential helper answers with GH_TOKEN. That token writes the
 //     repository the guard reads, so it can read that repository too.
 //   - The bundle may hold no directory for the repository's owner. A read with the bundle's
-//     directory would then be refused, and so would the push, for a repository the token writes.
+//     directory would then be refused, and the guard could read the visibility only with no
+//     credential, which answers for a public repository alone (leakguard.OwnerNotServedError):
+//     a push to a private repository the token writes would be refused.
 //   - gh sends the caller's token first, so a read with the bundle's directory would also have to
 //     remove that token from gh's environment.
 //

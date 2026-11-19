@@ -332,6 +332,44 @@ for the stack's start under a short one. The stack runs in a session of its own 
 is stopped as one process group, so a stop during the build — the script's exit, a
 wait that ran out, Ctrl-C — ends that build with the stack.
 
+## callout-check.sh
+
+Proves, on the whole local stack behind the NATS auth service, what the hub lets a
+connection reach: `check c-callout-live` of the NATS auth service's verification.
+`dev-stack.sh --callout` is that stack: natsd behind the auth callout, the service in two
+brokers on one database, and the listener and Dispatch connecting as services with the
+NATS-audience tokens the issuer writes them. All of what `--callout` adds is in
+`lib/callout-stack.sh`, which `dev-stack.sh` sources on every run; without the option each
+addition is empty. The check prints one line per property:
+a session subscribes its own delivery channel; it is refused another session's, in
+nats-server's own words (`Permissions Violation for Subscription to "..."`); a connection
+with no credential is refused, and a token neither broker issued is refused (a stand-in token
+endpoint plays the other broker), each in nats-server's own `Authorization Violation`, the only
+answer `natsprobe` exits 4 for; the hub lists the listener's connection authorized as
+`listener/<its machine id>`; and with one broker killed, three new sessions are each
+admitted within 2 s, the first counted from the kill. A session opened before the hub has
+read the killed broker's close can be routed to the dead replica and refused at the hub's
+authorization timeout, so the check opens the first session once the hub lists one
+`envoy-broker-callout` connection fewer (both brokers' connections carry that name), and says
+how long the drop took. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
+assertions failed` (exit 1); a probe that reports nothing reads `UNKNOWN` and fails.
+
+```bash
+LEGION_TEST_PG_DSN=postgres://... bash scripts/callout-check.sh   # starts and stops its own stack
+# or, in a shell that exported a `dev-stack.sh --callout` banner:
+bash scripts/callout-check.sh
+```
+
+With nothing exported it starts `dev-stack.sh --callout` itself, passing on its own
+arguments (`--database-url`, `--binaries`), and stops it on exit, which drops its
+databases; against an exported stack it kills that stack's second broker, which the stack
+outlives. Each probe is `natsprobe` (`cmd/natsprobe`), which tries any one subject by
+hand too: as a session it trades the stack's pod token for a broker token, as a service
+it presents `--service-token-file`, and `--no-credential` presents nothing.
+`callout-check.test.sh` holds the verdicts to fakes, including the negative control:
+`CALLOUT_CHECK_GRANT_ALL=1`, a service granting every session's channel, fails line 2, and
+a hub that never drops the killed broker's connection fails line 6.
+
 ## backend-count.sh
 
 Counts, for each test it names, the runs that passed on each store backend: the test's
@@ -357,27 +395,65 @@ in its time budget; the job runs it as "Count the store-form rows on each backen
 
 ## database-skips.sh
 
-Counts the tests of the broker's packages (`internal/broker/...`) that skipped, and fails on
-any: every database broker suite skips, which go test counts as a pass, when
-`BROKER_TEST_DATABASE_URL` is unset, and a `t.Skip` left in one skips it with the variable
-set.
+The one skip counter of the module's database-backed packages: it runs `go test -json` and
+counts the tests that skipped, and fails on any. A database suite skips, which go test counts
+as a pass and prints nothing for without `-v`, when its variable is unset, and a `t.Skip`
+left in one skips it with the variable set.
 
 ```bash
 BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
-packages/envoy/scripts/database-skips.sh --report REPORT.json
+DISPATCH_TEST_DATABASE_URL=postgres://… BROKER_TEST_DATABASE_URL=postgres://… \
+  packages/envoy/scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL \
+  --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/
+packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
-With no argument it runs `go test -json -count=1 -timeout 15m ./internal/broker/...` and
-reads that report; `--report` reads a `go test -json` report instead and runs nothing. It
-prints `SKIP PACKAGE TEST` for each skip, then `database_skips=N` and, for a run of its own,
-`go_test_exit=E`. A report that is missing, empty or holds no broker test prints
-`database_skips=UNKNOWN`, names what it could not read, and exits 1. It exits 0 only when
-broker tests ran, none skipped and go test passed. The tests `EXPECTED_SKIPS` names in the
-script skip by their own design in every run, and are not counted. `GO_TEST_TIMEOUT`
-replaces the 15-minute `-timeout`, which bounds each package's test binary and not the run:
-the packages run several at a time, so one that starts late ends later. `ci.yaml`'s
-`envoy-go` job runs it as "Count the database broker suites' skips", with a step limit of
-its own (`timeout-minutes: 25`) that its time budget counts.
+A `PACKAGE` is a pattern under `packages/envoy`, `./dir/` or `./dir/...`. With none it runs
+its default table, `./internal/broker/...` and `./cmd/broker/`, less the packages its
+`DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
+auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
+in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
+anything else). That is one `go test -json -count=1 -timeout 15m` from `packages/envoy`, then it
+reads that report. `--var NAME` names a variable the packages need, and repeats; with none it is
+`BROKER_TEST_DATABASE_URL`. A named variable that is unset or empty prints
+`database_skips=UNKNOWN` naming it, and nothing runs.
+`--race` adds `-race`, and `--timeout D` replaces the `-timeout`, as `GO_TEST_TIMEOUT` does
+when `--timeout` is not given; it bounds each package's test binary and not the run, since
+the packages run several at a time, so one that starts late ends later. `--report` reads a
+`go test -json` report instead and runs nothing, and refuses the three options that shape a
+run.
+
+It names the packages as `go list` does under the run's own flags, so a pattern spelled
+`./cmd/./broker/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
+listed package, then `database_skips=N` and, for a run of its own, `go_test_exit=E`. The tests
+`EXPECTED_SKIPS` names in the script skip by their own design in every CI run, which sets the
+database variables and none of what those tests need (a corpus, a seeded database, a built
+Lean model), and are not counted; each line gives its reason, and a line without one
+is refused. A report that is missing or empty, one in which a listed package with test files
+holds no test that passed or failed (its tests all skipped, or its `TestMain` returned before
+it ran them), and an `EXPECTED_SKIPS` line whose package is listed but whose test the report
+does not hold, print `database_skips=UNKNOWN`, name what could not be read, and exit 1. A
+failed test fails the count, read from a report as in a run. It exits 0 only when tests ran,
+none skipped but the expected ones, none failed, and go test passed. A failure prints, on
+stderr, each failed test, each test a failed package never finished, that package's output
+from its first `panic: ` on, that of its tests that did not pass, and any line test2json files
+under a test after that test's own `--- PASS` or `--- SKIP` (a timed-out binary's goroutine
+dump and a data race report among them), the build output and, for a run of its own, go test's
+stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>s` on stderr.
+
+`ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
+`--timeout 20m`, the unit step's own `-timeout`, and a step limit of its own
+(`timeout-minutes: 30`) that its time budget counts, and `envoy-go-race-api` runs the
+Dispatch API through it as the second line above.
+`database-skips.test.sh` holds it to five controls, which `envoy-go` runs as "Test the database
+skip counter": a skip planted through a Go overlay in `./internal/broker/api/`, `./cmd/broker/`
+and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
+that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
+a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
+package spelled other than canonically is counted;
+`--timeout 1s` ends a package's binary; and a copy with
+one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip. It needs
+a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
 
 ## aws-moto-check.sh
 

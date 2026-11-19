@@ -53,7 +53,7 @@ import { agentReplyTo, newestAttempt } from "../agents/exchange-delivery";
 import { useMarkShownRepliesRead } from "../agents/unread";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
-import { deliveryMode } from "../conversation/delivery";
+import { deliveryMode, noDeliveryLine } from "../conversation/delivery";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { AgentName } from "../refs/AgentName";
@@ -508,11 +508,6 @@ function AskThreadBody({
 /** What the live view says of a session its list no longer holds. */
 const ENDED_SESSION_LINE = "Not in the live session list — it may have ended.";
 
-/** What the live view says of a listed session that advertises no delivery mode. */
-const NO_DELIVERY_LINE =
-  "This session advertises no delivery mode, so a message sent here records a failed attempt. " +
-  "A session advertises none while its plugin cannot reach its conversation.";
-
 /** Said under a reply the session took as its user's own turn: the answer is streamed in the live
  *  view rather than stored under the reply. */
 function AcceptedAsTurn({ sessionId }: { sessionId: string }): ReactNode {
@@ -564,17 +559,20 @@ function AgentThreadBody({
       ) : undefined
     );
   const turns = read === undefined ? [] : [read.message, ...(read.replies ?? [])].map(turn);
+  // The warning of a session whose capabilities hold no delivery mode; undefined for one that
+  // takes a mode.
+  const noDelivery = noDeliveryLine(agent?.capabilities ?? []);
   return (
     <>
       <ThreadTurns
         composer={
           agent === undefined || read === undefined || newest === undefined ? null : (
             <div data-inbox-agent-composer="">
-              {(agent.capabilities ?? []).length === 0 ? (
+              {noDelivery !== undefined ? (
                 <>
                   <p className={`mt-2 text-xs ${textMutedOnCanvas}`}>Takes no messages</p>
                   <p className={`mt-1 text-sm ${dangerText}`} data-testid="agent-takes-no-messages">
-                    {NO_DELIVERY_LINE}
+                    {noDelivery}
                   </p>
                 </>
               ) : null}

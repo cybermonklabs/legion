@@ -35,7 +35,9 @@ export function AssignToMe({
   onLive: (askId: string, live: boolean) => void;
   viewer: string;
 }): ReactNode {
-  const write = useIssueAssignee(issueKey);
+  // Offered on an issue nobody holds, it stands on no assignee, and draws none: its words say
+  // whether its write is out, not who holds the issue.
+  const write = useIssueAssignee(issueKey, null);
   // The row held is the one the live save was pressed on, which is this row's unless a host has
   // drawn the control for another ask since that press. The save carries its issue and not the
   // row it was pressed on (`useIssueAssignee`), so the control keeps that row's ask itself.
