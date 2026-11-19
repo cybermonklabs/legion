@@ -201,8 +201,7 @@ class ClampMeasurer {
       this.#owners.set(box, element);
       this.#sizes?.observe(box);
     }
-    this.#mounted.push(element);
-    if (this.#mounted.length === 1) queueMicrotask(this.#measureMounted);
+    this.#measureAsMounted(element);
     this.#queue(element);
     return () => this.#unwatch(element);
   }
@@ -213,8 +212,7 @@ class ClampMeasurer {
    *  whole in view, where a cut would shrink what the reader sees. */
   redrawn(element: HTMLElement): void {
     if (this.#rows.get(element)?.face === undefined) return;
-    this.#mounted.push(element);
-    if (this.#mounted.length === 1) queueMicrotask(this.#measureMounted);
+    this.#measureAsMounted(element);
   }
 
   /** Whether no row is watched any more. */
@@ -243,6 +241,14 @@ class ClampMeasurer {
       this.#owners.delete(box);
       this.#sizes?.unobserve(box);
     }
+  }
+
+  /** Puts `element` in the mount's pass (`#measureMounted`), which runs once the commit now
+   *  running has run its layout effects: the commit's first such row schedules it, as one
+   *  microtask, and every later row of the commit joins it. */
+  #measureAsMounted(element: HTMLElement): void {
+    this.#mounted.push(element);
+    if (this.#mounted.length === 1) queueMicrotask(this.#measureMounted);
   }
 
   /** Puts `element` in the next batch, where it is near. */
