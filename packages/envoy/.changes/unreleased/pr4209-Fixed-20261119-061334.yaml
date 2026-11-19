@@ -5,11 +5,11 @@ body: |-
     new table `pull_request_texts`: the head, the branch, the head repository, the base, the
     title, the body, and the commit messages where the read read them. The database reads the
     keys from those texts (`attribution_keys`, migration `20261117122117_attribution_reading`).
-    The results route, the delivery timeline and `issue.deployed` read the same statement, so they
-    name one issue. A new link, a moved issue, a new issue, a new parent or a changed repository
-    mapping reaches every stored pull request at its next read, with no read of GitHub. A stored
-    issue said what the rule gave at a row's last read, so such a tie reached a merged pull
-    request late or never.
+    The results route, the delivery timeline, `issue.deployed` and the merge times of the Legion
+    metrics read the same statement, so they name one issue. A new link, a moved issue, a new
+    issue, a new parent or a changed repository mapping reaches every stored pull request at its
+    next read, with no read of GitHub. A stored issue said what the rule gave at a row's last
+    read, so such a tie reached a merged pull request late or never.
 
     A link by hand of a pull request (`PATCH /api/v1/issues/{key}` with `external_links`) owes a
     read of that pull request, where Dispatch maps its repository and holds no head row of it. The

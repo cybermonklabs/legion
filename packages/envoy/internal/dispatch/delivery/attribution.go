@@ -284,16 +284,42 @@ func attributedTermsOver(schema, judged, texts string) string {
 // reading, every such row, whose stored keys say nothing. The last is a one-time filter, so it
 // reads no row outside that window. A row an arm takes that the statement answers for another
 // issue is dropped by the reader's own `issue_key = $1`.
-var headsByIssue = `select repo, number from pull_request_heads where issue_key = $1
-	union select repo, number from delivery_pull_requests where issue_key = $1
+var headsByIssue = byIssueJudged(
+	func(column string) string { return column + ` = $1` },
+	func(keys string) string { return keys + ` @> array[$1::text]` })
+
+// timelineByIssues is the judged rows of a read by the issues of the array $1: the arms of
+// headsByIssue for each of them (ListPullRequestsOfIssues).
+var timelineByIssues = byIssueJudged(
+	func(column string) string { return column + ` = any($1::text[])` },
+	func(keys string) string { return keys + ` && $1::text[]` })
+
+// byIssueJudged is the arms of a read by issue, in the order headsByIssue gives them: is(column)
+// matches a column that holds one issue, and names(keys) a key array of pull_request_texts that
+// names the issue. One function writes both reads, so their arms cannot drift apart.
+func byIssueJudged(is, names func(string) string) string {
+	return `select repo, number from pull_request_heads where ` + is("issue_key") + `
+	union select repo, number from delivery_pull_requests where ` + is("issue_key") + `
 	union select repo, number from pull_request_texts
-		where branch_keys @> array[$1::text] or title_keys @> array[$1::text] or commit_keys @> array[$1::text]
+		where ` + names("branch_keys") + ` or ` + names("title_keys") + ` or ` + names("commit_keys") + `
 	union select h.repo, h.number from pull_request_heads h
-		where lower(h.url) in (select lower(l.url) from issue_external_links l where l.issue_key = $1) and ` + urlBound("h.url") + `
+		where lower(h.url) in (select lower(l.url) from issue_external_links l where ` + is("l.issue_key") + `) and ` + urlBound("h.url") + `
 	union select repo, number from pull_request_texts
-		where cited_issues && array(select ` + linkURLAsCited + ` from issue_external_links l where l.issue_key = $1)
+		where cited_issues && array(select ` + linkURLAsCited + ` from issue_external_links l where ` + is("l.issue_key") + `)
 	union select t.repo, t.number from pull_request_texts t
 		where (select r.other from now_reading r) and t.reading <> (select r.id from now_reading r)`
+}
+
+// pullRequestsOfIssuesSelect is ListPullRequestsOfIssues' select over the terms of
+// timelineByIssues: every timeline row, under each name it is stored under, of each judged pull
+// request whose answer is one of $1, with that answer after PullRequestColumns.
+var pullRequestsOfIssuesSelect = `
+	select ` + PullRequestColumns + `, answer from (
+		select d.*, a.issue_key as answer
+		from attributed a join delivery_pull_requests d
+			on d.number = a.number and lower(` + refs.CanonicalRepoSQL("d.repo") + `) = lower(a.repo)
+		where a.issue_key = any($1::text[])) x
+	order by answer, number, repo`
 
 // pullRequestKeys is the judged rows of PullRequestIssues: the keys its caller gave, $1 the
 // repositories and $2 the numbers.
@@ -318,6 +344,7 @@ type attributionStatements struct {
 	newestPullRequestHead string
 	baseBranchMergedFor   string
 	pullRequestsNotKnown  string
+	pullRequestsOfIssues  string
 	syncAttributions      string
 	attributionCounts     string
 	factsLine             string
@@ -335,6 +362,7 @@ func attributionStatementsFor(schema string) *attributionStatements {
 		newestPullRequestHead: byIssue + newestPullRequestHeadSelect,
 		baseBranchMergedFor:   byIssue + baseBranchMergedForSelect,
 		pullRequestsNotKnown:  attributedTerms(schema, notKnownJudged) + notKnownSelect,
+		pullRequestsOfIssues:  attributedTerms(schema, timelineByIssues) + pullRequestsOfIssuesSelect,
 		syncAttributions:      syncAttributionsStatement(schema),
 		attributionCounts:     attributedTerms(schema, factsLineJudged) + attributionCountsSelect,
 		factsLine:             attributedTerms(schema, factsLineJudged) + factsLineSelect,
@@ -522,6 +550,41 @@ func attributedIssues(ctx context.Context, q Querier, prs []DeliveryPullRequest)
 		issues[i] = PullRequestIssue{Key: answer.IssueKey, NotKnown: !answer.Known}
 	}
 	return issues, nil
+}
+
+// ListPullRequestsOfIssues is every timeline row of a pull request whose issue the statement gives
+// as one of issueKeys, under each name the row is stored under, by issue and then number. Each
+// row's IssueKey is that answer, the issue the timeline's other readers name (attributedIssues):
+// a link, a reparent or a facts read since the last pass counts at this read, and a pull request
+// whose answer is not known belongs to none of the issues. It never matches the stored issue_key
+// alone. The Legion merge times read it (legion/metrics).
+func ListPullRequestsOfIssues(ctx context.Context, q Querier, issueKeys []string) ([]DeliveryPullRequest, error) {
+	if len(issueKeys) == 0 {
+		return nil, nil
+	}
+	statements, err := attribution()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, statements.pullRequestsOfIssues, issueKeys)
+	if err != nil {
+		return nil, fmt.Errorf("read the pull requests of %d issues: %w", len(issueKeys), err)
+	}
+	defer rows.Close()
+	var prs []DeliveryPullRequest
+	for rows.Next() {
+		var answer string
+		pr, err := scanPullRequest(rows, &answer)
+		if err != nil {
+			return nil, fmt.Errorf("read the pull requests of %d issues: %w", len(issueKeys), err)
+		}
+		pr.IssueKey = &answer
+		prs = append(prs, pr)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the pull requests of %d issues: %w", len(issueKeys), err)
+	}
+	return prs, nil
 }
 
 // One pass keeps every stored row of a pull request on the answer of the statement: the
