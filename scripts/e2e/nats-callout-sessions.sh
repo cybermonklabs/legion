@@ -1,25 +1,34 @@
 #!/usr/bin/env bash
 # scripts/e2e/nats-callout-sessions.sh — the live proof of the NATS auth service's r-kinds and
 # r-refusal with sessions (its verification's checks c-callout-kinds-plugins, the default mode,
-# and c-callout-kinds, --real-hosts): an Oh My Pi session and
-# a Claude Code session, each connecting to the hub with its own broker token (NATS_AUTH=broker),
+# and c-callout-kinds, --real-hosts): an Oh My Pi session, a Claude Code session and two Codex
+# CLI sessions, each connecting to the hub with its own broker token (NATS_AUTH=broker),
 # are admitted to their own channels, receive a direct message, and keep receiving across a
 # restart of the listener and across a restart of the hub's server on the same store; and a probe
-# run in one session's own environment is refused the other session's channel by name.
+# run in one session's own environment is refused another session's channel by name.
 #
 # The stack is packages/envoy/scripts/dev-stack.sh --callout: the brokers, the listener, Dispatch
 # and nats-server behind the NATS auth service, each the process production runs, built from this
-# checkout. By default (plugins mode, below) the sessions are the two plugins, each the real code a
-# host runs, in processes of their own and with no model: this checkout's Oh My Pi extension
+# checkout. By default (plugins mode, below) the sessions are the three plugins, each the real code
+# a host runs, in processes of their own and with no model: this checkout's Oh My Pi extension
 # (packages/pi-envoy) under the stand-in host its own suite drives (role-takeover/omp-client.ts,
-# whose heartbeat this script ticks before each message, as the host's timer would), and Claude
+# whose heartbeat this script ticks before each message, as the host's timer would), Claude
 # Code's channel server (packages/claude-envoy) under a stand-in `claude` that speaks MCP to it and
-# plays the Legion inbox it writes each delivery to (role-takeover/claude-client.ts). The Oh My Pi session is told
-# NATS_AUTH=broker in its environment and the Claude Code session `natsAuth: broker` in its
-# envoy.json, so both ways of naming it run. Each trades the stack's pod identity (the exchange
-# token file the issuer wrote, AGENT_SECRETS_MACHINE_IDENTITY=kubernetes) for a token naming its
-# own session, which this script first registers for that pod, as a deployment's daemon does.
-# dev-stack.sh restarts natsd and the listener in place on SIGUSR1 and SIGUSR2.
+# plays the Legion inbox it writes each delivery to (role-takeover/claude-client.ts), and the Codex
+# plugin, @sjawhar/codex-envoy (packages/claude-envoy's `envoy-channel.js --host codex` and its
+# hooks), built and packed as the release packs it and installed into a Codex home of each
+# session's own, under a stand-in `codex` (role-takeover/codex-client.ts, compiled into a binary
+# named codex): it starts the plugin's MCP server from the installed manifest with only that
+# manifest's env_vars and the variables Codex hands every server, runs the plugin's hooks, keeps
+# the transcript the plugin reads, and answers the plugin's `codex queue`. The Oh My Pi session is
+# told NATS_AUTH=broker in its environment and the Claude Code session `natsAuth: broker` in its
+# envoy.json, so both ways of naming it run; a Codex session can be told either way, so each runs
+# in a session of its own: codex-env by NATS_AUTH=broker in its environment alone, which reaches
+# the plugin's server only because the plugin's manifest names NATS_AUTH in its env_vars, and
+# codex-file by `natsAuth: broker` in its envoy.json. Each trades the stack's pod identity (the
+# exchange token file the issuer wrote, AGENT_SECRETS_MACHINE_IDENTITY=kubernetes) for a token
+# naming its own session, which this script first registers for that pod, as a deployment's
+# daemon does. dev-stack.sh restarts natsd and the listener in place on SIGUSR1 and SIGUSR2.
 #
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/nats-callout-sessions.sh [--real-hosts] [--binaries <dir>]
@@ -29,47 +38,71 @@
 # on to dev-stack.sh, names the stack's binaries), bun with this checkout's node_modules
 # (`bun install`), psql, curl, jq and python3; in plugins mode no model, no container and no
 # credential, so a GitHub-hosted runner runs it. It inherits no AGENT_SECRETS_*, DISPATCH_*, ENVOY_*,
-# NATS_*, OMP*, PI_*, ANTHROPIC_* or CLAUDE_* variable of its caller's: a Legion pod exports its
-# deployment's, and none may reach this stack.
+# NATS_*, OMP*, PI_*, ANTHROPIC_*, CLAUDE_*, CODEX_* or OPENAI_* variable of its caller's: a Legion
+# pod exports its deployment's, and none may reach this stack.
 #
 # Each check prints `PASS <name>` or `FAIL <name>: <reason>`, every check runs whatever the one
 # before it did, and the last line says how many passed; the run exits 0 only when all did. A
 # message has reached a session when the session's own consumer (`s-<id>`, read from the hub's
 # /jsz) acks the stream sequence it was delivered: the listener acks only on the host's `done`,
-# which a host sends once the message is in its turn, so no model reply is read. A receive that
-# fails says which step it stopped at: `not admitted` when the hub's connection list
-# (/connz?auth=true) names no connection by the user the auth service admits the session as,
-# `session/<id>`; `not acked` when the host shows the message but its consumer acked nothing new.
+# which a host sends once the message is in its turn (a Codex session's once `codex queue` has
+# stored it), so no model reply is read. A receive that fails says which step it stopped at:
+# `not admitted` when the hub's connection list (/connz?auth=true) names no connection by the user
+# the auth service admits the session as, `session/<id>`; `not acked` when the host shows the
+# message but its consumer acked nothing new.
 #
 #   receives                           a direct message to each session reaches it
 #   receives-after-listener-restart    the listener restarted on its port; again
 #   receives-after-hub-restart         natsd restarted on its port and store; again
-#   receives-after-switch              the Oh My Pi session switched (/new) and the Claude Code
-#                                      session cleared (/clear) to session ids of their own, each
-#                                      plugin moving its connection to the new id's token; again
+#   receives-after-switch              the Oh My Pi session switched (/new), the Claude Code
+#                                      session cleared (/clear) and each Codex session started a
+#                                      new thread (/new, whose SessionStart hook names the new id)
+#                                      to session ids of their own, each plugin moving its
+#                                      connection to the new id's token; again
 #   probe-refused-other-session        natsprobe in the Oh My Pi session's environment is served its
-#                                      own channel and refused the Claude Code session's, by name
+#                                      own channel and refused the Claude Code session's, by name;
+#                                      and, a row per Codex session, natsprobe in the Codex
+#                                      session's environment is served its own channel and refused
+#                                      the Oh My Pi session's, and in the Oh My Pi session's it is
+#                                      refused the Codex session's
 #
 # Negative controls, NATS_CALLOUT_SESSIONS_CONTROL:
-#   seedless      both sessions start with no credential named (neither NATS_AUTH nor natsAuth),
-#                 so the hub's auth service admits neither connection and every receive FAILs
+#   seedless      every session starts with no credential named (neither NATS_AUTH nor natsAuth),
+#                 so the hub's auth service admits no connection and every receive FAILs
 #                 `not admitted`; the run then exits 1.
 #   withhold-ack  (default mode) the Claude Code stand-in takes each delivery into its inbox and
 #                 never answers it, so the channel server never sends `done` and the listener never
 #                 acks: the first Claude Code receive FAILs `not acked` (the host shows it, its
-#                 consumer acked nothing), the later ones FAIL held behind it, and the Oh My Pi ones
-#                 pass - the ack check failing for the one reason a transcript check is blind to.
+#                 consumer acked nothing), the later ones FAIL held behind it, and the Oh My Pi and
+#                 Codex ones pass - the ack check failing for the one reason a transcript check is
+#                 blind to.
+#   withhold-ack-codex  (default mode) each Codex stand-in takes each message its plugin's
+#                 `codex queue` hands it and never answers, so that command never returns, the
+#                 plugin never sends `done` and the listener never acks: the first receive of each
+#                 Codex session FAILs `not acked`, the later ones FAIL held behind it, and the Oh
+#                 My Pi and Claude Code ones pass.
+#   manifest-drops-nats-auth  the Codex plugin is installed with NATS_AUTH taken out of its
+#                 manifest's env_vars, so Codex hands codex-env's server no NATS_AUTH: it dials
+#                 with no credential, and codex-env's receives FAIL `not admitted`, naming the
+#                 manifest, while codex-file's, which names the credential in its envoy.json, and
+#                 the Oh My Pi and Claude Code ones pass.
 #
 # Two kinds of session:
 #   default       what e2e.yaml runs on a hosted runner: each plugin's own code under a stand-in
 #                 host, as described above, with no model.
 #   --real-hosts  the hosts themselves: the Oh My Pi binary in RPC mode (`omp --mode rpc`) with this
-#                 checkout's pi-envoy packed as the release packs it (lib/pack-plugin.sh), and the
+#                 checkout's pi-envoy packed as the release packs it (lib/pack-plugin.sh), the
 #                 pinned Claude Code under `legion claude-bridge` (built from this checkout) with
 #                 this checkout's claude-envoy, which writes each delivery to the bridge's inbox,
-#                 which hands it to Claude Code as a user turn. Each delivery may start a model
-#                 turn, so this mode needs a model route and the pins:
-#     LEGION_E2E_MODEL_BASE_URL   the Anthropic-compatible endpoint both hosts call
+#                 which hands it to Claude Code as a user turn, and the pinned Codex CLI, in a
+#                 terminal of its own (a tmux server of the run's own), with this checkout's
+#                 codex-envoy packed as the release packs it and installed from a marketplace of
+#                 the run's own (`codex plugin marketplace add`, `codex plugin add`) into a fresh
+#                 Codex home under ${XDG_CACHE_HOME:-$HOME/.cache}, outside TMPDIR, since Codex
+#                 refuses its helper binaries under a temporary directory; the plugin puts each
+#                 delivery into the session with `codex queue`. Each delivery may start a model
+#                 turn, so this mode needs model routes and the pins:
+#     LEGION_E2E_MODEL_BASE_URL   the Anthropic-compatible endpoint Oh My Pi and Claude Code call
 #     LEGION_E2E_MODEL_KEY_FILE   a file holding that endpoint's key, preflighted
 #                                 (lib/model-endpoint.sh) before anything starts
 #     LEGION_E2E_MODEL_ID         the anthropic/<id> Oh My Pi runs
@@ -82,10 +115,20 @@
 #                                 pin @anthropic-ai/claude-code (default the worker image's
 #                                 /opt/legion/claude-code), installed under $TMPDIR with `npm ci`
 #                                 and its --version held to the pin
-#                 as envoy-session-states.sh takes them; a missing input refuses the run, naming
-#                 it. It runs on a Legion pod, which carries the pins and a model route, or any box
-#                 given them. The switch step runs in the default mode alone: it drives each host's
-#                 /new and /clear through the stand-in.
+#     LEGION_E2E_CODEX_BASE_URL   the OpenAI Responses-compatible endpoint Codex calls, its /v1
+#                                 included (Codex's model provider base_url, wire_api responses)
+#     LEGION_E2E_CODEX_KEY_FILE   a file holding that endpoint's key, preflighted
+#                                 (lib/model-endpoint.sh, responses_key_preflight) before anything
+#                                 starts: its /models must answer the key 200 and list the model
+#     LEGION_E2E_CODEX_MODEL      the model id Codex runs
+#     LEGION_E2E_CODEX_PATH       the codex binary, or the @openai/codex launcher with node on PATH
+#     LEGION_E2E_CODEX_VERSION    the Codex CLI release the deployment pins (tested with 0.154.0),
+#                                 which `codex --version` must print as `codex-cli <version>`
+#                 the first six as envoy-session-states.sh takes them; a missing input refuses the
+#                 run, naming it, and this mode also needs tmux. It runs on a Legion pod, which
+#                 carries the pins and its model routes, or any box given them. The switch step
+#                 runs in the default mode alone: it drives each host's /new and /clear through
+#                 the stand-in.
 #
 # NATS_CALLOUT_SESSIONS_EVIDENCE_DIR (default a fresh directory under TMPDIR, kept and printed)
 # keeps the stack's logs, each client's output and every answer the checks read.
@@ -102,7 +145,7 @@ for argument in "$@"; do
 done
 for variable in $(compgen -e); do
   case $variable in
-    AGENT_SECRETS_* | DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | ANTHROPIC_* | CLAUDE_* | DATABASE_URL | LEGION_TEST_PG_DSN) unset "$variable" ;;
+    AGENT_SECRETS_* | DISPATCH_* | ENVOY_* | NATS_* | OMP* | PI_* | ANTHROPIC_* | CLAUDE_* | CODEX_* | OPENAI_* | DATABASE_URL | LEGION_TEST_PG_DSN) unset "$variable" ;;
   esac
 done
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -114,9 +157,10 @@ refuse() {
   exit 2
 }
 case $control in
-  "" | seedless) ;;
+  "" | seedless | manifest-drops-nats-auth) ;;
   withhold-ack) [ "$hosts" = plugins ] || refuse "the withhold-ack control runs in the default mode alone: a real host's inbox is the bridge's" ;;
-  *) refuse "NATS_CALLOUT_SESSIONS_CONTROL is \"$control\"; the controls are seedless and withhold-ack" ;;
+  withhold-ack-codex) [ "$hosts" = plugins ] || refuse "the withhold-ack-codex control runs in the default mode alone: a real Codex stores what codex queue hands it" ;;
+  *) refuse "NATS_CALLOUT_SESSIONS_CONTROL is \"$control\"; the controls are seedless, withhold-ack, withhold-ack-codex and manifest-drops-nats-auth" ;;
 esac
 [ -n "$pg_dsn" ] || refuse "name a Postgres server it may create databases on: LEGION_TEST_PG_DSN or DATABASE_URL"
 for tool in bun psql curl jq python3; do
@@ -127,7 +171,7 @@ done
 note() { echo "   $*"; }
 fail() { refuse "$*"; }
 if [ "$hosts" = real ]; then
-  for tool in go npm setsid mkfifo; do
+  for tool in go npm setsid mkfifo tmux; do
     command -v "$tool" >/dev/null || refuse "$tool is not on PATH"
   done
   model_base_url=${LEGION_E2E_MODEL_BASE_URL:-}
@@ -174,6 +218,26 @@ if [ "$hosts" = real ]; then
     refuse "LEGION_E2E_CLAUDE_CODE_PIN names $claude_pin, which holds no package.json and package-lock.json pinning @anthropic-ai/claude-code"
   claude_version=$(jq -er '.dependencies["@anthropic-ai/claude-code"]' "$claude_pin/package.json") ||
     refuse "$claude_pin/package.json pins no @anthropic-ai/claude-code"
+  # Codex's own route and pin: an OpenAI Responses-compatible endpoint, its key, the model and the
+  # binary, each named, since no image carries a Codex pin of its own.
+  codex_base_url=${LEGION_E2E_CODEX_BASE_URL:-}
+  codex_key_file=${LEGION_E2E_CODEX_KEY_FILE:-}
+  codex_model=${LEGION_E2E_CODEX_MODEL:-}
+  codex_bin=${LEGION_E2E_CODEX_PATH:-}
+  codex_version=${LEGION_E2E_CODEX_VERSION:-}
+  [ -n "$codex_base_url" ] || refuse "LEGION_E2E_CODEX_BASE_URL is required with --real-hosts: the OpenAI Responses-compatible endpoint Codex calls, its /v1 included"
+  if why=$(model_base_url_refusal "$codex_base_url") && [ -n "$why" ]; then
+    refuse "LEGION_E2E_CODEX_BASE_URL $why"
+  fi
+  [ -n "$codex_key_file" ] || refuse "LEGION_E2E_CODEX_KEY_FILE is required with --real-hosts: the file holding the key of LEGION_E2E_CODEX_BASE_URL"
+  [ -r "$codex_key_file" ] || refuse "LEGION_E2E_CODEX_KEY_FILE names '$codex_key_file', which cannot be read"
+  [ -n "$codex_model" ] || refuse "LEGION_E2E_CODEX_MODEL is required with --real-hosts: the model id Codex runs"
+  [ -n "$codex_version" ] || refuse "LEGION_E2E_CODEX_VERSION is required with --real-hosts: the Codex CLI release the deployment pins"
+  [ -n "$codex_bin" ] || refuse "LEGION_E2E_CODEX_PATH is required with --real-hosts: the codex binary of release $codex_version"
+  [ -x "$codex_bin" ] || refuse "LEGION_E2E_CODEX_PATH names '$codex_bin', which is no executable codex"
+  codex_reported=$("$codex_bin" --version 2>/dev/null | head -n 1) || true
+  [ "$codex_reported" = "codex-cli $codex_version" ] ||
+    refuse "$codex_bin prints --version '$codex_reported'; LEGION_E2E_CODEX_VERSION names codex-cli $codex_version"
   natives=$HOME/.omp/natives
 fi
 
@@ -190,9 +254,14 @@ scenario_pids=()
 scenario_fds=()
 # The real hosts' transcripts, which the teardown keeps in the evidence.
 transcripts=()
+# The Codex sessions, by label: codex-env is told NATS_AUTH=broker in its environment alone,
+# codex-file `natsAuth: broker` in its envoy.json.
+codex_labels=(codex-env codex-file)
+# The real Codex sessions' tmux servers, each one session named codex, which the teardown quits.
+codex_tmux_sockets=()
 cleanup_running=false
 cleanup() {
-  local status=$1 pid fd
+  local status=$1 pid fd sock label log transcript
   # Once: a repeated INT or TERM, or the EXIT after one, finds the stop already running. Both are
   # ignored from here on rather than put back on their default, which a repeat would then end the
   # run by, before the stack stopped and dropped its databases.
@@ -201,6 +270,26 @@ cleanup() {
   trap - EXIT
   trap '' INT TERM
   set +e
+  # Each real Codex's terminal as it stands, whole, for the evidence: Codex keeps no log of its own
+  # unless asked.
+  [ "${#codex_tmux_sockets[@]}" = 0 ] || mkdir -p "$evidence/sessions"
+  for sock in "${codex_tmux_sockets[@]}"; do
+    "$tmux_bin" -S "$sock" capture-pane -p -S - -t codex >"$evidence/sessions/${sock##*/}-pane.txt" 2>&1
+  done
+  # A real Codex quits on two ^Cs, which closes its plugin's MCP server's stdin, so the server
+  # deregisters its session; a Codex still up 15 s later goes with its tmux server.
+  for sock in "${codex_tmux_sockets[@]}"; do
+    "$tmux_bin" -S "$sock" send-keys -t codex C-c 2>/dev/null
+    sleep 0.5
+    "$tmux_bin" -S "$sock" send-keys -t codex C-c 2>/dev/null
+  done
+  for sock in "${codex_tmux_sockets[@]}"; do
+    for _ in $(seq 1 75); do
+      "$tmux_bin" -S "$sock" has-session -t codex 2>/dev/null || break
+      sleep 0.2
+    done
+    "$tmux_bin" -S "$sock" kill-server 2>/dev/null
+  done
   # A client's input ending is its host going away: each closes the end this shell holds of every
   # fifo before it starts, so it sees the end here, runs its shutdown (deregistering its session)
   # and exits; one still running 5 s later is killed with its process group.
@@ -224,6 +313,10 @@ cleanup() {
   for out in "$work"/*.out; do
     [ -f "$out" ] && cp "$out" "$evidence/client-logs/"
   done
+  # The stand-in Codex sessions' transcripts, which the plugin read.
+  for transcript in "$work"/codex-*/codex-home/sessions/*/*/*/rollout-*.jsonl; do
+    [ -f "$transcript" ] && cp "$transcript" "$evidence/client-logs/"
+  done
   if [ -n "${claude_home:-}" ] && declare -F claude_transcript >/dev/null; then
     file=$(claude_transcript) && transcripts+=("$file")
   fi
@@ -246,6 +339,12 @@ cleanup() {
   case ${stack_tmp:-} in
     /tmp/ncs-stack.*) rm -rf -- "$stack_tmp" ;;
   esac
+  case ${codex_root:-} in
+    */ncs-codex.??????) rm -rf -- "$codex_root" ;;
+  esac
+  case ${codex_tmux_dir:-} in
+    /tmp/ncs-codex-tmux.*) rm -rf -- "$codex_tmux_dir" ;;
+  esac
   echo "nats-callout-sessions: evidence kept in $evidence"
   exit "$status"
 }
@@ -260,6 +359,10 @@ if [ "$hosts" = real ]; then
   [ -s "$work/model-key" ] || refuse "LEGION_E2E_MODEL_KEY_FILE ($model_key_file) holds no key"
   model_key_preflight "$model_base_url" "$work/model-key" "$work/model-header" \
     "LEGION_E2E_MODEL_KEY_FILE ($model_key_file)"
+  (umask 077 && tr -d '[:space:]' <"$codex_key_file" >"$work/codex-model-key")
+  [ -s "$work/codex-model-key" ] || refuse "LEGION_E2E_CODEX_KEY_FILE ($codex_key_file) holds no key"
+  responses_key_preflight "$codex_base_url" "$work/codex-model-key" "$work/codex-model-header" \
+    "LEGION_E2E_CODEX_KEY_FILE ($codex_key_file)" "$codex_model"
   (cd "$root/packages/daemon" && go build -o "$work/bin/legion" ./cmd/legion) >"$work/logs/build-legion.log" 2>&1 ||
     refuse "legion did not build; see $work/logs/build-legion.log"
   tarball=$(bash "$root/scripts/e2e/lib/pack-plugin.sh" pi-envoy "$work/pack" 2>"$work/logs/pack-pi-envoy.log") ||
@@ -285,7 +388,50 @@ if [ "$hosts" = real ]; then
   claude_reported=$("$claude_bin" --version) || refuse "the installed Claude Code does not run"
   [ "${claude_reported%% *}" = "$claude_version" ] ||
     refuse "the installed Claude Code prints --version '$claude_reported'; $claude_pin pins $claude_version"
-  note "Claude Code $claude_reported from $claude_pin; $omp_reported ($omp_real) as .omp-pin names; pi-envoy packed, claude-envoy built, legion built"
+  note "Claude Code $claude_reported from $claude_pin; $omp_reported ($omp_real) as .omp-pin names; $codex_reported ($codex_bin); pi-envoy packed, claude-envoy built, legion built"
+fi
+
+# ---- the Codex plugin, built and packed as the release packs it ------------------------------
+# release.yaml's claude_envoy_build: scripts/build.ts --codex-out, then `bun pm pack` of that
+# directory. Each Codex session installs it from a marketplace of the run's own: the repository's
+# (.agents/plugins/marketplace.json) with the package's npm source swapped for the unpacked
+# tarball, so the plugin is installed under a release's name and keeps a release's state directory.
+marketplace=$root/.agents/plugins/marketplace.json
+jq -e 'any(.plugins[]?; .name == "codex-envoy")' "$marketplace" >/dev/null ||
+  refuse "$marketplace names no codex-envoy plugin"
+mkdir -p "$work/codex-pack" "$work/codex-market/.agents/plugins" "$work/codex-market/plugins/codex-envoy"
+(cd "$root/packages/claude-envoy" && bun scripts/build.ts --codex-out "$work/codex-envoy") \
+  >"$work/logs/build-codex-envoy.log" 2>&1 || refuse "codex-envoy did not build; see $work/logs/build-codex-envoy.log"
+(cd "$work/codex-envoy" && bun pm pack --destination "$work/codex-pack") >"$work/logs/pack-codex-envoy.log" 2>&1 ||
+  refuse "codex-envoy did not pack; see $work/logs/pack-codex-envoy.log"
+codex_tarballs=("$work"/codex-pack/*.tgz)
+{ [ "${#codex_tarballs[@]}" = 1 ] && [ -f "${codex_tarballs[0]}" ]; } ||
+  refuse "packing codex-envoy left no one tarball in $work/codex-pack"
+codex_plugin=$work/codex-market/plugins/codex-envoy
+tar xzf "${codex_tarballs[0]}" -C "$codex_plugin" --strip-components=1
+codex_manifest=$codex_plugin/.codex-plugin/plugin.json
+{ [ -r "$codex_manifest" ] && [ -r "$codex_plugin/dist/envoy-channel.js" ]; } ||
+  refuse "the packed codex-envoy holds no .codex-plugin/plugin.json and dist/envoy-channel.js"
+if [ "$control" = manifest-drops-nats-auth ]; then
+  jq '.mcpServers.envoy.env_vars -= ["NATS_AUTH"]' "$codex_manifest" >"$work/codex-manifest.json"
+  mv "$work/codex-manifest.json" "$codex_manifest"
+fi
+codex_market_name=$(jq -r .name "$marketplace")
+jq '.plugins |= map(if .name == "codex-envoy" then .source = {source: "local", path: "./plugins/codex-envoy"} else . end)' \
+  "$marketplace" >"$work/codex-market/.agents/plugins/marketplace.json"
+codex_plugin_version=$(jq -r .version "$codex_manifest")
+if jq -e '.mcpServers.envoy.env_vars | index("NATS_AUTH")' "$codex_manifest" >/dev/null; then
+  codex_names_nats_auth=true
+else
+  codex_names_nats_auth=false
+fi
+echo "   codex-envoy $codex_plugin_version packed; its manifest names NATS_AUTH among env_vars: $codex_names_nats_auth"
+if [ "$hosts" = plugins ]; then
+  # The stand-in `codex`, a binary of that name: the plugin's hooks find their codex process by
+  # its name, and the plugin runs `codex queue` with that process's own binary.
+  (cd "$root" && bun build --compile "$drivers/codex-client.ts" --outfile "$work/codex-bin/codex") \
+    >"$work/logs/build-codex-client.log" 2>&1 ||
+    refuse "the stand-in codex did not build; see $work/logs/build-codex-client.log"
 fi
 
 # wait_for SECONDS COMMAND...: runs COMMAND every 0.2 s until it succeeds; 1 once SECONDS passed.
@@ -334,11 +480,17 @@ for required in AGENT_SECRETS_URL ENVOY_URL NATS_URLS DEV_STACK_DIR DEV_STACK_PI
 done
 command -v natsprobe >/dev/null || refuse "natsprobe is not among the stack's binaries"
 
-# ---- the two sessions ---------------------------------------------------------------------------
+# ---- the sessions -------------------------------------------------------------------------------
 run=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+# Each Codex session's id, by label: a thread id is a UUID, which a stand-in is told and a real
+# Codex mints, read below from the record its SessionStart hook writes.
+declare -A codex_session=()
 if [ "$hosts" = plugins ]; then
   omp_session=ses_ncs_omp_$run
   claude_session=ses_ncs_claude_$run
+  for label in "${codex_labels[@]}"; do
+    codex_session[$label]=$(cat /proc/sys/kernel/random/uuid)
+  done
 else
   # Claude Code takes the session id it is told, a UUID; Oh My Pi mints its own, read below.
   omp_session=""
@@ -365,8 +517,19 @@ register_session() {
 }
 [ -z "$omp_session" ] || register_session "$omp_session"
 register_session "$claude_session"
+for label in "${!codex_session[@]}"; do
+  register_session "${codex_session[$label]}"
+done
+# session_of LABEL: the session id that label's host runs now.
+session_of() {
+  case $1 in
+    omp) printf '%s' "$omp_session" ;;
+    claude) printf '%s' "$claude_session" ;;
+    *) printf '%s' "${codex_session[$1]}" ;;
+  esac
+}
 
-# What both sessions trade with: the stack's pod identity, at its broker.
+# What every session trades with: the stack's pod identity, at its broker.
 broker_env=(
   AGENT_SECRETS_URL="$AGENT_SECRETS_URL"
   AGENT_SECRETS_MACHINE_IDENTITY=kubernetes
@@ -523,6 +686,140 @@ else
   note "Claude Code session $claude_session"
 fi
 
+# ---- the two Codex sessions -------------------------------------------------------------------
+# Each in a Codex home of its own with the plugin installed as a release's, and its Envoy in the
+# envoy.json of its own HOME (~/.config/legion/envoy.json, which a Codex session reads where no
+# ENVOY_CONFIG_FILE names another). codex-env is told NATS_AUTH=broker in its environment alone,
+# codex-file `natsAuth: broker` in that file; under the seedless control neither is.
+declare -A codex_transcript=()
+# codex_envoy LABEL HOME: that label's envoy.json under HOME.
+codex_envoy() {
+  local named=false
+  [ "$1" != codex-file ] || [ "$control" = seedless ] || named=true
+  mkdir -p "$2/.config/legion"
+  jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --argjson named "$named" \
+    '{envoy: ({enabled: true, url: $url, natsUrls: [$nats]} + (if $named then {natsAuth: "broker"} else {} end)),
+      dispatch: {enabled: false}}' >"$2/.config/legion/envoy.json"
+}
+if [ "$hosts" = plugins ]; then
+  # Each under the stand-in `codex`, the plugin copied where Codex installs it
+  # (<CODEX_HOME>/plugins/cache/<marketplace>/<plugin>/<version>), whose MCP server it starts with
+  # the manifest's env_vars alone, so NATS_AUTH in its environment reaches codex-env's server only
+  # through the manifest.
+  codex_flags=()
+  [ "$control" != withhold-ack-codex ] || codex_flags=(--withhold-queue-answers true)
+  for label in "${codex_labels[@]}"; do
+    base=$work/$label
+    installed=$base/codex-home/plugins/cache/$codex_market_name/codex-envoy/$codex_plugin_version
+    mkdir -p "$installed" "$base/home" "$base/cwd"
+    cp -R "$codex_plugin/." "$installed/"
+    codex_envoy "$label" "$base/home"
+    auth=()
+    [ "$label" != codex-env ] || [ "$control" = seedless ] || auth=(NATS_AUTH=broker)
+    client_fifo "$label"
+    (close_held_fifos && cd -- "$base/cwd" &&
+      exec env -i PATH="$PATH" HOME="$base/home" TMPDIR="$scratch" CODEX_HOME="$base/codex-home" \
+        ENVOY_HEARTBEAT_MS="$heartbeat_ms" "${broker_env[@]}" "${auth[@]}" \
+        "$work/codex-bin/codex" --plugin "$installed" --cwd "$base/cwd" \
+        --stderr "$work/logs/$label-server.err" --hook-log "$work/logs/$label-hooks.jsonl" \
+        "${codex_flags[@]}") \
+      <"$work/$label.stdin" >"${client_out[$label]}" 2>"$work/logs/$label.err" &
+    scenario_pids+=($!)
+  done
+  # The session's first prompt: the plugin's SessionStart hook records its id for the server.
+  for label in "${codex_labels[@]}"; do
+    wait_for 120 client_ready "$label" ||
+      refuse "the $label Codex client did not start: $(tail -n 10 "$work/logs/$label.err") $(tail -n 10 "$work/logs/$label-server.err" 2>/dev/null)"
+    send "$label" "$(jq -cn --arg s "${codex_session[$label]}" '{op: "start", session: $s}')"
+  done
+else
+  # The pinned Codex CLI's terminal in a tmux server of its own, the plugin installed from the run's
+  # marketplace with Codex's own commands, into a Codex home outside TMPDIR. Codex calls the model
+  # route the run was given through a provider of its own, whose key is in the variable it names
+  # (env_key), so the key is in Codex's environment and never in an argv or a file of Codex's.
+  tmux_bin=$(command -v tmux)
+  codex_cache=${XDG_CACHE_HOME:-$HOME/.cache}
+  mkdir -p "$codex_cache"
+  codex_root=$(mktemp -d "$codex_cache/ncs-codex.XXXXXX")
+  case $codex_root/ in
+    "${TMPDIR:-/tmp}"/* | /tmp/*)
+      refuse "the Codex homes would be under $codex_root, a temporary directory, where Codex refuses its helper binaries: set XDG_CACHE_HOME to a directory outside it"
+      ;;
+  esac
+  # The tmux sockets go in a short directory of their own: a unix socket path past 107 bytes is
+  # refused.
+  codex_tmux_dir=$(mktemp -d /tmp/ncs-codex-tmux.XXXXXX)
+  for label in "${codex_labels[@]}"; do
+    base=$codex_root/$label
+    mkdir -p "$base/codex-home" "$base/home" "$base/cwd" "$base/tmp"
+    codex_envoy "$label" "$base/home"
+    jq -rn --arg model "$codex_model" --arg url "$codex_base_url" --arg cwd "$base/cwd" '
+      "model = \($model | tojson)",
+      "model_provider = \"ncs\"",
+      "approval_policy = \"never\"",
+      "sandbox_mode = \"read-only\"",
+      "[model_providers.ncs]",
+      "name = \"ncs\"",
+      "base_url = \($url | tojson)",
+      "wire_api = \"responses\"",
+      "env_key = \"NCS_CODEX_MODEL_KEY\"",
+      "requires_openai_auth = false",
+      "[projects.\($cwd | tojson)]",
+      "trust_level = \"trusted\""' >"$base/codex-home/config.toml"
+    (isolated PATH="$PATH" HOME="$base/home" CODEX_HOME="$base/codex-home" TMPDIR="$base/tmp" -- \
+      "$codex_bin" plugin marketplace add "$work/codex-market") >>"$work/logs/$label-install.log" 2>&1 ||
+      refuse "codex plugin marketplace add failed for $label; see $work/logs/$label-install.log"
+    (isolated PATH="$PATH" HOME="$base/home" CODEX_HOME="$base/codex-home" TMPDIR="$base/tmp" -- \
+      "$codex_bin" plugin add "codex-envoy@$codex_market_name") >>"$work/logs/$label-install.log" 2>&1 ||
+      refuse "codex plugin add failed for $label; see $work/logs/$label-install.log"
+    installed=$base/codex-home/plugins/cache/$codex_market_name/codex-envoy/$codex_plugin_version
+    cmp -s "$codex_manifest" "$installed/.codex-plugin/plugin.json" ||
+      refuse "codex plugin add installed no copy of the packed manifest at $installed; see $work/logs/$label-install.log"
+    auth=()
+    [ "$label" != codex-env ] || [ "$control" = seedless ] || auth=(NATS_AUTH=broker)
+    sock=$codex_tmux_dir/$label
+    (isolated PATH="$PATH" HOME="$base/home" CODEX_HOME="$base/codex-home" TMPDIR="$base/tmp" \
+      TERM=xterm-256color LANG=C.UTF-8 NCS_CODEX_MODEL_KEY="$(<"$work/codex-model-key")" \
+      ENVOY_HEARTBEAT_MS="$heartbeat_ms" "${broker_env[@]}" "${auth[@]}" -- \
+      "$tmux_bin" -S "$sock" -f /dev/null new-session -d -s codex -x 200 -y 50 -c "$base/cwd" \
+      "$codex_bin" --dangerously-bypass-hook-trust) >>"$work/logs/$label-tmux.log" 2>&1 ||
+      refuse "tmux did not start Codex for $label; see $work/logs/$label-tmux.log"
+    codex_tmux_sockets+=("$sock")
+  done
+  # codex_composer SOCKET: Codex's terminal shows its prompt and has loaded its model, so it takes
+  # what is typed: a prompt typed while the header still says `model: loading` is lost (measured on
+  # 0.154.0).
+  codex_composer() {
+    local pane
+    pane=$("$tmux_bin" -S "$1" capture-pane -p -t codex 2>/dev/null) || return 1
+    grep -q 'Ask Codex' <<<"$pane" && ! grep -qE 'model: +loading' <<<"$pane"
+  }
+  # codex_record LABEL: the record the plugin's SessionStart hook wrote for that session.
+  codex_record() {
+    compgen -G "$codex_root/$1/codex-home/plugins/data/codex-envoy-$codex_market_name/codex-sessions/*.json"
+  }
+  for label in "${codex_labels[@]}"; do
+    sock=$codex_tmux_dir/$label
+    wait_for 120 codex_composer "$sock" ||
+      refuse "Codex showed no prompt for $label: $("$tmux_bin" -S "$sock" capture-pane -p -t codex 2>&1 | tail -n 15)"
+    # One turn of its own first: Codex runs SessionStart at a session's first prompt.
+    "$tmux_bin" -S "$sock" send-keys -t codex -l 'Reply with the one word: ready.'
+    sleep 0.5
+    "$tmux_bin" -S "$sock" send-keys -t codex Enter
+  done
+  for label in "${codex_labels[@]}"; do
+    wait_for 120 codex_record "$label" >/dev/null ||
+      refuse "Codex's SessionStart hook recorded no session for $label: $("$tmux_bin" -S "$codex_tmux_dir/$label" capture-pane -p -t codex 2>&1 | tail -n 15)"
+    record=$(codex_record "$label" | head -n 1)
+    codex_session[$label]=$(jq -r '.session_id' "$record")
+    codex_transcript[$label]=$(jq -r '.transcript_path' "$record")
+    transcripts+=("${codex_transcript[$label]}")
+    # Its plugin trades under this name once the pod is registered for it.
+    register_session "${codex_session[$label]}"
+    note "Codex session ($label) ${codex_session[$label]}"
+  done
+fi
+
 # ---- the checks ---------------------------------------------------------------------------------
 ran=0
 passed=0
@@ -596,8 +893,12 @@ received() {
   elif [ "$1" = omp ]; then
     omp_requests=$((omp_requests + 1))
     texts=$(omp_entries "ncs-entries-$omp_requests") && grep -qF -- "$2" <<<"$texts"
-  else
+  elif [ "$1" = claude ]; then
     file=$(claude_transcript) && jq -rnR "$claude_entries" "$file" 2>/dev/null | grep -qF -- "$2"
+  else
+    # A real Codex's own transcript: the turn `codex queue` started, or the hook's text inside a
+    # running turn, each a line that names the message.
+    grep -qF -- "$2" "${codex_transcript[$1]}" 2>/dev/null
   fi
 }
 # not_received LABEL MARKER: why received found no MARKER: the host's own error, where its last
@@ -609,6 +910,12 @@ not_received() {
   else
     printf "the host shows no message naming '%s'" "$2"
   fi
+}
+# manifest_gap LABEL: for codex-env, whose credential is named in its environment alone, that the
+# installed plugin's manifest does not hand NATS_AUTH to its server, where it does not.
+manifest_gap() {
+  { [ "$1" = codex-env ] && [ "$codex_names_nats_auth" = false ]; } || return 0
+  printf '; the installed codex-envoy manifest names no NATS_AUTH among its env_vars, so Codex hands the plugin'"'"'s server none and it dials with no credential'
 }
 
 # consumer SESSION: the hub's own record of the session's consumer (`s-<id>`, as the listener names
@@ -641,9 +948,8 @@ message_each() {
   # A stand-in Oh My Pi host's timer is this script's to tick: a pass, which registers the session
   # again, as it would by now. A real host ticks its own.
   [ "$hosts" = real ] || send omp '{"op":"heartbeat"}'
-  for label in omp claude; do
-    session=$omp_session
-    [ "$label" = omp ] || session=$claude_session
+  for label in omp claude "${codex_labels[@]}"; do
+    session=$(session_of "$label")
     marker="nats-callout-sessions $step $label $run"
     floor=$(delivered_through "$session")
     code=$(curl -sS --max-time 20 -o "$evidence/answers/$step-$label-send.json" -w '%{http_code}' \
@@ -669,7 +975,7 @@ message_each() {
     elif admitted_as "$session"; then
       failed "$step ($label)" "admitted as session/$session, but the message (send answered $code) did not arrive within 45 s"
     else
-      failed "$step ($label)" "not admitted: the hub lists no connection admitted as session/$session (send answered $code)"
+      failed "$step ($label)" "not admitted: the hub lists no connection admitted as session/$session (send answered $code)$(manifest_gap "$label")"
     fi
   done
 }
@@ -693,9 +999,10 @@ restart() {
   fi
 }
 
-# Both sessions connect once their tokens are traded; the first message waits for that.
-wait_for 60 admitted_as "$omp_session" || true
-wait_for 60 admitted_as "$claude_session" || true
+# Every session connects once its token is traded; the first message waits for that.
+for label in omp claude "${codex_labels[@]}"; do
+  wait_for 60 admitted_as "$(session_of "$label")" || true
+done
 message_each receives
 
 restart listener USR2
@@ -704,10 +1011,12 @@ message_each receives-after-listener-restart
 restart natsd USR1
 message_each receives-after-hub-restart
 
-# A session switch in each host: Oh My Pi's /new (the extension's session_switch) and Claude Code's
+# A session switch in each host: Oh My Pi's /new (the extension's session_switch), Claude Code's
 # /clear (the handoff file its SessionStart hook writes, which the channel server adopts on its
-# own). Each plugin moves its connection to the new id's token before it subscribes that id's
-# subjects, so the new id is admitted as its own user and receives. Driven through the stand-ins.
+# own) and Codex's /new (a new thread, whose SessionStart hook writes that handoff file and the
+# record the Codex parts follow). Each plugin moves its connection to the new id's token before it
+# subscribes that id's subjects, so the new id is admitted as its own user and receives. Driven
+# through the stand-ins.
 if [ "$hosts" = plugins ]; then
   omp_session=ses_ncs_omp_next_$run
   claude_session=ses_ncs_claude_next_$run
@@ -715,35 +1024,65 @@ if [ "$hosts" = plugins ]; then
   register_session "$claude_session"
   send omp "$(jq -cn --arg s "$omp_session" '{op: "switch", session: $s, reason: "new"}')"
   send claude "$(jq -cn --arg s "$claude_session" '{op: "clear", session: $s}')"
-  wait_for 60 admitted_as "$omp_session" || true
-  wait_for 60 admitted_as "$claude_session" || true
+  for label in "${codex_labels[@]}"; do
+    codex_session[$label]=$(cat /proc/sys/kernel/random/uuid)
+    register_session "${codex_session[$label]}"
+    send "$label" "$(jq -cn --arg s "${codex_session[$label]}" '{op: "new", session: $s}')"
+  done
+  for label in omp claude "${codex_labels[@]}"; do
+    wait_for 60 admitted_as "$(session_of "$label")" || true
+  done
   message_each receives-after-switch
 fi
 
-# natsprobe in the Oh My Pi session's own environment: its trade names that session, so the hub
-# serves its channel and refuses the other session's, in nats-server's own words.
+# probe AS ARGS...: natsprobe in session AS's own environment: its trade names that session.
 probe() {
+  local as=$1
+  shift
   probe_rc=0
-  probe_out=$(env -i PATH="$PATH" HOME="$work/probe-home" "${broker_env[@]}" AGENT_SECRETS_SESSION="$omp_session" \
+  probe_out=$(env -i PATH="$PATH" HOME="$work/probe-home" "${broker_env[@]}" AGENT_SECRETS_SESSION="$as" \
     natsprobe --servers "$NATS_URLS" "$@" 2>&1) || probe_rc=$?
   printf '%s\n' "$probe_out" >>"$evidence/answers/probe.txt"
 }
+# probe_served AS: why the probe as AS was not served AS's own channel; nothing where it was.
+probe_served() {
+  local own=notifications.envoy.deliver.$1 served
+  probe "$1" --subscribe "$own" --wait 1s
+  served=$(printf '%s\n' "$probe_out" | sed -n 's/^served //p' | head -n1)
+  { [ "$probe_rc" -eq 0 ] && [ "$served" = "$own" ]; } ||
+    printf 'the probe as %s was not served its own channel %s (exit %s): %s' "$1" "$own" "$probe_rc" "$(head -c 300 <<<"$probe_out")"
+}
+# probe_refused AS OTHER: why the probe as AS was not refused OTHER's channel by name, in
+# nats-server's own words; nothing where it was.
+probe_refused() {
+  local other=notifications.envoy.deliver.$2 refusal
+  probe "$1" --subscribe "$other" --wait 2s
+  refusal=$(printf '%s\n' "$probe_out" | sed -n 's/^refused: //p' | head -n1)
+  { [ "$probe_rc" -eq 3 ] && [ "$refusal" = "Permissions Violation for Subscription to \"$other\"" ]; } ||
+    printf 'the probe as %s was not refused %s by name (exit %s): %s' "$1" "$other" "$probe_rc" "$probe_out"
+}
 mkdir -p "$work/probe-home"
-own=notifications.envoy.deliver.$omp_session
-other=notifications.envoy.deliver.$claude_session
-probe --subscribe "$own" --wait 1s
-served=$(printf '%s\n' "$probe_out" | sed -n 's/^served //p' | head -n1)
-own_rc=$probe_rc
-probe --subscribe "$other" --wait 2s
-refusal=$(printf '%s\n' "$probe_out" | sed -n 's/^refused: //p' | head -n1)
-want="Permissions Violation for Subscription to \"$other\""
-if [ "$own_rc" -ne 0 ] || [ "$served" != "$own" ]; then
-  failed probe-refused-other-session "the probe was not served its own channel $own (exit $own_rc): $(head -c 300 "$evidence/answers/probe.txt")"
-elif [ "$probe_rc" -eq 3 ] && [ "$refusal" = "$want" ]; then
-  pass "probe-refused-other-session: served $own, refused: $refusal"
+# As the Oh My Pi session: served its own channel, refused the Claude Code session's.
+why=$(probe_served "$omp_session")
+[ -n "$why" ] || why=$(probe_refused "$omp_session" "$claude_session")
+if [ -z "$why" ]; then
+  pass "probe-refused-other-session: served notifications.envoy.deliver.$omp_session, refused: Permissions Violation for Subscription to \"notifications.envoy.deliver.$claude_session\""
 else
-  failed probe-refused-other-session "the probe was not refused $other by name (exit $probe_rc): $probe_out"
+  failed probe-refused-other-session "$why"
 fi
+# As each Codex session: served its own channel and refused the Oh My Pi session's; and as the Oh
+# My Pi session, refused the Codex session's.
+for label in "${codex_labels[@]}"; do
+  codex=${codex_session[$label]}
+  why=$(probe_served "$codex")
+  [ -n "$why" ] || why=$(probe_refused "$codex" "$omp_session")
+  [ -n "$why" ] || why=$(probe_refused "$omp_session" "$codex")
+  if [ -z "$why" ]; then
+    pass "probe-refused-other-session ($label): served notifications.envoy.deliver.$codex, refused the Oh My Pi session's; the Oh My Pi session refused notifications.envoy.deliver.$codex"
+  else
+    failed "probe-refused-other-session ($label)" "$why"
+  fi
+done
 
 echo "nats-callout-sessions: $passed of $ran checks passed (hosts: $hosts${control:+, control: $control})"
 [ "$ran" -gt 0 ] && [ "$passed" -eq "$ran" ]
