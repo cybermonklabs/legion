@@ -119,7 +119,7 @@ Each item below names a task and where its code is, then notes on it.
   a whole number from 0 to 60000, and unset, blank or 0 sets no limit.
   `ENVOY_SENDER_MESSAGE_BURST` is how many it may send at once, a whole number of 1 or more, and unset it equals the rate.
   A burst with no rate or with a rate of 0, and any other value, refuses startup naming the variable and the value (`parseSenderLimit`).
-  The start logs one line, `listener sender limit: <rate> messages a minute, <burst> at once, for each agent session in this process` or `listener sender limit: none`.
+  The start logs one line, `listener sender limit: <rate> messages a minute, <burst> at once, for each agent session in this process` (`1 message` when the rate is 1) or `listener sender limit: none`.
   The listener keeps one count for each sending session (`ratelimit.Keyed`), which starts at the burst and gains one message every 60 seconds divided by the rate, up to the burst.
   The counts are this process's own: each listener, and each replica of one, keeps its own, and a restart fills each count again.
   The sender is the session a secrets-broker token proves, else the request's `source_session`.

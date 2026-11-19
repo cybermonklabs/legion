@@ -427,8 +427,9 @@ The listener keeps one count for each sending session. The count starts at the b
 one message every 60 seconds divided by the rate, up to the burst. The counts are the listener
 process's own, so a restart of the listener, or a new VM, fills each count again. The sender is
 the session that a secrets-broker token proves, else the request's `source_session`. A message
-with another `source`, such as `dispatch` or `envoy`, is not counted. Neither is a message with no
-sender, which is how the Legion daemon sends its notices.
+with another `source`, such as `dispatch` or `envoy`, is not counted, with a secrets-broker token
+or without one. Neither is a message with no sender, which is how the Legion daemon sends its
+notices.
 
 A message that finds its sender's count at 0 is answered HTTP `429`. The listener does not store
 it, keep it for a later holder of a role or report a wake for it. `Retry-After` gives the whole

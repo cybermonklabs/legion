@@ -104,7 +104,11 @@ func describeSenderLimit(l *senderLimit) string {
 // is not agent (messageEnvelope writes agent for an absent one) is another system's delivery,
 // Dispatch's or Envoy's own among them, and a message with no sender is how the Legion daemon
 // sends its notices (packages/daemon/internal/notify): neither is counted, and both answer nil and
-// nil, as no limit does.
+// nil, as no limit does. A message whose source is not agent is not counted whatever credential the
+// request presented, a secrets-broker token's included: the token names the sender and does not
+// make the message count. The Envoy tools send the source agent and give an agent no argument for
+// it, so the limit holds agents' own tools, while a caller that writes its own request can name
+// another source: the limit is not a security boundary.
 func (l *senderLimit) take(r *http.Request, item contracts.Envelope) (*senderCharge, *senderRefusal) {
 	if l == nil || item.Source != "agent" {
 		return nil, nil
