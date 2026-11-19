@@ -1,16 +1,19 @@
 package docs
 
-// Review 8 scratch repro (not for the tree). Design F claims "saved" means stored: a frame's
+// Review 8's repro, kept as a regression test. Design F claims "saved" means stored: a frame's
 // answer waits for the store of the commit it made (Server.AnswerOnceStored). A frame whose apply
-// commits nothing - a SyncStep2 that carries nothing the room lacks because the room already
-// holds the browser's edit in memory - arms no store wait (armStoreWait runs only on a commit) and
-// is answered applied at once, while the commit that holds the edit is still waiting for its
+// committed nothing - a SyncStep2 that carries nothing the room lacks because the room already
+// holds the browser's edit in memory - waited on no store, since only a commit armed the wait, and
+// was answered applied at once, while the commit that held the edit was still waiting for its
 // store. The editor clears every row recorded before such a SyncStep2 (pending-sync.ts, the lcPage
-// model), so the edit shows saved before it is stored, and stays shown saved when that store fails.
+// model), so the edit showed saved before it was stored, and stayed shown saved when that store
+// failed. Under theorem-labs/ygo v1.55.1-theorem.10 a frame that commits nothing is answered once
+// every commit the room had made when it read the frame is stored, and the test holds that alice's
+// reconnect does not clear her row for her keystroke while the store holds her below the clock she
+// wrote, that store then failing.
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,7 +34,7 @@ func TestRV8AReconnectsSyncStep2IsAnsweredSavedBeforeTheCommitItCoversIsStored(t
 			case <-release:
 			case <-time.After(15 * time.Second):
 			}
-			return errors.New("scratch: the database refused the append")
+			return errors.New("the test: the database refused the append")
 		}
 		return nil
 	}
@@ -85,7 +88,7 @@ func TestRV8AReconnectsSyncStep2IsAnsweredSavedBeforeTheCommitItCoversIsStored(t
 	rows := alice2.rowsHeld()
 	storedAt := stored(aliceID)
 	wrote := alice2.doc.StateVector().Clock(aliceID)
-	t.Logf("%s", fmt.Sprintf("while L's store is held: SyncStep2 answered=%t, alice's rows %d, store holds alice to clock %d of %d", answered, rows, storedAt, wrote))
+	t.Logf("while L's store is held: SyncStep2 answered=%t, alice's rows %d, store holds alice to clock %d of %d", answered, rows, storedAt, wrote)
 	close(release)
 	lcWait(t, "the failed room to close alice", 10*time.Second, func() bool {
 		select {

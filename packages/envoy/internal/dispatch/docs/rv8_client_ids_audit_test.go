@@ -167,11 +167,18 @@ func TestRV8AStepTwoReachesTheHookUnreadAndCostsOnlyItsOwnReadBeforeTheSlot(t *t
 
 // Review 8 repro (ClientIdsAudit): mallory, an editor, reads alice's client id and next clock off
 // what the room relays, and sends a frame of no structs whose delete set names alice's id at the
-// clocks she has not typed yet. judgeClients judges no deletion (client_ids.go:55-56, the soleClient
-// fast path at :864 passes groups == 0), so the room parks the ranges. Alice's next keystroke at
-// those clocks then lands and is deleted by the parked ranges in the same apply: she is answered
-// applied, stays connected and is told nothing, and the room, bob and the store never hold what she
-// typed. Asserts the correct behaviour, so it fails where the defect stands.
+// clocks she has not typed yet. judgeClients judged no deletion, and its soleClient fast path
+// passed a frame of no structs, so the room parked the ranges. Alice's next keystroke at those
+// clocks then landed and was deleted by the parked ranges in the same apply: she was answered
+// applied, stayed connected and was told nothing, and the room, bob and the store never held what
+// she typed. Asserts the correct behaviour, so it fails where the defect stands.
+//
+// Review 8's repro is kept, with what round 9 changed: a delete range parks only under a client
+// the sender's socket holds (parkJudge), so mallory's frame is refused whole and nothing of it
+// parks. Where the repro waited for the room's pending queue to fill and only logged whether
+// mallory was closed, it requires her closed 4413 DOC_CLIENT_ID_REFUSED and the queue empty.
+// Alice's next two keystrokes then apply, the room renders them and she stays connected, as the
+// repro required.
 func TestRV8AForgedDeleteOfAnotherPersonsFutureClocksDropsHerNextKeystrokeInSilence(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
 	alice := openPage(t, serverURL, artifactID, "alice")
@@ -198,24 +205,16 @@ func TestRV8AForgedDeleteOfAnotherPersonsFutureClocksDropsHerNextKeystrokeInSile
 		t.Fatal(err)
 	}
 	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
-	deadline := time.Now().Add(10 * time.Second)
-	for stats := room().PendingStats(); stats.Items == 0 && stats.DeleteRanges == 0 && time.Now().Before(deadline); stats = room().PendingStats() {
-		time.Sleep(10 * time.Millisecond)
+	awaitRefused(t, mallory, "mallory, deleting alice's next 1,000 clocks")
+	if parked := room().PendingStats(); parked.Items != 0 || parked.DeleteRanges != 0 {
+		t.Fatalf("the room parks %+v after mallory's refused frame, want nothing of it", parked)
 	}
-	t.Logf("after mallory's frame the room's pending queue is %+v", room().PendingStats())
-	mallorysClosed := false
-	select {
-	case <-mallory.Ended:
-		mallorysClosed = true
-	case <-time.After(500 * time.Millisecond):
-	}
-	t.Logf("mallory closed: %t", mallorysClosed)
 
 	alice.Hear()
 	sendTyped(t, alice, 1, "b")
 	sendTyped(t, alice, 2, "c")
 	want := "# Title\n\nabcAlice's paragraph.\n"
-	deadline = time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	var got string
 	for time.Now().Before(deadline) {
 		got, _ = renderDocument(room())
@@ -235,12 +234,12 @@ func TestRV8AForgedDeleteOfAnotherPersonsFutureClocksDropsHerNextKeystrokeInSile
 }
 
 // Review 8 repro (ClientIdsAudit): inside the claim window a page of this build - a socket that
-// presents the client id parameter, which any signed-in editor's script can do - claims every id
+// presents the client id parameter, which any signed-in editor's script can do - claimed every id
 // below mintedClientFloor no row names that its updates write under, with no count: judgeClients
-// caps only a legacy socket's claims (client_ids.go:911, capped = unnamed && legacy), so
-// claimClients runs uncapped (:921, len(capped) == 0) and neither maxConfirmedClients nor
-// maxClaimsADay is asked. Each claim is stored landed, so no sweep takes it (:752-753). Asserts
-// the bound the comment at client_ids.go:160-163 says holds, so it fails where the defect stands.
+// capped only a legacy socket's claims, so claimClients ran with no cap, and neither
+// maxConfirmedClients nor maxClaimsADay was asked. Each claim is stored landed, so no sweep takes
+// it (claimClients, sweepUnusedClientIDs). Asserts the bound the rule says holds (maxClaimsADay in
+// client_ids.go), so it fails where the defect stands.
 //
 // Review 8's repro is kept as it was up to its tail, its 192 updates included. Round 9 holds every
 // claim, on every kind of socket, to maxClaimsASocket and maxClaimsADay, 64 each, and that changed

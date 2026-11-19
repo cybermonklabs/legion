@@ -1232,11 +1232,12 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // would help, and the editor tells the person it was rebuilt, builds its document afresh from
 // the rebuilt room and drops its saved rows typed against the old history as rows of a rebuilt
 // document (connection.ts refusedEditNotice, pending-sync.ts parkedClients). An update whose
-// header does not read refuses nothing there and falls through to the apply, whose decoder
-// refuses the same bytes, DocumentUpdateRefusedCloseReason. The second is an update carrying
-// structs under a client id that is not its sender's, refused DocumentClientIdRefusedCloseReason,
-// or one whose client ids the table could not be read for, refused for a retry with the transient
-// DocumentBusyCloseCode (judgeClients, client_ids_judgement.go).
+// header or delete set does not read refuses nothing there and falls through to the apply, whose
+// decoder refuses the same bytes, DocumentUpdateRefusedCloseReason. The second is an update
+// carrying structs under a client id that is not its sender's, refused
+// DocumentClientIdRefusedCloseReason, or one whose client ids the table could not be read for,
+// refused for a retry with the transient DocumentBusyCloseCode (judgeClients,
+// client_ids_judgement.go).
 //
 // Everything else is the apply's. The hook builds the allowance this update applies under
 // (peerApplyAllowance) and the roots it may name (peerAllowedRoots), hands both to the room's
@@ -1497,7 +1498,11 @@ func (s *Service) underPressure(room string) bool {
 // does not share - it reads no update carrying more structs than one update may decode
 // (maxV2Items) - and refusing such an update here would close an honest whole-state handoff of
 // a rebuilt document at the decode cap before the apply could weigh it at all. A delete set that
-// does not read past structs that did is let through the same way.
+// does not read past structs that did is let through the same way, whatever ranges were read
+// before its bytes stopped reading: those are the update's only where the whole of it reads
+// (eachV1Range). Such an update meets the apply, as every update the scan lets through does:
+// ygo's decoder reads the same delete set and refuses one that does not read, DOC_UPDATE_REFUSED,
+// and no range of it parks under a client the sender's socket does not hold (parkJudge).
 func (s *Service) refusedBeforeApply(info websocket.PeerUpdateInfo, weighing *roomWeighing) error {
 	if s.refusesNextPeerUpdateForTest(info.Room) {
 		refusal := documentUpdateRefused()
@@ -1534,7 +1539,7 @@ func (s *Service) refusedBeforeApply(info websocket.PeerUpdateInfo, weighing *ro
 			deleted, deletedAt, retiredAt, replaced = client, clock, at, true
 		}
 	})
-	if replaced {
+	if replaced && read {
 		return refuse("a delete range", deleted, deletedAt, retiredAt)
 	}
 	if !read {

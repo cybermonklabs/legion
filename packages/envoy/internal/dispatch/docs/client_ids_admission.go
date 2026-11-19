@@ -44,13 +44,16 @@ func presenceInterval() time.Duration {
 // has no id of its own here. stored is whether a row names own as the socket's person's: false
 // for a legacy socket and for a read-only admission's id, drawn and stored nowhere. landed is
 // whether own's row says an edit landed under it: read at the admission (keepsClient), and set
-// once this socket has marked the row after its first apply that left the room holding a struct
-// under own (recordLanded), which it does once.
+// once this socket's mark of the row is written (recordLanded), after an apply that left the room
+// holding a struct under own. marking is whether that mark is in flight, so the socket makes one
+// at a time; a mark the store refused leaves landed false, so the socket goes on presenting the
+// row (keepPresenting) and its next such apply marks it again (settleClients).
 type socketClients struct {
-	legacy bool
-	own    crdt.ClientID
-	stored bool
-	landed atomic.Bool
+	legacy  bool
+	own     crdt.ClientID
+	stored  bool
+	landed  atomic.Bool
+	marking atomic.Bool
 	// mu guards confirmed and claims: the hook changes them on the peer's read loop, and nothing
 	// else reads them, so the lock is never contended.
 	mu        sync.Mutex
@@ -315,12 +318,14 @@ func (s *Service) mintClient(ctx context.Context, room string, actor model.Actor
 }
 
 // keepPresenting presents clients' own id again every presenceInterval while its socket is open
-// and no edit has landed under it (presentClient), so its row stays live and no mint gives it
-// back (mintClient), on this process or another. A socket whose id no row of its own names - a
-// legacy socket, a read-only admission's drawn id - presents nothing, and nor does one whose row
-// says an edit landed already, which no mint gives back. Each presentation is one timer and one
-// statement, and the timer is set again only once the statement has returned and while no edit
-// has landed under the id. It returns what the socket's end runs, which stops it.
+// and its row does not say an edit landed under it (presentClient), so the row stays live and no
+// mint gives it back (mintClient), on this process or another. A socket whose id no row of its
+// own names - a legacy socket, a read-only admission's drawn id - presents nothing, and nor does
+// one whose row says an edit landed already, which no mint gives back. Each presentation is one
+// timer and one statement, and the timer is set again only once the statement has returned and
+// while the socket has not written its row's mark (socketClients.landed): a mark in flight, or
+// one the store refused, leaves it presenting. It returns what the socket's end runs, which stops
+// it.
 func (s *Service) keepPresenting(room string, actor model.Actor, clients *socketClients) (end func()) {
 	if !clients.stored || clients.landed.Load() {
 		return func() {}

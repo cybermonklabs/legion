@@ -336,6 +336,9 @@ test("an Update frame whose length overruns the frame is refused, not read past 
   }
 });
 
+// A read-only admission reads no saved row (`admit` returns before it does), so whatever a row
+// carries - an edit the server already holds among them - it applies none and keeps every one for
+// the next writable admission to send.
 test("a read-only first sync applies nothing and keeps the saved edits", async () => {
   const artifact = artifactId();
   const server = serverWith("shared", 100);
@@ -427,134 +430,6 @@ test("a read-only load keeps an earlier row of a browser whose later rows build 
   await admit(reopened.sync, false);
   expect(reopened.doc.getXmlFragment("prosemirror").toString()).toContain("Typed.");
   expect(reopened.states.at(-1)?.rebuiltAt).toBeUndefined();
-});
-
-test("a read-only first sync keeps a saved row the server already holds", async () => {
-  const artifact = artifactId();
-  const server = serverWith("shared", 100);
-  const saved = await savedEdit(artifact, server, " saved");
-  // The server applied the edit before the issue closed; the acknowledgement never came, and
-  // nothing says the server stored it.
-  Y.applyUpdate(server, saved);
-  const { states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
-
-  await admit(sync, true);
-
-  expect((await rowsOf(artifact)).length).toBe(1);
-  expect(states.at(-1)).toEqual({
-    count: 1,
-    readOnly: true,
-    rebuiltAt: undefined,
-    stored: true,
-    unsent: false,
-  });
-});
-
-test("a read-only first sync keeps a saved row that changes an object attribute", async () => {
-  type Attributes = { meta: { size: number } };
-  const artifact = artifactId();
-  const server = new Y.Doc();
-  server.clientID = 100;
-  const image = new Y.XmlElement<Attributes>("image");
-  image.setAttribute("meta", { size: 1 });
-  server.getXmlFragment("prosemirror").insert(0, [image as unknown as Y.XmlElement]);
-  await savedChanges(artifact, server, (browser) => {
-    const saved = browser
-      .getXmlFragment("prosemirror")
-      .get(0) as unknown as Y.XmlElement<Attributes>;
-    saved.setAttribute("meta", { size: 2 });
-  });
-  const { states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
-
-  await admit(sync, true);
-
-  expect((await rowsOf(artifact)).length).toBe(1);
-  expect(states.at(-1)).toEqual({
-    count: 1,
-    readOnly: true,
-    rebuiltAt: undefined,
-    stored: true,
-    unsent: false,
-  });
-});
-
-test("a read-only first sync keeps a saved row that only splits the same text into other items", async () => {
-  const artifact = artifactId();
-  const server = serverWith("shared", 100);
-  // The same text typed again in two pieces, the later one before the earlier, which Yjs keeps
-  // as two items where the server holds one.
-  await savedChanges(artifact, server, (browser) => {
-    browser.transact(() => {
-      const text = paragraphText(browser);
-      text.delete(0, text.length);
-      text.insert(0, "red");
-      text.insert(0, "sha");
-    });
-  });
-  const { states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
-
-  await admit(sync, true);
-
-  expect((await rowsOf(artifact)).length).toBe(1);
-  expect(states.at(-1)?.count).toBe(1);
-});
-
-test("a read-only first sync keeps a saved row that inserts and deletes the same text", async () => {
-  const artifact = artifactId();
-  const server = serverWith("shared", 100);
-  await savedChanges(artifact, server, (browser) => {
-    browser.transact(() => {
-      const text = paragraphText(browser);
-      text.insert(3, "typo");
-      text.delete(3, "typo".length);
-    });
-  });
-  const { states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
-
-  await admit(sync, true);
-
-  expect((await rowsOf(artifact)).length).toBe(1);
-  expect(states.at(-1)?.count).toBe(1);
-});
-
-test("a read-only first sync keeps a saved row that writes a margin record", async () => {
-  const artifact = artifactId();
-  const server = serverWith("shared", 100);
-  await savedChanges(artifact, server, (browser) => {
-    browser.getMap("marks").set("c-1", { kind: "comment", by: "ada" });
-  });
-  const { states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
-
-  await admit(sync, true);
-
-  expect((await rowsOf(artifact)).length).toBe(1);
-  expect(states.at(-1)).toEqual({
-    count: 1,
-    readOnly: true,
-    rebuiltAt: undefined,
-    stored: true,
-    unsent: false,
-  });
-});
-
-test("a read-only first sync keeps a saved row that writes a root other than the tree and the margin records", async () => {
-  const artifact = artifactId();
-  const server = serverWith("shared", 100);
-  await savedChanges(artifact, server, (browser) => {
-    browser.getText("notes").insert(0, "aside");
-  });
-  const { states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
-
-  await admit(sync, true);
-
-  expect((await rowsOf(artifact)).length).toBe(1);
-  expect(states.at(-1)).toEqual({
-    count: 1,
-    readOnly: true,
-    rebuiltAt: undefined,
-    stored: true,
-    unsent: false,
-  });
 });
 
 test("a connection first admitted read-only and later writable stores and counts the typing", async () => {

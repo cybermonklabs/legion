@@ -385,10 +385,10 @@ func nearACapUnencoded(doc *crdt.Doc, tracked int64) bool {
 // block twice, and the old history's structs would carry the room back toward the cap. Refused
 // with DocumentTooLargeCloseCode and DocumentRebuiltCloseReason, the editor drops what it
 // sent and builds its document afresh from the rebuilt room, and drops its saved rows typed
-// against the old history as rows of a rebuilt document (pending-sync.ts, addsParking). Before this
-// list a rebuild of a history that cannot load had no such guard: the hook took the old history
-// back unless the struct total refused it, which a browser's own copy, whose deleted runs Yjs
-// merges, need not pass.
+// against the old history as rows of a rebuilt document (pending-sync.ts, parkedClients). Before
+// this list a rebuild of a history that cannot load had no such guard: the hook took the old
+// history back unless the struct total refused it, which a browser's own copy, whose deleted runs
+// Yjs merges, need not pass.
 //
 // A rebuild of a closed issue's document writes the close's ask states into the tree it seeds, as
 // the close's final sweep writes them into the issue's other documents (closedIssueAskState), and

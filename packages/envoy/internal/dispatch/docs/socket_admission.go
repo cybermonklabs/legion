@@ -127,22 +127,51 @@ func refuseMintsLive(w http.ResponseWriter, r *http.Request, room string, cause 
 	closeAtUpgrade(w, r, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason)
 }
 
-// upgradeRefusal is the status ygo's upgrade answers r with instead of a socket, which is
-// gorilla's Upgrader's answer: 400 for a request that is no websocket upgrade, and 403 for one
-// from another origin, by the same-origin rule ygo's upgrade keeps with no AllowedOrigins
-// configured (a request with no Origin passes it). Zero for a request that passes both. The
-// admission asks it before it gives the page a client id, so a request that never becomes a
-// socket stores nothing.
-func upgradeRefusal(r *http.Request) int {
-	if !gws.IsWebSocketUpgrade(r) {
-		return http.StatusBadRequest
+// refusedAtUpgrade answers r as ygo's upgrade answers a request it refuses, and reports whether it
+// did, without taking the connection. It asks gorilla's Upgrader itself, called as ygo's upgrade
+// calls it - no response header, and the same-origin rule ygo keeps with no AllowedOrigins
+// configured (sameOrigin) - so it refuses what that upgrade refuses, with the status that upgrade
+// gives (Upgrader.Upgrade, gorilla/websocket server.go): 400 for no `Connection: upgrade`, 426 for
+// no `Upgrade: websocket`, 405 for a method other than GET, 400 for a version other than 13, 403
+// for another origin, and 400 for a Sec-WebSocket-Key that is not 16 bytes in base64. The
+// upgrader checks the whole request before it takes the connection, and is handed a writer it
+// cannot take (unhijackable), so a request that passes every check meets the one refusal after
+// them, the 500 of a writer that is no http.Hijacker, where nothing is written and this reports
+// false. A refusal is written as gorilla writes its own (returnError): its status, with
+// Sec-WebSocket-Version 13 beside it. The admission asks this before it gives the page a client
+// id, so a request that never becomes a socket stores nothing. It cannot see the connection: a
+// client that sends bytes before the 101 arrives is dropped by the upgrade with no answer, after
+// its id was given out.
+func refusedAtUpgrade(w http.ResponseWriter, r *http.Request) bool {
+	refused := false
+	upgrader := gws.Upgrader{
+		CheckOrigin: sameOrigin,
+		Error: func(w http.ResponseWriter, _ *http.Request, status int, _ error) {
+			if status == http.StatusInternalServerError {
+				return // past every check of the request, at the writer it cannot take
+			}
+			refused = true
+			w.Header().Set("Sec-Websocket-Version", "13")
+			http.Error(w, http.StatusText(status), status)
+		},
 	}
-	if origin := r.Header.Get("Origin"); origin != "" {
-		if parsed, err := url.Parse(origin); err != nil || !strings.EqualFold(parsed.Host, r.Host) {
-			return http.StatusForbidden
-		}
+	_, _ = upgrader.Upgrade(unhijackable{w}, r, nil)
+	return refused
+}
+
+// unhijackable is a ResponseWriter that is no http.Hijacker, whatever the one it wraps is.
+type unhijackable struct{ http.ResponseWriter }
+
+// sameOrigin is the origin rule ygo's upgrade keeps with no AllowedOrigins configured
+// (Server.checkOrigin): a request with no Origin passes, and one with an Origin passes where its
+// host is the request's.
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
 	}
-	return 0
+	parsed, err := url.Parse(origin)
+	return err == nil && strings.EqualFold(parsed.Host, r.Host)
 }
 
 // closeAtUpgrade completes the upgrade only to close the socket with code and reason. The zero
@@ -215,10 +244,11 @@ func socketRoom(r *http.Request) string {
 //
 // Last of all, once nothing above can refuse the socket, the admission decides whether the
 // socket's page may write (decideWritable) and then its client id (admitClients), so a read-only
-// admission stores no row. A request ygo's upgrade would refuse - no websocket upgrade, or one
-// from another origin - is answered as that upgrade answers it before either (upgradeRefusal),
-// and stores nothing; and a page whose person holds every unlanded id the document allows them,
-// each held by an open socket, is closed at its upgrade with 4503 DOC_BUSY (refuseMintsLive).
+// admission stores no row. A request ygo's upgrade would refuse - no websocket upgrade, a method
+// other than GET, a websocket version or key it does not take, or one from another origin - is
+// answered as that upgrade answers it before either (refusedAtUpgrade), and stores nothing; and a
+// page whose person holds every unlanded id the document allows them, each held by an open
+// socket, is closed at its upgrade with 4503 DOC_BUSY (refuseMintsLive).
 //
 // The room's name has to be the document's id as Dispatch writes it, lower case and hyphenated,
 // and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free run of hex,
@@ -376,8 +406,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// given out only to a socket that is served (admitClients, client_ids_admission.go): a request
 	// ygo's upgrade would refuse is answered as it would answer it first, and the page's write is
 	// decided before its id, so a read-only page is given one stored nowhere.
-	if status := upgradeRefusal(r); status != 0 {
-		http.Error(w, http.StatusText(status), status)
+	if refusedAtUpgrade(w, r) {
 		return
 	}
 	if err := s.decideWritable(r.Context(), room, connection, r.URL.Query(), documentSince); err != nil {

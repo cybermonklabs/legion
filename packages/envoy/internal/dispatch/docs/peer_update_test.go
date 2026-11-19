@@ -1166,6 +1166,17 @@ func TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason(t *testing.T) {
 			},
 		},
 		{
+			// A delete set that stops reading is no read of the update's ranges, a retired
+			// client's among them, so the scan refuses nothing for it and the apply judges the
+			// bytes: two clients' ranges announced, and one sent (refusedBeforeApply, eachV1Range).
+			name: "a delete of the history a rebuild replaced in a delete set that does not read", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentUpdateRefusedCloseReason, applies: true,
+			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
+				service, room, replica := rebuiltRoom(t, ordinary, rebuilt)
+				update := newV1Frame(0).uint(2).uint(123).uint(1).uint(0).uint(3).done()
+				return service, room, update, replica
+			},
+		},
+		{
 			name: "a 9 KiB paste at the byte bound", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentTooLargeCloseReason, applies: true,
 			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
 				service, room, replica := peerUpdateRoom(t, proseAtLeast(pmdoc.MaxDocumentBytes), pmdoc.MaxDocumentBytes)

@@ -263,8 +263,10 @@ func heldBy(room *crdt.Doc) crdt.StateVector {
 // landed as the socket was admitted: an update whose structs under the id only parked leaves the
 // room holding none of them and the row unmarked, so a later mint may still give it back once its
 // socket has gone. It asks the room for that one client's clock (roomHolds), never for its state
-// vector, which would copy every client the room holds on every keystroke, and only until an edit
-// has landed under the id, once a socket.
+// vector, which would copy every client the room holds on every keystroke, and only until the
+// mark is written. A socket makes one mark at a time (socketClients.marking), and only a written
+// one sets landed: a mark the store refused leaves the socket presenting its row (keepPresenting),
+// and the next such apply marks it again.
 func (s *Service) settleClients(info websocket.PeerUpdateInfo, judged clientJudgement, stood bool) {
 	connection := connectionOf(info.Context)
 	if connection == nil || connection.clients == nil {
@@ -280,8 +282,13 @@ func (s *Service) settleClients(info websocket.PeerUpdateInfo, judged clientJudg
 		return
 	}
 	if judged.writesOwn && !clients.landed.Load() && roomHolds(info.Doc, clients.own) &&
-		clients.landed.CompareAndSwap(false, true) {
-		go s.recordLanded(info.Room, connection.actor, clients.own)
+		clients.marking.CompareAndSwap(false, true) {
+		go func() {
+			defer clients.marking.Store(false)
+			if s.recordLanded(info.Room, connection.actor, clients.own) {
+				clients.landed.Store(true)
+			}
+		}()
 	}
 }
 

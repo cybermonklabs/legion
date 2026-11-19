@@ -13,6 +13,11 @@
 // API or server write of two structs or more. A parked range is no item of the cap's now
 // (ceilingWithQueue): the splits its landing makes are the drain's, which the apply that lands it
 // spends from its own Split share.
+//
+// Review 8's repro of the same frame at the pending cap's size,
+// TestRV8OneFrameOfParkedDeleteRangesAtTheHeadroomRefusesEveryKeystroke, asserted that the frame
+// parks and an honest keystroke after it is not refused; the test below asserts both of the same
+// frame in the same document, so the repro is held here and has no file of its own.
 package docs
 
 import (

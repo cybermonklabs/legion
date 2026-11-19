@@ -138,7 +138,8 @@ import (
 // above that is stored nowhere and claims nothing: its page cannot write under it, and a page
 // admitted writable later presents it, finds no row and is given one afresh, which its document
 // takes while it has written nothing under the first (connection.ts, takeClientId). A request
-// that never becomes a socket - no websocket upgrade, or another origin - stores nothing either.
+// that never becomes a socket - one ygo's upgrade refuses, whatever it refuses it for
+// (refusedAtUpgrade) - stores nothing either.
 //
 // Every writable page load is given an id, and most never type. So a person holds at most
 // maxUnlandedMintsADocument rows in a document that no edit landed under: a mint past that gives
@@ -637,14 +638,15 @@ func (s *Service) releaseClaims(room string, actor model.Actor, claims []uint64)
 }
 
 // recordLanded marks the row of client, the id room's socket was given, as having landed an edit,
-// so no mint gives it back and the sweep never deletes it (mintClient, sweepUnusedClientIDs). A
-// row the sweep took while the socket stayed open is written again for its person. It runs off
-// the peer's read loop, once a socket, after the first of the socket's applies that stood and
-// left the room holding a struct under client (settleClients) - not one whose structs under it
-// only parked - and only where the row did not say an edit had landed as the socket was
-// admitted, which a claimed row does; a write that fails is logged, and the socket's next
-// reconnect marks the row again on its first edit.
-func (s *Service) recordLanded(room string, actor model.Actor, client crdt.ClientID) {
+// so no mint gives it back and the sweep never deletes it (mintClient, sweepUnusedClientIDs), and
+// reports whether the mark was written. A row the sweep took while the socket stayed open is
+// written again for its person. It runs off the peer's read loop, one mark at a time for a socket,
+// after an apply of the socket's that stood and left the room holding a struct under client
+// (settleClients) - not one whose structs under it only parked - and only where the row did not
+// say an edit had landed as the socket was admitted, which a claimed row does. A write that fails
+// is logged, and the socket goes on presenting the row (keepPresenting) until its next such apply
+// marks it.
+func (s *Service) recordLanded(room string, actor model.Actor, client crdt.ClientID) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), clientCheckTimeout)
 	defer cancel()
 	if _, err := s.store.Pool.Exec(ctx, `
@@ -654,8 +656,11 @@ func (s *Service) recordLanded(room string, actor model.Actor, client crdt.Clien
 		where document_client_ids.actor_kind = excluded.actor_kind and document_client_ids.actor_id = excluded.actor_id
 			and not document_client_ids.landed
 	`, room, int64(client), actor.Kind, actor.ID); err != nil {
-		slog.Warn("dispatch: could not mark a client id as having landed an edit", "room", room, "client", uint64(client), "error", err)
+		slog.Warn("dispatch: could not mark a client id as having landed an edit; its socket presents it until a later landing marks it",
+			"room", room, "client", uint64(client), "error", err)
+		return false
 	}
+	return true
 }
 
 // sweepUnusedClientIDs deletes every row whose id never landed an edit and that nothing has

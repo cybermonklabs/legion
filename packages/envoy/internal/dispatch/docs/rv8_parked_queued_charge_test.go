@@ -1,12 +1,16 @@
 package docs
 
-// Review 8 scratch repro (not for the tree). noteQueued charges the whole content of every apply
-// that leaves the room's pending queue holding anything to queuedContent, and only an apply that
-// leaves the queue empty takes the charge back. One struct parked behind a gap no one fills keeps
-// the queue non-empty while the room is loaded, so every later paste is charged as queued content
-// on top of the tracked state, and deleting the paste takes none of it back. residentBytes (state
-// + queued) is what the state cap's allowance and the room budget weigh, so a room whose encoded
-// state is small ends refusing every keystroke at the state cap.
+// Review 8's repro of its finding 7, kept as a regression test. noteQueued once summed what each
+// apply added to the room's pending queue: it charged the whole content of every apply that left
+// the queue holding anything to queuedContent, and only an apply that left the queue empty took
+// the charge back. One struct parked behind a gap no one fills kept the queue non-empty while the
+// room was loaded, so every later paste was charged as queued content on top of the tracked
+// state, and deleting the paste took none of it back. residentBytes (state + queued) is what the
+// state cap's allowance and the room budget weigh, so a room whose encoded state was small ended
+// refusing every keystroke at the state cap. noteQueued now records what the queue holds after
+// each apply (crdt.PendingStats.ContentBytes), and the test holds that, with one struct parked,
+// three keystrokes after up to 200 cycles of a 900 KiB paste and its delete apply, as they do in a
+// room with nothing parked.
 
 import (
 	"runtime"

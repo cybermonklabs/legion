@@ -1,10 +1,12 @@
 package docs
 
-// Review 8 scratch repro (not for the tree). Under design F a parked delete range is out of the
-// room's encoded state (leaveParkedOut), so the tracked state does not count it; noteQueued
-// charges content bytes, which a delete range has none of; and the struct figure counts parked
-// structs, not ranges. So the room budget charges nothing for a room's parked delete ranges. This
-// measures the heap one frame of them holds against what the room is charged.
+// Review 8's repro, kept as a regression test. Under design F a parked delete range is out of the
+// room's encoded state (leaveParkedOut), so the tracked state does not count it; the queued
+// content noteQueued records is content bytes, which a delete range has none of; and the struct
+// figure counts parked structs, not ranges. So the room budget charged nothing for a room's
+// parked delete ranges. It now charges each range the room parks (noteParkedRanges,
+// roomChargeWeight, bytesOfHeapAParkedRange), and the test holds the live heap one frame of
+// parked ranges takes to within four times what the room's charge grew by, plus 1 MiB.
 //
 // Review 8's repro is kept as it was written, and only its two reads of the charge moved: each
 // reads the charge the budget holds for the room through the function the budget calls

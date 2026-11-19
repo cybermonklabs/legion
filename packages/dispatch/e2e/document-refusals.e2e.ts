@@ -811,7 +811,7 @@ test("a browser holding the history someone else's rebuild replaced is told the 
     // The room answered each frame she typed offline not applied, since it parks behind the
     // history the rebuild replaced, so her saved rows outlive the refusal. The document read
     // afresh drops them as rows typed against a rebuilt history, and its connection dot says when
-    // they were saved (pending-sync.ts `addsParking`, connection.ts `pendingNotice`): the dot
+    // they were saved (pending-sync.ts `parkedClients`, connection.ts `pendingNotice`): the dot
     // reads "connected" alone only from the new socket's first frame until that restore reports.
     await expect(connectedDot(page)).toHaveAccessibleName(
       /^connected · Edits saved in this browser at .+ could not be applied: the document was rebuilt since\.$/u

@@ -700,7 +700,7 @@ func (h *heldHead) Head(ctx context.Context, room string) (persistence.Version, 
 // the document after the rebuild joined it: it was served the replaced history, what it typed was
 // refused at the store, which no longer held the items it was typed against, and on its
 // reconnect the rebuilt room refused the history it held as DOC_REBUILT, so the page dropped its
-// unsent rows as rows of a rebuilt document (pending-sync.ts, addsParking) and told the person
+// unsent rows as rows of a rebuilt document (pending-sync.ts, parkedClients) and told the person
 // someone else had rebuilt it. The person who clicked the rebuild is the one who opens it next.
 //
 // The load is held inside its hook, past the hold's check, at the render the hook makes of the

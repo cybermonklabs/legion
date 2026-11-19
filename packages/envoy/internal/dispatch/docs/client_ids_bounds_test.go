@@ -22,7 +22,8 @@ import (
 // socket (client_ids.go): a read-only admission and a request that never becomes a socket store
 // nothing; a person's unlanded minted rows in a document stop at maxUnlandedMintsADocument, past
 // which a mint gives back a row no open socket holds; "landed" is an edit integrated under the id,
-// not one that only parked; and every claim is held to the day's bound.
+// not one that only parked, and a landing the store did not mark leaves the row presented; and
+// every claim is held to the day's bound.
 
 // unlandedMintsOf is how many rows artifactID stores for login of ids an admission gave out that
 // no edit landed under.
@@ -202,42 +203,58 @@ func TestAReadOnlyAdmissionStoresNoRowAndItsPageWritesUnderAFreshIDOnceWritable(
 	awaitLanded(t, service, artifactID, again.Given, "bob's writable page")
 }
 
-// A request that never becomes a socket stores nothing: one that is no websocket upgrade is
-// answered 400, and an upgrade from another origin 403, as ygo's upgrade answers them, before the
-// admission gives out a client id; a same-origin upgrade is given one.
+// A request that never becomes a socket stores nothing: each request ygo's upgrade refuses is
+// answered with the status that upgrade gives it (gorilla's Upgrader.Upgrade), and with the
+// websocket version beside it as gorilla writes a refusal, before the admission gives out a
+// client id (refusedAtUpgrade). Each row is a real HTTP request carrying a websocket upgrade's
+// headers with the one change its name says. A same-origin upgrade is then given one id.
 func TestARequestThatNeverBecomesASocketStoresNoClientID(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
 	address := socketURL(serverURL, artifactID) + "&" + contracts.DocumentClientIdParameter + "="
-	request, err := http.NewRequest(http.MethodGet, "http"+strings.TrimPrefix(address, "ws"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header = pageHeader("eve")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusBadRequest {
-		t.Fatalf("a plain GET of the document's socket was answered %d, want 400", response.StatusCode)
-	}
-	header := pageHeader("eve")
-	header.Set("Origin", "https://elsewhere.example")
-	connection, response, err := gws.DefaultDialer.Dial(address, header)
-	if connection != nil {
-		_ = connection.Close()
-	}
-	if err == nil || response == nil || response.StatusCode != http.StatusForbidden {
-		t.Fatalf("an upgrade from another origin: %v, %v; want it refused 403", response, err)
-	}
-	if rows := unlandedMintsOf(t, service, artifactID, "eve"); rows != 0 {
-		t.Fatalf("two requests that never became sockets stored %d rows for eve", rows)
+	stored := 0
+	for _, row := range []struct {
+		name   string
+		method string
+		header func(http.Header)
+		want   int
+	}{
+		{"a plain GET, no websocket upgrade", http.MethodGet, func(h http.Header) { h.Del("Connection"); h.Del("Upgrade") }, http.StatusBadRequest},
+		{"an upgrade naming no websocket", http.MethodGet, func(h http.Header) { h.Del("Upgrade") }, http.StatusUpgradeRequired},
+		{"a HEAD, which the socket's GET route takes too", http.MethodHead, func(http.Header) {}, http.StatusMethodNotAllowed},
+		{"a websocket version other than 13", http.MethodGet, func(h http.Header) { h.Set("Sec-WebSocket-Version", "8") }, http.StatusBadRequest},
+		{"a key that is not 16 bytes in base64", http.MethodGet, func(h http.Header) { h.Set("Sec-WebSocket-Key", "c2hvcnQ=") }, http.StatusBadRequest},
+		{"no key", http.MethodGet, func(h http.Header) { h.Del("Sec-WebSocket-Key") }, http.StatusBadRequest},
+		{"another origin", http.MethodGet, func(h http.Header) { h.Set("Origin", "https://elsewhere.example") }, http.StatusForbidden},
+	} {
+		request, err := http.NewRequest(row.method, "http"+strings.TrimPrefix(address, "ws"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header = pageHeader("eve")
+		request.Header.Set("Connection", "Upgrade")
+		request.Header.Set("Upgrade", "websocket")
+		request.Header.Set("Sec-WebSocket-Version", "13")
+		request.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+		row.header(request.Header)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("%s: %v", row.name, err)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != row.want || response.Header.Get("Sec-WebSocket-Version") != "13" {
+			t.Errorf("%s was answered %d with Sec-WebSocket-Version %q, want %d with 13 as ygo's upgrade answers it",
+				row.name, response.StatusCode, response.Header.Get("Sec-WebSocket-Version"), row.want)
+		}
+		if rows := unlandedMintsOf(t, service, artifactID, "eve"); rows != stored {
+			t.Errorf("%s never became a socket and stored %d rows for eve", row.name, rows-stored)
+			stored = rows
+		}
 	}
 	if _, busy := openAndLeave(t, address, "eve"); busy {
 		t.Fatal("eve's same-origin socket was refused busy")
 	}
-	if rows := unlandedMintsOf(t, service, artifactID, "eve"); rows != 1 {
-		t.Fatalf("eve's same-origin socket left %d rows, want its one", rows)
+	if rows := unlandedMintsOf(t, service, artifactID, "eve"); rows != stored+1 {
+		t.Fatalf("eve's same-origin socket stored %d rows, want its one", rows-stored)
 	}
 }
 
@@ -268,6 +285,76 @@ func TestAFrameThatOnlyParksMarksNoRowLanded(t *testing.T) {
 	awaitRendering(t, room, "# Title\n\nabAlice's paragraph.\n", "the room")
 	requireConnected(t, page, "alice's page")
 	awaitLanded(t, service, artifactID, page.Given, "alice's page once its first keystroke landed")
+}
+
+// A landing whose mark the store did not write leaves its socket presenting the row, so no mint
+// gives back the id an open page writes under, and the socket's next landing writes the mark. The
+// store refuses the first mark of a landing once (a trigger on document_client_ids), and the
+// presence interval is cut to 300 ms, so a row no socket presents is a mint's to give back 900 ms
+// after its last presentation (clientPresenceLapses). Alice's first keystroke lands and its mark
+// is refused; past that lapse her row is still live, as the mint reads it; her second keystroke
+// lands and its mark is written.
+func TestALandingTheStoreDidNotMarkLeavesItsSocketPresentingTheRow(t *testing.T) {
+	presenceIntervalForTest.Store(int64(300 * time.Millisecond))
+	t.Cleanup(func() { presenceIntervalForTest.Store(0) })
+	service, artifactID, serverURL := clientIDRoom(t)
+	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
+	pool := service.store.Pool
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `drop trigger if exists dispatch_test_fail_first_landing on document_client_ids`)
+		_, _ = pool.Exec(context.Background(), `drop function if exists dispatch_test_fail_first_landing()`)
+		_, _ = pool.Exec(context.Background(), `drop sequence if exists dispatch_test_landing_failure`)
+	})
+	for _, statement := range []string{
+		`create sequence dispatch_test_landing_failure`,
+		`create function dispatch_test_fail_first_landing() returns trigger language plpgsql as $$
+		begin
+			if nextval('dispatch_test_landing_failure') = 1 then
+				raise exception 'the test fails this landing''s mark';
+			end if;
+			return new;
+		end $$`,
+		`create trigger dispatch_test_fail_first_landing before update on document_client_ids for each row
+		when (new.landed and not old.landed) execute function dispatch_test_fail_first_landing()`,
+	} {
+		if _, err := pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("make the store refuse the first landing's mark: %v", err)
+		}
+	}
+	page := openPage(t, serverURL, artifactID, "alice")
+	awaitAnswer(t, page, "alice's page")
+	sendTyped(t, page, 0, "a")
+	awaitRendering(t, room, "# Title\n\naAlice's paragraph.\n", "the room after alice's first keystroke")
+	if !testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
+		var asked bool
+		if err := pool.QueryRow(context.Background(), `select is_called from dispatch_test_landing_failure`).Scan(&asked); err != nil {
+			t.Fatal(err)
+		}
+		return asked
+	}) {
+		t.Fatal("the store was never asked to mark alice's row after her first keystroke landed")
+	}
+	if landed, stored := clientIDLanded(t, service, artifactID, page.Given); !stored || landed {
+		t.Fatalf("after the store refused its mark, alice's row is stored %t and says an edit landed %t", stored, landed)
+	}
+	lapse := clientPresenceLapses * presenceInterval()
+	time.Sleep(lapse + presenceInterval())
+	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool {
+		var live bool
+		if err := pool.QueryRow(context.Background(), `
+			select presented_at >= now() - $3::bigint * interval '1 microsecond'
+			from document_client_ids where artifact_id = $1 and client_id = $2
+		`, artifactID, int64(page.Given), lapse.Microseconds()).Scan(&live); err != nil {
+			t.Fatal(err)
+		}
+		return live
+	}) {
+		t.Fatalf("alice's open page stopped presenting its row once the store refused its landing's mark: unpresented for %s, a mint may give back the id it writes under", lapse)
+	}
+	sendTyped(t, page, 1, "b")
+	awaitRendering(t, room, "# Title\n\nabAlice's paragraph.\n", "the room after alice's second keystroke")
+	awaitLanded(t, service, artifactID, page.Given, "alice's page once its second keystroke landed")
+	requireConnected(t, page, "alice's page")
 }
 
 // A claim of an update that stood is kept even where its structs only parked, and binds the id to
