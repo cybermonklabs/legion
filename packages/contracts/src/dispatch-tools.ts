@@ -7,6 +7,7 @@ import {
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
+import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
 export interface DispatchToolSpec {
@@ -535,6 +536,13 @@ export const STEP_INPUT_CODE = "STEP_INPUT";
 export const STEP_WRITER_CODE = "STEP_WRITER";
 export const STEP_OTHER_ISSUE_CODE = "STEP_OTHER_ISSUE";
 
+/** The codes of the plan write's refusals that no retry changes: a value outside its form, and an
+ *  id whose plan is the plan of another issue. A writer that is not the daemon's session is refused
+ *  `STEP_WRITER`, as a step write is. Generated into Go as `contracts.PlanInputCode` and
+ *  `contracts.PlanOtherIssueCode`, which the route answers and the daemon ends a row on. */
+export const PLAN_INPUT_CODE = "PLAN_INPUT";
+export const PLAN_OTHER_ISSUE_CODE = "PLAN_OTHER_ISSUE";
+
 /** The form of the agent, the session and the model a step record names: printable ASCII with no
  *  space, from 1 to 128 characters. The session and the model come from the agent's own frames,
  *  and `dispatch steps` joins a record's fields with spaces, so a space or a control character in
@@ -695,6 +703,18 @@ export const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
  *  it, the tool's and the server's alike: generated into Go as `contracts.ProjectKeyRule`. */
 export const PROJECT_KEY_RULE =
   "an uppercase letter, then 1 to 9 uppercase letters or digits, such as CORE";
+
+/** The refusal of a `project` argument that is not a project key, for the tools that hold their
+ *  key to the rule before it is sent: `dispatch_related` and `dispatch_plans`, which send it in the
+ *  request path, and `dispatch_search` past an empty one. A missing project is each schema's own
+ *  refusal. */
+const projectKeyValidation: NonNullable<DispatchToolSpec["validation"]> = {
+  check: (value) => {
+    const { project } = value as { readonly project?: unknown };
+    return typeof project !== "string" || PROJECT_KEY_PATTERN.test(project);
+  },
+  message: `project is not a project key: ${PROJECT_KEY_RULE}`,
+};
 
 /** A GitHub repository as `owner/name`, as `dispatch architecture-sync --repo` sends it in the
  *  path of `/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync`. A name of `.` or
@@ -1995,13 +2015,14 @@ export const dispatchToolSpecs = [
         .describe("Results to skip before the page; nonnegative integer; default 0.")
         .optional(),
     }),
-    // An empty project searches every project, as the server reads it.
+    // An empty project searches every project, as the server reads it; any other value is held
+    // to the project-key rule.
     validation: {
       check: (value) => {
         const { project } = value as { readonly project?: unknown };
-        return typeof project !== "string" || project === "" || PROJECT_KEY_PATTERN.test(project);
+        return project === "" || projectKeyValidation.check(value);
       },
-      message: `project is not a project key: ${PROJECT_KEY_RULE}`,
+      message: projectKeyValidation.message,
     },
   },
   {
@@ -2044,14 +2065,7 @@ export const dispatchToolSpecs = [
         .describe("Search by keywords only, skipping meaning search.")
         .optional(),
     }),
-    // The key rides in the request path; a missing project is the schema's own refusal.
-    validation: {
-      check: (value) => {
-        const { project } = value as { readonly project?: unknown };
-        return typeof project !== "string" || PROJECT_KEY_PATTERN.test(project);
-      },
-      message: `project is not a project key: ${PROJECT_KEY_RULE}`,
-    },
+    validation: projectKeyValidation,
   },
   {
     name: "dispatch_issues",
@@ -2346,6 +2360,39 @@ export const dispatchToolSpecs = [
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
     }),
+    strict: true,
+  },
+  {
+    name: "dispatch_plans",
+    example: { project: "INFRA" },
+    description:
+      "Print each finished issue of a project, newest close first, with the plan Legion ran it " +
+      "from, the rating each retro gave that plan with its reason, its time and its count of " +
+      "failed steps. An issue is finished when its status is done and Dispatch closed it. The " +
+      "first line is `<PROJECT>: <n> finished issues`. Then each issue prints one line: `<KEY> " +
+      "closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings " +
+      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n>\`. ` +
+      "source is default (Legion's default steps) or owner (the plan the issue's owner wrote), " +
+      `and the plan is the one of the issue's newest run. A rating is ${LEGION_PLAN_RATING_LEAST} (the plan cost the ` +
+      `work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), one for each retro in the order the retros ran, and ` +
+      "its reason prints as a JSON string. time runs from the first start of the issue's steps " +
+      "to the last end, in whole hours and minutes rounded down. failed steps counts the runs " +
+      "of a step that failed, retros and merges left out. An issue with no plan prints plan " +
+      "none, one with no rating prints ratings none, and one whose time is not known prints " +
+      "time -: an issue Legion never ran prints all three. since and until, each an RFC 3339 " +
+      "time, keep the issues closed at or after since and before until.",
+    arguments: (z) => ({
+      project: z.string().describe("Project key whose finished issues to list, such as INFRA."),
+      since: z
+        .string()
+        .describe("Optional RFC 3339 time; only issues closed at or after it.")
+        .optional(),
+      until: z
+        .string()
+        .describe("Optional RFC 3339 time; only issues closed before it.")
+        .optional(),
+    }),
+    validation: projectKeyValidation,
     strict: true,
   },
   {
