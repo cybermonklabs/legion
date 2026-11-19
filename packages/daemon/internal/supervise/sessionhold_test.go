@@ -908,3 +908,34 @@ func TestARecordedNameNoHoldCoversIsTakenByNoClaim(t *testing.T) {
 		})
 	}
 }
+
+// A compaction whose session hold the store does not answer asks nothing, and its answer says the
+// store did not answer rather than that the claim does not hold its session: the claim may well
+// hold it, and the operator reading `legion claims compact`'s 409 would otherwise look for another
+// claim holding a session nobody else holds (compactStart, plan E's t-e-54).
+//
+// The control (the pull request records the run): compactStart with one sentence for both
+// answers, as before, answers "the claim's session is not held to it" for the store's outage.
+func TestACompactionWhoseHoldTheStoreDoesNotAnswerSaysSo(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.store.fail("HoldSessions", errors.New("the store is down"))
+	h.restart()
+	h.helloWithIdentity()
+	h.m.Wait()
+
+	err := h.m.Compact(h.ctx, testCompactInstructions)
+
+	if !errors.Is(err, ErrCompactNotTaken) || !errors.Is(err, errHoldUnanswered) {
+		t.Fatalf("a compaction whose hold the store did not answer answered %v, want ErrCompactNotTaken carrying errHoldUnanswered", err)
+	}
+	if want := "the store did not answer whether the claim holds its session"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("the answer %q does not say %q", err, want)
+	}
+	if strings.Contains(err.Error(), "is not held to it") {
+		t.Fatalf("the answer %q says the claim does not hold its session, which the store did not say", err)
+	}
+	if got := len(h.conn.Compactions()); got != 0 {
+		t.Fatalf("Oh My Pi was asked for %d compactions, want none", got)
+	}
+}
