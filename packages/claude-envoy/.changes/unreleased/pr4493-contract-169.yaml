@@ -1,0 +1,4 @@
+kind: Changed
+custom:
+  Issue: pr4493
+body: The plugin declares daemon API contract 169, where the `repositories` block of the state is `{live, caches}`.

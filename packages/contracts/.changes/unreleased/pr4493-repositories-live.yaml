@@ -1,0 +1,5 @@
+kind: Changed
+custom:
+  Issue: pr4493
+body: |-
+  `legion-api.ts`: the `repositories` block of the state is `{live, caches}` at daemon API contract 169, one `live` entry for each repository that a live record names. Each entry has `repo`, and `servedAs`, `apps`, `readError`, `webhookApp` and `cache`, each one only when it holds something.
