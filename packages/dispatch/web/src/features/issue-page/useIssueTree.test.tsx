@@ -1276,10 +1276,14 @@ const NAMING_ELSEWHERE = [
 // issue's write that changes its title, which renames the issue's own address. The feed is the
 // workspace's, so each refreshes only the names reads whose key names an address it can change of
 // the issue the event is on: an event on an issue no read names changes no name that read holds,
-// and only a title change changes the name of the issue's own address. A new comment is a new
-// address, which the tree reads under a key of its own, a person's edit of a document is the
-// notice after the versions that already refreshed them, and an issue's write that leaves its
-// title alone renames nothing.
+// and only a title change changes the name of the issue's own address, which the names read
+// answers with the issue's title and nothing else. A child's page names its parent by that
+// address, and the parent's documents take new versions often: none of those, nor any other
+// change under the parent, reads the child's names again, where the parent's new title, and an
+// older server's update that names none of its changes, does. A new comment is a new address,
+// which the tree reads under a key of its own, a person's edit of a document is the notice after
+// the versions that already refreshed them, and an issue's write that leaves its title alone
+// renames nothing.
 test("an edit on an issue refreshes the names reads whose key names the issue and no other, a new comment none", () => {
   const editsWords = [
     feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
@@ -1289,17 +1293,21 @@ test("an edit on an issue refreshes the names reads whose key names the issue an
     feedEvent("artifact.removed", { artifact: plan }),
   ];
   for (const event of editsWords) {
-    expect(refreshedNames(event, [...NAMING_ISSUE, ...NAMING_ELSEWHERE]), event.type).toEqual(
-      NAMING_ISSUE
-    );
+    expect(
+      refreshedNames(event, [...NAMING_KEY, ...NAMING_ISSUE, ...NAMING_ELSEWHERE]),
+      event.type
+    ).toEqual(NAMING_ISSUE);
   }
-  expect(
-    refreshedNames(feedEvent("issue.updated", { changed: ["title"] }), [
-      ...NAMING_KEY,
-      ...NAMING_ISSUE,
-      ...NAMING_ELSEWHERE,
-    ])
-  ).toEqual(NAMING_KEY);
+  for (const payload of [{ changed: ["title"] }, {}]) {
+    expect(
+      refreshedNames(feedEvent("issue.updated", payload), [
+        ...NAMING_KEY,
+        ...NAMING_ISSUE,
+        ...NAMING_ELSEWHERE,
+      ]),
+      JSON.stringify(payload)
+    ).toEqual(NAMING_KEY);
+  }
   const editsNoWords = [
     feedEvent("comment.created", { anchor: null, ask_id: null, id: "comment-2" }),
     feedEvent("artifact.human_edited", { artifact_id: plan.id, from_version: 1, to_version: 2 }),
@@ -1307,30 +1315,6 @@ test("an edit on an issue refreshes the names reads whose key names the issue an
   ];
   for (const event of editsNoWords) {
     expect(refreshedNames(event, [...NAMING_KEY, ...NAMING_ISSUE]), event.type).toEqual([]);
-  }
-});
-
-// The names read answers an issue's own address with the issue's title and nothing else, so of
-// an issue's events only a change of its title moves that name. A child's page names its parent
-// by that address, and the parent's documents take new versions often: none of those, nor any
-// other change under the parent, reads the child's names again, where the parent's new title,
-// and an older server's update that names none of its changes, does.
-test("a new version of an issue's document leaves a read naming only the issue's key alone, a title change refreshes it", () => {
-  const underTheIssue = [
-    feedEvent("artifact.version", { artifact_id: plan.id, name: "Plan" }),
-    feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
-    feedEvent("ask.edited", { anchor: null, id: "ask-1" }),
-    feedEvent("artifact.renamed", { artifact: plan }),
-    feedEvent("artifact.removed", { artifact: plan }),
-  ];
-  for (const event of underTheIssue) {
-    expect(refreshedNames(event, NAMING_KEY), event.type).toEqual([]);
-  }
-  for (const event of [
-    feedEvent("issue.updated", { changed: ["title"] }),
-    feedEvent("issue.updated", {}),
-  ]) {
-    expect(refreshedNames(event, NAMING_KEY)).toEqual(NAMING_KEY);
   }
 });
 
@@ -1357,12 +1341,13 @@ const roadmap = issueDocument("artifact-roadmap", "roadmap-md", {
 });
 
 // A project document's event is on the document and what it owns, each written under
-// `dispatch://CORE/artifact/roadmap-md`. A rename, a removal, a comment's edit and the edit of an
-// ask its anchor puts on the document, or of a block ask through the ask's own route, carry the
-// slug, so they leave a read naming another document of the project alone too, `roadmap-md-2`
-// among them; a new version and the edit of an ask asked of the document as a whole name the
-// document by its id alone, as a version's rewording of a block ask does, so they are held to the
-// project's documents, which leaves another project's documents and every issue alone.
+// `dispatch://CORE/artifact/roadmap-md`. A rename, a removal, a comment's edit, the edit of an
+// ask its anchor puts on the document, or of a block ask through the ask's own route, and an
+// approval request's rewording carry the slug, so they leave a read naming another document of
+// the project alone too, `roadmap-md-2` among them; a new version and the edit of a question
+// asked of the document as a whole name the document by its id alone, as a version's rewording
+// of a block ask does, so they are held to the project's documents, which leaves another
+// project's documents and every issue alone.
 test("a project document's event refreshes the names reads naming that document, and none naming another", () => {
   const onDocument = { artifact_id: roadmap.id, issue_key: null };
   const naming = [
@@ -1413,6 +1398,31 @@ test("a project document's event refreshes the names reads naming that document,
         block_artifact: { id: roadmap.id, primary: false, slug: roadmap.slug },
         block_id: "q1",
         id: "ask-3",
+      },
+      onDocument
+    ),
+    feedEvent(
+      "ask.edited",
+      {
+        anchor: null,
+        approval: {
+          artifact_id: roadmap.id,
+          documents: [
+            { artifact_id: roadmap.id, name: roadmap.name, requested_version: 1, version: 2 },
+          ],
+          name: roadmap.name,
+          requested_version: 1,
+          version: 2,
+        },
+        approval_artifact: {
+          name: roadmap.name,
+          primary: false,
+          project: "CORE",
+          slug: roadmap.slug,
+        },
+        artifact_id: roadmap.id,
+        id: "ask-4",
+        kind: "approval",
       },
       onDocument
     ),
