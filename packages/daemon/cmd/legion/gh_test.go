@@ -342,7 +342,10 @@ func ghReferenceUsages(t *testing.T) []ghReferenceUsage {
 // owners; only a command naming no repository at all is not named, once the working directory's
 // git remotes name no owner but the token's, and a command gh only prints the help or version of
 // sends nothing. GH_REPO names the owner only when nothing explicit does, and only for a leaf that
-// reads it.
+// reads it. A read naming only owners the bundle holds no directory for, read in a working
+// directory whose remotes name no github.com repository for it, runs with GH_CONFIG_DIR's
+// directory (R4 of dispatch://INFRA-3399); every other call naming such an owner is routed and
+// refused as with no R4.
 func TestGhTargetOfFailsClosed(t *testing.T) {
 	acme := map[string]string{"GH_REPO": "acme/widgets"}
 	// A pane of the issue owner acme, whose GH_CONFIG_DIR is acme's directory of the bundle.
@@ -696,6 +699,79 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 			}
 		case err != nil || target.owner != tc.owner:
 			t.Errorf("ghTargetOf(%q, %v) = %+v, %v; want the owner %q", tc.argv, tc.env, target, err, tc.owner)
+		}
+	}
+
+	// R4 of dispatch://INFRA-3399, against the pane's bundle: directories for acme and sjawhar and
+	// none for any other owner, which dirFor answers as ghConfigDirFor does, with a bare
+	// OwnerNotServedError; and two configured renames, octocat/moved -> sjawhar/moved, whose `to`
+	// owner has a directory, and sjawhar/gone -> nobody/gone, whose `to` owner has none, which it
+	// refuses as ghConfigDirFor does, naming the pair around that error. A call that writes
+	// nothing, whose every item is an owner with no directory and whose working directory's
+	// remotes name no github.com repository for it, runs with GH_CONFIG_DIR's directory. Every
+	// other call gets main's routing and main's refusal: a write, a GraphQL mutation, a read
+	// beside an owner the bundle serves, a read with no GH_CONFIG_DIR, a read whose remotes were
+	// read for it (whether or not the remote's entry was kept), and a read of a pair's repository.
+	paneBundle := func(owner, name string) (string, error) {
+		switch owner + "/" + name {
+		case "octocat/moved":
+			return ghconfig.Dir("/owners", "sjawhar"), nil
+		case "sjawhar/gone":
+			return "", fmt.Errorf("the configured rename sjawhar/gone -> nobody/gone serves sjawhar/gone from nobody's gh directory, and %w; GitHub holds the repository under the name it moved to, so no other token of this bundle reaches it",
+				&leakguard.OwnerNotServedError{Owner: "nobody", OwnersDir: "/owners"})
+		}
+		if owner == "acme" || owner == "sjawhar" {
+			return ghconfig.Dir("/owners", owner), nil
+		}
+		return "", &leakguard.OwnerNotServedError{Owner: owner, OwnersDir: "/owners"}
+	}
+	const unserved = `the role's GitHub App is not installed on "octocat"`
+	octocatClone := ghRemote{name: "origin", url: "https://github.com/octocat/hello.git"}
+	for _, tc := range []struct {
+		argv    []string
+		env     map[string]string
+		remotes func() ([]ghRemote, error) // a working directory that is no git repository when nil
+		dir     string                     // the directory the command runs with, where it is not refused
+		err     string                     // a refusal containing this
+	}{
+		// Reads naming two owners with no directory, by a search query's qualifiers and by a
+		// GraphQL query's variables.
+		{argv: []string{"search", "issues", "owner:octocat", "org:hubot"}, env: pane, dir: pane["GH_CONFIG_DIR"]},
+		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "org=hubot", "-f", "query=query($owner:String!,$org:String!){a:repositoryOwner(login:$owner){login} b:organization(login:$org){login}}"}, env: pane, dir: pane["GH_CONFIG_DIR"]},
+		// A read where no GH_CONFIG_DIR names the directory a command naming no owner runs with.
+		{argv: []string{"repo", "view", "octocat/hello", "--json", "name"}, err: unserved},
+		// A write naming an owner with no directory, and a GraphQL mutation naming one.
+		{argv: []string{"issue", "create", "-R", "octocat/hello", "--title", "t", "--body", "b"}, env: pane, err: unserved},
+		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", `query=mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`}, env: pane, err: unserved},
+		// A read naming an owner with no directory beside one the bundle serves.
+		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "org=sjawhar", "-f", "query={viewer{login}}"}, env: pane, err: unserved},
+		// Reads for which gh takes a repository from the working directory's remotes: an owner
+		// named by a GraphQL query's variable beside a {repo} gh fills from the remote; a URL gh's
+		// pr finder reads as a branch of the command's own repository, where the remote is acme's,
+		// and where it is the URL's own repository, whose entry add drops; and an endpoint's
+		// {owner}, in a clone of the repository the endpoint names.
+		{argv: []string{"api", "graphql", "-F", "owner=octocat", "-F", "name={repo}", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id}}"}, env: pane, remotes: remotes(octocatClone), err: unserved},
+		{argv: []string{"pr", "view", "https://github.com/octocat/hello/tree/main", "--json", "number"}, env: pane, remotes: remotes(acmeClone), err: unserved},
+		{argv: []string{"pr", "view", "https://github.com/octocat/hello/tree/main", "--json", "number"}, env: pane, remotes: remotes(octocatClone), err: unserved},
+		{argv: []string{"api", "repos/octocat/hello/pulls?head={owner}:x"}, env: pane, remotes: remotes(octocatClone), err: unserved},
+		// The repository a configured rename pair moves: refused naming the pair where its `to`
+		// owner has no directory, though its `from` owner has one, and served from the `to`
+		// owner's directory where that owner has one, though its `from` owner has none.
+		{argv: []string{"repo", "view", "sjawhar/gone", "--json", "name"}, env: pane, err: "the configured rename sjawhar/gone -> nobody/gone"},
+		{argv: []string{"repo", "view", "octocat/moved", "--json", "name"}, env: pane, dir: ghconfig.Dir("/owners", "sjawhar")},
+	} {
+		listed := tc.remotes
+		if listed == nil {
+			listed = noGitRepository
+		}
+		target, err := ghTargetOfKept(t, tc.argv, tc.env, savedGhHelp, listed, paneBundle)
+		switch {
+		case tc.err != "":
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("ghTargetOf(%q, %v) = %+v, %v; want a refusal containing %q", tc.argv, tc.env, target, err, tc.err)
+			}
+		case err != nil || target.dir != tc.dir:
+			t.Errorf("ghTargetOf(%q, %v) = %+v, %v; want the directory %q", tc.argv, tc.env, target, err, tc.dir)
 		}
 	}
 }
@@ -1247,7 +1323,8 @@ func legionGhIn(t *testing.T, dir string, env map[string]string, stdin string, a
 // reads each command from the real gh's own help. The real gh runs with GH_PATH naming the `gh`
 // wrapper first on PATH, so the git gh runs asks `legion gh auth git-credential`, which answers by
 // the path's owner as `legion git-credential` does; with useHttpPath on for github.com, and gh's
-// update check and prompts off. A command naming an owner the bundle holds no directory for is
+// update check and prompts off. A read naming only an owner the bundle holds no directory for
+// runs with GH_CONFIG_DIR's directory (R4 of dispatch://INFRA-3399); a write naming one is
 // refused, exit 2, naming the owner, and so are one it cannot read, a gh alias, and any command
 // when PATH's first gh is the real gh; the real gh never runs. In a clone of an owner's
 // repository, a command naming none runs as that repository's. Each of the three variables it needs is
@@ -1313,12 +1390,27 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		}
 	}
 
+	// A read naming only an owner the bundle holds no directory for runs with GH_CONFIG_DIR's
+	// directory, as a command naming no owner does (R4 of dispatch://INFRA-3399). It runs under
+	// the stand-in the tests count as the shared check the read rule was proven against
+	// (testProvenCheckEnv), which the guard runs alone for a call that writes nothing; the whole
+	// guard would first read the repository's visibility, which `legion gh` refuses for an owner
+	// it holds no directory for, and then ask GitHub itself, with no credential (git ls-remote).
+	proven := maps.Clone(env)
+	proven["PUBLIC_LEAK_CHECK"], proven[testProvenCheckEnv] = ghCheckAt(t, ghCheckPasses), ghProvenProgramSHA256
+	for _, args := range [][]string{{"pr", "view", "https://github.com/other/thing/pull/1"}, {"api", "repos/Other/thing"}} {
+		code, stdout, stderr := legionGh(t, proven, args...)
+		if want := stub + "|" + defaultDir + "|" + strings.Join(args, " ") + "\n" + wantEnv; code != 0 || stdout != want {
+			t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 0 and %q", args, code, stdout, stderr, want)
+		}
+	}
+
 	for _, tc := range []struct {
 		args []string
 		want string
 	}{
-		{[]string{"pr", "view", "https://github.com/other/thing/pull/1"}, `the role's GitHub App is not installed on "other"`},
-		{[]string{"api", "repos/Other/thing"}, `the role's GitHub App is not installed on "other"`},
+		{[]string{"pr", "create", "-R", "other/thing", "--fill"}, `the role's GitHub App is not installed on "other"`},
+		{[]string{"api", "-X", "POST", "repos/Other/thing/issues", "-f", "title=t"}, `the role's GitHub App is not installed on "other"`},
 		{[]string{"pr", "view", "1", "--bogus"}, `"--bogus" is no option`},
 		{[]string{"issue", "lock", "1"}, "cannot read `gh issue lock`"},
 		{[]string{"co", "1"}, `"co" is a gh alias`},
