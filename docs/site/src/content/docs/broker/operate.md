@@ -410,11 +410,15 @@ or under a name bound to no registrar, `invalid_grant`, with a description that 
 route writes no such registration: such a row was written by something other than this release's
 route.
 Like the refusal of a released registration (below), that refusal is final: both clients stop on
-it rather than trade again, since only the holding registrar's registration of that pod admits it.
+it rather than trade again, since only the holding registrar's registration of that pod admits it,
+or, under a name bound to no registrar, a registration that binds the name to the pod's registrar.
 A pod that no registration names keeps the `pod_session_not_registered:` refusal. The broker logs
-the refusal at WARN, `broker: the token exchange refused a pod's trade under a session name another
-daemon holds`, naming the principal, the pod, the session, the registrar that wrote the
-registration and the holder.
+each case at WARN on a line of its own. For a name another registrar holds, the line is `broker:
+the token exchange refused a pod's trade under a session name another daemon holds`, naming the
+principal, the pod, the session, the registrar that wrote the registration and the holder. For a
+name bound to no registrar, the line is `broker: the token exchange refused a pod's trade under a
+session name bound to no daemon`, naming the principal, the pod, the session and the registrar
+that wrote the registration.
 
 The registrar is the daemon's login account, never its service, which every Legion daemon shares,
 nor its pod, which a restart changes. So a daemon whose login ServiceAccount changes is a new

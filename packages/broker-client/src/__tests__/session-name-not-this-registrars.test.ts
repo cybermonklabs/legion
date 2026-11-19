@@ -7,7 +7,8 @@
 // words naming the session the trade sent, so the client prints it whole, as it prints the
 // refusal of a released registration. Withheld, it leaves a pod's log saying only that a trade
 // was refused, never that the name belongs to another daemon, which is the one thing that tells
-// an operator why the pod stopped.
+// an operator why the pod stopped. The exchange refuses a live registration of a name bound to no
+// daemon with the same code and words of its own, and the client prints that whole too.
 
 import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -21,6 +22,12 @@ import { refusalOf, stubBroker } from "./stub";
  *  sends it. */
 function notThisRegistrars(session: string): string {
   return `${SESSION_NAME_NOT_THIS_REGISTRARS}: The session name '${session}' belongs to another daemon: a pod trades only under a session name the daemon that registered it holds.`;
+}
+
+/** The exchange's refusal of a pod registered under `session` where `session` is bound to no
+ *  daemon, as the broker sends it. */
+function boundToNone(session: string): string {
+  return `${SESSION_NAME_NOT_THIS_REGISTRARS}: The session name '${session}' is bound to no daemon: a pod trades only under a session name the daemon that registered it holds.`;
 }
 
 /** The refusal a client trading for `session` reads from a broker that answers `description`. */
@@ -56,6 +63,16 @@ test("the refusal of a session name another daemon holds prints whole, and no tr
   expect(refusal.said).toBe(notThisRegistrars("ses_held"));
   expect(refusal.message).toBe(
     `the secrets broker refused the projected service-account token: HTTP 400 invalid_grant: ${notThisRegistrars("ses_held")}`
+  );
+  expect(refusal.podSessionUnregistered).toBe(false);
+  expect(isFinalRefusal(refusal)).toBe(true);
+});
+
+test("the refusal of a session name bound to no daemon prints whole, and no trade cures it", async () => {
+  const refusal = await refusalOf400("ses_unbound", boundToNone("ses_unbound"));
+  expect(refusal.said).toBe(boundToNone("ses_unbound"));
+  expect(refusal.message).toBe(
+    `the secrets broker refused the projected service-account token: HTTP 400 invalid_grant: ${boundToNone("ses_unbound")}`
   );
   expect(refusal.podSessionUnregistered).toBe(false);
   expect(isFinalRefusal(refusal)).toBe(true);

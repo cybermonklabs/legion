@@ -110,10 +110,11 @@ const (
 	PodSessionNotRegistered = "pod_session_not_registered"
 	// SessionNameNotThisRegistrars, then a colon, begins the error_description of the exchange's
 	// final invalid_grant for a pod a daemon other than the one its session name is bound to
-	// registered (internal/broker/oauth, registeredPodSession): the name belongs, for good, to the
-	// daemon that first registered it, so no later trade cures the refusal. Both clients read it
-	// as final: of the exchange's invalid_grant refusals, they trade again only on one whose
-	// description begins PodSessionNotRegistered.
+	// registered, or that a daemon registered under a name bound to none (internal/broker/oauth,
+	// registeredPodSession). A name belongs, for good, to the daemon that first registered it, and
+	// only a registration, never a later trade, binds a name bound to none, so no later trade cures
+	// the refusal. Both clients read it as final: of the exchange's invalid_grant refusals, they
+	// trade again only on one whose description begins PodSessionNotRegistered.
 	SessionNameNotThisRegistrars = "session_name_not_this_registrars"
 	// MembershipHeld is the token endpoint's refusal of a credential whose person Dispatch holds
 	// until they sign in to Dispatch again, or a refresh confirms them. It is not permanent.
