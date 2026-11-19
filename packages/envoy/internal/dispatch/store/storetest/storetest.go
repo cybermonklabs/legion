@@ -65,6 +65,14 @@ var shared struct {
 // t when DISPATCH_TEST_DATABASE_URL is unset.
 func Open(t testing.TB) *store.Store {
 	t.Helper()
+	ready(t)
+	return clone(t, shared.template)
+}
+
+// ready makes sure the package's TestMain runs Run, skips t when DISPATCH_TEST_DATABASE_URL is
+// unset, and prepares the admin pool and the template Open clones, once.
+func ready(t testing.TB) {
+	t.Helper()
 	if !shared.main {
 		t.Fatal("storetest.Open needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }, or storetest.Run around another harness's Main")
 	}
@@ -76,11 +84,15 @@ func Open(t testing.TB) *store.Store {
 	if shared.err != nil {
 		t.Fatalf("prepare migrated template database: %v", shared.err)
 	}
+}
 
+// clone returns a store on a new database cloned from template, dropped after t ends.
+func clone(t testing.TB, template string) *store.Store {
+	t.Helper()
 	ctx := context.Background()
 	name := randomName(t, "dispatch_test_")
-	if _, err := shared.admin.Exec(ctx, cloneStatement(name)); err != nil {
-		t.Fatalf("clone isolated database from template: %v", err)
+	if _, err := shared.admin.Exec(ctx, cloneStatement(name, template)); err != nil {
+		t.Fatalf("clone isolated database from template %s: %v", template, err)
 	}
 	t.Cleanup(func() { dropDatabase(name) })
 	database, err := store.Open(ctx, databaseURL(shared.server, name))
@@ -91,10 +103,89 @@ func Open(t testing.TB) *store.Store {
 	return database
 }
 
-// cloneStatement returns the create database that makes name a copy of the template's files
-// rather than a copy through the write-ahead log (the package comment says why).
-func cloneStatement(name string) string {
-	return "create database " + name + " template " + shared.template + " strategy file_copy"
+// Empty returns the connection string of a new database that holds nothing, not even the
+// version table, dropped after t ends: for a test that migrates it itself, as the two-build
+// suite has the builds it runs migrate theirs, in production's order.
+func Empty(t testing.TB) string {
+	t.Helper()
+	ready(t)
+	name := randomName(t, "dispatch_test_")
+	if _, err := shared.admin.Exec(context.Background(), "create database "+name+" strategy file_copy"); err != nil {
+		t.Fatalf("create empty database: %v", err)
+	}
+	t.Cleanup(func() { dropDatabase(name) })
+	return databaseURL(shared.server, name)
+}
+
+// keyedTemplates are the templates OpenFrom makes, by its key, each once in the test binary; Run
+// drops them with the template Open clones.
+var keyedTemplates = struct {
+	sync.Mutex
+	byKey map[string]*keyedTemplate
+}{byKey: map[string]*keyedTemplate{}}
+
+// keyedTemplate is one of OpenFrom's templates: once makes it, name is its database, and err is
+// why it could not be made.
+type keyedTemplate struct {
+	once sync.Once
+	name string
+	err  error
+}
+
+// OpenFrom is Open for a database migrate brings to its schema instead of this tree's runner
+// alone: it returns a store on a new database cloned from the template of key, dropped after t
+// ends. The template is made once per key in the test binary, by the first test that asks: a new
+// empty database whose connection string migrate is given, which migrate migrates and leaves
+// with no connection open. A template whose migrate failed, or ended its test, fails every test
+// that asks for it again.
+func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) *store.Store {
+	t.Helper()
+	ready(t)
+	keyedTemplates.Lock()
+	entry := keyedTemplates.byKey[key]
+	if entry == nil {
+		entry = &keyedTemplate{}
+		keyedTemplates.byKey[key] = entry
+	}
+	keyedTemplates.Unlock()
+	entry.once.Do(func() {
+		// Set first, and cleared only once migrate returns, so a migrate that ends its test
+		// (t.Fatal) leaves a template no later test clones.
+		entry.err = fmt.Errorf("the test that made it ended before its migrate returned")
+		suffix, err := randomSuffix()
+		if err != nil {
+			entry.err = err
+			return
+		}
+		name := "dispatch_template_" + suffix
+		ctx := context.Background()
+		if _, err := shared.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+			entry.err = fmt.Errorf("create template database: %w", err)
+			return
+		}
+		// Named once it exists, so Run drops exactly the templates that were made.
+		entry.name = name
+		if err := migrate(databaseURL(shared.server, entry.name)); err != nil {
+			entry.err = fmt.Errorf("migrate template database: %w", err)
+			return
+		}
+		// As prepare closes the template Open clones, so a stray session cannot fail a clone.
+		if _, err := shared.admin.Exec(ctx, "alter database "+entry.name+" with allow_connections false"); err != nil {
+			entry.err = fmt.Errorf("close template database to connections: %w", err)
+			return
+		}
+		entry.err = nil
+	})
+	if entry.err != nil {
+		t.Fatalf("prepare template database %q: %v", key, entry.err)
+	}
+	return clone(t, entry.name)
+}
+
+// cloneStatement returns the create database that makes name a copy of template's files rather
+// than a copy through the write-ahead log (the package comment says why).
+func cloneStatement(name, template string) string {
+	return "create database " + name + " template " + template + " strategy file_copy"
 }
 
 // Main runs the package's tests, waits for their databases to drop, then drops the template Open
@@ -120,13 +211,21 @@ func Run(run func() int) int {
 			code = 1
 		}
 	}
-	if shared.template == "" {
-		return code
+	templates := []string{shared.template}
+	keyedTemplates.Lock()
+	for _, entry := range keyedTemplates.byKey {
+		templates = append(templates, entry.name)
 	}
-	if _, err := shared.admin.Exec(context.Background(), "drop database "+shared.template); err != nil {
-		fmt.Fprintf(os.Stderr, "storetest: drop template database %s: %v\n", shared.template, err)
-		if code == 0 {
-			code = 1
+	keyedTemplates.Unlock()
+	for _, template := range templates {
+		if template == "" {
+			continue
+		}
+		if _, err := shared.admin.Exec(context.Background(), "drop database "+template); err != nil {
+			fmt.Fprintf(os.Stderr, "storetest: drop template database %s: %v\n", template, err)
+			if code == 0 {
+				code = 1
+			}
 		}
 	}
 	return code

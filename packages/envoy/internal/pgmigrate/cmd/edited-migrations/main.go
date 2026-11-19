@@ -1,15 +1,19 @@
 // Command edited-migrations is the check before merge that a change edits no migration a database
-// may already have run, unless the edit declares the file's earlier identity: for each store,
-// Dispatch's and the broker's, it compares every forward migration file the base commit holds with
-// this tree's file of the same version (pgmigrate.CheckEdits).
+// may already have run in a way such a database refuses: for each store, Dispatch's and the
+// broker's, it compares every forward migration file the base commit holds with this tree's file
+// of the same version (pgmigrate.CheckEdits). A head file that differs from the base's must keep
+// the base's first identity as its first replaces line (the base file itself, where the base
+// declares none) and must accept the base's text, its own or one a replaces line names; a base
+// file whose version the head has no file for is refused.
 //
-//	go run ./internal/pgmigrate/cmd/edited-migrations --base <commit>
+//	go build -o edited-migrations ./internal/pgmigrate/cmd/edited-migrations && ./edited-migrations --base <commit>
 //
-// The base is the commit the change is merged onto: its merge base with main, or, in CI, the base
-// of the pull request's merge commit, which CI checks out. The command reads the base's files with
-// git, so the base commit must be in the repository (CI fetches it). It exits 0 when both stores
-// compared at least one file and refused none, 1 when a file was refused or a store compared
-// nothing, and 2 when the check could not be taken.
+// The base is the commit the change is merged onto: its merge base with main, or, in CI, the first
+// parent of the commit the run checked out, or the bypass run's migration-base. The command reads
+// the base's files with git, so the base commit must be in the repository (CI fetches it). It
+// exits 0 when both stores compared at least one file and refused none, 1 when a file was refused
+// or a store compared nothing, and 2 when the check could not be taken. Built and run, as above,
+// it keeps those codes; `go run` reports every failure as exit 1.
 package main
 
 import (

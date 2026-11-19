@@ -1663,7 +1663,7 @@ In the same transaction, before it applies anything, the runner reads every row 
 
 - A row whose identity passes, but whose applied text is neither the file's own text nor one its replaces lines name, is refused: the database ran an edit of the file this build does not hold.
 
-- Any other row passes and is left as it is: the release that recorded it still finds what it records there and boots, as a rolling update, the auto-deployer's version-only rollback and the two-build tests (`TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile`) need.
+- Any other row passes and is left as it is: the release that recorded it still finds what it records there and boots, as a rolling update and the auto-deployer's version-only rollback need, on a database an earlier release created and a later one migrated forward (`TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile`).
   A second edit of the same file keeps the first replaces line first and adds one naming the first edit's identity after it, so the chain covers every text a database may have applied, and the recorded identity stays the version's first.
 
 - A version no file of the build has is left as it is, as before: an image rolled back meets the versions a later one recorded.
@@ -1688,7 +1688,7 @@ What the operator does:
   The first replaces line names the identity the version first shipped with, and a later line goes after the ones there, in their order; the next boot accepts the row as it is.
   The line names a `<version>_<name>.up.sql` of the file's own version and 64 lower-case hex digits, and the loader refuses the whole set, naming the file and line, for a line that begins `-- replaces:` and is written any other way, and for one that Postgres reads as part of a string literal, a dollar-quoted body or a continued string, where it would declare nothing.
   A line ending in a carriage return, as a file with CRLF line endings has, is read without it.
-  Before the merge, the `envoy-go-checks` job compares every migration the base already holds with the head's file of the same version (`go run ./internal/pgmigrate/cmd/edited-migrations --base <commit>`).
+  Before the merge, the `envoy-go-checks` job compares every migration the base already holds with the head's file of the same version, building `./internal/pgmigrate/cmd/edited-migrations` and running it with `--base <commit>` (built and run, it exits 2 when the check could not be taken; `go run` reports every failure as exit 1).
   The base is the first parent of the commit the run tests, on a pull request and in the merge queue; on the bypass check's run at main's tip (`main-bypass-check.yaml`, whose push can carry several commits) it is the commit main pointed at before that push, passed as ci.yaml's `migration-base` input, and a dispatch that names none fails the check.
   It fails a head file whose first replaces line is not the base's first identity, a head file that accepts no text of the base's, and a base file whose version the head no longer has a file of, each naming the lines to add, so the pull request that edits an applied migration, a comment included, meets the refusal before any database does.
   A revert of an edit is refused there too, since a database the edited release created applied the edit's text: the revert keeps the replaces lines.
@@ -1697,7 +1697,8 @@ What the operator does:
 A release cannot accept a text it has never seen, so the release before an edit refuses a database that a release carrying the edit created from empty: the applied text there is the edit's.
 That is the same row a development database leaves when it ran another branch's edit, and refusing it is what this check is for.
 A production database is created once and booted by every later release, so a rollback onto it, and a rolling update over it, still boot: a later release applies no version the earlier one holds, and leaves each row's applied text as it was.
-The two-build tests boot the previous release on a database cloned at this tree's schema, so a pull request that edits a migration the previous release holds meets this refusal there.
+The two-build tests build their database the same way, in production's order: the previous release migrates it from empty, then this tree migrates it forward, and the previous release boots on that (`laneDatabase`, `cmd/dispatch/twobuild_harness_test.go`).
+So a pull request that edits a migration the previous release holds, with its replaces line, keeps that lane green, as it keeps production booting (`TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShippedMigration`, whose control is a database the pull request's tree migrated from empty, which the previous release refuses).
 
 Every row a runner before this one wrote has a null name, so a database's first boot of this runner fills each one with the identity this runner records of its file, and refuses none.
 A migration edited in place after this runner's first release needs its replaces line, which the pre-merge check requires.

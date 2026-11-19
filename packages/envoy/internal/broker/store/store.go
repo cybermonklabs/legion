@@ -211,10 +211,11 @@ const versionTable = "broker_schema_migrations"
 // rolls the whole transaction back, nothing applied), and applies the pending migrations. It adds
 // the columns again where they are missing, for one case alone: on a fresh database, a pod of the
 // release before can create the table without them between the two transactions, and the ALTER
-// then holds ACCESS EXCLUSIVE until this transaction commits, after the pending migrations. No
-// request reads the table of a database that new. Each fill is logged once the transaction has
-// committed (pgmigrate.LogFixes). A fresh database commits nothing, its table included, until
-// every migration has applied.
+// then holds ACCESS EXCLUSIVE until this transaction commits, after the pending migrations. That
+// pod serves at once, so its request's read of the table (requests.writtenBeforeMigration13) waits
+// behind the ALTER until this transaction commits, a wait the pending migrations bound. Each fill
+// is logged once the transaction has committed (pgmigrate.LogFixes). A fresh database commits
+// nothing, its table included, until every migration has applied.
 func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	migrations, err := pgmigrate.Load(fsys, "migrations")
 	if err != nil {

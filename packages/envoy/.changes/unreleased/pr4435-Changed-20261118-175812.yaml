@@ -3,11 +3,12 @@ body: |-
     `schema_migrations` and `broker_schema_migrations` gain nullable `name`, `checksum` and
     `applied_checksum` columns, which Dispatch and the broker add themselves at their first start
     of this release, in one `alter table` under the migration lock that takes the table's
-    `ACCESS EXCLUSIVE` lock for a catalog change and waits at most five seconds for it. That start
-    fills the name and checksum of every migration already recorded from the release's own files,
-    logs `pgmigrate: recorded the identity of a migration applied before the runners recorded
-    identities` once for each, and refuses none. The release before this one runs beside it
-    unchanged while it rolls.
+    `ACCESS EXCLUSIVE` lock for a catalog change. Each attempt waits at most five seconds for the
+    lock, and a start makes up to three attempts in all, with a two-second pause between them, so
+    it waits about 19 seconds at worst before it fails. That start fills the name and checksum of
+    every migration already recorded from the release's own files, logs `pgmigrate: recorded the
+    identity of a migration applied before the runners recorded identities` once for each, and
+    refuses none. The release before this one runs beside it unchanged while it rolls.
 time: 2026-11-18T17:58:12.548865030Z
 custom:
     Issue: pr4435

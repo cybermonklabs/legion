@@ -24,18 +24,15 @@ const nonTransactionalMarker = "-- pgmigrate:non-transactional"
 // usual way to get there. The marker's words inside a literal, or as part of a longer comment, are
 // text and declare nothing.
 func misplacedMarker(name, sql string) error {
-	var misplaced error
-	_ = scanSQL(sql, func(token sqlToken) error {
-		if misplaced != nil || token.kind != sqlComment || token.start == 0 ||
+	return scanSQL(sql, func(token sqlToken) error {
+		if token.kind != sqlComment || token.start == 0 ||
 			strings.TrimSuffix(sql[token.start:token.end], "\r") != nonTransactionalMarker {
 			return nil
 		}
-		misplaced = fmt.Errorf(
+		return fmt.Errorf(
 			"migration %s line %d: the %s marker is read on the first line alone, so this file would run in a transaction: put the marker on its first line, and any replaces line after it",
 			name, 1+strings.Count(sql[:token.start], "\n"), nonTransactionalMarker)
-		return nil
 	})
-	return misplaced
 }
 
 // The scanner here reads SQL text as Postgres 18 reads it. It does not reason about the grammar:

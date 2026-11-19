@@ -28,7 +28,7 @@ func TestACloneWritesTheLogOfAFileCopyNotOfTheTemplate(t *testing.T) {
 
 	name := randomName(t, "dispatch_test_")
 	before := backendWALBytes(t, conn)
-	if _, err := conn.Exec(ctx, cloneStatement(name)); err != nil {
+	if _, err := conn.Exec(ctx, cloneStatement(name, shared.template)); err != nil {
 		t.Fatalf("clone the template: %v", err)
 	}
 	dropDatabase(name)

@@ -2,10 +2,11 @@
 
 // Two builds of Dispatch serving one Postgres and one NATS at once, which is what a rolling release
 // runs: the build that serves now (the previous build) and the build that rolls in beside it (this
-// tree). Each row starts one envoy-dispatch of each build, on one database storetest cloned at this
-// tree's schema (the previous build boots on it, which is the SQL half of the rule in
-// cmd/dispatch/README.md) and one NATS server, with one signing key, and drives the surface the
-// other build's clients use: the CLI (twobuild_cli_test.go), the stored documents and the document
+// tree). Each row starts one envoy-dispatch of each build, on one database at this tree's schema
+// that the builds migrated in production's order (laneDatabase: the previous build boots on it,
+// which is the SQL half of the rule in cmd/dispatch/README.md) and one NATS server, with one
+// signing key, and drives the surface the other build's clients use: the CLI
+// (twobuild_cli_test.go), the stored documents and the document
 // socket (twobuild_documents_test.go), the messages and subscription settings on the bus
 // (twobuild_messages_test.go), and what the page admission does while the previous build's process
 // is live and once it has left the registry (twobuild_transition_test.go). This file is the
@@ -173,7 +174,48 @@ func newFirstRolloutBuilds(t *testing.T) *twoBuilds {
 
 func newTwoBuildsOf(t *testing.T, build previousBuild) *twoBuilds {
 	t.Helper()
-	return &twoBuilds{dispatchPair: newPair(t), build: build, binary: cmdtest.Build(t, "envoy-dispatch")}
+	return &twoBuilds{dispatchPair: newPairOn(t, laneDatabase(t, build)), build: build, binary: cmdtest.Build(t, "envoy-dispatch")}
+}
+
+// laneDatabase is the database a row's two builds share: a clone of a template made once per
+// earlier build in the test binary, in production's order. The earlier build migrates the empty
+// database, as the release before this tree migrated production's, and this tree's binary then
+// migrates it forward, as a rollout does (migrateInOrder), so the earlier build boots on what
+// production would hold. A database this tree's runner migrated from empty, as storetest.Open's
+// is, records this tree's text of every migration as applied, which an earlier build that judges
+// the applied text refuses wherever this tree edits a migration it holds: the lane would be red for
+// every pull request that edits a shipped migration, its replaces line in place
+// (TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShippedMigration). The
+// arrival mark a boot of a build before the owner lock stamps (owner_lock_legacy_mark) is cleared
+// after the boots, as every test database starts without one.
+func laneDatabase(t *testing.T, build previousBuild) *store.Store {
+	t.Helper()
+	return storetest.OpenFrom(t, "two builds after "+build.dir, func(url string) error {
+		migrateInOrder(t, url, build.path("envoy-dispatch"), cmdtest.Build(t, "envoy-dispatch"))
+		ctx := context.Background()
+		conn, err := pgx.Connect(ctx, url)
+		if err != nil {
+			return err
+		}
+		defer conn.Close(ctx)
+		_, err = conn.Exec(ctx, "delete from owner_lock_legacy_mark")
+		return err
+	})
+}
+
+// migrateInOrder boots each of binaries in turn alone on the database url names, with a NATS
+// server of its own, and stops it as a deploy does once it serves: the first migrates the empty
+// database, as a release before this one migrated production's, and each after it migrates the
+// database forward, as each rollout does. Each process deregisters as it stops, so none counts in
+// a later process's fleet.
+func migrateInOrder(t *testing.T, url string, binaries ...string) {
+	t.Helper()
+	_, nats := multiprocessNATS(t)
+	for _, binary := range binaries {
+		p := startDispatchProcessWith(t, url, dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: binary})
+		p.waitHealthy(t)
+		stop(t, p)
+	}
 }
 
 // options is what both builds' processes start with: the pair's NATS, the one signing key, and env.
@@ -311,10 +353,11 @@ var probedOwnerLockProtocols = struct {
 // such a row tests: a build before the owner lock that boots on a database is an arrival there,
 // which stamps the database's mark of an earlier build (owner_lock_legacy_mark) for an hour
 // (store.OwnerLockMarkWindow) and puts every process of this tree on it in the mode beside an
-// earlier build. So the probe boots build once alone, on a database (storetest.Open) and a NATS
-// server of its own, reads the protocol its process registers (registeredOwnerLockProtocol), and
-// kills the process. The answer is kept by the build's directory for the rest of the test binary,
-// and a later row reads it without a boot.
+// earlier build. So the probe boots build once alone, on a database of its own (laneDatabase, a
+// clone the row's database is not, at this tree's schema in production's order, which build boots
+// on) and a NATS server of its own, reads the protocol its process registers
+// (registeredOwnerLockProtocol), and kills the process. The answer is kept by the build's directory
+// for the rest of the test binary, and a later row reads it without a boot.
 func previousBuildOwnerLockProtocol(t *testing.T, build previousBuild) int {
 	t.Helper()
 	probed := &probedOwnerLockProtocols
@@ -324,7 +367,7 @@ func previousBuildOwnerLockProtocol(t *testing.T, build previousBuild) int {
 		return protocol
 	}
 	name := "probe of the previous build (" + shortCommit(build.commit) + ")"
-	database := storetest.Open(t)
+	database := laneDatabase(t, build)
 	_, nats := multiprocessNATS(t)
 	probe := startDispatchProcessWith(t, databaseURLOf(t, database),
 		dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: build.path("envoy-dispatch")})
