@@ -48,9 +48,34 @@ jobs:
       - uses: ./.github/actions/install-omp
       # extensions/tmux-place-omp.test.ts runs that binary in a pane of a tmux server of its own,
       # the only way the place a session registers can be read from the session itself, and refuses
-      # on GitHub Actions without a tmux.
+      # on GitHub Actions without LEGION_TEST_TMUX naming the tmux it runs. It runs twice, against
+      # each of the two tmux versions the place reader reads: the runner's apt tmux, 3.4, on PATH
+      # (the whole suite below), and tmux 3.8, the first release whose `#{window_layout}` is the
+      # JSON form, off PATH (the step after it).
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+      # tmux 3.8 is the static build the `tmux` row of .github/ci-tools.yaml pins, which
+      # .github/actions/install-tmux installs into $RUNNER_TEMP/tmux. That directory is cached
+      # under a key that ends in the row's own digest, so the key moves exactly when the pinned
+      # bytes move: a hit is the pinned binary already here, which the action still holds to the
+      # row with no network, and a miss fetches it through the two sources the row names.
+      # .github/workflows/ci-caches.yaml fills the entry on a push to main, as it fills every
+      # family this file restores. No restore-keys: an entry of another digest is exactly what
+      # this key keeps out.
+      - id: tmux-row
+        name: Read the tmux row's digest, which ends the cache key
+        run: |
+          set -euo pipefail
+          # shellcheck source=.github/scripts/ci-tools.sh
+          . .github/scripts/ci-tools.sh
+          echo "digest=$(ci_tools_digest tmux)" >> "$GITHUB_OUTPUT"
+      - id: tmux-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/tmux
+          key: tmux-${{ runner.os }}-${{ runner.arch }}-${{ steps.tmux-row.outputs.digest }}
+      - id: tmux
+        uses: ./.github/actions/install-tmux
       - run: bun install --frozen-lockfile
       - name: Build contracts for pi-envoy
         run: bun run build
@@ -63,6 +88,16 @@ jobs:
         working-directory: packages/pi-envoy
         env:
           LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+          # Ubuntu's tmux package installs its binary here, the tmux 3.4 the apt step put on PATH.
+          LEGION_TEST_TMUX: /usr/bin/tmux
+      # The one file of the suite that reads a tmux layout, run again against tmux 3.8, so the
+      # JSON form of `#{window_layout}` is read on every run of this job as well as 3.4's form.
+      - name: Test pi-envoy's tmux place against tmux 3.8
+        run: bun test extensions/tmux-place-omp.test.ts
+        working-directory: packages/pi-envoy
+        env:
+          LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+          LEGION_TEST_TMUX: ${{ steps.tmux.outputs.binary }}
       # The release's pack (release.yaml's pi_envoy_build job), which is also this job's build: the
       # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
       # envoy.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose

@@ -44,7 +44,7 @@ jobs:
     # get.pulumi.com behind the base-pulumi control's dead proxy. The other 36 kept the pinned
     # ladder: the kept case's own fetch at 63 s, the probe's reserved control name, and the
     # honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, none of
-    # which took more than a second (1), the bytes the installs and the sixteen cases move, over
+    # which took more than a second (1), the bytes the installs and the eighteen cases move, over
     # npm, PyPI, get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the
     # readings, the `ladder-report` step, the stop-fault step and the report (1).
     # That is 12, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
@@ -69,7 +69,7 @@ jobs:
     # whole cost to this budget (dispatch://INFRA-2605).
     #
     # EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`,
-    # and the twenty-four installs whose control accepts a failure are timed as well, against
+    # and the twenty-seven installs whose control accepts a failure are timed as well, against
     # the seconds .github/scripts/ci-tools-proof.sh holds every timed install to: a step the
     # runner ends at its own bound leaves `outcome=failure` behind it, which those controls
     # accept, so the wall time is the only reading that tells a hang from the refusal the case
@@ -77,7 +77,7 @@ jobs:
     # The eleven minutes is derived from the installs as they ran before the ladders stopped
     # sleeping: over the green runs of these two jobs between 2026-11-09T19:38Z and
     # 2026-11-10T10:51Z, 2422 install steps — the sixteen-install shape this job carried for
-    # part of that window counted as well as the thirty-two it carries now — gave a median of
+    # part of that window counted as well as the thirty-two it carried at its end — gave a median of
     # 64 s, a 99th percentile of 128 s and a maximum of 326 s, which is `install-jj` on five
     # slow runs. Eleven minutes is twice that maximum, rounded up to the minute the key takes,
     # so no step that would have finished is ended by it. Since the ladders stopped sleeping
@@ -96,6 +96,15 @@ jobs:
     # out.`; and the `outcome=failure` the caller's later steps read was measured in job
     # 129872208213, where a later step printed `steps.<id>.outcome`. The runner is about
     # twelve seconds late, so a bound is a ceiling and not a stopwatch.
+    #
+    # THE tmux ROW ADDS THIRTEEN STEPS, FOUR OF THEM INSTALLS: one with nowhere to go, the head's
+    # own, and two corrupted cases, each after a removal of $RUNNER_TEMP/tmux, with the control's
+    # mark and the two cases' corrupt and report steps. Each install moves at most the row's
+    # 2450648-byte binary or its 1077204-byte tarball, over the package or loopback, and each
+    # fetch of them the fault or a dead port holds is one the stand-in shortens, so they fall
+    # under the items above for those steps and for the bytes the cases move. That is an
+    # estimate from the elan steps they follow and not a measurement of this job, and the limit
+    # stays.
     timeout-minutes: 22
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -200,8 +209,8 @@ jobs:
       - name: Start the machine watch over every faulted install
         run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
 
-      # Case 5 of 16 of the corrupted payloads, and the one that runs here rather than with the
-      # other seven: the jj binary in mise's install directory is one byte changed.
+      # Case 5 of 18 of the corrupted payloads, and the one that runs here rather than with the
+      # other eight primary cases: the jj binary in mise's install directory is one byte changed.
       # That directory is where .github/actions/install-jj reads an installed jj from, so a
       # changed binary there is the primary path's own mismatch: `mise install` finds the tool
       # installed, the action holds the binary mise points at to the jj row, and refuses it.
@@ -304,11 +313,11 @@ jobs:
       - name: Read the fault before any install meets it
         run: .github/scripts/ci-tools-proof.sh probe github.com
 
-      # The negative control, under the same fault: eight installs with nowhere to go — the
+      # The negative control, under the same fault: nine installs with nowhere to go — the
       # merge base's seven, each given a dead port where its second source would be read, a ghcr
-      # base, an npm base, a URL base or a proxy, and the docker provider plugin, which the
-      # merge base has no action for, as the head's own action with its second source on a dead
-      # port — so every one of them must fail here.
+      # base, an npm base, a URL base or a proxy, and the docker provider plugin and tmux, which
+      # the merge base of the change that added each has no action for, each as the head's own
+      # action with its second source on a dead port — so every one of them must fail here.
       # What it asserts is a property of this change and not a fact about history: an install
       # whose primary meets the fault and whose second source cannot be reached fails. That is
       # what makes the passes below a reading of the second source rather than of a cache, of a
@@ -320,7 +329,7 @@ jobs:
       # and uv's one source is the release asset this fault holds, and the CLI's is
       # get.pulumi.com, which this fault does not hold, so that step carries a dead proxy of its
       # own instead.
-      # Once this change is on main the base is this tree, and every one of the eight fails for
+      # Once this change is on main the base is this tree, and every one of the nine fails for
       # the dead ports alone, which leave its second source nothing to reach.
       # A control that leaned on the merge base having one source each would expire the day this
       # change lands on main: the base would then be this tree, each primary would meet the
@@ -344,7 +353,7 @@ jobs:
       # steps is deleting that caller too and should move the rule's exercise rather than lose
       # it.
 
-      # When the install below started. Each of the eight with nowhere to go carries a mark step
+      # When the install below started. Each of the nine with nowhere to go carries a mark step
       # of its own, and the control step after them reads every one, because a bound that fires
       # on one of them is otherwise silent: each carries `continue-on-error` and the control
       # accepts a step whose `outcome` is `failure`, which is exactly what the runner leaves
@@ -475,13 +484,35 @@ jobs:
           http_proxy: http://127.0.0.1:1
           https_proxy: http://127.0.0.1:1
 
-      # A bound belongs only where firing it is loud, and on these eight it is not: each carries
+      # tmux's control is the head's own action with its second source on a dead port, as the
+      # docker provider plugin's is and for the same reason: it reads nothing of the base tree,
+      # so the property it states — an install whose primary is faulted and whose second source
+      # cannot be reached fails — is the head's own and does not expire when this change lands.
+      # The removal before it is what every tmux step of this job carries:
+      # .github/actions/install-tmux holds a binary it finds at $RUNNER_TEMP/tmux/tmux to the
+      # row and fetches nothing, and $RUNNER_TEMP is one path for the whole job, so a tmux step
+      # without it reads the binary the step before it installed.
+      - name: Take tmux away, so the control installs rather than finds one
+        run: rm -rf "$RUNNER_TEMP/tmux"
+
+      - id: mark-nowhere-tmux
+        name: Mark when the install with nowhere to go for tmux began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - id: nowhere-tmux
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-tmux
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+
+      # A bound belongs only where firing it is loud, and on these nine it is not: each carries
       # `continue-on-error`, and the test below accepts a step whose `outcome` is `failure`,
       # which is what the runner leaves when it ends a step at its bound. So this step reads the
       # clock as well. Without it an install that hung would satisfy its own control and leave
       # the job green, where before those bounds the same hang held the job to its own ceiling,
       # which cancels it and fails ci-ok, so somebody looked.
-      - name: Check all eight installs with nowhere to go failed, and failed in their own time
+      - name: Check all nine installs with nowhere to go failed, and failed in their own time
         env:
           CRANE: ${{ steps.base-crane.outcome }}
           CHANGIE: ${{ steps.base-changie.outcome }}
@@ -491,6 +522,7 @@ jobs:
           UV: ${{ steps.base-uv.outcome }}
           PULUMI_DOCKER: ${{ steps.nowhere-pulumi-docker.outcome }}
           PULUMI_CLI: ${{ steps.base-pulumi.outcome }}
+          TMUX: ${{ steps.nowhere-tmux.outcome }}
           CRANE_AT: ${{ steps.mark-base-crane.outputs.at }}
           CHANGIE_AT: ${{ steps.mark-base-changie.outputs.at }}
           JJ_AT: ${{ steps.mark-base-jj.outputs.at }}
@@ -499,12 +531,13 @@ jobs:
           UV_AT: ${{ steps.mark-base-uv.outputs.at }}
           PULUMI_DOCKER_AT: ${{ steps.mark-nowhere-pulumi-docker.outputs.at }}
           PULUMI_CLI_AT: ${{ steps.mark-base-pulumi.outputs.at }}
+          TMUX_AT: ${{ steps.mark-nowhere-tmux.outputs.at }}
         run: |
           set -euo pipefail
           echo "a merge base from before this change reads none of the CI_TOOLS_* seams, so each of these installs has the one source it always had: the release asset this fault holds for crane, changie, jj, bun, elan and uv, and get.pulumi.com, which this job does not fault, behind the dead proxy the pulumi step carries for that reason"
-          echo "a base that reads the seams — this tree on a workflow_dispatch, and every base once this change is on main — is sent by the dead ports above to something nothing listens on, and that is what fails them instead; the docker provider plugin, which the merge base has no action for, is the head's own action with its second source on a dead port, and that control states the same property without reading the base tree at all"
+          echo "a base that reads the seams — this tree on a workflow_dispatch, and every base once this change is on main — is sent by the dead ports above to something nothing listens on, and that is what fails them instead; the docker provider plugin and tmux, whose actions the merge base of the change that added each did not have, are the head's own actions with their second source on a dead port, and those controls state the same property without reading the base tree at all"
           wrong=""
-          for pair in "crane:$CRANE" "changie:$CHANGIE" "jj:$JJ" "bun:$BUN" "elan:$ELAN" "uv:$UV" "pulumi-docker:$PULUMI_DOCKER" "pulumi-cli:$PULUMI_CLI"; do
+          for pair in "crane:$CRANE" "changie:$CHANGIE" "jj:$JJ" "bun:$BUN" "elan:$ELAN" "uv:$UV" "pulumi-docker:$PULUMI_DOCKER" "pulumi-cli:$PULUMI_CLI" "tmux:$TMUX"; do
             echo "  the install with nowhere to go for ${pair%%:*} ended in ${pair#*:}"
             [ "${pair#*:}" = failure ] || wrong="$wrong ${pair%%:*}"
           done
@@ -516,7 +549,7 @@ jobs:
           # and for the last of them to this step's own time. No install here may reach the
           # seconds .github/scripts/ci-tools-proof.sh holds every timed install to, which
           # this step reads from that script rather than writing the number again: the rig holds
-          # the sixteen corrupted cases below to that same bound, and a bound written in two
+          # the eighteen corrupted cases below to that same bound, and a bound written in two
           # places is a bound that drifts, with the job then refusing two different things.
           # INSTALL_BOUND in that script is where the number lives, and the comment on it says
           # why it is the number it is. A window also names the install that hung.
@@ -525,17 +558,17 @@ jobs:
           # is exactly the window the clock exists to catch, so it may not pass quietly. Left to
           # the arithmetic below, an empty mark reads as a large negative number, which is under
           # the bound, and then stops the loop on the empty operand with the step exiting 0 and
-          # seven of the eight windows never read.
+          # eight of the nine windows never read.
           # A bound this step cannot read is refused too, for a different reason, since the step
           # would fail either way: driven with the guard taken out, an empty bound leaves
-          # `[ "$seconds" -lt "" ]` failing on every window, so all eight land in `slow` and the
+          # `[ "$seconds" -lt "" ]` failing on every window, so all nine land in `slow` and the
           # step exits 1 saying they `took  seconds or more`. That reading sends a reader to the
-          # eight installs, which did nothing wrong, instead of to the rig that answered
+          # nine installs, which did nothing wrong, instead of to the rig that answered
           # nothing. The guard buys the right name, not the failure.
           bound=$(.github/scripts/ci-tools-proof.sh install-bound)
           case "$bound" in
             '' | *[!0-9]*)
-              echo "::error::.github/scripts/ci-tools-proof.sh install-bound answered '${bound:-nothing}', which is no whole number of seconds, so this step has no bound to hold these eight installs to; the bound is INSTALL_BOUND in that script, written there once and read here, and this step holds no number of its own to fall back on" >&2
+              echo "::error::.github/scripts/ci-tools-proof.sh install-bound answered '${bound:-nothing}', which is no whole number of seconds, so this step has no bound to hold these nine installs to; the bound is INSTALL_BOUND in that script, written there once and read here, and this step holds no number of its own to fall back on" >&2
               exit 1
               ;;
           esac
@@ -543,7 +576,7 @@ jobs:
           previous=""
           slow=""
           unreadable=""
-          for pair in "crane:$CRANE_AT" "changie:$CHANGIE_AT" "jj:$JJ_AT" "bun:$BUN_AT" "elan:$ELAN_AT" "uv:$UV_AT" "pulumi-docker:$PULUMI_DOCKER_AT" "pulumi-cli:$PULUMI_CLI_AT"; do
+          for pair in "crane:$CRANE_AT" "changie:$CHANGIE_AT" "jj:$JJ_AT" "bun:$BUN_AT" "elan:$ELAN_AT" "uv:$UV_AT" "pulumi-docker:$PULUMI_DOCKER_AT" "pulumi-cli:$PULUMI_CLI_AT" "tmux:$TMUX_AT"; do
             case "${pair#*:}" in
               '' | *[!0-9]*) unreadable="$unreadable ${pair%%:*}" ;;
             esac
@@ -552,7 +585,7 @@ jobs:
             echo "::error::the mark of the install with nowhere to go for$unreadable holds no whole number of seconds, so this step cannot tell how long that install took, and that reading is the one thing that tells an install the runner ended at its own timeout-minutes from an install that failed for the reason this control names; the mark is one echo into \$GITHUB_OUTPUT by the step before that install, so read this job's step record for it" >&2
             exit 1
           fi
-          for pair in "crane:$CRANE_AT" "changie:$CHANGIE_AT" "jj:$JJ_AT" "bun:$BUN_AT" "elan:$ELAN_AT" "uv:$UV_AT" "pulumi-docker:$PULUMI_DOCKER_AT" "pulumi-cli:$PULUMI_CLI_AT" "this check:$(date +%s)"; do
+          for pair in "crane:$CRANE_AT" "changie:$CHANGIE_AT" "jj:$JJ_AT" "bun:$BUN_AT" "elan:$ELAN_AT" "uv:$UV_AT" "pulumi-docker:$PULUMI_DOCKER_AT" "pulumi-cli:$PULUMI_CLI_AT" "tmux:$TMUX_AT" "this check:$(date +%s)"; do
             if [ -n "$previous" ]; then
               seconds=$(( ${pair#*:} - ${previous#*:} ))
               echo "  the install with nowhere to go for ${previous%%:*} took ${seconds}s"
@@ -566,7 +599,7 @@ jobs:
           fi
 
       # The head's own installs, under the same fault and with no continue-on-error: each must
-      # succeed, and the seven whose primary the fault holds do it through the second source
+      # succeed, and the eight whose primary the fault holds do it through the second source
       # their row names, with no seam of any kind. The Pulumi CLI, whose primary this fault does
       # not hold, is read by the case at the end of this list instead.
       # install-jj meets an empty mise data directory here, since nothing warmed one before the
@@ -612,6 +645,17 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-docker-plugin
 
+      # tmux's release asset is behind the fault, so this install must read the copy of the
+      # binary its row names. The removal before it is the one every tmux step carries, for the
+      # reason the control above says. The step carries an id because the reading below runs the
+      # binary it hands back, which no PATH holds.
+      - name: Take tmux away, so the faulted install must read the copy
+        run: rm -rf "$RUNNER_TEMP/tmux"
+
+      - id: tmux
+        timeout-minutes: 11
+        uses: ./.github/actions/install-tmux
+
       # The Pulumi CLI's own fallback, which is a case rather than a plain install: its primary
       # is get.pulumi.com, and this job does not fault that host, so the seam puts the primary
       # on a dead port and the install must read its second source — the pulumi/pulumi release
@@ -628,6 +672,8 @@ jobs:
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 
       - name: Check every tool is the version its row pins
+        env:
+          INSTALLED_TMUX: ${{ steps.tmux.outputs.binary }}
         run: |
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
@@ -641,6 +687,7 @@ jobs:
           "$proof" version-answers elan "$(elan --version)" || wrong="$wrong elan"
           "$proof" version-answers uv "$("$LEGION_TEST_UV" --version)" || wrong="$wrong uv"
           "$proof" version-answers pulumi-cli "$(pulumi version)" || wrong="$wrong pulumi-cli"
+          "$proof" version-answers tmux "$("$INSTALLED_TMUX" -V)" || wrong="$wrong tmux"
           # The docker provider plugin prints no version of its own: nothing is installed, and
           # what the action hands back is the tarball the live tests are given. Its reading is
           # therefore the row's own digest, read by the one digest reader of this repository.
@@ -677,11 +724,11 @@ jobs:
             exit 1
           fi
 
-      # The sixteen corrupted payloads, one case at a time: the rig says which rows the origin
+      # The eighteen corrupted payloads, one case at a time: the rig says which rows the origin
       # serves with one byte changed, the install meets them through the seams the case's
       # own env: names, and the report after it is what passes or fails this job.
       #
-      # Case 1 of 16: crane's primary serves one byte changed, and the second source must stay
+      # Case 1 of 18: crane's primary serves one byte changed, and the second source must stay
       # untried — a digest mismatch is a supply-chain signal, never a reason to read elsewhere.
       - name: Corrupt crane for its primary case
         run: .github/scripts/ci-tools-proof.sh corrupt crane
@@ -697,7 +744,7 @@ jobs:
       - name: Read the crane-primary case
         run: .github/scripts/ci-tools-proof.sh report crane-primary --outcome ${{ steps.crane-primary.outcome }} --row crane --expect-source github-release --expect-untried ghcr-mirror
 
-      # Case 2 of 16: crane's second source serves one byte changed, after the primary — the real
+      # Case 2 of 18: crane's second source serves one byte changed, after the primary — the real
       # host, which the fault holds — did not serve them at all.
       - name: Corrupt crane for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt crane
@@ -712,7 +759,7 @@ jobs:
       - name: Read the crane-second-source case
         run: .github/scripts/ci-tools-proof.sh report crane-second-source --outcome ${{ steps.crane-second-source.outcome }} --row crane --expect-source ghcr-mirror
 
-      # Case 3 of 16: changie's primary serves one byte changed.
+      # Case 3 of 18: changie's primary serves one byte changed.
       - name: Corrupt changie for its primary case
         run: .github/scripts/ci-tools-proof.sh corrupt changie
 
@@ -727,7 +774,7 @@ jobs:
       - name: Read the changie-primary case
         run: .github/scripts/ci-tools-proof.sh report changie-primary --outcome ${{ steps.changie-primary.outcome }} --row changie --expect-source github-release --expect-untried ghcr-mirror
 
-      # Case 4 of 16: changie's second source serves one byte changed.
+      # Case 4 of 18: changie's second source serves one byte changed.
       - name: Corrupt changie for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt changie
 
@@ -741,7 +788,7 @@ jobs:
       - name: Read the changie-second-source case
         run: .github/scripts/ci-tools-proof.sh report changie-second-source --outcome ${{ steps.changie-second-source.outcome }} --row changie --expect-source ghcr-mirror
 
-      # Case 6 of 16: the copy of the jj binary serves one byte changed, with mise unable to
+      # Case 6 of 18: the copy of the jj binary serves one byte changed, with mise unable to
       # install the tool at all.
       # Its data directory goes, so `mise install` must reach the faulted host and fails, which
       # is what sends the action to the second source. Only jj is corrupted, so the action's own
@@ -768,7 +815,7 @@ jobs:
       - name: Read the jj-second-source case
         run: .github/scripts/ci-tools-proof.sh report jj-second-source --outcome ${{ steps.jj-second-source.outcome }} --row jj --expect-source ghcr-mirror
 
-      # Case 7 of 16: the installed Bun is one byte changed and still answers the pinned revision,
+      # Case 7 of 18: the installed Bun is one byte changed and still answers the pinned revision,
       # so setup-bun's third step takes the branch that installs nothing — a Bun of the pinned
       # version is already at ~/.bun/bin/bun, and the first step found it there, so the word this
       # one writes for it is `existing-install` — and the fourth step refuses those bytes.
@@ -800,7 +847,7 @@ jobs:
       - name: Read the bun-primary case
         run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome ${{ steps.bun-primary.outcome }} --row bun-linux-x64 --expect-source github-release
 
-      # Case 8 of 16: with no Bun of the pinned version on this runner, setup-bun's third step
+      # Case 8 of 18: with no Bun of the pinned version on this runner, setup-bun's third step
       # must read the second source, and the npm package serves one byte changed.
       # This case takes the pair away itself rather than leaning on the case before it. That
       # case's refusal does remove the bun and the bunx it refused from ~/.bun/bin — setup-bun's
@@ -822,7 +869,7 @@ jobs:
       - name: Read the bun-second-source case
         run: .github/scripts/ci-tools-proof.sh report bun-second-source --outcome ${{ steps.bun-second-source.outcome }} --row bun-linux-x64 --expect-source npm
 
-      # Case 9 of 16: elan's primary serves one byte changed, and the copy must stay untried.
+      # Case 9 of 18: elan's primary serves one byte changed, and the copy must stay untried.
       - name: Take elan away for its primary case
         run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
 
@@ -840,7 +887,7 @@ jobs:
       - name: Read the elan-primary case
         run: .github/scripts/ci-tools-proof.sh report elan-primary --outcome ${{ steps.elan-primary.outcome }} --row elan --expect-source github-release --expect-untried ghcr-mirror
 
-      # Case 10 of 16: elan's copy serves one byte changed, after the primary — the real host,
+      # Case 10 of 18: elan's copy serves one byte changed, after the primary — the real host,
       # which the fault holds — did not serve them at all.
       - name: Take elan away for its second-source case
         run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
@@ -858,7 +905,7 @@ jobs:
       - name: Read the elan-second-source case
         run: .github/scripts/ci-tools-proof.sh report elan-second-source --outcome ${{ steps.elan-second-source.outcome }} --row elan --expect-source ghcr-mirror
 
-      # Case 11 of 16: uv's primary serves one byte changed, and PyPI must stay untried.
+      # Case 11 of 18: uv's primary serves one byte changed, and PyPI must stay untried.
       # What the changed byte trips here is the row's `primary_digest`, the sha256 of the
       # tarball GitHub serves, which is read before the binary is taken out of it: the row's own
       # `digest` is of that binary, so the archive carries a digest of its own and this is the
@@ -877,7 +924,7 @@ jobs:
       - name: Read the uv-primary case
         run: .github/scripts/ci-tools-proof.sh report uv-primary --outcome ${{ steps.uv-primary.outcome }} --row uv --expect-source github-release --expect-untried pypi
 
-      # Case 12 of 16: PyPI's wheel serves one byte changed, after the primary — the real host,
+      # Case 12 of 18: PyPI's wheel serves one byte changed, after the primary — the real host,
       # which the fault holds — did not serve the tarball at all.
       # The byte the origin changes here is inside the wheel's own member, and the rig says
       # why: a zip's last byte is in its end-of-directory record, which a reader taking a
@@ -907,7 +954,7 @@ jobs:
       - name: Read the uv-second-source case
         run: .github/scripts/ci-tools-proof.sh report uv-second-source --outcome ${{ steps.uv-second-source.outcome }} --row uv --expect-source pypi
 
-      # Case 13 of 16: the docker provider plugin's release asset serves one byte changed, and
+      # Case 13 of 18: the docker provider plugin's release asset serves one byte changed, and
       # get.pulumi.com must stay untried.
       - name: Corrupt the docker provider plugin for its primary case
         run: .github/scripts/ci-tools-proof.sh corrupt pulumi-docker
@@ -923,7 +970,7 @@ jobs:
       - name: Read the pulumi-docker-primary case
         run: .github/scripts/ci-tools-proof.sh report pulumi-docker-primary --outcome ${{ steps.pulumi-docker-primary.outcome }} --row pulumi-docker --expect-source github-release --expect-untried pulumi-releases
 
-      # Case 14 of 16: get.pulumi.com serves the plugin's tarball with one byte changed, after
+      # Case 14 of 18: get.pulumi.com serves the plugin's tarball with one byte changed, after
       # the release asset — the real host, which the fault holds — did not serve it at all.
       # Pulumi serves one file at both addresses, so the origin serves one payload under one
       # name on its two routes, and which route a case read is what its report prints.
@@ -940,7 +987,7 @@ jobs:
       - name: Read the pulumi-docker-second-source case
         run: .github/scripts/ci-tools-proof.sh report pulumi-docker-second-source --outcome ${{ steps.pulumi-docker-second-source.outcome }} --row pulumi-docker --expect-source pulumi-releases
 
-      # Case 15 of 16: the Pulumi CLI's primary serves one byte changed, and the release asset
+      # Case 15 of 18: the Pulumi CLI's primary serves one byte changed, and the release asset
       # must stay untried. This row's two sides are the four cases above reversed: its primary
       # is get.pulumi.com, so the seam that puts a corrupted primary in front of it is the URL
       # one, and the GitHub seam is here so that the untried reading is a reading: with it the
@@ -961,7 +1008,7 @@ jobs:
       - name: Read the pulumi-cli-primary case
         run: .github/scripts/ci-tools-proof.sh report pulumi-cli-primary --outcome ${{ steps.pulumi-cli-primary.outcome }} --row pulumi-cli --expect-source pulumi-releases --expect-untried github-release
 
-      # Case 16 of 16: the Pulumi CLI's second source, the pulumi/pulumi release asset, serves
+      # Case 16 of 18: the Pulumi CLI's second source, the pulumi/pulumi release asset, serves
       # one byte changed, after its primary found a dead port where get.pulumi.com is.
       # The dead port and not the fault, because this job leaves get.pulumi.com alone; the
       # origin stands in for the release asset, as it does in the install that must succeed
@@ -980,7 +1027,46 @@ jobs:
       - name: Read the pulumi-cli-second-source case
         run: .github/scripts/ci-tools-proof.sh report pulumi-cli-second-source --outcome ${{ steps.pulumi-cli-second-source.outcome }} --row pulumi-cli --expect-source github-release
 
-      # What this runner holds after the sixteen refusals, said plainly: no corrupted byte was
+      # Case 17 of 18: tmux's primary serves its tarball with one byte changed, and the copy must
+      # stay untried. What the changed byte trips is the row's `primary_digest`, the sha256 of
+      # the tarball the release serves, which is read before the binary is taken out of it, as
+      # uv's is. The removal before it is the one every tmux step carries.
+      - name: Take tmux away for its primary case
+        run: rm -rf "$RUNNER_TEMP/tmux"
+
+      - name: Corrupt tmux for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt tmux
+
+      - id: tmux-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-tmux
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the tmux-primary case
+        run: .github/scripts/ci-tools-proof.sh report tmux-primary --outcome ${{ steps.tmux-primary.outcome }} --row tmux --expect-source github-release --expect-untried ghcr-mirror
+
+      # Case 18 of 18: tmux's copy serves the binary with one byte changed, after the primary —
+      # the real host, which the fault holds — did not serve the tarball at all.
+      - name: Take tmux away for its second-source case
+        run: rm -rf "$RUNNER_TEMP/tmux"
+
+      - name: Corrupt tmux for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt tmux
+
+      - id: tmux-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-tmux
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the tmux-second-source case
+        run: .github/scripts/ci-tools-proof.sh report tmux-second-source --outcome ${{ steps.tmux-second-source.outcome }} --row tmux --expect-source ghcr-mirror
+
+      # What this runner holds after the eighteen refusals, said plainly: no corrupted byte was
       # installed, and what the installs themselves left is what this step reads.
       # .github/scripts/ci-tools.sh verifies the bytes before it puts them at their destination,
       # so every refused fetch above left nothing behind, and the two installs that meet a
@@ -993,7 +1079,9 @@ jobs:
       # bytes before anything was written in their place: this runner ends with no bun at all.
       # crane and changie are held to the version they answer, because their rows pin the release
       # tarball rather than the binary inside it; jj is held to its row's own digest, which is of
-      # the installed binary.
+      # the installed binary. tmux is on no PATH: each of its two cases took $RUNNER_TEMP/tmux
+      # away before its install, and the refusal wrote nothing in its place, which this step
+      # reads too.
       - name: Print what every tool answers now
         run: |
           set -euo pipefail
@@ -1013,11 +1101,17 @@ jobs:
               echo "$taken is gone: the bun-primary case's refusal took it away, the case after it took the pair away again before its own install, and that case refused the corrupted package before it wrote anything there"
             fi
           done
+          if [ -e "$RUNNER_TEMP/tmux/tmux" ]; then
+            echo "::error::$RUNNER_TEMP/tmux/tmux is still here, and the two tmux cases each took that directory away and then refused their corrupted bytes before anything reached it, so a tmux here is bytes a refusal left behind" >&2
+            wrong="$wrong $RUNNER_TEMP/tmux/tmux"
+          else
+            echo "$RUNNER_TEMP/tmux/tmux is gone: the tmux-second-source case took the directory away before its install and refused the corrupted copy before it wrote anything there"
+          fi
           if [ -n "$wrong" ]; then
-            echo "::error::$wrong is not what this job must leave on this runner, so one of the sixteen refusals did not hold; the lines above say which reading was wrong" >&2
+            echo "::error::$wrong is not what this job must leave on this runner, so one of the eighteen refusals did not hold; the lines above say which reading was wrong" >&2
             exit 1
           fi
-          echo "every tool on this runner is its row's pinned bytes and the refused bun is gone: not one of the sixteen corrupted payloads was installed"
+          echo "every tool on this runner is its row's pinned bytes and the refused bun is gone: not one of the eighteen corrupted payloads was installed"
 
       # The reading of what the stand-in curl measured, before the fault stops, so that its own
       # refusal is this job's. It refuses the job for a stand-in that never reached PATH, which

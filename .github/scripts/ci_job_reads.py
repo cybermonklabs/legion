@@ -336,6 +336,20 @@ def install_omp(job):
     )
 
 
+def install_tmux(job):
+    return reads(
+        (".github/actions/install-tmux/**", at(job, "./.github/actions/install-tmux")),
+        (".github/ci-tools.yaml", ".github/actions/install-tmux/action.yml:53 holds a restored tmux binary to the "
+                                  "digest of the tmux row, and :61 installs that row's binary"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-tmux/action.yml:39 sources it: ci_tools_verify checks "
+                                        "a restored binary and ci_tools_fetch reads the row's two sources"),
+    )
+
+
+# The pi-envoy step that reads the tmux row's digest for the key of the tmux cache it restores.
+PI_ENVOY_TMUX_ROW_STEP = "Read the tmux row's digest, which ends the cache key"
+
+
 def setup_go(job, gomod, workflow=""):
     return reads((gomod, f"{at(job, 'actions/setup-go', workflow)} go-version-file"))
 
@@ -2723,7 +2737,10 @@ GATES = [
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:120-123"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
-      + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
+      + install_jj("pi-envoy") + install_omp("pi-envoy") + install_tmux("pi-envoy") + reads(
+        (".github/ci-tools.yaml", f"{at('pi-envoy', PI_ENVOY_TMUX_ROW_STEP)}: the tmux row's digest ends the cache key"),
+        (".github/scripts/ci-tools.sh", f"{at('pi-envoy', PI_ENVOY_TMUX_ROW_STEP)} sources it for ci_tools_digest"),
+    ) + bun_job("pi-envoy")),
 
     gate("pi_legion", "pi-legion", runs=[
         script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
@@ -3526,6 +3543,7 @@ GATES = [
         (".github/actions/install-elan/**", at("tool-fallback", "./.github/actions/install-elan")),
         (".github/actions/install-uv/**", at("tool-fallback", "./.github/actions/install-uv")),
         (".github/actions/install-pulumi/**", at("tool-fallback", "./.github/actions/install-pulumi")),
+        (".github/actions/install-tmux/**", at("tool-fallback", "./.github/actions/install-tmux")),
         (".github/actions/install-docker-plugin/**",
          at("tool-fallback", "./.github/actions/install-docker-plugin")),
         (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
