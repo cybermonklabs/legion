@@ -3,6 +3,7 @@
 // database or a container, so they are kept apart from the product packages whose suites do.
 // Each reaches its subject by a relative path from this directory, but the checks that hold the
 // guide to the daemon's migrations: they import internal/store/migrations, whose closure is those
-// migrations and the rule of their names, so the guide is held to the set the daemon embeds and
-// no other daemon file joins this job's filter.
+// migrations and the rule of their names, so the guide's list of migrations and each way back held
+// to a migration's header read the set the daemon embeds, and no other daemon file joins this
+// job's filter.
 package textcheck

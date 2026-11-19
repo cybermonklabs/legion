@@ -157,6 +157,7 @@ var readListAnswers = map[string]struct {
 }{
 	"GET /api/v1/projects/{key}/architecture": {http.StatusNotFound, "SOURCE_NOT_FOUND"},
 	"GET /api/v1/issues/{key}/steps":          {http.StatusNotFound, "NOT_FOUND"},
+	"GET /api/v1/projects/{key}/plans":        {http.StatusNotFound, "PROJECT_NOT_FOUND"},
 }
 
 // TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone walks the server register mounted,
@@ -356,6 +357,9 @@ var (
 	sourcesRead = regexp.MustCompile(`(?i)\bfrom\s+architecture_sources\b`)
 	// stepsRead is the steps read's one read, of the tuples that make each run part of its issue.
 	stepsRead = regexp.MustCompile(`(?i)\bfrom\s+workflow_tuples\b`)
+	// plansRead is the plans read's one read of the project's finished issues, joined through
+	// their tuples to their runs and plans.
+	plansRead = regexp.MustCompile(`(?is)\bfrom\s+issues\s+i\b.*\bworkflow_tuples\b`)
 )
 
 // writesOf answers each write statement makes, as "<verb> <table>", and false when it holds a
@@ -390,10 +394,11 @@ func readOnlyTreeFiles(nonce string) map[string]string {
 // a read-only token, and reads every statement the request ran - its handler's and the work it
 // detaches - through a tracer on the one pool the server and the verifier's replay store share.
 // The architecture is read with Dispatch-Trees: 1, a cold display cache and a stale route_roster,
-// and the steps of an issue the daemon wrote a run of. Every insert, update and delete is to
-// dpop_proofs, text_trees or route_roster: the proof's replay row and the two caches Dispatch
-// rebuilds from what it holds. The positive controls are each proof's insert, a tree's insert,
-// the read of architecture_sources and the read of workflow_tuples, so a tracer that saw nothing
+// the steps of an issue the daemon wrote a run of, and the plans of the project once that issue is
+// done. Every insert, update and delete is to dpop_proofs, text_trees or route_roster: the proof's
+// replay row and the two caches Dispatch rebuilds from what it holds. The positive controls are
+// each proof's insert, a tree's insert, the read of architecture_sources, the read of
+// workflow_tuples and the read of the project's finished issues, so a tracer that saw nothing
 // cannot pass.
 func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	database := storetest.Open(t)
@@ -511,6 +516,21 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 		t.Fatalf("the read-only token's read of the steps of %s: status=%d body=%s, want 200 and its one task", issueKey, response.Code, response.Body.String())
 	}
 	requireOnlyProofAndCaches(t, marked.take(), stepsRead)
+
+	// The plans of the project, once the issue is done: the person closes it and the daemon
+	// writes its plan, outside the counted read, and the read-only token lists it.
+	if closed := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+issueKey, map[string]any{"status": "done"}); closed.Code != http.StatusOK {
+		t.Fatalf("close %s: status=%d body=%s", issueKey, closed.Code, closed.Body.String())
+	}
+	putPlanRecordOK(t, rig.handler, issueKey, "0c4b2f7e-3d1a-4b8c-9e6f-1a2b3c4d5e6f", defaultPlanBody(daemonSessionOf(project), 1))
+	marked.take()
+	request = caller.presenting(t, http.MethodGet, "/api/v1/projects/"+project+"/plans", token, nil)
+	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
+	response = rig.serve(request)
+	if read := decodeBody[model.ProjectPlans](t, response); response.Code != http.StatusOK || len(read.Issues) != 1 || read.Issues[0].Plan == nil {
+		t.Fatalf("the read-only token's read of the plans of %s: status=%d body=%s, want 200 and %s with its plan", project, response.Code, response.Body.String(), issueKey)
+	}
+	requireOnlyProofAndCaches(t, marked.take(), plansRead)
 }
 
 // requireOnlyProofAndCaches fails unless every write of statements is to the proof's replay row or
