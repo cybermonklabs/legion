@@ -19,7 +19,8 @@ Read, against the goal, every check and every requirement:
 3. the reviewer's approval of the head its Legion footer names, never its `commit_id`
    (`skill://legion-worker/references/merge-gate.md`);
 4. each claim of the reviewer's prose, against the code at that head;
-5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI and no wake.
+5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI
+   (*A conflicting head*, below).
 
 - `sign_off` works only in `accepting`, where the Dispatch status reads `needs_review`; your
   `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
@@ -50,16 +51,17 @@ reason to park a child. Before you park a child, move its criterion to the paren
 request or a released, open child; never downgrade it. Then, in one turn:
 
 1. `envoy_publish` to the tester's role topic: "The next round of <KEY> is its last round: a full
-   test round of every check of the issue with no `ci_check`, not the forward-merge re-check."
+   test round of every check of the issue with no `ci_check`."
 2. `request_backward_move` to `implementing`, with the reason "Last round: merge the default
    branch your addressing line names into the branch, push, end your forward-merge comment with
    `parent's last round: full test round`, and complete." Never hard-code `main`.
 
-A conflict or a child's merge while the parent waits needs no move of its own: the last round's
-forward merge takes them all. If the pull request merged before its last round, move nothing back:
-once the children close, have a fresh `task` subagent run each check with no `ci_check` on the
-default branch and record each result, read each `ci_check` result in `dispatch results`, post
-them in the acceptance comment, then `sign_off`.
+A child's merge while the parent waits needs no move of its own: the last round's forward merge
+takes them all, and the daemon answers a conflict on its head (*A conflicting head*, below). If
+the pull request merged before its last round, move nothing back: once the children close, have
+a fresh `task` subagent run each check with no `ci_check` on the default branch and record each
+result, read each `ci_check` result in `dispatch results`, post them in the acceptance comment,
+then `sign_off`.
 
 ## After your sign-off
 
@@ -72,15 +74,24 @@ holds the phase makes the `request_backward_move`. When the merger reports:
 - a merge GitHub refuses for a repository setting or an App permission: open a `dispatch ask`
   naming the pull request, the head and GitHub's refusal, and never bypass a rule;
 - a squash into a base other than the default branch: tell the implementer of each open pull
-  request of the tree built on that branch to merge that base forward in its implementing round.
+  request of the tree built on that branch whose issue is yours and still in `implementing` to
+  merge that base forward in its implementing round. Past `implementing`, the daemon asks for that
+  merge itself (*A conflicting head*, below).
 
 ## A conflicting head
 
-Where GitHub reports `CONFLICTING` (`gh pr view <n> --json mergeable,mergeStateStatus`) from
-`testing` to `merging`, the daemon moves the issue back to `implementing` and sends `checks-red`.
-The implementer merges the base forward (`skill://legion-worker/references/conflicts-and-rewrites.md`);
-the tester re-runs the bare gates only and the class search of every earlier round's findings at
-the new head; the reviewer approves the new head by SHA. You start nothing.
+A head that conflicts with its base keeps the issue in its phase. The daemon asks the implementer
+to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in
+`skill://legion-worker/references/conflicts-and-rewrites.md`). A conflict it does not act on yet
+is recorded: the tester and the reviewer go on at that head, an approval of it ends the review
+round, and the daemon acts when the issue enters `accepting`. When it asks outside
+`implementing`, it tells you once by `checks-red`, naming the phase the issue stays in, the head,
+the base and why; in `implementing` no notice comes. You start nothing for the merge.
+
+Past review, the daemon also asks the reviewer to read the merge and approve the new head by its
+SHA, or request changes. In `accepting`, wait for that approval of the new head before
+`sign_off`, and send the issue back with `request_backward_move` when the reviewer requests
+changes.
 
 ## A review thread GitHub will not resolve
 

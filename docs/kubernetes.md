@@ -2109,6 +2109,39 @@ So after the rollback a merger learns of a removal only when it reads the pull r
 The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
 This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
 
+#### Rolling back the release that merges a conflicting head forward in its phase
+
+This release stops a conflict from sending an issue back to `implementing`.
+Its migration `20261119003157_conflict_reads_and_merge_forward` adds two outbox kinds to the kind check (`outbox_kind_check`), keeps `phase_ended` in it, deletes every queued `phase_ended` row, and adds two nullable columns to `pull_requests`.
+A `conflict_confirm` row is the second read of a head a first read found conflicting, due a minute after it, and `pull_requests.conflict_read` holds that first read.
+A `merge_forward` row is one message to one role about a conflict the daemon acted on, and `pull_requests.merge_forward` holds the ask that the implementer merge the base forward.
+
+**The rows of the two new kinds, and the two columns, must be cleared before the earlier image is pinned.**
+An earlier release puts neither kind in an outbox lane (`laneKinds` in `record/outbox.go`), so it never runs a row of either kind, and such a row would wait through the rollback and run at the roll forward, when the head it names has long moved.
+The earlier release never names the two columns either, so it neither reads nor clears them, and a first read or an ask it left standing would name a head its own moves have overtaken by the roll forward.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+begin;
+-- The second reads of conflicting heads, and the merge-forward messages.
+delete from outbox where kind in ('conflict_confirm', 'merge_forward');
+update pull_requests set conflict_read = null, merge_forward = null
+  where conflict_read is not null or merge_forward is not null;
+commit;
+```
+
+Each deleted `conflict_confirm` row costs one second read: the earlier release reads mergeability its own way and acts on a conflict at its first read.
+Each deleted `merge_forward` row is a message that nobody delivers.
+
+The kind check keeps `phase_ended` and both new names after the rollback, so it refuses nothing the earlier release writes.
+That release queues `phase_ended` rows again when a conflict sends an issue back, and the migration that deletes them does not run a second time, since the database still records its version.
+So run this once more with the earlier release stopped, before this release starts again:
+
+```sql
+-- A phase-ended message the earlier release queued about a move this release no longer makes.
+delete from outbox where kind = 'phase_ended';
+```
+
 #### Rolling back the release that publishes each issue's role sessions to Dispatch
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
@@ -2879,6 +2912,7 @@ The migrations recorded above this one are these.
 20261117064152_step_starts_roll_forward writes `step_starts`, `step_starts_rollback` and the `step_record` rows it adds to `outbox`, reads `phases.entry` through `step_run_witness` and writes none of the six, so the block holds over it, and the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), re-arm it for the roll forward.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
+20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -6307,9 +6341,9 @@ A release moves no issue and ends no phase.
 A wake brings the pod back and resumes, in its own session, each role the wake is for.
 The wakes are these:
 
-- a phase start, task, backward move, notice, phase-ended message, hook prompt, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
+- a phase start, task, backward move, notice, merge-forward message, hook prompt, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
 
-- a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own read of a pull request runs as the workflow runtime starts and once an agent's handoff has been recorded, on no timer).
+- a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own reads of a pull request run at the moments [Running Legion](https://cybermonklabs.github.io/legion/legion/running-legion/) names).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
 
 - a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon.
@@ -6317,13 +6351,13 @@ The wakes are these:
   If it is not, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
   While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
   One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running.
-  The daemon sets `keep: false` on each of its publishes but two, a phase-ended message and a hook prompt, which it publishes with `keep: true`.
+  The daemon sets `keep: false` on each of its publishes but one, a hook prompt, which it publishes with `keep: true`.
   Its informational role messages to a released role (`outbox.roleMessage`, above) are neither published nor sent again, so they wake nothing and no next try reaches the role.
-  Its other messages to a role (a notice, a phase-ended message, a hook prompt, a merge-queue removal message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
+  Its other messages to a role (a notice, a hook prompt, a merge-queue removal message, a merge-forward message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
   While the wake pacing holds such a resume for its turn, the claim reads `launching` with no process, and each of these messages waits rather than publishing, because a kept copy's hour runs from its publish and can end before the pod starts.
   It looks again at its turn or five minutes later, whichever comes first, so a park that ends early, through an operator's resume or a restart, delays the message by five minutes at most.
-  A phase-ended message and a hook prompt are then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy keeps each of them for that session.
-  A listener before #4079 keeps nothing for a claim whose holder is not live and answers them `404`: their outbox rows end with them undelivered when that holder is `gone`, and retry while it is `unresponsive`;
+  A hook prompt is then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy keeps it for that session; a merge-queue removal message and a merge-forward message wait instead until the woken session holds the role.
+  A listener before #4079 keeps nothing for a claim whose holder is not live and answers a hook prompt `404`: its outbox row ends with it undelivered when that holder is `gone`, and retries while it is `unresponsive`;
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 

@@ -1,15 +1,14 @@
-# Conflicts, retargets, fingerprints, and a wrong pushed commit
+# Conflicts, retargets, and a wrong pushed commit
 
-Read it when GitHub reports the pull request `CONFLICTING`, the controller asks you to resolve a conflict, the change needs something only the base has, the pull request is retargeted, you compare two heads after a forward merge, or a commit you pushed is wrong.
+Read it when GitHub reports the pull request `CONFLICTING`, the daemon's merge-forward message asks you to merge the base forward or to stop writing the workspace, the controller asks you to resolve a conflict, the change needs something only the base has, the pull request is retargeted, you read a merge of the base, or a commit you pushed is wrong.
 
 ## Reintegrating the base
 
-The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the controller asks because of a conflict, the architect's backward move names a parent's last round, the change needs something only the base has, or the pull request was retargeted. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review. Never with `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
+The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the daemon's merge-forward message asks it (*The daemon's ask*, below), the controller asks because of a conflict, the architect's backward move names a parent's last round, the change needs something only the base has, or the pull request was retargeted. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review. Never with `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
 
 Before you race another tree's pull request on shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and merge once, after it.
 
-1. Record the fingerprint (below) at the current tip.
-2. Merge the bookmark, never `@`, with the base, in one new commit. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
+1. Merge the bookmark, never `@`, with the base, in one new commit. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
 
    ```bash
    base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
@@ -17,28 +16,26 @@ Before you race another tree's pull request on shared files, `envoy_publish` to 
    ```
 
    Write `<message>` in the repository's own commit convention (its commit-lint configuration, else its recent commits on the base), such as `chore(<scope>): merge <base> into <branch>`, or `Merge <base> into <branch>` where none shows. `@` after a split is an empty commit with no description, which `jj git push` refuses.
-3. Resolve any conflict in that one commit, then `jj -R "$LEGION_WORKSPACE" new` to move off it.
-4. The fingerprint answers one question only: whether the branch's own diff changed. It cannot show an instance the merge brought in from the base, so before you push, search the merge head for the class of every finding of every earlier review round.
-5. Push the merge as any code push, build the branch, and record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict.
-6. Record the fingerprint at the new tip and post one PR comment with the Legion footer: `forward merge <old-tip-sha> → <new-tip-sha>; fingerprint <before> → <after>; unchanged|changed`, with each class search beside it. In a parent's last round, end it with `parent's last round: full test round`.
+2. Resolve any conflict in that one commit, then `jj -R "$LEGION_WORKSPACE" new` to move off it.
+3. A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round.
+4. Push the merge as any code push, build the branch, and record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict.
+5. Post one PR comment with the Legion footer: `forward merge <old-tip-sha> → <new-tip-sha>; <the condition it meets>`, with each class search beside it. In a parent's last round, end it with `parent's last round: full test round`.
 
-An equal fingerprint makes the merge a confirmation, not a new round; a changed one sends the head through the tester again. After a retarget, do the same merge onto the new base, and cite the new head's run in the PR body. Recover a jj mistake forward (`jj new`, `jj restore <paths>`), never with `jj undo`, `jj abandon` or `jj op restore`, which rewrite the shared operation log.
+After a retarget, do the same merge onto the new base, and cite the new head's run in the PR body. Recover a jj mistake forward (`jj new`, `jj restore <paths>`), never with `jj undo`, `jj abandon` or `jj op restore`, which rewrite the shared operation log.
 
-## The unchanged-diff check
+## Reading a merge of the base
 
-```bash
-base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
-cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" git fetch && \
-fingerprint=$(set -o pipefail; jj -R "$LEGION_WORKSPACE" diff --from "fork_point(${base}@origin | <head-sha>)" --to <head-sha> \
-    --git --context 0 '~(.legion | docs/solutions)' \
-  | sed -e '/^@@/d' -e '/^index /d' | sha256sum) && echo "$fingerprint"
-```
+Every role reads a merge of the base the same way:
 
-- `<head-sha>` is a full commit SHA; a head the merge replaced still resolves by its SHA.
-- A nonzero exit or no printed fingerprint counts as changed, never as unchanged.
-- The fileset must stay one expression: jj unions positional filesets, so `'~.legion' '~docs/solutions'` excludes nothing.
-- Your two heads: the implementer, its tip before and after the merge; the tester, the commit its latest results name and the new head; the reviewer, the head its last submitted review's Legion footer names (never that review's `commit_id`, which GitHub moves) and the new head. The merger computes none.
-- Beside the hash, compare the set of files the pull request changes before and after (`gh pr diff <n> --name-only`), explain each path that appears or goes, and remove a path that belongs to an already-merged pull request.
+- `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in.
+- A check those files or the resolution can reach runs again, and a check the merge was made for has no pass to carry.
+
+## The daemon's ask
+
+A head that conflicts with its base keeps the issue in its phase. The daemon reads GitHub twice, at least a minute apart, and acts only on a conflict both reads report, and only when the next step needs a mergeable head: the issue stands in `accepting`, `retro` or `merging`; a check the base requires has no green result on the head, since GitHub runs no check on a conflicting head; the base requires a pull request to be current with it; or the daemon could not read the base's rules.
+
+- The implementer gets a merge-forward message on its role topic: merge the base forward in `$LEGION_WORKSPACE` as *Reintegrating the base* says and push the issue branch, with no handoff and no completion for the merge. In `implementing` and `retro` the phase is the implementer's, and its assignment and its completion stand.
+- In `testing`, `reviewing` and `merging`, the phase's worker is told to stop writing the workspace: stop at once, complete nothing at the old head (the merger merges and enqueues nothing), and keep your turn and its jobs. When the push lands you are told the new head: read the merge as above and go on at that head.
 
 ## A wrong pushed commit
 

@@ -283,9 +283,9 @@ test("no staged skill or daemon prompt says what a pull request body `CI` line h
 // Background work is on for every role: Legion writes no Oh My Pi settings
 // overlay, so a long bash call becomes a background job and a `task` subagent runs as one, and a
 // role reads a result with the `wait` tool, which a message to its session also returns from. No
-// task agent declares `blocking`, and nothing interrupts a turn: a CI red that ends a
-// phase starts the implementer at once and tells the role whose phase ended by one message, which
-// stops nothing of its. So no skill, no shipped agent and no file of the plugin a Claude Code role
+// task agent declares `blocking`, and nothing interrupts a turn: a message the daemon sends a role,
+// a merge-forward message among them, stops nothing of its. So no skill, no shipped agent and no
+// file of the plugin a Claude Code role
 // loads may say that a takeover cancels a turn or tell a role to keep its work in
 // the foreground, and each that dispatches a task subagent names the tool that reads its result.
 //
@@ -390,13 +390,15 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
   expect(counts).toEqual(relativePaths.map((file) => ({ file, found: 1 })));
 }
 
-// R3: the unchanged-diff fingerprint covers the branch's own diff alone, so a forward merge can
-// bring a new instance of a class the branch already answered. The tester's prompt carries the
-// `E2E` re-check wording with the class search.
-test("the forward-merge re-check searches the new head for each earlier finding's class", () => {
-  countedOncePerFile(
-    "forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean",
-    ["packages/daemon/internal/prompts/roles/tester.md"]
+// R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
+// merge can bring a new instance of a class the branch already answered. The implementer's merge
+// procedure carries the class search; the tester's prompt carries its own, which roles_test.go
+// pins.
+test("a forward merge searches the new head for each earlier finding's class", () => {
+  expect(
+    collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
+  ).toContain(
+    "A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round"
   );
 });
 

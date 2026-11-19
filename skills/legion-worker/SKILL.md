@@ -21,6 +21,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 - A refused completion is information, not a retry loop. Quote the answer verbatim to the architect.
   - `HANDOFF_STALE_GENERATION` or `HANDOFF_NO_RUN`: push nothing more and end the turn without completing. When the task then arrives with its work and handoff done, call `handoff_complete` again in its turn; never redo the work.
   - `HANDOFF_STALE_ENTRY`: end the turn without completing; the daemon sends the new entry's task by itself. Do what it asks at the head it names, with a handoff of its own.
+  - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or your completion names no head; nothing was recorded. Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head with a handoff that names it.
   - `HANDOFF_NOT_CURRENT_PHASE`: report it; never complete again. `HANDOFF_ALREADY_RECORDED`: the first answer stands.
 - These waits stand rather than proceed, each ending the turn with a `WAITING` line naming what it waits on:
   - a planner on a decision the plan itself needs, because a plan completed around an open decision carries that gap into every later phase;
@@ -58,7 +59,7 @@ They override this skill, except: no deferrals; the base merged forward only as 
 - A check carrying `ci_check`: `skill://legion-worker/references/ci-checks.md`.
 - Review, approval, merge, production check: `skill://legion-worker/references/merge-gate.md`.
 - Review threads, a bot's finding: `skill://legion-worker/references/review-threads.md`.
-- A conflict, a need for the base, a retarget, two heads to compare, a wrong pushed commit: `skill://legion-worker/references/conflicts-and-rewrites.md`.
+- A conflict, the daemon's merge-forward message, a need for the base, a retarget, a wrong pushed commit: `skill://legion-worker/references/conflicts-and-rewrites.md`.
 - A plan you write or review: `skill://legion-worker/references/plan-tests.md`.
 - Builds, tests, tools or a database in the pod: `skill://legion-worker/references/tools.md`; before you unpack or install what the image lacks: `skill://legion-worker/references/withheld-capability.md`.
 - A problem outside your issue, or a failed production check: `skill://legion-worker/references/findings.md`.

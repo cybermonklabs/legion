@@ -34,23 +34,24 @@ A `code_scanning` rule requires an analysis that no status-check list names. A r
 
 Never approve a head while a required item has no run. Sort it, in this order. Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on.
 
-1. Read `gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus` first. `DIRTY` takes a forward merge, which is the implementer's: the daemon sends the head back itself. `UNKNOWN`: read again each minute for up to five minutes, then report it to the architect as a refused read.
+1. Read `gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus` first. `DIRTY` takes a forward merge, which is the implementer's: the daemon asks for it and tells you the new head when it lands. `UNKNOWN`: read again each minute for up to five minutes, then report it to the architect as a refused read.
 2. A fork head whose runs stand `action_required` waits on a maintainer. Never close and reopen it.
 3. A check only a commit status reports, or a workflow another repository defines: nothing here starts it. Never close and reopen it.
 4. A required workflow whose `paths` or `paths-ignore` filter, as the base holds it, skips every file of the change: a reopen sends the same event, so the head or the workflow must change.
 5. The remedy's case: a `BLOCKED` head, not from a fork (`--json isCrossRepository`), with no run `action_required`, where a workflow under `.github/workflows/` (as the merge commit holds it) has a job reporting the item whose `on:` runs it for `pull_request` with no `types` that leave out `reopened`, no `branches` filter that excludes the base and no path filter that skips the whole change, and neither list holds a run of it. A job reports its `name:` or its key, with ` (<matrix values>)` for a matrix job and `<calling job> / <job>` for a reusable workflow's; for `code_scanning`, the analysis jobs report under their own names and the `CodeQL` run is the code-scanning App's. Tell the architect why, close the pull request, wait a minute, and reopen it at the same head (a quicker reopen can have its run cancelled by the close's own run). Approve only once the item's run concluded green. One close and reopen covers every item of the head: name the others to the architect in the same message. A head with any item in case 2 or 3 takes no remedy, and an item still with no run after the reopen's runs concluded is never reopened again.
 6. Anything else: tell the architect, do not approve, and wait.
 
-### The issue's checks and a forward merge
+### The issue's checks
 
 - Approval is gated by the issue's own `before_merge` checks, as your role prompt says; a `ci_check` check as `skill://legion-worker/references/ci-checks.md` says. A check whose `run` is a whole test suite with no pass standing is a finding for the architect: wait for its rewrite, and request no changes for it.
-- After a forward merge, take the fingerprint at the head your last submitted review read, its Legion footer's `head`. This lists your session's reviews, oldest first, so the last line is your last review; no line means a new round:
+
+### A merge of the base is reviewed for what it changed
+
+After a forward merge of the base, read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`) and this change's own commits since the head your last submitted review read, its Legion footer's `head`. This lists your session's reviews, oldest first, so the last line is your last review; no line, or `no head` on it, means you read the branch's whole diff:
 
 ```bash
 gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
 ```
-
-- A footer with no head: use the `head` of the newest `review` handoff your session wrote at or before that review's `submitted_at` (`dispatch handoff-read --issue <issue> --phase review --version <n>`, whose first line names the version, the session and the time), else the one head the review's body names. Dispatch not answering is no answer: run it again. No head found means a new round.
 
 ## The production check after the close
 
