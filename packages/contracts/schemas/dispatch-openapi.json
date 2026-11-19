@@ -206,7 +206,7 @@
     },
     "/api/v1/access/person": {
       "get": {
-        "description": "One person's member kind as the membership answer spells it: {person, member_kind} for ?person= (full, restricted, or none for a login nobody has signed in with); no person is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
+        "description": "One person's member kind as the membership answer spells it: {person, member_kind} for ?person= (full, restricted, or none for a login nobody has signed in with); no person is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
         "operationId": "getApiV1AccessPerson",
         "parameters": [
           {
@@ -250,9 +250,48 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/access/private-projects": {
+      "get": {
+        "description": "Every private project's Slack channels and when they last changed, for the secrets broker's own service-account token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
+        "operationId": "getApiV1AccessPrivateProjects",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrivateProjectsAnswer"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/access/projects/{key}": {
       "get": {
-        "description": "The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, repositories, slack_channels} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible false): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, the repositories mapped to the project by their mapped and renamed names, and slack_channels, the owner's list, [] for none. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
+        "description": "The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, repositories, slack_channels} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible false): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, the repositories mapped to the project by their mapped and renamed names, and slack_channels, the owner's list, [] for none. slack_channels_changed_at is when the list last changed, null until a write changes the list. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED.",
         "operationId": "getApiV1AccessProjectsByKey",
         "parameters": [
           {
@@ -9802,7 +9841,7 @@
     },
     "/api/v1/projects/{key}/access": {
       "get": {
-        "description": "Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope.",
+        "description": "Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope.",
         "operationId": "getApiV1ProjectsByKeyAccess",
         "parameters": [
           {
@@ -9850,7 +9889,7 @@
         ]
       },
       "patch": {
-        "description": "Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when the deployment names no private project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when DISPATCH_PRIVATE_PROJECTS does not name this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. private is 409 REPOSITORY_LANE_SHARED when one of the project's repositories shares a GitHub subject lane with another project's. private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, while the hub does not take the project's key in its envoy_private_projects bucket. Appends project.access_changed and answers the project's access as GET answers it. Needs the person scope.",
+        "description": "Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. A private project's write of a Slack channel that another private project lists is 409 SLACK_CHANNEL_SHARED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when the deployment names no private project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when DISPATCH_PRIVATE_PROJECTS does not name this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. private is 409 REPOSITORY_LANE_SHARED when one of the project's repositories shares a GitHub subject lane with another project's. private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, while the hub does not take the project's key in its envoy_private_projects bucket. Appends project.access_changed and answers the project's access as GET answers it. Needs the person scope.",
         "operationId": "patchApiV1ProjectsByKeyAccess",
         "parameters": [
           {
@@ -13177,6 +13216,13 @@
               "null"
             ]
           },
+          "slack_channels_changed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "visibility": {
             "type": "string"
           },
@@ -13192,7 +13238,8 @@
           "member_kind",
           "visible",
           "repositories",
-          "slack_channels"
+          "slack_channels",
+          "slack_channels_changed_at"
         ],
         "type": "object"
       },
@@ -25695,6 +25742,46 @@
         ],
         "type": "object"
       },
+      "PrivateProjectChannels": {
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "slack_channels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "slack_channels_changed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "project",
+          "slack_channels",
+          "slack_channels_changed_at"
+        ],
+        "type": "object"
+      },
+      "PrivateProjectsAnswer": {
+        "properties": {
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/PrivateProjectChannels"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "projects"
+        ],
+        "type": "object"
+      },
       "ProgressCount": {
         "properties": {
           "done": {
@@ -25791,6 +25878,13 @@
               "null"
             ]
           },
+          "slack_channels_changed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "visibility": {
             "type": "string"
           }
@@ -25802,6 +25896,7 @@
           "people",
           "groups",
           "slack_channels",
+          "slack_channels_changed_at",
           "not_signed_in"
         ],
         "type": "object"

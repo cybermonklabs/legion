@@ -22,6 +22,7 @@ function access(overrides: Partial<ProjectAccess> = {}): ProjectAccess {
     people: ["carol@example.com"],
     project: "CORE",
     slack_channels: [],
+    slack_channels_changed_at: null,
     visibility: "public",
     ...overrides,
   };
@@ -444,6 +445,47 @@ test("the owner names the project's Slack channels, and the field shows the stor
   } finally {
     panel.restore();
     patch.mockRestore();
+  }
+});
+
+// When the list last changed shows beside it, so the owner can read when the secrets broker's
+// settle time for these channels started; a list never written shows no time.
+test("the time the Slack channels last changed shows beside them, and nothing while it is null", async () => {
+  const panel = renderPanel({
+    answer: access({
+      slack_channels: ["C012345678"],
+      slack_channels_changed_at: "2026-11-17T10:00:00Z",
+    }),
+  });
+  try {
+    const changed = await screen.findByTestId("access-slack-channels-changed");
+    expect(changed.textContent).toStartWith("Changed ");
+    expect(changed.querySelector("time")).toHaveAttribute("datetime", "2026-11-17T10:00:00Z");
+  } finally {
+    panel.restore();
+  }
+  const never = renderPanel();
+  try {
+    await screen.findByLabelText("Channel ids");
+    expect(screen.queryByTestId("access-slack-channels-changed")).not.toBeInTheDocument();
+  } finally {
+    never.restore();
+  }
+});
+
+// A list the owner emptied changed too: the secrets broker stops releasing the token for the
+// channels taken off from that time, so the tab shows it beside the empty field, as it does beside
+// a list. The break it catches: the time shown only beside a list that names a channel.
+test("the time the Slack channels last changed shows beside a list the owner emptied", async () => {
+  const panel = renderPanel({
+    answer: access({ slack_channels: [], slack_channels_changed_at: "2026-11-17T10:00:00Z" }),
+  });
+  try {
+    const changed = await screen.findByTestId("access-slack-channels-changed");
+    expect(changed.textContent).toStartWith("Changed ");
+    expect(changed.querySelector("time")).toHaveAttribute("datetime", "2026-11-17T10:00:00Z");
+  } finally {
+    panel.restore();
   }
 });
 

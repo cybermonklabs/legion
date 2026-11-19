@@ -1,0 +1,5 @@
+kind: Added
+body: 'A project''s Slack channels carry when they last changed, `slack_channels_changed_at` (migration `20261118181230_projects_slack_channels_changed_at`, null until the first write that changes the list), on its access, its `project.access_changed` event and the membership answer, and its Access tab shows it. A Slack channel belongs to one private project: a private project''s write of a channel another private project lists is 409 SLACK_CHANNEL_SHARED, naming that project only to a caller who sees it, and one lock orders two such writes. `GET /api/v1/access/private-projects` answers the secrets broker''s service-account token every private project''s Slack channels and when they last changed, `{"projects":[]}` when no project is private.'
+time: 2026-11-18T18:56:34.151537389Z
+custom:
+    Issue: pr4439

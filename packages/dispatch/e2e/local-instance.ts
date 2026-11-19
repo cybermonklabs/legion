@@ -73,15 +73,19 @@ async function ensureLocalPostgres(boundMs: number): Promise<string> {
 }
 
 /** The harness inputs a command needs to reach this instance, as a shell prefix: the database,
- *  each port the harness reported, and the broker switch (e2e/harness-broker.ts) this shell set. */
-function harnessEnvironment(databaseUrl: string, ports: Readonly<Record<string, string>>): string {
+ *  each variable the harness returned (its ports, and a kept file's path), and the broker switch
+ *  (e2e/harness-broker.ts) this shell set. */
+function harnessEnvironment(
+  databaseUrl: string,
+  harnessEnv: Readonly<Record<string, string>>
+): string {
   const switches = [
     "DISPATCH_E2E_AGENT_SECRETS_URL",
     "DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE",
   ].filter((variable) => process.env[variable] !== undefined);
   return [
     `DATABASE_URL=${shellQuote(databaseUrl)}`,
-    ...Object.entries(ports).map(([variable, port]) => `${variable}=${port}`),
+    ...Object.entries(harnessEnv).map(([variable, value]) => `${variable}=${shellQuote(value)}`),
     ...switches.map((variable) => `${variable}=${shellQuote(process.env[variable] ?? "")}`),
   ].join(" ");
 }

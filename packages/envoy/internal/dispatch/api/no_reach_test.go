@@ -674,10 +674,11 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/machine-logins":                                         "the agent-secrets broker",
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
 	// The membership answer reads nothing for a person's cookie, the probe's caller: only a
-	// service account DISPATCH_ACCESS_ACCOUNTS names reads it (access_answer_test.go reads both
-	// routes with one).
-	"GET /api/v1/access/projects/{key}": "a service account DISPATCH_ACCESS_ACCOUNTS names",
-	"GET /api/v1/access/person":         "a service account DISPATCH_ACCESS_ACCOUNTS names",
+	// service account DISPATCH_ACCESS_ACCOUNTS names reads it (access_answer_test.go reads the
+	// first two routes with one, and access_private_projects_test.go the third).
+	"GET /api/v1/access/projects/{key}":   "a service account DISPATCH_ACCESS_ACCOUNTS names",
+	"GET /api/v1/access/person":           "a service account DISPATCH_ACCESS_ACCOUNTS names",
+	"GET /api/v1/access/private-projects": "a service account DISPATCH_ACCESS_ACCOUNTS names",
 }
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the

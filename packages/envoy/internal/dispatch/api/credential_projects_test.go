@@ -47,14 +47,20 @@ func seedCredentialProjects(t *testing.T, handler http.Handler, database *store.
 	}
 }
 
-// makePrivate makes project private. This release's route refuses the setting (409
-// PRIVATE_PROJECTS_OFF) until the deployment's bus can hold it, so the row is written as that
-// write will write it, with the fill marker the switch requires first: a project the route made
-// private implies session_projects_filled, since the switch refuses until it is written.
-func makePrivate(t *testing.T, database *store.Store, project string) {
+// makePrivate makes project private, naming channels when any are given. This release's route
+// refuses the setting (409 PRIVATE_PROJECTS_OFF) until the deployment's bus can hold it, so the row
+// is written as that write will write it, with the fill marker the switch requires first: a
+// project the route made private implies session_projects_filled, since the switch refuses until
+// it is written.
+func makePrivate(t *testing.T, database *store.Store, project string, channels ...string) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'private' where key = $1`, project); err != nil {
 		t.Fatalf("make %s private: %v", project, err)
+	}
+	if len(channels) > 0 {
+		if _, err := database.Pool.Exec(context.Background(), `update projects set slack_channels = $2 where key = $1`, project, channels); err != nil {
+			t.Fatalf("name %s's Slack channels %v: %v", project, channels, err)
+		}
 	}
 	if _, err := database.Pool.Exec(context.Background(), `insert into session_projects_filled select now() where not exists (select 1 from session_projects_filled)`); err != nil {
 		t.Fatalf("write the fill marker beside %s: %v", project, err)

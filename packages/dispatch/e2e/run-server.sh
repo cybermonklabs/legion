@@ -217,6 +217,26 @@ if [ "${DISPATCH_E2E_EMBEDDER:-}" = "fake" ]; then
   )
 fi
 
+# The membership answer's reader, read before the sweep below: DISPATCH_E2E_ACCESS_ISSUER=1
+# (e2e/harness-access.ts) has the harness start e2e/run-access-issuer.sh before this server, a dev
+# OIDC issuer on DISPATCH_E2E_ACCESS_ISSUER_PORT that keeps the secrets broker's projected
+# service-account token in the file the harness exports as DISPATCH_E2E_ACCESS_TOKEN_FILE. The
+# server verifies that issuer's tokens for the audience e2e/access-account.sh names and lists that
+# file's account in DISPATCH_ACCESS_ACCOUNTS, so a driver reads the three routes of the membership
+# answer with the file's token. Unset, the server verifies no service-account token, and those
+# routes refuse every caller, as a deployment that names no access account does.
+access_env=()
+if [ "${DISPATCH_E2E_ACCESS_ISSUER:-}" = "1" ]; then
+  : "${DISPATCH_E2E_ACCESS_ISSUER_PORT:?DISPATCH_E2E_ACCESS_ISSUER_PORT must name the dev OIDC issuer (e2e/run-access-issuer.sh) DISPATCH_E2E_ACCESS_ISSUER=1 verifies tokens from}"
+  # shellcheck source-path=SCRIPTDIR source=access-account.sh
+  . "$(dirname "$0")/access-account.sh"
+  access_env=(
+    DISPATCH_ACCESS_ACCOUNTS="$access_account"
+    DISPATCH_OIDC_AUDIENCE="$access_audience"
+    DISPATCH_OIDC_ISSUER="http://127.0.0.1:$DISPATCH_E2E_ACCESS_ISSUER_PORT"
+  )
+fi
+
 # The server binary, read before the sweep below: DISPATCH_E2E_SERVER_BIN names a prebuilt
 # envoy-dispatch this run executes instead of building one from this checkout
 # (scripts/e2e/dispatch-claimant-delivery.sh's DISPATCH_BIN is the precedent), which
@@ -401,6 +421,7 @@ exec "${listen[@]}" env \
   "${broker_env[@]}" \
   "${file_store_env[@]}" \
   "${fake_embedder_env[@]}" \
+  "${access_env[@]}" \
   "${signin_env[@]}" \
   DATABASE_URL="$database_url" \
   DISPATCH_AGENT_TOKEN=e2e-token \

@@ -11,11 +11,14 @@ import (
 
 // The membership answer (K3) is what the secrets broker reads to decide a project's secrets and a
 // token's list: one project's owner, visibility and repositories, and whether one person sees it,
-// and one person's member kind. It is plain data read outside any transaction. Only a Kubernetes
-// service account the deployment names in DISPATCH_ACCESS_ACCOUNTS reads it, with its own projected
-// token; every other caller, a person included, is 403 ACCESS_ACCOUNT_REQUIRED before anything is
-// read (the read class accessAccount, which withinReadScope holds both routes to). A deployment
-// that names no such account answers every caller so.
+// one person's member kind, and every private project's Slack channels. It is plain data read
+// outside any transaction. Only a Kubernetes service account the deployment names in
+// DISPATCH_ACCESS_ACCOUNTS reads it, with its own projected token. Before anything is read, a
+// caller with no credential, or one whose credential does not verify, is refused as every route
+// refuses it (401 NO_IDENTITY for none: optionalActor's error, writeAuthenticationError), and
+// every other caller, a person included, is 403 ACCESS_ACCOUNT_REQUIRED (the read class
+// accessAccount, which withinReadScope holds the three routes to). A deployment that names no such
+// account answers every caller so.
 
 // accessAccountOf answers the service-account subject a request's verified projected token names,
 // and false for every other credential: a broker-issued token that names a fleet as its service
@@ -78,4 +81,27 @@ func (s *server) getAccessPerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, answer)
+}
+
+// privateProjectsAnswer is GET /api/v1/access/private-projects' body. Projects is always an
+// array, [] when no project is private (access.PrivateProjects), and never left out.
+type privateProjectsAnswer struct {
+	Projects []model.PrivateProjectChannels `json:"projects" nullable:"false"`
+}
+
+// getAccessPrivateProjects answers every private project's Slack channels and when each list last
+// changed, by key, read live on each request. Its read class, accessAccount, has withinReadScope
+// check the caller before it runs (requireAccessAccount), once, as for the two other answers.
+func (s *server) getAccessPrivateProjects(w http.ResponseWriter, r *http.Request) {
+	pool, err := s.readyPool()
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	projects, err := access.PrivateProjects(r.Context(), pool)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, privateProjectsAnswer{Projects: projects})
 }

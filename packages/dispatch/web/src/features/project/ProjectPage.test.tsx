@@ -316,6 +316,7 @@ test("the Access tab, at /access, shows the project's owner and the people and g
     project: "CORE",
     not_signed_in: [],
     slack_channels: [],
+    slack_channels_changed_at: null,
     visibility: "public",
   });
   const listAccessGroups = spyOn(api, "listAccessGroups").mockResolvedValue([
