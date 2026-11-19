@@ -285,24 +285,63 @@ check "asks npm nothing" "$(lacks "npm view" "$calls")"
 
 # npm installs `latest` only when it matches the range and is not deprecated, and otherwise the
 # highest match that is not deprecated, so a deprecated version is judged only when every match is.
-echo "case: --clients, npm's latest is deprecated, and a lower match is not"
+# Here the first match has neither field, so npm, asked for `version deprecated engines`, would
+# unwrap every match to its bare version (view.js:248-249) and lose 4.0.0's deprecation: the gate
+# asks for `name` too, which every version has.
+echo "case: --clients, npm's latest is deprecated, and the first match declares nothing"
 box_case clients-npm-deprecated
 printf '[{"version": "3.3.0"}, {"version": "4.0.0", "deprecated": "broken"}]\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
 run_gate -- --clients "$commit"
 check "exits 1" "$(is "$status" 1)"
-check "asks npm whether each match is deprecated" \
-  "$(grep -qxF "npm view @sjawhar/claude-envoy@>=1.0.0 version deprecated engines --json" "$calls" && echo true || echo false)"
+check "asks npm for each match's name, so no match is unwrapped" \
+  "$(grep -qxF "npm view @sjawhar/claude-envoy@>=1.0.0 name version deprecated engines --json" "$calls" && echo true || echo false)"
 check "judges the match npm installs, not the deprecated latest" \
   "$(has_line "GATE SHUT: dotfiles .claude/settings.json runs claude-envoy 3.3.0 from claude-envoy-v3.3.0 at ${behind_rev} (behind ${commit} by 12)${claude_note}")"
 check "never judges the deprecated version" "$(lacks "claude-envoy 4.0.0" "$out")"
 
-echo "case: --clients, a match that declares engines"
+# npm checks engines.node and engines.npm (npm-install-checks), against a runtime the gate does not
+# know, so only the version npm takes is UNKNOWN when it declares either.
+echo "case: --clients, the version npm takes declares engines.node"
 box_case clients-npm-engines
 printf '[{"version": "3.3.0"}, {"version": "4.0.0", "engines": {"node": ">=99"}}]\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the version and its engines" \
   "$(has_line "UNKNOWN: dotfiles .claude/settings.json: npm's choice among the versions it matches to >=1.0.0 depends on the engines 4.0.0 declares, which this gate does not read")"
+
+echo "case: --clients, a version npm passes over declares engines.node"
+box_case clients-npm-engines-passed-over
+printf '[{"version": "3.3.0", "engines": {"node": ">=99"}}, {"version": "4.0.0"}]\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
+run_gate -- --clients "$commit"
+check "exits 0" "$(is "$status" 0)"
+check "judges the version npm takes" "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served}")"
+
+echo "case: --clients, the version npm takes declares an engine npm does not check"
+box_case clients-npm-engines-unchecked
+printf '[{"version": "4.0.0", "engines": {"vscode": "^1.80.0"}}, {"version": "3.3.0"}]\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
+run_gate -- --clients "$commit"
+check "exits 0" "$(is "$status" 0)"
+check "judges the version npm takes" "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served}")"
+
+# npm takes the dist-tag its `tag` setting names, `latest` by default.
+echo "case: --clients, npm's tag setting names another dist-tag"
+box_case clients-npm-tag
+printf '{"latest": "4.0.0", "next": "3.3.0"}\n' >"${case_root}/npm/_sjawhar_claude-envoy.dist-tags"
+run_gate FAKE_NPM_TAG=next -- --clients "$commit"
+check "exits 1" "$(is "$status" 1)"
+check "judges the version that dist-tag names" \
+  "$(has_line "GATE SHUT: dotfiles .claude/settings.json runs claude-envoy 3.3.0 from claude-envoy-v3.3.0 at ${behind_rev} (behind ${commit} by 12)${claude_note}, npm's next dist-tag")"
+
+# Claude Code takes a registry other than the box's default only over https, and npm answers from
+# its default registry for a value it cannot read as a URL.
+echo "case: --clients, a claude-envoy served from a registry that is no https URL"
+box_case clients-npm-registry-http
+plugin_source '{"source": "npm", "package": "@sjawhar/claude-envoy", "version": ">=1.0.0", "registry": "http://npm.internal.example"}'
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the registry" \
+  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy from registry http://npm.internal.example, which is no https URL")"
+check "asks npm nothing" "$(lacks "npm view" "$calls")"
 
 echo "case: --clients, a marketplace repository that is no owner/repo"
 box_case clients-marketplace-repo-path
@@ -365,3 +404,65 @@ check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the file, its escape written out" \
   "$(has_line "UNKNOWN: cannot read ${deployment} legion/projects/60-X\\x1b[2K.yaml: gh: Server Error (HTTP 502)")"
 check "prints no escape" "$(grep -q $'\e' "$out" && echo false || echo true)"
+
+# A link's target is the dotfiles' text: git stores it as a blob, so it can hold any bytes.
+echo "case: --clients, a dotfiles .claude/plugins that is a dangling link whose target holds a newline"
+box_case clients-record-link-control
+ln -s $'x\nGATE OPEN\n\e[2K\rPASS: forged' "${case_root}/home/.dotfiles/.claude/plugins"
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "names the link, its target's control characters written out" \
+  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: cannot tell whether a Claude Code plugin record is there: ${case_root}/home/.dotfiles/.claude/plugins is a link to x\\x0aGATE OPEN\\x0a\\x1b[2K\\x0dPASS: forged, which does not exist")"
+check "no line of its output is the target's verdict" "$(grep -q '^GATE OPEN' "$out" && echo false || echo true)"
+
+# jq's compact output writes C0 controls as escapes but keeps C1 controls and the line and
+# paragraph separators as they are, so the JSON the gate quotes goes through printable too.
+echo "case: --clients, an npm source holding C1 controls and line separators"
+box_case clients-plugin-c1
+plugin_source '{"source": "npm", "package": "@sjawhar/claude-envoy\u2028GATE OPEN\u2028", "version": ">=1.0.0", "x": "\u0085\u009b2K"}'
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "quotes the source, each separator and control written out" \
+  "$(has_line 'UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy as {"source":"npm","package":"@sjawhar/claude-envoy\u2028GATE OPEN\u2028","version":">=1.0.0","x":"\x85\x9b2K"}, not as one entry of the npm package @sjawhar/claude-envoy')"
+check "prints no separator and no C1 control" \
+  "$(grep -qF -e $'\xe2\x80\xa8' -e $'\xc2\x85' -e $'\xc2\x9b' "$out" && echo false || echo true)"
+
+echo "case: --clients, a marketplace source holding a direction override and a C1 control"
+box_case clients-marketplace-c1
+marketplace_source '{"source": "github", "repo": "example-org/plugins\u202e\u009b"}'
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "quotes the source, each written out" \
+  "$(has_line 'UNKNOWN: dotfiles .claude/settings.json: the marketplace legion-plugins it names is {"source":"github","repo":"example-org/plugins\u202e\x9b"}, which is no GitHub repository this gate reads')"
+check "prints neither raw" "$(grep -qF -e $'\xe2\x80\xae' -e $'\xc2\x9b' "$out" && echo false || echo true)"
+
+# GitHub lists a submodule in a directory as a file with no download URL, and serves it with no
+# content; the deployment's program would read it as a project file it cannot read.
+echo "case: a submodule among the files of legion/projects/"
+daemons_short projects-submodule
+printf '[{"name": "60-OPS.yaml", "type": "file", "download_url": null}]\n' >"${case_root}/listing-extra.json"
+run_gate -- "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the entry" \
+  "$(has_line "UNKNOWN: ${deployment} legion/projects/60-OPS.yaml is listed as a file with no download URL, as GitHub lists a submodule, which this gate does not read as a project file")"
+check "never fetches it" "$(lacks "contents/legion/projects/60-OPS.yaml" "$calls")"
+
+# A file stored in Git LFS is its pointer in the tree and in the archive alike.
+echo "case: --listeners, a Go file stored in Git LFS"
+vm_short listeners-lfs
+printf 'version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize 4096\n' "$(printf '%064d' 0)" >"${case_root}/files/envoy/zz_hub.go"
+run_gate -- --listeners "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the pointer" \
+  "$(has_line "${vm_prefix} envoy/zz_hub.go is a Git LFS pointer, whose content neither the tree nor the archive holds, so its code cannot be read")"
+check "never says the hub is gone" "$(lacks "NO VM HUB" "$out")"
+
+# GitHub serves a file of 1 to 100 MB with encoding none and no content.
+echo "case: --listeners, a stack file GitHub serves with no content"
+vm_short listeners-encoding-none
+printf 'envoy-cluster/Pulumi.prod.yaml\n' >"${case_root}/encoding-none"
+run_gate -- --listeners "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming why it has no content" \
+  "$(has_line "UNKNOWN: cannot read ${deployment} envoy-cluster/Pulumi.prod.yaml: GitHub serves it with encoding none and no content, as it serves a file over 1 MB")"
+check "never reads it as a file that sets no pin" "$(lacks "sets no ${cluster_project}:envoyImage" "$out")"

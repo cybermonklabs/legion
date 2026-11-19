@@ -36,10 +36,13 @@ readonly dispatch_project="deployment-dispatch"
 
 # The fake gh. It takes the endpoint (the argument that starts `repos/`) with any `?ref=` query
 # dropped, and answers:
-#   repos/<FAKE_DEPLOYMENT>/contents/<path> --jq .content: the base64 of FAKE_ROOT/files/<path>; for
-#     a directory, GitHub's listing of it ({name, type} for each entry: file, dir or symlink, at most
-#     1,000 of them, as GitHub lists) run through the --jq query, failing as a server error when
-#     FAKE_LIST_DOWN=1;
+#   repos/<FAKE_DEPLOYMENT>/contents/<path>: for a file, run through the --jq query (`.content`, or
+#     `.encoding, .content`), GitHub's answer for it: encoding base64 and the base64 of
+#     FAKE_ROOT/files/<path>, or encoding none and no content for a path FAKE_ROOT/encoding-none lists,
+#     as GitHub serves a file over 1 MB; for a directory, GitHub's listing of it ({name, type,
+#     download_url} for each entry: file, dir or symlink, a file with a download URL, the entries of
+#     FAKE_ROOT/listing-extra.json (a JSON list) added, at most 1,000 of them, as GitHub lists) run
+#     through the --jq query, failing as a server error when FAKE_LIST_DOWN=1;
 #   repos/<FAKE_DEPLOYMENT>/commits/HEAD: FAKE_HEAD;
 #   repos/<FAKE_DEPLOYMENT>/git/trees/<sha>: GitHub's recursive tree of FAKE_ROOT/files, each file and
 #     link a blob named by git's own hash of it, with the entries of FAKE_ROOT/tree-extra.json (a JSON
@@ -81,13 +84,26 @@ case "$path" in
     file="${FAKE_ROOT}/files/${path#repos/"${FAKE_DEPLOYMENT}"/contents/}"
     if [ -d "$file" ]; then
       [ "${FAKE_LIST_DOWN:-0}" != 1 ] || { echo "gh: Server Error (HTTP 500)" >&2; exit 1; }
-      find "$file" -mindepth 1 -maxdepth 1 -printf '%f\t%y\n' | sort |
-        jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {name: .[0], type: ({"f": "file", "d": "dir", "l": "symlink"}[.[1]] // "file")}) | .[0:1000]' |
-        jq -r "$query"
+      extra="${FAKE_ROOT}/listing-extra.json"
+      [ -f "$extra" ] || extra=/dev/null
+      {
+        find "$file" -mindepth 1 -maxdepth 1 -printf '%f\t%y\n' | sort |
+          jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {name: .[0], type: ({"f": "file", "d": "dir", "l": "symlink"}[.[1]] // "file")} | .download_url = (if .type == "file" then "https://raw.example/" + .name else null end))'
+        cat "$extra"
+      } | jq -s 'add // [] | .[0:1000]' | jq -r "$query"
       exit 0
     fi
     [ -f "$file" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
-    base64 -w 76 <"$file"
+    encoding=base64
+    if [ -f "${FAKE_ROOT}/encoding-none" ] && grep -qxF -- "${path#repos/"${FAKE_DEPLOYMENT}"/contents/}" "${FAKE_ROOT}/encoding-none"; then
+      encoding=none
+    fi
+    case "$query" in
+      .content) ;;
+      ".encoding, .content") echo "$encoding" ;;
+      *) echo "fake gh: unexpected query for a file: $query" >&2; exit 2 ;;
+    esac
+    if [ "$encoding" = base64 ]; then base64 -w 76 <"$file"; else echo; fi
     ;;
   repos/"${FAKE_DEPLOYMENT}"/commits/HEAD) echo "${FAKE_HEAD:?}" ;;
   repos/"${FAKE_DEPLOYMENT}"/git/trees/*)
@@ -236,12 +252,18 @@ case "$6" in
   *) echo "fake docker: unexpected format: $6" >&2; exit 2 ;;
 esac
 EOF
-# The fake npm. `npm view <spec> version deprecated engines --json` answers
-# FAKE_ROOT/npm/<spec with / @ < > = as _>, as npm answers it: one version as itself, several as a
-# list, each a version alone or, when one is deprecated or declares engines, an object of its fields;
-# and `npm view <spec> dist-tags --json` that file with `.dist-tags` added. With
-# `--registry=<url>`, each is answered from FAKE_ROOT/npm-registries/<url with / and : as _>/
-# instead. Each fails as an unreachable registry when FAKE_NPM_DOWN=1.
+# The fake npm. `npm view <spec> <field>... --json` reads FAKE_ROOT/npm/<spec with / @ < > = as _>,
+# the versions the registry matches to the spec in its order: a version alone, or a list of
+# versions, each a version string or an object of its fields (`{"version", "deprecated",
+# "engines"}`); every version's `name` is the spec's package. It answers as npm 10.9.7's `npm view`
+# does (lib/commands/view.js): each match keeps only the asked fields it has a value for (:417-422),
+# a match left with none is dropped, every match is unwrapped to its one field when the first match
+# holds exactly one (:248-249), and one match is answered as itself, not as a list (:253-254). A
+# file that is no JSON, or a file with `.raw` added, is answered as it is, as an npm that answers
+# garbage would. `npm view <spec> dist-tags --json` answers that file with `.dist-tags` added, and
+# `npm config get tag` answers FAKE_NPM_TAG, by default latest. With `--registry=<url>`, each view
+# is answered from FAKE_ROOT/npm-registries/<url with / and : as _>/ instead. Each view fails as an
+# unreachable registry when FAKE_NPM_DOWN=1.
 cat >"${temporary_dir}/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
@@ -254,17 +276,42 @@ for word in "$@"; do
   esac
 done
 set -- "${words[@]}"
-case "$1 ${*:3}" in
-  "view version deprecated engines --json") suffix="" ;;
-  "view dist-tags --json") suffix=".dist-tags" ;;
-  *) echo "fake npm: unexpected command: $*" >&2; exit 2 ;;
-esac
+if [ "$*" = "config get tag" ]; then
+  printf '%s\n' "${FAKE_NPM_TAG:-latest}"
+  exit 0
+fi
+[ "$1" = view ] && [ "$#" -ge 4 ] && [ "${*: -1}" = --json ] || { echo "fake npm: unexpected command: $*" >&2; exit 2; }
 [ "${FAKE_NPM_DOWN:-0}" != 1 ] || { echo "npm error code ENOTFOUND" >&2; exit 1; }
 dir="${FAKE_ROOT:?}/npm"
 [ -z "$registry" ] || dir="${FAKE_ROOT}/npm-registries/$(printf '%s' "$registry" | tr '/:' '__')"
-file="${dir}/$(printf '%s' "$2" | tr '/@<>=' '_____')${suffix}"
+file="${dir}/$(printf '%s' "$2" | tr '/@<>=' '_____')"
+if [ "$#" -eq 4 ] && [ "$3" = dist-tags ]; then
+  [ -f "${file}.dist-tags" ] || { echo "npm error code E404" >&2; exit 1; }
+  cat "${file}.dist-tags"
+  exit 0
+fi
+[ ! -f "${file}.raw" ] || { cat "${file}.raw"; exit 0; }
 [ -f "$file" ] || { echo "npm error code E404" >&2; exit 1; }
-cat "$file"
+jq -e . "$file" >/dev/null 2>&1 || { cat "$file"; exit 0; }
+python3 - "$file" "${2%@*}" "${@:3:$#-3}" <<'PY'
+import json
+import sys
+
+path, name, fields = sys.argv[1], sys.argv[2], sys.argv[3:]
+with open(path) as handle:
+    matched = json.load(handle)
+matched = matched if isinstance(matched, list) else [matched]
+if not matched:
+    sys.exit("npm error code E404")
+manifests = [{"name": name, **(m if isinstance(m, dict) else {"version": m})} for m in matched]
+answer = [{f: m[f] for f in fields if m.get(f)} for m in manifests]
+answer = [a for a in answer if a]
+first = list(answer[0]) if answer else []
+if len(first) == 1:
+    answer = [a.get(first[0]) for a in answer]
+if answer:
+    print(json.dumps(answer[0] if len(answer) == 1 else answer, indent=2))
+PY
 EOF
 chmod +x "${temporary_dir}/bin/gh" "${temporary_dir}/bin/docker" "${temporary_dir}/bin/npm"
 

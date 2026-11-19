@@ -19,7 +19,9 @@
 # of a project's settings each, read in file-name order), as the deployment's legion program reads
 # them. Only a deployment with no such directory still declares them in legion/Pulumi.prod.yaml's
 # projects list, as that program did before the files (load_entries). An entry of the directory that
-# is no file, and a listing of 1,000 entries or more (GitHub lists no more), are UNKNOWN.
+# is no file, a file with no download URL (GitHub lists a submodule so), and a listing of 1,000
+# entries or more (GitHub lists no more), are UNKNOWN; so is a file GitHub serves with no content
+# (fetch), as it serves one over 1 MB.
 #
 # Without a mode it reads the image that runs each Legion daemon: for each project, its
 # `daemonImage` when set, else its `image` (legion/README.md's `daemonImage` row). A project that runs
@@ -44,9 +46,10 @@
 # Declared, it prints `VM HUB: <file>:<line> at <sha> uses NewNatsHub` (or `registers
 # envoy-infra:gcp:NatsHub`) and reads the pin, a stack that sets none staying UNKNOWN; used
 # nowhere, every file read, it prints `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and
-# reads no VM pin. What it cannot fetch or read is UNKNOWN, a file the archive leaves out or changed
-# and a submodule among it, since the archive holds none of their code; so a missing pin never reads
-# as a hub that is gone. A stack pin that is no plain image reference is UNKNOWN and never read.
+# reads no VM pin. What it cannot fetch or read is UNKNOWN, a file the archive leaves out or changed,
+# a Git LFS pointer and a submodule among it, since the archive holds none of their code; so a
+# missing pin never reads as a hub that is gone. A stack pin that is no plain image reference is
+# UNKNOWN and never read.
 #
 # With --clients it reads the clients that deliver to a session, each of which must carry the
 # client follow filter of <commit>, since an older one passes a frame in a form it does not match in
@@ -93,16 +96,19 @@
 #     install the dotfiles' Claude Code plugin record holds, by its manifest; and the claude-envoy
 #     version the marketplace legion-plugins serves to .claude/settings.json, read as Claude Code
 #     reads it: its repo at its ref, the file at its path (one inside the repository, with no `.`
-#     or `..` segment), and the package from its registry; a key of either source this gate does
-#     not read is UNKNOWN. npm's install takes the `latest` dist-tag when it matches the range the
-#     marketplace names and is not deprecated, else the highest match that is not deprecated, so
-#     the gate judges both: `latest` when it is among the
-#     versions npm matches, and that highest match; a match that declares engines, which npm ranks
-#     by the box's own node and npm versions, is UNKNOWN. Each version is judged by the commit of
-#     its release tag (`pi-envoy-v<version>`, `claude-envoy-v<version>`). A client installed where
-#     the dotfiles' pins say nothing about it (~/.omp/plugins or a profile's plugin tree, ~/.claude,
-#     another CLAUDE_CONFIG_DIR), a link that does not resolve, and a marketplace entry it cannot
-#     read are UNKNOWN.
+#     or `..` segment), and the package from its registry, which must be an https URL; a key of
+#     either source this gate does not read is UNKNOWN. npm's install takes the dist-tag its `tag`
+#     setting names (`latest` by default) when it matches the range the marketplace names and is
+#     not deprecated, else the highest match that is not deprecated, so the gate judges both: that
+#     dist-tag's version when it is among the versions npm matches, and that highest match. It asks
+#     npm for each match's name too, since `npm view` unwraps every match to a bare version, losing
+#     the rest's deprecated and engines, when the first match holds only one field. The version
+#     npm takes is UNKNOWN when it declares engines.node or engines.npm, which npm checks against a
+#     runtime this gate does not know. Each version is judged by the commit of its release tag
+#     (`pi-envoy-v<version>`, `claude-envoy-v<version>`). A client installed where the dotfiles'
+#     pins say nothing about it (~/.omp/plugins or a profile's plugin tree, ~/.claude, another
+#     CLAUDE_CONFIG_DIR), a link that does not resolve, and a marketplace entry it cannot read are
+#     UNKNOWN.
 #
 # Each pin's org.opencontainers.image.source and .revision labels are read with `docker buildx
 # imagetools inspect`. A single image is read whole; an OCI image index, which carries no image
@@ -219,15 +225,22 @@ last_line() { printable "$(tail -n 1 "$1")"; }
 
 # fetch <path> <dest>: the text of <path> in the deployment repository on its default branch, into
 # <dest>; on failure sets $fetch_error to what could not be done and GitHub's or base64's first
-# line, and returns 1.
+# line, and returns 1. GitHub serves a file of 1 to 100 MB with encoding `none` and no content, so
+# any encoding but base64 is a file the gate could not read, never an empty one.
 fetch() {
-  local encoded
+  local answer encoding content=""
   fetch_error=""
-  if ! encoded=$(gh api "repos/${deployment}/contents/$1" --jq .content 2>"$work/err"); then
+  if ! answer=$(gh api "repos/${deployment}/contents/$1" --jq '.encoding, .content' 2>"$work/err"); then
     fetch_error="cannot read ${deployment} $(printable "$1"): $(first_line "$work/err")"
     return 1
   fi
-  if ! printf '%s' "$encoded" | base64 -d >"$2" 2>"$work/err"; then
+  encoding=${answer%%$'\n'*}
+  [[ $answer != *$'\n'* ]] || content=${answer#*$'\n'}
+  if [ "$encoding" != base64 ]; then
+    fetch_error="cannot read ${deployment} $(printable "$1"): GitHub serves it with encoding $(printable "$encoding") and no content, as it serves a file over 1 MB"
+    return 1
+  fi
+  if ! printf '%s' "$content" | base64 -d >"$2" 2>"$work/err"; then
     fetch_error="cannot decode ${deployment} $(printable "$1"): $(first_line "$work/err")"
     return 1
   fi
@@ -316,9 +329,10 @@ load_entries() {
   entries_state=unread
   mkdir -p "$work/projects"
   # GitHub's listing names each entry with its type; the deployment's program reads every entry of
-  # the directory, so one that is no file (a link, a directory, a submodule) is not skipped but
-  # refused, and so is a listing that may have stopped at the 1,000 entries GitHub lists at most.
-  if ! names=$(gh api "repos/${deployment}/contents/legion/projects" --jq '.[] | [.type, .name] | @tsv' 2>"$work/err"); then
+  # the directory, so one that is no file (a link, a directory) is not skipped but refused, and so is
+  # a listing that may have stopped at the 1,000 entries GitHub lists at most. GitHub lists a
+  # submodule as a file with no download URL, so that is refused too.
+  if ! names=$(gh api "repos/${deployment}/contents/legion/projects" --jq '.[] | [.type, (if .download_url == null then "none" else "url" end), .name] | @tsv' 2>"$work/err"); then
     if ! grep -qF 'HTTP 404' "$work/err"; then
       entries_state=failed
       entries_error="cannot list ${deployment} legion/projects: $(first_line "$work/err")"
@@ -332,11 +346,16 @@ load_entries() {
     entries_error="${deployment} legion/projects/ holds 1000 entries or more, and GitHub lists at most 1,000, so the gate cannot read every project"
     return 0
   fi
-  while IFS=$'\t' read -r type name; do
+  while IFS=$'\t' read -r type url name; do
     [ -n "$name" ] || continue
     if [ "$type" != file ]; then
       entries_state=failed
       entries_error="${deployment} legion/projects/$(printable "$name") is a $(printable "$type"), which this gate does not read as a project file"
+      return 0
+    fi
+    if [ "$url" = none ]; then
+      entries_state=failed
+      entries_error="${deployment} legion/projects/$(printable "$name") is listed as a file with no download URL, as GitHub lists a submodule, which this gate does not read as a project file"
       return 0
     fi
     if ! fetch "legion/projects/$name" "$work/projects/$name"; then
@@ -686,11 +705,11 @@ compare_revision() {
     ahead:0) printf 'PASS: %s runs %s (ahead of %s)%s\n' "$key" "$runs" "$commit" "$via" ;;
     identical:0) printf 'PASS: %s runs %s (identical to %s)%s\n' "$key" "$runs" "$commit" "$via" ;;
     behind:*)
-      printf 'GATE SHUT: %s runs %s (behind %s by %s)%s\n' "$key" "$runs" "$commit" "$behind_by" "$via"
+      printf 'GATE SHUT: %s runs %s (behind %s by %s)%s\n' "$key" "$runs" "$commit" "$(printable "$behind_by")" "$via"
       shut=$((shut + 1))
       ;;
     diverged:*)
-      printf 'GATE SHUT: %s runs %s (diverged from %s, behind by %s)%s\n' "$key" "$runs" "$commit" "$behind_by" "$via"
+      printf 'GATE SHUT: %s runs %s (diverged from %s, behind by %s)%s\n' "$key" "$runs" "$commit" "$(printable "$behind_by")" "$via"
       shut=$((shut + 1))
       ;;
     *)

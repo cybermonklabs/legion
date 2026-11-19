@@ -191,6 +191,11 @@ except (OSError, EOFError, tarfile.TarError) as error:
 for path in sorted(blobs):
     if wanted(path) and path not in members:
         fail(f"the archive leaves out {path}, which the commit holds, so its code cannot be read")
+# A file stored in Git LFS is its pointer in both the tree and the archive, and GitHub's archive
+# leaves the object out, so its code is never there to read.
+for name in sorted(sources):
+    if sources[name].startswith(b"version https://git-lfs.github.com/spec/v1"):
+        fail(f"{name} is a Git LFS pointer, whose content neither the tree nor the archive holds, so its code cannot be read")
 
 
 def go_files(top):

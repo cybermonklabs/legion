@@ -74,13 +74,16 @@ check "refuses UNKNOWN naming the dist-tag" \
   "$(has_line "UNKNOWN: dotfiles .claude/settings.json: npm answers no latest dist-tag of @sjawhar/claude-envoy")"
 check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 
-for answer in '["4.0.0-01"]' '["4.0.0-rc..1"]' '["4.0.0-."]' '["3.0.0-01", "4.0.0"]' '["3.0.0+..", "4.0.0"]' '["1.0.0\n4.0.0"]' '["4.0.0", {"version": "1.0.0"}]' 'text'; do
+# Each answer below is npm's whole answer, printed as it is (`.raw`): one npm can never give to the
+# gate's query (bare versions, a mixed list, a version that is no release version, text), which the
+# gate must read as no answer at all.
+for answer in '["4.0.0-01"]' '["4.0.0-rc..1"]' '["4.0.0-."]' '["3.0.0-01", "4.0.0"]' '["3.0.0+..", "4.0.0"]' '["1.0.0\n4.0.0"]' '["4.0.0", {"version": "1.0.0"}]' '["3.3.0", "4.0.0"]' 'text'; do
   echo "case: --clients, npm answers ${answer}"
   box_case "versions-npm-grammar-$(printf '%s' "$answer" | tr -c 'A-Za-z0-9' '_')"
   if [ "$answer" = text ]; then
-    printf 'npm warn config something\n4.0.0\n' >"${case_root}/npm/${npm_answer}"
+    printf 'npm warn config something\n4.0.0\n' >"${case_root}/npm/${npm_answer}.raw"
   else
-    printf '%s\n' "$answer" >"${case_root}/npm/${npm_answer}"
+    printf '%s\n' "$answer" >"${case_root}/npm/${npm_answer}.raw"
   fi
   tag "claude-envoy-v4.0.0-01" "$ahead_rev"
   tag "claude-envoy-v4.0.0-rc..1" "$ahead_rev"

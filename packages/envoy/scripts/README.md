@@ -669,12 +669,15 @@ mapping of a project's settings each, in file-name order), as the deployment's l
 them. Only a deployment with no such directory (GitHub answers 404) still declares them in the
 projects list of `legion/Pulumi.prod.yaml`, as that program did before the files. Any other failed
 listing, a listing of 1,000 entries or more (GitHub lists no more, so it may have stopped short),
-an entry that is no file (a link, a directory or a submodule), a file that is not one mapping, a
-file that program refuses (a name that is not `<nn>-<KEY>.yaml`, or a `key` that is not that KEY),
-and a deployment that declares no project print `UNKNOWN` naming what the gate read. A project
-whose `key` is no project key (`[A-Z][A-Z0-9]*`, which the list is held to as the files are), whose
-`replicas` is no count, whose `daemon` is no boolean, or whose image is no plain reference prints
-`UNKNOWN` by name: it is never skipped, and its image is never read cut short.
+an entry that is no file (a link or a directory), a file with no download URL (GitHub lists a
+submodule so), a file that is not one mapping, a file that program refuses (a name that is not
+`<nn>-<KEY>.yaml`, or a `key` that is not that KEY), and a deployment that declares no project
+print `UNKNOWN` naming what the gate read. A file GitHub serves with any encoding but base64 (it
+serves a file of 1 to 100 MB with encoding `none` and no content) is a file the gate cannot read,
+never an empty one. A project whose `key` is no project key (`[A-Z][A-Z0-9]*`, which the list is
+held to as the files are), whose `replicas` is no count, whose `daemon` is no boolean, or whose
+image is no plain reference prints `UNKNOWN` by name: it is never skipped, and its image is never
+read cut short.
 
 Without a mode it reads the image each Legion daemon runs: each project's `daemonImage` when
 set, else its `image`; a project at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
@@ -713,11 +716,12 @@ gate prints `VM HUB: <file>:<line> at <sha> uses NewNatsHub` (or `registers
 envoy-infra:gcp:NatsHub`) and reads the pin, which, if absent, stays `UNKNOWN`. Used nowhere, every
 file read, it prints `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and reads no VM pin. A
 head, tree, archive or file it cannot read, a tree GitHub lists only in part, a file the archive
-leaves out or changed, a hard link, a link that leaves the repository, a submodule (a tree entry of
-type commit, or a `.gitmodules`), whose code GitHub's archive does not hold, a local `replace` or
-`use` of `envoy/go.mod` or a `go.work` that leaves it, and an `envoy/` with no Go file or no
-`go.mod` print `UNKNOWN`, so a missing pin never reads as a hub that is gone. A stack pin that is
-no plain image reference prints `UNKNOWN` and is never read.
+leaves out or changed, a Go or module file that is a Git LFS pointer, a hard link, a link that
+leaves the repository, a submodule (a tree entry of type commit, or a `.gitmodules`), whose code
+GitHub's archive does not hold, a local `replace` or `use` of `envoy/go.mod` or a `go.work` that
+leaves it, and an `envoy/` with no Go file or no `go.mod` print `UNKNOWN`, so a missing pin never
+reads as a hub that is gone. A stack pin that is no plain image reference prints `UNKNOWN` and is
+never read.
 
 With `--clients` it reads the clients that deliver to a session, each of which must carry the
 client follow filter of `<commit>`, since an older one passes a frame in a form it does not match
@@ -767,25 +771,30 @@ in silence:
   lie inside the dotfiles' `.claude`; and the claude-envoy version the marketplace `legion-plugins`
   serves to `.claude/settings.json`. The marketplace is read as Claude Code reads it: its GitHub
   `repo` at its `ref` (sent percent-encoded), the file at its `path`, by default
-  `.claude-plugin/marketplace.json`, and the plugin from its npm `registry` when the entry names one
-  (`npm view --registry=<url>`); a `path` with an empty, `.` or `..` segment, and any other key of
-  the marketplace source or the npm source, print `UNKNOWN`, since either may move what is
-  installed. npm's install (npm-pick-manifest) takes the `latest` dist-tag when it matches the
+  `.claude-plugin/marketplace.json`, and the plugin from its npm `registry` when the entry names
+  one, which must be an `https` URL (`npm view --registry=<url>`); a `path` with an empty, `.` or
+  `..` segment, and any other key of the marketplace source or the npm source, print `UNKNOWN`,
+  since either may move what is installed. npm's install (npm-pick-manifest) takes the dist-tag its
+  `tag` setting names (`npm config get tag`, `latest` by default) when that version matches the
   range the marketplace names and is not deprecated, else the highest match that is not deprecated
   (the highest of all when every match is), so the gate asks
-  `npm view @sjawhar/claude-envoy@<range> version deprecated engines` and judges both: `latest`
-  (`npm view @sjawhar/claude-envoy dist-tags`) when it is among those matches, and the highest of
-  them by semantic-version precedence (a release above its own pre-release), each on its own line.
-  npm also ranks a match whose `engines` do not fit the box below the rest, which the gate cannot
-  judge, so a match that declares `engines` prints `UNKNOWN`. Each version must be an exact release
-  version and is judged by the commit of its release tag, `pi-envoy-v<version>` or
-  `claude-envoy-v<version>`. A settings file that enables no `claude-envoy@legion-plugins` prints
-  `SKIPPED`. A pi-envoy in `~/.omp/plugins` or a profile's plugin tree that is not the dotfiles'
-  copy, a claude-envoy recorded in `~/.claude` or another `CLAUDE_CONFIG_DIR`, a link that does not
-  resolve, a directory the gate may not search, a marketplace entry it cannot read, a marketplace
-  that names claude-envoy twice, npm dist-tags that name no `latest`, and an npm answer that is not
-  all release versions print `UNKNOWN`. A session started before a pin moved still runs the plugin
-  it loaded: the gate reads pins and installs, not processes.
+  `npm view @sjawhar/claude-envoy@<range> name version deprecated engines` and judges both: the
+  dist-tag's version (`npm view @sjawhar/claude-envoy dist-tags`) when it is among those matches,
+  and the highest of them by semantic-version precedence (a release above its own pre-release),
+  each on its own line. It asks for `name`, which every version has, because `npm view` prints each
+  match with only the fields it has a value for and unwraps every match to a bare version when the
+  first holds only one, losing the later matches' `deprecated`; an answer that is not one object
+  per match is unreadable. npm checks `engines.node` and `engines.npm` against the runtime it runs
+  on, which the gate does not know, so the version npm takes prints `UNKNOWN` when it declares
+  either. Each version must be an exact release version and is judged by the commit of its release
+  tag, `pi-envoy-v<version>` or `claude-envoy-v<version>`. A settings file that enables no
+  `claude-envoy@legion-plugins` prints `SKIPPED`. A pi-envoy in `~/.omp/plugins` or a profile's
+  plugin tree that is not the dotfiles' copy, a claude-envoy recorded in `~/.claude` or another
+  `CLAUDE_CONFIG_DIR`, a link that does not resolve, a directory the gate may not search, a
+  marketplace entry it cannot read, a marketplace that names claude-envoy twice, npm dist-tags that
+  name no version for its tag, and an npm answer that is not all release versions print
+  `UNKNOWN`. A session started before a pin moved still runs the plugin it loaded: the gate reads
+  pins and installs, not processes.
 
 It prints a line per pin or surface (`PASS`, `GATE SHUT`, `UNKNOWN`, `SKIPPED`, `VM HUB` or
 `NO VM HUB`) and the verdict on the last: `GATE OPEN` (exit 0) only when every pin it read passed

@@ -25,8 +25,8 @@ check "reads the claude-envoy version the marketplace serves, the highest npm ma
   "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served}")"
 check "reads the marketplace the settings name" \
   "$(grep -qF "repos/example-org/plugins/contents/.claude-plugin/marketplace.json" "$calls" && echo true || echo false)"
-check "asks npm for the range the marketplace names, with each match's deprecation and engines" \
-  "$(grep -qxF "npm view @sjawhar/claude-envoy@>=1.0.0 version deprecated engines --json" "$calls" && echo true || echo false)"
+check "asks npm for the range the marketplace names, with each match's name, deprecation and engines" \
+  "$(grep -qxF "npm view @sjawhar/claude-envoy@>=1.0.0 name version deprecated engines --json" "$calls" && echo true || echo false)"
 check "resolves each version through its release tag" \
   "$(grep -qF "repos/cybermonklabs/legion/commits/refs/tags/pi-envoy-v17.40.0" "$calls" && grep -qF "repos/cybermonklabs/legion/commits/refs/tags/claude-envoy-v4.0.0" "$calls" && echo true || echo false)"
 check "asks npm for the latest dist-tag, and judges it once, it being the highest match" \

@@ -224,7 +224,7 @@ dotfiles_clients() {
     if [ -e "$package" ]; then
       label="dotfiles omp/plugins installed @sjawhar/pi-envoy"
       if ! installed=$(jq -er 'select(.name == "@sjawhar/pi-envoy") | .version | strings' "$package/package.json" 2>/dev/null); then
-        printf 'UNKNOWN: %s: %s/package.json is no @sjawhar/pi-envoy manifest with a version\n' "$label" "$package"
+        printf 'UNKNOWN: %s: %s/package.json is no @sjawhar/pi-envoy manifest with a version\n' "$label" "$(printable "$package")"
         unknown=$((unknown + 1))
       elif [ "$installed" != "$pin" ]; then
         judge_release "$label" pi-envoy "$installed" "; the pin names $(printable "$pin")"
@@ -240,14 +240,14 @@ dotfiles_clients() {
 # ~/.claude or the CLAUDE_CONFIG_DIR this run is given, is UNKNOWN.
 dotfiles_claude_envoy() {
   local root=$1 label="dotfiles .claude/settings.json" record state own_record=absent name version enabled others marketplace repo ref query plugin range served tags latest
-  local extra file shown_file shown_range registry
+  local extra file shown_file shown_range shown_plugin registry tag shown_tag
   local -a registry_args=()
   for record in "$HOME/.claude/plugins/installed_plugins.json" ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"} "$root/.claude/plugins/installed_plugins.json"; do
     state=$(entry_state "$record")
     if [ "$state" = absent ]; then
       continue
     elif [ "$state" != present ]; then
-      printf 'UNKNOWN: %s: cannot tell whether a Claude Code plugin record is there: %s\n' "$label" "${state#unknown }"
+      printf 'UNKNOWN: %s: cannot tell whether a Claude Code plugin record is there: %s\n' "$label" "$(printable "${state#unknown }")"
       unknown=$((unknown + 1))
       return
     fi
@@ -262,7 +262,7 @@ dotfiles_claude_envoy() {
       return
     fi
     if [ -s "$work/claude.outside" ]; then
-      printf 'UNKNOWN: %s: claude-envoy is installed outside %s, in %s\n' "$label" "$root" "$(dirname "$record")"
+      printf 'UNKNOWN: %s: claude-envoy is installed outside %s, in %s\n' "$label" "$(printable "$root")" "$(printable "$(dirname "$record")")"
       unknown=$((unknown + 1))
       return
     fi
@@ -310,7 +310,7 @@ dotfiles_claude_envoy() {
   if [ "$(jq -r '.source // ""' <<<"$marketplace")" != github ] || ! repo=$(jq -er '.repo | strings' <<<"$marketplace") ||
     ! [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
     ! jq -e '(.ref // "" | type == "string") and (.path // "" | type == "string")' <<<"$marketplace" >/dev/null; then
-    printf 'UNKNOWN: %s: the marketplace legion-plugins it names is %s, which is no GitHub repository this gate reads\n' "$label" "$marketplace"
+    printf 'UNKNOWN: %s: the marketplace legion-plugins it names is %s, which is no GitHub repository this gate reads\n' "$label" "$(printable "$marketplace")"
     unknown=$((unknown + 1))
     return
   fi
@@ -323,7 +323,7 @@ dotfiles_claude_envoy() {
   # A `..` or `.` segment, or an empty one, would let GitHub's API (or the URL it is sent as) read a
   # file the path does not name in the repository Claude Code clones.
   if ! jq -e '.path // ".claude-plugin/marketplace.json" | split("/") | all(. != "" and . != "." and . != "..")' <<<"$marketplace" >/dev/null; then
-    printf 'UNKNOWN: %s: the marketplace legion-plugins it names sets path %s, which is no plain path inside its repository\n' "$label" "$(jq -c '.path' <<<"$marketplace")"
+    printf 'UNKNOWN: %s: the marketplace legion-plugins it names sets path %s, which is no plain path inside its repository\n' "$label" "$(printable "$(jq -c '.path' <<<"$marketplace")")"
     unknown=$((unknown + 1))
     return
   fi
@@ -343,7 +343,8 @@ dotfiles_claude_envoy() {
     [ "$(jq -r '.source? // ""' <<<"$plugin")" != npm ] ||
     [ "$(jq -r '.package? // ""' <<<"$plugin")" != "@sjawhar/claude-envoy" ] ||
     ! jq -e '.registry // "" | type == "string"' <<<"$plugin" >/dev/null; then
-    printf 'UNKNOWN: %s: %s %s serves claude-envoy as %s, not as one entry of the npm package @sjawhar/claude-envoy\n' "$label" "$repo" "$shown_file" "${plugin:-$(first_line "$work/err")}"
+    if [ -n "$plugin" ]; then shown_plugin=$(printable "$plugin"); else shown_plugin=$(first_line "$work/err"); fi
+    printf 'UNKNOWN: %s: %s %s serves claude-envoy as %s, not as one entry of the npm package @sjawhar/claude-envoy\n' "$label" "$repo" "$shown_file" "$shown_plugin"
     unknown=$((unknown + 1))
     return
   fi
@@ -357,15 +358,33 @@ dotfiles_claude_envoy() {
   shown_range=$(printable "$range")
   registry=$(jq -r '.registry // ""' <<<"$plugin")
   registry_args=()
+  # Claude Code takes a registry other than the box's default only over https, and npm answers from
+  # its default registry, with a warning on stderr, for a value it cannot read as a URL.
+  if [ -n "$registry" ] && ! [[ $registry =~ ^https://[^[:space:]]+$ ]]; then
+    printf 'UNKNOWN: %s: %s %s serves claude-envoy from registry %s, which is no https URL\n' "$label" "$repo" "$shown_file" "$(printable "$registry")"
+    unknown=$((unknown + 1))
+    return
+  fi
   [ -z "$registry" ] || registry_args=("--registry=$registry")
-  # npm's install (npm-pick-manifest) takes the `latest` dist-tag when it matches the range and is
-  # not deprecated, else the highest match that is not deprecated, the highest of all when every
-  # match is; and it ranks a match whose engines do not fit the box below the rest, which the gate
-  # cannot judge, so a match that declares engines is UNKNOWN. Where both may be installed, both are
-  # judged: `latest` when it is among the matches, and the highest of them by semantic-version
-  # precedence, where a release ranks above its own pre-release (`sort -V` ranks them the other
-  # way). Each answer must be one whole version, so no answer splits.
-  if ! served=$(npm view "@sjawhar/claude-envoy@$range" version deprecated engines --json "${registry_args[@]}" 2>"$work/err"); then
+  # npm's install (npm-pick-manifest, lib/index.js:123-136 and :168-186 in npm 10.9.7) takes the
+  # dist-tag its `tag` setting names, `latest` by default, when that version matches the range, is
+  # not deprecated and its engines fit; else it ranks the matches that are not deprecated and whose
+  # engines fit first, and takes the highest by semantic-version precedence, where a release ranks
+  # above its own pre-release (`sort -V` ranks them the other way). Only `engines.node` and
+  # `engines.npm` are checked (npm-install-checks, lib/index.js:13-14), against a runtime the gate
+  # does not know, so the version npm takes is UNKNOWN when it declares either; one it passes over
+  # cannot move it. Where both may be installed, both are judged: the dist-tag's version when it is
+  # among the matches, and the highest match. `npm view` prints each match with only the fields it
+  # has a value for, and unwraps every match to its one field when the first match holds only one
+  # (lib/commands/view.js:417-422, :248-249), so the query asks for `name`, which every version
+  # has, and an answer that is not one object per match is unreadable whole.
+  if ! tag=$(npm config get tag 2>"$work/err") || [ -z "$tag" ]; then
+    printf "UNKNOWN: %s: cannot read npm's tag setting: %s\n" "$label" "$(first_line "$work/err")"
+    unknown=$((unknown + 1))
+    return
+  fi
+  shown_tag=$(printable "$tag")
+  if ! served=$(npm view "@sjawhar/claude-envoy@$range" name version deprecated engines --json "${registry_args[@]}" 2>"$work/err"); then
     printf 'UNKNOWN: %s: npm cannot resolve @sjawhar/claude-envoy@%s: %s\n' "$label" "$shown_range" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
     return
@@ -375,8 +394,8 @@ dotfiles_claude_envoy() {
     unknown=$((unknown + 1))
     return
   fi
-  if ! latest=$(jq -er '.latest | strings' <<<"$tags" 2>/dev/null); then
-    printf 'UNKNOWN: %s: npm answers no latest dist-tag of @sjawhar/claude-envoy\n' "$label"
+  if ! latest=$(jq -er --arg tag "$tag" '.[$tag] | strings' <<<"$tags" 2>/dev/null); then
+    printf 'UNKNOWN: %s: npm answers no %s dist-tag of @sjawhar/claude-envoy\n' "$label" "$shown_tag"
     unknown=$((unknown + 1))
     return
   fi
@@ -403,16 +422,16 @@ def core(version):
     return head if release.fullmatch(head) else None
 
 
-# npm answers one match as itself and several as a list: each a version alone when no match is
-# deprecated or declares engines, and each an object of its version and those fields when one does.
+# npm answers one match as itself and several as a list, each an object of its name, its version and
+# whichever of deprecated and engines it has. A bare version, or an object with no name, is the
+# unwrapped shape, which has lost the other matches' fields, so the answer is unreadable whole.
 matches = answer if isinstance(answer, list) else [answer]
-if all(isinstance(m, str) for m in matches):
-    matches = [{"version": m} for m in matches]
-elif not all(isinstance(m, dict) for m in matches):
+if not matches or not all(isinstance(m, dict) and m.get("name") == "@sjawhar/claude-envoy" for m in matches):
     sys.exit(1)
 versions = [m.get("version") for m in matches]
-if not versions or any(core(v) is None for v in versions):
+if any(core(v) is None for v in versions):
     sys.exit(1)
+by_version = {m["version"]: m for m in matches}
 
 
 def precedence(version):
@@ -422,16 +441,22 @@ def precedence(version):
     return (major, minor, patch, not pre, parts)
 
 
-engines = [m["version"] for m in matches if m.get("engines")]
-if engines:
-    print(f"engines {max(engines, key=precedence)}")
-    sys.exit(0)
-deprecated = {m["version"] for m in matches if m.get("deprecated")}
-# The highest match npm may take, then `latest` when it is another of them.
+def bound(version):
+    """whether the version declares an engine npm checks: engines.node or engines.npm."""
+    engines = by_version[version].get("engines")
+    return isinstance(engines, dict) and bool(engines.get("node") or engines.get("npm"))
+
+
+deprecated = {v for v in versions if by_version[v].get("deprecated")}
+# The highest match npm may take, and the dist-tag's version when npm takes it instead.
 highest = max([v for v in versions if v not in deprecated] or versions, key=precedence)
+taken = latest if latest in versions and latest not in deprecated else highest
+if bound(taken):
+    print(f"engines {taken}")
+    sys.exit(0)
 print(highest)
-if latest in versions and latest not in deprecated and latest != highest:
-    print(latest)
+if taken != highest:
+    print(taken)
 PY
     printf 'UNKNOWN: %s: npm answers no version of @sjawhar/claude-envoy for %s\n' "$label" "$shown_range"
     unknown=$((unknown + 1))
@@ -448,6 +473,6 @@ PY
     judge_release "$label" claude-envoy "$served" "; the version legion-plugins serves for $shown_range"
     return
   fi
-  judge_release "$label" claude-envoy "$latest" "; the version legion-plugins serves for $shown_range, npm's latest dist-tag"
+  judge_release "$label" claude-envoy "$latest" "; the version legion-plugins serves for $shown_range, npm's $shown_tag dist-tag"
   judge_release "$label" claude-envoy "$served" "; the highest version npm matches to $shown_range"
 }
