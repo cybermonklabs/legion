@@ -1,6 +1,7 @@
-// The placement rules of `withSessionAnswers` on reads through the real `readSessionAnswers`, as
-// the extension reads: each from a Dispatch stand-in of its own and on a clock of its own (`now`),
-// handed on by `carriedAnswers`, the mapping the extension's `sessionAnswersText` calls.
+// The rules by which `withSessionAnswers` keeps every list sent and appends a change, on reads
+// through the real `readSessionAnswers`, as the extension reads: each from a Dispatch stand-in of
+// its own and on a clock of its own (`now`), handed on by `carriedAnswers`, the mapping the
+// extension's `sessionAnswersText` calls.
 import { expect, test } from "bun:test";
 import type { SessionAnswer } from "@legion/contracts";
 import { bearerCredential } from "@legion/envoy-client/bearer";
@@ -17,7 +18,12 @@ import {
   requestOf,
   skill,
 } from "../test/session-answers-requests";
-import { carriedAnswers, withSessionAnswers } from "./session-answers-context";
+import {
+  carriedAnswers,
+  SESSION_ANSWERS_NO_ITEM,
+  SESSION_ANSWERS_REPLACES,
+  withSessionAnswers,
+} from "./session-answers-context";
 
 /** A state directory of the case's own, for the read's `answers.json`. */
 const stateDir = temporaryDirectories("session-answers-read");
@@ -45,9 +51,17 @@ function writtenBefore(hours: number, id: string, text: string, item = ITEM): Se
   return { ...item, id, at: new Date(NOW - hours * 3_600_000).toISOString(), text };
 }
 
-/** The message a request carries `text` in, as `userTextMessage` adds it. */
+/** The message a request carries the list `text` in, as `userTextMessage` adds it: the list, then
+ *  the sentence saying it replaces every earlier list. */
 function listMessage(text: string | undefined): unknown {
-  return { role: "user", content: [{ type: "text", text }], timestamp: 0 };
+  return {
+    role: "user",
+    content: [
+      { type: "text", text },
+      { type: "text", text: SESSION_ANSWERS_REPLACES },
+    ],
+    timestamp: 0,
+  };
 }
 
 let dispatchCount = 0;
@@ -80,9 +94,10 @@ function readingDispatch(items: () => readonly SessionAnswer[], now: () => numbe
 }
 
 // The character cap leaves out the first item that does not fit, and every item older than it.
-// What a person wrote there still counts: the list moves, and the model reads the new list with
-// its line counting what was left out, rather than kept bytes that look current.
-test("a new item longer than the character cap moves the list", async () => {
+// What a person wrote there still counts: a list goes after the last message, and the model reads
+// it with its line counting what was left out, rather than the list sent before as current. The
+// list sent before stays where it went, with its bytes.
+test("a new item longer than the character cap appends a list after the last message", async () => {
   const older = writtenBefore(2, "m-older", "Ship it.");
   let items = [older];
   const read = readingDispatch(
@@ -90,20 +105,25 @@ test("a new item longer than the character cap moves the list", async () => {
     () => NOW
   );
   const session = {};
+  const placed = listMessage(renderSessionAnswers(items, { now: NOW }));
   expect(await withSessionAnswers([skill, ask], requestOf(read, noBranch, session))).toEqual([
     skill,
     ask,
-    listMessage(renderSessionAnswers(items, { now: NOW })),
+    placed,
   ]);
   items = [writtenBefore(1, "m-longest", "w".repeat(9_000)), older];
   const turn = [skill, ask, readCall, readResult];
   expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
-    ...turn,
+    skill,
+    ask,
+    placed,
+    readCall,
+    readResult,
     listMessage(renderSessionAnswers(items, { now: NOW })),
   ]);
 });
 
-test("an edit that makes a shown comment too long for the character cap moves the list", async () => {
+test("an edit that makes a shown comment too long for the character cap appends a list after the last message", async () => {
   const newer = writtenBefore(1, "m-newer", "x".repeat(3_000));
   const shipIt = writtenBefore(2, "c-1", "Ship it.", COMMENT);
   let items = [newer, shipIt];
@@ -125,19 +145,23 @@ test("an edit that makes a shown comment too long for the character cap moves th
     text: `Do not ship. ${"y".repeat(5_500)}`,
   };
   items = [newer, edited];
-  const moved = listMessage(renderSessionAnswers(items, { now: NOW }));
-  expect(JSON.stringify(moved)).not.toContain("Do not ship.");
+  const appended = listMessage(renderSessionAnswers(items, { now: NOW }));
+  expect(JSON.stringify(appended)).not.toContain("Do not ship.");
   const turn = [skill, ask, readCall, readResult];
   expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
-    ...turn,
-    moved,
+    skill,
+    ask,
+    placed,
+    readCall,
+    readResult,
+    appended,
   ]);
 });
 
 // A list the cap left with no item, only its header and its left-out line, shows nobody's words.
 // Each case below changes an item that list leaves out and retracts nothing, so only the words of
 // every item Dispatch sent, the left-out ones included, tell the two reads apart.
-test("a second item over the character cap moves a list the cap had already emptied", async () => {
+test("a second item over the character cap appends a list after one the cap had already emptied", async () => {
   const first = writtenBefore(2, "m-first", "w".repeat(9_000));
   let items = [first];
   const read = readingDispatch(
@@ -155,12 +179,16 @@ test("a second item over the character cap moves a list the cap had already empt
   items = [writtenBefore(1, "m-second", "v".repeat(9_000)), first];
   const turn = [skill, ask, readCall, readResult];
   expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
-    ...turn,
+    skill,
+    ask,
+    placed,
+    readCall,
+    readResult,
     listMessage(renderSessionAnswers(items, { now: NOW })),
   ]);
 });
 
-test("an edit to the comment a list left out whole moves the list, though its text is the same", async () => {
+test("an edit to the comment a list left out whole appends a list, though its text is the same", async () => {
   const first = writtenBefore(2, "c-1", "w".repeat(9_000), COMMENT);
   let items = [first];
   const read = readingDispatch(
@@ -179,15 +207,20 @@ test("an edit to the comment a list left out whole moves the list, though its te
   expect(listMessage(renderSessionAnswers(items, { now: NOW }))).toEqual(placed);
   const turn = [skill, ask, readCall, readResult];
   expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
-    ...turn,
+    skill,
+    ask,
+    placed,
+    readCall,
+    readResult,
     placed,
   ]);
 });
 
 // An answer a person retracts (sets back to none) leaves the read while its time is still inside
-// the 72 hours, so a kept list would go on showing it as current: the list moves. An item the
-// window leaves behind is no change, and the list keeps its place and its bytes.
-test("a retracted answer moves the list", async () => {
+// the 72 hours, so the list sent would go on showing it as current: a list without it goes after
+// the last message, and the list sent stays where it went. An item the window leaves behind is no
+// change, and appends nothing.
+test("a retracted answer appends a list after the last message", async () => {
   const message = writtenBefore(2, "m-1", "Also check the docs.");
   let items = [writtenBefore(1, "ask-1", "The second way, please.", ANSWER), message];
   let clock = NOW;
@@ -196,20 +229,27 @@ test("a retracted answer moves the list", async () => {
     () => clock
   );
   const session = {};
+  const placed = listMessage(renderSessionAnswers(items, { now: NOW }));
   await withSessionAnswers([skill, ask], requestOf(read, noBranch, session));
   clock = NOW + 60_000;
   items = [message];
   const turn = [skill, ask, readCall, readResult];
   expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual([
-    ...turn,
+    skill,
+    ask,
+    placed,
+    readCall,
+    readResult,
     listMessage(renderSessionAnswers(items, { now: clock })),
   ]);
 });
 
 // With the only answer in the window retracted, the read has no list to give, and no text; its
-// words still show that answer gone while its time is inside the window. The list leaves the
-// request and stays out, rather than go on showing the withdrawn words as current.
-test("retracting the only answer in the window takes the list out of the request", async () => {
+// words still show that answer gone while its time is inside the window. Taking the list sent out
+// would change the request from its place on, so the "no item" list goes after the last message,
+// rather than leave the withdrawn words the newest list; its words are the read's, so the next
+// request appends nothing.
+test('retracting the only answer in the window appends the "no item" list, and the next request appends nothing', async () => {
   let items = [writtenBefore(1, "ask-1", "The second way, please.", ANSWER)];
   let clock = NOW;
   const read = readingDispatch(
@@ -217,17 +257,23 @@ test("retracting the only answer in the window takes the list out of the request
     () => clock
   );
   const session = {};
+  const placed = listMessage(renderSessionAnswers(items, { now: NOW }));
   expect(await withSessionAnswers([skill, ask], requestOf(read, noBranch, session))).toEqual([
     skill,
     ask,
-    listMessage(renderSessionAnswers(items, { now: NOW })),
+    placed,
   ]);
   clock = NOW + 60_000;
   items = [];
   const turn = [skill, ask, readCall, readResult];
-  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toBeUndefined();
+  const emptied = [skill, ask, placed, readCall, readResult, listMessage(SESSION_ANSWERS_NO_ITEM)];
+  expect(await withSessionAnswers([...turn], requestOf(read, noBranch, session))).toEqual(emptied);
   const tools = [...turn, grepCall, grepResult];
-  expect(await withSessionAnswers([...tools], requestOf(read, noBranch, session))).toBeUndefined();
+  expect(await withSessionAnswers([...tools], requestOf(read, noBranch, session))).toEqual([
+    ...emptied,
+    grepCall,
+    grepResult,
+  ]);
 });
 
 test("an item the 72-hour window left behind keeps the list's place and bytes", async () => {

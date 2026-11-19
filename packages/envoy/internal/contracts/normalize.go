@@ -195,16 +195,83 @@ func GithubCIObservation(event string, object map[string]any, owner, repo, numbe
 	return obs, true
 }
 
-// checkName is a check's name as the CI store keys it: whole, or past maxEnvelopeTextRunes its first
-// maxEnvelopeTextRunes runes and an ellipsis followed by a digest of the whole name, so two names
-// that share the kept text stay two checks and one name keys the same entry every time. The name is
-// the one text a repository chooses in an observation (a workflow's job names it).
+// checkName is a check's name, or a commit status's context, as the CI store keys it: whole, or
+// past maxEnvelopeTextRunes its first maxEnvelopeTextRunes runes and an ellipsis followed by a
+// digest of the whole name, so two names that share the kept text stay two entries and one name
+// keys the same entry every time. The name is the one text a repository chooses in an observation
+// (a workflow's job names a check run, and whatever posts a status names its context).
 func checkName(name string) string {
 	if utf8.RuneCountInString(name) <= maxEnvelopeTextRunes {
 		return name
 	}
 	digest := sha256.Sum256([]byte(name))
 	return truncateWithEllipsis(name, maxEnvelopeTextRunes) + " " + hex.EncodeToString(digest[:8])
+}
+
+// StatusObservation is one commit status of a pull request's head for the CI state aggregator:
+// the newest status GitHub holds for one context, in a state the record keeps
+// (TerminalStatusState). A status is an entry of its own kind in the record, apart from any check
+// run of the same name.
+type StatusObservation struct {
+	Owner  string
+	Repo   string
+	Number string
+	SHA    string
+	// Context names the status, as the CI store keys it (checkName).
+	Context string
+	// State is success, failure or error, as GitHub's REST answer spells it.
+	State string
+	// CreatedAt is GitHub's created_at, which orders two statuses of one context.
+	CreatedAt   string
+	URL         string
+	Description string
+}
+
+// TerminalStatusState reports whether state is a commit status state the CI record keeps:
+// success, failure or error. GitHub's other states, pending and GraphQL's EXPECTED, say the
+// context has not finished, and the record keeps no such status, so a context that stays pending
+// holds no head back.
+func TerminalStatusState(state string) bool {
+	switch state {
+	case "success", "failure", "error":
+		return true
+	}
+	return false
+}
+
+// GithubStatusObservation maps one commit status object to the observation the CI store records
+// under owner/repo, pull request number and head sha. ok is false for a status with no context or
+// no head, and for one in a state the record does not keep (TerminalStatusState): a pending status
+// is never recorded, so a newer pending status leaves the recorded one in place.
+//
+// object is in the shape GitHub's REST answer GET /repos/{owner}/{repo}/commits/{ref}/status lists
+// each status in: context, state, created_at, target_url and description. Dispatch's CI reconcile
+// maps a status its GraphQL query read into that same shape, as it maps a check run into the
+// webhook's, so one status read either way maps to one observation. The sha and the number come
+// from the caller, because a listed status carries neither. The state is lower-cased, since
+// GraphQL's StatusState is upper case (SUCCESS) where REST's is lower case (success). Each text is
+// capped as a check run's is (GithubCIObservation), and a context past the cap keeps a digest of
+// the whole context after its ellipsis (checkName), because the record is keyed by context.
+func GithubStatusObservation(object map[string]any, owner, repo, number, sha string) (StatusObservation, bool) {
+	name := checkName(stringValue(object["context"]))
+	state := strings.ToLower(stringValue(object["state"]))
+	if sha == "" || name == "" || !TerminalStatusState(state) {
+		return StatusObservation{}, false
+	}
+	text := func(key string) string {
+		return truncateWithEllipsis(stringValue(object[key]), maxEnvelopeTextRunes)
+	}
+	return StatusObservation{
+		Owner:       owner,
+		Repo:        repo,
+		Number:      number,
+		SHA:         sha,
+		Context:     name,
+		State:       state,
+		CreatedAt:   text("created_at"),
+		URL:         text("target_url"),
+		Description: text("description"),
+	}, true
 }
 
 // ReviewerVerdict is what the shared rule says about one check run's name and the App that

@@ -1,0 +1,22 @@
+kind: Added
+body: |-
+    The daemon reads the `statuses` field of a CI settlement and keeps the commit statuses of the
+    checked head in a new column of `pull_requests` (migration `20261117112334`). It merges the
+    statuses of each settlement it applies into the ones it keeps, one context at a time: the
+    status with the later `created_at` is kept, and a context that the settlement leaves out stays
+    as it was. A settlement that names a new context, or a later `created_at` for a context, and
+    whose check runs are older than the ones the daemon keeps, or the same at a generation no
+    higher than the kept one, changes those statuses alone: the kept check runs, failed and
+    cancelled names, generation and snapshot stay, and the kept status stands on an equal
+    `created_at`. So a status that changes on a CI record recreated after the bucket's TTL still
+    reaches the daemon, and an earlier settlement that names fewer check runs than a later one
+    puts none of its older view back. A settlement is applied whole only where its check runs are
+    newer for some check, or the same at a higher generation. Its CI message and the notice of a
+    head that GitHub will not merge name each status with its state, after the check runs, and
+    the task of a role that a settlement wakes names each failed status. A failed status moves no
+    issue. A settlement whose `statuses` field the daemon cannot read, such as one with an entry
+    that has no `created_at`, keeps the statuses it already holds for that head, and the rest of
+    the settlement applies as before.
+time: 2026-11-17T12:46:29Z
+custom:
+    Issue: pr4299
