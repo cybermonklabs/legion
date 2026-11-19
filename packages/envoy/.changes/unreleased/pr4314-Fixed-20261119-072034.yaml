@@ -40,6 +40,14 @@ body: |-
 
   `gcp:Dispatch` and `gcp:ClusteredNatsHub` name a refused `oidcIssuer` by its length, never
   quoting it, since an issuer refused for its user part holds a password.
+
+  `envoy-dispatch versions` reads `DATABASE_URL` through `pgsetting`, as the census does: a value
+  pgx cannot parse is refused by its length, and a failed connect names no user.
+
+  A Google identity token's audience (`ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`,
+  `BROKER_JUDGE_MODEL_AUDIENCE`) is named through `redact.URL` in every error that reads or mints
+  one, and a failed read of the metadata server names the identity path it asked and the cause's
+  class, never the URL it asked, whose query holds the audience.
 time: 2026-11-19T07:20:34Z
 custom:
     Issue: pr4314
