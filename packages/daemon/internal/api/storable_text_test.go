@@ -13,13 +13,13 @@ import (
 )
 
 // nulText is a string whose second character is a NUL (U+0000), which PostgreSQL's text and jsonb
-// cannot hold: a statement that stores it fails.
+// cannot hold: the daemon's store keeps U+FFFD in its place.
 const nulText = "a\x00b"
 
 // nulError is the decoder's error for a string at place whose NUL is its at-th character, counted
 // from 1 in code points.
 func nulError(place string, at int) string {
-	return fmt.Sprintf("%s holds a NUL character (U+0000) at character %d, which the daemon cannot store", place, at)
+	return fmt.Sprintf("%s holds a NUL character (U+0000) at character %d, which the daemon API refuses rather than store it as U+FFFD", place, at)
 }
 
 // The decoder of every request body refuses a string holding a NUL character, in strict mode and
@@ -78,8 +78,8 @@ func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 // GitHub is read, with nothing recorded and the issue where it was, so the agent sends it again
 // corrected and that is taken. The workflow decides the fact here, writing the summary on the
 // implementer's phase row as the whole daemon does: a summary holding a NUL that reached that
-// write would fail it, and the completion would be answered 500 FACT_APPLY_FAILED, naming no
-// field.
+// write would be stored with U+FFFD in its place and the completion answered 200, so the agent
+// would never learn that its summary was not kept as written.
 func TestACompletionSummaryWithANulIsRefusedAsInput(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h := newWorkflowHandoffHarness(t, github, io.Discard)

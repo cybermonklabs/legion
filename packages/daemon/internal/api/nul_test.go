@@ -9,9 +9,11 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -20,9 +22,11 @@ import (
 )
 
 // PostgreSQL refuses a NUL and a byte that is not UTF-8 in text (SQLSTATE 22021), and a \u0000
-// escape in jsonb (22P05). Text the daemon stores from a worker, a runtime or a request is stored
-// with U+FFFD in their place instead, and the write that carries it is taken. Every test here
-// writes through the harness's store, which store.Open built.
+// escape in jsonb (22P05). Text the daemon stores from a worker, a runtime or a fact is stored
+// with U+FFFD in their place instead, and the write that carries it is taken. A request body that
+// holds a NUL is refused by the API's decoder before its route reads it (decodeJSON), so a test of
+// such a route hands the fact or the event the route would build to the daemon below the API.
+// Every test here writes through the harness's store, which store.Open built.
 
 // storeRefusal is the server's refusal of a statement in err's chain, and "" when err carries
 // none. A launch the runtime refused answers an error whatever the store did with the claim; what
@@ -227,48 +231,108 @@ func TestADeathDetailWithNULAndAnInvalidByteIsStoredWithReplacementCharacters(t 
 	}
 }
 
-// A completion whose summary holds a NUL is answered as a clean one is: the tester's phase row
-// and the phase-finished notice it queues for the architect hold the summary with U+FFFD.
-func TestHandoffCompleteStoresASummaryWithNULAsReplacementCharacter(t *testing.T) {
+// phaseFinishedSummaries is the summary of each phase-finished notice of role's completion on
+// issue queued in the outbox, in no order.
+func phaseFinishedSummaries(t *testing.T, h *harness, issue string, role claim.Role) []string {
+	t.Helper()
+	rows, err := h.store.Pool().Query(h.ctx, `select payload->>'summary' from outbox
+		where issue = $1 and kind = 'notice' and payload->>'kind' = 'phase-finished' and payload->>'role' = $2`,
+		issue, string(role))
+	if err != nil {
+		t.Fatalf("read the %s's phase-finished notices on %s: %v", role, issue, err)
+	}
+	summaries, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the %s's phase-finished notices on %s: %v", role, issue, err)
+	}
+	return summaries
+}
+
+// A completion whose summary holds a NUL is refused by the decoder of its body, 400 naming
+// summary, before the route reads it, and nothing of it is recorded: the issue is still in
+// testing, the tester's phase row holds no completion, and no phase-finished notice is queued for
+// the architect. The same completion applied below the API stores the summary with U+FFFD
+// (TestHandoffCompleteFactBelowTheAPIStoresASummaryWithNULAsReplacementCharacter).
+func TestHandoffCompleteRefusesASummaryWithNULAndRecordsNothing(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
 	seedPullRequest(t, h, "LEGION-208", headSHA)
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+
+	wantRefusal(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass\x00 at the head", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusBadRequest,
+		"invalid request body: "+nulError("summary", 11))
+
+	assertIssuePhase(t, h, phase.Testing)
+	if row := phaseRowOf(t, h, "LEGION-208", claim.RoleTester); row != nil && (row.Summary != "" || row.HandoffRecord != "") {
+		t.Fatalf("the tester's row after the refusal = %+v, want no completion recorded on it", row)
+	}
+	if notices := phaseFinishedSummaries(t, h, "LEGION-208", claim.RoleTester); len(notices) != 0 {
+		t.Fatalf("the tester's phase-finished notices after the refusal carry the summaries %q, want none queued", notices)
+	}
+}
+
+// The completion of a summary that holds a NUL, applied below the API as the completion route
+// applies it (intake.ApplyFact on the harness's pool, with the workflow deciding it), is taken with
+// no error: the tester's phase row and the phase-finished notice it queues for the architect hold
+// the summary with U+FFFD.
+func TestHandoffCompleteFactBelowTheAPIStoresASummaryWithNULAsReplacementCharacter(t *testing.T) {
+	h, engine, _ := newEntryHarness(t)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	machine, ok := h.supervisor.Machine(tester.token)
+	if !ok {
+		t.Fatalf("no machine for %s", tester.token)
+	}
+	c := machine.Claim()
+	handoff := tester.writeHandoff("test", 1)
 	const want = "tests pass\uFFFD at the head"
 
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass\x00 at the head", Verdict: "pass",
-		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+	// The fact and its key as the completion route builds them (handoff.go): the run the claim
+	// serves, and the key's tree generation and generation 1, as LEGION-208 is seeded, and pass 0,
+	// since no implementer's row raised it.
+	fact := intake.HandoffComplete{Generation: c.ServingRun(), Issue: "LEGION-208", Role: claim.RoleTester, Claim: tester.token,
+		Summary: "tests pass\x00 at the head", Verdict: "pass", Commit: headSHA, HandoffRecord: handoff, HandoffVersion: 1,
+		MustRate: c.PluginContract >= PlanRatingContract}
+	eventID := fmt.Sprintf("handoff:LEGION-208:1:1:%d:%s:%s:0:%s:pass", c.ServingRun(), claim.RoleTester, phase.Testing, handoff)
+	result, err := intake.ApplyFact(h.ctx, h.store.Pool(), "api", eventID, fact, engine)
+	if err != nil || result.Refusal != nil || result.Duplicate {
+		t.Fatalf("apply the tester's completion = %+v, %v; want it taken", result, err)
+	}
 
 	if row := phaseRowOf(t, h, "LEGION-208", claim.RoleTester); row == nil || row.Summary != want {
 		t.Fatalf("the tester's row = %+v, want its summary stored as %q", row, want)
 	}
-	var notice string
-	if err := h.store.Pool().QueryRow(h.ctx, `select payload->>'summary' from outbox
-		where issue = $1 and kind = 'notice' and payload->>'kind' = 'phase-finished' and payload->>'role' = $2`,
-		"LEGION-208", string(claim.RoleTester)).Scan(&notice); err != nil {
-		t.Fatalf("read the tester's phase-finished notice: %v", err)
-	}
-	if notice != want {
-		t.Fatalf("the phase-finished notice carries summary %q, want %q", notice, want)
+	if notices := phaseFinishedSummaries(t, h, "LEGION-208", claim.RoleTester); len(notices) != 1 || notices[0] != want {
+		t.Fatalf("the tester's phase-finished notices carry the summaries %q, want one of %q", notices, want)
 	}
 }
 
-// The operator's delivery of a task that holds a NUL is answered as a clean one is, and the task
-// is stored with U+FFFD in its place.
-func TestDeliverStoresATaskWithNULAsReplacementCharacter(t *testing.T) {
+// The operator's delivery of a task that holds a NUL is refused by the decoder of its body, 400
+// naming task, and queues nothing. The same delivery handed to the claim's machine below the API,
+// as the deliver route hands it (operator.go's deliverEvent), is stored with U+FFFD in its place.
+func TestDeliverRefusesATaskWithNULThatTheMachineStoresAsReplacementCharacter(t *testing.T) {
 	h := newHarness(t)
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
-
-	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/deliver",
-		DeliverRequest{Task: "Review\x00 the plan."})
-
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("deliver = %d, want 200; body %s", recorder.Code, recorder.Body)
+	machine, ok := h.supervisor.Machine(architectToken)
+	if !ok {
+		t.Fatalf("no machine for %s", architectToken)
 	}
-	var got OperatorClaim
-	decodeInto(t, recorder, &got)
-	if got.Pending == nil || !strings.HasPrefix(got.Pending.Task, "Review") || !strings.HasSuffix(got.Pending.Task, " the plan.") {
-		t.Fatalf("deliver answered pending %+v, want the task", got.Pending)
+
+	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/deliver",
+		DeliverRequest{Task: "Review\x00 the plan."}), http.StatusBadRequest, "invalid request body: "+nulError("task", 7))
+	var queued int
+	if err := h.store.Pool().QueryRow(h.ctx, `select count(*) from pending_task_deliveries where claim_token = $1`,
+		string(architectToken)).Scan(&queued); err != nil {
+		t.Fatalf("count the stored deliveries: %v", err)
+	}
+	if pending := machine.Claim().Pending; queued != 0 || pending != nil {
+		t.Fatalf("after the refusal the store holds %d deliveries and the claim holds pending %+v, want neither", queued, pending)
+	}
+
+	if err := machine.Handle(h.ctx, supervise.RequestDeliver{Claim: architectToken, Task: "Review\x00 the plan."}); err != nil {
+		t.Fatalf("deliver the task below the API: %v", err)
 	}
 	var stored string
 	if err := h.store.Pool().QueryRow(h.ctx, `select task from pending_task_deliveries where claim_token = $1`,
@@ -282,9 +346,10 @@ func TestDeliverStoresATaskWithNULAsReplacementCharacter(t *testing.T) {
 
 // The operator's delivery of a task that holds a NUL reaches the agent as the task is stored. The
 // stored delivery reads U+FFFD where the request had the NUL, and a restart reads that copy back,
-// so the deliver's answer and the prompt the agent is sent before any restart read it too. A claim
-// that keeps the request's own text hands the agent, and the operator's answer, a NUL the store
-// never shows.
+// so the operator's listing and the prompt the agent is sent before any restart read it too; the
+// deliver route answers a body holding a NUL with its decoder's 400, so the same delivery is handed
+// to the claim's machine below the API. A claim that keeps the request's own text hands the agent,
+// and the operator's answer, a NUL the store never shows.
 func TestADeliveredTaskWithNULReachesTheAgentAsItIsStored(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleTester)
@@ -297,10 +362,14 @@ func TestADeliveredTaskWithNULReachesTheAgentAsItIsStored(t *testing.T) {
 	}
 	settled(h, token)
 
-	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/deliver",
-		DeliverRequest{Task: "Review\x00 the plan."})
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("deliver = %d, want 200; body %s", recorder.Code, recorder.Body)
+	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/deliver",
+		DeliverRequest{Task: "Review\x00 the plan."}), http.StatusBadRequest, "invalid request body: "+nulError("task", 7))
+	machine, ok := h.supervisor.Machine(token)
+	if !ok {
+		t.Fatalf("no machine for %s", token)
+	}
+	if err := machine.Handle(h.ctx, supervise.RequestDeliver{Claim: token, Task: "Review\x00 the plan."}); err != nil {
+		t.Fatalf("deliver below the API: %v", err)
 	}
 	settled(h, token)
 
@@ -313,10 +382,8 @@ func TestADeliveredTaskWithNULReachesTheAgentAsItIsStored(t *testing.T) {
 	if stored != want {
 		t.Fatalf("the stored task is %q, want %q", stored, want)
 	}
-	var answered OperatorClaim
-	decodeInto(t, recorder, &answered)
-	if answered.Pending == nil || answered.Pending.Task != want {
-		t.Errorf("the deliver answered the pending task %+v, want %q, the task as stored", answered.Pending, want)
+	if listed := listedClaim(t, h, token); listed.Pending == nil || listed.Pending.Task != want {
+		t.Errorf("the operator's listing answers the pending task %+v, want %q, the task as stored", listed.Pending, want)
 	}
 	if prompts := conn.Prompts(); len(prompts) != 1 || prompts[0].Message != want {
 		t.Errorf("the agent was sent %q, want one prompt of %q, the task as stored", prompts, want)
