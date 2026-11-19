@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # packages/envoy/scripts/airlock-check.sh
 #
-# Runs one before_merge check of the airlock's verification document
-# (dispatch://INFRA-1352/artifact/verification-md) end to end and says whether it passed, so
-# that the implementer and the tester run the same command and read the same evidence.
+# Runs one before_merge check of the airlock's verification document end to end and says
+# whether it passed, so that the implementer and the tester run the same command and read the
+# same evidence.
 #
 # What one run proves is the check's own sentence and nothing wider. The script starts the
 # local stack the check needs (scripts/dev-airlock.sh, with the options that check's negative
@@ -51,9 +51,12 @@
 # installs (az, gcloud, pulumi and boto3), k9 needs git, and k15 needs lake from the Lean
 # toolchain this environment names. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh as it
 # is, so a pod with no container runtime names its test server there.
-# k7 also requires AIRLOCK_GWS_READ_SECRET and AIRLOCK_GWS_ADMIN_SECRET (the operator's
-# Google Workspace broker names), and AIRLOCK_GWS_TIER_KEY (the account key in gws/accounts.json
-# whose tiers.read.command is used). No broker name or account key is supplied by default.
+# k7 also requires four operator inputs, and refuses to start without them, naming each one
+# missing: AIRLOCK_GCLOUD_SECRET, AIRLOCK_GWS_READ_SECRET and AIRLOCK_GWS_ADMIN_SECRET, the
+# broker names of the operator's own gcloud login and Google Workspace read and administrator
+# logins, which the consumers k7 runs read by those names; and AIRLOCK_GWS_TIER_KEY, the account
+# key in gws/accounts.json whose tiers.read.command k7 runs. No broker name or account key is
+# supplied by default.
 #
 # k9 is a long run: ten minutes of connections and two stacks, about twenty-five minutes in all.
 set -euo pipefail
@@ -66,12 +69,17 @@ usage() {
 	cat <<'EOF'
 usage: airlock-check.sh <id> [--keep-stack]
 
-Runs one before_merge check of dispatch://INFRA-1352/artifact/verification-md and prints, for
-each property the check's outcome sentence names, what it expected beside what it got.
+Runs one before_merge check of the airlock's verification document and prints, for each
+property the check's outcome sentence names, what it expected beside what it got.
 
   <id>           k1, k2, k3, k4, k5, k6, k7, k8a, k9 or k15
   --keep-stack   leave the stack and this run's work directory up, to look at a failure with
   --help         print this
+
+k7 needs AIRLOCK_GCLOUD_SECRET, AIRLOCK_GWS_READ_SECRET and AIRLOCK_GWS_ADMIN_SECRET (the broker
+names of the operator's gcloud and Google Workspace logins) and AIRLOCK_GWS_TIER_KEY (the account
+key in gws/accounts.json whose read tier it runs) in its environment, and refuses to start
+without them.
 
 It exits 0 only when every property passed, 1 when one did not and 2 on a usage error. k9 takes
 about twenty-five minutes; every other check takes a few.
@@ -119,17 +127,42 @@ k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8a | k9 | k15) ;;
 	;;
 esac
 
+# K7_SECRET_INPUTS are the k7 inputs that name a broker secret: the operator's own logins, which
+# the consumers k7 runs read by those names, so k7 binds and stores its fake values under them.
+K7_SECRET_INPUTS=(AIRLOCK_GCLOUD_SECRET AIRLOCK_GWS_READ_SECRET AIRLOCK_GWS_ADMIN_SECRET)
+
+# broker_name says whether $1 is a name of policy.NameToSlug's form, the one form the broker
+# reads a rules file entry of: ASCII capitals, digits and single underscores, starting with a
+# capital. The letters are listed, since [A-Z] matches other letters in some locales.
+broker_name() {
+	local upper=ABCDEFGHIJKLMNOPQRSTUVWXYZ digit=0123456789
+	[[ $1 =~ ^[$upper][$upper$digit]*(_[$upper$digit]+)*$ ]]
+}
+
+# broker_slug is the name a broker secret is stored under, policy.NameToSlug's mapping of the
+# name a session asks for: lower-cased, each underscore a hyphen (GWS_READ is gws-read).
+broker_slug() {
+	local slug="${1,,}"
+	printf '%s' "${slug//_/-}"
+}
+
 if [ "$CHECK_ID" = k7 ]; then
-	missing=()
-	for input in AIRLOCK_GWS_READ_SECRET AIRLOCK_GWS_ADMIN_SECRET AIRLOCK_GWS_TIER_KEY; do
+	k7_absent=()
+	for input in "${K7_SECRET_INPUTS[@]}" AIRLOCK_GWS_TIER_KEY; do
 		if [ -z "${!input:-}" ]; then
-			missing+=("$input")
+			k7_absent+=("$input")
 		fi
 	done
-	if [ "${#missing[@]}" -ne 0 ]; then
-		printf 'airlock-check: k7 requires operator inputs: %s\n' "${missing[*]}" >&2
+	if [ "${#k7_absent[@]}" -ne 0 ]; then
+		printf 'airlock-check: k7 requires operator inputs: %s\n' "${k7_absent[*]}" >&2
 		exit 2
 	fi
+	for input in "${K7_SECRET_INPUTS[@]}"; do
+		if ! broker_name "${!input}"; then
+			printf 'airlock-check: %s=%s is no broker name: uppercase letters, digits and single underscores, starting with a letter\n' "$input" "${!input}" >&2
+			exit 2
+		fi
+	done
 fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/airlock-check-$CHECK_ID.XXXXXX")"
@@ -406,9 +439,16 @@ release() { # <name> <ttl>
 	PROXY_PASSWORD="$(printf '%s' "$RELEASE_JSON" | jq -r '.airlock.proxy_password // ""')"
 }
 
-# proxy_for is the proxy URL of this grant at one address, credential and all. It is passed to
-# curl and never printed.
+# proxy_for is the proxy URL of this grant at one address, credential and all. It is never
+# printed, and never a command's argument, which every process of the pod reads in
+# /proc/<pid>/cmdline: dev-airlock-stands load reads it from --proxy-file and curl from the config
+# proxy_config writes, each given as a <(…) path.
 proxy_for() { printf 'http://agent-secrets:%s@%s' "$PROXY_PASSWORD" "$1"; }
+
+# proxy_config is a curl config naming proxy_for's URL at one address as the proxy, for
+# `curl -K <(proxy_config …)`. The password is a placeholder, of letters, digits and hyphens, so
+# the quoted value needs no escape.
+proxy_config() { printf 'proxy = "%s"\n' "$(proxy_for "$1")"; }
 
 records() { curl -sS "$AIRLOCK_RECORDS_URL/records/$1"; }
 records_count() { records "$1" | jq 'length'; }
@@ -626,10 +666,9 @@ check_k1() {
 
 # The airlock's own merge, and the release whose agent-secrets the old-CLI steps of k2 and k7
 # run: the last legion-envoy-v* release before that merge (legion-envoy-v29.40.0 is the merge's
-# own release, dispatch://INFRA-1352). Those steps ask what a CLI that knows nothing of the
-# airlock does, so the release is pinned rather than read as "the newest": every release from
-# v29.40.0 on carries the airlock, and a newest-release CLI answers the airlock's way and
-# proves nothing.
+# own release). Those steps ask what a CLI that knows nothing of the airlock does, so the release
+# is pinned rather than read as "the newest": every release from v29.40.0 on carries the airlock,
+# and a newest-release CLI answers the airlock's way and proves nothing.
 AIRLOCK_MERGE_COMMIT="46c4162bc50a39852918cc016e3198944da1a5e7"
 OLD_CLI_DEFAULT_TAG="legion-envoy-v29.39.0"
 
@@ -929,12 +968,12 @@ fetch("https://10.11.12.13/").then(r => console.log("status", r.status, Date.now
   .catch(e => { const p = []; let c = e.cause; while (c) { p.push((c.code || "") + ":" + (c.message || "")); c = c.cause; } console.log("ms", Date.now() - t, "|", e.message, "|", p.join(" <- ")); });
 ' >"$WORK_DIR/node10.txt" 2>&1
 say "node10=\$(tr '\n' ' ' <"$WORK_DIR/node10.txt")"
-say "private=\$(curl -sS --noproxy '' --proxy "\$HTTPS_PROXY" http://10.11.12.13/ 2>&1 | tr '\n' ' ')"
-say "metadata=\$(curl -sS --noproxy '' --proxy "\$HTTPS_PROXY" http://169.254.169.254/ 2>&1 | tr '\n' ' ')"
-say "broker_port=\$(curl -sS --noproxy '' --proxy "\$HTTPS_PROXY" http://${BROKER_API_ADDRS[0]}/healthz 2>&1 | tr '\n' ' ')"
-say "broker_connect=\$(curl -sS --noproxy '' --proxy "\$HTTPS_PROXY" https://${BROKER_API_ADDRS[0]}/healthz 2>&1 | tr '\n' ' ')"
+say "private=\$(curl -sS --noproxy '' -K <(printf 'proxy = "%s"\n' "\$HTTPS_PROXY") http://10.11.12.13/ 2>&1 | tr '\n' ' ')"
+say "metadata=\$(curl -sS --noproxy '' -K <(printf 'proxy = "%s"\n' "\$HTTPS_PROXY") http://169.254.169.254/ 2>&1 | tr '\n' ' ')"
+say "broker_port=\$(curl -sS --noproxy '' -K <(printf 'proxy = "%s"\n' "\$HTTPS_PROXY") http://${BROKER_API_ADDRS[0]}/healthz 2>&1 | tr '\n' ' ')"
+say "broker_connect=\$(curl -sS --noproxy '' -K <(printf 'proxy = "%s"\n' "\$HTTPS_PROXY") https://${BROKER_API_ADDRS[0]}/healthz 2>&1 | tr '\n' ' ')"
 say "no_password=\$(curl -sS --noproxy '' --proxy "http://\${HTTPS_PROXY##*@}" $AIRLOCK_S_URL/ok 2>&1 | tr '\n' ' ')"
-say "made_up=\$(curl -sS --noproxy '' --proxy "\${HTTPS_PROXY%@*}-made-up@\${HTTPS_PROXY##*@}" $AIRLOCK_S_URL/ok 2>&1 | tr '\n' ' ')"
+say "made_up=\$(curl -sS --noproxy '' -K <(printf 'proxy = "%s-made-up@%s"\n' "\${HTTPS_PROXY%@*}" "\${HTTPS_PROXY##*@}") $AIRLOCK_S_URL/ok 2>&1 | tr '\n' ' ')"
 EOF
 	agent-secrets AIRLOCK_DEMO_TOKEN -- bash "$WORK_DIR/k4-steps.sh" >"$WORK_DIR/k4-cli.log" 2>&1 || true
 	declare -A K4
@@ -981,16 +1020,16 @@ EOF
 	local s_mark short_now short_later withheld_before withheld_after
 	s_mark="$(records_count s)"
 	release AIRLOCK_DEMO_TOKEN 1m
-	short_now="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+	short_now="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" -K <(proxy_config "${AIRLOCK_PROXY_URL##*://}") -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 	sleep 70
-	short_later="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+	short_later="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" -K <(proxy_config "${AIRLOCK_PROXY_URL##*://}") -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 
 	release AIRLOCK_DEMO_TOKEN 30m
-	withheld_before="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+	withheld_before="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" -K <(proxy_config "${AIRLOCK_PROXY_URL##*://}") -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 	# Withholding a name from a session is an operator's act, and a pod session has no
 	# operator, so the row the broker reads is written here directly.
 	psql_stack -c "insert into withheld_secrets (enrollment_id, name) values ('$AIRLOCK_ENROLLMENT', 'AIRLOCK_DEMO_TOKEN')" >/dev/null
-	withheld_after="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+	withheld_after="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" -K <(proxy_config "${AIRLOCK_PROXY_URL##*://}") -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 	psql_stack -c "delete from withheld_secrets where enrollment_id = '$AIRLOCK_ENROLLMENT'" >/dev/null
 	local tunnelled
 	tunnelled="$(($(records_count s) - s_mark))"
@@ -1008,7 +1047,7 @@ EOF
 		BROKER_AIRLOCK_TEST_DIAL_ALLOW="$STACK_DIAL_ALLOW ${BROKER_API_ADDRS[0]}"
 	release AIRLOCK_DEMO_TOKEN 30m
 	local control_answer
-	control_answer="$(curl -sS --noproxy '' --proxy "$(proxy_for "$EXTRA_PROXY_ADDR")" "http://${BROKER_API_ADDRS[0]}/healthz" 2>&1 | tr '\n' ' ')"
+	control_answer="$(curl -sS --noproxy '' -K <(proxy_config "$EXTRA_PROXY_ADDR") "http://${BROKER_API_ADDRS[0]}/healthz" 2>&1 | tr '\n' ' ')"
 	control "a second broker on the same database and rules, started with the first broker's address in BROKER_AIRLOCK_TEST_DIAL_ALLOW — the setting that turns the refusal of a loopback address off for one host — answered the same request: $control_answer"
 	judge "$(! contains "loopback" "$control_answer" && echo 0 || echo 1)" \
 		"negative control: with the refusal turned off the connection to the broker's loopback port is tunnelled" \
@@ -1023,7 +1062,7 @@ EOF
 
 k5_call() { # <placeholder> -> prints the status
 	printf 'Authorization: Bearer %s' "$1" | curl -sS -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
-		--proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok"
+		-K <(proxy_config "${AIRLOCK_PROXY_URL##*://}") -H @- "$AIRLOCK_S_URL/ok"
 }
 
 # k5_stored drives the stored half of k5 against the stack this run started and answers through
@@ -1118,9 +1157,9 @@ check_k5() {
 #
 # k6 drives real clients: the Azure CLI through sjawhar/dotfiles' scripts/az-broker, and the AWS
 # CLI and boto3 against the stack's stand-in AWS service. A Legion issue pod has no boto3, and a
-# pod on a worker image from before dispatch://INFRA-3257 has no az, so the check installs both
-# with scripts/airlock-clients.sh, which pins a version and checks its SHA-256 before anything of
-# it runs, and reads that script's exports, whose PATH puts its az ahead of any az the image has.
+# pod on an older worker image has no az, so the check installs both with
+# scripts/airlock-clients.sh, which pins a version and checks its SHA-256 before anything of it
+# runs, and reads that script's exports, whose PATH puts its az ahead of any az the image has.
 #
 # The stack's stand-ins play the two clouds whole, so both clients run as they do in anger: the
 # Microsoft stand answers the tenant's OpenID configuration document and the token endpoint,
@@ -1426,10 +1465,10 @@ check_k6() {
 # One consumer speaks gRPC, which offers h2 alone in its TLS handshake: Pulumi's gcpkms secrets
 # manager, whose Cloud KMS call the proxy carries in HTTP/2.
 #
-# The names are the consumers' own - GITHUB_ADMIN_PAT, the gcloud login k7_names lists,
-# and the operator-supplied Google Workspace logins - and the hosts are the real ones, so this
-# check needs a rules file the stack's does not hold. That is one broker process of this check's
-# own, on the stack's own database, store, certificate authority and stand-ins, with its rules file, its own
+# The names are the consumers' own - GITHUB_ADMIN_PAT, and the operator's gcloud and Google
+# Workspace logins, which k7's inputs name - and the hosts are the real ones, so this check needs
+# a rules file the stack's does not hold. That is one broker process of this check's own, on the
+# stack's own database, store, certificate authority and stand-ins, with its rules file, its own
 # two ports and its own public URL changed - the same device k4's control uses for one setting,
 # with the public URL changed too because this broker must serve the release as well as the proxy,
 # and a session's proof is verified against the public URL it was signed for. Its whole
@@ -1488,11 +1527,11 @@ k7_broker() {
 k7_names() {
 	local d="$WORK_DIR/k7"
 	mkdir -p "$d"
-	jq --arg read "$AIRLOCK_GWS_READ_SECRET" --arg admin "$AIRLOCK_GWS_ADMIN_SECRET" '.secrets += [
+	jq --arg gcloud "$AIRLOCK_GCLOUD_SECRET" --arg read "$AIRLOCK_GWS_READ_SECRET" --arg admin "$AIRLOCK_GWS_ADMIN_SECRET" '.secrets += [
 	     {"name": "SLACK_BOT_TOKEN", "hosts": ["slack.com"]},
 	     {"name": "GITHUB_ADMIN_PAT", "hosts": ["api.github.com", "github.com"]},
 	     {"name": "TAILSCALE_API_KEY", "hosts": ["api.tailscale.com"]},
-	     {"name": "GCLOUD_SAMI", "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"]},
+	     {"name": $gcloud, "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"]},
 	     {"name": $read, "hosts": ["www.googleapis.com", "oauth2.googleapis.com"]},
 	     {"name": $admin, "hosts": ["admin.googleapis.com"]}
 	   ]' "$AIRLOCK_RULES_FILE" >"$d/rules.json"
@@ -1504,15 +1543,11 @@ k7_names() {
 	add_fake_secret "${STACK_SECRETS_PREFIX}tailscale-api-key" '{"owner":"legion-daemon","tier":"agent"}' "$K7_TAILSCALE"
 	# The three Google logins are minted types: the broker mints each at the stack's stand-in
 	# Google token endpoint, so what the consumer holds a placeholder for is a minted value.
-	local google login
+	local google login input
 	google='{"owner":"legion-daemon","tier":"agent","type":"google-login"}'
 	login='{"type":"authorized_user","client_id":"the-stand-in-client","client_secret":"the-stand-in-client-secret","refresh_token":"the-stand-in-refresh-token"}'
-	add_fake_secret "${STACK_SECRETS_PREFIX}gcloud-sami" "$google" "$login"
-	# policy.NameToSlug: lower-case the broker name and replace underscores with hyphens.
-	local name slug
-	for name in "$AIRLOCK_GWS_READ_SECRET" "$AIRLOCK_GWS_ADMIN_SECRET"; do
-		slug="${name,,}"
-		add_fake_secret "${STACK_SECRETS_PREFIX}${slug//_/-}" "$google" "$login"
+	for input in "${K7_SECRET_INPUTS[@]}"; do
+		add_fake_secret "${STACK_SECRETS_PREFIX}$(broker_slug "${!input}")" "$google" "$login"
 	done
 }
 
@@ -1537,12 +1572,14 @@ EOF
 # k7_steps writes every consumer's own command into one file, as k3's and k4's steps are
 # written, so one grant of the seven names covers them all.
 k7_steps() {
-	local d="$WORK_DIR/k7" read_secret admin_secret tier_key
+	local d="$WORK_DIR/k7" gcloud_secret read_secret admin_secret tier_key
+	printf -v gcloud_secret '%q' "$AIRLOCK_GCLOUD_SECRET"
 	printf -v read_secret '%q' "$AIRLOCK_GWS_READ_SECRET"
 	printf -v admin_secret '%q' "$AIRLOCK_GWS_ADMIN_SECRET"
 	printf -v tier_key '%q' "$AIRLOCK_GWS_TIER_KEY"
 	cat >"$d/steps.sh" <<EOF
 set -u
+gcloud_secret=$gcloud_secret
 gws_read_secret=$read_secret
 gws_admin_secret=$admin_secret
 gws_tier_key=$tier_key
@@ -1578,10 +1615,11 @@ say "pulumi=\$(cd $d/pulumi && export PULUMI_CONFIG_PASSPHRASE= PULUMI_BACKEND_U
 # placeholder as its access token. The airlock carries it in HTTP/2 and Cloud KMS refuses the fake
 # value with gRPC's own UNAUTHENTICATED; a proxy that does not speak HTTP/2 fails the handshake
 # ("tls: no application protocol") and Pulumi says only "context deadline exceeded".
-say "kms=\$(cd $d/pulumi && export PULUMI_BACKEND_URL=file://$d/pulumi/state GOOGLE_OAUTH_ACCESS_TOKEN="\$GCLOUD_SAMI" && timeout 120 pulumi stack init k7kms --non-interactive --secrets-provider gcpkms://projects/airlock-k7/locations/global/keyRings/airlock-k7/cryptoKeys/airlock-k7 2>&1 | grep -iE 'error|unauthenticated|deadline|application protocol' | head -n 1 | tr -d '\r')"
+say "kms=\$(cd $d/pulumi && export PULUMI_BACKEND_URL=file://$d/pulumi/state GOOGLE_OAUTH_ACCESS_TOKEN="\${!gcloud_secret}" && timeout 120 pulumi stack init k7kms --non-interactive --secrets-provider gcpkms://projects/airlock-k7/locations/global/keyRings/airlock-k7/cryptoKeys/airlock-k7 2>&1 | grep -iE 'error|unauthenticated|deadline|application protocol' | head -n 1 | tr -d '\r')"
 
-# gcloud-broker with gcloud projects list.
-say "gcloud=\$(GCLOUD_BROKER_INNER=1 GCLOUD_SAMI="\$GCLOUD_SAMI" bash $K7_DOTFILES/scripts/gcloud-broker -- gcloud projects list --format=json 2>&1 | grep -iE 'ERROR|reason:' | head -n 1 | tr -d '\r')"
+# gcloud-broker with gcloud projects list. It reads the login under the operator's name for it,
+# which agent-secrets put in this command's environment.
+say "gcloud=\$(GCLOUD_BROKER_INNER=1 bash $K7_DOTFILES/scripts/gcloud-broker -- gcloud projects list --format=json 2>&1 | grep -iE 'ERROR|reason:' | head -n 1 | tr -d '\r')"
 
 # One gws call under the operator's read tier: that tier's own command out of gws/accounts.json,
 # running the Drive call gws makes, since gws itself is no file of that repository.
@@ -1593,12 +1631,15 @@ say "gws=\$(secret-run --reason 'gws operator read' "\$gws_read_secret" -- bash 
 say "admin=\$(printf 'Authorization: Bearer %s' "\${!gws_admin_secret}" | curl -sS -o /dev/null -w %{http_code} -H @- "https://admin.googleapis.com/admin/directory/v1/users?domain=example.com" 2>&1 | tail -n 1)"
 
 # git push --dry-run through scripts/airlock/credential-helper, which answers the placeholder,
-# with the proxy in git's own configuration. The pod's own GIT_CONFIG_* settings are cleared for
-# this step alone: they name a credential helper of the pod's, which would answer in place of it.
+# with the proxy in git's own configuration. It is given in the environment (GIT_CONFIG_*) rather
+# than as a -c argument, since the proxy URL holds the proxy password and git's arguments are in
+# /proc/<pid>/cmdline. GIT_CONFIG_COUNT=1 makes git read that one pair alone, so the pod's own
+# GIT_CONFIG_* settings, which name a credential helper of the pod's that would answer in place
+# of this one, are left out for this step.
 rm -rf $d/repo
 git init -q $d/repo
 (cd $d/repo && git -c user.email=k7@airlock.test -c user.name=k7 commit -q --allow-empty -m k7)
-say "git=\$(cd $d/repo && env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 -u GIT_CONFIG_KEY_2 -u GIT_CONFIG_VALUE_2 -u GIT_CONFIG_KEY_3 -u GIT_CONFIG_VALUE_3 -u GIT_CONFIG_KEY_4 -u GIT_CONFIG_VALUE_4 git -c http.proxy="\$HTTPS_PROXY" -c credential.helper=$SCRIPT_DIR/airlock/credential-helper -c http.sslCAInfo="\$GIT_SSL_CAINFO" push --dry-run https://github.com/cybermonklabs/legion HEAD:refs/heads/k7-airlock-never-pushed 2>&1 | tail -n 2 | tr '\n' ' ')"
+say "git=\$(cd $d/repo && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0="\$HTTPS_PROXY" git -c credential.helper=$SCRIPT_DIR/airlock/credential-helper -c http.sslCAInfo="\$GIT_SSL_CAINFO" push --dry-run https://github.com/cybermonklabs/legion HEAD:refs/heads/k7-airlock-never-pushed 2>&1 | tail -n 2 | tr '\n' ' ')"
 
 # The plain clients to S, each with the fake value in the header it uses, and none with it in its
 # command line: curl reads the header on standard input. wget reads a header from no pipe, so it
@@ -1672,7 +1713,7 @@ check_k7() {
 	s_before="$(records_count s)"
 	# AGENT_SECRETS_URL is this check's own broker, the one whose rules name the real hosts.
 	AGENT_SECRETS_URL="$K7_API_URL" agent-secrets \
-		SLACK_BOT_TOKEN GITHUB_ADMIN_PAT TAILSCALE_API_KEY GCLOUD_SAMI \
+		SLACK_BOT_TOKEN GITHUB_ADMIN_PAT TAILSCALE_API_KEY "$AIRLOCK_GCLOUD_SECRET" \
 		"$AIRLOCK_GWS_READ_SECRET" "$AIRLOCK_GWS_ADMIN_SECRET" AIRLOCK_DEMO_TOKEN \
 		--ttl 30m -- bash "$WORK_DIR/k7/steps.sh" >"$WORK_DIR/k7/cli.out" 2>"$WORK_DIR/k7/cli.err"
 	declare -A K7
@@ -1970,7 +2011,7 @@ check_k9() {
 		sleep 0.25
 	done
 	echo "airlock-check: k9 is measuring the baseline through a plain tunnel for 60 seconds..." >&2
-	"$STANDS_BIN" load load --proxy "http://$plain" --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
+	"$STANDS_BIN" load load --proxy-file <(printf 'http://%s\n' "$plain") --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
 		--rate 50 --seconds 60 --out "$WORK_DIR/k9/baseline.json" >/dev/null 2>"$WORK_DIR/k9/baseline.err"
 
 	local before=() after=() wall_before wall_after rss="$WORK_DIR/k9/rss.log"
@@ -1981,8 +2022,8 @@ check_k9() {
 	for pid in "${pids[@]}"; do before+=("$(k9_cpu "$pid")"); done
 	wall_before="$(date +%s.%N)"
 	echo "airlock-check: k9 is opening 50 connections a second through the airlock for ten minutes..." >&2
-	"$STANDS_BIN" load load --proxy "$proxy" --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
-		--header "$PLACEHOLDER" --rate 50 --seconds 600 --out "$WORK_DIR/k9/load.json" \
+	"$STANDS_BIN" load load --proxy-file <(printf '%s\n' "$proxy") --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
+		--header-file <(printf '%s\n' "$PLACEHOLDER") --rate 50 --seconds 600 --out "$WORK_DIR/k9/load.json" \
 		>/dev/null 2>"$WORK_DIR/k9/load.err"
 	wall_after="$(date +%s.%N)"
 	for pid in "${pids[@]}"; do after+=("$(k9_cpu "$pid")"); done
@@ -2019,14 +2060,14 @@ check_k9() {
 
 	# The upload, the answer with a gap in it, the upgrade and the clone.
 	echo "airlock-check: k9 is uploading 50 MiB, waiting out a 90-second gap and cloning..." >&2
-	"$STANDS_BIN" load upload --proxy "$proxy" --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
-		--header "$PLACEHOLDER" --size $((50 * 1024 * 1024)) --out "$WORK_DIR/k9/upload.json" >/dev/null 2>&1
-	"$STANDS_BIN" load gap --proxy "$proxy" --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
-		--header "$PLACEHOLDER" --gap 90 --out "$WORK_DIR/k9/gap.json" >/dev/null 2>&1
+	"$STANDS_BIN" load upload --proxy-file <(printf '%s\n' "$proxy") --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
+		--header-file <(printf '%s\n' "$PLACEHOLDER") --size $((50 * 1024 * 1024)) --out "$WORK_DIR/k9/upload.json" >/dev/null 2>&1
+	"$STANDS_BIN" load gap --proxy-file <(printf '%s\n' "$proxy") --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
+		--header-file <(printf '%s\n' "$PLACEHOLDER") --gap 90 --out "$WORK_DIR/k9/gap.json" >/dev/null 2>&1
 	local s_mark
 	s_mark="$(records_count s)"
-	"$STANDS_BIN" load upgrade --proxy "$proxy" --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
-		--header "$PLACEHOLDER" --out "$WORK_DIR/k9/upgrade.json" >/dev/null 2>&1
+	"$STANDS_BIN" load upgrade --proxy-file <(printf '%s\n' "$proxy") --host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" \
+		--header-file <(printf '%s\n' "$PLACEHOLDER") --out "$WORK_DIR/k9/upgrade.json" >/dev/null 2>&1
 
 	# The clone goes through the same proxy on an ordinary CONNECT: github.com is no bound host,
 	# so nothing is swapped into it and what is proved is that the tunnel carries a clone.
@@ -2063,8 +2104,8 @@ check_k9() {
 	# connection is this run's own gap connection on the second broker's proxy port, so what is
 	# stopped is the process carrying it.
 	local stopped="${pids[-1]}" after_stop
-	"$STANDS_BIN" load gap --proxy "http://agent-secrets:$PROXY_PASSWORD@${BROKER_PROXY_ADDRS[-1]}" \
-		--host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" --header "$PLACEHOLDER" --gap 8 \
+	"$STANDS_BIN" load gap --proxy-file <(proxy_for "${BROKER_PROXY_ADDRS[-1]}") \
+		--host s.airlock.test --ca "$AIRLOCK_CA_CERT_FILE" --header-file <(printf '%s\n' "$PLACEHOLDER") --gap 8 \
 		--out "$WORK_DIR/k9/stopped.json" >/dev/null 2>&1 &
 	local gap_pid=$!
 	sleep 3
@@ -2078,7 +2119,7 @@ check_k9() {
 	local after_stop="" status ok=0 i
 	for i in 1 2 3 4; do
 		status="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
-			--proxy "$proxy" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr -d '\n')"
+			-K <(printf 'proxy = "%s"\n' "$proxy") -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr -d '\n')"
 		after_stop="$after_stop $status"
 		[ "$status" = 200 ] && ok=$((ok + 1))
 	done
@@ -2096,8 +2137,8 @@ check_k9() {
 	start_stack --idle-seconds 60
 	stack_facts
 	release AIRLOCK_DEMO_TOKEN 30m
-	"$STANDS_BIN" load gap --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" --host s.airlock.test \
-		--ca "$AIRLOCK_CA_CERT_FILE" --header "$PLACEHOLDER" --gap 90 \
+	"$STANDS_BIN" load gap --proxy-file <(proxy_for "${AIRLOCK_PROXY_URL##*://}") --host s.airlock.test \
+		--ca "$AIRLOCK_CA_CERT_FILE" --header-file <(printf '%s\n' "$PLACEHOLDER") --gap 90 \
 		--out "$WORK_DIR/k9/control-gap.json" >/dev/null 2>&1
 	local control_second
 	control_second="$(jq -r '.second // ""' "$WORK_DIR/k9/control-gap.json")"

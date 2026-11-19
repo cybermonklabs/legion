@@ -541,8 +541,14 @@ release() { # <grant id> <name>
 }
 
 # proxy_for is the proxy URL of one proxy password at one address, credential and all. It is
-# passed to curl and never printed.
+# never printed, and never a command's argument, which every process of the pod reads in
+# /proc/<pid>/cmdline: curl reads it from the config proxy_config writes, on a <(…) path.
 proxy_for() { printf 'http://agent-secrets:%s@%s' "$1" "$2"; }
+
+# proxy_config is a curl config naming proxy_for's URL as the proxy, for
+# `curl -K <(proxy_config …)`. The password is a placeholder, of letters, digits and hyphens, so
+# the quoted value needs no escape.
+proxy_config() { printf 'proxy = "%s"\n' "$(proxy_for "$1" "$2")"; }
 
 # call_s makes one call to S through the proxy with the password and header value the caller
 # names, leaving the status in CALL_STATUS and the answer's body in CALL_BODY.
@@ -556,7 +562,7 @@ proxy_for() { printf 'http://agent-secrets:%s@%s' "$1" "$2"; }
 call_s() { # <proxy password> <header value>
 	local CALL_OUT
 	CALL_OUT="$(printf 'Authorization: Bearer %s' "$2" | curl -sS -o "$WORK_DIR/call.out" -w 'http_code=%{http_code}' --noproxy '' \
-		--cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "$1" "$PROXY_ADDR")" \
+		--cacert "$AIRLOCK_CA_CERT_FILE" -K <(proxy_config "$1" "$PROXY_ADDR") \
 		-H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 	CALL_BODY="$(tr -d '\n' <"$WORK_DIR/call.out")"
 	case "$CALL_OUT" in

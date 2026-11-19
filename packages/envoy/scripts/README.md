@@ -232,8 +232,12 @@ model with `lake`, prints its theorem statements and their axioms, runs the comp
 fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`.
 
 Before starting `k7`, set these operator inputs. An absent or empty input is a usage
-error (exit 2), reported before setup starts:
+error (exit 2), reported before setup starts, and so is a broker name that is not
+uppercase letters, digits and single underscores starting with a letter, the one form
+the broker reads:
 
+- `AIRLOCK_GCLOUD_SECRET`: the broker name of the operator's gcloud login, which the
+  consumer's `scripts/gcloud-broker` reads, for example `GCLOUD_OPERATOR`.
 - `AIRLOCK_GWS_READ_SECRET`: the broker name of the operator's Google Workspace
   read login, for example `GWS_OPERATOR_READ_OAUTH`.
 - `AIRLOCK_GWS_ADMIN_SECRET`: the broker name of the operator's Google Workspace
@@ -241,10 +245,12 @@ error (exit 2), reported before setup starts:
 - `AIRLOCK_GWS_TIER_KEY`: the account key in `gws/accounts.json` whose
   `tiers.read.command` the check reads, for example `operator`.
 
-The check uses fake login values in its local store. These inputs identify the
-consumer's existing broker names and account; they do not rename the operator's logins.
-`bash packages/envoy/scripts/airlock-check.test.sh` checks the required inputs, fake
-broker rules, store names and generated consumer commands without starting a stack.
+The check uses fake login values in its local store, each stored under the name the
+broker reads its input's name by (lower-cased, each underscore a hyphen). These inputs
+identify the consumer's existing broker names and account; they do not rename the
+operator's logins. `bash packages/envoy/scripts/airlock-check.test.sh` checks the
+required inputs, fake broker rules, store names and generated consumer commands without
+starting a stack.
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-airlock-stands`, the binary `dev-broker.sh`
@@ -254,6 +260,12 @@ the plain tunnel its baseline goes through. CI compiles and vets all three with 
 rest of that command. The others are under `scripts/airlock/`: `memscan.py`, `k6`'s
 boto3 steps (`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git
 credential helper.
+
+The grant's proxy password and placeholder stay out of a command's arguments, which
+every process of the pod reads in `/proc/<pid>/cmdline`. `load` reads the proxy URL from
+`--proxy-file` and the bearer from `--header-file`, and refuses `--proxy` and `--header`;
+curl reads the proxy from a config (`-K`) and the header from standard input; and `k7`'s
+git step reads the proxy from `GIT_CONFIG_*`. Each file is a `<(printf …)` path.
 
 Where a check needs a secret the stack does not hold, the run extends the stack's own
 fake Secrets Manager and makes every broker reread it. A control that needs other
