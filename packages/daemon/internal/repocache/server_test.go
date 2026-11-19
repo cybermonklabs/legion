@@ -10,11 +10,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/volumestat"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -1510,4 +1514,480 @@ func recorded(t *testing.T, root string) time.Time {
 		t.Fatalf("the last-repack record holds %q: %v", body, err)
 	}
 	return at
+}
+
+// volumeSeam stands in for readVolume with the figures a case sets: a volume of a size with so
+// many bytes available, or, once fail is called, a statfs that fails. Every read must be of the
+// cache's volume root, Options.Root.
+type volumeSeam struct {
+	t    *testing.T
+	root string
+
+	mu      sync.Mutex
+	reading volumestat.Reading
+	failing error
+}
+
+// seamVolume replaces readVolume, until the test ends, with a seam answering a volume at root of
+// size bytes with available bytes left.
+func seamVolume(t *testing.T, root string, size, available uint64) *volumeSeam {
+	t.Helper()
+	seam := &volumeSeam{t: t, root: root}
+	seam.set(size, available)
+	saved := readVolume
+	readVolume = seam.read
+	t.Cleanup(func() { readVolume = saved })
+	return seam
+}
+
+func (s *volumeSeam) read(path string) (volumestat.Reading, error) {
+	if path != s.root {
+		s.t.Errorf("the cache read the volume at %s, want its root %s", path, s.root)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failing != nil {
+		return volumestat.Reading{}, s.failing
+	}
+	return s.reading, nil
+}
+
+// set has the seam answer a volume of size bytes with available bytes left.
+func (s *volumeSeam) set(size, available uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reading = volumestat.Reading{SizeBytes: size, UsedBytes: size - available, AvailableBytes: available}
+	s.failing = nil
+}
+
+// fail has the seam's statfs fail with err.
+func (s *volumeSeam) fail(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failing = err
+}
+
+// healthFields decodes a /healthz body into its Health and the names of the fields it holds, so a
+// case tells a field that is absent from one that is there and zero.
+func healthFields(t *testing.T, status int, body []byte) (int, Health, map[string]bool) {
+	t.Helper()
+	var health Health
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &health); err != nil {
+		t.Fatalf("/healthz answered %d with a body that is not its JSON: %v: %s", status, err, body)
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("/healthz answered %d with a body that is not a JSON object: %v: %s", status, err, body)
+	}
+	fields := map[string]bool{}
+	for name := range raw {
+		fields[name] = true
+	}
+	return status, health, fields
+}
+
+// healthzOf is GET /healthz of c through its own handler, as Serve serves it.
+func healthzOf(t *testing.T, c *cache) (int, Health, map[string]bool) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	c.handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	return healthFields(t, recorder.Code, recorder.Body.Bytes())
+}
+
+// healthFields is GET /healthz of the running Serve: its status, its body and the fields it holds.
+func (c *running) healthFields(t *testing.T) (int, Health, map[string]bool) {
+	t.Helper()
+	response := c.get(t, "/healthz", c.bearer(t))
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read /healthz: %v", err)
+	}
+	return healthFields(t, response.StatusCode, body)
+}
+
+// The lines git wrote when one deployment's cache ran out of room on 2026-11-19, as its log holds
+// them: its fetch's write that found no room, its repack's, and its fetch's ref it could not write,
+// which names neither of outOfSpacePhrases. The paths are the test clone's.
+const fetchOutOfSpace = "fatal: write error: No space left on device"
+
+func repackOutOfSpace(dir string) string {
+	return "fatal: sha1 file '" + filepath.Join(dir, "objects", "pack") + "/tmp_pack_jrqcNe' write error. Out of diskspace"
+}
+
+func refNotWritten(dir string) string {
+	return "error: cannot lock ref 'refs/heads/main': unable to create directory for " + filepath.Join(dir, "refs", "heads", "main")
+}
+
+// spaceFixture is one cache of acme/widgets that a case drives refresh by refresh, with the real
+// git but for the step the case fails, its volume's figures the seam's, and /healthz read through
+// the cache's own handler, or through the running Serve's once a case has restarted it.
+type spaceFixture struct {
+	remote  string
+	run     *testRunner
+	opts    Options
+	log     *syncLog
+	c       *cache
+	volume  *volumeSeam
+	serving *running
+	// release lets the first fetch of a restarted Serve run, which a case holds (testRunner.hold).
+	release func()
+	// from and to bound the last refresh, and repacks is how many repacks the runner had been
+	// asked for before it.
+	from, to time.Time
+	repacks  int
+}
+
+// newSpaceFixture is a fixture whose cache has cloned onto a volume of 20 GiB with 5 GiB left, so
+// no failure counts for lack of space by its room alone.
+func newSpaceFixture(t *testing.T) *spaceFixture {
+	t.Helper()
+	remote := newRemote(t)
+	run := newTestRunner(t, remote)
+	f := &spaceFixture{remote: remote, run: run, opts: testOptions(t, run), log: &syncLog{}}
+	f.opts.Log = f.log.log
+	f.volume = seamVolume(t, f.opts.Root, 20<<30, 5<<30)
+	f.c = cacheOn(t, f.opts)
+	f.refresh(t, false)
+	return f
+}
+
+// refresh runs one refresh of the cache, wanting it to fail or not, noting when it ran and how many
+// repacks the runner had been asked for before it.
+func (f *spaceFixture) refresh(t *testing.T, fails bool) {
+	t.Helper()
+	f.repacks = f.run.repacks()
+	f.from = time.Now()
+	err := f.c.refresh(context.Background())
+	f.to = time.Now()
+	if (err != nil) != fails {
+		t.Fatalf("a refresh answered %v, want it failed %t; log %q", err, fails, f.log.all())
+	}
+}
+
+// failFetch has the next refresh's fetch fail as git does, exiting exit having written stderr.
+func (f *spaceFixture) failFetch(t *testing.T, exit int, stderr string) {
+	t.Helper()
+	f.run.instead("fetch", func(context.Context, workspace.Command) (workspace.Result, error) {
+		return workspace.Result{ExitCode: exit, Stderr: stderr + "\n"}, nil
+	})
+	f.refresh(t, true)
+}
+
+// repackDue makes a repack due at the next refresh, as a repackEvery since the last one does.
+func (f *spaceFixture) repackDue() {
+	f.c.lastRepack = time.Now().Add(-repackEvery - time.Hour)
+}
+
+// failRepack has the next refresh repack, and its repack fail as git does, having written stderr.
+func (f *spaceFixture) failRepack(t *testing.T, stderr string) {
+	t.Helper()
+	f.repackDue()
+	f.run.instead("repack", func(context.Context, workspace.Command) (workspace.Result, error) {
+		return workspace.Result{ExitCode: 128, Stderr: stderr + "\n"}, nil
+	})
+	f.refresh(t, false)
+	if got := f.run.repacks() - f.repacks; got != 1 {
+		t.Fatalf("the refresh asked for %d repacks, want the one that fails", got)
+	}
+}
+
+// repackOK has the next refresh repack, and its repack succeed.
+func (f *spaceFixture) repackOK(t *testing.T) {
+	t.Helper()
+	f.repackDue()
+	f.refresh(t, false)
+	if got := f.run.repacks() - f.repacks; got != 1 {
+		t.Fatalf("the refresh asked for %d repacks, want one", got)
+	}
+}
+
+// healthz is GET /healthz of the fixture's cache.
+func (f *spaceFixture) healthz(t *testing.T) (int, Health, map[string]bool) {
+	t.Helper()
+	if f.serving != nil {
+		return f.serving.healthFields(t)
+	}
+	return healthzOf(t, f.c)
+}
+
+// failedInTheRefresh is whether at lies within the last refresh.
+func (f *spaceFixture) failedInTheRefresh(at time.Time) bool {
+	return !at.Before(f.from) && !at.After(f.to)
+}
+
+// keptRepackFailure is the time repackOutOfSpaceFile under root holds, and whether it is there.
+func keptRepackFailure(t *testing.T, root string) (time.Time, bool) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(root, repackOutOfSpaceFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return time.Time{}, false
+	}
+	if err != nil {
+		t.Fatalf("read the kept repack failure: %v", err)
+	}
+	if !strings.HasSuffix(string(body), "Z\n") {
+		t.Errorf("the kept repack failure holds %q, want one RFC 3339 UTC time and a line feed", body)
+	}
+	at, err := time.Parse(time.RFC3339, strings.TrimSpace(string(body)))
+	if err != nil {
+		t.Fatalf("the kept repack failure holds %q: %v", body, err)
+	}
+	return at, true
+}
+
+// A fetch's and a repack's failure for lack of space reach /healthz, each with its step and its
+// time, and each step's next success clears its own. A failure counts when git's output says so
+// (`No space left on device` for the fetch, `Out of diskspace` for the repack, the lines a full
+// cache logged) or when the volume had less than 1 GiB available as it failed; a failure naming
+// neither, with 5 GiB available, counts for nothing. A recorded failure holds back no repack that
+// is due. The volume's figures are read at every answer, so they move with the seam's and no fetch
+// between, and a statfs that fails leaves them out and names its error. A fetch's failure is kept
+// in memory alone: a restarted cache reports none until a fetch fails again.
+func TestTheCacheReportsAFailureForLackOfSpace(t *testing.T) {
+	none := func(*testing.T, *spaceFixture) {}
+	fetchFailed := func(t *testing.T, f *spaceFixture) { f.failFetch(t, 128, fetchOutOfSpace) }
+	repackFailed := func(t *testing.T, f *spaceFixture) { f.failRepack(t, repackOutOfSpace(f.c.dir)) }
+	for _, tc := range []struct {
+		name  string
+		state func(*testing.T, *spaceFixture)
+		event func(*testing.T, *spaceFixture)
+		check func(t *testing.T, f *spaceFixture, status int, health Health, fields map[string]bool)
+	}{
+		{"a fetch fails No space left on device with 5 GiB available", none, fetchFailed,
+			func(t *testing.T, f *spaceFixture, status int, health Health, fields map[string]bool) {
+				if status != http.StatusOK || !fields["fetchOutOfSpaceAt"] || !f.failedInTheRefresh(health.FetchOutOfSpaceAt) {
+					t.Errorf("/healthz answers %d %+v, want ready with the fetch's failure within its refresh, %s to %s", status, health, f.from, f.to)
+				}
+				if fields["repackOutOfSpaceAt"] {
+					t.Errorf("/healthz names a repack failure at %s, though no repack ran", health.RepackOutOfSpaceAt)
+				}
+			}},
+		{"a repack fails Out of diskspace with 5 GiB available", none, repackFailed,
+			func(t *testing.T, f *spaceFixture, status int, health Health, fields map[string]bool) {
+				if status != http.StatusOK || !fields["repackOutOfSpaceAt"] || !f.failedInTheRefresh(health.RepackOutOfSpaceAt) {
+					t.Errorf("/healthz answers %d %+v, want ready with the repack's failure within its refresh, %s to %s", status, health, f.from, f.to)
+				}
+				if fields["fetchOutOfSpaceAt"] {
+					t.Errorf("/healthz names a fetch failure at %s, though the fetch succeeded", health.FetchOutOfSpaceAt)
+				}
+				if kept, ok := keptRepackFailure(t, f.opts.Root); !ok || !kept.Equal(health.RepackOutOfSpaceAt.Truncate(time.Second)) {
+					t.Errorf("%s holds %s (there: %t), want the failure's time %s to the second", repackOutOfSpaceFile, kept, ok, health.RepackOutOfSpaceAt)
+				}
+			}},
+		{"a fetch fails naming neither phrase with 5 GiB available", none,
+			func(t *testing.T, f *spaceFixture) { f.failFetch(t, 1, refNotWritten(f.c.dir)) },
+			func(t *testing.T, f *spaceFixture, status int, health Health, fields map[string]bool) {
+				if fields["fetchOutOfSpaceAt"] || fields["repackOutOfSpaceAt"] {
+					t.Errorf("/healthz answers %d %+v, want no failure for lack of space: git named none and 5 GiB were left", status, health)
+				}
+			}},
+		{"a fetch fails naming neither phrase with 512 MiB available", none,
+			func(t *testing.T, f *spaceFixture) {
+				f.volume.set(20<<30, 512<<20)
+				f.failFetch(t, 1, refNotWritten(f.c.dir))
+			},
+			func(t *testing.T, f *spaceFixture, status int, health Health, fields map[string]bool) {
+				if !fields["fetchOutOfSpaceAt"] || !f.failedInTheRefresh(health.FetchOutOfSpaceAt) {
+					t.Errorf("/healthz answers %d %+v, want the fetch's failure within its refresh, %s to %s: under 1 GiB was left", status, health, f.from, f.to)
+				}
+			}},
+		{"the next fetch after a failed one succeeds", fetchFailed,
+			func(t *testing.T, f *spaceFixture) { f.refresh(t, false) },
+			func(t *testing.T, f *spaceFixture, status int, health Health, fields map[string]bool) {
+				if fields["fetchOutOfSpaceAt"] {
+					t.Errorf("/healthz answers %d %+v, want the fetch's failure cleared by the fetch that succeeded", status, health)
+				}
+			}},
+		{"the next refresh after a failed fetch succeeds with a repack due", fetchFailed,
+			func(t *testing.T, f *spaceFixture) {
+				f.repackDue()
+				f.refresh(t, false)
+			},
+			func(t *testing.T, f *spaceFixture, status int, health Health, fields map[string]bool) {
+				if got := f.run.repacks() - f.repacks; got != 1 {
+					t.Errorf("the refresh asked for %d repacks, want the one that was due: a recorded failure holds none back", got)
+				}
+			}},
+		{"the next repack after a failed one succeeds", repackFailed,
+			func(t *testing.T, f *spaceFixture) { f.repackOK(t) },
+			func(t *testing.T, f *spaceFixture, status int, health Health, fields map[string]bool) {
+				if fields["repackOutOfSpaceAt"] {
+					t.Errorf("/healthz answers %d %+v, want the repack's failure cleared by the repack that succeeded", status, health)
+				}
+				if kept, ok := keptRepackFailure(t, f.opts.Root); ok {
+					t.Errorf("%s still holds %s after a repack succeeded", repackOutOfSpaceFile, kept)
+				}
+			}},
+		{"the volume's figures change with no fetch between",
+			func(t *testing.T, f *spaceFixture) {
+				repackFailed(t, f)
+				fetchFailed(t, f)
+			},
+			func(t *testing.T, f *spaceFixture) { f.volume.set(40<<30, 21<<30) },
+			func(t *testing.T, f *spaceFixture, status int, health Health, fields map[string]bool) {
+				if health.VolumeBytes == nil || *health.VolumeBytes != 40<<30 || health.AvailableBytes == nil || *health.AvailableBytes != 21<<30 {
+					t.Errorf("/healthz answers %d %+v, want the seam's new figures, a 40 GiB volume with 21 GiB available", status, health)
+				}
+				if !fields["fetchOutOfSpaceAt"] || !fields["repackOutOfSpaceAt"] {
+					t.Errorf("/healthz answers %d %+v, want both failures still named: neither step ran since", status, health)
+				}
+			}},
+		{"the volume's statfs fails", fetchFailed,
+			func(t *testing.T, f *spaceFixture) {
+				f.volume.fail(errors.New("statfs " + f.opts.Root + ": input/output error"))
+			},
+			func(t *testing.T, f *spaceFixture, status int, health Health, fields map[string]bool) {
+				if fields["volumeBytes"] || fields["availableBytes"] {
+					t.Errorf("/healthz answers %d %+v, want no figures from a statfs that failed", status, health)
+				}
+				if want := "statfs " + f.opts.Root + ": input/output error"; health.VolumeError != want {
+					t.Errorf("/healthz names the volume's error %q, want %q", health.VolumeError, want)
+				}
+				if !fields["fetchOutOfSpaceAt"] {
+					t.Errorf("/healthz answers %d %+v, want the fetch's failure still named", status, health)
+				}
+			}},
+		{"the process restarts after a failed fetch", fetchFailed,
+			func(t *testing.T, f *spaceFixture) {
+				f.opts.Refresh = 50 * time.Millisecond
+				started, release := f.run.hold()
+				t.Cleanup(release)
+				f.serving, f.release = start(t, f.opts), release
+				<-started
+			},
+			func(t *testing.T, f *spaceFixture, status int, health Health, fields map[string]bool) {
+				if status != http.StatusServiceUnavailable || fields["fetchOutOfSpaceAt"] {
+					t.Errorf("the restarted cache's first answer, during its first fetch, is %d %+v, want 503 naming no fetch failure: the last process's was in its memory alone", status, health)
+				}
+				f.release()
+				f.serving.ready(t)
+				f.run.instead("fetch", func(context.Context, workspace.Command) (workspace.Result, error) {
+					return workspace.Result{ExitCode: 128, Stderr: fetchOutOfSpace + "\n"}, nil
+				})
+				f.serving.waitFor(t, "naming the fetch that failed again", func(_ int, h Health) bool { return !h.FetchOutOfSpaceAt.IsZero() })
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSpaceFixture(t)
+			tc.state(t, f)
+			tc.event(t, f)
+			status, health, fields := f.healthz(t)
+			if health.VolumeBytes != nil && health.VolumeError != "" {
+				t.Errorf("/healthz answers %d %+v, both the volume's figures and a statfs error", status, health)
+			}
+			tc.check(t, f, status, health, fields)
+		})
+	}
+}
+
+// A repack's failure for lack of space outlives its process: a cache started on the volume of one
+// whose repack failed so names that failure in its first /healthz answer, the 503 one during its
+// first fetch, with the volume's figures beside it, and with no repack between. The control is the
+// same start after a repack that succeeded since: its first answer names no repack failure, and the
+// volume holds no repackOutOfSpaceFile.
+func TestTheCacheKeepsARepackFailureAcrossARestart(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		repaired bool
+	}{
+		{"after a repack that failed for lack of space", false},
+		{"after a repack that succeeded since", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSpaceFixture(t)
+			f.failRepack(t, repackOutOfSpace(f.c.dir))
+			_, first, _ := healthzOf(t, f.c)
+			if first.RepackOutOfSpaceAt.IsZero() {
+				t.Fatalf("the first process answers %+v, naming no repack failure to keep", first)
+			}
+			failed := first.RepackOutOfSpaceAt.Truncate(time.Second)
+			if tc.repaired {
+				f.repackOK(t)
+			}
+			repacks := f.run.repacks()
+			started, release := f.run.hold()
+			t.Cleanup(release)
+			again := start(t, f.opts)
+			<-started
+
+			status, health, fields := again.healthFields(t)
+			if status != http.StatusServiceUnavailable || health.VolumeBytes == nil || health.AvailableBytes == nil {
+				t.Errorf("the restarted cache's first answer, during its first fetch, is %d %+v, want 503 with the volume's figures", status, health)
+			}
+			if tc.repaired {
+				if fields["repackOutOfSpaceAt"] {
+					t.Errorf("the restarted cache's first answer names a repack failure at %s, though a repack succeeded since", health.RepackOutOfSpaceAt)
+				}
+				if kept, ok := keptRepackFailure(t, f.opts.Root); ok {
+					t.Errorf("%s holds %s after a repack succeeded", repackOutOfSpaceFile, kept)
+				}
+			} else if !health.RepackOutOfSpaceAt.Equal(failed) {
+				t.Errorf("the restarted cache's first answer names the repack's failure at %s, want the last process's %s", health.RepackOutOfSpaceAt, failed)
+			}
+			release()
+			health = again.ready(t)
+			want := failed
+			if tc.repaired {
+				want = time.Time{}
+			}
+			if !health.RepackOutOfSpaceAt.Equal(want) {
+				t.Errorf("the restarted cache, ready, names a repack failure at %s, want %s (the zero time is none)", health.RepackOutOfSpaceAt, want)
+			}
+			if got := f.run.repacks(); got != repacks {
+				t.Errorf("the runner was asked for %d repacks across the restart, want none: the failure is the last process's", got-repacks)
+			}
+		})
+	}
+}
+
+// statFS is `stat -f -c '%S %b %a' dir`: the fundamental block size, which is the unit statfs
+// counts its blocks in (f_frsize; %s is f_bsize, which need not be), the volume's blocks, and the
+// blocks available to an unprivileged writer.
+func statFS(t *testing.T, dir string) (unit, blocks, available uint64) {
+	t.Helper()
+	out, err := exec.Command("stat", "-f", "-c", "%S %b %a", dir).Output()
+	if err != nil {
+		t.Fatalf("stat -f %s: %v", dir, err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) != 3 {
+		t.Fatalf("stat -f %s printed %q, want three counts", dir, out)
+	}
+	counts := make([]uint64, 3)
+	for i, field := range fields {
+		if counts[i], err = strconv.ParseUint(field, 10, 64); err != nil {
+			t.Fatalf("stat -f %s printed %q: %v", dir, out, err)
+		}
+	}
+	return counts[0], counts[1], counts[2]
+}
+
+// The cache reads its own volume with the real reader (readVolume is volumestat.Read) at Options.Root:
+// on a temporary directory, the size /healthz answers is what `stat -f` prints as the fundamental
+// block size times the blocks, and the available bytes lie between that block size times the
+// available blocks read before the answer and after it, since a shared disk's available bytes
+// move. A cache with no clone yet answers 503, so the figures are in that answer too.
+func TestTheCacheReadsItsVolume(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skipf("the volume is read with statfs on Linux alone; on %s the reader refuses", runtime.GOOS)
+	}
+	root := t.TempDir()
+	c := cacheOn(t, Options{Repo: ghrepo.MustParse("acme/widgets"), Root: root, Log: func(string) {}})
+	unit, blocks, availableBefore := statFS(t, root)
+	status, health, _ := healthzOf(t, c)
+	unitAfter, blocksAfter, availableAfter := statFS(t, root)
+	if unitAfter != unit || blocksAfter != blocks {
+		t.Fatalf("stat -f read %d blocks of %d bytes, then %d of %d: the volume changed size under the test", blocks, unit, blocksAfter, unitAfter)
+	}
+	if status != http.StatusServiceUnavailable || health.VolumeError != "" || health.VolumeBytes == nil || health.AvailableBytes == nil {
+		t.Fatalf("/healthz of a cache with no clone answers %d %+v, want 503 with the volume's figures", status, health)
+	}
+	if want := unit * blocks; *health.VolumeBytes != want {
+		t.Errorf("/healthz answers a volume of %d bytes, want %d blocks of %d bytes, %d", *health.VolumeBytes, blocks, unit, want)
+	}
+	low, high := unit*min(availableBefore, availableAfter), unit*max(availableBefore, availableAfter)
+	if available := *health.AvailableBytes; available < low || available > high {
+		t.Errorf("/healthz answers %d bytes available, want between %d and %d, stat -f's readings before and after it", available, low, high)
+	}
 }
