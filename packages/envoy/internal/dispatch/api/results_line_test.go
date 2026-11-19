@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"math/rand/v2"
 	"net/http"
 	"slices"
 	"strings"
@@ -574,5 +575,106 @@ func TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt(t *testing.T) {
 				t.Errorf("%s, %s line, %s: got %q, want %q", host.name, pairing.line, pairing.parse, pairing.got, pairing.want)
 			}
 		}
+	}
+}
+
+// earlyStopTokens are the words a body of TestTheEarlyStopPrintsWhatWholeTextJudgingPrints is
+// made of: plain words short and long, words the line drops (keys, links, hosts, markup, invisible
+// and invalid runes), and words whose length puts them at the cut's edge.
+var earlyStopTokens = []string{
+	"a", "ab", "abc", "abcd", "abcde", "abcdefgh", "abcdefghijkl", "é", "日本語", "e\u0301",
+	"UTF-8", "SHA-256", "kernel-6.8", "Lists", "[1,", "2]", "f(x)", "x\ufe0f",
+	strings.Repeat("x", 79), strings.Repeat("y", 80), strings.Repeat("z", 81), strings.Repeat("w", 100),
+	strings.Repeat("q", 75) + "ACME-12xyz", "ACME-12xyz",
+	"ACME-12", "acme-3", "(ACME-4)", "dispatch://x/y", "https://dispatch.example/a", "dispatch.example",
+	"vm-1.c.proj-1.internal", "vm.internal.", "box.tail1234.ts.net", "a->b", "Vec<u8>", "[ACME](#)-12",
+	"ACME<!--", "-->-12", "**ACME**-12", "ACME\u034f-12", "ACME&#45;12", "\xff\xfe", "\xff",
+}
+
+// earlyStopSeparators are the blanks between the words of such a body.
+var earlyStopSeparators = []string{" ", " ", " ", "  ", "\t", "\n", "\u00a0", "\u3000"}
+
+// earlyStopBody is one body of up to 44 words of earlyStopTokens, drawn from r.
+func earlyStopBody(r *rand.Rand) string {
+	var body strings.Builder
+	if r.IntN(4) == 0 {
+		body.WriteString(earlyStopSeparators[r.IntN(len(earlyStopSeparators))])
+	}
+	for index := range r.IntN(45) {
+		if index > 0 {
+			body.WriteString(earlyStopSeparators[r.IntN(len(earlyStopSeparators))])
+		}
+		body.WriteString(earlyStopTokens[r.IntN(len(earlyStopTokens))])
+	}
+	if r.IntN(4) == 0 {
+		body.WriteString(earlyStopSeparators[r.IntN(len(earlyStopSeparators))])
+	}
+	return body.String()
+}
+
+// wholeTextKept is what lineWords keeps of text when every word is judged: each word drops leaves,
+// joined by single blanks. It shares only drops with keepThrough, so it reads the whole text
+// whatever the early stop does.
+func wholeTextKept(w lineWords, text string) string {
+	var kept []string
+	for _, word := range strings.Fields(text) {
+		if !w.drops(word) {
+			kept = append(kept, word)
+		}
+	}
+	return strings.Join(kept, " ")
+}
+
+// lineTail is the tail checkResultLine and ciVerdictLine print for kept: nothing when it is empty,
+// else kept cut.
+func lineTail(w lineWords, kept string) string {
+	if kept == "" {
+		return ""
+	}
+	return w.cut(kept)
+}
+
+// earlyStopBodies is how many bodies TestTheEarlyStopPrintsWhatWholeTextJudgingPrints judges.
+const earlyStopBodies = 50000
+
+// The line judges a text's words only until its kept text passes the cut (keepThrough), and the
+// tail it prints equals the tail judging the whole text prints (wholeTextKept), over
+// earlyStopBodies random bodies from a seeded generator, so every run judges the same bodies. The
+// run counts the bodies whose judging stopped early and the bodies whose tail was cut, and fails
+// on none of either, which would mean it tested nothing. Its control stops judging one rune early
+// (budget 79, as `runes >= budget` would): that tail must differ from the whole text's on some
+// body, which shows the comparison can fail.
+func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
+	words := lineWordsFor([]string{"ACME", "RESK"}, testServerURL)
+	r := rand.New(rand.NewPCG(4517, 50))
+	var stopped, cut, mismatches, controlMismatches int
+	for range earlyStopBodies {
+		body := earlyStopBody(r)
+		wholeKept := wholeTextKept(words, body)
+		whole := lineTail(words, wholeKept)
+		stoppedKept := words.keepThrough(body, checkResultReadingRunes)
+		if stoppedKept != wholeKept {
+			stopped++
+		}
+		if strings.HasSuffix(whole, "…") {
+			cut++
+		}
+		if got := lineTail(words, stoppedKept); got != whole {
+			mismatches++
+			if mismatches <= 3 {
+				t.Errorf("for %q the early stop prints %q, judging the whole text prints %q", body, got, whole)
+			}
+		}
+		if lineTail(words, words.keepThrough(body, checkResultReadingRunes-1)) != whole {
+			controlMismatches++
+		}
+	}
+	t.Logf("bodies %d: judging stopped early on %d, the tail was cut on %d, mismatches %d; control (budget %d): mismatches %d",
+		earlyStopBodies, stopped, cut, mismatches, checkResultReadingRunes-1, controlMismatches)
+	if stopped == 0 || cut == 0 {
+		t.Fatalf("judging stopped early on %d bodies and the tail was cut on %d: the run tested nothing", stopped, cut)
+	}
+	if controlMismatches == 0 {
+		t.Fatalf("a stop one rune early printed the whole text's tail on every body: the comparison cannot fail")
 	}
 }
