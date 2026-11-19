@@ -201,13 +201,16 @@ func (d *dispatchStandIn) askReads() int {
 }
 
 // modelStandIn is a model endpoint speaking Chat Completions: it answers each call with the same
-// reply and records every request body, so a test can read the data object the judge sent.
+// reply and records every request body, so a test can read the data object the judge sent, and
+// every Authorization, so a test can read which bearer the judge presented.
 type modelStandIn struct {
 	server *httptest.Server
 
 	mu sync.Mutex
-	// bodies are the request bodies it got, in order.
-	bodies [][]byte
+	// bodies are the request bodies it got, in order, and authorizations each one's
+	// Authorization header.
+	bodies         [][]byte
+	authorizations []string
 	// status, when it is not 0 or 200, is answered in place of a reply, and reply is the
 	// assistant content the stream carries. delay holds the answer back, which is how a
 	// test spends a bound.
@@ -241,6 +244,7 @@ func (m *modelStandIn) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	m.mu.Lock()
 	m.bodies = append(m.bodies, body)
+	m.authorizations = append(m.authorizations, r.Header.Get("Authorization"))
 	status, reply, delay, tokens := m.status, m.reply, m.delay, m.tokens
 	m.mu.Unlock()
 	if delay > 0 {
@@ -298,6 +302,13 @@ func (m *modelStandIn) asked() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.bodies)
+}
+
+// presented is the Authorization of every call the model got, in order.
+func (m *modelStandIn) presented() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.authorizations...)
 }
 
 // data is the Data object the judge sent with its first call, read back out of the user message.

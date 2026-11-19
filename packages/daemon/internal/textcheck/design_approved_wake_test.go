@@ -39,10 +39,12 @@ func TestTheArchitectsInstructionsTakeTheResumeAsTheDesignApprovedWake(t *testin
 }
 
 // A phrase a reader of the rendered page cannot see is none: the page shows nothing of a phrase
-// inside an HTML comment, around it or around the fenced block holding it, or after a comment never
-// closed, and a comment that splits the phrase shows it whole on the page alone. So the phrase is
-// held in both readings of the page, and each of those fails for the comment. A comment that holds
-// nothing of the phrase, or a "<!--" inside a fenced block before it, hides nothing of it.
+// inside an HTML comment, around it or around the fenced block holding it, or after a comment
+// opened on a line of its own and never closed, and a comment that splits the phrase shows it whole
+// on the page alone. So the phrase is held in both readings of the page, and each of those fails for
+// the comment. A comment that holds nothing of the phrase, a "<!--" inside a fenced block before it,
+// and a "<!--" inside a line that its paragraph never closes, which the page shows as text, hide
+// nothing of it.
 func TestTheDesignApprovedWakeIsHeldWhereAReaderSeesIt(t *testing.T) {
 	const phrase = "this resume is your design-approved wake"
 	line := "A resume task saying \"" + phrase + "\" is that wake.\n"
@@ -59,7 +61,8 @@ func TestTheDesignApprovedWakeIsHeldWhereAReaderSeesIt(t *testing.T) {
 		{"a comment splitting the phrase, the page showing it whole",
 			"## Release\n\nA resume task saying \"this resume is your <!-- whole -->design-approved wake\".\n",
 			errCommented},
-		{"a comment never closed before the phrase", "## Release\n\nRead this. <!-- a note\n\n" + line, errCommented},
+		{"a comment never closed before the phrase", "## Release\n\nRead this.\n<!-- a note\n\n" + line, errCommented},
+		{"a \"<!--\" never closed inside a line before the phrase", "## Release\n\nRead this. <!-- a note\n\n" + line, nil},
 		{"a comment around the fenced block holding the phrase",
 			"## Release\n\n<!--\n```text\n" + phrase + "\n```\n-->\n", errCommented},
 		{"a comment holding nothing of the phrase", "## Release\n\n<!-- a note -->\n" + line, nil},

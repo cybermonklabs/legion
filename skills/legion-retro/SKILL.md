@@ -71,7 +71,13 @@ with a WAITING line naming the defect and the answer you wait on.
    ```
 
 6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the
-   architect.
+   architect. In the same call, rate the plan the issue ran (its steps and the role that worked
+   each, not the planner's `plan.md`): send both `plan_rating`, a whole number from 1 (the plan
+   cost the work) to 5 (the plan fit the work), and `plan_reason`, one sentence of why from step
+   1's evidence, or neither where your `legion` tool's `handoff_complete` takes neither field. The
+   daemon refuses a completion without them (`PLAN_RATING_REQUIRED`), with one alone, a rating off
+   that scale or a reason blank or over 2,000 characters (`PLAN_RATING_INPUT`), and with both on
+   any other completion (`PLAN_RATING_UNEXPECTED`). A refusal records nothing: complete again.
 
 ## Before you complete
 
@@ -79,3 +85,5 @@ with a WAITING line naming the defect and the answer you wait on.
   lists nothing.
 - Each body line you added or changed that says work was done names work this pull request did.
 - The comment and the message are posted, and the pull request's head is the head you found.
+- Your `handoff_complete` carries `plan_rating` and `plan_reason`, or neither where your `legion`
+  tool's `handoff_complete` takes neither.

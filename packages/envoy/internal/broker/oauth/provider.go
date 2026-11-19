@@ -271,9 +271,14 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 		reservations:   reservations,
 	}
 	// A provider built with no store serves no request at all and is only ever inspected, as the
-	// broker's route wiring test inspects it, so there is nothing there to give the decision to.
+	// broker's route wiring test inspects it, so there is nothing there to give the decision or the
+	// fixed names to.
 	if store != nil {
 		store.ExchangeSubject = p.decide
+		// The one derivation of the names the configuration fixes: the provider's fixed claim and
+		// ReserveSessions read reservations, and the store's BindSession reads the same map to
+		// refuse a pair any of those names, by an exchange's claim or an enrollment's.
+		store.Reserved = reservations
 	}
 	return p, nil
 }
