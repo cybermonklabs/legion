@@ -47,6 +47,9 @@ func TestMain(m *testing.M) {
 		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
 			ghReadsProvenCheck.sha256 = proven
 		}
+		// The environment these tests hand gh beside ghChildEnviron's allowlist
+		// (testGhChildEnviron); the legion binary has no such hook.
+		ghChildTestEnviron = testGhChildEnviron(os.Environ())
 		main()
 	}
 	// environment_test.go reads these variables again once every test before it has run, so the

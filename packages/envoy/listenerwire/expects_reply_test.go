@@ -1,4 +1,4 @@
-package contracts
+package listenerwire
 
 import (
 	"encoding/json"

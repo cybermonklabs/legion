@@ -9,11 +9,11 @@
 # workflow in silence.
 #
 # Without --listeners it reads the image that runs each Legion daemon: for each entry of the
-# `agent-infra-legion:projects` list of theorem-labs/agent-infra legion/Pulumi.prod.yaml, its
+# projects list (the key daemon_pins reads) of example-org/deployment legion/Pulumi.prod.yaml, its
 # `daemonImage` when set, else its `image` (legion/README.md's `daemonImage` row). An entry that runs
 # no daemon (`replicas: 0`, or `daemon: false`) is printed SKIPPED, by name. An entry at `runtime:
 # tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from its
-# `image` (agent-infra legion/host.go, checkHost), and the gate reads no image for it: it is UNKNOWN
+# `image` (deployment legion/host.go, checkHost), and the gate reads no image for it: it is UNKNOWN
 # by name, and so is an entry on any runtime but `kubernetes`, the default. With --listeners it
 # reads the three listener pins instead: envoy/Pulumi.prod.yaml `listenerImage`,
 # envoy-cluster/Pulumi.prod.yaml `envoyImage`, and dispatch/Pulumi.prod.yaml `listenerImage`, which
@@ -43,7 +43,7 @@
 # the last line: `GATE OPEN` (exit 0) only when every pin it read passed and it read at least one,
 # `GATE SHUT` (exit 1) when any pin shut it, and `UNKNOWN` (exit 3) otherwise. A usage error exits 2.
 #
-# It needs bash, gh (signed in with read access to theorem-labs/agent-infra and cybermonklabs/legion),
+# It needs bash, gh (signed in with read access to the deployment repository and cybermonklabs/legion),
 # docker with buildx, jq, base64 and python3 with PyYAML. Docker must be able to read each pin's
 # registry: for ghcr.io, a login with a token holding read:packages, made into a config directory of
 # your own so the shared one is untouched:
@@ -77,7 +77,7 @@ compared=0
 
 first_line() { head -n 1 "$1"; }
 
-# stack_file <path>: the text of <path> in theorem-labs/agent-infra on its default branch, into
+# stack_file <path>: the text of <path> in the deployment repository on its default branch, into
 # $work/stack.yaml. An unreadable file is UNKNOWN, named with GitHub's answer.
 stack_file() {
   local encoded
@@ -226,7 +226,7 @@ aliases_error=""
 
 # load_aliases writes into $work/aliases, lowercased and one per line, every name a recorded
 # rename makes one repository with cybermonklabs/legion. The record is the deployment's own:
-# the repositoryRenames pairs of the project entries of theorem-labs/agent-infra
+# the repositoryRenames pairs of the project entries of the deployment repository's
 # legion/Pulumi.prod.yaml, which render as each daemon's `repository_renames` and which the
 # daemon's ghrepo.Renames reads (packages/daemon/internal/ghrepo/renames.go). It is the one place
 # the transfer of sjawhar/legion to cybermonklabs/legion is recorded, so the gate keeps no copy of
@@ -354,7 +354,7 @@ listener() {
 if [ "$mode" = listeners ]; then
   listener envoy envoy agent-infra-envoy:listenerImage
   listener envoy-cluster envoy-cluster agent-infra-envoy-cluster:envoyImage
-  # dispatch's listener runs listenerImage and nothing else: agent-infra dispatch/main.go requires
+  # dispatch's listener runs listenerImage and nothing else: the deployment's dispatch/main.go requires
   # that key (loadSettings) and pinListenerImage sets the listener's container from it, leaving
   # envoyImage to the Dispatch server. A stack that sets none runs no listener this gate can read,
   # so it is UNKNOWN rather than a reading of the server's image.

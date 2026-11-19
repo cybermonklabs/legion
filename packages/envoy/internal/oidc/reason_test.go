@@ -26,6 +26,7 @@ func TestReasonNamesEveryClass(t *testing.T) {
 		{"issuer", fmt.Errorf("%w: %q, want %q", ErrIssuer, "https://other", "https://mine"), "issuer"},
 		{"audience", fmt.Errorf("%w: %q, want %q", ErrAudience, []string{"dispatch"}, "envoy"), "audience"},
 		{"expired", fmt.Errorf("%w at 2026-01-01T00:00:00Z", ErrExpired), "expired"},
+		{"not yet valid", fmt.Errorf("%w: issued at 2026-01-01T00:00:00Z", ErrNotYetValid), "not-yet-valid"},
 		{"cancelled", fmt.Errorf("%w: %v", ErrCancelled, context.Canceled), "cancelled"},
 		{"issuer unavailable", fmt.Errorf("%w: %w", ErrIssuerUnavailable, fmt.Errorf("%w: https://issuer.example/keys answered 503", ErrKeySet)), "unavailable"},
 		{"signature", ErrSignature, "signature"},

@@ -574,6 +574,78 @@ func TestEveryRoleMessageKindWaitsForARoleOfThePod(t *testing.T) {
 	}
 }
 
+// A step record is history: its row reaches no session of the pod, so a record Dispatch has not
+// taken yet, due now or backing off for an hour behind a Dispatch that is down, keeps no idle pod
+// standing and cancels no release at its boundary, whether it was queued before the release's rows
+// or after them. A start of a role of the pod queued beside it does both, which shows the reads
+// see the queue at all.
+func TestAPendingStepRecordHoldsNoIdlePod(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		attempts int
+		nextAt   string
+	}{
+		{name: "due now", nextAt: "now()"},
+		{name: "backing off behind a Dispatch that is down", attempts: 6, nextAt: "now() + interval '1 hour'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			if err := st.PutClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"),
+				Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1,
+				Generation: 1, ServingGeneration: 1, State: supervise.StateIdle}); err != nil {
+				t.Fatal(err)
+			}
+			started := time.Now().UTC()
+			queueRecord := func() {
+				t.Helper()
+				row, err := record.NewOutboxRow(rootIssue, record.StepRecord{ID: "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b",
+					Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation",
+					Agent: "legion-legion-legion-208-implementer", Generation: 1, StartedAt: &started}, started)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+					values ($1, $2, $3, $4, `+tc.nextAt+`, 'Dispatch is unreachable')`,
+					string(row.Kind), rootIssue, row.Payload, tc.attempts); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			queueRecord()
+			if view := idleViewOf(t, st, rootIssue); view.Waiting {
+				t.Fatal("the idle view reads a step record as waiting for a role of the pod, which would keep the idle pod standing")
+			}
+			candidates, err := st.IdlePods(ctx, "legion")
+			if err != nil || !slices.Contains(candidates, rootIssue) {
+				t.Fatalf("IdlePods = %v, %v; want %s, whose claim is live, a candidate", candidates, err, rootIssue)
+			}
+			_, boundary, _ := releaseThroughTheStore(t, st)
+			queueRecord()
+			decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+			if err != nil || decision.Act != ReleaseActs {
+				t.Fatalf("the boundary with step records queued below and above the release's rows = %s for %s, %v; want %s",
+					decision.Act, decision.Cause, err, ReleaseActs)
+			}
+
+			if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+				values ('supervise', $1, '{"op":"start","tree":"LEGION-208","role":"tester","generation":1}', 0, now(), '')`,
+				rootIssue); err != nil {
+				t.Fatal(err)
+			}
+			if view := idleViewOf(t, st, rootIssue); !view.Waiting {
+				t.Fatal("control: the idle view reads nothing waiting, though a start of the pod's tester is queued")
+			}
+			decision, err = st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+			if err != nil || decision.Act != ReleaseCancel || decision.Cause != ReleaseCauseOvertaken {
+				t.Fatalf("control: the boundary with a start of the tester queued = %s for %s, %v; want %s for %s",
+					decision.Act, decision.Cause, err, ReleaseCancel, ReleaseCauseOvertaken)
+			}
+		})
+	}
+}
+
 // waitingOnTheSerializer is whether a backend of this test's database other than the reader waits
 // on an advisory lock: the shared serializer (treelifecycle.Serialize) is the only one the store
 // takes by that name outside a migration, so a waiter here is a transaction held at its head.

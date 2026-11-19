@@ -1697,7 +1697,7 @@ test("a search carrying anything beyond them goes to GET /api/v1/search/results"
   const beyond: Record<string, unknown> = {
     number_project: "INFRA",
     status: "in_progress",
-    author: "sami@theorem.dev",
+    author: "sami@example.com",
     updated_since: "2026-11-01T00:00:00Z",
     keywords_only: true,
   };

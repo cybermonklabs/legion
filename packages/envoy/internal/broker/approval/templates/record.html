@@ -50,12 +50,14 @@
 <dt>State</dt>
 <dd class="state">{{$r.State}}{{if $r.DecidedBy}} by {{if $r.DecidedByJudge}}the model judge <code>{{$r.DecidedBy}}</code>{{else}}{{$r.DecidedBy}}{{end}}{{end}}{{if $r.DecidedAt}} at {{$r.DecidedAt}}{{end}}{{if $r.Detail}} ({{$r.Detail}}){{end}}</dd>
 </dl>
-{{- if not $r.MachineLogin}}
+{{- if and (not $r.MachineLogin) (not $r.JudgeDeciding)}}
 <p class="note">Approve gives this session the value of these secrets {{$r.Lifetime}}.</p>
 <p class="note">Deny refuses them, and so does leaving the request until it expires.</p>
 {{- end}}
 {{- if $r.MachineLogin}}
 <p class="note">A machine login is approved by typing the code its machine shows on Dispatch's machine-login page: <a href="{{$.MachineLoginURL}}">{{$.MachineLoginURL}}</a></p>
+{{- else if $r.JudgeDeciding}}
+<p class="note judge">The model judge is deciding this request, so nobody approves or denies it here. If the judge cannot decide it, it comes back to its approver here.</p>
 {{- else if $r.Buttons}}
 <form method="post" action="/approve" class="decide">
 {{template "token" $.Form}}
