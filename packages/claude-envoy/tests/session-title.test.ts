@@ -340,9 +340,8 @@ const withoutTmux = skipWithout("tmux")
 
 /** Where the two rows' tmux sockets go. A socket path has 107 bytes to fit in (Linux's `sun_path`
  *  holds 108 with its terminating zero), and tmux refuses a longer one (`Filename too long`):
- *  `<directory>/title-tmux-XXXXXX/tmux.sock` passes it under a `TMPDIR` over 79 bytes, as a Legion
- *  pod's can be, so the directories go under `/tmp`, whatever `TMPDIR` is, as mod-link.test.ts's
- *  socket homes do. */
+ *  `<directory>/title-tmux-XXXXXX/tmux.sock` passes it under a `TMPDIR` over 79 bytes. So the
+ *  directories go under `/tmp`, whatever `TMPDIR` is, as mod-link.test.ts's socket homes do. */
 const SOCKET_ROOT = "/tmp"
 
 test.skipIf(withoutTmux)(
