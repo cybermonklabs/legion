@@ -516,6 +516,18 @@ function plainTagProp(program: Program, comp: Comp, tag: ts.Identifier): boolean
   });
 }
 
+/** The `LIBRARY_WRAPPERS` key of the element's tag: an identifier imported from a package, the
+ *  one tag that table is read for. Undefined for any other tag - a namespaced one such as
+ *  `<ThreadPrimitive.Root>`, or one from a path the census does not hold. */
+function libraryKey(program: Program, element: ts.Node): string | undefined {
+  const tag = tagOf(element) as ts.JsxTagNameExpression;
+  if (!ts.isIdentifier(tag)) return undefined;
+  const binding = modOf(program, element).imports.get(tag.text);
+  return binding !== undefined && binding.from === undefined
+    ? `${binding.spec}#${binding.name}`
+    : undefined;
+}
+
 /** Whether an element the census reads no component for draws what it wraps as it is: a
  *  context's provider, a library element known to, or a plain tag its component takes as a
  *  string. */
@@ -531,14 +543,8 @@ function drawsAsItIs(program: Program, comp: Comp, element: ts.Node): boolean {
     if (init !== undefined && calleeName(init) === "createContext") return true;
   }
   if (!ts.isIdentifier(tag)) return false;
-  const binding = mod.imports.get(tag.text);
-  if (
-    binding !== undefined &&
-    binding.from === undefined &&
-    LIBRARY_WRAPPERS[`${binding.spec}#${binding.name}`] !== undefined
-  ) {
-    return true;
-  }
+  const key = libraryKey(program, element);
+  if (key !== undefined && LIBRARY_WRAPPERS[key] !== undefined) return true;
   return plainTagProp(program, comp, tag);
 }
 
@@ -560,9 +566,10 @@ function followElement(
     return followSlot(walk, id, prop, subpath, depth);
   }
   if (prop === "children" && drawsAsItIs(program, comp, element)) return undefined;
-  // A library element is read as a plain one (`LIBRARY_WRAPPERS`) only where it wraps the slot.
+  // A library element is read as a plain one (`LIBRARY_WRAPPERS`) only where it wraps the slot,
+  // and only for the tags `drawsAsItIs` reads that table for (`libraryKey`).
   const wrapper =
-    prop === "children"
+    prop === "children" && libraryKey(program, element) !== undefined
       ? ", or add it to LIBRARY_WRAPPERS in composer-census/walk.ts with why it draws its children unchanged"
       : "";
   return id === undefined || declOf(program, id) === undefined

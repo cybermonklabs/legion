@@ -11,7 +11,8 @@
  * `settings.test.tsx` passed in a pod and failed on a loaded CI runner: it awaited the
  * "Repositories → Projects" heading, which the settings page draws at once, and then read the
  * sidebar's Settings link, which the sidebar draws only once the inbox, the pinned issues and the
- * projects have answered (`Sidebar.tsx`). Here that row fails under every seed.
+ * projects have answered (`Sidebar.tsx`). Until that row waited for the link, it failed here
+ * under every seed.
  *
  * The wait is the real `setImmediate`, which a fake clock a row installs does not hold (Bun
  * 1.4.4): a row on a fake clock gets its answers as it would without this file, one turn later.
@@ -27,10 +28,12 @@
  * write's 401 path through the sign-in check (`write-store.test.ts`) - is timing the very answer
  * this file moves. A row that ends while a read it never reads is still out sees that read land
  * between two of its `act` scopes, which React reports and the preload's act check fails
- * (`setup.ts`). The third is a page that never reaches the state a row waits for: under this
- * lane the Agents header's unread badge still read "New reply 1" ten seconds after its
- * conversation was opened (`AgentsPage.test.tsx`), so a wait cannot pass, and what holds the
- * badge is the page's to read, not the row's.
+ * (`setup.ts`). The third is a page that never reaches the state a row waits for, which is a bug
+ * of the page and not of the row, so no wait can pass it. This lane found one: the Agents
+ * header's unread badge still read "New reply 1" ten seconds after its conversation was opened
+ * (`AgentsPage.test.tsx`), because a read asked before the mark put back the count the mark had
+ * cleared; `storeAgentState` (`features/agents/unread.ts`) now puts the mark's answer over the
+ * reads still out.
  */
 
 import { Query } from "@tanstack/react-query";
