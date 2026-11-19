@@ -4795,6 +4795,7 @@ jobs:
               - '!packages/envoy/dispatchbody/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/aws/**/*_test.go'
+              - '!packages/envoy/infra/buckets/**/*_test.go'
               - '!packages/envoy/infra/cmd/**/*_test.go'
               - '!packages/envoy/infra/core/**/*_test.go'
               - '!packages/envoy/infra/gcp/**/*_test.go'
