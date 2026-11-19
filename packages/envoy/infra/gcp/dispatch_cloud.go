@@ -18,18 +18,41 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi/internals"
 )
 
-// dispatchCluster is what the component's cluster resources give the rest of it. Both modes build
-// them, so every field here is set in either mode.
+// dispatchNetwork is what the network half gives the rest of the component: the VPC and its
+// regional subnetwork, the private services peering, and the project. The network half registers
+// apart from the cluster half, so the network, its peering and the project lookup hang on no
+// cluster: the cluster half takes the network, never the other way round.
+type dispatchNetwork struct {
+	// network is the VPC the cluster's nodes and the database's private IP are on, and subnetwork
+	// the range in region the component's own cluster takes its nodes' and pods' addresses from.
+	network    *compute.Network
+	subnetwork *compute.Subnetwork
+	// connection is the private services peering the Cloud SQL instance takes its private IP
+	// through. clusterOnly builds no database, so it registers no peering and connection is nil.
+	connection *servicenetworking.Connection
+	// project is the project whose number and id name the principal, the Workload Identity pool
+	// and the issuer.
+	project organizations.LookupProjectResultOutput
+}
+
+// dispatchCluster is what the cluster half gives the rest of the component: the cluster's name,
+// service-account token issuer, kubeconfig and Workload Identity pool, each as an output, and the
+// resources a child that reaches the cluster waits for. Both modes build the cluster half, so every
+// field here is set in either mode.
 type dispatchCluster struct {
-	cluster *container.Cluster
+	// name is the cluster's name, which the component exports as clusterName.
+	name pulumi.StringOutput
 	// issuer is the cluster's service-account token issuer, and kubeconfig the cluster's
 	// exec-plugin kubeconfig, which the component exports and its Kubernetes provider takes.
 	issuer     pulumi.StringOutput
 	kubeconfig pulumi.StringOutput
-	// network is the VPC the database takes a private IP on, and project the project whose number
-	// and id name the principal and the issuer.
-	network *compute.Network
-	project organizations.LookupProjectResultOutput
+	// pool is the Workload Identity pool as the cluster reports it, which names the pods'
+	// principal. It is a *string the provider can leave nil, which the principal's apply refuses
+	// (outputString).
+	pool pulumi.StringPtrOutput
+	// waitFor is the resources every Kubernetes child and every grant to the pool depends on: the
+	// component's own Cluster, so none of them is made before the cluster exists.
+	waitFor []pulumi.Resource
 }
 
 // dispatchDatabase is what the component's database resources give the rest of it: the Cloud SQL
@@ -69,25 +92,28 @@ func providerFor(ctx context.Context, pkg string, opts ...pulumi.ResourceOption)
 	return nil, fmt.Errorf("missing %s provider", pkg)
 }
 
-// newDispatchCluster registers the cluster and what the cluster is made of: the VPC, its
-// subnetwork, the router and Cloud NAT its private nodes reach the internet through, and the
-// Autopilot cluster itself. It is all clusterOnly builds, and it computes the two values derived
-// from the cluster alone, the service-account token issuer and the kubeconfig.
-func newDispatchCluster(ctx *pulumi.Context, comp *Dispatch, name string, s dispatchSettings, opts ...pulumi.ResourceOption) (*dispatchCluster, error) {
-	dispatch := dispatchType + " " + name
+// newDispatchNetwork is the network half: it registers the network the component runs on, apart
+// from any cluster. That is the VPC, Network <hostname>-network; in region, its subnetwork and
+// the router and Cloud NAT that private nodes reach the internet through, Subnetwork, Router and
+// RouterNat <hostname>; and, outside clusterOnly, which builds no database, the private services
+// range and its peering, GlobalAddress and Connection <hostname>-services, through which the Cloud
+// SQL instance takes its private IP. It also looks the project up through the gcp provider. The
+// cluster half takes the network and the subnetwork from it, and the database half the network,
+// the connection and the project.
+func newDispatchNetwork(ctx *pulumi.Context, comp *Dispatch, s dispatchSettings, opts ...pulumi.ResourceOption) (*dispatchNetwork, error) {
 	gcpProvider, err := providerFor(ctx.Context(), "gcp", opts...)
 	if err != nil {
 		return nil, err
 	}
 	child := pulumi.Parent(comp)
 	project := organizations.LookupProjectOutput(ctx, organizations.LookupProjectOutputArgs{}, pulumi.Provider(gcpProvider))
-	// The cluster's Workload Identity pool; GKE accepts only the project's own, <project id>.svc.id.goog.
-	pool := project.ProjectId().Elem().ApplyT(func(id string) string { return id + ".svc.id.goog" }).(pulumi.StringOutput)
-
 	network, err := compute.NewNetwork(ctx, s.hostname+"-network", &compute.NetworkArgs{AutoCreateSubnetworks: pulumi.Bool(false)}, child)
 	if err != nil {
 		return nil, err
 	}
+	// The regional part of the network, which only a cluster in region uses: the subnetwork the
+	// component's own cluster takes its addresses from, and the router and Cloud NAT its private
+	// nodes reach the internet through.
 	subnetwork, err := compute.NewSubnetwork(ctx, s.hostname, &compute.SubnetworkArgs{
 		Network: network.ID(), Region: pulumi.String(s.region), IpCidrRange: pulumi.String("10.64.0.0/20"), PrivateIpGoogleAccess: pulumi.Bool(true),
 	}, child)
@@ -104,8 +130,36 @@ func newDispatchCluster(ctx *pulumi.Context, comp *Dispatch, name string, s disp
 	if err != nil {
 		return nil, err
 	}
+	vpc := &dispatchNetwork{network: network, subnetwork: subnetwork, project: project}
+	if s.clusterOnly {
+		return vpc, nil
+	}
+	address, err := compute.NewGlobalAddress(ctx, s.hostname+"-services", &compute.GlobalAddressArgs{
+		Purpose: pulumi.String("VPC_PEERING"), AddressType: pulumi.String("INTERNAL"), PrefixLength: pulumi.Int(16), Network: network.ID(),
+	}, child)
+	if err != nil {
+		return nil, err
+	}
+	vpc.connection, err = servicenetworking.NewConnection(ctx, s.hostname+"-services", &servicenetworking.ConnectionArgs{
+		Network: network.ID(), Service: pulumi.String("servicenetworking.googleapis.com"), ReservedPeeringRanges: pulumi.StringArray{address.Name},
+	}, child)
+	if err != nil {
+		return nil, err
+	}
+	return vpc, nil
+}
+
+// newDispatchCluster is the cluster half of the component's own cluster: it registers the
+// Autopilot cluster, Cluster <hostname> in region, on the network half's network and subnetwork,
+// and computes what the rest of the component reads off it: the service-account token issuer, the
+// kubeconfig and the Workload Identity pool. With the network half it is all clusterOnly builds.
+func newDispatchCluster(ctx *pulumi.Context, comp *Dispatch, name string, s dispatchSettings, vpc *dispatchNetwork) (*dispatchCluster, error) {
+	dispatch := dispatchType + " " + name
+	child := pulumi.Parent(comp)
+	// The cluster's Workload Identity pool; GKE accepts only the project's own, <project id>.svc.id.goog.
+	workloadPool := vpc.project.ProjectId().Elem().ApplyT(func(id string) string { return id + ".svc.id.goog" }).(pulumi.StringOutput)
 	cluster, err := container.NewCluster(ctx, s.hostname, &container.ClusterArgs{
-		Name: pulumi.String(s.hostname), Location: pulumi.String(s.region), EnableAutopilot: pulumi.Bool(true), Network: network.ID(), Subnetwork: subnetwork.ID(),
+		Name: pulumi.String(s.hostname), Location: pulumi.String(s.region), EnableAutopilot: pulumi.Bool(true), Network: vpc.network.ID(), Subnetwork: vpc.subnetwork.ID(),
 		IpAllocationPolicy:   &container.ClusterIpAllocationPolicyArgs{},
 		PrivateClusterConfig: &container.ClusterPrivateClusterConfigArgs{EnablePrivateNodes: pulumi.Bool(true), EnablePrivateEndpoint: pulumi.Bool(false)},
 		ReleaseChannel:       &container.ClusterReleaseChannelArgs{Channel: pulumi.String("REGULAR")},
@@ -114,7 +168,7 @@ func newDispatchCluster(ctx *pulumi.Context, comp *Dispatch, name string, s disp
 			Enabled:        pulumi.Bool(true),
 			RotationConfig: &container.ClusterSecretSyncConfigRotationConfigArgs{Enabled: pulumi.Bool(true)},
 		},
-		WorkloadIdentityConfig: &container.ClusterWorkloadIdentityConfigArgs{WorkloadPool: pool},
+		WorkloadIdentityConfig: &container.ClusterWorkloadIdentityConfigArgs{WorkloadPool: workloadPool},
 		DeletionProtection:     pulumi.Bool(s.deletionProtection),
 	}, child)
 	if err != nil {
@@ -126,14 +180,17 @@ func newDispatchCluster(ctx *pulumi.Context, comp *Dispatch, name string, s disp
 	// principal set). It is built from the project, the location and the name rather than taken from
 	// the cluster's selfLink, which the provider documents only as "the server-defined URL for the
 	// resource", a form it does not promise.
-	issuer := pulumi.All(project.ProjectId(), cluster.Location, cluster.Name).ApplyT(func(values []interface{}) (string, error) {
+	issuer := pulumi.All(vpc.project.ProjectId(), cluster.Location, cluster.Name).ApplyT(func(values []interface{}) (string, error) {
 		parts, err := outputStrings(dispatch, values, "the project's id", "the cluster's location", "the cluster's name")
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("https://container.googleapis.com/v1/projects/%s/locations/%s/clusters/%s", parts[0], parts[1], parts[2]), nil
 	}).(pulumi.StringOutput)
-	return &dispatchCluster{cluster: cluster, issuer: issuer, kubeconfig: dispatchKubeconfig(dispatch, cluster), network: network, project: project}, nil
+	return &dispatchCluster{
+		name: cluster.Name, issuer: issuer, kubeconfig: dispatchKubeconfig(dispatch, cluster),
+		pool: cluster.WorkloadIdentityConfig.WorkloadPool(), waitFor: []pulumi.Resource{cluster},
+	}, nil
 }
 
 // dispatchKubeconfig renders the cluster's exec-plugin kubeconfig, which the component exports and
@@ -150,25 +207,14 @@ func dispatchKubeconfig(dispatch string, cluster *container.Cluster) pulumi.Stri
 }
 
 // newDispatchDatabase registers what Dispatch itself runs on, which clusterOnly builds none of:
-// the private services range and its peering, the Cloud SQL instance with its database and user,
-// the generated passwords, and the Secret Manager grants the pods' principal needs. It takes the
-// cluster half's resources and answers with its own.
-func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, cloud *dispatchCluster) (*dispatchDatabase, error) {
+// the Cloud SQL instance with its database and user, the generated passwords, and the Secret
+// Manager grants the pods' principal needs. It takes the network half's network, peering and
+// project, and the cluster half's Workload Identity pool and the resources its grants wait for,
+// and answers with its own.
+func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, vpc *dispatchNetwork, cloud *dispatchCluster) (*dispatchDatabase, error) {
 	dispatch := dispatchType + " " + name
 	child := pulumi.Parent(comp)
-	network, project, cluster := cloud.network, cloud.project, cloud.cluster
-	address, err := compute.NewGlobalAddress(ctx, s.hostname+"-services", &compute.GlobalAddressArgs{
-		Purpose: pulumi.String("VPC_PEERING"), AddressType: pulumi.String("INTERNAL"), PrefixLength: pulumi.Int(16), Network: network.ID(),
-	}, child)
-	if err != nil {
-		return nil, err
-	}
-	connection, err := servicenetworking.NewConnection(ctx, s.hostname+"-services", &servicenetworking.ConnectionArgs{
-		Network: network.ID(), Service: pulumi.String("servicenetworking.googleapis.com"), ReservedPeeringRanges: pulumi.StringArray{address.Name},
-	}, child)
-	if err != nil {
-		return nil, err
-	}
+	network, connection, project := vpc.network, vpc.connection, vpc.project
 	// databaseWaitsFor names a value of a resource the consumer wants the instance's update to
 	// follow, its own step before the restart (deleting the old tailnet device, say). The value
 	// itself reaches no resource here: only the dependencies it carries do, which is all
@@ -243,22 +289,23 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 		return nil, err
 	}
 	// The principal lives in the cluster's Workload Identity pool, which Google creates with the
-	// cluster. It is built from the cluster's own WorkloadIdentityConfig, so it resolves only once
-	// the pool exists, and the component's own seed grant below, built from it, waits for the
-	// cluster: IAM may refuse a member of a pool that does not exist yet (unproven: the plan's
-	// hardening ledger). A consumer's grant taken from the `principal` output would resolve later
-	// still, once every child has registered, the app Deployment's readiness wait included, and
-	// that wait needs roles/cloudsql.client already granted, so the consumer grants that role from
-	// the principal's known form, not from the output; whether IAM accepts it before the pool
-	// exists is the same unproven question.
-	principal := pulumi.All(project.Number(), cluster.WorkloadIdentityConfig.WorkloadPool()).ApplyT(func(values []interface{}) (string, error) {
+	// cluster. It is built from the pool the cluster half reports, the cluster's own
+	// WorkloadIdentityConfig, so it resolves only once the pool exists, and the component's own
+	// seed grant below, built from it, waits for the cluster half's resources, the cluster: IAM may
+	// refuse a member of a pool that does not exist yet (unproven: the plan's hardening ledger). A
+	// consumer's grant taken from the `principal` output would resolve later still, once every
+	// child has registered, the app Deployment's readiness wait included, and that wait needs
+	// roles/cloudsql.client already granted, so the consumer grants that role from the principal's
+	// known form, not from the output; whether IAM accepts it before the pool exists is the same
+	// unproven question.
+	principal := pulumi.All(project.Number(), cloud.pool).ApplyT(func(values []interface{}) (string, error) {
 		parts, err := outputStrings(dispatch, values, "the project's number", "the cluster's Workload Identity pool")
 		if err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/subject/ns/%s/sa/%s", parts[0], parts[1], s.namespace, s.hostname), nil
 	}).(pulumi.StringOutput)
-	seedAccessor, err := secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn([]pulumi.Resource{cluster}))
+	seedAccessor, err := secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn(cloud.waitFor))
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +313,7 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	if s.azure.key {
 		// The Azure key is read by the app at run time through the CSI driver, so the pods'
 		// principal needs the same per-secret accessor grant the NATS seed has.
-		azureKeyAccessor, err = secretmanager.NewSecretIamMember(ctx, s.hostname+"-azure-embed-key-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.AzureEmbedKeySecret, dispatch, "azureEmbedKeySecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn([]pulumi.Resource{cluster}))
+		azureKeyAccessor, err = secretmanager.NewSecretIamMember(ctx, s.hostname+"-azure-embed-key-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.AzureEmbedKeySecret, dispatch, "azureEmbedKeySecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn(cloud.waitFor))
 		if err != nil {
 			return nil, err
 		}
@@ -275,7 +322,7 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	if s.answerer.place == dispatchAnswererEndpoint {
 		// The endpoint answerer's bearer token is read by the app on every call through the CSI
 		// driver, so the pods' principal needs the same per-secret accessor grant.
-		chatTokenAccessor, err = secretmanager.NewSecretIamMember(ctx, s.hostname+"-chat-token-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.ChatTokenSecret, dispatch, "chatTokenSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn([]pulumi.Resource{cluster}))
+		chatTokenAccessor, err = secretmanager.NewSecretIamMember(ctx, s.hostname+"-chat-token-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.ChatTokenSecret, dispatch, "chatTokenSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn(cloud.waitFor))
 		if err != nil {
 			return nil, err
 		}

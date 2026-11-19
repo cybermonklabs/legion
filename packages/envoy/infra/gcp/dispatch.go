@@ -1708,7 +1708,7 @@ func mebibytes(bytes *big.Rat) string {
 }
 
 // NewDispatch registers a Dispatch component after resolving all plain inputs and requiring the
-// providers its cluster, database, generated secrets, and Kubernetes resources use.
+// providers its network, cluster, database, generated secrets, and Kubernetes resources use.
 func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...pulumi.ResourceOption) (*Dispatch, error) {
 	// The name is quoted in every refusal below and the component registers under it, so a seed
 	// there is refused first, as NewNatsHub refuses one in its own name.
@@ -1741,12 +1741,16 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	if err := ctx.RegisterComponentResource(dispatchType, name, comp, opts...); err != nil {
 		return nil, err
 	}
-	cloud, err := newDispatchCluster(ctx, comp, name, s, opts...)
+	vpc, err := newDispatchNetwork(ctx, comp, s, opts...)
+	if err != nil {
+		return nil, err
+	}
+	cloud, err := newDispatchCluster(ctx, comp, name, s, vpc)
 	if err != nil {
 		return nil, err
 	}
 	// The three outputs the cluster alone decides, which both modes carry.
-	comp.ClusterName = cloud.cluster.Name
+	comp.ClusterName = cloud.name
 	comp.Kubeconfig = cloud.kubeconfig
 	comp.ServiceAccountIssuer = cloud.issuer
 	if s.clusterOnly {
@@ -1758,7 +1762,7 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 		comp.AgentToken, comp.ServiceAccountSubject = empty, empty
 		return comp, nil
 	}
-	database, err := newDispatchDatabase(ctx, comp, name, args, s, cloud)
+	database, err := newDispatchDatabase(ctx, comp, name, args, s, vpc, cloud)
 	if err != nil {
 		return nil, err
 	}

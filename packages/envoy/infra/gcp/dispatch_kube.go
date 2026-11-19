@@ -335,7 +335,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if err != nil {
 		return err
 	}
-	child := []pulumi.ResourceOption{pulumi.Parent(comp), pulumi.Provider(provider), pulumi.DependsOn([]pulumi.Resource{cloud.cluster})}
+	child := []pulumi.ResourceOption{pulumi.Parent(comp), pulumi.Provider(provider), pulumi.DependsOn(cloud.waitFor)}
 	metadata := func(name string) *metav1.ObjectMetaArgs {
 		return objectMeta(name, s.namespace)
 	}
