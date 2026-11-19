@@ -42,7 +42,7 @@ export function IssueClaimControl({
   const claimLeft = useFocusHandOff(() => none.current);
   // Release and Retry send the one release, and a press while it is out sends nothing: the guard
   // drops a press made before React has drawn the release out, and `isPending` one made after
-  // this row was drawn again - Details' section closed and opened - with a guard that starts free.
+  // this row was drawn afresh, with a guard that starts free.
   const release = () => {
     if (releaseClaim.isPending) return;
     press.guard(() => releaseClaim.mutate(undefined, { onSettled: () => press.release() }));

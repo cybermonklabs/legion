@@ -62,9 +62,9 @@ export function blockedByControlName(issueKey: string, blockerCount: number): st
  * one the reader is looking at.
  *
  * Whether the editor is open, the list typed into it and its write are the panel's
- * (`IssueMarginPanel`), handed down here, and not this row's: a closed section of Details
- * unmounts its rows, so a reader who closes Development while a save is out still finds the
- * editor, the list they typed and the refusal that landed meanwhile when they open it again.
+ * (`IssueMarginPanel`), handed down here. A closed section of Details keeps its rows on the
+ * page, hidden, so a reader who closes Development while a save is out still finds the editor,
+ * the list they typed and the refusal that landed meanwhile when they open it again.
  */
 export function BlockedByControl({
   draft,
@@ -90,11 +90,8 @@ export function BlockedByControl({
   const blockers = issue.blocked_by ?? [];
   const input = useRef<HTMLInputElement>(null);
   const control = useRef<HTMLButtonElement>(null);
-  // Set by the reader's own open, so the box takes the focus then and not when Development is
-  // opened again over an editor that stayed open.
-  const focusBox = useRef(false);
   // Whether the editor was open at the last commit, so that its close - by Cancel, by Escape or
-  // by a save that lands - is told apart from Development opening over a closed editor.
+  // by a save that lands - is told apart from the row's first draw, with the editor closed.
   const wasEditing = useRef(editing);
   const isClosed = issue.closed_at !== null;
   // The editor opens with the issue's own list in it, and the focus in the box: the control
@@ -108,14 +105,11 @@ export function BlockedByControl({
       if (focusOnDocument()) control.current?.focus();
       return;
     }
-    if (!editing || !focusBox.current) return;
-    focusBox.current = false;
-    input.current?.focus();
+    if (editing) input.current?.focus();
   }, [editing]);
   const open = () => {
     write.forgetRefusal();
     onDraft(blockers.join(" "));
-    focusBox.current = true;
     onEditing(true);
   };
   // The save holds the editor open: the refusal it may bring is drawn in this form and nowhere
@@ -156,7 +150,9 @@ export function BlockedByControl({
         <form
           className="flex min-w-0 flex-wrap items-center gap-2"
           onKeyDown={(event) => {
-            if (event.key !== "Escape") return;
+            // A press that ends an IME composition gives up what the reader was composing, not
+            // the editor: the form leaves it alone, unmarked, as the key registry does.
+            if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
             // Escape anywhere in the editor, its box, its Save or its Cancel, is Cancel's, and is
             // held as Cancel is while the save is out. It is marked taken: the page's own Escape,
             // which closes Details and the phone's Details sheet with it, passes over a press a

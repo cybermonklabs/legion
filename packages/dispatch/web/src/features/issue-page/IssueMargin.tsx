@@ -86,6 +86,9 @@ import { waitingOnReader } from "./waiting";
  *  the rest. */
 const FOLD_AFTER = 10;
 
+/** The id of the Parent row's line that says why Dispatch refused a parent. */
+export const PARENT_ERROR_ID = "issue-parent-error";
+
 /** The rows of each section that a control elsewhere on the page opens Details at
  *  (`DetailsRow`), each where it is drawn: the section opens for a request of one of them.
  *  People holds the issue's collaborators, whose place there is `DetailsPeople`. */
@@ -197,18 +200,25 @@ export function IssueMarginPanel({
   // The panel's own element, under which every control of Details that Add reaches is drawn.
   const panel = useRef<HTMLDivElement>(null);
   const referencesPanelId = useId();
-  // The blocked-by editor's state is the panel's and not its row's, because a closed section
-  // unmounts its rows and the panel stays drawn for the life of the page (`slots/details.tsx`):
-  // a list typed before the reader closed Development, and a refusal that lands after, are
-  // still there when it opens again (`BlockedByControl`).
+  // The blocked-by editor's state is the panel's, which stays drawn for the life of the page
+  // (`slots/details.tsx`), as a closed section keeps its rows: a list typed before the reader
+  // closed Development, and a refusal that lands after, are still there when it opens again
+  // (`BlockedByControl`).
   const [blockedByEditing, setBlockedByEditing] = useState(false);
   const [blockedByDraft, setBlockedByDraft] = useState("");
   const blockedByWrite = useIssueBlockedBy(issue.key, () => setBlockedByEditing(false));
   // The row's own control takes the focus back as the reader leaves its editor - by a save, by
   // Cancel or by Escape - since the box that held it goes with the editor; only where the focus
   // fell to the document, the one focus the page takes back for the reader (`shell/roving.ts`).
+  // It passes over a control that takes no press (`usableControl`). On a closed issue the Parent
+  // row draws no control, so the focus goes to the parent's link where the issue has a parent,
+  // and the route's control is disabled; where the row holds nothing that takes the focus, it
+  // goes to Development's heading, the button that opens and closes the section these rows are in.
   const parentControl = useRef<HTMLButtonElement>(null);
+  const parentValue = useRef<HTMLDivElement>(null);
   const routeControl = useRef<HTMLButtonElement>(null);
+  const routeValue = useRef<HTMLDivElement>(null);
+  const developmentHeading = useRef<HTMLButtonElement>(null);
   const leftEditor = useRef<IssueField | null>(null);
   const closeEditor = () => {
     leftEditor.current = editingField;
@@ -218,12 +228,25 @@ export function IssueMarginPanel({
     const left = leftEditor.current;
     leftEditor.current = null;
     if (left === null || editingField !== null || !focusOnDocument()) return;
-    (left === "parent" ? parentControl : routeControl).current?.focus();
+    const inRow =
+      left === "parent"
+        ? [parentControl.current, parentValue.current?.querySelector<HTMLElement>("a[href]")]
+        : [routeControl.current];
+    firstUsable(...inRow, developmentHeading.current)?.focus();
   }, [editingField]);
-  // The failure of Details' last field save, which the route's row says when it is a route's,
-  // and the row's own control, which takes the focus of that line's Retry as the line goes.
+  // The failure of Details' last field save, which the route's row says when it is a route's.
+  // The focus of that line's Retry goes on in the row as the line goes: to the row's control, and
+  // where that takes no press - not drawn while the route's editor is open, disabled on a closed
+  // issue - to the editor's box, the one box of the row; and where that takes none either, on a
+  // closed issue, to Development's heading.
   const fieldFailure = useSaidFailure(writes.updateIssue);
-  const routeRetryLeft = useFocusHandOff(() => routeControl.current);
+  const routeRetryLeft = useFocusHandOff(() =>
+    firstUsable(
+      routeControl.current,
+      routeValue.current?.querySelector<HTMLElement>("input"),
+      developmentHeading.current
+    )
+  );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   // What Details reads beyond the issue - the titles of the issues around this one, and its
   // links on GitHub - only while the drawer is open, so a load that leaves it shut costs no
@@ -289,7 +312,6 @@ export function IssueMarginPanel({
   // row's first priority, and out of the Advances row to that heading.
   const advancesValue = useRef<HTMLDivElement>(null);
   const addRow = useRef<HTMLDivElement>(null);
-  const developmentHeading = useRef<HTMLButtonElement>(null);
   const priorityAddSelector = `[aria-label="${CSS.escape(addPriorityControlName(issue.key))}"]`;
   const priorityBesideAddLeft = useFocusHandOff(() =>
     firstUsable(
@@ -408,7 +430,7 @@ export function IssueMarginPanel({
         {/* The parent's own control first, which opens its editor in this row: the header's Set
             parent issue presses it (`useOpenDetailsAt`, `details-rows.ts`), as the add menu's
             Parent does. */}
-        <Row glyph="↑" label={PROPERTY_LABELS.parent} row="parent">
+        <Row glyph="↑" label={PROPERTY_LABELS.parent} row="parent" valueRef={parentValue}>
           {isClosed || editingField === "parent" ? null : (
             <button
               className={pageHeaderControl}
@@ -441,7 +463,7 @@ export function IssueMarginPanel({
             />
           ) : null}
           {writes.parentSaveFailed ? (
-            <p className={`w-full text-sm ${pageFailedText}`} id="issue-parent-error" role="alert">
+            <p className={`w-full text-sm ${pageFailedText}`} id={PARENT_ERROR_ID} role="alert">
               {writes.parentError}
             </p>
           ) : null}
@@ -520,7 +542,7 @@ export function IssueMarginPanel({
         <Row glyph={FLAG} label={PROPERTY_LABELS.claim}>
           <IssueClaimControl issue={issue} writes={writes} />
         </Row>
-        <Row glyph="→" label={PROPERTY_LABELS.route} row="route">
+        <Row glyph="→" label={PROPERTY_LABELS.route} row="route" valueRef={routeValue}>
           <IssueRouteControl
             controlRef={routeControl}
             editing={editingField === "route"}
@@ -707,7 +729,12 @@ export function IssueMarginPanel({
         </Row>
       </PropertySection>
       <DetailsFocusedNode issue={issue} state={state} />
-      <IssuePins dismissed={stateForIssue(state, issue.key).dismissed ?? []} issueKey={issue.key} />
+      <IssuePins
+        dismissed={
+          state === undefined ? undefined : (stateForIssue(state, issue.key).dismissed ?? [])
+        }
+        issueKey={issue.key}
+      />
       <DetailsHistory issue={issue} state={state} />
     </div>
   );
@@ -813,7 +840,10 @@ function ShowAll({
 }
 
 /** One named section of the panel's properties, open or closed by its own one control. A closed
- *  section draws none of its values, so what a reader sees is what the page holds. */
+ *  section keeps its rows on the page and hides them (`hidden`: out of view, out of the tab order
+ *  and out of the accessibility tree), so what a reader sees is what the page holds, and what a
+ *  row holds of its own - a draft, an open form, a refusal said in the row - is still there when
+ *  the section opens again, as the panel's is when Details does (`slots/details.tsx`). */
 function PropertySection({
   children,
   drawerBox,
@@ -867,7 +897,9 @@ function PropertySection({
           <span aria-hidden="true">{open ? "−" : "+"}</span>
         </button>
       </h2>
-      {open ? <div className="flex min-w-0 flex-col">{children}</div> : null}
+      <div className="flex min-w-0 flex-col" hidden={!open}>
+        {children}
+      </div>
     </section>
   );
 }

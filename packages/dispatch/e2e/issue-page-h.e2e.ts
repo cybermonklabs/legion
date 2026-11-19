@@ -1,4 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
+import { assigneeControlName } from "../web/src/features/issue/AssigneeControl";
 import { labelsControlName } from "../web/src/features/issue/IssueLabels";
 import { repoControlName } from "../web/src/features/issue/RepoControl";
 import { DETAILS_ROW_REQUEST_EVENT } from "../web/src/features/issue-page/details-rows";
@@ -11,6 +12,7 @@ import {
   CONTROL_LABELS,
   PROGRESS_NOUNS,
 } from "../web/src/features/issue-page/page-words";
+import { addPriorityControlName } from "../web/src/features/priorities/IssuePriorityLine";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
 import { createPriority, getIssue, patchIssue, putRepoProject } from "./api";
@@ -1210,7 +1212,9 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     ).toBeVisible();
     // One read is the header's answer here: the assignee's control waits on no read, so a header
     // that draws it draws it in the commit that drew the heading awaited above.
-    const assigneeControls = await page.locator(`[aria-label="Assignee of ${two}"]`).count();
+    const assigneeControls = await page
+      .locator(`[aria-label="${assigneeControlName(two)}"]`)
+      .count();
     const listsAssignee = assigneeControls > 0 && twoStored.assignee === null;
     await expect(
       openMenu(page).getByRole("menuitem"),
@@ -1332,7 +1336,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await reopen(three);
     await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
     await marginSlot(page)
-      .getByRole("button", { name: `${CONTROL_LABELS.add_priority} to ${three}` })
+      .getByRole("button", { name: addPriorityControlName(three) })
       .click();
     await marginSlot(page)
       .getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance })
@@ -1387,7 +1391,8 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       "true"
     );
     await marginSectionDisclosure(page, "development").click();
-    await expect(detailsRow(page, PROPERTY_LABELS.repository)).toHaveCount(0);
+    // A closed section keeps its rows on the page and hides them, so the reader sees none.
+    await expect(detailsRow(page, PROPERTY_LABELS.repository)).toBeHidden();
     expect(
       await page.evaluate(() => localStorage.getItem("dispatch.issue.margin-sections:alice"))
     ).toBe("development");
@@ -1633,9 +1638,7 @@ test.describe("the shared controls of Details keep the focus while their write l
       await gotoIssue(page, `/issues/${one}`);
       await openDetails(page);
       const advances = detailsRow(page, PROPERTY_LABELS.advances);
-      const addPriority = advances.getByRole("button", {
-        name: `${CONTROL_LABELS.add_priority} to ${one}`,
-      });
+      const addPriority = advances.getByRole("button", { name: addPriorityControlName(one) });
       await addPriority.focus();
       await expect(addPriority).toBeFocused();
       await page.keyboard.press("Enter");
@@ -1789,7 +1792,7 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
     await gotoIssue(page, `/issues/${three}`);
     await openDetails(page);
     const addPriority = priorityLine(page).getByRole("button", {
-      name: `${CONTROL_LABELS.add_priority} to ${three}`,
+      name: addPriorityControlName(three),
     });
     await addPriority.focus();
     await expect(addPriority).toBeFocused();
@@ -1829,7 +1832,7 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
     );
     await expect(
       detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
-        name: `${CONTROL_LABELS.add_priority} to ${three}`,
+        name: addPriorityControlName(three),
       }),
       "once the new read moved the line into the Advances row, the focus is not on its add control"
     ).toBeFocused();
@@ -1865,7 +1868,7 @@ test("Details' priority Remove of an issue's last priority keeps the focus in De
     // ONE advances nothing now, so its line is the control beside Add.
     await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
     const addPriority = priorityLine(page).getByRole("button", {
-      name: `${CONTROL_LABELS.add_priority} to ${one}`,
+      name: addPriorityControlName(one),
     });
     await expect(addPriority).toBeVisible();
     await expectFocusKept(

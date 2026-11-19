@@ -38,17 +38,21 @@ import { ROW_LINK } from "./row-references";
  * as its row draws them, and its first line whole, wrapping rather than cut. Where a read has
  * not answered, has failed, or holds no words for a pin - a handoff, an event older than the
  * history has read - the pin is drawn by the page's word for its kind and never by its id.
+ * Until the reader's own state has answered, which pins there are is not known: the section
+ * draws its heading alone, and says None only once that state holds no pin.
  */
 export function IssuePins({
   dismissed,
   issueKey,
 }: {
-  dismissed: readonly string[];
+  /** The reader's pins and dismissals of this issue (`UserIssueState.dismissed`), or
+   *  `undefined` while the reader's state has not answered. */
+  dismissed: readonly string[] | undefined;
   issueKey: string;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const pins = pinnedConversations([...dismissed]);
-  const eventPins = pinnedEventIds([...dismissed]);
+  const pins = pinnedConversations([...(dismissed ?? [])]);
+  const eventPins = pinnedEventIds([...(dismissed ?? [])]);
   const reading = pins.length > 0;
   const asks = useQuery({
     enabled: reading,
@@ -114,7 +118,7 @@ export function IssuePins({
       >
         {CONTROL_LABELS.pinned}
       </h2>
-      {pins.length + eventPins.length === 0 ? (
+      {dismissed === undefined ? null : pins.length + eventPins.length === 0 ? (
         <p className={`text-xs ${pageQuietText}`} {...pageChrome}>
           {CONTROL_LABELS.none}
         </p>

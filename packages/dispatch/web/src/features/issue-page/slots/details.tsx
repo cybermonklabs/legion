@@ -87,7 +87,8 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
         // from these same writes. While that save is out the control is busy, `aria-disabled` and
         // refusing to open, so `l` acts only while the control takes a press (`usableControl`),
         // which counts no refusal from Details being closed: the key opens Details at the row
-        // first.
+        // first. A closed Development is a refusal: it keeps the row on the page but `hidden`
+        // (`IssueMargin.tsx`'s `PropertySection`), so `l` is off while Development is closed.
         const name = labelsControlName(issue.key, {
           labels: issue.labels ?? [],
           saving: writes.labels.isPending,

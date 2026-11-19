@@ -1,7 +1,15 @@
 import { expect, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for an Escape that ends an IME composition, which user-event has no form for
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -46,7 +54,7 @@ import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
-import { IssueMarginPanel } from "./IssueMargin";
+import { IssueMarginPanel, PARENT_ERROR_ID } from "./IssueMargin";
 import {
   DETAILS_ATTRIBUTE,
   FilledMarginSlot,
@@ -415,9 +423,9 @@ test("the blocked-by editor opened again draws no refusal from the attempt befor
   }
 });
 
-// A closed section unmounts its rows, so the blocked-by editor's state is the panel's and not
-// its row's: a reader who closes Development while the save is out finds the editor, the list
-// they typed and the refusal that landed meanwhile when they open it again.
+// A closed section hides its rows, and the blocked-by editor's state is the panel's, which stays
+// drawn for the life of the page: a reader who closes Development while the save is out finds
+// the editor, the list they typed and the refusal that landed meanwhile when they open it again.
 test("closing Development keeps the blocked-by editor, its typed list and a refusal that lands after the close", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
@@ -442,7 +450,10 @@ test("closing Development keeps the blocked-by editor, its typed list and a refu
 
     const development = screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development });
     await user.click(development);
-    expect(screen.queryByLabelText("Issues CORE-1 waits on")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: "Issues CORE-1 waits on" }),
+      "a closed Development still shows the blocked-by editor"
+    ).toBeNull();
     saving.reject(
       new ApiError(400, { code: "BLOCKED_BY_INPUT", error: "blocked_by issue CORE-9 not found" })
     );
@@ -461,6 +472,53 @@ test("closing Development keeps the blocked-by editor, its typed list and a refu
       screen.queryByRole("alert")?.textContent,
       "the refusal that landed while Development was closed is drawn nowhere"
     ).toBe("There is no issue CORE-9.");
+  } finally {
+    unmount();
+    restore();
+    window.localStorage.removeItem(userPreferenceStorageKey("alice", "issue.margin-sections"));
+  }
+});
+
+// A closed section unmounted its rows, so what a row of a shared control holds of its own was
+// thrown away as the reader closed Development: here the repository's box, with a name it refused
+// as the reader left it for the section's heading, which the row alone says. The section hides
+// its rows instead: the reader sees none of them while it is closed, and finds the box as they
+// left it, the refused name still in it, when it opens again.
+test("closing Development hides its rows and keeps the repository box's refused draft for its next open", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const { unmount } = renderDetails();
+  const box = () => screen.queryByRole("combobox", { name: repoControlName("CORE-1") });
+
+  try {
+    await user.click(
+      await screen.findByRole("button", {
+        name: `${CONTROL_LABELS.none}, ${repoControlName("CORE-1")}`,
+      })
+    );
+    const typed = await screen.findByRole("combobox", { name: repoControlName("CORE-1") });
+    await user.click(typed);
+    await user.paste("acme");
+
+    const development = screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development });
+    await user.click(development);
+    expect(development).toHaveAttribute("aria-expanded", "false");
+    expect(box(), "a closed Development still shows the repository's box").toBeNull();
+    expect(
+      screen.queryByRole("button", { name: blockedByControlName("CORE-1", 0) }),
+      "a closed Development still shows the Blocked by row's control"
+    ).toBeNull();
+
+    await user.click(development);
+    expect(
+      box(),
+      "closing Development threw away the repository's box and its draft"
+    ).not.toBeNull();
+    expect(box(), "closing Development threw away the name typed into the box").toHaveValue("acme");
+    expect(
+      box(),
+      "closing Development threw away the box's refusal of the name typed into it"
+    ).toHaveAttribute("aria-invalid", "true");
   } finally {
     unmount();
     restore();
@@ -491,6 +549,48 @@ test("Escape in the blocked-by box closes its editor and goes no further", async
       escapes.taken,
       "Escape in the blocked-by box went on to the page's keys, which close Details on a phone"
     ).toEqual([true]);
+  } finally {
+    escapes.stop();
+    unmount();
+    restore();
+  }
+});
+
+// An Escape that ends an IME composition gives up what the reader was composing, and the
+// blocked-by editor closed on it, with the list typed into it. The editor leaves that press alone,
+// unmarked, as the page's other editors do, and a plain Escape still closes it.
+test("an Escape that ends an IME composition leaves the blocked-by editor open with its list", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const escapes = watchEscapes();
+  const { unmount } = renderDetails();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    const keys = await screen.findByLabelText<HTMLInputElement>("Issues CORE-1 waits on");
+    await user.click(keys);
+    await user.paste("CORE-2");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(keys, { isComposing: true, key: "Escape" });
+    expect(
+      screen.queryByLabelText("Issues CORE-1 waits on"),
+      "an Escape that ended an IME composition closed the blocked-by editor"
+    ).toBe(keys);
+    expect(keys.value, "an Escape that ended an IME composition threw the typed list away").toBe(
+      "CORE-2"
+    );
+
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByLabelText("Issues CORE-1 waits on"),
+      "Escape left the blocked-by editor open"
+    ).not.toBeInTheDocument();
+    expect(
+      escapes.taken,
+      "the editor marked the Escape that ended a composition taken, or left a plain one unmarked"
+    ).toEqual([false, true]);
   } finally {
     escapes.stop();
     unmount();
@@ -2953,6 +3053,49 @@ test("with Details closed, l is on for the labels control, and off while its row
   }
 });
 
+// A closed Development keeps the Labels row on the page, hidden, and `l` reads a control under a
+// hidden element as one that takes no press (`usableControl`): the key stays off while the reader
+// keeps the section closed, as it was while a closed section drew no rows, and is on again once
+// the section opens.
+test("with Development closed, l is off, and on again once Development opens", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <IssueKeys />
+          <MarginProvider>
+            <MarginSlotProvider drawsSlot>
+              <DetailsSlot issue={issue} route={{ key: "CORE-1", kind: "issue" }} />
+              <MarginBody />
+            </MarginSlotProvider>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const labelsKey = () => appKeymap.describe().find((entry) => entry.id === "labels")?.enabled;
+
+  try {
+    await waitFor(() => rowAt("labels"));
+    expect(labelsKey(), "l is off while Development is open").toBe(true);
+    const development = screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development });
+    await user.click(development);
+    expect(development).toHaveAttribute("aria-expanded", "false");
+    expect(labelsKey(), "l is on while Development is closed").toBe(false);
+    await user.click(development);
+    expect(labelsKey(), "l is not on again once Development opens").toBe(true);
+  } finally {
+    view.unmount();
+    restore();
+    window.localStorage.removeItem(userPreferenceStorageKey("alice", "issue.margin-sections"));
+  }
+});
+
 /** The project's one architecture source, so the components line draws its picker
  *  (`shared-writes.test.ts`'s `architectureSource`). */
 const architectureSource: ArchitectureSource = {
@@ -3150,7 +3293,7 @@ test("a parent Dispatch refuses is said in the Parent row with Dispatch's reason
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(
-        detailsRow(PROPERTY_LABELS.parent).querySelector("#issue-parent-error")?.textContent,
+        detailsRow(PROPERTY_LABELS.parent).querySelector(`#${PARENT_ERROR_ID}`)?.textContent,
         "the Parent row does not say why Dispatch refused the parent"
       ).toBe(reason)
     );
@@ -3444,6 +3587,123 @@ test("leaving the parent's or the route's editor gives the focus back to its row
   }
 });
 
+/** The fixture's issue, closed. */
+const closedIssue: IssueDetails = { ...issue, closed_at: "2026-09-10T00:00:00Z", status: "done" };
+
+// On a closed issue the Parent row draws no control and the route's control is disabled, so
+// leaving either editor once the issue had closed under it gave the focus to no control that
+// takes it, and it stayed on the page's body. It goes to Development's heading, the button that
+// opens and closes the section these rows are in, where the row holds nothing else to take it.
+test("on a closed issue, leaving the parent's or the route's editor hands the focus to Development's heading", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const { queryClient, unmount } = renderDetails();
+  const drawIssue = (details: IssueDetails) => {
+    getIssue.mockResolvedValue(details);
+    act(() => {
+      queryClient.setQueryData(issueQuery("CORE-1").queryKey, details);
+    });
+  };
+  const heading = () => screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development });
+
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.set_parent }));
+    await screen.findByLabelText(PROPERTY_LABELS.parent);
+    drawIssue(closedIssue);
+    await user.click(within(rowAt("parent")).getByRole("button", { name: CONTROL_LABELS.cancel }));
+    expect(
+      document.activeElement,
+      "Cancel of the parent's editor on a closed issue did not give the focus to Development's heading"
+    ).toBe(heading());
+
+    drawIssue(issue);
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await screen.findByLabelText(PROPERTY_LABELS.route);
+    drawIssue(closedIssue);
+    await user.click(within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.cancel }));
+    expect(
+      document.activeElement,
+      "Cancel of the route's editor on a closed issue did not give the focus to Development's heading"
+    ).toBe(heading());
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The refused route's Retry handed its focus to the row's control alone. A closed issue's route
+// control is disabled and takes no focus, so a Retry that went as the issue closed left the focus
+// on the page's body; and while the route's editor is open the row draws no such control, so a
+// Retry pressed there, whose route then landed, did the same. The focus goes on to the editor's
+// box while the editor is open, and to Development's heading where the row holds nothing to take
+// it.
+test("the refused route's Retry hands its focus to the editor's box while it is open, and on a closed issue to Development's heading", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const route = "role:legion-controller-core";
+  const refuse = () =>
+    patchIssue.mockImplementationOnce(() =>
+      Promise.reject(new ApiError(400, { code: "ROUTE_INVALID", error: "invalid route" }))
+    );
+  const { queryClient, unmount } = renderDetails();
+  const retryOfRoute = () =>
+    within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.retry });
+  const refused = () =>
+    waitFor(() =>
+      expect(within(rowAt("route")).queryByRole("alert")?.textContent).toBe("invalid route")
+    );
+
+  try {
+    refuse();
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.route));
+    await user.paste(route);
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
+    await refused();
+    // The editor opened again over the refused route, which the line still says.
+    await user.click(
+      within(rowAt("route")).getByRole("button", { name: `Messages default to ${route}` })
+    );
+    const box = await screen.findByLabelText(PROPERTY_LABELS.route);
+    act(() => retryOfRoute().focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(
+        within(rowAt("route")).queryByRole("alert"),
+        "the refusal is still said after the route landed"
+      ).not.toBeInTheDocument()
+    );
+    expect(
+      document.activeElement,
+      "the route landed with its editor open, and the focus did not go to the editor's box"
+    ).toBe(box);
+
+    await user.click(within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.cancel }));
+    refuse();
+    await user.click(screen.getByRole("button", { name: `Messages default to ${route}` }));
+    await user.clear(await screen.findByLabelText(PROPERTY_LABELS.route));
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
+    await refused();
+    act(() => retryOfRoute().focus());
+    const closed: IssueDetails = { ...closedIssue, route };
+    getIssue.mockResolvedValue(closed);
+    act(() => {
+      queryClient.setQueryData(issueQuery("CORE-1").queryKey, closed);
+    });
+    expect(
+      within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry }),
+      "the refusal of a route on a closed issue offers a Retry that sends nothing"
+    ).toBeNull();
+    expect(
+      document.activeElement,
+      "the Retry went as the issue closed, and the focus did not go to Development's heading"
+    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 // The pins are read for their words only where there is a pin, so an issue with none costs no
 // request of the questions, comments and messages.
 test("with no pin, Pinned reads None and sends no request", async () => {
@@ -3465,6 +3725,36 @@ test("with no pin, Pinned reads None and sends no request", async () => {
       pinReads.messages,
       "Pinned read the issue's messages with no pin"
     ).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// Pinned said None before the reader's state had answered, so a reader with pins read for a
+// moment that they had none. Until that state answers the section draws its heading alone, and
+// once it answers with no pin it says None.
+test("Pinned says no None until the reader's state has answered, and None once it holds no pin", async () => {
+  const { getMyState, restore } = stubIssueApi();
+  const state = Promise.withResolvers<UserState>();
+  getMyState.mockImplementation(() => state.promise);
+  const { unmount } = renderDetails();
+
+  try {
+    const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    await waitFor(() => expect(getMyState).toHaveBeenCalled());
+    expect(pins, "Pinned says None before the reader's state has answered").not.toHaveTextContent(
+      CONTROL_LABELS.none
+    );
+    await act(async () =>
+      state.resolve({ "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 } })
+    );
+    await waitFor(() =>
+      expect(
+        pins,
+        "Pinned does not say None once the reader's state holds no pin"
+      ).toHaveTextContent(CONTROL_LABELS.none)
+    );
   } finally {
     unmount();
     restore();
