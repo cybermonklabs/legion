@@ -37,7 +37,9 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/logmask"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -333,9 +335,37 @@ type logLine struct {
 
 // logCapture is the slog handler the rows install: logtest.Recorder keeps every record with the
 // attributes the proxy wrote it with, and the methods here are this package's own reading of
-// those records.
+// those records. Each record is also written as the broker writes it - the broker's JSON handler
+// (logging.NewCloudHandler) through its placeholder mask (logmask.Writer) - into written, the
+// bytes a row that asks what reaches the broker's log reads (writtenLines).
 type logCapture struct {
 	logtest.Recorder
+	written *logtest.Buffer
+	broker  slog.Handler
+}
+
+// newLogCapture is a logCapture with nothing written yet.
+func newLogCapture() *logCapture {
+	written := &logtest.Buffer{}
+	return &logCapture{written: written, broker: logging.NewCloudHandler(logmask.Writer(written))}
+}
+
+func (c *logCapture) Handle(ctx context.Context, record slog.Record) error {
+	if err := c.Recorder.Handle(ctx, record); err != nil {
+		return err
+	}
+	return c.broker.Handle(ctx, record)
+}
+
+// The proxy logs with no attribute or group of a logger's own, and Recorder keeps none.
+func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *logCapture) WithGroup(string) slog.Handler      { return c }
+
+// writtenLines is every line written so far as the broker writes it, each decoded as the JSON
+// object it is.
+func (c *logCapture) writtenLines(t *testing.T) []map[string]any {
+	t.Helper()
+	return logtest.JSONLines(t, c.written.String())
 }
 
 // calls is every line one call to a bound host logged that the airlock carried or failed. Records
@@ -457,6 +487,10 @@ type rig struct {
 	// open as one that won that race does.
 	holdResolve func(ctx context.Context)
 	holdDial    func(ctx context.Context) context.Context
+	// dialTimeout is the dialer's own Timeout for each address a row names it for, as the
+	// production dialer has one (New): how a row has a dial time out on its own, with the error
+	// net.Dialer itself answers, rather than end because its command went away.
+	dialTimeout map[string]time.Duration
 	// dialledFor is the grant each socket the proxy opened was dialled for, as the lines of that
 	// dial name it (callerOfContext), by the socket's own local address, which is the remote
 	// address the service it reached reads each request on it as: how a row reads which caller a
@@ -498,7 +532,7 @@ func (l *wrapListener) Accept() (net.Conn, error) {
 // listener accepts.
 func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 	t.Helper()
-	r := &rig{t: t, grants: newFakeGrants(), logs: &logCapture{}, trust: x509.NewCertPool(), protocol: suiteProtocol}
+	r := &rig{t: t, grants: newFakeGrants(), logs: newLogCapture(), trust: x509.NewCertPool(), protocol: suiteProtocol}
 
 	// The stand-in service behind the bound host, with a certificate of its own naming that
 	// host and an authority of the rig's own behind it, which is the only thing the proxy
@@ -589,7 +623,7 @@ func (r *rig) dial(ctx context.Context, network, addr string) (net.Conn, error) 
 	if !ok {
 		return nil, fmt.Errorf("this test dials no %s", addr)
 	}
-	var dialer net.Dialer
+	dialer := net.Dialer{Timeout: r.dialTimeout[addr]}
 	conn, err := dialer.DialContext(ctx, network, to)
 	if err != nil {
 		return nil, err

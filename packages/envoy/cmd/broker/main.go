@@ -11,6 +11,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -35,7 +36,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
@@ -60,12 +60,11 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/reread"
+	"github.com/sjawhar/envoy/internal/broker/rulehost"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/wake"
 	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/fold"
-	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -126,11 +125,8 @@ const oauthSecretTimeout = 10 * time.Second
 const clientCheckInterval = time.Hour
 
 func main() {
-	// Every line this process writes is one JSON object on stderr, which Cloud Logging reads as
-	// an entry with its own severity, message and fields (logging.NewCloudHandler). It is the
-	// first thing main does, so a subcommand that opens the store logs the same shape, and the
-	// log package, which slog.SetDefault points at the same handler, writes no line of another.
-	slog.SetDefault(slog.New(logging.NewCloudHandler(os.Stderr)))
+	// The broker's logging (setUpLogging): every line of slog and the log package, masked.
+	setUpLogging(os.Stderr)
 	// A subcommand is read before flag.Parse, and serves nothing: it is the whole of what this
 	// process does. Reading it here is what makes an older image refuse `broker end-sessions`
 	// rather than fall through to serving - and so to migrating the database - when a
@@ -894,7 +890,7 @@ func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Sto
 	var awsCfg aws.Config
 	var err error
 	if cfg.DatabaseIAM || awsAlso {
-		if awsCfg, err = awsconfig.LoadDefaultConfig(ctx); err != nil {
+		if awsCfg, err = loadAWSConfig(ctx); err != nil {
 			return nil, aws.Config{}, fmt.Errorf("load the AWS configuration: %w", err)
 		}
 	}
@@ -1023,19 +1019,18 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 }
 
 // validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
-// that the boot and airlock-check refuse the same file in the same words: a host the proxy
-// never compares a request's host with (ruleHostRefusal), then airlock.Validate's answer, which
-// is the Lean model's, then the two refusals that are this program's own and not that model's —
-// an entry whose name is not a name a session can ask for, and guidance longer than the judge is
-// shown (maxGuidanceRunes). The hosts come first because ruleHostRefusal names each host's reason
-// and repeats no text of the file, where Validate's refusal of a host HostShapeOK refuses quotes
-// the host as written; and because every host ruleHostRefusal accepts HostShapeOK accepts too,
-// Validate then refuses no host. So a file with two faults reports its first bad host ahead of
-// any other fault Validate finds (a repeated name, a judge above 900 seconds, another kind). An
-// entry with no hosts has no host to refuse, and Validate accepts it: it says who decides its key
-// and binds the value nowhere. Two of the host refusals are this program's own and not the Lean
-// model's: a last label that is 0x and hex digits (0x1f, a.0x7f000001), which HostShapeOK accepts
-// as no all-digit label but clients read as an IPv4 address, and a wildcard over one.
+// that the boot and airlock-check refuse the same file in the same words: a host rulehost.Refusal
+// refuses, then airlock.Validate's answer, which is the Lean model's, then the two refusals that
+// are this program's own and not that model's — an entry whose name is not a name a session can
+// ask for, and guidance longer than the judge is shown (maxGuidanceRunes). The hosts come first
+// because rulehost.Refusal names each host's reason and repeats no text of the file but the form
+// to write, where Validate's refusal of a host airlock.HostShapeOK refuses quotes the host as
+// written; and because that grammar serves a host only where HostShapeOK accepts it, Validate then
+// refuses no host. So a file with two faults reports its first bad host, by entry and then by
+// position, ahead of any other fault Validate finds (a repeated name, a judge above 900 seconds,
+// another kind). An entry with no hosts has no host to refuse, and Validate accepts it: it says
+// who decides its key and binds the value nowhere. The host refusals rulehost.Refusal adds to
+// HostShapeOK are this program's own and not the Lean model's.
 //
 // Rules.Lookup compares an entry's name with a released name exactly, and a released name is
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
@@ -1046,7 +1041,7 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 func validateRulesFile(rules airlock.Rules) error {
 	for i, s := range rules.Secrets {
 		for j, h := range s.Hosts {
-			if why := ruleHostRefusal(fold.ASCII(h)); why != "" {
+			if why := rulehost.Refusal(h); why != "" {
 				return fmt.Errorf("secrets[%d] %q: hosts[%d] %s", i, s.Name, j, why)
 			}
 		}
@@ -1070,97 +1065,6 @@ func validateRulesFile(rules airlock.Rules) error {
 // one bounded prompt, so a text past this would be cut rather than read; it is refused instead,
 // at the boot and in airlock-check, where its author reads why.
 const maxGuidanceRunes = 2000
-
-// ruleHostRefusal is why validateRulesFile refuses one host of an entry, h as fold.ASCII writes
-// it, or "" for a host it serves.
-//
-// An IP address binds no secret in any spelling. In its canonical form the proxy decrypts a
-// CONNECT to it, but a TLS client sends no server name for an address (RFC 6066 section 3; Go's
-// crypto/tls and curl send none), so airlock.Decide refuses every such request "sni mismatch";
-// airlock.HostShapeOK refuses every address for that reason, in the Lean model's validation. In
-// any other spelling it matches no request at all, because the proxy takes a CONNECT host's port
-// and brackets off (net.SplitHostPort) and writes an address as netaddr.Host writes it before
-// airlock.HostBound compares (airlockproxy's serveConnect and servePlain): not netaddr.Host's
-// form (2001:db8:7:0::1, 2001:0db8:7::1, ::ffff:192.0.2.10, an embedded IPv4 part, a zone),
-// in brackets, after a trailing dot, or with a port. Each is refused with one reason, which
-// repeats nothing of the host as written, whose zone is any text, and names the service's host
-// name as what to write.
-//
-// A host name with a trailing dot (api.github.com.) is the name a client writes without one, and
-// matches only a request that writes the dot, so for the requests clients make it binds nothing:
-// it is refused naming the name without the dot when that name is one airlock.HostShapeOK
-// accepts (its letters, digits, hyphens and dots are all a refusal may repeat, since h arrives
-// folded by fold.ASCII), and naming no form otherwise. An empty host names nothing a request can
-// reach.
-//
-// The rest are hosts no request names, each refused naming no form, since all they hold is the
-// file's own text: a host with a scheme; a host with a port; a bracket or a % around no address;
-// a colon in no address, which no host name holds; a last label that is a number, which no host
-// name has and which is an IPv4 address netip does not read (a leading zero, fewer than four
-// parts, a hex part), that one client reads as one address and the next as another or as a name;
-// and a wildcard over such a label, which HostBound would match against addresses by their text.
-// Last, a host airlock.HostShapeOK refuses for any other reason (an empty label, a label opening
-// or closing with "-", a character no label holds, "*" anywhere but a leading "*.") is refused as
-// no DNS name, naming nothing of it, so no host this function accepts is one HostShapeOK refuses:
-// Validate, which runs after it, then refuses no host of a file this function passed.
-func ruleHostRefusal(h string) string {
-	if strings.Contains(h, "://") {
-		return "holds a scheme, and a host is a name alone, so it binds nothing; write the service's host name with no scheme, path or port"
-	}
-	if _, err := netip.ParseAddr(h); err == nil {
-		return ipAddressHost
-	}
-	bare, port := h, false
-	if host, _, err := net.SplitHostPort(h); err == nil {
-		bare, port = host, true
-	}
-	bare = strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(bare, "["), "]"), ".")
-	if _, err := netip.ParseAddr(bare); err == nil {
-		return ipAddressHost
-	}
-	numeric := numericLabel(bare[strings.LastIndexByte(bare, '.')+1:])
-	switch {
-	case port:
-		return "holds a port, and the proxy compares a CONNECT's host without its port, so the host binds nothing; write the host name alone"
-	case strings.ContainsAny(h, "[]%"):
-		return "holds a bracket or a % and is no IP address without its brackets, so it matches no host the proxy compares and binds nothing; write the service's host name"
-	case strings.Contains(bare, ":"):
-		return "holds a colon and is no IP address, and no host name holds one, so it matches no host the proxy compares and binds nothing; write the service's host name"
-	case numeric && strings.HasPrefix(bare, "*."):
-		return "is a wildcard whose last label is a number, which no host name has, so it would match addresses by their text; name the service by its host name"
-	case numeric:
-		return "ends in a number, which no host name does, and is no IP address netip reads: clients read a leading zero, fewer than four parts or a hex part as different addresses, and an address binds no secret in any form, so the host binds nothing; write the service's host name"
-	case h == "":
-		return "is empty, so it names no host a request can reach and binds nothing; write the service's host name"
-	case strings.HasSuffix(h, ".") && airlock.HostShapeOK(bare):
-		return "is a host name with a trailing dot, and a client writes a name without one, so the host binds nothing it asks for; write it as " + bare
-	case !airlock.HostShapeOK(h):
-		return "is no DNS name: a host is labels of letters, digits and hyphens between single dots, none empty and none opening or closing with a hyphen, after an optional leading wildcard label, so the airlock binds it nowhere; write the service's host name"
-	}
-	return ""
-}
-
-// ipAddressHost is ruleHostRefusal's refusal of a host that is an IP address in any spelling.
-const ipAddressHost = "is an IP address, and an address binds no secret in any spelling: a client sends no TLS server name for one, so the proxy refuses every request to its canonical form \"sni mismatch\", and compares no other form at all; write the service's host name"
-
-// numericLabel reports whether one label of a host is a number as inet_aton reads one, decimal or
-// 0x and hex digits: never the last label of a host name, and always part of an IPv4 address.
-func numericLabel(label string) bool {
-	digits, hex := label, false
-	if rest, ok := strings.CutPrefix(label, "0x"); ok {
-		digits, hex = rest, true
-	}
-	if digits == "" {
-		return false
-	}
-	for i := range len(digits) {
-		c := digits[i]
-		if !('0' <= c && c <= '9' || hex && 'a' <= c && c <= 'f') {
-			return false
-		}
-	}
-	return true
-}
 
 // readAirlockRules reads the airlock's rules file, the path BROKER_AIRLOCK_RULES_FILE names. An
 // empty path is a deployment with no airlock, and answers empty rules, whose Digest is "" for
@@ -1336,7 +1240,8 @@ func judgeDispatch(cfg config.Config) *judge.Dispatch {
 // fails this build rather than a deployment's first judged request.
 var _ judge.Requests = (*requests.Machine)(nil)
 
-// judgeDispatchTimeout bounds each of the judge's two Dispatch GETs. A run's own 30-second
+// judgeDispatchTimeout bounds each of the judge's Dispatch GETs (the issue, its spec document and
+// the ask the reason cites). A run's own 30-second
 // budget already ends a read whose server never answers, but that budget is shared with the
 // 20-second model call, so a client with no timeout of its own would let one stalled read eat
 // the whole run. Ten seconds is wake.Envoy's own bound for the same kind of call, an authorized
@@ -1348,6 +1253,10 @@ const judgeDispatchTimeout = 10 * time.Second
 // one line which of the two brokers this is. The five settings are all-or-none (config.Load
 // refuses a start that sets some of them), so the model URL alone says whether there is a judge,
 // and a judge always has dispatch, the read of Dispatch main built once and gave m as well.
+// The line of a broker with a judge names the identity whose token it presents to its model:
+// metadata for the metadata server's identity token, or the service account
+// BROKER_JUDGE_MODEL_ACCOUNT names, whose token is minted at generateIdToken. It is read off the
+// reader the model holds, so the line shows what was wired rather than what was configured.
 //
 // ctx is main's own signal.NotifyContext, which the first SIGTERM cancels, and not boot's
 // `serving`, which outlives the drain: every run hangs off it, so one in flight when the broker
@@ -1366,10 +1275,12 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 		slog.Info("model judge", "state", "off", "detail", detail)
 		return
 	}
+	account := brokertoken.NewGoogleAccount(cfg.JudgeModelAudience)
+	account.ServiceAccount = cfg.JudgeModelAccount
 	runner := judge.New(ctx, judge.Options{
 		Rules:      rules,
 		Dispatch:   *dispatch,
-		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, cfg.JudgeModelAudience),
+		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, account),
 		Requests:   m,
 		SkipChecks: cfg.JudgeTestSkipChecks,
 	})
@@ -1377,8 +1288,9 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 	// machine's own type, so this is the method and nothing else. Consider returns at once, so
 	// nothing of a run is on the requester's path.
 	m.Judge = runner.Consider
+	identity := cmp.Or(account.ServiceAccount, "metadata")
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
-		"dispatch", cfg.JudgeDispatchURL, "skip_checks", cfg.JudgeTestSkipChecks)
+		"dispatch", cfg.JudgeDispatchURL, "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
 }
 
 // googleExchangeAudience is the Google audience GET /v1/settings publishes: BROKER_GOOGLE_OIDC_AUDIENCE

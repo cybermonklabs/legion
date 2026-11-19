@@ -115,7 +115,14 @@ projected ServiceAccount token for it. They are all-or-none: with none of them s
 judge, and every human-tier request waits for the person who decides it today, except on a broker
 with `BROKER_SIGNIN=off`, which denies every such request at once and takes no judge
 ([A broker that signs nobody in](#a-broker-that-signs-nobody-in)); its `model judge state=off`
-boot line says so. A sixth setting names the protocol that endpoint speaks and has a default. The
+boot line says so. A sixth setting names the protocol that endpoint speaks and has a default. A
+seventh, `BROKER_JUDGE_MODEL_ACCOUNT`, is optional: it names the Google service account whose
+identity token the judge presents, which the broker mints for that audience at IAM Service Account
+Credentials' `generateIdToken`, spending the access token the metadata server answers for the
+pod. It is for a pod that runs as a bare Workload Identity principal, whose metadata server
+answers an access token and no identity token. Unset, the judge presents the metadata server's
+identity token as before. The `model judge state=on` boot line names which: `identity=metadata`,
+or `identity=` and the account's email. The
 [configuration reference](/legion/broker/reference/config/) names each and gives its accepted
 values. `BROKER_JUDGE_TEST_SKIP_CHECKS` turns the judge's checks before the model off, as the
 local stack's negative control of them, and a production start — one with
@@ -773,7 +780,7 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | Google Cloud (optional) | To let machines trade their Google identity tokens, `BROKER_GOOGLE_OIDC_AUDIENCE` names the audience of those tokens, and `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_VM_EXCHANGE_ACCOUNTS` describe each fleet. The broker fetches Google's discovery document at startup and refuses to start if it cannot. |
 | Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. It calls the listener with its own projected ServiceAccount token, which `BROKER_ENVOY_ACCOUNT_TOKEN_FILE` names and which it reads for each notice, so the listener must admit that account. The shared bearer `BROKER_ENVOY_TOKEN` is removed, and a broker started with it refuses to start. |
 | The Envoy hub's NATS auth service (optional) | With `BROKER_NATS_URLS`, the broker answers the authorization of each connection the Envoy hub sends it: a session presenting its broker access token and a proof of its key gets its own delivery channel, and a service presenting a platform token for `BROKER_NATS_K8S_AUDIENCE` or `BROKER_NATS_GOOGLE_AUDIENCE`, from an account `BROKER_NATS_SERVICES` lists, gets its kind's grant. It connects to the hub as the user `BROKER_NATS_SEED_FILE` holds, signs with the account seed in `BROKER_NATS_ISSUER_SEED_FILE` and opens each request with the curve seed in `BROKER_NATS_XKEY_SEED_FILE`; each file is refused at startup unless it holds a seed of its kind. Every replica answers in one queue group, so a stopped replica delays no connection. With none of these set the broker runs no auth service. |
-| The model judge (optional) | Outbound HTTPS access to the model endpoint `BROKER_JUDGE_MODEL_URL` names, which the broker reaches with its machine's own Google identity token for `BROKER_JUDGE_MODEL_AUDIENCE`, and to the Dispatch `BROKER_JUDGE_DISPATCH_URL` names, which it reads with the projected ServiceAccount token in the file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, read at call time and never at boot, so a rotation needs no restart. It reads one issue and that issue's spec document there for the judge, and one issue's assignee for a Legion worker pod's request for a shared secret, and writes nothing. With those settings unset the broker makes neither call and runs no judge ([Concepts](/legion/broker/concepts/#the-model-judge)). |
+| The model judge (optional) | Outbound HTTPS access to the model endpoint `BROKER_JUDGE_MODEL_URL` names, which the broker reaches with its machine's own Google identity token for `BROKER_JUDGE_MODEL_AUDIENCE`, and to the Dispatch `BROKER_JUDGE_DISPATCH_URL` names, which it reads with the projected ServiceAccount token in the file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, read at call time and never at boot, so a rotation needs no restart. It reads one issue, that issue's spec document and the ask the reason cites there for the judge, and one issue's assignee for a Legion worker pod's request for a shared secret, and writes nothing. With those settings unset the broker makes neither call and runs no judge ([Concepts](/legion/broker/concepts/#the-model-judge)). With `BROKER_JUDGE_MODEL_ACCOUNT` set, the token it presents to the model is that service account's, which it mints at IAM Service Account Credentials' `generateIdToken`, so it also needs outbound HTTPS to `iamcredentials.googleapis.com` on 443, and a read of the metadata server's token path (`/computeMetadata/v1/instance/service-accounts/default/token`, plain HTTP on the node's own link) for the access token the mint spends; the broker's principal holds `roles/iam.serviceAccountOpenIdTokenCreator` on the account; and the account's project has the IAM Service Account Credentials API turned on. A mint that fails hands the request to its person, and the broker never falls back to the metadata server's identity token. |
 | Dispatch's project access (optional) | To let a token name the projects its person may see, `BROKER_PROJECT_ACCESS_URL` names the Dispatch the token exchange asks whether a person may see a project and what kind of member a person is, through Dispatch's `GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person` routes, and `BROKER_PROJECT_ACCESS_TOKEN_FILE` names the broker's own projected ServiceAccount token for Dispatch's audience, read at call time and never at boot. No Dispatch release serves those routes yet: leave both unset until the broker can reach one that does, since against one that does not, every trade naming a project is refused `temporarily_unavailable`. Dispatch must list that account as one that may ask: until it does, Dispatch answers 403 and every trade that asks it is refused `server_error`, saying Dispatch refused the broker's account; so is every such trade while the broker cannot read the token file, and while Dispatch answers a member kind the broker does not know. The two are set together or not at all. Answers are kept 30 seconds, and the questions are asked before the exchange's database transaction begins. While Dispatch cannot be asked, a token naming no project is minted as before, and each such mint logs a warning naming the account or person and the session; every trade naming a project, an operator entry's included, is refused `temporarily_unavailable`. With neither set the broker asks Dispatch nothing: a token naming no project and an operator entry's token are minted as before, and a person's trade naming a project is refused. The boot log's `project access check state=on` or `state=off` line says which. |
 
 ## Network and trust
@@ -786,15 +793,22 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   terminate TLS without setting `X-Forwarded-Proto`, and a client that sends those headers itself
   changes nothing. That holds for the machine login's token endpoint (`POST /v1/oauth/token`)
   too, whose DPoP proofs name `BROKER_PUBLIC_URL/v1/oauth/token`.
-- The model judge adds two outbound calls. The broker reads one Dispatch issue and that issue's
-  spec document at `BROKER_JUDGE_DISPATCH_URL`, with its own projected ServiceAccount token, and
-  writes nothing there: no ask, no comment, no status. At the same address and with the same token
-  it reads the issue a Legion worker pod's claim names, for its assignee alone, when that pod asks
-  for a shared human-tier secret. It calls the model at
+- The model judge adds two outbound calls. The broker reads one Dispatch issue, that issue's spec
+  document and the ask the reason cites at `BROKER_JUDGE_DISPATCH_URL`, with its own projected
+  ServiceAccount token, and writes nothing there: no ask, no comment, no status. At the same
+  address and with the same token it reads the issue a Legion worker pod's claim names, for its
+  assignee alone, when that pod asks for a shared human-tier secret. It calls the model at
   `BROKER_JUDGE_MODEL_URL`, presenting its machine's own Google identity token for
   `BROKER_JUDGE_MODEL_AUDIENCE`. Each call carries the broker's own identity and no session's,
   and neither carries a secret value: what reaches the model is the secret's name and rules, the
-  request's reason and the issue, as data to judge.
+  request's reason and the issue, as data to judge. With `BROKER_JUDGE_MODEL_ACCOUNT` set, the
+  token it presents to the model is that service account's, and minting it adds two calls: the
+  metadata server's token path (`/computeMetadata/v1/instance/service-accounts/default/token`)
+  for the access token of the broker's own principal, and `generateIdToken` at
+  `iamcredentials.googleapis.com` on 443, which spends that token. That principal holds
+  `roles/iam.serviceAccountOpenIdTokenCreator` on the account, and the account's project has the
+  IAM Service Account Credentials API turned on. A mint that fails hands the request to its
+  person: the broker never falls back to the metadata server's identity token.
 - A person approves a secret request in a browser at `BROKER_PUBLIC_URL`, which must therefore be
   an `https` address people's browsers reach: the page's two cookies, `__Host-broker-session` and
   `__Host-broker-signin`, are `Secure` and host-only. A decision is accepted only from a form on
@@ -1090,7 +1104,9 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `broker: narrowing refused grant=… enrollment=… name=<NAME> error=…` | At WARN, for each release whose narrowing of its GitHub App tokens names what the secret cannot serve: an account its `github-owners` tag does not list, refused before any minter runs (`403 NARROWING_OWNER_NOT_LISTED`), or a narrowing GitHub answered 422, such as a repository the installation does not reach (`422 NARROWING_REFUSED`); a 422 that says it is a rate limit is an upstream `mint failed` instead. Nothing was released. The caller fixes its narrowing; the App and the secret are not at fault, so this line needs no action unless one session repeats it. |
 | `broker: narrowing refused enrollment=… name=<NAME> error=…`, with no `grant=` key | The same line for a refusal the broker made before the approval request: a request that carries a `github_app` narrowing and that a person would decide is checked first, and this is what that check refused. The keys are the enrollment, the secret the refusal is about (empty for `NARROWING_NOT_APPLICABLE`, which is about the request as a whole) and the error. There is no `grant=` key because no grant exists: no request row was written, no record was made and nobody was asked to approve anything. The refusal names the account its `github-owners` tag does not list (`403 NARROWING_OWNER_NOT_LISTED`), a request no name of which is a `github-app` secret (`400 NARROWING_NOT_APPLICABLE`), a name the airlock holds back (`409 NARROWING_BEHIND_AIRLOCK`), or what GitHub refused (`422 NARROWING_REFUSED`). The broker learns of a repository the installation does not reach, or of read access the App does not hold, by minting the token the release would mint and revoking it at once. It learns of an App with no installation on that account at all from the App's list of installations, and a release answers that one `502 MINT_FAILED` instead, its own answer for every refused mint. It checks a narrowing to an account alone from that list alone, and mints no token for it. The caller fixes its narrowing, as above. |
 | `broker: the narrowing check was skipped enrollment=… name=… reason=… error=…` | At INFO, each time trouble, never a refusal, ended that check. `reason=` is one of eight, and each is the whole reason it ended: `the requester could not be read`; `this broker has no github-app minter`; `this enrollment has reached GitHub for more checks than its bound allows` (five at once, one more every twelve seconds); `the stored value could not be read` (the secret store out of reach, or refusing the broker); `the stored value is not an App id and private key the minter can read`, which the secret's owner fixes by storing a new value, as they do for a release's `mint failed … class=stored-value`; `the check's time ran out, or its caller went away, before GitHub answered` (the check's budget is ten seconds for the whole check and five for one mint, and a caller that goes away ends it too); `GitHub refused the App rather than the narrowing` (a 401 to the App's own token, a 403, or a 404 — the App's key, its clock or its installation, and nothing a caller mends by narrowing differently); or `GitHub's answer decided nothing about the narrowing` (a transport failure, a 5xx, or a rate limit). `error=` is there only where something failed, so the two reasons that need no failure carry none. `name=` is the secret the check had reached, and empty where it had reached none. The request then takes the path it took before this check existed: the person is asked, and the release makes the refusal. Nothing is wrong with the request, so one line needs no action; a run of them says GitHub, the secret store or the bounds are leaving the verdict unreached. |
-| `broker: grant log …` | At INFO, once for each request decision, each `request.judged` row and each grant end. Every line carries the event's `kind`, its `actor`, whichever of the enrollment, request and grant ids the row names, and `raw`, the audit row's own detail; it carries no audit id and no timestamp, since the line is written once the row has committed and the log keeps its own time. The rest is what the writer of that line had in hand, which differs by line: a `request.created` line adds the session and its person, the service the broker verified, the service the session's credential claims (`claimed_service`), the secrets and how each was decided, the state, the approver, the lifetime, the reason and the detail; a `request.granted` or `request.denied` line adds the session and its person, the claimed service, the state, the approver, who decided, the lifetime, the reason and the detail, and neither the verified service nor the secrets; a `request.cancelled` or `request.expired` line adds the state, the detail and, for a cancel, who decided; a `request.judged` line, written for every judge run that reached a verdict, its referrals and its failed checks included, adds the session and its person, the claimed service, and the grant where the verdict granted one; a `grant.revoked` or `grant.withheld` line adds nothing more, except the session's person when a person's revoke ended it. A reader joins a line to its request's own `request.created` line by `request_id` for the rest, or reads that row from `GET /v1/grant-log`, which joins the tables and holds every field. The line is the copy a deployment's log pipeline keeps of the rows that route answers from the `audit` table, so a closed period's decisions can be read without the database ([the audit record](/legion/broker/concepts/#the-audit-record)). A release (`grant.used`) writes the line below instead, and an enrollment row writes none. |
+| `broker: grant log …` | At INFO, once for each request decision, each `request.judged` row and each grant end. Every line carries the event's `kind`, its `actor`, whichever of the enrollment, request and grant ids the row names, and `raw`, the audit row's own detail; it carries no audit id and no timestamp, since the line is written once the row has committed and the log keeps its own time. The rest is what the writer of that line had in hand, which differs by line: a `request.created` line adds the session and its person, the service the broker verified, the service the session's credential claims (`claimed_service`), the secrets and how each was decided, the state, the approver, the lifetime, the reason and the detail; a `request.granted` or `request.denied` line adds the session and its person, the claimed service, the state, the approver, who decided, the lifetime, the reason and the detail, and neither the verified service nor the secrets; a `request.cancelled` or `request.expired` line adds the state, the detail and, for a cancel, who decided; a `request.judged` line, written for every judge run that reached a verdict, its hand-overs to a person and its failed checks included, adds the session and its person, the claimed service, and the grant where the verdict granted one; a `grant.revoked` or `grant.withheld` line adds nothing more, except the session's person when a person's revoke ended it. A reader joins a line to its request's own `request.created` line by `request_id` for the rest, or reads that row from `GET /v1/grant-log`, which joins the tables and holds every field. The line is the copy a deployment's log pipeline keeps of the rows that route answers from the `audit` table, so a closed period's decisions can be read without the database ([the audit record](/legion/broker/concepts/#the-audit-record)). A release (`grant.used`) writes the line below instead, and an enrollment row writes none. |
+| `broker: a pending request's record is signed for another broker address; it is ended, and its session's new request replaces it request=… record_id=… new_request=… enrollment=…` | At INFO, once for each pending request the broker ended because its record is signed for another broker address: its session asked a broker at another `BROKER_PUBLIC_URL` that shares this database, or this broker before its public URL changed, and then asked this broker again for one of its names, where no person and no judge could decide the request it left waiting. The broker cancelled that request, recording itself as the one who decided it, with a detail that says the broker moved, and wrote the `broker: grant log` line of its `request.cancelled` row beside this one. `request` is the ended request, `record_id` its record, `new_request` the request the session is referred to now (the one its ask made, pending, granted or denied; the pending request of this broker the ask joined or was refused `REQUEST_PENDING` for; or the request of the live grant the ask was answered with), and `enrollment` the enrollment that asked. The line is written once the end has committed, so an ask whose transaction failed writes none; each value is an id, and the line holds no secret value, no token and no request object. It needs no action: the broker cleared a request its session left behind when it moved. |
+| `broker: a grant's approval chain does not verify; it releases nothing grant=… record_id=… enrollment=… at=<values, airlock or reuse> reason=…` | At WARN, each time a release finds that a grant's whole approval chain no longer verifies. `at` says where: `values`, the session's own release, answered `403 GRANT_CHAIN_INVALID`; `airlock`, the airlock proxy's read of the values it swaps in, which the proxy answers the same; or `reuse`, the broker's check of a live grant it would hand back to a new request for the same names, which passes that grant over for the next newest and, with none left, asks afresh. `grant` is the grant, `record_id` the record its chain rests on, `enrollment` the enrollment that holds it, and `reason` the refusal's text, which names the link that failed. Most often that is `aud does not match`: the grant's record was signed for another `BROKER_PUBLIC_URL`, by a broker at another address that shares this database or by this broker before its public URL changed, and the grant's session, which asks here now, still holds it. A database failure during the check writes no such line, and the line holds no secret value, no token and no request object. |
 | `broker: released a grant grant=… request=… enrollment=… names=[<NAME> …] reason=<reason> call_reason=<reason> command=[<argument> …] github_app=…` | At INFO, once for each release of a grant, after its `grant.used` audit row is written: what each grant was spent on, and why. `reason` is the reason the grant's request gave. A session's release adds `call_reason`, the `--reason` its own call gave, where that differs from the grant's: a session that asks again for secrets it holds a live grant of gets that grant back, and its new reason is in no request. The broker drops the characters a request's reason may not hold and cuts it to 400 characters. A session's release also adds `command`, the argument vector the `agent-secrets NAME -- <command>` form said the release starts: its first 32 arguments, each cut to 256 bytes, and `github_app`, the narrowing of its GitHub App tokens the release applied, where it applied one. In the cut command the broker replaces with `[redacted]` each secret it can name: each value of eight bytes or more that the release handed out, each string of eight bytes or more inside a stored JSON value, each token inside a document a minter made, each placeholder of a name the airlock holds back, and every GitHub token, AWS access key id, Google OAuth access token, Slack token of any `xox` prefix and PEM private key, wherever it came from; an argument the cut ended loses any end that starts one of them. **A secret of no such kind — a value from another store, a password typed in, a value shorter than eight bytes — is logged as the session typed it, so pass secrets in the command's environment, as the exec form does, and never on its command line.** `call_reason` and `command` are the session's own word, which the broker records and does not check, and a client from before the fields names neither, which logs an empty `command`. The airlock proxy's release of a grant writes `airlock=true` in their place, since it starts no command. The `grant.used` row's `detail` holds the same fields, and `GET /v1/grant-log` answers that detail to every account with the power to read the grant log. While a client of this version meets a broker from before these fields, that broker refuses each release once with `400 INVALID_NARROWING` naming the unknown field, and the client sends it again without them: the older broker writes a `broker: answer refused … code=INVALID_NARROWING` line and counts `broker_answers_total{outcome="refused",code="INVALID_NARROWING"}` for each, which is expected until the broker is rolled. |
 | `broker: the assignee of a Legion pod's issue could not be read; its request is listed for everyone issue=… enrollment=… error=… bound_reached=…` | At WARN, once for a Legion worker pod's request for a shared secret whose issue's assignee the broker could not read: Dispatch refused the read or answered nothing it could decode, the read ran past its three seconds (`bound_reached=true`), or the broker could not read the pod's own requester first. `issue` is the issue the pod's claim names and `enrollment` the pod's enrollment. The request is listed in every person's Inbox, as when the issue has no assignee, which logs nothing ([Concepts](/legion/broker/concepts/#approvals)). A line on every such request means that step is off: check the token file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names and that `BROKER_JUDGE_DISPATCH_URL` answers. The error names no token. |
 | `broker sweeper: ended an enrollment whose lease lapsed enrollment_id=… kind=… runtime_id=… slot=… lease_expired_at=… grants_revoked=… requests_cancelled=… left_dormant=… handed_to=…` | A session stopped renewing (a pod that is gone, a box whose `agent-secrets renew` stopped) while a broker was serving; the sweep ended it, revoking its grants and cancelling its pending requests. `left_dormant=true` says it left them for the session's next enrollment instead, and a non-empty `handed_to` that it handed them to that enrollment, a running pod of the same Legion claim ([Concepts](/legion/broker/concepts/#requests-and-grants)). A lease that ran out while no broker was serving is not ended ([when no broker is serving](/legion/broker/concepts/#when-no-broker-is-serving)). |
@@ -1261,26 +1277,77 @@ Many fields of these lines are the command's own text. From its request's header
 `correlation_id`, which is the `X-Correlation-Id` header, and the host of a `CONNECT` whose target
 is a path, which is its `Host` header. From the rest of its request: the method, the path, the
 host and the port it asked for, the address that host resolved to, and a `reason` or `error` that
-quotes them — an upstream failure's `error` can quote the names a service's certificate holds,
-which the service chose. A host is written as the command sent it, lowercased: a client that
-sends a Unicode name as its punycode (`xn--…`) form, as Go's and curl's do, has the punycode
-written, and the proxy converts no name of its own. A cut to 256 bytes keeps a line small, and
-lowercasing a host keeps it one spelling; neither is redaction. What keeps a placeholder off
-every line the airlock's proxy port writes, a refusal line among them, is that each text the
-line holds has each placeholder written whole — `agent-secrets-placeholder-` and the letters and
-digits after it, in any case — replaced by `[placeholder]` before the line is written. So no line
-holds a placeholder as it was minted or lowercased: a command that writes its placeholder into
-its request's path, its `X-Correlation-Id` or the host it asks for, or a service that names it in
-its certificate, has `[placeholder]` written there. A placeholder encoded on purpose — its
-characters percent-escaped, written in fullwidth letters, or its 32 characters after the prefix
-written without it — is text the proxy cannot tell from any other, and is written as it came;
-that is out of the mask's scope, since a command that wants its placeholder sent somewhere can
-send it through a tunnel, and the mask is for a placeholder written as it is. No line holds a
-secret's value: no field is read from a request's body or from a header the swap puts a value
-in. The API port's refusal line takes its `correlation_id` from the caller's `X-Correlation-Id`
-too, and masks no placeholder; its line holds no message text, and names the code. Each answer,
-a refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is the one
-record of the API port's `429` and of a device grant's poll answers.
+quotes them. A host is written as the command sent it, lowercased: a client that sends a Unicode
+name as its punycode (`xn--…`) form, as Go's and curl's do, has the punycode written. A
+plain-HTTP request whose URL names a Unicode host is the one place the proxy's side
+converts it: net/http's transport dials the punycode form, so the line of the transport's dial —
+the tunnel's, or a failed dial's when the transport's own check or dial fails — names
+`xn--caf-dma.example.net`, while the line of the proxy's own check before it, the refusal line
+and `airlock proxy: upstream` name `café.example.net`. A cut to 256 bytes keeps a line small,
+and lowercasing a host keeps it one spelling; neither is redaction. What keeps a placeholder off
+a line is the broker's mask, which reads each line its JSON handler writes, after the handler has
+written it: it decodes each string of the line — each value, each key, each group's name — and
+writes again each string whose decoded text holds a placeholder, with each placeholder replaced
+by `[placeholder]`, and leaves every other byte as the handler wrote it. A placeholder is
+`agent-secrets-placeholder-`, in any case, and the letters and digits after it, at most the 32
+the broker mints and up to where another placeholder starts, so two placeholders written
+together are two. A line of one JSON object that holds no `\u` escape, no byte past ASCII and no
+`agent-secrets-placeholder-` in any ASCII case cannot hold a placeholder, and is handed on as it
+came: every other escape JSON has decodes to a character no placeholder holds. So a value is
+masked in the one form the line holds it, and a name a command chose
+changes no other field of its line, whatever bytes it holds. That holds for every line the
+broker writes through slog or Go's `log`
+package: every line of the airlock's proxy port, a refusal line and net/http's and httputil's own
+`airlock proxy: net/http` lines among them, the API port's lines, the standard logger's, the AWS
+SDK's, which the broker writes as `broker: aws sdk` at `WARNING`, grpc's, written as
+`broker: grpc` (its errors at `ERROR`; its infos and warnings, which grpc drops by default, at
+`DEBUG`, which the broker drops too), and OpenTelemetry's internal errors. grpc's own
+`GRPC_GO_LOG_SEVERITY_LEVEL` and `GRPC_GO_LOG_VERBOSITY_LEVEL` therefore change nothing the broker
+writes. net/http's transport has no error log of its own: when a service sends bytes after a
+whole answer on a connection the proxy keeps, the transport writes them to the standard logger,
+which the broker writes as one line for each write, its first line cut to 256 bytes and the rest
+kept as `stack`. So no such line holds a placeholder as it was minted or lowercased: a command
+that writes its placeholder into its request's path, its `X-Correlation-Id` or the host it asks
+for has `[placeholder]` written there. A line the mask cannot read as one JSON object is written
+as a fixed line in its place, and none of its text
+is written. A value whose methods fail or panic is written as slog writes that failure —
+`!ERROR:…` or `!PANIC: …`, with a placeholder in that text masked too; the mask calls no method
+of a value and so cannot panic for one, though slog itself can panic for a value whose failure
+it cannot print. Two kinds of text are not masked. A library that writes to stderr or stdout
+itself writes past it — the Anthropic SDK's warnings, go-retryablehttp's default client, the
+pg_query WebAssembly module's stdout and stderr, and the Google client libraries' own logger when
+`GOOGLE_SDK_GO_LOGGING_LEVEL` is set and a client was given no logger (the broker's Secret
+Manager client is given one that drops every line, since at debug it prints each response, and a
+read's response holds the value) — as does the Go runtime's report of a fatal error or a panic no
+handler recovered, and anything written before `main` runs. And a placeholder the line holds in
+another spelling: a `[]byte`, which the JSON handler writes in base64 wherever it is in a line,
+and a placeholder encoded on purpose — its characters percent-escaped, written in fullwidth
+letters, a separator written after the prefix, an invisible character written inside it, or its
+32 characters after the prefix written alone — is text the mask cannot tell from any other, and
+is written as it came; that is out of the mask's scope, since a command that wants its
+placeholder sent somewhere can send it through a tunnel, and the mask is for a placeholder
+written as it is.
+
+No field of a line is read from a request's body or from a header the swap puts a value in. A
+bound service is sent the real value, though, and can send it back, and the token endpoint of an
+Azure exchange is sent the real federated token; the placeholder mask can see neither. net/http,
+net/textproto and httputil quote each run of bytes they repeat from a peer — an answer's bytes on
+an idle connection, a header, trailer or status line they could not read, a client's ALPN list —
+so a library's text from the first quotation mark of each of its lines to that line's end is
+written as `"[service bytes not shown]"`: in the lines those libraries write (the standard
+logger's and `airlock proxy: net/http`), in the `error` of `airlock proxy: upstream` and in the
+`502` the proxy answers with it, and in the reason, line and answer of an Azure exchange the
+endpoint's answer failed. The whole rest of the line goes, not only the quoted run, since a stray
+quotation mark before a run would otherwise pair with the run's opening one and leave the run in
+clear. A service's text a library writes without quotes is written as it came, but for the names
+a certificate holds: crypto/x509's error for a certificate that names other hosts than the one
+asked for lists every name in it, so the `error` of `airlock proxy: upstream`, the `502`, and the
+reason, line and answer of an Azure exchange whose token endpoint's certificate names other hosts
+write `tls: the service's certificate is not valid for this host; the names it holds are not shown`
+in its place. The API port's refusal line takes its `correlation_id` from the caller's
+`X-Correlation-Id` too; its line holds no message text, and names the code. Each
+answer, a refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is
+the one record of the API port's `429` and of a device grant's poll answers.
 
 On the API port, an answer that no refusal line records names its id in no line: a `429`, the two
 answers of a device login's poll, and every answer of 500 and above. `agent-secrets` prints the id
@@ -1722,8 +1789,8 @@ login has no request, and its events alone say how it was decided.
 
 A decision the model judge made names `judge:<model id>` in the event's `actor` and in the
 request's `decided_by`, with no login beside it, and writes one `request.judged` row of its own.
-That row is there for every judge run that reached a verdict, the referrals and the failed checks
-included, so it is where a request the judge did not take says why
+That row is there for every judge run that reached a verdict, the hand-overs to a person and the
+failed checks included, so it is where a request the judge did not take says why
 ([Concepts](/legion/broker/concepts/#the-model-judge)):
 
 ```sql

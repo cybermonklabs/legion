@@ -170,7 +170,8 @@ test("Answering an ask inside the drawer submits and removes it from the list, s
     await user.click(screen.getByRole("button", { name: "Open inbox" }));
     const dialog = await screen.findByRole("dialog", { name: "Inbox" });
     const card = await within(dialog).findByTestId("ask-ask-a");
-    await user.click(within(card).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(card).findByRole("radio", { name: "Ship" }));
     await user.click(within(card).getByRole("button", { name: "Answer" }));
 
     await waitFor(() => expect(within(dialog).queryByTestId("ask-ask-a")).not.toBeInTheDocument());
