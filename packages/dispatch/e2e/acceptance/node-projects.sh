@@ -332,33 +332,20 @@ census_complete "$section" "after the backfill"
 # stands behind it - and with the debt clear there and the message's node written, that tick's
 # pass has finished.
 #
-# The tick reads an event only once the event horizon has passed it (events.Horizon), and the
-# horizon trails the oldest transaction holding a transaction id anywhere on the Postgres instance,
-# in any database. A transaction of another database - a shared test instance's other runs, an
-# operator's open psql - is not the server's: while one older than 5 s holds an id (events'
-# horizonStallAfter, and horizontest.OwnHoldBound), the wait does not count that time against
-# its budget. A transaction of this run's own database held that long is the defect the horizon's
-# own test waits fail on (docs/testing.md, "A test that waits for the event feed's first frame"),
-# so it fails the section at once, named. The holders are read as events.StallHolderSQL reads
-# them, the oldest transaction id first, a prepared transaction's as well as a backend's. A role
-# that is neither a superuser nor a member of pg_read_all_stats reads no xact_start of another
-# role's backend, so it cannot tell a long hold from a short one: such a role waives no hold, and
-# its failure says so.
+# The tick reads an event only once the event horizon has passed it (events.Horizon). A
+# transaction of this run's own database that holds a transaction id for 5 s or more (events'
+# horizonStallAfter, and horizontest.OwnHoldBound) holds the server's event readers back, which is
+# the defect the horizon's own test waits fail on (docs/testing.md, "A test that waits for the event
+# feed's first frame"), so it fails the section at once, named; the holders are read as
+# events.StallHolderSQL reads them, the oldest transaction id first, a prepared transaction's as
+# well as a backend's.
 #
 # The wait is counted in the server's own work, not in time: the block-index tick's passes, each
-# recorded in duty_passes as the period it served (duty's recordPass). A tick that runs while no
-# such hold stands reads the event, owes the pass and runs it, so six ticks with no hold and no
-# pass are a server that does not cure the row, and the section fails; and sixty ticks in all,
-# three times objectPassInterval at the tick's interval, fail it however long the holds were. The
-# lease, the tick's interval and objectPassInterval are read from the source that declares them.
-# The clock is a hang guard alone: ten of the tick's intervals with no pass of its lease at all is
-# a server whose tick has stopped, and fails the section naming the last period it served. A
-# holder whose id came after the server's observation does not hold the event but is counted all
-# the same, so while another database keeps a transaction open, a server that never runs the pass
-# fails only at the sixtieth tick. A hold longer than objectPassInterval lets the tick's timed pass
-# run while the event waits; that pass writes the message's node before its event is read, and no
-# quiet interval follows it. So when the message has its node while no cursor has reached its
-# event, the section sends another message and waits for that one's pass.
+# recorded in duty_passes as the period it served (duty's recordPass). A tick reads the event, owes
+# the pass and runs it, so six ticks with no pass are a server that does not cure the row, and the
+# section fails. The lease and the tick's interval are read from the source that declares them. The
+# clock is a hang guard alone: ten of the tick's intervals with no pass of its lease at all is a
+# server whose tick has stopped, and fails the section naming the last period it served.
 section=pass
 # declared WHAT FILE SED: the one value SED prints out of a Go source file, refused when the file or
 # the declaration is gone, so a build that moves one moves this driver with it.
@@ -373,96 +360,55 @@ readonly tick_lease="$answer"
 declared "read the block-index tick's interval" "$docs_source/block_index.go" \
   's/^[[:space:]]*BlockIndexReconcileInterval = \([0-9][0-9]*\) \* time\.Second$/\1/p'
 readonly tick_seconds="$answer"
-declared "read the object pass's interval" "$docs_source/block_index_roll.go" \
-  's/^const objectPassInterval = \([0-9][0-9]*\) \* time\.Minute$/\1/p'
-readonly all_ticks=$((3 * answer * 60 / tick_seconds)) quiet_ticks=6 stalled_seconds=$((10 * tick_seconds))
-query "$section" "read whether this role reads every backend's transaction start" "
-  select coalesce((select rolsuper from pg_roles where rolname = current_user), false)
-      or pg_has_role(current_user, 'pg_read_all_stats', 'member')"
-sees_holders="$answer"
-# send_earlier_message: as an earlier build would, a direct message with its event and no node,
-# its id in $before and its event's in $written.
-send_earlier_message() {
-  query "$section" "an earlier build sends a direct message with its event and no node" "
-    with message as (
-      insert into messages (issue_key, author, body, target)
-      values (null, '{\"kind\":\"user\",\"id\":\"$person\"}', 'Before the control $stamp.', 'session:$agent')
-      returning id
-    ), event as (
-      insert into events (seq, type, actor, payload, notify)
-      select 0, 'message.created', '{\"kind\":\"user\",\"id\":\"$person\"}', jsonb_build_object('id', message.id::text), false
-      from message
-      returning id
-    )
-    select message.id::text || ' ' || event.id from message, event"
-  read -r before written <<<"$answer"
-}
-send_earlier_message
-boundary="" ticks=0 quiet=0 last_pass=$SECONDS holder="" resent=0
+readonly quiet_ticks=6 stalled_seconds=$((10 * tick_seconds))
+query "$section" "an earlier build sends a direct message with its event and no node" "
+  with message as (
+    insert into messages (issue_key, author, body, target)
+    values (null, '{\"kind\":\"user\",\"id\":\"$person\"}', 'Before the control $stamp.', 'session:$agent')
+    returning id
+  ), event as (
+    insert into events (seq, type, actor, payload, notify)
+    select 0, 'message.created', '{\"kind\":\"user\",\"id\":\"$person\"}', jsonb_build_object('id', message.id::text), false
+    from message
+    returning id
+  )
+  select message.id::text || ' ' || event.id from message, event"
+read -r before written <<<"$answer"
+boundary="" ticks=0 last_pass=$SECONDS
 while :; do
   query "$section" "read whether the server's object pass has run after event $written" "
-    select case when exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
-        then 'reached' else 'below' end
-      || ' ' || case when exists (select 1 from graph_nodes where kind = 'message' and id = '$before') then 'node' else 'none' end"
-  read -r cursor node <<<"$answer"
-  [[ "$cursor" == reached && "$node" == node ]] && break
-  if [[ "$cursor" == below && "$node" == node ]]; then
-    resent=$((resent + 1))
-    send_earlier_message
-  fi
-  query "$section" "read the oldest transaction that holds the event horizon back" "
-    with holder as (
+    select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
+       and exists (select 1 from graph_nodes where kind = 'message' and id = '$before')"
+  [[ "$answer" == t ]] && break
+  query "$section" "read the oldest transaction of this run's database that holds the event horizon back" "
+    select coalesce((select name from (
       select format('backend %s (application %s), open since %s: %s', pid, coalesce(application_name, ''), xact_start,
-          left(coalesce(query, ''), 80)) as name, coalesce(datname::text, '') as database, xact_start as started,
-        age(backend_xid) as age
+          left(coalesce(query, ''), 80)) as name, xact_start as started, age(backend_xid) as age
       from pg_stat_activity
-      where backend_xid is not null and pid <> pg_backend_pid()
+      where backend_xid is not null and pid <> pg_backend_pid() and datname = current_database()
       union all
-      select format('prepared transaction %s, prepared at %s', gid, prepared), database::text, prepared, age(transaction)
-      from pg_prepared_xacts
-    )
-    select coalesce(
-      (select 'own ' || name from holder
-        where database = current_database() and started < now() - interval '5 seconds' order by age desc limit 1),
-      (select 'other ' || name || ', in database ' || database from holder
-        where database is distinct from current_database() and started < now() - interval '5 seconds' order by age desc limit 1),
-      '')"
-  held=0
-  case "$answer" in
-  own\ *)
+      select format('prepared transaction %s, prepared at %s', gid, prepared), prepared, age(transaction)
+      from pg_prepared_xacts where database = current_database()
+    ) holder where started < now() - interval '5 seconds' order by age desc limit 1), '')"
+  [[ -z "$answer" ]] ||
     fail "$section" "no transaction of this run's database holds the event horizon back" \
-      "${answer#own } has held a transaction id in this run's database for more than 5 s, which holds the server's event readers back"
-    ;;
-  other\ *)
-    holder="${answer#other }"
-    [[ "$sees_holders" == t ]] && held=1
-    ;;
-  esac
+      "$answer has held a transaction id in this run's database for more than 5 s, which holds the server's event readers back"
   query "$section" "read the period the block-index tick last served" \
     "select coalesce((select boundary::text from duty_passes where lease = '$tick_lease'), '')"
   if [[ "$answer" != "$boundary" ]]; then
-    if [[ -n "$boundary" ]]; then
-      ticks=$((ticks + 1))
-      ((held)) || quiet=$((quiet + 1))
-    fi
+    [[ -z "$boundary" ]] || ticks=$((ticks + 1))
     boundary="$answer" last_pass=$SECONDS
   fi
-  if ((quiet >= quiet_ticks || ticks >= all_ticks)); then
-    blind=""
-    [[ "$sees_holders" == t ]] ||
-      blind="; this role reads no other role's transaction start (it is no superuser and holds no pg_read_all_stats), so no hold was waived"
+  ((ticks < quiet_ticks)) ||
     fail "$section" "the server's object pass runs" \
-      "no cursor past event $written without a debt and no node of message $before after $ticks block-index ticks, $quiet of them with no transaction of another database holding the event horizon back; the last one that held it: ${holder:-none}$blind"
-  fi
+      "no cursor past event $written without a debt and no node of message $before after $ticks block-index ticks"
   if ((SECONDS - last_pass >= stalled_seconds)); then
     fail "$section" "the server's block-index tick runs" \
       "no pass of lease $tick_lease for $((SECONDS - last_pass)) s; the last period it served began at ${boundary:-no period}"
   fi
   sleep 1
 done
-resends=""
-((resent == 0)) || resends=", sent $resent more time(s) because a timed pass wrote an earlier message's node while a hold kept its event back"
-pass "$section" "the server's object pass wrote the node of message $before after event $written and owes nothing$resends"
+pass "$section" "the server's object pass wrote the node of message $before after event $written and owes nothing"
 
 section=control
 query "$section" "take the ask's node away" "
