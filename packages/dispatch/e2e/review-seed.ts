@@ -122,13 +122,16 @@ async function markWhatTheShotPagesRead(broadcastId: string, issue: string): Pro
   }
   const specId = (await getIssue(issue)).primary_artifact_id;
   const spec = (await listIssueArtifacts(issue)).find((artifact) => artifact.id === specId);
-  const newest = spec?.versions?.[0]?.number;
-  if (specId === undefined || specId === null || newest === undefined) {
+  // The server lists a document's versions oldest first, and the Spec tab shows the one with the
+  // highest number (`versionsNewestFirst`, then the first): so the mark is the highest number, read
+  // from every version, and never the list's first, which is the newest only for a one-version spec.
+  const numbers = (spec?.versions ?? []).map((version) => version.number);
+  if (specId === undefined || specId === null || numbers.length === 0) {
     throw new Error(
       `seedReviewRoutes: ${issue} has no spec with a version for its Spec tab to read`
     );
   }
-  await putDocumentRead(specId, newest);
+  await putDocumentRead(specId, Math.max(...numbers));
 }
 
 /** Seeds the review corpus into an empty database; the caller resets first. `boundMs` is the
