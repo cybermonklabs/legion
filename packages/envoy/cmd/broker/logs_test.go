@@ -1,19 +1,15 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"log"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	smithylogging "github.com/aws/smithy-go/logging"
 	"github.com/go-logr/stdr"
@@ -27,31 +23,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
-
-// brokerLogLines is each line of the broker's log, decoded, failing t on a line that is no JSON
-// object of its own.
-func brokerLogLines(t *testing.T, written string) []map[string]any {
-	t.Helper()
-	var lines []map[string]any
-	for _, text := range strings.Split(strings.TrimSpace(written), "\n") {
-		var line map[string]any
-		if err := json.Unmarshal([]byte(text), &line); err != nil || line == nil {
-			t.Fatalf("a line of the broker's log is no JSON object: %q: %v", text, err)
-		}
-		lines = append(lines, line)
-	}
-	return lines
-}
-
-// lineWhere is the first line for which holds says true, and false when no line does.
-func lineWhere(lines []map[string]any, holds func(map[string]any) bool) (map[string]any, bool) {
-	for _, line := range lines {
-		if holds(line) {
-			return line, true
-		}
-	}
-	return nil, false
-}
 
 // isolateAWS points the AWS SDK at no file and no instance of AWS's own for the rest of t, and
 // empties every other AWS_ variable of the environment, each of which the SDK reads as unset when
@@ -74,13 +45,12 @@ func isolateAWS(t *testing.T) {
 // sets up first, is what every line of slog, the log package, the AWS SDK, grpc and
 // OpenTelemetry goes through, one subtest for each route, each reading the lines written while
 // it ran. A placeholder written through any of them is written masked, in a value, a key and a
-// group's name alike; a library's line has no date of its own, its first line is cut to 256
-// bytes as its message and the rest is its stack; a run of bytes net/http's transport quotes from
-// a service - here an answer's bytes on an idle connection, the line no ErrorLog reaches - is
-// written as a fixed phrase; the AWS SDK's line is a WARNING of the broker's own shape, cut as a
-// call line's fields are, and its debug line is not written; grpc's error is an ERROR, cut as a
-// call line's fields are and with no newline at its end, its info and its warning are not
-// written, and its V is true at level 0 and false past it; and OpenTelemetry's error is an ERROR.
+// group's name alike; the log package's line has no date of its own; the AWS SDK's line is a
+// WARNING of the broker's own shape, cut as a call line's fields are, and its debug line is not
+// written; grpc's error is an ERROR, cut as a call line's fields are and with no newline at its
+// end, its info and its warning are not written, and its V is true at level 0 and false past it;
+// and OpenTelemetry's error is an ERROR. What the mask, the log package's lines and the bytes a
+// library quotes from a peer are written as is logmask's to test; here each route reaches it.
 func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 	placeholder := requests.PlaceholderPrefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
 	out := &logtest.Buffer{}
@@ -134,7 +104,7 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 		if written == "" {
 			return "", nil
 		}
-		return written, brokerLogLines(t, written)
+		return written, logtest.JSONLines(t, written)
 	}
 	message := func(want string) func(map[string]any) bool {
 		return func(line map[string]any) bool { return line["message"] == want }
@@ -144,71 +114,16 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 		written, lines := during(t, func() {
 			slog.Info("broker: a planted line", "planted", placeholder, placeholder, "a key", slog.Group(placeholder, "k", "v"))
 		})
-		planted, ok := lineWhere(lines, message("broker: a planted line"))
+		planted, ok := logtest.LineWhere(lines, message("broker: a planted line"))
 		if !ok || planted["severity"] != "INFO" || planted["planted"] != logmask.Mark || planted[logmask.Mark] == nil {
 			t.Errorf("the default logger's line = %v; want its own message, at INFO, with the value, the key and the group's name masked (log: %q)", planted, written)
 		}
 	})
 
 	t.Run("the log package", func(t *testing.T) {
-		first := placeholder + " " + strings.Repeat("x", 300)
-		written, lines := during(t, func() {
-			log.Print(first)
-			log.Print(first + "\nsecond line " + placeholder)
-		})
-		cut := logmask.Mark + answer.Clip(first)[len(placeholder):]
-		if len(lines) != 2 || lines[0]["message"] != cut || lines[0]["stack"] != nil {
-			t.Errorf("the log package's one-line write is %v; want its line cut to %d bytes and masked, with no date before it and no stack (log: %q)", lines, answer.FieldBytes, written)
-		}
-		if library, ok := lineWhere(lines, message(cut)); !ok || len(lines) != 2 || lines[1]["stack"] != "second line "+logmask.Mark {
-			t.Errorf("no line of the log package is its first line cut to %d bytes and masked, and the rest as its stack: %v (log: %q)", answer.FieldBytes, library, written)
-		}
-	})
-
-	t.Run("net/http's transport", func(t *testing.T) {
-		written, lines := during(t, func() {
-			// A service that answers two bytes and sends the placeholder after them in the same
-			// write: net/http's transport reads the answer, finds the rest on the idle
-			// connection, logs it with log.Printf and then closes the connection, which is when
-			// the service hears from it.
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatalf("bind the service: %v", err)
-			}
-			t.Cleanup(func() { listener.Close() })
-			closed := make(chan struct{})
-			go func() {
-				conn, err := listener.Accept()
-				if err != nil {
-					return
-				}
-				defer conn.Close()
-				buffer := make([]byte, 4096)
-				if _, err := conn.Read(buffer); err != nil {
-					return
-				}
-				io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"+placeholder)
-				io.Copy(io.Discard, conn)
-				close(closed)
-			}()
-			transport := &http.Transport{}
-			t.Cleanup(transport.CloseIdleConnections)
-			response, err := (&http.Client{Transport: transport, Timeout: 20 * time.Second}).Get("http://" + listener.Addr().String() + "/")
-			if err != nil {
-				t.Fatalf("GET the service: %v", err)
-			}
-			io.Copy(io.Discard, response.Body)
-			response.Body.Close()
-			select {
-			case <-closed:
-			case <-time.After(2 * time.Minute):
-				t.Fatalf("net/http's transport never closed the connection whose answer ended in bytes after it: %q", out.String())
-			}
-		})
-		// From the first quotation mark of the transport's line on, the line is the fixed phrase.
-		unsolicited := "Unsolicited response received on idle HTTP channel starting with " + logmask.PeerBytesShown
-		if _, ok := lineWhere(lines, message(unsolicited)); !ok {
-			t.Errorf("no line of net/http's transport is %q: %q", unsolicited, written)
+		written, lines := during(t, func() { log.Print("a line of the log package naming " + placeholder) })
+		if want := "a line of the log package naming " + logmask.Mark; len(lines) != 1 || lines[0]["message"] != want || lines[0]["severity"] != "INFO" {
+			t.Errorf("the log package's line is %v; want one line at INFO, %q, masked and with no date before it (log: %q)", lines, want, written)
 		}
 	})
 
@@ -226,10 +141,10 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 		aws := func(text string) func(map[string]any) bool {
 			return func(line map[string]any) bool { return line["message"] == awsSDKMessage && line["text"] == text }
 		}
-		if imds, ok := lineWhere(lines, aws("falling back to IMDSv1: token "+logmask.Mark)); !ok || imds["severity"] != "WARNING" {
+		if imds, ok := logtest.LineWhere(lines, aws("falling back to IMDSv1: token "+logmask.Mark)); !ok || imds["severity"] != "WARNING" {
 			t.Errorf("the AWS SDK's warning = %v; want %q at WARNING, its text masked (log: %q)", imds, awsSDKMessage, written)
 		}
-		if _, ok := lineWhere(lines, aws(strings.Repeat("y", answer.FieldBytes))); !ok {
+		if _, ok := logtest.LineWhere(lines, aws(strings.Repeat("y", answer.FieldBytes))); !ok {
 			t.Errorf("no line of the AWS SDK is its long warning cut to %d bytes: %q", answer.FieldBytes, written)
 		}
 		if strings.Contains(written, "a debug line of the SDK's") {
@@ -248,13 +163,13 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 		grpc := func(text string) func(map[string]any) bool {
 			return func(line map[string]any) bool { return line["message"] == grpcMessage && line["text"] == text }
 		}
-		if line, ok := lineWhere(lines, grpc("a grpc error of "+logmask.Mark)); !ok || line["severity"] != "ERROR" {
+		if line, ok := logtest.LineWhere(lines, grpc("a grpc error of "+logmask.Mark)); !ok || line["severity"] != "ERROR" {
 			t.Errorf("grpc's error line = %v; want %q at ERROR, its text masked (log: %q)", line, grpcMessage, written)
 		}
-		if line, ok := lineWhere(lines, grpc(longGRPC[:answer.FieldBytes])); !ok || line["severity"] != "ERROR" {
+		if line, ok := logtest.LineWhere(lines, grpc(longGRPC[:answer.FieldBytes])); !ok || line["severity"] != "ERROR" {
 			t.Errorf("grpc's long error line = %v; want %q at ERROR, its text cut to %d bytes (log: %q)", line, grpcMessage, answer.FieldBytes, written)
 		}
-		if _, ok := lineWhere(lines, grpc("a grpc error line of two words")); !ok {
+		if _, ok := logtest.LineWhere(lines, grpc("a grpc error line of two words")); !ok {
 			t.Errorf("no grpc line is its Errorln's text without the newline that ends it: %q", written)
 		}
 	})
@@ -275,7 +190,7 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 	t.Run("OpenTelemetry", func(t *testing.T) {
 		// Its global state logs an error when its tracer provider is set to the one it holds.
 		written, lines := during(t, func() { otel.SetTracerProvider(otel.GetTracerProvider()) })
-		if _, ok := lineWhere(lines, func(line map[string]any) bool {
+		if _, ok := logtest.LineWhere(lines, func(line map[string]any) bool {
 			return line["severity"] == "ERROR" && strings.Contains(stringOf(line["message"]), "tracer provider")
 		}); !ok {
 			t.Errorf("no ERROR line of OpenTelemetry's says its tracer provider was set to its current value: %q", written)

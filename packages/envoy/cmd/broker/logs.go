@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"os"
 	"strings"
@@ -30,37 +29,17 @@ import (
 // which Cloud Logging reads as an entry with its own severity, message and fields
 // (logging.NewCloudHandler), written through the placeholder mask (logmask.Writer), which masks
 // the bytes the handler writes: the message, every key and group name, and every value in the
-// form the handler wrote it. The log package writes through the same handler (setDefaultLog): a
-// line a library writes with it - net/http's transport logs what a service sent on an idle
+// form the handler wrote it. The log package writes through the same handler (logmask.SetDefault):
+// a line a library writes with it - net/http's transport logs what a service sent on an idle
 // connection with log.Printf, which no ErrorLog reaches - has the bytes it quotes from a peer
 // written as a fixed phrase and its first line cut as a call line's fields are. grpc and
 // OpenTelemetry keep loggers of their own on stderr, which write past all of that, so both are
 // pointed at the default logger too (grpcLog, and logr's slog handler): grpc's before any gRPC
 // call, as grpclog asks.
 func setUpLogging(stderr io.Writer) {
-	setDefaultLog(logging.NewCloudHandler(logmask.Writer(stderr)))
+	logmask.SetDefault(logging.NewCloudHandler(logmask.Writer(stderr)))
 	grpclog.SetLoggerV2(grpcLog{})
 	otel.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
-}
-
-// slogsOwnHandler is the handler slog's default logger has until something sets one, which
-// writes each record through the log package. It is read when this package is initialized, before
-// main runs, and no package the broker imports sets the default logger as it is initialized.
-var slogsOwnHandler = slog.Default().Handler()
-
-// setDefaultLog makes handler the process's default logger, and points the log package at it
-// (logmask.StandardLog), so every line written through slog or the log package is handler's. For
-// slog's own handler it leaves the log package as it is, as slog.SetDefault does: that handler
-// writes through the log package, whose output holds the log package's lock while it writes, so
-// a log package pointed at that handler would wait on its own lock, and every log call with it.
-func setDefaultLog(handler slog.Handler) {
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
-	if handler == slogsOwnHandler {
-		return
-	}
-	log.SetFlags(0)
-	log.SetOutput(logmask.StandardLog(logger))
 }
 
 // grpcMessage is the message of a line grpc writes (grpcLog).

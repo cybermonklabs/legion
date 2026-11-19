@@ -1130,7 +1130,7 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 	for _, c := range ruleHostRows {
 		t.Run("a host: "+c.name, func(t *testing.T) {
 			path := airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", "api.deel.com", c.host))
-			refused(t, path, append([]string{"secrets[0]", "DEEL_API_KEY", "hosts[1]"}, c.want...), c.absents())
+			refused(t, path, append([]string{"secrets[0]", "DEEL_API_KEY", "hosts[1]"}, c.want...), []string{c.absent})
 		})
 	}
 	// The binary's own log (setUpLogging, the first thing main does): a host the file writes in
@@ -1166,8 +1166,8 @@ func TestMainStartsWithAnAirlockRulesFile(t *testing.T) {
 }
 
 // TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt is the control of the host rows above:
-// a host of each shape a deployment names, written in the one grammar a rules host is written in
-// (canonicalRuleHosts), is no obstacle to the boot, and the broker goes on to serve.
+// hosts the one grammar a rules host is written in serves, in a case a reader of the file could
+// fold (foldedRuleHosts), are no obstacle to the boot, and the broker goes on to serve.
 func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
@@ -1178,7 +1178,7 @@ func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
-		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", canonicalRuleHosts...)),
+		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", foldedRuleHosts...)),
 	)})
 	requireHealthy(t, broker.Addr)
 }

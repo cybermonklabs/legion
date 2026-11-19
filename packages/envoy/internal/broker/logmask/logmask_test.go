@@ -3,7 +3,6 @@ package logmask
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,27 +13,52 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// held is a placeholder as the broker mints one, and realValue a value a swap puts in, built from
-// parts so that no scanner reads it as a key.
+// held and other are placeholders as the broker mints them, and realValue a value a swap puts in,
+// built from parts so that no scanner reads it as a key.
 var (
 	held      = requests.PlaceholderPrefix + "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPp"
+	other     = requests.PlaceholderPrefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
 	realValue = strings.Join([]string{"sk", "live", "REAL", "VALUE", "7f3c9a1e5b2d"}, "-")
 	at        = time.Date(2026, 11, 18, 21, 0, 0, 0, time.UTC)
-	// heldAnywhere is the test's own reading of a placeholder, in any case, so a check of the
-	// mask does not lean on the mask's own pattern.
-	heldAnywhere = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(requests.PlaceholderPrefix) + `[0-9a-z]*`)
 )
 
-// lineOf is the line handler writes, on a buffer of its own, for one record with message and
-// attrs, written through with: the handler a row gets from WithAttrs or WithGroup, or the
-// handler itself. A record is made at one time, so two lines of it compare byte for byte.
-func lineOf(t *testing.T, handler slog.Handler, with func(slog.Handler) slog.Handler, message string, attrs ...any) string {
+// holdsPlaceholder is the test's own reading of whether text holds a placeholder: the prefix
+// anywhere in it, in any case as Unicode's simple folding reads case (strings.EqualFold, which
+// reads ſ as s). It reads no pattern of the mask's, so a check of the mask does not lean on the
+// mask's own reading.
+func holdsPlaceholder(text string) bool {
+	for i := range text {
+		if opensWithFold(text[i:], requests.PlaceholderPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// opensWithFold is whether text opens with prefix, rune by rune, in any case.
+func opensWithFold(text, prefix string) bool {
+	for _, want := range prefix {
+		r, size := utf8.DecodeRuneInString(text)
+		if size == 0 || !strings.EqualFold(string(r), string(want)) {
+			return false
+		}
+		text = text[size:]
+	}
+	return true
+}
+
+// lineOf has handler write one record with message and attrs, through with where a row sets it
+// (the handler a row gets from WithAttrs or WithGroup), into whatever handler writes to. A record
+// is made at one time, so two lines of it compare byte for byte.
+func lineOf(t *testing.T, handler slog.Handler, with func(slog.Handler) slog.Handler, message string, attrs ...any) {
 	t.Helper()
 	if with != nil {
 		handler = with(handler)
@@ -44,7 +68,6 @@ func lineOf(t *testing.T, handler slog.Handler, with func(slog.Handler) slog.Han
 	if err := handler.Handle(context.Background(), record); err != nil {
 		t.Fatalf("the handler refused the record: %v", err)
 	}
-	return ""
 }
 
 // brokerLines is the line the broker's own handler (logging.NewCloudHandler) writes for one
@@ -65,25 +88,35 @@ type span struct {
 	isString bool
 }
 
-// spans is line, one JSON object, as its tokens, failing t when it is not one.
-func spans(t *testing.T, line string) []span {
-	t.Helper()
-	line = strings.TrimSuffix(line, "\n")
-	var object map[string]any
-	if err := json.Unmarshal([]byte(line), &object); err != nil || object == nil {
-		t.Fatalf("the line is no JSON object: %q: %v", line, err)
-	}
+// tokensOf is line as its tokens, read by encoding/json's decoder with each number as written, or
+// an error where line is not one JSON object: an object, and nothing after it but white space.
+func tokensOf(line string) ([]span, error) {
 	decoder := json.NewDecoder(strings.NewReader(line))
 	decoder.UseNumber()
 	var out []span
-	previous := int64(0)
+	previous, depth := int64(0), 0
 	for {
 		token, err := decoder.Token()
 		if err == io.EOF {
-			break
+			if len(out) == 0 || depth != 0 {
+				return nil, errors.New("no whole JSON object")
+			}
+			return out, nil
 		}
 		if err != nil {
-			t.Fatalf("the line %q does not read as JSON tokens: %v", line, err)
+			return nil, err
+		}
+		if len(out) == 0 && token != json.Delim('{') {
+			return nil, fmt.Errorf("a JSON value that is no object: %v", token)
+		}
+		if len(out) > 0 && depth == 0 {
+			return nil, errors.New("more after the JSON object")
+		}
+		switch token {
+		case json.Delim('{'), json.Delim('['):
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
 		}
 		offset := decoder.InputOffset()
 		s := span{raw: line[previous:offset]}
@@ -91,50 +124,72 @@ func spans(t *testing.T, line string) []span {
 		out = append(out, s)
 		previous = offset
 	}
-	return out
 }
 
-// checkMasked is the mask's claim for one line, against the line the handler wrote alone: the
-// masked line is one JSON object; it holds no placeholder, decoded, in any case; and it is the
-// handler's line byte for byte but for each string whose decoded text holds a placeholder, which
-// it writes with logmask.Mark in the placeholder's place. So a caller's text changes no token but
-// its own. It answers how many strings the mask wrote again.
-func checkMasked(t *testing.T, plain, masked string) int {
-	t.Helper()
-	before, after := spans(t, plain), spans(t, masked)
+// maskedAsClaimed is the mask's claim for one line, against the line that came in, each read as
+// its tokens (tokensOf): the masked line is one JSON object of as many tokens; each token whose
+// decoded text holds no placeholder (holdsPlaceholder) is written byte for byte as it came, with
+// what comes before it; each string that held one is a string, after the same separator, that
+// holds none and holds Mark where it was; and a line that held none is written as it came. So a
+// caller's text changes no token but its own. It answers how many strings the mask wrote again,
+// or why the masked line breaks the claim.
+func maskedAsClaimed(plain, masked string) (int, error) {
+	before, err := tokensOf(plain)
+	if err != nil {
+		return 0, fmt.Errorf("the line that came in is no JSON object (%v): %q", err, plain)
+	}
+	after, err := tokensOf(masked)
+	if err != nil {
+		return 0, fmt.Errorf("the masked line is no JSON object (%v): %q", err, masked)
+	}
 	if len(before) != len(after) {
-		t.Fatalf("the masked line has %d tokens and the handler's %d: %q, %q", len(after), len(before), masked, plain)
+		return 0, fmt.Errorf("the masked line has %d tokens and the line that came in %d: %q, %q", len(after), len(before), masked, plain)
 	}
 	rewritten := 0
 	for i := range before {
-		switch {
-		case after[i].isString && heldAnywhere.MatchString(after[i].text):
-			t.Errorf("the masked line holds a placeholder in %q: %q", after[i].raw, masked)
-		case before[i].isString && heldAnywhere.MatchString(before[i].text):
-			rewritten++
-			want := heldAnywhere.ReplaceAllString(before[i].text, Mark)
-			if !after[i].isString || after[i].text != want {
-				t.Errorf("the masked line writes %q where the handler wrote %q; want the string %q", after[i].raw, before[i].raw, want)
+		if !before[i].isString || !holdsPlaceholder(before[i].text) {
+			if after[i].raw != before[i].raw {
+				return 0, fmt.Errorf("the masked line writes %q where %q came, which holds no placeholder: %q, %q", after[i].raw, before[i].raw, masked, plain)
 			}
-			// What comes before a string's opening quotation mark - a separator, a brace - is
-			// the handler's own, and the string is JSON with HTML left unescaped, as slog's
-			// handler writes a string.
-			sep := before[i].raw[:strings.IndexByte(before[i].raw, '"')]
-			var encoded bytes.Buffer
-			encoder := json.NewEncoder(&encoded)
-			encoder.SetEscapeHTML(false)
-			encoder.Encode(want)
-			if exact := sep + strings.TrimSuffix(encoded.String(), "\n"); after[i].raw != exact {
-				t.Errorf("the masked line writes %q where the handler wrote %q; want %q", after[i].raw, before[i].raw, exact)
-			}
-		case before[i].raw != after[i].raw:
-			t.Errorf("the masked line writes %q where the handler wrote %q, which holds no placeholder: %q, %q", after[i].raw, before[i].raw, masked, plain)
+			continue
+		}
+		rewritten++
+		sep := before[i].raw[:strings.IndexByte(before[i].raw, '"')]
+		if !after[i].isString || !strings.HasPrefix(after[i].raw, sep+`"`) || holdsPlaceholder(after[i].text) || !strings.Contains(after[i].text, Mark) {
+			return 0, fmt.Errorf("the masked line writes %q where %q came; want a string after the same %q that holds %s and no placeholder", after[i].raw, before[i].raw, sep, Mark)
 		}
 	}
 	if rewritten == 0 && masked != plain {
-		t.Errorf("the line holds no placeholder, and the mask changed it: %q; want %q", masked, plain)
+		return 0, fmt.Errorf("the line holds no placeholder, and the mask changed it: %q; want %q", masked, plain)
+	}
+	return rewritten, nil
+}
+
+// checkMasked is maskedAsClaimed failing t, for the line the handler wrote alone and the line it
+// wrote through the mask.
+func checkMasked(t *testing.T, plain, masked string) int {
+	t.Helper()
+	rewritten, err := maskedAsClaimed(plain, masked)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return rewritten
+}
+
+// decodedText is every string of line, one JSON object, keys included, decoded and joined.
+func decodedText(t *testing.T, line string) string {
+	t.Helper()
+	tokens, err := tokensOf(line)
+	if err != nil {
+		t.Fatalf("the line is no JSON object (%v): %q", err, line)
+	}
+	var texts []string
+	for _, s := range tokens {
+		if s.isString {
+			texts = append(texts, s.text)
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 // TestSlogWritesEachRecordInOneWrite: the mask reads each Write on its own (Writer), so a record
@@ -304,7 +359,7 @@ func TestTheMaskMasksEveryPlaceAPlaceholderReachesALine(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			plain, masked := brokerLines(t, c.with, c.message, c.attrs...)
-			if !heldAnywhere.MatchString(decodedText(t, plain)) {
+			if !holdsPlaceholder(decodedText(t, plain)) {
 				t.Fatalf("the premise: the handler's own line holds no placeholder, so the row tests nothing: %q", plain)
 			}
 			if rewritten := checkMasked(t, plain, masked); rewritten == 0 {
@@ -330,16 +385,30 @@ func TestTheMaskMasksEveryPlaceAPlaceholderReachesALine(t *testing.T) {
 	})
 }
 
-// decodedText is every string of line, one JSON object, keys included, decoded and joined.
-func decodedText(t *testing.T, line string) string {
-	t.Helper()
-	var texts []string
-	for _, s := range spans(t, line) {
-		if s.isString {
-			texts = append(texts, s.text)
-		}
+// TestTheMaskMasksEachPlaceholderOfARun: a placeholder is the prefix and at most the minted
+// length of letters and digits after it, and it stops where the next prefix starts. So two
+// placeholders written together are two marks, as the prefix written once or twice before a
+// placeholder is, and none of them leaves the characters of the placeholder after it in clear;
+// letters past the minted length are no placeholder's, and are written as they came.
+func TestTheMaskMasksEachPlaceholderOfARun(t *testing.T) {
+	prefix := requests.PlaceholderPrefix
+	for _, c := range []struct{ name, text, want string }{
+		{"two placeholders written together", held + other, Mark + Mark},
+		{"two placeholders in upper case written together", strings.ToUpper(held + other), Mark + Mark},
+		{"the prefix written once before a placeholder", prefix + held, Mark + Mark},
+		{"the prefix written twice before a placeholder", prefix + prefix + held, Mark + Mark + Mark},
+		{"a placeholder and letters past the minted length", held + "QqRr", Mark + "QqRr"},
+		{"a placeholder between words", "from " + held + "/" + other + " on", "from " + Mark + "/" + Mark + " on"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			plain, masked := brokerLines(t, nil, "a line", "v", c.text)
+			checkMasked(t, plain, masked)
+			var line struct{ V string }
+			if err := json.Unmarshal([]byte(masked), &line); err != nil || line.V != c.want {
+				t.Fatalf("the mask wrote v as %q (%v); want %q: %q", line.V, err, c.want, masked)
+			}
+		})
 	}
-	return strings.Join(texts, "\n")
 }
 
 // TestTheMaskReadsTheLineAReplaceAttrWrote: a handler's ReplaceAttr can change a value after the
@@ -363,53 +432,6 @@ func TestTheMaskReadsTheLineAReplaceAttrWrote(t *testing.T) {
 	}
 	checkMasked(t, plain.String(), masked.String())
 }
-
-// TestTheMaskWritesNoOtherFormOfAValue: the four values a review measured, each holding the
-// placeholder and a real value in a form the JSON handler does not write - an error whose
-// MarshalText or Format holds both, a value whose AppendText holds both, a struct whose String
-// holds both. The mask writes the line the JSON handler wrote, which holds neither, byte for byte.
-func TestTheMaskWritesNoOtherFormOfAValue(t *testing.T) {
-	for _, c := range []struct {
-		name  string
-		value any
-	}{
-		{"an error whose MarshalText holds both", errorQuotesInText{}},
-		{"an error whose Format holds both", errorFormatsBoth{}},
-		{"a value whose AppendText holds both", appendsBoth{}},
-		{"a struct whose String holds both", hostShowsBoth{Host: "api.example.com"}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			plain, masked := brokerLines(t, nil, "a line", "value", c.value)
-			if masked != plain {
-				t.Errorf("the mask wrote %q; want the JSON handler's own line %q", masked, plain)
-			}
-			if strings.Contains(masked, realValue) || heldAnywhere.MatchString(masked) {
-				t.Errorf("the line holds the real value or the placeholder: %q", masked)
-			}
-		})
-	}
-}
-
-type (
-	errorQuotesInText struct{}
-	errorFormatsBoth  struct{}
-	appendsBoth       struct{}
-	hostShowsBoth     struct{ Host string }
-)
-
-func (errorQuotesInText) Error() string { return "request failed" }
-func (errorQuotesInText) MarshalText() ([]byte, error) {
-	return []byte("Bearer " + held + " swapped for " + realValue), nil
-}
-func (errorFormatsBoth) Error() string { return "request failed" }
-func (errorFormatsBoth) Format(f fmt.State, verb rune) {
-	fmt.Fprintf(f, "request failed: [Bearer %s] upstream [%s]", held, realValue)
-}
-func (appendsBoth) MarshalJSON() ([]byte, error) { return []byte(`"redacted"`), nil }
-func (appendsBoth) AppendText(b []byte) ([]byte, error) {
-	return append(b, held+" "+realValue...), nil
-}
-func (h hostShowsBoth) String() string { return h.Host + " " + held + " -> " + realValue }
 
 // TestTheMaskKeepsARefusalsOtherNames: a name a caller chose can change only its own string. A
 // refusal names the secrets its request named (answer.SecretNames), and a name holding a byte the
@@ -446,6 +468,7 @@ func FuzzTheMaskKeepsALineOneJSONObject(f *testing.F) {
 		"\x1agent-secrets-placeholder-", "\x1a" + requests.PlaceholderPrefix, "%1A" + requests.PlaceholderPrefix, "\x1a" + held, held, strings.ToUpper(held),
 		`\u0061gent-secrets-placeholder-x`, "\"" + held + "\"", "\\" + held, requests.PlaceholderPrefix[:10], "agent-secrets-placehold",
 		"\xff\xfe" + held, "\x00\x01\x1f\x7f", "\u2028\u2029", "<b>&amp;" + held, "", "a\nb" + held, strings.Repeat(held, 3),
+		held + other, requests.PlaceholderPrefix + held,
 	} {
 		f.Add(seed)
 	}
@@ -455,6 +478,60 @@ func FuzzTheMaskKeepsALineOneJSONObject(f *testing.F) {
 		attrs := append(names.AppendFields(nil), "name", name, slog.String("k"+name, "v"))
 		plain, masked := brokerLines(t, func(h slog.Handler) slog.Handler { return h.WithGroup("g" + name) }, "a line "+name, attrs...)
 		checkMasked(t, plain, masked)
+	})
+}
+
+// FuzzTheMaskWritesEachLineAsOneJSONObject is Writer for any bytes at all, not only the lines
+// slog writes - raw escapes, invalid UTF-8, lone surrogates, several lines in one Write, text and
+// JSON values that are no object - read against encoding/json's decoder (tokensOf) and no pattern
+// of the mask's: the Write's lines come out one for one, each one JSON object; a line that came in
+// as one is masked as maskedAsClaimed claims, so it changes no token but those that held a
+// placeholder and a line that held none comes out byte for byte; and a line that came in as none
+// is NotJSON. Its seeds run as rows of every go test.
+func FuzzTheMaskWritesEachLineAsOneJSONObject(f *testing.F) {
+	var line bytes.Buffer
+	slog.New(logging.NewCloudHandler(&line)).Info("a line", "host", held+".example.net", "k", 1, "g", slog.GroupValue(slog.String("h", "v")))
+	for _, seed := range []string{
+		line.String(), strings.ReplaceAll(line.String(), held, "clean"), line.String() + line.String(),
+		`{"m":"\u0061gent-secrets-placeholder-x"}`, `{"` + held + `":1}`, `{"m":"` + held + other + `"}`,
+		`{"m":"` + requests.PlaceholderPrefix + held + `"}`, `{"m":"\ud800` + held + `"}`, "{\"m\":\"\xff" + held + "\xfe\"}",
+		`{"m":"agent-ſecrets-placeholder-x"}`, `{"m":"a\"b\\c\/d\u2028","n":[1,-2.5e3,true,null,{"o":"p"}]}`,
+		`{"m":"<&>` + held + `"}`, `["` + held + `"]`, `"` + held + `"`, "level=INFO msg=" + held, "", "\n", "\n\n",
+		`{"m":"x"} {"n":"y"}`, `{"m":"` + held, " \t{\"m\":\"" + held + "\"}\r", "{\"m\":\"\x01" + held + "\"}", `{"m":"\q` + held + `"}`,
+		`{"m":"a\"` + held + `\\b"}`, `{"m":"\u0001` + held + `\n"}`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, p []byte) {
+		var out bytes.Buffer
+		if n, err := Writer(&out).Write(p); err != nil || n != len(p) {
+			t.Fatalf("Write = %d, %v; want %d, nil", n, err, len(p))
+		}
+		if len(p) == 0 {
+			if out.Len() != 0 {
+				t.Fatalf("an empty Write wrote %q", out.String())
+			}
+			return
+		}
+		in := strings.Split(strings.TrimSuffix(string(p), "\n"), "\n")
+		written := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+		if len(written) != len(in) {
+			t.Fatalf("a Write of %d lines came out as %d: %q, %q", len(in), len(written), p, out.String())
+		}
+		for i := range in {
+			if _, err := tokensOf(written[i]); err != nil {
+				t.Fatalf("line %d came out as no JSON object (%v): %q, from %q", i, err, written[i], in[i])
+			}
+			if _, err := tokensOf(in[i]); err != nil {
+				if written[i] != NotJSON {
+					t.Fatalf("line %d is no JSON object (%v) and came out as %q; want %s", i, err, written[i], NotJSON)
+				}
+				continue
+			}
+			if _, err := maskedAsClaimed(in[i], written[i]); err != nil {
+				t.Fatalf("line %d: %v", i, err)
+			}
+		}
 	})
 }
 
@@ -481,14 +558,16 @@ func TestTheMaskWritesALineThatIsNoJSONObjectAsNotJSON(t *testing.T) {
 	}
 }
 
-// TestTheMaskCannotSeeAByteSlice: what a byte mask cannot see, stated as a row. The JSON handler
-// writes a []byte in base64, at any depth, so a placeholder in one reaches the line as base64,
-// and the mask hands the line on as the handler wrote it. The handler-level mask before it did
-// not see one either: it read a []byte's JSON, which is the same base64. The broker logs no []byte.
-func TestTheMaskCannotSeeAByteSlice(t *testing.T) {
-	plain, masked := brokerLines(t, nil, "a line", "value", []byte(held))
-	if masked != plain || !strings.Contains(masked, base64.StdEncoding.EncodeToString([]byte(held))) {
-		t.Errorf("the line is %q; want the handler's own, %q, which holds the placeholder's base64", masked, plain)
+// TestAStringTheMaskCannotDecodeIsWrittenAsTheMark: Writer reads only a line json.Valid passes, so
+// every string it hands maskString decodes. A string that did not would be one the mask cannot
+// read, so it cannot say what it holds: maskString writes Mark in its place, whole, rather than
+// the string as it came. The rows hand maskString such strings directly, one of them with a
+// placeholder before an escape JSON has none of.
+func TestAStringTheMaskCannotDecodeIsWrittenAsTheMark(t *testing.T) {
+	for _, token := range []string{`"` + held + `\q"`, `"\q"`, `"\u12"`} {
+		if masked, rewritten := maskString([]byte(token)); !rewritten || string(masked) != `"`+Mark+`"` {
+			t.Errorf("maskString(%q) = %q, %v; want %q, true", token, masked, rewritten, `"`+Mark+`"`)
+		}
 	}
 }
 
@@ -535,14 +614,7 @@ func TestStandardLogCutsSplitsAndMasksALibrarysLine(t *testing.T) {
 	library.Print(long + "\nsecond line " + held + "\nthird line")
 	library.Print(`Unsolicited response received on idle HTTP channel starting with "ok` + realValue + `"; err=<nil>`)
 	library.Print("a line and a blank one\n")
-	var lines []map[string]any
-	for _, text := range strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n") {
-		var line map[string]any
-		if err := json.Unmarshal([]byte(text), &line); err != nil {
-			t.Fatalf("a line is no JSON object: %q: %v", text, err)
-		}
-		lines = append(lines, line)
-	}
+	lines := logtest.JSONLines(t, out.String())
 	if len(lines) != 4 {
 		t.Fatalf("the four writes are %d lines; want four: %q", len(lines), out.String())
 	}
@@ -558,5 +630,32 @@ func TestStandardLogCutsSplitsAndMasksALibrarysLine(t *testing.T) {
 	}
 	if _, stacked := lines[3]["stack"]; stacked || lines[3]["message"] != "a line and a blank one" {
 		t.Errorf("the write that ends in a blank line is %v; want its line and no stack", lines[3])
+	}
+}
+
+// BenchmarkWriter is the mask's cost for one line of the shape the broker writes most, a call
+// line of the airlock's proxy port with twelve fields: with no placeholder, with one in its path,
+// and with a byte the JSON handler escapes in its path.
+func BenchmarkWriter(b *testing.B) {
+	for _, c := range []struct{ name, path string }{
+		{"a clean call line", "/v1/things"},
+		{"a call line with a placeholder", "/v1/" + held},
+		{"a call line with an escape", "/v1/\x01things"},
+	} {
+		b.Run(c.name, func(b *testing.B) {
+			var line bytes.Buffer
+			slog.New(logging.NewCloudHandler(&line)).Info("airlock proxy: a call to a bound host",
+				"answer_id", "01HZX3K5V7Q9T2M4N6P8R0S2U4", "method", "GET", "host", "api.example.com", "path", c.path,
+				"status", 200, "code", "HTTP_200", "grant", "g-7f3c9a1e", "enrollment", "e-5b2d", "session", "s-1a2b3c",
+				"runtime", "r-4d5e6f", "slot", "primary", "duration_ms", 143)
+			w := Writer(io.Discard)
+			b.SetBytes(int64(line.Len()))
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := w.Write(line.Bytes()); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

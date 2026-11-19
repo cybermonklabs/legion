@@ -12,6 +12,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,7 +30,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/answer"
-	"github.com/sjawhar/envoy/internal/broker/logmask"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -547,8 +547,9 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 //     whose service cannot be reached, and the error of one whose name answers the check and
 //     nothing to the transport's own lookup, which quotes that host;
 //   - of net/http's own line (slogWriter, the ErrorLog of both servers), the error of a TLS
-//     handshake that failed on a bound connection, whose ClientHello offers only protocols the
-//     proxy does not speak, which crypto/tls's error quotes whole.
+//     handshake that failed on a bound connection, whose ClientHello offers only cipher suites
+//     the proxy does not speak, which crypto/tls's error lists in hex with no quotation mark, so
+//     the line holds it past the peer bytes it hides (logmask.HidePeerBytes).
 //
 // The cut is for the caller's text, never for the server's own. One row more panics a handler of
 // the inner server (serveBound, through the clock the rig hands the proxy), which net/http
@@ -559,16 +560,19 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 // No other row's line holds a stack.
 //
 // Each row writes its line through the broker's own JSON handler (logging.NewCloudHandler), reads
-// its length, and reads the field back as the first 256 bytes of the text it held, which for a
-// reason or an error is the proxy's words around the host, for net/http's error its words around
-// the client's address and the protocols it offered, and for the panic's error, which is shorter,
-// its whole first line: the client's address and the value the clock panicked with. The table
-// records which field of which line it drove, and fails when it drove fewer than all of them.
+// its length, and reads the field back as the first answer.FieldBytes bytes of the text it held,
+// which for a reason or an error is the proxy's words around the host, for net/http's error its
+// words around the client's address and the cipher suites it offered, and for the panic's error,
+// which is shorter, its whole first line: the client's address and the value the clock panicked
+// with. Every row but the panic's holds more than answer.FieldBytes bytes, so each reads a field
+// the cut shortened. The table records which field of which line it drove, and fails when it
+// drove fewer than all of them.
 //
-// The named reverts: let one field pass answer.ClipFields uncut; that field's row writes a line
-// of about 300 KB and fails. Or pass net/http's whole text through answer.ClipFields as its error
-// with no stack field, as slogWriter did before Verification v19; the panic row then fails, since
-// the first 256 bytes of that text end inside the runtime's frames, before any of the handler's.
+// The named reverts: let one field pass answer.ClipFields uncut, slogWriter's among them; that
+// field's row writes a field past answer.FieldBytes bytes and fails, and all but net/http's a line
+// of about 300 KB. Or pass net/http's whole text through answer.ClipFields as its error with no
+// stack field, as slogWriter did before Verification v19; the panic row then fails, since the
+// first 256 bytes of that text end inside the runtime's frames, before any of the handler's.
 func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 	const entryLimit = 256 << 10
 	// The caller's text: not one byte repeated, so its first 256 bytes are no other 256 of it.
@@ -645,14 +649,14 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 	anyMethod := airlock.Rules{Secrets: []airlock.SecretRule{{
 		Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"},
 	}}}
-	// protocols is an ALPN list without http/1.1 that crypto/tls's client still sends: 240 names
-	// of 255 bytes, the most one name holds, which keeps the ClientHello under the 65,536 bytes
-	// crypto/tls's server reads of one handshake message. Each byte is one %q writes as four
-	// (\x00) and the JSON handler as five, so net/http's line quoting the list is about 300 KB
-	// uncut.
-	protocols := make([]string, 240)
-	for i := range protocols {
-		protocols[i] = strings.Repeat("\x00", 255)
+	// suites is a ClientHello's cipher suites, none of which crypto/tls's server speaks: 4,000 ids
+	// from 0x2000 on, where no cipher suite is registered. crypto/tls refuses such a ClientHello
+	// listing every suite the client offered in hex, with no quotation mark (pickCipherSuite), so
+	// net/http's line holds about 20 KB of the client's text that logmask.HidePeerBytes leaves as
+	// it came, and only the cut bounds.
+	suites := make([]uint16, 4000)
+	for i := range suites {
+		suites[i] = 0x2000 + uint16(i)
 	}
 	// handshakeError is what net/http's line holds before the cut. It names the client's own
 	// address, which only the row's dial picks, so the row's send writes it.
@@ -771,20 +775,20 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 				response, _ := r.get(r.client(workerPlaceholder), "http://"+sent+"/")
 				return response
 			}},
-		{name: "Go's HTTP server's error: a TLS handshake on a bound connection whose ClientHello offers no protocol the proxy speaks", message: netHTTPMessage, field: "error",
-			// The error quotes each protocol the client offered, which the line writes as
-			// logmask.PeerBytesShown (logmask.HidePeerBytes), one for each: still past the cut.
-			heldBy: func() string { return logmask.HidePeerBytes(handshakeError) }, status: http.StatusOK,
+		{name: "Go's HTTP server's error: a TLS handshake on a bound connection whose ClientHello offers no cipher suite the proxy speaks", message: netHTTPMessage, field: "error",
+			heldBy: func() string { return handshakeError }, status: http.StatusOK,
 			send: func(t *testing.T, r *rig) *http.Response {
 				response, conn, _ := r.connectRaw(boundHost+":443", basic(workerPlaceholder))
 				// net/http names the client by the address its CONNECT came from, this end of the
-				// connection, and crypto/tls quotes every protocol the client offered.
-				handshakeError = fmt.Sprintf("http: TLS handshake error from %s: tls: client requested unsupported application protocols (%q)",
-					conn.LocalAddr(), protocols)
-				client := tls.Client(conn, &tls.Config{ServerName: boundHost, RootCAs: r.trust, NextProtos: protocols})
-				if err := client.Handshake(); err == nil {
-					t.Fatal("the proxy finished a handshake whose ClientHello offered no protocol it speaks; want it refused")
+				// connection, and crypto/tls lists every cipher suite the client offered.
+				handshakeError = fmt.Sprintf("http: TLS handshake error from %s: tls: no cipher suite supported by both client and server; client offered: %x",
+					conn.LocalAddr(), suites)
+				conn.SetDeadline(time.Now().Add(20 * time.Second))
+				if _, err := conn.Write(clientHelloOffering(suites)); err != nil {
+					t.Fatalf("write the ClientHello: %v", err)
 				}
+				// The proxy answers with an alert and closes the connection.
+				io.Copy(io.Discard, conn)
 				return response
 			}},
 		{name: "Go's HTTP server's error: a handler of the inner server that panics, whose stack the line keeps whole", message: netHTTPMessage, field: "error",
@@ -866,7 +870,10 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			if row.heldBy != nil {
 				held = row.heldBy()
 			}
-			want := held[:min(len(held), 256)]
+			if row.frame == "" && len(held) <= answer.FieldBytes {
+				t.Fatalf("the row's text is %d bytes, no more than the cut's %d, so the row tests no cut: %.80q", len(held), answer.FieldBytes, held)
+			}
+			want := held[:min(len(held), answer.FieldBytes)]
 			if kept, _ := written[row.field].(string); kept != want {
 				t.Fatalf("the line's %s is %d bytes, want the first %d of the %d it held: %.80q", row.field, len(kept), len(want), len(held), kept)
 			}
@@ -883,6 +890,25 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 	if driven != 21 || len(missing) != 0 {
 		t.Fatalf("the table drove %d rows, want 21; it never drove %v", driven, missing)
 	}
+}
+
+// clientHelloOffering is one TLS record holding a TLS 1.2 ClientHello that offers suites, and
+// null compression, with no session and no extension, as RFC 5246 section 7.4.1.2 lays one out:
+// crypto/tls's client offers only the suites it speaks, so a row that offers others writes its
+// own bytes.
+func clientHelloOffering(suites []uint16) []byte {
+	hello := []byte{3, 3}                      // client_version: TLS 1.2
+	hello = append(hello, make([]byte, 32)...) // random
+	hello = append(hello, 0)                   // session_id: none
+	hello = binary.BigEndian.AppendUint16(hello, uint16(2*len(suites)))
+	for _, suite := range suites {
+		hello = binary.BigEndian.AppendUint16(hello, suite)
+	}
+	hello = append(hello, 1, 0) // compression_methods: null
+	message := append([]byte{1, byte(len(hello) >> 16), byte(len(hello) >> 8), byte(len(hello))}, hello...)
+	record := []byte{22, 3, 1} // a handshake record, TLS 1.0 on the wire as clients write it
+	record = binary.BigEndian.AppendUint16(record, uint16(len(message)))
+	return append(record, message...)
 }
 
 // TestEveryAnswerOfTheAirlockThatIsNoRefusalIsCountedAndWritesNoRecord: a call the airlock

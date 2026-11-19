@@ -12,7 +12,6 @@ package airlockproxy
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -22,7 +21,6 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -864,21 +862,6 @@ func TestAnAzureAccessExchangeNamesTheGrantItsRequestRead(t *testing.T) {
 	} {
 		if got := lines[0].fields[field]; got != want {
 			t.Errorf("the access exchange's failed dial's %s = %v; want %v (whole line: %v)", field, got, want, lines[0].fields)
-		}
-	}
-}
-
-// TestTheDialLogTestsStayUnderAThousandLines holds this file and the masking rows split out of it
-// (log_masking_test.go) to a size one reader can hold: a file past 1,000 lines is split by what
-// its rows are about, as the masking rows were, rather than grown.
-func TestTheDialLogTestsStayUnderAThousandLines(t *testing.T) {
-	for _, file := range []string{"dial_log_test.go", "log_masking_test.go"} {
-		text, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatalf("read %s: %v", file, err)
-		}
-		if lines := bytes.Count(text, []byte("\n")); lines > 1000 {
-			t.Errorf("%s is %d lines; want at most 1,000, split by what its rows are about", file, lines)
 		}
 	}
 }

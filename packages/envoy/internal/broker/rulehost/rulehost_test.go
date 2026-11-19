@@ -266,11 +266,12 @@ func TestRefusalRefusesEveryHostTheProxyNeverCompares(t *testing.T) {
 // FuzzRefusalIsNoLooserThanHostShapeOK holds the grammar to airlock.HostShapeOK, the Lean-proved
 // shape airlock.Validate holds every host to: a host Refusal serves (an empty reason) is one
 // HostShapeOK accepts, so cmd/broker's validateRulesFile, which reads every host here first, never
-// passes a host for Validate to refuse in words that quote it. It holds by construction, since
-// HostShapeOK is the grammar's first test; without that test the grammar's own refusals past it
-// read no character and no empty label, and the seeds below fail. The seeds are the airlock
-// package's own hosts and the shapes of this program's host rows; go test runs each seed, and
-// go test -fuzz searches beyond them.
+// passes a host for Validate to refuse in words that quote it. It holds by construction: Refusal
+// serves a host only where why does, and why serves one only on its branch for a host HostShapeOK
+// accepts; without that branch's test the grammar's own refusals past it read no character and no
+// empty label, and the seeds below fail. The seeds are the airlock package's own hosts and the
+// shapes of this program's host rows; go test runs each seed, and go test -fuzz searches beyond
+// them.
 func FuzzRefusalIsNoLooserThanHostShapeOK(f *testing.F) {
 	for _, host := range hostShapeRows {
 		f.Add(host)

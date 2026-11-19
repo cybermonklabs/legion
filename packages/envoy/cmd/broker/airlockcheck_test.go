@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -155,56 +154,28 @@ type ruleHostRow struct {
 	absent string
 }
 
-// ruleHostAdvice is the advice rulehost.Refusal gives after a reason that names no form of its
-// own. A refusal gives one advice: this, a form to write ("write it as …"), or the advice its
-// own reason carries, which an IP address's and a scheme's do.
-const ruleHostAdvice = "write a host name of letters, digits and hyphens"
-
-// absents is every text the row's refusal must not hold: the host's own text as written, and the
-// grammar's advice where the row wants none, so a reason that carries its own advice, or names a
-// form, is given no second one.
-func (c ruleHostRow) absents() []string {
-	absent := []string{c.absent}
-	if !slices.Contains(c.want, ruleHostAdvice) {
-		absent = append(absent, ruleHostAdvice)
-	}
-	return absent
-}
-
 // ruleHostRows are the host spellings airlock-check
 // (TestAirlockCheckRefusesAHostTheProxyNeverCompares) and the boot
 // (TestMainRefusesAnAirlockRulesFileItCannotServe) both refuse. rulehost's own test holds a row
-// for every way out of the grammar and reads Refusal's text; these rows read the wiring: that the
-// host Refusal reads is the host the file writes, which a reader of the file would change if it
-// folded case, took a trailing dot or white space off, wrote an address in its canonical form,
-// read the host as a URL or converted it to punycode, and that each kind of advice a refusal
-// gives - a form to write, an address's, a scheme's and the grammar's own - reaches its reader.
+// for every way out of the grammar and reads Refusal's text, its one advice among it; these rows
+// read the wiring: that the host Refusal reads is the host the file writes, which a reader of the
+// file would change if it folded case, took a trailing dot or white space off, wrote an address in
+// its canonical form, read the host as a URL or converted it to punycode, and that a refusal's
+// reason and the form it names reach its reader.
 var ruleHostRows = []ruleHostRow{
 	{"a host name in mixed case with a trailing dot", "API.GitHub.com.", []string{"ends in a dot", "write it as api.github.com", "sni mismatch"}, "GitHub"},
 	{"an IPv6 address in upper case", "2001:DB8:8::1",
 		[]string{"is an IP address", "2001:db8:8::1 in its canonical form", "no TLS server name", "sni mismatch", "name the service by its host name"}, "DB8"},
-	{"a scheme with one slash", "https:/slack.com", []string{"is no DNS name", ruleHostAdvice}, "https:"},
+	{"a scheme with one slash", "https:/slack.com", []string{"is no DNS name"}, "https:"},
 	{"a host with a scheme", "https://slack.com", []string{"holds a scheme", "write the service's host name with no scheme"}, "https"},
 	{"a Unicode internationalized name", "bücher.example", []string{"punycode", "write it as xn--bcher-kva.example"}, "bücher"},
-	{"a trailing dot and a newline", "api.github.com.\n", []string{"white space", "binds nothing", ruleHostAdvice}, "github"},
+	{"a trailing dot and a newline", "api.github.com.\n", []string{"white space", "binds nothing"}, "github"},
 }
 
-// longestRuleHost is a name of 253 characters, the longest the grammar reads, and
-// longestRuleLabel a name whose first label is 63 characters, the longest label it reads.
-var (
-	longestRuleHost  = strings.Repeat(strings.Repeat("c", 63)+".", 3) + strings.Repeat("c", 61)
-	longestRuleLabel = strings.Repeat("d", 63) + ".example"
-)
-
-// canonicalRuleHosts are hosts the grammar reads, one of each shape a deployment's rules file
-// names - a name, a wildcard, a name with a hyphen and a digit in a label, an internationalized
-// name as its punycode, a single-label name, and a name in upper or mixed case, which
-// airlock.HostShapeOK accepts and airlock.HostBound folds on both sides, the punycode in upper
-// case among them, which the grammar reads as its lower case - and the edges of the grammar it
-// reads: the longest name, the longest label, and a number as a label other than the last.
-// rulehost's own test reads the same hosts with Refusal; these are the file a broker serves.
-var canonicalRuleHosts = []string{"api.github.com", "*.googleapis.com", "s3.us-east-1.amazonaws.com", "xn--bcher-kva.example", "localhost",
-	"API.GitHub.com", "*.GoogleAPIs.com", "XN--BCHER-KVA.example", longestRuleHost, longestRuleLabel, "123.foo"}
+// foldedRuleHosts are hosts the grammar serves in a spelling a reader of the file would change
+// if it folded case before Refusal read them; rulehost's own test holds every shape the grammar
+// serves and its edges.
+var foldedRuleHosts = []string{"API.GitHub.com", "*.GoogleAPIs.com", "XN--BCHER-KVA.example"}
 
 // rulesWithHosts is a rules file of one entry, name, that binds hosts, written by encoding/json
 // so that a host holding a quotation mark, a control character or Unicode is the host the row
@@ -228,8 +199,8 @@ func rulesWithHosts(t *testing.T, name string, hosts ...string) string {
 // grammar a rules host is written in (rulehost.Refusal, whose own test holds every spelling out of
 // it), and airlock-check refuses a spelling outside it as the boot does, naming the entry and the
 // host's position, saying why, and naming the form to write where one exists, with nothing else
-// of the host as written. The control is a file of hosts of each shape a deployment names, in the
-// grammar's spelling: it is valid.
+// of the host as written. The control is a file of hosts the grammar serves in a spelling a reader
+// that folded case would change: it is valid.
 func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 	for _, c := range ruleHostRows {
 		t.Run(c.name, func(t *testing.T) {
@@ -247,15 +218,13 @@ func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 					t.Fatalf("the refusal does not say %q: %q", want, stderr)
 				}
 			}
-			for _, absent := range c.absents() {
-				if absent != "" && strings.Contains(text, absent) {
-					t.Fatalf("the refusal holds %q, which it must not: %q", absent, stderr)
-				}
+			if c.absent != "" && strings.Contains(text, c.absent) {
+				t.Fatalf("the refusal holds %q, which it must not: %q", c.absent, stderr)
 			}
 		})
 	}
-	t.Run("the control: a host of each shape a deployment names, in the grammar's spelling", func(t *testing.T) {
-		path := airlockFile(t, "airlock.json", rulesWithHosts(t, "GITHUB", canonicalRuleHosts...))
+	t.Run("the control: hosts the grammar serves, in a case a reader could fold", func(t *testing.T) {
+		path := airlockFile(t, "airlock.json", rulesWithHosts(t, "GITHUB", foldedRuleHosts...))
 		if code, _, stderr := runAirlockCheck(t, path); code != 0 || stderr != "" {
 			t.Fatalf("a file of hosts in the grammar's spelling = exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
 		}

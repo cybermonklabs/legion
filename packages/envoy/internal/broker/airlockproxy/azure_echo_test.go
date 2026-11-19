@@ -99,15 +99,13 @@ func noFederatedToken(t *testing.T, r *rig, answer string) {
 	}
 	shown := false
 	for _, record := range r.logs.Records() {
-		text := record.Message
+		if text := recordText(record); holdsARunOf(text, azureRealFederated) {
+			t.Errorf("a line the proxy wrote holds the real federated token: %q", text)
+		}
 		record.Attrs(func(a slog.Attr) bool {
-			text += " " + a.Key + "=" + a.Value.String()
 			shown = shown || a.Key == "reason" && strings.Contains(a.Value.String(), logmask.PeerBytesShown)
 			return true
 		})
-		if holdsARunOf(text, azureRealFederated) {
-			t.Errorf("a line the proxy wrote holds the real federated token: %q", text)
-		}
 	}
 	if !shown {
 		t.Errorf("no line gives as its reason that the endpoint's answer was %s: %v", logmask.PeerBytesShown, r.logs.Records())

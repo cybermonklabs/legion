@@ -1233,10 +1233,9 @@ Many fields of these lines are the command's own text. From its request's header
 `correlation_id`, which is the `X-Correlation-Id` header, and the host of a `CONNECT` whose target
 is a path, which is its `Host` header. From the rest of its request: the method, the path, the
 host and the port it asked for, the address that host resolved to, and a `reason` or `error` that
-quotes them — an upstream failure's `error` can quote the names a service's certificate holds,
-which the service chose. A host is written as the command sent it, lowercased: a client that
-sends a Unicode name as its punycode (`xn--…`) form, as Go's and curl's do, has the punycode
-written. A plain-HTTP request whose URL names a Unicode host is the one place the proxy's side
+quotes them. A host is written as the command sent it, lowercased: a client that sends a Unicode
+name as its punycode (`xn--…`) form, as Go's and curl's do, has the punycode written. A
+plain-HTTP request whose URL names a Unicode host is the one place the proxy's side
 converts it: net/http's transport dials the punycode form, so the line of the transport's dial —
 the tunnel's, or a failed dial's when the transport's own check or dial fails — names
 `xn--caf-dma.example.net`, while the line of the proxy's own check before it, the refusal line
@@ -1244,11 +1243,15 @@ and `airlock proxy: upstream` name `café.example.net`. A cut to 256 bytes keeps
 and lowercasing a host keeps it one spelling; neither is redaction. What keeps a placeholder off
 a line is the broker's mask, which reads each line its JSON handler writes, after the handler has
 written it: it decodes each string of the line — each value, each key, each group's name — and
-writes again each string whose decoded text holds a placeholder, with each placeholder written
-whole — `agent-secrets-placeholder-` and the letters and digits after it, in any case — replaced
-by `[placeholder]`, and leaves every other byte as the handler wrote it. So a value is masked in
-the one form the line holds it, and a name a command chose changes no other field of its line,
-whatever bytes it holds. That holds for every line the broker writes through slog or Go's `log`
+writes again each string whose decoded text holds a placeholder, with each placeholder replaced
+by `[placeholder]`, and leaves every other byte as the handler wrote it. A placeholder is
+`agent-secrets-placeholder-`, in any case, and the letters and digits after it, at most the 32
+the broker mints and up to where another placeholder starts, so two placeholders written
+together are two. A line of one JSON object that holds no escape, no byte past ASCII and no
+`agent-secrets-placeholder-` in any ASCII case cannot hold a placeholder, and is handed on as it
+came. So a value is masked in the one form the line holds it, and a name a command chose
+changes no other field of its line, whatever bytes it holds. That holds for every line the
+broker writes through slog or Go's `log`
 package: every line of the airlock's proxy port, a refusal line and net/http's and httputil's own
 `airlock proxy: net/http` lines among them, the API port's lines, the standard logger's, the AWS
 SDK's, which the broker writes as `broker: aws sdk` at `WARNING`, grpc's, written as
@@ -1260,8 +1263,8 @@ whole answer on a connection the proxy keeps, the transport writes them to the s
 which the broker writes as one line for each write, its first line cut to 256 bytes and the rest
 kept as `stack`. So no such line holds a placeholder as it was minted or lowercased: a command
 that writes its placeholder into its request's path, its `X-Correlation-Id` or the host it asks
-for, or a service that names it in its certificate, has `[placeholder]` written there. A line the
-mask cannot read as one JSON object is written as a fixed line in its place, and none of its text
+for has `[placeholder]` written there. A line the mask cannot read as one JSON object is written
+as a fixed line in its place, and none of its text
 is written. A value whose methods fail or panic is written as slog writes that failure —
 `!ERROR:…` or `!PANIC: …`, with a placeholder in that text masked too; the mask calls no method
 of a value and so cannot panic for one, though slog itself can panic for a value whose failure
@@ -1291,11 +1294,12 @@ logger's and `airlock proxy: net/http`), in the `error` of `airlock proxy: upstr
 `502` the proxy answers with it, and in the reason, line and answer of an Azure exchange the
 endpoint's answer failed. The whole rest of the line goes, not only the quoted run, since a stray
 quotation mark before a run would otherwise pair with the run's opening one and leave the run in
-clear. A service's text a library writes without quotes is written as it came,
-so a line or a `502` holds a secret's value where a service writes it into such text: for
-example, the `error` of `airlock proxy: upstream` for a certificate that names another host lists
-the names in the service's certificate. The API port's refusal line takes its `correlation_id` from
-the caller's `X-Correlation-Id` too; its line holds no message text, and names the code. Each
+clear. A service's text a library writes without quotes is written as it came, but for the names
+a certificate holds: crypto/x509's error for a certificate that names other hosts than the one
+asked for lists every name in it, so the `error` of `airlock proxy: upstream` and the `502` write
+`tls: the service's certificate is not valid for this host; the names it holds are not shown` in
+its place. The API port's refusal line takes its `correlation_id` from the caller's
+`X-Correlation-Id` too; its line holds no message text, and names the code. Each
 answer, a refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is
 the one record of the API port's `429` and of a device grant's poll answers.
 

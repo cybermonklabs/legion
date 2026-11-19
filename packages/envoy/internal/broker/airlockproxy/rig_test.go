@@ -17,7 +17,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -341,13 +340,17 @@ type logLine struct {
 // bytes a row that asks what reaches the broker's log reads (writtenLines).
 type logCapture struct {
 	logtest.Recorder
-	written logtest.Buffer
-	once    sync.Once
+	written *logtest.Buffer
 	broker  slog.Handler
 }
 
+// newLogCapture is a logCapture with nothing written yet.
+func newLogCapture() *logCapture {
+	written := &logtest.Buffer{}
+	return &logCapture{written: written, broker: logging.NewCloudHandler(logmask.Writer(written))}
+}
+
 func (c *logCapture) Handle(ctx context.Context, record slog.Record) error {
-	c.once.Do(func() { c.broker = logging.NewCloudHandler(logmask.Writer(&c.written)) })
 	if err := c.Recorder.Handle(ctx, record); err != nil {
 		return err
 	}
@@ -362,18 +365,7 @@ func (c *logCapture) WithGroup(string) slog.Handler      { return c }
 // object it is.
 func (c *logCapture) writtenLines(t *testing.T) []map[string]any {
 	t.Helper()
-	var lines []map[string]any
-	for _, text := range strings.Split(strings.TrimSpace(c.written.String()), "\n") {
-		if text == "" {
-			continue
-		}
-		var line map[string]any
-		if err := json.Unmarshal([]byte(text), &line); err != nil || line == nil {
-			t.Fatalf("a line the broker would write is no JSON object: %q: %v", text, err)
-		}
-		lines = append(lines, line)
-	}
-	return lines
+	return logtest.JSONLines(t, c.written.String())
 }
 
 // calls is every line one call to a bound host logged that the airlock carried or failed. Records
@@ -540,7 +532,7 @@ func (l *wrapListener) Accept() (net.Conn, error) {
 // listener accepts.
 func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 	t.Helper()
-	r := &rig{t: t, grants: newFakeGrants(), logs: &logCapture{}, trust: x509.NewCertPool(), protocol: suiteProtocol}
+	r := &rig{t: t, grants: newFakeGrants(), logs: newLogCapture(), trust: x509.NewCertPool(), protocol: suiteProtocol}
 
 	// The stand-in service behind the bound host, with a certificate of its own naming that
 	// host and an authority of the rig's own behind it, which is the only thing the proxy

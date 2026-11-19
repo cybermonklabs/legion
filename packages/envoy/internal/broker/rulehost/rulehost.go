@@ -4,9 +4,10 @@
 // in airlock-check) and the local stack's stand-in token authority
 // (config's BROKER_AIRLOCK_TEST_AZURE_AUTHORITY).
 //
-// Its first test is airlock.HostShapeOK, the Lean-proved shape airlock.Validate holds every host
-// to, so no host Refusal accepts is one HostShapeOK refuses: the refusals past that test only add
-// to it. It lives outside the airlock package so the Lean model of that package is untouched.
+// It serves a host only where airlock.HostShapeOK, the Lean-proved shape airlock.Validate holds
+// every host to, accepts it: Refusal returns "" only on why's branch for such a host, so the
+// refusals the grammar adds to HostShapeOK only add to it. It lives outside the airlock package so
+// the Lean model of that package is untouched.
 package rulehost
 
 import (

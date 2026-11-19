@@ -11,7 +11,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -36,14 +35,14 @@ import (
 // host of a CONNECT's authority and of a CONNECT whose authority is its Host header, the port of
 // such a Host header, the host and the zone of a plain-HTTP URL, the Host header of a plain-HTTP
 // request and of a request on a bound connection, the path of a refused call and of a carried
-// one, the method of a request that is no proxy request, the name a forwarded https service's
-// certificate holds, which the upstream line's error quotes in its own case, the trailer line a
-// forwarded service and a bound one send, which the error httputil logs when it cannot read it
-// quotes, and bytes a bound service sends after a whole answer, which net/http's transport quotes
-// on the standard logger. Between them they write every line the proxy writes about a request: a
-// tunnel's, a forwarded plain-HTTP request's, each class of failed dial, an upstream failure's,
-// httputil's own, the transport's, a refusal of the outer server and of a bound call, and a
-// carried call's.
+// one, the method of a request that is no proxy request, the names a forwarded https service's
+// certificate holds - the placeholder's host and a host made of the real value - which the
+// upstream line and its 502 write as a fixed phrase, the trailer line a forwarded service and a
+// bound one send, which the error httputil logs when it cannot read it quotes, and bytes a bound
+// service sends after a whole answer, which net/http's transport quotes on the standard logger.
+// Between them they write every line the proxy writes about a request: a tunnel's, a forwarded
+// plain-HTTP request's, each class of failed dial, an upstream failure's, httputil's own, the
+// transport's, a refusal of the outer server and of a bound call, and a carried call's.
 //
 // Each row reads what the broker writes: every line of the proxy's logger as the broker writes it
 // (logCapture's written: the broker's JSON handler through its placeholder mask), and everything
@@ -60,24 +59,21 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 	t.Run("the lines the bytes a bound service sends reach", noLineABoundServicesBytesReachHoldsAValueOrPlaceholder)
 }
 
-// The values the rows plant where a command really puts them, which no line may hold, and the
-// message of a refusal line, read where a row's own answer variable hides the answer package.
+// The values the rows plant where a command really puts them, which no line may hold.
 const (
-	plantedHeader      = "planted-header-value-nothing-may-log"
-	plantedBody        = "planted-body-value-nothing-may-log"
-	refusalLineMessage = answer.RefusalMessage
+	plantedHeader = "planted-header-value-nothing-may-log"
+	plantedBody   = "planted-body-value-nothing-may-log"
 )
 
 // routeAsTheBroker points the default logger at the broker's own JSON handler through its
-// placeholder mask, and the log package at that logger (logmask.StandardLog), as cmd/broker's
+// placeholder mask, and the log package at that logger, with logmask.SetDefault, as cmd/broker's
 // setUpLogging does, until t ends; the lines are written into the buffer it answers. A line any
 // package writes to the standard logger then passes what it passes in the broker.
 func routeAsTheBroker(t *testing.T) *logtest.Buffer {
 	t.Helper()
 	out := &logtest.Buffer{}
-	logtest.SetDefault(t, logging.NewCloudHandler(logmask.Writer(out)))
-	log.SetFlags(0)
-	log.SetOutput(logmask.StandardLog(slog.Default()))
+	logtest.Keep(t)
+	logmask.SetDefault(logging.NewCloudHandler(logmask.Writer(out)))
 	return out
 }
 
@@ -114,9 +110,10 @@ func checkNoLineHolds(t *testing.T, sinks map[string]string) {
 	}
 }
 
-// writtenWhere is the first line written under message for which holds says true.
+// writtenWhere is whether a line written under message holds what holds says it must.
 func writtenWhere(lines []map[string]any, message string, holds func(map[string]any) bool) bool {
-	return slices.ContainsFunc(lines, func(line map[string]any) bool { return line["message"] == message && holds(line) })
+	_, found := logtest.LineWhere(lines, func(line map[string]any) bool { return line["message"] == message && holds(line) })
+	return found
 }
 
 // noLineOfACommandsRequestsHoldsAValueOrPlaceholder is the first half: one rig, the requests a
@@ -148,10 +145,10 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 	correlation := "X-Correlation-Id: " + workerPlaceholder + "\r\n"
 
 	// A tunnel that opened, with the planted value in a header of the CONNECT itself.
-	answer, conn, _ := r.connectRaw(net.JoinHostPort(echoHost, "443"),
+	connected, conn, _ := r.connectRaw(net.JoinHostPort(echoHost, "443"),
 		basic(workerPlaceholder), "X-Planted: "+plantedHeader+"\r\n", correlation)
-	if answer.StatusCode != http.StatusOK {
-		t.Fatalf("CONNECT %s = %d; want 200", echoHost, answer.StatusCode)
+	if connected.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT %s = %d; want 200", echoHost, connected.StatusCode)
 	}
 	defer conn.Close()
 	// A refused address, a name that resolves nowhere, a service that cannot be reached, and a
@@ -186,11 +183,12 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 		t.Fatalf("the forwarded plain-HTTP request answered %d %q; want 200", answer.StatusCode, body)
 	}
 	// A forwarded https request to a service whose certificate names the placeholder's host in
-	// its own case: the proxy's transport refuses the certificate, and the error the upstream
-	// line writes quotes the names it holds.
-	certLeaf, _, err := r.service.Authority().Leaf([]string{placeholderHost})
+	// its own case and a host made of the real value the swap puts in: the proxy's transport
+	// refuses the certificate, crypto/x509's error lists the names it holds with no quotation
+	// mark, and the upstream line and the 502 write a fixed phrase in its place.
+	certLeaf, _, err := r.service.Authority().Leaf([]string{placeholderHost, workerValue + ".example.net"})
 	if err != nil {
-		t.Fatalf("the certificate naming the placeholder: %v", err)
+		t.Fatalf("the certificate naming the placeholder and the real value: %v", err)
 	}
 	certService := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		io.WriteString(w, "the service whose certificate names another host answered")
@@ -200,8 +198,9 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 	t.Cleanup(certService.Close)
 	r.addresses[certHost] = []netip.Addr{netip.MustParseAddr("93.184.216.40")}
 	r.dialTo[net.JoinHostPort(certHost, "443")] = certService.Listener.Addr().String()
-	if answer, body := r.requestRaw(http.MethodGet, "https://"+certHost+"/x", certHost, basic(workerPlaceholder), correlation); answer.StatusCode != http.StatusBadGateway {
-		t.Fatalf("the forward to a service whose certificate names another host answered %d %q; want 502", answer.StatusCode, body)
+	certAnswer, certBody := r.requestRaw(http.MethodGet, "https://"+certHost+"/x", certHost, basic(workerPlaceholder), correlation)
+	if certAnswer.StatusCode != http.StatusBadGateway || !strings.Contains(certBody, certificateNotForHost) {
+		t.Fatalf("the forward to a service whose certificate names another host answered %d %q; want 502 saying %q", certAnswer.StatusCode, certBody, certificateNotForHost)
 	}
 	// A forwarded plain-HTTP request to a service whose chunked answer ends in a trailer line
 	// that is the placeholder and no header at all: the transport cannot read it, and httputil
@@ -274,9 +273,9 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 	}{
 		{"a failed dial's host", dialFailedMessage, "host", logmask.Mark + ".example.net"},
 		{"a failed dial's host, the zone gone", dialFailedMessage, "host", zoned},
-		{"a refusal's correlation id", refusalLineMessage, "correlation_id", logmask.Mark},
-		{"a refusal's method", refusalLineMessage, "method", logmask.Mark},
-		{"a refusal's path", refusalLineMessage, "path", "/v2/" + logmask.Mark},
+		{"a refusal's correlation id", answer.RefusalMessage, "correlation_id", logmask.Mark},
+		{"a refusal's method", answer.RefusalMessage, "method", logmask.Mark},
+		{"a refusal's path", answer.RefusalMessage, "path", "/v2/" + logmask.Mark},
 		{"a carried call's path", callMessage, "path", "/v1/" + logmask.Mark},
 	} {
 		if !writtenWhere(written, control.message, func(line map[string]any) bool { return line[control.field] == control.want }) {
@@ -284,9 +283,9 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 		}
 	}
 	if !writtenWhere(written, upstreamMessage, func(line map[string]any) bool {
-		return line["host"] == certHost && strings.Contains(fmt.Sprint(line["error"]), logmask.Mark+".example.net")
+		return line["host"] == certHost && strings.Contains(fmt.Sprint(line["error"]), certificateNotForHost)
 	}) {
-		t.Errorf("no upstream line for %s quotes the certificate's name as %q: %q", certHost, logmask.Mark+".example.net", r.logs.written.String())
+		t.Errorf("no upstream line for %s says %q: %q", certHost, certificateNotForHost, r.logs.written.String())
 	}
 	if !writtenWhere(written, netHTTPMessage, func(line map[string]any) bool {
 		text := fmt.Sprint(line["error"])
@@ -295,7 +294,11 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 		t.Errorf("no net/http line says the body copy failed with the trailer written as %s: %q", logmask.PeerBytesShown, r.logs.written.String())
 	}
 
-	sinks := map[string]string{"the proxy's lines as the broker writes them": r.logs.written.String(), "the standard logger": stdlog.String()}
+	sinks := map[string]string{
+		"the proxy's lines as the broker writes them":                       r.logs.written.String(),
+		"the standard logger":                                               stdlog.String(),
+		"the answer to the forward to a service whose certificate names it": certBody,
+	}
 	// A planted value and the real value are no placeholder, and no mask hides them: no record
 	// the proxy wrote may hold one either.
 	for i, record := range r.logs.Records() {
