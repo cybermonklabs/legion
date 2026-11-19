@@ -135,6 +135,10 @@ type AppContextOptions struct {
 	// (brokerTokenVerifier). See api.DepsInput.
 	BrokerTokens *brokertoken.Verifier
 	AgentStream  agentstream.Source
+	// AgentPublisher queues a person's targeted message on its session's own subject when no store
+	// of the listener's holds that session: cmd/dispatch's NATS client, its recorder under the
+	// test hooks with NATS disabled, and nil otherwise. See api.Deps.AgentPublisher.
+	AgentPublisher api.AgentPublisher
 	// Lifetime is the process context the API's background work runs on, which New passes to
 	// api.Register as its lifetime; required, since api.Register refuses a nil one.
 	Lifetime context.Context
@@ -218,6 +222,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OIDC:                   opts.OIDC,
 		BrokerTokens:           opts.BrokerTokens,
 		AgentStream:            opts.AgentStream,
+		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
 		Files:                  opts.Files,
@@ -924,9 +929,13 @@ func publicOrigin(serverURL string, req *http.Request) string {
 	return fmt.Sprintf("%s://%s", scheme, req.Host)
 }
 
+// enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session
+// cookie or an IAP assertion, unless it comes from Dispatch's own origin. A browser sends the
+// credential with a request another site's page makes: its cookie, or under IAP the IAP cookie,
+// for which IAP adds a valid assertion. A request with an Authorization header is an agent's.
 func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) {
+		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
 			next.ServeHTTP(w, req)
 			return
 		}

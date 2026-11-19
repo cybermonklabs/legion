@@ -67,7 +67,7 @@ func claimForRelease(t *testing.T, path claimReleasePath, role, holder, instance
 	clock := func() time.Time { return noProcessClaimed.Add(time.Duration(elapsed.Load())) }
 	var reg *Registry
 	if path.viewed {
-		opened, err := Open(conn, WithReplicas(1), WithClock(clock))
+		opened, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock))
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}

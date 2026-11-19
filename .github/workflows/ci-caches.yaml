@@ -501,13 +501,14 @@ jobs:
             done
 
   # The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build`
-  # needs. No setup-go and no Go family: the key is the content of the lean-toolchain the model
-  # names, since that file is what decides which toolchain elan installs, so the entry is
-  # refreshed when the model moves to another Lean and at no other time. install-elan puts elan
-  # under $RUNNER_TEMP/elan and `lake build` downloads the named toolchain into it on a miss,
-  # which is the whole of what is saved.
+  # needs. No setup-go and no Go family: the key is the runner's architecture, since elan and the
+  # toolchain are binaries of it, and the content of the lean-toolchain the model names, since
+  # that file is what decides which toolchain elan installs, so the entry is refreshed when the
+  # model moves to another Lean and at no other time. install-elan puts elan under
+  # $RUNNER_TEMP/elan and `lake build` downloads the named toolchain into it on a miss, which is
+  # the whole of what is saved. It runs on ubuntu-24.04-arm, the runner airlock-lean runs on.
   elan:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # One toolchain download and one build of the model on a miss; a run that finds the key
     # costs the checkout alone.
     timeout-minutes: 30
@@ -520,7 +521,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/elan
-          key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
           lookup-only: true
 
       - if: steps.elan-cache.outputs.cache-hit != 'true'
@@ -537,4 +538,4 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/elan
-          key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+          key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}

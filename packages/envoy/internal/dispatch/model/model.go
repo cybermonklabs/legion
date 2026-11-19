@@ -1072,7 +1072,9 @@ type NearCopyChecksPage struct {
 
 // IssueChild is a child item embedded in an issue detail response. The subtree counts
 // include the child itself, every status (icebox included); done is `status = 'done'`.
-// ActiveAt is the newest updated_at anywhere in the child's subtree.
+// ActiveAt is the newest updated_at anywhere in the child's subtree. Needs and Claim are the
+// child's own, each left out when it has none: Needs the sorted keys of the issues it waits on,
+// the elements of Issue's blocked_by, and Claim the claim holding it, in Issue's shape.
 type IssueChild struct {
 	Key           string         `json:"key"`
 	Title         string         `json:"title"`
@@ -1081,6 +1083,8 @@ type IssueChild struct {
 	SubtreeTotal  int            `json:"subtree_total"`
 	ActiveAt      time.Time      `json:"active_at"`
 	ExternalLinks []ExternalLink `json:"external_links"`
+	Needs         []string       `json:"needs,omitempty"`
+	Claim         *IssueClaim    `json:"claim,omitempty"`
 }
 
 // ArchitectureTree is GET /api/v1/projects/{key}/architecture: the project's
@@ -1461,13 +1465,17 @@ type CheckResultRetraction struct {
 // stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
 // where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
 // `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check's
-// one result is the one derived from that run.
+// one result is the one derived from that run. Text is the block's words with every link and
+// dispatch:// reference dropped (the pull-request line reads them); TextTree is the block's own
+// content whole, links and references kept, as the reader is shown it, present only for a
+// caller that sent `Dispatch-Trees: 1`.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
 	IssueKey        string        `json:"issue_key"`
 	ArtifactID      string        `json:"artifact_id"`
 	Text            string        `json:"text"`
+	TextTree        DisplayTree   `json:"text_tree,omitempty"`
 	When            string        `json:"when"`
 	Surface         string        `json:"surface"`
 	Run             string        `json:"run"`
@@ -1524,14 +1532,16 @@ type IssueCoverage struct {
 // `check` and `plan_task` blocks of any document of that issue or of any descendant issue, at
 // any status, that name it in `serves`. Gaps is this requirement's own gap lines, the ones
 // IssueCoverage.Gaps carries for it, so a reader draws them beside the requirement without
-// parsing the sentence back.
+// parsing the sentence back. Text and TextTree are the requirement's words as a CheckBlock's
+// are: the words with no link or reference, and the block's whole content as a tree.
 type RequirementCoverage struct {
-	BlockID   string   `json:"block_id"`
-	Ref       string   `json:"ref"`
-	Text      string   `json:"text"`
-	Checks    int      `json:"checks"`
-	PlanTasks int      `json:"plan_tasks"`
-	Gaps      []string `json:"gaps"`
+	BlockID   string      `json:"block_id"`
+	Ref       string      `json:"ref"`
+	Text      string      `json:"text"`
+	TextTree  DisplayTree `json:"text_tree,omitempty"`
+	Checks    int         `json:"checks"`
+	PlanTasks int         `json:"plan_tasks"`
+	Gaps      []string    `json:"gaps"`
 }
 
 // CheckResultEventPayload is the payload of result.recorded, appended on the check's issue: the
@@ -1960,9 +1970,10 @@ type AskAnsweredEventPayload struct {
 // blocked_by, external_links; for issue.created every field the new issue holds a value in),
 // Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
-// assignee moved, whose Inbox rows the write can move (api.issueWriteThreadLogins): for a close
-// or a reopen every login with a Replies row on one of the issue's open asks
-// (events.IssueThreadLogins), for an assignee move the assignee the issue was taken from and the
+// assignee moved, whose Inbox rows the write can move (api/issue_patch.go): for a close
+// or a reopen every login with a Replies row on one of the issue's open asks, read by the
+// event's own insert, after the ask writes the transaction queued before it
+// (events.IssueLoginsOf), for an assignee move the assignee the issue was taken from and the
 // one it was given to, for the two together the sorted union of both, and for any other status
 // move []. Each is absent from an event written before them.
 //
@@ -1994,6 +2005,15 @@ func NewIssueEventPayload(issue Issue, changes ReferenceChanges) IssueEventPaylo
 		Issue:                   issue,
 		ReferenceChangesPayload: NewReferenceChangesPayload(changes),
 	}
+}
+
+// WithOwnerLastSeq is the payload carrying seq as the issue's last_seq. An issue event's payload
+// holds the issue row as the event leaves it, and the event's own sequence is what that row's
+// last_seq becomes when it is appended, so the append derives both from one expression
+// (events.Broker.QueueAppend) and no writer counts the events queued before its own.
+func (p IssueEventPayload) WithOwnerLastSeq(seq int) any {
+	p.LastSeq = seq
+	return p
 }
 
 // AskEditEventPayload is the full edited ask plus its prior mutable content, the actor who made
@@ -2053,7 +2073,7 @@ type BlockInvalidEventPayload struct {
 }
 
 // AskOption is an answer choice. ID is the id of the block this option is stored as - the part
-// `dispatch://<key>/ask/<ask id>#b-<id>` names (refs.IndexAskParts) - which every read that shows
+// `dispatch://<key>/ask/<ask id>#b-<id>` names (refs.PlanAskParts) - which every read that shows
 // an ask's options carries (api.attachAskPartIDs) and no write accepts: a caller that sends an
 // option back as it read it has its id emptied (api.validateAskOptions). Absent on a write's own
 // response and while the ask's parts are not indexed yet.
@@ -3409,6 +3429,47 @@ type GraphReferences struct {
 	Node         GraphNode   `json:"node"`
 	Edges        []GraphEdge `json:"edges"`
 	UnknownKinds []string    `json:"unknown_kinds,omitempty"`
+}
+
+// ReferenceTarget is what one reference of a batched reference read points at: Ref, the
+// reference as the request named it, Kind, the kind of node it names (a GraphNode kind), Name,
+// the words a reader is shown for the target in place of its text (refs.TargetNames), and Gone,
+// whether nothing answers to that reference now. A gone target carries no name: its node was
+// deleted, so there is nothing left to name it by. Ambiguous says why a member is gone when its
+// reference writes a short id that two or more items carry: the read answers that member gone
+// and answers every other member, where GET /api/v1/references refuses such an id with a 409.
+// TextTree is a block's whole text as the tree a reader is shown, every link and dispatch://
+// reference kept and nothing cut, where Name stops at the block's stored excerpt: a typed
+// block's is of its own content, what stands between its opening line and its closing one, read
+// by the block's kind. A document's block has the closing fence's indentation taken out of each
+// line, which a block in a list item or a footnote definition carries; a block of a comment, a
+// message or an ask, stored from the start of its line, has its opening line's indentation, up
+// to three spaces, taken off before the directive is read and up to as many columns taken off
+// each later line, as its own text's parse reads them, the indentation left on a line, and the
+// spaces or tabs after a list marker or `>`, written as spaces with each tab counted to the next
+// multiple of four from its own column. With its opening line at column 0, such a block keeps
+// every line as written; an opening line four spaces or a tab in opens no typed block, so that
+// text answers the tree of its whole stored text. A typed block in a quote answers the tree of its
+// whole stored text, its opening line included, and so does a block of a comment, a message or an
+// ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its
+// text. Only a member whose Kind is block carries one, and only for a caller that sent
+// `Dispatch-Trees: 1`.
+type ReferenceTarget struct {
+	Ref  string `json:"ref"`
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	Gone bool   `json:"gone"`
+	// Ambiguous is true for a reference whose short id two or more items carry in the scope
+	// that the reference names. Such a member is gone, with the name "", and every other
+	// member of the read is answered. The key is left out otherwise.
+	Ambiguous bool        `json:"ambiguous,omitempty"`
+	TextTree  DisplayTree `json:"text_tree,omitempty"`
+}
+
+// ReferenceTargets is GET /api/v1/reference-targets: one member per ?ref= the request named, in
+// the request's order, a reference named twice answered twice.
+type ReferenceTargets struct {
+	Targets []ReferenceTarget `json:"targets"`
 }
 
 // BlockLink is one link from a block of one document to a block of a document: its edge kind,

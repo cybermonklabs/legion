@@ -201,6 +201,11 @@ const ReceiptTimeoutCause = "The listener didn't answer within the send window; 
 // cannot drift apart.
 const MaxBroadcastRecipients = 100
 
+// ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
+// from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
+// batches are one number.
+const ReferenceTargetsMax = 256
+
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the `dispatch search`
 // command's cannot drift apart.
@@ -388,19 +393,20 @@ const DocumentNewerContentCloseReason = "DOC_NEWER_CONTENT"
 
 // DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
 // document socket whose page the live server processes no longer admit, once the message in flight
-// on it is out. The Hocuspocus provider reconnects on the code, and the reconnect is admitted
-// again. Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and
-// DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON in packages/contracts so the server's close and the
-// dashboard's reading of it cannot drift apart.
+// on it is out, and an open document socket whose upgrade's Identity-Aware Proxy assertion has
+// expired. The Hocuspocus provider reconnects on the code, and the reconnect is admitted again.
+// Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON
+// in packages/contracts so the server's close and the dashboard's reading of it cannot drift
+// apart.
 const DocumentAdmissionRevokedCloseCode = 4412
 const DocumentAdmissionRevokedCloseReason = "DOC_ADMISSION_REVOKED"
 
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
-// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
-// the most subscriptions one live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE,
-// LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in
-// packages/contracts so the server's close and limit and the dashboard's reading of them cannot
-// drift apart.
+// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), or once its upgrade's
+// Identity-Aware Proxy assertion expires, and LiveSocketMaxSubscriptions the most subscriptions one
+// live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE, LIVE_SOCKET_MIN_AGE_MS,
+// LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in packages/contracts so the server's
+// close and limit and the dashboard's reading of them cannot drift apart.
 const LiveSocketMaxAgeClose = 4001
 const LiveSocketMinAge = 1800000 * time.Millisecond
 const LiveSocketMaxAge = 3600000 * time.Millisecond

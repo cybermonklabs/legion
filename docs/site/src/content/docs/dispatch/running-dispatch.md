@@ -67,7 +67,10 @@ copies and a limit a start with other settings lowered
 ([Keeping the stream](/legion/dispatch/envoy/#keeping-the-stream)).
 
 People sign in through a Cognito sign-in pool or with Google directly by default, and Dispatch
-names each person by their lowercase email. `DISPATCH_IDENTITY=header:<Header-Name>` names people by a request header instead; it is for
+names each person by their lowercase email. `DISPATCH_IDENTITY=iap` names people from the
+assertion Google Cloud's Identity-Aware Proxy signs instead
+([Behind Identity-Aware Proxy](#behind-identity-aware-proxy)).
+`DISPATCH_IDENTITY=header:<Header-Name>` names people by a request header; it is for
 tests and local harnesses only, needs `DISPATCH_IDENTITY_HEADER_TRUSTED=1`, and refuses every
 `DISPATCH_SIGNIN_*` setting. Serve Dispatch over HTTPS. `DISPATCH_INSECURE_COOKIE=1` is only for
 trying it over plain HTTP on your own machine.
@@ -159,6 +162,49 @@ return to domain mode unprotected: the same Google account signing in again find
 `sub` still on the row, so nothing ends sessions a pool-era cookie still held. Everyone then signs
 in again under the new issuer; a refresh token left from the old one would be refused at the
 first hourly confirmation, and is still redeemable at the old issuer until it is revoked there.
+
+## Behind Identity-Aware Proxy
+
+A Dispatch served behind a Google Cloud load balancer with Identity-Aware Proxy (IAP) turned on
+lets IAP sign people in: `DISPATCH_IDENTITY=iap`. On each request it lets through, IAP adds an
+assertion it signs, the `X-Goog-IAP-JWT-Assertion` header, and Dispatch names the person from that
+assertion alone. It never reads IAP's unsigned `X-Goog-Authenticated-User-Email` or
+`X-Goog-Authenticated-User-Id`, which a request that reached Dispatch around IAP can carry.
+
+Dispatch checks each assertion as Google documents
+([Securing your app with signed headers](https://cloud.google.com/iap/docs/signed-headers-howto)):
+an ES256 signature by one of IAP's keys, which it reads from
+`https://www.gstatic.com/iap/verify/public_key-jwk` on the first request and caches; the issuer
+`https://cloud.google.com/iap`; the audience `DISPATCH_IAP_AUDIENCE`; and the expiry and issue
+times, each with 30 seconds of clock skew. Set `DISPATCH_IAP_AUDIENCE` to the audience IAP shows as
+the **Signed Header JWT Audience** of the load balancer's backend service,
+`/projects/<project number>/global/backendServices/<backend service id>`.
+
+Who may use Dispatch is the same rule as Google sign-in's: set `DISPATCH_SIGNIN_DOMAIN` to the
+organization's primary Workspace domain, and a person is admitted when the assertion's `hd` is that
+domain and it names a Google account, named by the assertion's `email`, lowercased. The other
+`DISPATCH_SIGNIN_*` settings are refused: Dispatch runs no sign-in of its own, so `/auth/start`
+answers `503 SIGNIN_UNCONFIGURED`. Grant IAP access to the people who should reach Dispatch as
+well; Dispatch's own check stands behind IAP's, so a request that bypasses IAP, or carries an
+assertion for another backend service, is refused.
+
+IAP signs a fresh assertion for every request, so Dispatch keeps no session for it: a person IAP or
+the domain stops admitting is refused from their next request, and Dispatch's logout signs nobody
+out of IAP. A request with no valid assertion, or whose person the domain does not admit, is
+answered `401 NO_IDENTITY`; one that finds IAP's key set unreadable is answered
+`503 SIGNIN_UNAVAILABLE`, and the next one after the keys can be read goes through. A write from a
+page of another origin is refused, as it is for a session cookie, since a browser sends IAP's own
+cookie with it.
+
+A page's live connections, its live socket and each open document's socket, are the one place an
+assertion ages: they re-check the assertion they opened with every 15 seconds, and IAP gives an
+assertion about ten minutes. When it expires, Dispatch closes the socket with a code on which the
+page reopens it at once (`4001` for the live socket, `4412` for a document's), and the reopened
+socket carries IAP's next assertion, which is checked again. So each of an IAP user's sockets
+reopens about every ten minutes: the live socket shows nothing of it, and a document reconnects
+as it does after any close the server makes, its sync restoring whatever was in flight. Only an
+assertion IAP signed counts as expired: one IAP's keys no longer verify, or whose person the domain
+no longer admits, is refused, and the socket closes as it does when its person signs out.
 
 ## Changing the session key
 

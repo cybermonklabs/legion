@@ -478,6 +478,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: IdentityHeader = %q, want cookie identity", boot.IdentityHeader)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_IDENTITY": "basic"}, "DISPATCH_IDENTITY")
+			if iap, err := resolveBootConfig(envGetter(iapIdentityEnvironment(nil))); err != nil || iap.IAPAudience != testIAPAudience {
+				t.Errorf("iap: IAPAudience = %q, %v", iap.IAPAudience, err)
+			}
 			// The identity main builds for the router: a header server names the person the
 			// header names, lowercased, and records them.
 			t.Run("router", func(t *testing.T) {
@@ -487,6 +490,49 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				routerFor(t, header, routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)}).ServeHTTP(response, request)
 				if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"login":"alice@example.com"`) {
 					t.Errorf("DISPATCH_IDENTITY=header:X-Dispatch-User: GET /auth/whoami answered %d %s, want alice@example.com", response.Code, response.Body.String())
+				}
+			})
+			// An IAP server names the person of a verified assertion IAP signed for its audience,
+			// lowercased, admits only an account of DISPATCH_SIGNIN_DOMAIN, records the member,
+			// and never takes IAP's unsigned email header for a person.
+			t.Run("iap router", func(t *testing.T) {
+				keys, signing := iapKeySet(t)
+				people := peopleStore(t)
+				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: people, Store: storetest.Open(t)})
+				member := iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "example.com"), nil)
+				if member.Code != http.StatusOK || !strings.Contains(member.Body.String(), `"login":"a.person@example.com"`) {
+					t.Errorf("DISPATCH_IDENTITY=iap: a member's assertion: GET /auth/whoami answered %d %s, want a.person@example.com", member.Code, member.Body.String())
+				}
+				if _, found, err := people.Membership(context.Background(), "a.person@example.com"); err != nil || !found {
+					t.Errorf("DISPATCH_IDENTITY=iap: the member was not recorded: found %t, %v", found, err)
+				}
+				for name, response := range map[string]*httptest.ResponseRecorder{
+					"an account of another domain": iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "other.example"), nil),
+					"a forged assertion":           iapWhoami(handler, iapAssertion(t, keys, oidctest.NewES256Key(t, signing.KeyID()), testIAPAudience, "example.com"), nil),
+					"IAP's unsigned email header":  iapWhoami(handler, "", map[string]string{"X-Goog-Authenticated-User-Email": "accounts.google.com:a.person@example.com"}),
+				} {
+					if response.Code != http.StatusUnauthorized {
+						t.Errorf("DISPATCH_IDENTITY=iap: %s: GET /auth/whoami answered %d %s, want 401", name, response.Code, response.Body.String())
+					}
+				}
+			})
+		},
+		"DISPATCH_IAP_AUDIENCE": func(t *testing.T) {
+			iap, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": " " + testIAPAudience + " "})))
+			if err != nil || iap.IAPAudience != testIAPAudience {
+				t.Errorf("IAPAudience = %q, %v", iap.IAPAudience, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_IAP_AUDIENCE": testIAPAudience}, "DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap")
+			// The audience the router's identity holds each assertion to: one IAP signed for
+			// another backend service is refused, the same assertion for this one admitted.
+			t.Run("router", func(t *testing.T) {
+				keys, signing := iapKeySet(t)
+				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)})
+				if response := iapWhoami(handler, iapAssertion(t, keys, signing, "/projects/123456789012/global/backendServices/1", "example.com"), nil); response.Code != http.StatusUnauthorized {
+					t.Errorf("an assertion for another audience: GET /auth/whoami answered %d %s, want 401", response.Code, response.Body.String())
+				}
+				if response := iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "example.com"), nil); response.Code != http.StatusOK {
+					t.Errorf("the same assertion for DISPATCH_IAP_AUDIENCE: GET /auth/whoami answered %d %s, want 200", response.Code, response.Body.String())
 				}
 			})
 		},
@@ -827,7 +873,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if err != nil {
 				t.Fatalf("build the webhook sweeper: %v", err)
 			}
-			if _, err := sweeper.Open(); err == nil || !strings.Contains(err.Error(), "ENVOY_NATS_REPLICAS=3: ") {
+			if _, err := sweeper.Open(t.Context()); err == nil || !strings.Contains(err.Error(), "ENVOY_NATS_REPLICAS=3: ") {
 				t.Errorf("the redelivery bucket at ENVOY_NATS_REPLICAS=3 on one server: err = %v, want the server's refusal naming the setting", err)
 			}
 			github := githubapptest.NewWebhook(t, &key.PublicKey, replicasTestClientID, nil)
@@ -1336,11 +1382,12 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("AgentSecretsURL = %q", boot.AgentSecretsURL)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_AGENT_SECRETS_URL": "https://broker.example/v1", "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": tokenFile}, "DISPATCH_AGENT_SECRETS_URL")
-			// The broker the router relays credential requests to; without one it has none, and the
-			// pending list answers null.
+			// The broker the router relays credential requests to, which it asks for alice's
+			// pending and expired requests; without one it has none, and the pending list answers
+			// null.
 			t.Run("router", func(t *testing.T) {
-				if got := brokerReceived(t, "account-token"); !strings.HasPrefix(got, "GET /v1/pending?approver=alice ") {
-					t.Errorf("the broker DISPATCH_AGENT_SECRETS_URL names received %q, want alice's pending list", got)
+				if got := brokerReceived(t, "account-token"); !strings.HasPrefix(got, "GET /v1/pending?approver=alice&state=pending&state=expired ") {
+					t.Errorf("the broker DISPATCH_AGENT_SECRETS_URL names received %q, want alice's pending and expired requests", got)
 				}
 				request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 				response := httptest.NewRecorder()

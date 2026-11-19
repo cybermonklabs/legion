@@ -148,6 +148,12 @@ over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
 front`, round-robin per connection), and enrols one pod session the way the Legion
 daemon does — a service login at `POST /v1/launcher-credentials/token`, then
 `POST /v1/enrollments` of kind `pod` — so `agent-secrets self` answers `kind: pod`.
+It keeps that session's lease alive for as long as it runs, with the renewer the
+Legion worker shim gives a pod: `agent-secrets renew --pod-token-file` on the pod
+token `dev-oidc-issuer` rewrites in place. The broker ends a session whose lease
+(`BROKER_LEASE_SECONDS`, 900 seconds by default) passes unrenewed, and every grant
+of it with it, so without the renewer a check that holds a grant for longer would
+have its calls refused 407 midway.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/dev-airlock.sh
@@ -170,9 +176,21 @@ Options: `--keep-values` and `--no-kind`, the two negative controls
 `dev-airlock.test.sh` proves the driver's own decisions behind fake binaries — the
 work directories under `TMPDIR`, two brokers with the whole airlock block on one
 database, one front over each pair of ports, the options reaching the brokers, the
-enrolment written beside the session key, the usage error, and the cleanup stopping
-everything it started — with no real Postgres, no network and no Go build; CI runs
-it in the `envoy-go` job of `.github/workflows/ci.yaml`.
+enrolment written beside the session key, the session's renewer, the usage error,
+and the cleanup stopping everything it started — with no real Postgres, no network
+and no Go build; CI runs it in the `envoy-go-checks` job
+(`.github/workflows/ci-job-envoy-go-checks.yaml`).
+
+`dev-airlock-lease.test.sh` proves the renewer works on the real stack: it starts
+the stack with one broker and `BROKER_LEASE_SECONDS=91`, the shortest lease the
+broker starts with at its default sweep, holds one 30-minute grant of
+`AIRLOCK_DEMO_TOKEN`, and calls S through the proxy front at once and again three
+leases later. Both calls must reach S with the real value, and the session must still
+be the one enrolled, with a later lease. It prints a `PASS:` or `FAIL:` line for each
+and ends `dev-airlock-lease: passed` or `dev-airlock-lease: failed (<n> of <m>)`. It
+needs what `dev-airlock.sh` needs, takes the stack's start plus about five minutes,
+and is not part of CI. Without the renewer, the second call is refused 407 "grant is
+expired, revoked, or its session ended".
 
 ## airlock-check.sh
 
@@ -407,10 +425,13 @@ result block; `--help` prints the usage, and a usage error exits 2.
 
 ## airlock-clients.sh
 
-Installs the clients checks `k6` and `k7` drive and that a Legion issue pod has not
-got — the Azure CLI, the Google Cloud CLI, Pulumi with the Tailscale provider, and
-boto3 — each at a pinned version whose SHA-256 is checked before anything of it runs,
-under `${TMPDIR:-/tmp}`, and prints the exports a check needs on stdout:
+Installs the clients checks `k6` and `k7` drive — the Azure CLI, the Google Cloud CLI,
+Pulumi with the Tailscale provider, and boto3 — each at a pinned version whose SHA-256
+is checked before anything of it runs, under `${TMPDIR:-/tmp}`, and prints the exports
+a check needs on stdout. A Legion issue pod has no Pulumi and no boto3, and a pod on a
+worker image from before dispatch://INFRA-3257 has no `az` and no `gcloud` either. An
+image since then carries both, and the script still installs its own, first on the
+`PATH` its exports set, so the checks drive the same versions on every digest:
 
 ```bash
 eval "$(packages/envoy/scripts/airlock-clients.sh)"
@@ -786,6 +807,74 @@ identity. The script writes 50 comments, 50 asks, 50 messages, 100 document vers
 edits for every run, which is what A9 measures: run it after the statement timings, and re-seed
 before anything reads a row count again. `--requests`, `--body-bytes`, `--artifact` and
 `--large-artifact` are the knobs; `--help` lists them.
+
+## coverage-scale.sh
+
+Measures the search coverage statement as the route runs it (the head: `coverageQuery` under the settings `planCoverage` sets) against the statement it replaced (`mainCoverageQuery`, the base) at production's size and twice it,
+in six states of `embeddings`, four of its visibility map and statistics and two after an embedder change,
+and states the corpus size at which the head would reach its 10 s bound in the slowest of them.
+It runs `TestCoverageStatementScale` (`internal/dispatch/embedqueue`), which builds a synthetic corpus in a database of its own at each scale:
+`testdata/coverage_corpus.sql`, production's counts and proportions of 2026-11-17 times the scale
+(11,151 issues, 216,414 document versions and 984,012 window rows at scale 1),
+with texts cut from this repository's `docs/` and `skills/` and each issue's spec of a size sampled from real specs.
+Autovacuum is off on `embeddings`, so nothing but the test sets its visibility map or its statistics.
+Once the corpus is loaded it drops the two window indexes, `embeddings_window_embedded` and `embeddings_window_unembedded`, and builds each again with its migration's own statement, read from its file under `internal/dispatch/store/migrations` and run outside a transaction as the migration runner runs it,
+timing each build and reading each index's size:
+the downtime a deploy of those migrations takes, since Dispatch migrates before it serves.
+On each corpus it then measures six states in turn:
+`fresh`, every table vacuumed and analyzed;
+`third`, one row of every third heap page of `embeddings` updated and the table analyzed, so about a third of its pages are not all-visible;
+`all`, one row of every page updated and the table analyzed, so no page is all-visible;
+`stale`, the table vacuumed, one row of every even page updated and the table analyzed, then one row of every odd page updated with no analyze after it,
+so no page is all-visible while the statistics still record about half of them all-visible;
+`embedder`, the configured embedder changed to another identity, whose identity step (`dropForeignVectors`, over every covered kind) drops every vector the corpus holds, with no analyze after it, so the statistics are the `stale` state's;
+and `embedder-analyzed`, the same table analyzed.
+The test fails the `stale` state unless its statistics record at least 0.3 of the pages all-visible (`laggingVisibleShare`), the share from which an earlier version of this statement read the windows by index-only scans, which fetched every window row from the heap one at a time in such a state (dispatch://INFRA-4241/artifact/tester-r2-job-2f9a6fc1-log),
+and the `embedder` state unless the identity step dropped a vector; it logs how many it dropped.
+In each state it checks that the base and the head answer the same rows in one snapshot, for the state's configured identity (the new one from `embedder` on),
+and times both on one connection, one warm-up and then five alternating runs each under `EXPLAIN (ANALYZE, BUFFERS)`:
+the base on the connection,
+the head in a read-only transaction that `planCoverage` plans, as the route runs it, with no `statement_timeout`.
+In every state it also runs a negative control:
+the head's text once with none of `planCoverage`'s settings, the planner free.
+It drops the database before the next scale.
+
+It runs as a Job in the cluster's `builds` namespace, never in an issue pod.
+It starts a Postgres of its own on 127.0.0.1:5433 with `legion-testpg ensure`, where an issue pod's own test server already listens,
+and a corpus of production's size is more disk than an issue pod may use;
+the script refuses to start where a server already answers on that port.
+It needs the worker image, which carries Go, the PostgreSQL 18 server with pgvector and `legion-testpg`,
+and a scratch disk of about 10 GB for scales 1 and 2:
+one scale's database at a time, the write-ahead log, the Go caches and the clone.
+The Job runs it from `packages/envoy` of a clone:
+
+```bash
+cd packages/envoy && COVERAGE_SCALE_SCRATCH=/scratch scripts/coverage-scale.sh
+```
+
+`COVERAGE_SCALE_SCRATCH` (default `/scratch`) names the scratch disk.
+The server's data directory (`LEGION_TESTPG_DIR`), `GOCACHE`, `GOTMPDIR`, `GOMODCACHE` and the test's log, `coverage-scale.log`, go under it.
+`DISPATCH_COVERAGE_SCALES` (default `1 2`) lists the scales, space-separated, and reaches the test as it is.
+The script sets `LEGION_TEST_PG_DSN` and `DISPATCH_COVERAGE_SCALE_URL` itself,
+both to `postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable`.
+
+It prints the server's version and the settings the times depend on
+(`shared_buffers`, `work_mem`, `maintenance_work_mem`, `jit`, `max_parallel_workers_per_gather`, `effective_cache_size`),
+then the test's output: for each scale the corpus's counts, each window index's build time and size, the head's report kind by kind and the items;
+and for each state how many vectors its embedder change dropped, how many pages of `embeddings` the statistics record as all-visible and that share, the database's size,
+each statement's median and every run, one plan of each,
+and the negative control's time and whether it read `embeddings` by a Seq Scan.
+Read the result from the line that starts `coverage-scale:`, which the script prints again as its last line.
+It names each window index's build time and size at the two smallest scales;
+then, for each state, the vectors dropped where the state changes the embedder, the share of pages the statistics record as all-visible, the head's and the base's medians, the negative control's times and whether it read `embeddings` by a Seq Scan, at both scales;
+and the item count at which the head would reach 10 s by a linear fit and by a power law `t = a × s^k` through the two points,
+with the smaller of the two as a multiple of the 1 × corpus's items.
+It ends with the slowest state, the one with the smallest multiple, and its multiple;
+where a state has no fit, it says the slowest state is not known and names the slowest of the others.
+`pass` means that multiple is at least 4.
+`FAIL` means it is below 4, or that the head's time did not grow between the two scales in some state, so no fit is defined.
+The script exits with the test's own status, and with 1 when the test printed no `coverage-scale:` line.
+CI never runs it: the test skips while `DISPATCH_COVERAGE_SCALE_URL` is unset.
 
 ## going-smoke.sh
 
