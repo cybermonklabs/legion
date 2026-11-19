@@ -45,6 +45,12 @@ function setup(): { readonly binary: string; readonly nats: string } {
   return { binary: omp, nats: natsUrl };
 }
 
+/** How long a case waits for one thing the session owes it before failing on it. The two shared
+ *  hooks take it too: bun's own 5 s per hook is less than a connection to the NATS server, or the
+ *  teardown of every session the cases shared (each a real binary killed and awaited, and its
+ *  scratch tree removed), takes on a loaded machine. */
+const DEADLINE_MS = 30_000;
+
 // The real `connect`'s connection reports the server it reached (`getServer`); the mock's has no
 // such method. Checked once, before any case spends a binary's startup on a connection that
 // reaches no server.
@@ -60,10 +66,7 @@ beforeAll(async () => {
   } finally {
     await probe.close();
   }
-});
-
-/** How long a case waits for one thing the session owes it before failing on it. */
-const DEADLINE_MS = 30_000;
+}, DEADLINE_MS);
 
 /** How often one session may put its context usage on the wire in these cases, the interval the
  *  check names (`ENVOY_CONTEXT_FRAME_INTERVAL_MS`). */
@@ -78,7 +81,7 @@ const SHELL_LIMIT_MS = 2_000;
 const cleanup: Cleanup = [];
 afterAll(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, DEADLINE_MS);
 
 function text(reply: string): Block {
   return { type: "text", text: reply };
