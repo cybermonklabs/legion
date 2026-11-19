@@ -2580,11 +2580,16 @@ func (r *keptRun) ready(tree *keptTree) {
 	r.sup.deps.Conns.(*fake.Conns).Register(tree.token, tree.conn)
 	launch := machine.Claim().Generation
 	r.handle(machine, supervise.StreamHello{Claim: tree.token, Generation: launch})
+	// Each architect is a session of its own, with a file of its own: the daemon holds a session's
+	// id and its file's path and name to the first claim of the project that recorded them
+	// (supervise's holdRecorded), so two trees' architects registering one would have the second
+	// refused.
+	session := "ses-architect-" + tree.key
 	if state := machine.Claim().State; state == supervise.StateShimConnected || state == supervise.StateRegistered || supervise.SaidReady(state) {
-		r.handle(machine, supervise.RequestRegister{Claim: tree.token, Generation: launch, Session: "ses-architect", SessionFile: "/tmp/architect.jsonl"})
+		r.handle(machine, supervise.RequestRegister{Claim: tree.token, Generation: launch, Session: session, SessionFile: "/tmp/" + session + ".jsonl"})
 	}
 	if state := machine.Claim().State; state == supervise.StateRegistered || supervise.SaidReady(state) {
-		r.handle(machine, supervise.RequestReady{Claim: tree.token, Generation: launch, Session: "ses-architect"})
+		r.handle(machine, supervise.RequestReady{Claim: tree.token, Generation: launch, Session: session})
 	}
 	r.waitMachines()
 	r.tracef("ready tree=%s launch=%d state=%s", tree.key, launch, machine.Claim().State)

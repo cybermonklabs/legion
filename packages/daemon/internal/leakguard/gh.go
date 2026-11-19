@@ -124,7 +124,7 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 	argv := append([]string{check, "gh-guard"}, req.Args...)
 	status, printed, err := g.run(ctx, child{argv: argv})
 	if err != nil {
-		return nil, false, sharedNotRun(whatGhCall, err)
+		return nil, false, sharedNotRun(whatGhCall, err, printed)
 	}
 	var buffered []byte
 	if status == checkWantsStdin {
@@ -512,7 +512,7 @@ func (g *Guard) askAgain(ctx context.Context, argv []string, req GhRequest) ([]b
 		},
 	})
 	if err != nil {
-		return buffered, 0, "", sharedNotRun(whatGhCall, err)
+		return buffered, 0, "", sharedNotRun(whatGhCall, err, printed)
 	}
 	if status == checkWantsStdin {
 		return buffered, 0, printed, &SetupFailure{

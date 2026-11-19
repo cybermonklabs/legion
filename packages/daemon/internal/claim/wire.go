@@ -270,6 +270,71 @@ var (
 	InvalidSecret = Refusal{Status: http.StatusForbidden, Message: "Invalid session secret"}
 )
 
+// SessionHeldRefusal refuses a registration or a resume under a name of a session another claim of
+// this daemon recorded first: its id, its file's path or name, or an id its file's name gives (the
+// name is what session is). Each name is held to the first claim that recorded it, whatever that
+// claim's state since (supervise's holdRecorded): the daemon enrolls the session a registration
+// records with the secrets broker, whose enrollment takes over the grants of every other enrollment
+// of the same pod account and session, and resumes the session the record names at every
+// relaunch, so a role that registered a sibling's session, or an ended claim's, would take that
+// session's secrets and its transcript (plan E's t-e-54). It names no other claim's token: the
+// caller is told only that the name is not its own, and the daemon's log names the claim that
+// holds it. It is a 409, as the same-agent rule's refusal is, and every caller of the registration
+// exits on it.
+func SessionHeldRefusal(session string) Refusal {
+	return Refusal{Status: http.StatusConflict, Message: fmt.Sprintf(
+		"session %s is recorded for another claim of this daemon; a claim registers only a session it recorded itself, or one no claim has recorded", session)}
+}
+
+// MaxSessionNameBytes is the longest a name of a session may be: a session id, or the base name of a
+// session file, in bytes. The daemon holds every name of a session in claim_sessions, whose primary
+// key a PostgreSQL btree indexes, and a btree row holds at most 2,704 bytes (SQLSTATE 54000 past
+// it), so a name without a bound could stop the migration or the boot that holds it. 255 is the
+// longest file name Linux allows (NAME_MAX), and a real name is a uuid or such a file name.
+const MaxSessionNameBytes = 255
+
+// SessionNameTooLong refuses a registration whose session id, or whose session file's base name,
+// is longer than MaxSessionNameBytes. It is a 400: the request is malformed, whoever sends it.
+func SessionNameTooLong(what string, bytes int) Refusal {
+	return Refusal{Status: http.StatusBadRequest, Message: fmt.Sprintf(
+		"the %s is %d bytes; a session id, and a session file's name, are at most %d bytes", what, bytes, MaxSessionNameBytes)}
+}
+
+// SessionFileNotClean refuses a registration whose session file is not the clean path it names
+// (filepath.Clean of it differs): a `.` part, a `..` part after a name or at the root, a doubled or
+// trailing `/`. Clean keeps a `..` that leads a relative path, so such a path is clean and is not
+// refused. A last part of `.` or `..` gives a base name that is not the session's file name, so the
+// file-name hold would hold the wrong name; the rest is refused too, so that one file has one
+// recorded spelling. It is a 400: the plugins send the clean path of the file they wrote.
+func SessionFileNotClean(file string) Refusal {
+	return Refusal{Status: http.StatusBadRequest, Message: fmt.Sprintf(
+		"the session file %q is not a clean path; a session file is the path of the file the agent writes, as filepath.Clean writes it: no `.` part, no `..` part but at the start of a relative path, and no doubled or trailing `/`", file)}
+}
+
+// SessionNameUnheldRefusal refuses a claim that records a session name the daemon cannot hold: one
+// longer than MaxSessionNameBytes, or a session file that is not a clean path, which only a daemon
+// from before the hold could have recorded. Nothing holds such a name, so it is treated as held for
+// no claim: the claim resumes, enrolls and registers nothing under it until an operator gives it a
+// new session (`legion claims forget-session`). It is a 409, as SessionHeldRefusal is.
+func SessionNameUnheldRefusal(what string) Refusal {
+	return Refusal{Status: http.StatusConflict, Message: fmt.Sprintf(
+		"this claim records a %s this daemon cannot hold, so it takes nothing under it; an operator gives the claim a new session", what)}
+}
+
+// HeldNamesCapRefusal refuses a registration whose new session names would take its claim past
+// the most one claim may hold, max (supervise.MaxHeldNamesPerClaim): a hold ends only by an
+// operator's release, so without a bound one role could grow the daemon's record of held names
+// without end. It is a 409, as SessionHeldRefusal is: the request is well formed, but the claim's
+// own record refuses it. Nothing of the registration is recorded, and the claim keeps every name it
+// holds. So a claim that records a session still resumes that one, but a claim that needs a new
+// session, one that records none after a fresh start, starts none until an operator frees the
+// names of its other sessions with `legion claims release-names` (supervise.Machine.ReleaseNames,
+// which the daemon's log line names).
+func HeldNamesCapRefusal(max int) Refusal {
+	return Refusal{Status: http.StatusConflict, Message: fmt.Sprintf(
+		"this claim holds the most session names one claim may (%d), so it registers no new session: a session it records still resumes, but a new one waits until an operator frees the names of its other sessions (`legion claims release-names`, which the daemon's log names)", max)}
+}
+
 // staleContract renders the opening sentence a stale-caller refusal shares: got is the contract
 // the plugin declared, 0 when it declared none; want is the daemon's own (api.DaemonAPIVersion,
 // which this package cannot import, so the caller names it). remedy is the clause that tells the

@@ -121,6 +121,10 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 	return slices.Concat(dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup, []dispatchInput{
 		{"outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }},
 		{"signInOutside", func(a *gcp.DispatchArgs) { a.SignInOutside = true }},
+		{"publicOrigin", func(a *gcp.DispatchArgs) { a.PublicOrigin = dispatchPublicOrigin }},
+		{"iapAudience", func(a *gcp.DispatchArgs) { a.IapAudience = pulumi.String(dispatchIAPAudience) }},
+		{"loadBalancerSourceRanges", func(a *gcp.DispatchArgs) { a.LoadBalancerSourceRanges = dispatchLoadBalancerRanges }},
+		{"networkEndpointGroupName", func(a *gcp.DispatchArgs) { a.NetworkEndpointGroupName = dispatchNEGName }},
 		{"envoyImage", func(a *gcp.DispatchArgs) { a.EnvoyImage = dispatchEnvoyImage }},
 		{"cloudSqlProxyImage", func(a *gcp.DispatchArgs) { a.CloudSqlProxyImage = dispatchProxyImage }},
 		{"natsUrl", func(a *gcp.DispatchArgs) { a.NatsUrl = pulumi.String("nats://example-hub.example-tailnet.ts.net:4222") }},

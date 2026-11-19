@@ -834,7 +834,10 @@ type daemon struct {
 	transport *http.Transport
 	client    *http.Client
 	base      string
-	stopped   bool
+	// stopped is set once the test has begun stopping this run, before the run closes anything:
+	// a goroutine that answers the daemon over a worker stream reads it (stepClaimant.serve) to
+	// tell a write the test's own stop failed from one the daemon failed.
+	stopped atomic.Bool
 }
 
 // startDaemon runs the daemon until the test stops it, and returns once it answers /healthz.
@@ -885,7 +888,7 @@ func startDaemonWithin(t *testing.T, cfg config.Config, o overrides, log *slog.L
 		}
 		select {
 		case exited := <-d.done:
-			d.stopped = true
+			d.stopped.Store(true)
 			t.Fatalf("the daemon exited before it answered /healthz: %v", exited)
 		default:
 		}
@@ -923,10 +926,9 @@ func repositoriesGitHub(t *testing.T) string {
 // against 3 s, which is what INFRA-985 was filed for (stopHangGuard, inflight_test.go).
 func (d *daemon) stop() {
 	d.t.Helper()
-	if d.stopped {
+	if d.stopped.Swap(true) {
 		return
 	}
-	d.stopped = true
 	d.transport.CloseIdleConnections()
 	d.cancel()
 	select {
@@ -1059,6 +1061,12 @@ type shim struct {
 	conn   net.Conn
 	lines  *bufio.Reader
 	writer *shimwire.Writer
+	// stopping closes when the test ends the connection (end): a goroutine serving it that is
+	// handing a frame on lets it go and returns.
+	stopping chan struct{}
+	// serving counts the goroutines answering the daemon on conn (serve), each of which end waits
+	// for before it closes conn.
+	serving sync.WaitGroup
 }
 
 // dialShim connects to the worker stream at address and says hello with bootToken, returning
@@ -1069,13 +1077,36 @@ func dialShim(t *testing.T, address, bootToken string) *shim {
 	if err != nil {
 		t.Fatalf("dial the worker stream %s: %v", address, err)
 	}
-	t.Cleanup(func() { conn.Close() })
-	s := &shim{t: t, conn: conn, lines: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
+	s := newTestShim(t, conn)
 	s.send(shimwire.Hello2{BootToken: bootToken})
 	if frame := s.next(); frame.FrameType() != shimwire.TypeHelloAck {
 		t.Fatalf("the daemon answered the hello with %#v, want hello_ack", frame)
 	}
 	return s
+}
+
+// serve runs answer on a goroutine of its own, the pane's reader of every frame the daemon sends
+// on this connection, with no read deadline, from the read the hello_ack came through on. answer
+// returns once a read fails, and hands a frame on only in a select that also takes s.stopping.
+func (s *shim) serve(answer func()) {
+	_ = s.conn.SetReadDeadline(time.Time{})
+	s.serving.Add(1)
+	go func() {
+		defer s.serving.Done()
+		answer()
+	}()
+}
+
+// end is the test's end of the connection, run as its cleanup: it stops every goroutine serving
+// the connection, cutting short the read each waits in, waits until each has returned, and only
+// then closes the connection. An answer a goroutine is writing as the test ends so meets the
+// connection still open rather than the test's own close, and no goroutine serving it runs, or
+// reports anything, once the test is over.
+func (s *shim) end() {
+	close(s.stopping)
+	_ = s.conn.SetReadDeadline(time.Now())
+	s.serving.Wait()
+	_ = s.conn.Close()
 }
 
 func (s *shim) send(frame shimwire.Frame) {

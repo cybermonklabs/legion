@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -20,7 +21,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // Hook is one hook of the deployment as the engine runs it: its words are the text, never a
@@ -138,9 +142,11 @@ type Config struct {
 	// StepAgent is the daemon's read of the agent of a step at the moment the engine writes the
 	// step's end (endStep): the session its claim records and the model that answered it last in
 	// that session (supervise.Machine.LastAnswer), read from the claim's machine without waiting
-	// on a decision in flight. Nil reads nothing, so a record names no session and no model,
-	// which is the API-only daemon and every test that reads no agent.
-	StepAgent func(claim.Token) StepAgent
+	// on a decision in flight. tx is the fact's own transaction, which holds the fact lock: a read
+	// the agent's record needs is made in it, never on another connection and never a write. Nil
+	// reads nothing, so a record names no session and no model, which is the API-only daemon and
+	// every test that reads no agent.
+	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
 }
 
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.
@@ -298,6 +304,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.listenerWake(ctx, tx, fact)
 	case intake.PodBackstopDue:
 		return e.podBackstopDue(ctx, tx, fact)
+	case intake.VolumeNearFull:
+		return e.volumeNearFull(ctx, tx, fact)
 	case intake.WorkerSilent:
 		return e.workerSilent(ctx, tx, fact)
 	case intake.WorkerBackgroundStalled:
@@ -949,8 +957,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // the four counts the failure left, each against the limit it ran out at (noticeFailure). The
 // worker-died of a role that does not work the issue's phase names it too, since that role's
 // architect decides whether to start it again on the same evidence. The tree architect's own
-// worker-died names none: nobody inside the tree is left to read it, and the operator who
-// relaunches that architect reads the claim's own record (api.ClaimFailureView).
+// worker-died carries no failure record, so its reason carries the sentence instead, with the
+// pod end when the claim holds one, or else, for a claim that failed because its process died,
+// the first line of the runtime's account of that death (deathReason): it is the one notice of
+// that failure the architect and the controller are sent.
 //
 // A child's own architect works no phase but its child's acceptance (accepting), where no worker
 // runs: the daemon starts it with the child's first phase (StartFirstPhase). Its claim failing
@@ -983,7 +993,8 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	if claim.IsTreeArchitect(fact.Role, issue.Key, issue.Tree) {
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase})
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase,
+			Reason: deathReason(fact, false)})
 	}
 	if fact.Role == claim.RoleArchitect {
 		if !record.InWorkflow(*issue) {
@@ -1013,9 +1024,16 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 			if err := e.endLook(ctx, tx, check, "claim failed"); err != nil {
 				return intake.Result{}, err
 			}
-			reason := fact.Reason
-			if reason == "" {
-				reason = fmt.Sprintf("the %s's claim failed before it reported the look", check.Role)
+			// The supervisor's sentence is text the daemon did not write, so it is carried as
+			// every worker-died's reason carries it, on one line, quoted and cut (deathSentence).
+			// The daemon's own sentence for a fact that holds none is written bare, as deathReason
+			// writes its own words ("the pod ended: ", "the process was last found "): the quotes
+			// in a reason mark text the daemon did not write, and never the daemon's own words.
+			// The pod end deathReason writes bare is the one text it did not write that a reason
+			// leaves unquoted: the kubelet's reason and message, cut at runtime.PodEndRunes.
+			reason := fmt.Sprintf("the %s's claim failed before it reported the look", check.Role)
+			if fact.Reason != "" {
+				reason = deathSentence(fact.Reason)
 			}
 			return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{
 				Kind: "worker-died", Role: fact.Role, Reason: fmt.Sprintf("production check look %d lost its %s: %s", check.Looks, check.Role, reason),
@@ -1053,7 +1071,436 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: from,
-		Failure: failure})
+		Failure: failure, Reason: deathReason(fact, failure != nil)})
+}
+
+// deathReason is what a worker-died notice says on the two paths that build no reason of their
+// own — the tree architect's and the held phase's. It names the supervisor's own sentence
+// (supervise.Claim.Failure, intake.ClaimFailed.Reason), then what ended the process: the pod end
+// it was last observed to have died of (supervise.Claim.PodEnd), which is the cause no role
+// chose — an eviction for ephemeral storage above all — or, where the claim holds no pod end and
+// failed because its process died, the first line of the runtime's account of that death
+// (supervise.Claim.LastDeathCause, intake.ClaimFailed.Death). They are joined with "; ", and any
+// of them the fact does not hold is left out. The sentence is made one line (deathSentence) and
+// the death's first line is taken without its log tail (deathFirstLine), and each is written
+// quoted and cut to a bound (quoteBounded), so neither a provider's message nor a role's log
+// writes a line of its own into the reason, nor a tab, an escape or a clause that reads as this
+// function's own — `; the pod ended: Evicted: …` at the end of a provider's message stays inside
+// the sentence's quotes — and the reason's size is one this package chose; the pod end is the
+// kubelet's reason and message, bounded where it is built (runtime.PodEnd). All three are
+// persisted on the claim, so the boot's replay of a failure no daemon applied says the same thing
+// (the daemon's replayTerminal).
+//
+// The death is named only where there is no pod end, because on a pod the cluster ended it is
+// the runtime's whole detail (sandbox's Runtime.ended): the pod's reason and the kubelet's
+// message, which are the pod end, and after them a tail of the role's log and the container's.
+// Its first line holds that reason and message too, so beside the pod end it would name the
+// kubelet's message twice. The death begins with the verdict the runtime reached (supervise's
+// deathCause), `gone` above all, so it is written after "the process was last found "
+// (deathFirstLine).
+//
+// It is named only where the fact's cause is supervise.CauseDied, too: the death is written at
+// every death of the claim and cleared by nothing (supervise's died), so a claim that died, was
+// launched again and then failed for something else — its provider's refusals, its prompt
+// retirements, an agent that never registered — still holds the account of the earlier death,
+// and beside that failure the reason would name an end that did not cause it: an old eviction
+// beside a provider error, which reads as the cluster's fault. A fact whose cause is "" or
+// `unrecorded` does not say the process's death failed it either, so it names no death. The pod
+// end needs no such test: each launch clears it (supervise's launchNow), so a fact that carries
+// one failed with no launch since the death that wrote it.
+//
+// failureCarried says the notice carries a failure record beside this reason, as the held
+// phase's does whenever the fact names a cause. That record's `detail` already carries the
+// sentence and its `death` the runtime's account (noticeFailure), so such a reason is the pod
+// end alone, and empty when there is none, since repeating either would say one thing twice.
+// The tree architect's notice carries no failure record, and neither does a held phase's whose
+// fact names no cause, so their reason carries the sentence and the pod end, and the tree
+// architect's, where there is no pod end and its claim failed because it died, the death: without
+// them the notice would say nothing of why the claim failed. A held phase's fact that names no
+// cause does not name `died` either, so its reason names no death.
+//
+// The two paths that already build a reason keep theirs: a role that does not work the issue's
+// phase, and a checking role of a closed issue, each say what the failure meant for that issue,
+// which is more than either of these facts is. The first is the daemon's own words alone. The
+// second names the look and the role in the daemon's words and then the supervisor's sentence
+// as this writes it, one line, quoted and cut (deathSentence), or, where the fact holds no
+// sentence, a sentence of the daemon's own, bare (claimFailed).
+func deathReason(fact intake.ClaimFailed, failureCarried bool) string {
+	said := make([]string, 0, 2)
+	if !failureCarried && fact.Reason != "" {
+		said = append(said, deathSentence(fact.Reason))
+	}
+	switch {
+	case fact.PodEnd != "":
+		said = append(said, "the pod ended: "+fact.PodEnd)
+	case !failureCarried && fact.Cause == supervise.CauseDied && fact.Death != "":
+		said = append(said, "the process was last found "+quoteBounded(deathFirstLine(fact.Death), false))
+	}
+	return strings.Join(said, "; ")
+}
+
+// deathReasonCut follows the closing quote of a part of a worker-died's reason that quoteBounded
+// cut, so a reader sees both where the quoted text ends and that it was cut.
+const deathReasonCut = "… (cut)"
+
+// deathSentence is the supervisor's sentence as a worker-died's reason carries it: each run of
+// line breaks between two pieces of its text written as " / " and any at either end dropped, then
+// quoted and cut as quoteBounded writes it. For a run of refused turns the sentence holds the
+// provider's message as the role's own plugin posted it (supervise's refusalCause, api's
+// turn-outcome route), which can run to a mebibyte over many lines; the claim and a failure
+// record's `detail` keep it whole (noticeFailure). The sentence is cut at runtime.PodEndRunes
+// runes before its line breaks are written, so no more of a mebibyte is read than the bound
+// keeps.
+func deathSentence(sentence string) string {
+	cut := false
+	if at := runeOffset(sentence, runtime.PodEndRunes); at < len(sentence) {
+		sentence, cut = sentence[:at], true
+	}
+	return quoteBounded(strings.Join(strings.FieldsFunc(sentence, isLineBreak), " / "), cut)
+}
+
+// quoteBounded is one part of a worker-died's reason that the daemon did not write itself — the
+// supervisor's sentence, the first line of the runtime's account of a death — as the reason
+// carries it: quoted with %q, so a line break, a tab, an escape or a quote in it is written
+// escaped and nothing in it reads as the reason's own words, and cut to runtime.PodEndRunes
+// runes, the bound the pod end beside it is cut to, where it was longer or cut says it was cut
+// already: the text is then cut to that bound less deathReasonCut's runes, quoted, and followed
+// by deathReasonCut after its closing quote.
+func quoteBounded(text string, cut bool) string {
+	if !cut && runeOffset(text, runtime.PodEndRunes) == len(text) {
+		return strconv.Quote(text)
+	}
+	keep := runtime.PodEndRunes - utf8.RuneCountInString(deathReasonCut)
+	return strconv.Quote(text[:runeOffset(text, keep)]) + deathReasonCut
+}
+
+// isLineBreak is whether r ends a line where the reason is read: a line feed, a carriage return,
+// a vertical tab, a form feed, a next line, or Unicode's line and paragraph separators.
+func isLineBreak(r rune) bool {
+	switch r {
+	case '\n', '\r', '\v', '\f', '\u0085', '\u2028', '\u2029':
+		return true
+	}
+	return false
+}
+
+// runeOffset is the byte offset of the rune n runes into s, and len(s) where s holds n runes or
+// fewer.
+func runeOffset(s string, n int) int {
+	at := 0
+	for ; n > 0 && at < len(s); n-- {
+		_, size := utf8.DecodeRuneInString(s[at:])
+		at += size
+	}
+	return at
+}
+
+// deathFirstLine is the part of a death the worker-died's reason carries: its first line — the
+// verdict and the start of the runtime's account — without the header of a log tail that ends
+// it. The sandbox runtime ends that line with "; last lines of <role>:" and writes the tail of
+// the role's log and of the container's on the lines after it, among them lines a role wrote:
+// carried whole, each of those became a line of the architect's notice. The whole account stays
+// on the claim (supervise.Claim.LastDeathCause), where an operator reads it, and in the `death`
+// of the failure record a notice carries when the fact names a cause (noticeFailure). The line
+// itself can run long — for a pod left unscheduled past the boot timeout it holds the
+// scheduler's message and the pod's events joined (sandbox's Runtime.verdict) — so it is quoted
+// and cut where it is written (deathReason, quoteBounded), and whatever else is in it stays
+// inside the reason's one line.
+func deathFirstLine(death string) string {
+	first, _, cut := strings.Cut(death, "\n")
+	if at := strings.LastIndex(first, "; last lines of "); cut && at >= 0 && strings.HasSuffix(first, ":") {
+		first = first[:at]
+	}
+	return first
+}
+
+// The bounds on what an issue's architect is told about its pod's volume filling, and the two
+// log lines that say which way a report went.
+//
+// A filling pod can report every sweep, and the notice is a wake of the architect's session.
+// VolumeNoticeCap is the most an architect hears for one trimmer and one episode: three is
+// enough to show a trend — it is filling, the trimmer is not keeping up, here is what is in it —
+// and a fourth says nothing the third did not. Two kinds of report pass a bound
+// (volumeNoticeHeldBy): one whose episode a rise raised skips the hour below and not the cap, so
+// each rise episode costs up to three notices however recent the pod's last one was, and the
+// report that the trimmer switched itself off skips both. Every other report of one pod waits
+// VolumeNoticePodInterval from the pod's newest notice, whatever trimmer or episode wrote it, so
+// an episode that ends and another that opens a minute later is still one notice an hour.
+//
+// Both lines begin with VolumeNoticeLinePrefix and each names the issue, the pod, the trimmer,
+// the episode and the count, because the issue's production check reads them from the daemon's
+// log to prove the bounds hold. They are constants so the check and this package name one
+// string.
+const (
+	VolumeNoticeCap         = 3
+	VolumeNoticePodInterval = time.Hour
+
+	VolumeNoticeLinePrefix = "volume near full: "
+	VolumeNoticeWritten    = VolumeNoticeLinePrefix + "the issue's architect was told its pod's volume is filling"
+	VolumeNoticeSuppressed = VolumeNoticeLinePrefix + "a bound held the notice of a sweep that left the pod's volume above its low mark"
+)
+
+// volumeNearFull applies one sweep of an issue pod's volume as that pod's launcher reported it
+// (intake.VolumeNearFull). The launcher reports only a sweep that ended with the volume still
+// above its low mark, and the one report no sweep makes — the trimmer having switched itself off
+// after three faults — so every fact that arrives here is one the architect may need; what this
+// decides is which of them it is told, and it records the telling in the same transaction as the
+// notice.
+//
+// An issue the daemon does not record, and one whose tree lingers after leaving the workflow,
+// write nothing: there is nobody in such a tree to act, as there is nobody for a worker-died of
+// a lingering member. An engine built without the pod tables records nothing either, exactly as
+// it wakes nothing (Config.Pods).
+//
+// The bounds are read and written through the store, never kept here, because a daemon that
+// restarts in the middle of a filling pod's episode would otherwise start the count over and
+// tell that architect three more times — on exactly the pod that keeps reporting.
+func (e *Engine) volumeNearFull(ctx context.Context, tx pgx.Tx, fact intake.VolumeNearFull) (intake.Result, error) {
+	if e.cfg.Pods == nil {
+		return intake.Result{}, nil
+	}
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
+		return intake.Result{}, err
+	}
+	report := fact.Report
+	// The pod is the session's, never the report's: a launcher is authenticated for one pod and
+	// cannot name another's volume (sandbox's volumeReported).
+	report.PodUID = fact.PodUID
+	counts, err := e.cfg.Pods.VolumeNoticeCounts(ctx, tx, issue.Key, fact.PodUID, report.Trimmer, report.Episode)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	now := e.now()
+	if held := volumeNoticeHeldBy(report, counts, now); held != "" {
+		e.logOnCommit(ctx, VolumeNoticeSuppressed, "issue", issue.Key, "pod", fact.PodUID, "trimmer", report.Trimmer,
+			"episode", report.Episode, "notices", counts.Notices, "bound", held,
+			"raisedBy", report.RaisedBy, "usedBytes", report.UsedBytes, "freeBytes", report.FreeBytes)
+		return intake.Result{}, nil
+	}
+	// The count and the notice are one write: a notice the listener cannot hand to an architect
+	// that is not there is still a notice spent, and a transaction that rolls back has spent
+	// none.
+	notices, err := e.cfg.Pods.RecordVolumeNotice(ctx, tx, issue.Key, fact.PodUID, report.Trimmer, report.Episode, now)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: record.VolumeNearFullNotice, Role: claim.RoleArchitect,
+		Reason: volumeNoticeReason(issue.Key, report), Volume: &report}); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, VolumeNoticeWritten, "issue", issue.Key, "pod", fact.PodUID, "trimmer", report.Trimmer,
+		"episode", report.Episode, "notices", notices,
+		"raisedBy", report.RaisedBy, "usedBytes", report.UsedBytes, "freeBytes", report.FreeBytes,
+		"switchedOff", report.SwitchedOff)
+	return intake.Result{}, nil
+}
+
+// volumeNoticeHeldBy is the bound that holds report back, and "" for a report that is sent. The
+// order is the order the rules override each other in:
+//
+//   - A trimmer that has switched itself off is sent whatever the counts stand at. The
+//     protection this notice exists for has stopped, on exactly the pod that has been reporting,
+//     and the bounds would otherwise swallow the one report that says so.
+//   - Three notices for one trimmer and episode is all an architect hears of that episode,
+//     however long it runs and whatever raises a reading inside it. A new trimmer identifier is
+//     a new line and starts the count over, which the key gives: a restarted roles container
+//     mints one.
+//   - A report whose episode a rise raised (shimwire.VolumeEpisodeRise) is sent however recent
+//     the pod's last notice was, where one whose episode a recovery raised waits for the hour.
+//     The launcher raises an episode that way at the start of a reported sweep, where the lower
+//     of that start and the one before it stands five points or more above the episode's
+//     anchor, and at no smaller climb (internal/launcher's riseAt). The anchor is the lowest
+//     start of the episode's reported sweeps where no rise raised it, and the floor that raised
+//     it where one did, which never moves, so until a recovery a chain whose anchor is A at its
+//     first rise holds at most (100 − A) / 5 rises, rounded down: (100 − high mark) / 5 for one
+//     anchored at the high mark. An anchor above 95% can never be passed, since a reading is at
+//     most 100%, so no rise follows one; the bound above holds every episode to three notices
+//     however it was raised. This function reads the word alone.
+//   - Everything else waits an hour from the pod's newest notice, whatever trimmer or episode
+//     wrote it — a recovery-raised episode included, which is a volume doing what it did before.
+func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeCounts, now time.Time) string {
+	if report.SwitchedOff {
+		return ""
+	}
+	if counts.Notices >= VolumeNoticeCap {
+		return fmt.Sprintf("%d notices already written for this trimmer and episode", counts.Notices)
+	}
+	if report.RaisedBy == shimwire.VolumeEpisodeRise {
+		return ""
+	}
+	if !counts.LastAt.IsZero() && now.Sub(counts.LastAt) < VolumeNoticePodInterval {
+		return fmt.Sprintf("the pod's last notice was %s ago, inside the %s this bound gives one pod",
+			now.Sub(counts.LastAt).Round(time.Second), VolumeNoticePodInterval)
+	}
+	return ""
+}
+
+// volumeNoticeReason is the sentence the architect reads: which pod of which issue, how full the
+// volume is, what the sweep freed, why it stopped, each /proc read the kernel refused, and what
+// is on the volume with the two age splits that tell a working set from cold bytes. The notice's
+// own Volume member carries the same facts in a shape a reader can compute with; this is what a
+// person or an agent reads in the message.
+//
+// It is written in the past tense, because the frame carries no time for the sweep it reports and
+// a report the launcher held through an outage reaches the daemon after it (launcher's deliver):
+// the volume was above its low mark when the sweep ended, which says nothing of it now. The freed
+// bytes are the sweep's first reading's used bytes less its last's (launcher's sweep), so they are
+// negative when the volume's used bytes grew; such a sweep is told as the volume growing by that
+// many bytes while it ran, and never as a negative number freed.
+//
+// Everything that comes from the pod rather than from this package is rendered with %q: a
+// name two levels under /legion, a directory's or a file's, is one a role of that pod chose —
+// /legion/scratch is writable by the role uid — and the sentence is read by the architect's own
+// agent session, so a newline in such a name must be text inside the sentence and not a line of
+// its own, with nothing to mark it as data. The trimmer's identifier and what raised its episode
+// are rendered the same way, although the launcher mints the one and takes the other from one of
+// three constants: the frame's own rule checks only that the identifier is present and reads
+// neither one's contents (shimwire.LauncherVolumeReport.Validate), so the sentence's safety rests
+// on this daemon rather than on the sender being Legion's own launcher. The structured Volume
+// member keeps the raw name, which is data a reader computes
+// with rather than prose.
+//
+// How many entries each list carries is the launcher's bound (internal/launcher's bound), and
+// where that bound left entries out the sentence says so: a reader must not take a cut list for
+// the whole of what the trimmer measured.
+//
+// A size is what the launcher's walk measured (internal/launcher's measureTree): the apparent
+// size of every regular file at or under its path, counted once for each name the walk met it
+// under. So a sparse file counts at its length rather than at the blocks it holds, a file linked
+// under two names — bun links its install cache into a workspace's node_modules — counts under
+// both, and the sizes can sum past the used bytes this same sentence gives. The sentence says
+// so in one clause after the last size, once however many sizes it carries, and not at all where
+// the report carries none.
+//
+// The report of a switched-off trimmer is made by no sweep (launcher's switchOff), so its
+// sentence names no bytes freed and no episode: its freed bytes are zero because nothing swept,
+// and its episode and what raised it are filled in for the frame's own rule where the trimmer
+// never raised one, so the sentence cannot tell an episode the trimmer raised from one the frame
+// was given. The structured Volume member still carries all three. Its used and free bytes are
+// the trimmer's last reading of the volume, whenever that was, and both zero where it made none,
+// which is how the sentence tells the two apart: the frame carries no mark of its own for a
+// trimmer that made no reading, and a reading of a mounted volume does not have both at zero.
+//
+// The opening clause of a switched-off trimmer counts nothing, and what the report carries does
+// the counting: what stops the trimmer is three recovered panics in a row of one kind of its
+// work, its readings of the volume, a row that also counts its wait for settings and its interval
+// clock with the line that starts it, or its sweeps and their reports (volumeFaultLimit and
+// faultRow, launcher's volumetrim.go), which the stop reason the launcher sends says and the
+// sentence quotes, while Faults holds the newest three faults of both rows, those recovered since
+// the trimmer's last report and those of a report it still held, which goes into this one
+// (launcher's switchOff), so an earlier one it left out makes four.
+func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
+	var out strings.Builder
+	switch {
+	case report.SwitchedOff:
+		fmt.Fprintf(&out, "the cache trimmer on %s's pod %s has switched itself off and frees nothing more until the pod's roles container restarts (trimmer %q)",
+			issue, report.PodUID, report.Trimmer)
+		if report.UsedBytes == 0 && report.FreeBytes == 0 {
+			out.WriteString(": it made no reading of the volume")
+		} else {
+			fmt.Fprintf(&out, ": its last reading of the volume was %d bytes used, %d free", report.UsedBytes, report.FreeBytes)
+		}
+	default:
+		fmt.Fprintf(&out, "the volume %s's roles share on pod %s was still above its low mark when the sweep ended (trimmer %q, episode %d raised by %q): %d bytes used, %d free, ",
+			issue, report.PodUID, report.Trimmer, report.Episode, report.RaisedBy, report.UsedBytes, report.FreeBytes)
+		if report.FreedBytes < 0 {
+			// The magnitude as uint64, which holds it for every int64, the least one included.
+			fmt.Fprintf(&out, "and the volume grew by %d bytes while the sweep ran", uint64(-report.FreedBytes))
+		} else {
+			fmt.Fprintf(&out, "%d freed by the sweep", report.FreedBytes)
+		}
+	}
+	if report.StopReason != "" {
+		fmt.Fprintf(&out, "; it stopped because %q", report.StopReason)
+	}
+	if len(report.RefusedReads) > 0 {
+		fmt.Fprintf(&out, "; the kernel refused the /proc of %s", quotedList(report.RefusedReads))
+		if report.RefusedReadsOmitted > 0 {
+			fmt.Fprintf(&out, " and %d more this report leaves out", report.RefusedReadsOmitted)
+		}
+	}
+	for _, size := range report.Sizes {
+		if size.Refused == "" {
+			fmt.Fprintf(&out, "; %q holds %d bytes (%d older than an hour, %d older than a day)",
+				size.Path, size.Bytes, size.BytesOverHour, size.BytesOverDay)
+			continue
+		}
+		// A size the walk could read only in part — the kernel refused a read under it, or it
+		// holds a directory deeper than the walk descends — is what the walk could read and no
+		// more, so it is told as a lower bound with the first read the walk did not make, which
+		// is where a reader looks for the rest (record.VolumeSize).
+		fmt.Fprintf(&out, "; %q holds at least %d bytes (%d older than an hour, %d older than a day, of what the walk could read): the walk could not make %d of its reads under it, the first at %q",
+			size.Path, size.Bytes, size.BytesOverHour, size.BytesOverDay, size.Refusals, size.Refused)
+	}
+	if len(report.Sizes) > 0 {
+		out.WriteString("; each size is the apparent size of the files at or under its path, with a file linked under more than one name counted under each name, so the sizes can sum past the bytes the volume uses")
+	}
+	if report.SizesOmitted > 0 {
+		fmt.Fprintf(&out, "; %d more sizes are left out of this report", report.SizesOmitted)
+	}
+	// Two facts and not one: a walk that was cut ended early, and a target the walk measured
+	// none of, or the volume root or an immediate child of it that it did not list in full, may
+	// be one whose read the kernel refused, which cuts no walk — a directory it could not open or
+	// list, a file whose lstat was refused — and is told with the read the kernel refused
+	// (record.VolumeNearFull, record.VolumeMissing).
+	if report.SizesPartial {
+		out.WriteString("; the size walk was cut before it reached every target")
+	}
+	if len(report.SizesMissing) > 0 {
+		fmt.Fprintf(&out, "; the size walk measured none of %s", missingList(report.SizesMissing))
+		if report.SizesMissingOmitted > 0 {
+			fmt.Fprintf(&out, " and %d more it leaves out", report.SizesMissingOmitted)
+		}
+	}
+	if !report.SizesAt.IsZero() {
+		fmt.Fprintf(&out, "; measured at %s", report.SizesAt.UTC().Format(time.RFC3339))
+	}
+	// The count and each fault's first line alone. A fault is a recovered panic with its whole
+	// stack behind it (the trimmer's recover, launcher's volumetrim.go), kilobytes of it, and
+	// Volume.Faults carries them whole already: this sentence is stored in an outbox row and
+	// published to a role topic, so the stack is left out of it. The first line's length is the
+	// sender's: this package cuts at the first newline and applies no rune limit.
+	if len(report.Faults) > 0 {
+		fmt.Fprintf(&out, "; faults the trimmer recovered from: %d", len(report.Faults)+report.FaultsOmitted)
+		for _, fault := range report.Faults {
+			first, _, _ := strings.Cut(fault, "\n")
+			fmt.Fprintf(&out, "; %q", first)
+		}
+		if report.FaultsOmitted > 0 {
+			fmt.Fprintf(&out, "; %d older faults are left out of this report", report.FaultsOmitted)
+		}
+	}
+	return out.String()
+}
+
+// quotedList is each element of list quoted and joined, which is how every list the pod chose
+// the contents of reaches the sentence above: a name with a newline or a quotation mark in it is
+// text inside the sentence rather than a line of its own.
+func quotedList(list []string) string {
+	quoted := make([]string, len(list))
+	for at, one := range list {
+		quoted[at] = strconv.Quote(one)
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// missingList is the targets a size walk measured none of, and the volume root or an immediate
+// child of it where the walk did not list one in full, as quotedList writes a list, each followed
+// by the reason the kernel gave where it has one, quoted the same way: the reason comes from the
+// pod as the path does.
+func missingList(list []record.VolumeMissing) string {
+	quoted := make([]string, len(list))
+	for at, one := range list {
+		quoted[at] = strconv.Quote(one.Path)
+		if one.Reason != "" {
+			quoted[at] += " (because " + strconv.Quote(one.Reason) + ")"
+		}
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // sessionLost tells the issue, its architect and the controller that a worker's recorded session
