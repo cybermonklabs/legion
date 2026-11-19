@@ -402,7 +402,7 @@ def close_paren(src: str, k: int) -> int:
             k = quoted_end(src, k, "'", False, True) + 1
             continue
         if c == '"':
-            k = quoted_end(src, k, '"', True, True) + 1
+            k = dq_end(src, k) + 1
             continue
         if c == "(":
             depth += 1
@@ -410,6 +410,32 @@ def close_paren(src: str, k: int) -> int:
             depth -= 1
             if depth == 0:
                 return k
+        k += 1
+    return n
+
+
+def dq_end(src: str, j: int) -> int:
+    """The index of the `"` that closes a double-quoted shell word opened at j. A $(...), ${...}
+    or `...` inside it is stepped over whole, so the quotes it holds, as in
+    "$(contains "$out" "x")", close nothing."""
+    k, n = j + 1, len(src)
+    while k < n:
+        c = src[k]
+        if c == "\\":
+            k += 2
+            continue
+        if c == '"':
+            return k
+        if src.startswith("$(", k):
+            k = close_paren(src, k + 2) + 1
+            continue
+        if src.startswith("${", k):
+            k = close_brace(src, k + 2, "sh") + 1
+            continue
+        if c == "`":
+            e = src.find("`", k + 1)
+            k = (n if e < 0 else e) + 1
+            continue
         k += 1
     return n
 
@@ -515,7 +541,7 @@ def lex_sh(src: str):
             lits.append(Lit(j, min(k + 1, n), [("text", src[j + 1 : k], j + 1)]))
             i = k + 1
             continue
-        k = quoted_end(src, j, '"', True, True)
+        k = dq_end(src, j)
         lits.append(Lit(j, min(k + 1, n), sh_parts(src, j + 1, k)))
         i = k + 1
     return lits, comments
@@ -1269,6 +1295,16 @@ CONTROLS = [
      'package planted\n\nfunc d(title, body string) string {\n'
      '\treturn fmt.Sprintf("title is %d characters; body is %d characters", len(title), utf8.RuneCountInString(body))\n}\n',
      ["instance", "code points"]),
+    ("a %q before the count takes its own argument, so the count is judged by the next",
+     "packages/envoy/internal/planted/quoted.go",
+     'package planted\n\nfunc q(name string) string {\n'
+     '\treturn fmt.Sprintf("%q holds %d characters", utf8.RuneCountInString(name), len(name))\n}\n',
+     ["instance"]),
+    ("a double-quoted shell word holding \"$(cmd \"x\")\" ends at its own quote",
+     "packages/envoy/scripts/planted-substitution.sh",
+     "#!/usr/bin/env bash\ncheck \"names it\" \"$(contains \"$out\" \"the gate's refusal\")\"\n"
+     "echo \"name: $(printf '%s' \"$1\" | wc -c) characters\"\n# keep a 40-character note\n",
+     ["instance"]),
     ("in a, b := x, y each name takes its own value", "packages/envoy/internal/planted/pair.go",
      'package planted\n\nfunc p(x, y string) string {\n\tsent, held := utf8.RuneCountInString(x), len(y)\n'
      '\treturn fmt.Sprintf("sent %d characters, held %d characters", sent, held)\n}\n',
