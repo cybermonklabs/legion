@@ -30,7 +30,7 @@ func TestThePerIssueReadFollowsAStaleRecordedHead(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 	w := readRuntime(pool, pullRequestStandIn(t, "pushed", read, &atomic.Int32{}).URL, quietLogger())
-	if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+	if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 		t.Fatalf("read the issue's pull request: %v", err)
 	}
 	_, pr := capturePhase(t, pool)
@@ -44,7 +44,7 @@ func TestThePerIssueReadFollowsAStaleRecordedHead(t *testing.T) {
 	// further: the read is safe to run twice. What that second read does apply is the
 	// mergeability fact every answering read applies, whose read time is what moved
 	// (applyMergeability).
-	if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+	if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 		t.Fatalf("read the issue's pull request again: %v", err)
 	}
 	if got := headReads(t, pool, "head-read"); got != 1 {
@@ -63,7 +63,7 @@ func TestThePerIssueReadFindsThePullRequestOfTheIssuesBranch(t *testing.T) {
 	seedUnrecorded(t, pool, "handoff")
 	var listed atomic.Int32
 	w := readRuntime(pool, pullRequestStandIn(t, "handoff", opened, &listed).URL, quietLogger())
-	if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+	if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 		t.Fatalf("read the issue's pull request: %v", err)
 	}
 	got, pr := capturePhase(t, pool)
@@ -95,7 +95,7 @@ func TestThePerIssueReadTellsTheArchitectOfAMissingPullRequest(t *testing.T) {
 	t.Cleanup(server.Close)
 	w := readRuntime(pool, server.URL, quietLogger())
 	for range 2 {
-		if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+		if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 			t.Fatalf("read the issue's pull request: %v", err)
 		}
 	}

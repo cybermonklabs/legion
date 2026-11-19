@@ -490,7 +490,7 @@ counts.
 ## Metrics
 
 `GET /metrics` needs no credential either, so whoever reaches the server's HTTP port can read it.
-It answers in the Prometheus text format with two counters.
+It answers in the Prometheus text format with two counters and four gauges.
 `envoy_dispatch_outbox_publish_failures_total` counts each destination of an event publish that
 was not reached, labelled `reason`. `denied` is a publish NATS refused under the server's own
 grant, `refused` one NATS refuses however often it is retried, `unanswered` a forward NATS took
@@ -506,6 +506,18 @@ holder keeps its claim, and the event is retried until the session answers - so 
 here rather than with the failures above, and its event's back-off is logged at INFO
 (`dispatch outbox: event waits for its role's holder`). An event that reaches the dead-letter
 threshold logs at ERROR however it was held.
+
+A copy of a comment's mention waits until every earlier event of its issue that a session may
+take first has been published, so the session takes them in order. The wait has no limit, so it
+shows. `envoy_dispatch_mention_sends_held` counts the mention sends that wait, and
+`envoy_dispatch_mention_send_held_oldest_seconds` is how long the oldest of them has waited.
+`envoy_dispatch_outbox_fallback_copies_held` and
+`envoy_dispatch_outbox_fallback_copy_held_oldest_seconds` are the same for the copies the outbox
+holds for a mention whose send did not settle. The four carry no label: an issue key is private,
+and anyone who reaches the port reads this endpoint. A copy that waits a minute logs one WARN
+that names the owner, the earlier event and that event's last publish error. The cause is the
+earlier event's failed publish, which logs `dispatch outbox: publish event` at ERROR at each
+attempt and counts in `envoy_dispatch_outbox_publish_failures_total`.
 
 ## Behind a proxy
 
