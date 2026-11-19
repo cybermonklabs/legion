@@ -10,9 +10,9 @@ import { Timestamp } from "../refs/Timestamp";
 import type { PinnedConversationCard } from "./useMarginItems";
 
 interface PinnedTabProps {
-  /** Conversations pinned from the Conversation tab, each under its own `<kind>:<id>`. */
+  /** Conversations pinned from a row of the outline, each under its own `<kind>:<id>`. */
   conversations: PinnedConversationCard[];
-  /** Events pinned from the Activity tab, and conversations pinned before a card carried its
+  /** Events pinned from the issue's history, and conversations pinned before a card carried its
    *  own id, which stay their event's line here until the reader pins the card again. */
   events: DispatchEvent[];
   onUnpin(eventId: number): void;
@@ -28,7 +28,10 @@ export function PinnedTab({
   pinnedIds,
 }: PinnedTabProps): ReactNode {
   return (
-    <div className="pt-3">
+    // The panel the Pinned tab opens, named, because the margin's sheet now holds the issue's
+    // whole conversation under it: one message can be drawn both here and in that list, so a
+    // reader - or a check - asking for the pinned one has to be able to say which it means.
+    <section aria-label="Pinned" className="pt-3">
       {conversations.map((conversation) => (
         <article className={`rounded-lg border p-3 text-sm ${borderDefault}`} key={conversation.id}>
           <div className="flex items-start justify-between gap-2">
@@ -66,6 +69,6 @@ export function PinnedTab({
       {pinnedIds.length === 0 && conversations.length === 0 ? (
         <p className={`text-sm ${textMutedOnSurface}`}>No pinned items.</p>
       ) : null}
-    </div>
+    </section>
   );
 }

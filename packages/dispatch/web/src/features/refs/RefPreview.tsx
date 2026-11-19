@@ -20,7 +20,7 @@ import { type IssueStatus, statusLabel } from "../project/board-model";
 import { AgentName } from "./AgentName";
 import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
+import { hoverPreviewsOff, REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import {
   artifactTextQuery,
@@ -256,6 +256,12 @@ function attachTriggers(): () => void {
     if (trigger === null || trigger === triggerOf(event.relatedTarget)) {
       return;
     }
+    // A surface its reader works from the keyboard opens no card for a resting pointer (the
+    // issue page, dispatch://INFRA-1196 R6); its references still open theirs on keyboard focus,
+    // below.
+    if (hoverPreviewsOff(trigger)) {
+      return;
+    }
     const route = routeOf(trigger);
     if (route !== undefined) {
       keptUnderAStillPointer = false;
@@ -310,11 +316,33 @@ function attachTriggers(): () => void {
       refPreview.blur(trigger);
     }
   };
+  /** The link of an editable document the caret opened a card for, on a surface that opens no
+   *  card on hover: a link inside an editor takes no focus of its own, so the caret entering it
+   *  is the keyboard reaching it, and the caret leaving it closes the card it opened. */
+  let caretIn: HTMLElement | undefined;
+  const onSelectionChange = () => {
+    const at = document.getSelection()?.anchorNode ?? null;
+    const element = at instanceof Element ? at : (at?.parentElement ?? null);
+    const trigger = triggerOf(element);
+    if (trigger?.isContentEditable && hoverPreviewsOff(trigger)) {
+      const route = routeOf(trigger);
+      if (route !== undefined && state?.target.anchor !== trigger) {
+        caretIn = trigger;
+        refPreview.focus(trigger, route);
+      }
+      return;
+    }
+    if (caretIn !== undefined) {
+      refPreview.blur(caretIn);
+      caretIn = undefined;
+    }
+  };
   document.addEventListener("pointermove", onPointerMove, { passive: true });
   document.addEventListener("pointerover", onPointerOver);
   document.addEventListener("pointerout", onPointerOut);
   document.addEventListener("focusin", onFocusIn);
   document.addEventListener("focusout", onFocusOut);
+  document.addEventListener("selectionchange", onSelectionChange);
   document.addEventListener("wheel", onReaderInput, { capture: true, passive: true });
   document.addEventListener("keydown", onReaderInput, { capture: true, passive: true });
   document.addEventListener("pointerdown", onReaderInput, { capture: true, passive: true });
@@ -324,6 +352,7 @@ function attachTriggers(): () => void {
     document.removeEventListener("pointerout", onPointerOut);
     document.removeEventListener("focusin", onFocusIn);
     document.removeEventListener("focusout", onFocusOut);
+    document.removeEventListener("selectionchange", onSelectionChange);
     document.removeEventListener("wheel", onReaderInput, { capture: true });
     document.removeEventListener("keydown", onReaderInput, { capture: true });
     document.removeEventListener("pointerdown", onReaderInput, { capture: true });

@@ -1,5 +1,15 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
-import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  type ReactNode,
+  type RefObject,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
@@ -17,13 +27,15 @@ import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
-import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
+import { PRESET_NAMES, PRESET_ORDER } from "./features/issue/page-words";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
+import { MarginSlotProvider } from "./features/margin/margin-slot";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
+import { ReferenceNamesProvider } from "./features/refs/reference-names";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
@@ -41,6 +53,7 @@ import {
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPalette } from "./features/search/SearchPalette";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
+import { IconRail } from "./features/shell/IconRail";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
 import {
   appKeymap,
@@ -49,8 +62,11 @@ import {
   useKeymap,
 } from "./features/shell/keymap";
 import { NotFoundPage } from "./features/shell/NotFoundPage";
+import { PageFrameProvider } from "./features/shell/page-frame";
 import { RailButton } from "./features/shell/RailButton";
 import { ShortcutHelp } from "./features/shell/ShortcutHelp";
+import { ShellNavigationContext } from "./features/shell/shell-navigation";
+import { ShortcutHelpOpener } from "./features/shell/shortcut-help-opener";
 import {
   SIGN_OUT_SETTLE_MS,
   SignInChannel,
@@ -58,6 +74,7 @@ import {
 } from "./features/shell/sign-in-channel";
 import {
   COMPACT_VIEWPORT_QUERY,
+  MD_VIEWPORT_QUERY,
   READING_PANE_QUERY,
   useDialog,
   useMediaQuery,
@@ -85,6 +102,7 @@ import {
   card,
   linkHoverText,
   linkText,
+  pagePaperBg,
   primaryButtonBg,
   primaryButtonHoverBg,
   railAccentHoverText,
@@ -192,16 +210,24 @@ function IssuePageFallback(): ReactNode {
           />
         </h1>
       </header>
-      {/* `overflow-hidden`: the ten labels are wider than a narrow window and this row neither
-          wraps nor scrolls, where the real tablist scrolls inside itself. Clipped, a chunk's load
-          never scrolls the page sideways. */}
-      <div className={`mb-4 flex gap-2 overflow-hidden border-b ${borderDefault}`} role="tablist">
-        {ISSUE_TAB_LABELS.map((label) => (
+      {/* `min-w-0`, so the row may be narrower than the names it holds: without it the row's
+          min-content width is the page's own at every width, and a 390 px phone draws the
+          whole issue page 465 px wide for as long as the chunk takes to arrive
+          (dispatch://INFRA-1196 R17, `e2e/phone.e2e.ts`). `overflow-hidden`, because this row
+          neither wraps nor scrolls where the real one scrolls inside itself: clipped, a chunk's
+          load never scrolls the page sideways. The names are the filter row's five controls, so
+          the skeleton and the page it stands in for say the same thing and no retired name
+          flashes on screen (R2). */}
+      <div
+        className={`mb-4 flex min-w-0 gap-2 overflow-hidden border-b ${borderDefault}`}
+        role="toolbar"
+      >
+        {PRESET_ORDER.map((preset) => (
           <span
-            className={`animate-pulse rounded px-3 py-2 text-sm ${textTransparent} ${skeletonBg}`}
-            key={label}
+            className={`animate-pulse truncate rounded px-3 py-2 text-sm ${textTransparent} ${skeletonBg}`}
+            key={preset}
           >
-            {label}
+            {PRESET_NAMES[preset]}
           </span>
         ))}
       </div>
@@ -336,7 +362,8 @@ function NavigationContents({
   onClose: () => void;
   onCreateIssue: () => void;
   onHideSidebar: () => void;
-  onOpenInboxDrawer: () => void;
+  /** Opens the inbox drawer from the navigation's Peek, where this navigation carries one. */
+  onOpenInboxDrawer: (() => void) | undefined;
   onSearch: () => void;
   onSignOut: () => void;
   signOutError: boolean;
@@ -386,7 +413,14 @@ function NavigationContents({
       <Sidebar
         onHide={compact ? undefined : onHideSidebar}
         onNavigate={onClose}
-        onOpenInboxDrawer={compact ? undefined : onOpenInboxDrawer}
+        onOpenInboxDrawer={
+          onOpenInboxDrawer === undefined
+            ? undefined
+            : () => {
+                onClose();
+                onOpenInboxDrawer();
+              }
+        }
         user={user}
       />
       {/* Identity is chrome: who you are and how to leave are read once, while the navigation
@@ -448,17 +482,54 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     String
   );
   const location = useLocation();
+  // The issue page's frame is its own (dispatch://INFRA-1196 R14): from Tailwind's `md` up an
+  // icon rail of 56 px stands where the sidebar stands on every other page, below it the `☰` in
+  // the issue's own header opens the navigation, and its panel is a drawer over the page,
+  // Details, rather than a column. The shell reads the address for it, as it reads the address
+  // for the margin, so a reload draws that frame from its first frame. The rail is drawn by the
+  // query that is `md` itself, in `rem`, because the room the page makes for it is `md:pl-14`:
+  // a pixel query draws the rail over the page wherever the two disagree, which is every width
+  // from 768 to 959 px at a 20 px default font.
+  const issuePage = parseIssuePath(location.pathname, location.search) !== undefined;
+  const railFits = useMediaQuery(MD_VIEWPORT_QUERY);
+  const iconRailShown = issuePage && railFits;
+  // Whether the Details drawer is open, held for the page it was opened on: every load opens it
+  // closed, and so does every move to another issue; the issue's own `/conversation`,
+  // `/activity` and `/collaborators` open it (`IssuePage.tsx`), and so do a compose, a picked
+  // card and a link that lands on a card beside its document (`features/margin/Margin.tsx`).
+  // Leaving the page it was opened on forgets it in the same render, so coming back to that
+  // page - by a link or by Back - finds it closed, as a load does.
+  const pageIdentity =
+    parseIssuePath(location.pathname)?.key ??
+    parseProjectPath(location.pathname)?.project ??
+    location.pathname;
+  const [detailsFor, setDetailsFor] = useState<string | undefined>(undefined);
+  if (detailsFor !== undefined && detailsFor !== pageIdentity) setDetailsFor(undefined);
+  const detailsOpen = detailsFor === pageIdentity;
+  const detailsDrawer = useMemo(
+    () => ({
+      open: detailsOpen,
+      setOpen: (open: boolean) => setDetailsFor(open ? pageIdentity : undefined),
+    }),
+    [detailsOpen, pageIdentity]
+  );
   // The shell reserves a gutter for a rail only where that rail exists. The collapsed-margin
   // rail exists only where the route has a margin, so it is reserved from exactly the answer
   // `features/margin/Margin.tsx` renders from; two answers that disagree leave 80 px of
   // padding beside a rail that is not there. "Full width" means no expanded column on either
-  // side - on a route with no margin, a hidden sidebar is enough.
+  // side - on a route with no margin, a hidden sidebar is enough, and the issue page has
+  // neither.
   const hasMargin = routeHasMargin(location.pathname, location.search);
-  const marginRailShown = hasMargin && marginHidden;
-  const marginColumnShown = hasMargin && !marginHidden;
-  const fullWidth = sidebarHidden && !marginColumnShown;
-  const mainLayoutClass =
-    sidebarHidden && marginRailShown
+  // The issue page's column has no padding of its own: its header, its filter row, its Contents
+  // pane and its outline each keep the inset the prototype gives them, the pane against the rail
+  // (`IssuePage.tsx`). Every other page keeps the 24 px it has always had.
+  const mainPaddingClass = issuePage ? "" : "p-6";
+  const marginRailShown = !issuePage && hasMargin && marginHidden;
+  const marginColumnShown = !issuePage && hasMargin && !marginHidden;
+  const fullWidth = (issuePage || sidebarHidden) && !marginColumnShown;
+  const mainLayoutClass = issuePage
+    ? "md:pl-14"
+    : sidebarHidden && marginRailShown
       ? "xl:w-full xl:pl-20 xl:pr-20"
       : sidebarHidden && !hasMargin
         ? "xl:w-full xl:pl-20"
@@ -534,14 +605,28 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useFootInset(statusCornerRef, true, FOOT_STATUS_INSET_PROPERTY);
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
+  // The navigation's sheet: behind the Menu control below `xl`, and on the issue page behind the
+  // rail's foot control and the header's `☰`, which open the whole of it over the page.
+  const navigationSheetShown = navigationOpen && (isCompactViewport || issuePage);
   const drawer = useDialog<HTMLElement>({
     initialFocusRef: closeButtonRef,
     onClose: () => setNavigationOpen(false),
-    open: navigationOpen && isCompactViewport,
+    open: navigationSheetShown,
   });
+  // What the issue's header draws its `☰` from, below `md`, where the shell draws neither its
+  // bar nor the rail (R14).
+  const headerNavigation = useMemo(
+    () =>
+      issuePage && !railFits
+        ? { onOpen: () => setNavigationOpen(true), open: navigationOpen }
+        : undefined,
+    [issuePage, navigationOpen, railFits]
+  );
   const navigate = useNavigate();
   // The registry as described when `?` fired (focus still on the caller); `null` while closed.
   const [helpSnapshot, setHelpSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
+  // What `?` does, and what a page's own Keys control does (`shortcut-help-opener.tsx`).
+  const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
   useKeymap("global", [
@@ -569,7 +654,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       id: "help",
       keys: "?",
       label: "Keyboard shortcuts",
-      run: () => setHelpSnapshot(appKeymap.describe()),
+      run: openHelp,
     },
     { id: "create", keys: "c", label: "Create issue", run: () => setCreateOpen(true) },
     { id: "go-inbox", keys: "g i", label: "Go to Inbox", run: () => navigate("/") },
@@ -609,17 +694,21 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       keys: "Shift+S",
       label: "Toggle sidebar",
       run: () => setSidebarHidden(!sidebarHidden),
-      // Below `xl` the sidebar is a sheet with its own Menu control, and the preference is inert.
-      when: () => !isCompactViewport,
+      // Below `xl` the sidebar is a sheet with its own Menu control, and the preference is inert;
+      // so it is on the issue page, whose navigation is its icon rail.
+      when: () => !isCompactViewport && !issuePage,
     },
     {
+      // On the issue page the margin is the Details drawer, which this key opens and closes at
+      // every width, as the header's Details control does (R14).
       id: "toggle-margin",
       keys: "Shift+M",
-      label: "Toggle margin",
-      run: () => setMarginHidden(!marginHidden),
+      label: issuePage ? "Open or close Details" : "Toggle margin",
+      run: () =>
+        issuePage ? detailsDrawer.setOpen(!detailsDrawer.open) : setMarginHidden(!marginHidden),
       // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
       // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
-      when: () => !isCompactViewport && hasMargin,
+      when: () => issuePage || (!isCompactViewport && hasMargin),
     },
   ]);
   const login = user.login;
@@ -663,11 +752,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const [askingTabs, setAskingTabs] = useState(false);
   // Tabs within the same issue manage their own focus (roving tabindex); only a
   // genuine page change — a different issue, or a different top-level route —
-  // should move focus to the main region.
-  const pageIdentity =
-    parseIssuePath(location.pathname)?.key ??
-    parseProjectPath(location.pathname)?.project ??
-    location.pathname;
+  // should move focus to the main region. `pageIdentity` is read above.
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-run only to move focus to main on a real page change
   useEffect(() => {
@@ -681,11 +766,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const navigation = (
     <NavigationContents
       closeButtonRef={closeButtonRef}
-      compact={isCompactViewport}
+      compact={isCompactViewport || issuePage}
       onClose={() => setNavigationOpen(false)}
       onCreateIssue={() => setCreateOpen(true)}
       onHideSidebar={() => setSidebarHidden(true)}
-      onOpenInboxDrawer={() => setInboxDrawerOpen(true)}
+      onOpenInboxDrawer={
+        // Below `xl` the shell's own bar carries the peek, so its sheet leaves it out; the issue
+        // page draws no such bar, and its sheet carries it.
+        isCompactViewport && !issuePage ? undefined : () => setInboxDrawerOpen(true)
+      }
       onSearch={() => setBarOpen(true)}
       onSignOut={() => {
         // Signing out discards the person's own writes in every tab of this browser, so it asks
@@ -730,210 +819,271 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
 
   return (
     <MarginProvider>
-      <div
-        className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${canvasText}`}
-        data-testid="app-shell"
-      >
-        <a
-          className={`sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-lg focus:px-4 focus:py-2 ${railFocusOverlayBg} ${railFocusOverlayText}`}
-          href="#main-content"
+      <ReferenceNamesProvider>
+        {/* Below `xl` the margin is a sheet over the page, and collapsed it is a rail, so in
+            neither does it draw the page's panel: the page draws it in its own column instead
+            (`features/margin/margin-slot.tsx`, dispatch://INFRA-1196 R11). On the issue page the
+            margin is the Details drawer at every width, and draws the page's panel there (R14). */}
+        <MarginSlotProvider
+          drawer={issuePage ? detailsDrawer : undefined}
+          drawsSlot={issuePage || (marginColumnShown && !isCompactViewport)}
         >
-          Skip to content
-        </a>
-        {/* The shell's status corner: the pending-writes indicator above the connection pill.
+          <ShellNavigationContext.Provider value={headerNavigation}>
+            <ShortcutHelpOpener.Provider value={openHelp}>
+              <div
+                className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${canvasText}`}
+                data-testid="app-shell"
+              >
+                <a
+                  className={`sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded-lg focus:px-4 focus:py-2 ${railFocusOverlayBg} ${railFocusOverlayText}`}
+                  href="#main-content"
+                >
+                  Skip to content
+                </a>
+                {/* The shell's status corner: the pending-writes indicator above the connection pill.
             Above the highest composer fixed at the foot of the screen (`--foot-composer-inset`,
             `useFootInset`), so neither sits over its controls; otherwise just above the phone's
             bottom bar. Only what it shows takes the pointer. A socket Dispatch refuses carries no
             status the page can read, so nothing in the pill is terminal: once reconnecting has
             gone on for two minutes it offers a reload, and the page keeps trying underneath. */}
-        <div
-          className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
-          ref={statusCornerRef}
-        >
-          <PendingWritesIndicator />
-          {connection === "stuck" ? (
-            <p
-              aria-live="polite"
-              className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium shadow-lg ${calloutDangerBorder} ${calloutDangerBg} ${badgeBlocking.text}`}
-              data-testid="connection-pill"
-            >
-              Live updates are not reaching this page
-              <button className="underline" onClick={() => window.location.reload()} type="button">
-                Reload
-              </button>
-            </p>
-          ) : connection === "reconnecting" ? (
-            <p
-              aria-live="polite"
-              className={`rounded-full border px-3 py-1 text-xs font-medium shadow-lg ${calloutWarningBorder} ${statusConnecting.bg} ${statusConnecting.text}`}
-              data-testid="connection-pill"
-            >
-              Reconnecting…
-            </p>
-          ) : null}
-        </div>
-        {isCompactViewport ? (
-          <header
-            className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
-          >
-            {/* The title never shrinks and no count breaks its own words: the counts that do not
-                fit beside the title wrap onto a second row of the bar, with Menu on the right. */}
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <Link className="shrink-0 text-lg font-semibold" to="/">
-                Dispatch
-              </Link>
-              {routeIsInbox(location.pathname) ? (
-                <span className={inboxBadgeClass}>{inboxLabel}</span>
-              ) : (
-                <>
-                  <button
-                    aria-label="Peek at the inbox without leaving this page"
-                    className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
-                    onClick={() => setInboxDrawerOpen(true)}
-                    type="button"
-                  >
-                    Peek
-                  </button>
-                  <Link className={inboxBadgeClass} to="/">
-                    {inboxLabel}
-                  </Link>
-                </>
-              )}
-              {unreadReplies === 0 ? null : (
-                <Link
-                  className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-                  to="/agents"
+                <div
+                  className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
+                  ref={statusCornerRef}
                 >
-                  {unreadRepliesLabel(unreadReplies)}
-                </Link>
-              )}
-            </div>
-            <button
-              aria-expanded={navigationOpen}
-              aria-label="Open navigation"
-              className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${railHoverBg}`}
-              onClick={() => setNavigationOpen(true)}
-              type="button"
-            >
-              Menu
-            </button>
-          </header>
-        ) : null}
-        {isCompactViewport && navigationOpen ? (
-          <>
-            <div
-              aria-hidden="true"
-              className={`fixed inset-0 z-20 ${backdrop50}`}
-              onClick={() => setNavigationOpen(false)}
-            />
-            <aside
-              aria-label="Navigation"
-              aria-modal="true"
-              className={`fixed inset-y-0 left-0 z-30 flex w-80 max-w-[calc(100vw-2rem)] flex-col overflow-y-auto border-b p-5 shadow-2xl ${railBorder} ${railBg} ${railText}`}
-              ref={drawer.containerRef}
-              role="dialog"
-            >
-              {navigation}
-            </aside>
-          </>
-        ) : null}
-        {isCompactViewport ? null : sidebarHidden ? (
-          <aside
-            aria-label="Collapsed sidebar"
-            className={`fixed inset-y-0 left-0 z-10 flex w-14 justify-center border-r p-2 ${railBorder} ${railBg} ${railText}`}
-            data-testid="sidebar-rail"
-          >
-            <button
-              aria-label="Show sidebar"
-              className={`min-h-11 min-w-11 rounded-lg text-sm font-medium ${railHoverBg}`}
-              onClick={() => setSidebarHidden(false)}
-              type="button"
-            >
-              <span aria-hidden="true">›</span>
-            </button>
-          </aside>
-        ) : (
-          // The sidebar is first in the document and as tall as the viewport, so left to itself
-          // Chromium's scroll anchoring picks it as the anchor node - and since it never moves,
-          // nothing is ever compensated. Excluding it makes the browser anchor inside <main>, so
-          // content growing above the reader (a card's thread loading, Markdown rendering) no
-          // longer shifts what they are looking at.
-          <aside
-            aria-label="Navigation"
-            className={`relative order-1 w-80 max-w-none border-r [overflow-anchor:none] ${railBorder} ${railBg} ${railText}`}
-          >
-            {/* The aside stretches to the page's height, so the navigation is a viewport-tall
+                  <PendingWritesIndicator />
+                  {connection === "stuck" ? (
+                    <p
+                      aria-live="polite"
+                      className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium shadow-lg ${calloutDangerBorder} ${calloutDangerBg} ${badgeBlocking.text}`}
+                      data-testid="connection-pill"
+                    >
+                      Live updates are not reaching this page
+                      <button
+                        className="underline"
+                        onClick={() => window.location.reload()}
+                        type="button"
+                      >
+                        Reload
+                      </button>
+                    </p>
+                  ) : connection === "reconnecting" ? (
+                    <p
+                      aria-live="polite"
+                      className={`rounded-full border px-3 py-1 text-xs font-medium shadow-lg ${calloutWarningBorder} ${statusConnecting.bg} ${statusConnecting.text}`}
+                      data-testid="connection-pill"
+                    >
+                      Reconnecting…
+                    </p>
+                  ) : null}
+                </div>
+                {isCompactViewport && !issuePage ? (
+                  <header
+                    className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
+                  >
+                    {/* The title never shrinks and no count breaks its own words: the counts that do not
+                fit beside the title wrap onto a second row of the bar, with Menu on the right. */}
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                      <Link className="shrink-0 text-lg font-semibold" to="/">
+                        Dispatch
+                      </Link>
+                      {routeIsInbox(location.pathname) ? (
+                        <span className={inboxBadgeClass}>{inboxLabel}</span>
+                      ) : (
+                        <>
+                          <button
+                            aria-label="Peek at the inbox without leaving this page"
+                            className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railHoverBg}`}
+                            onClick={() => setInboxDrawerOpen(true)}
+                            type="button"
+                          >
+                            Peek
+                          </button>
+                          <Link className={inboxBadgeClass} to="/">
+                            {inboxLabel}
+                          </Link>
+                        </>
+                      )}
+                      {unreadReplies === 0 ? null : (
+                        <Link
+                          className={`whitespace-nowrap rounded-full px-2 py-1 text-xs font-semibold ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
+                          to="/agents"
+                        >
+                          {unreadRepliesLabel(unreadReplies)}
+                        </Link>
+                      )}
+                    </div>
+                    <button
+                      aria-expanded={navigationOpen}
+                      aria-label="Open navigation"
+                      className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${railHoverBg}`}
+                      onClick={() => setNavigationOpen(true)}
+                      type="button"
+                    >
+                      Menu
+                    </button>
+                  </header>
+                ) : null}
+                {navigationSheetShown ? (
+                  <>
+                    <div
+                      aria-hidden="true"
+                      className={`fixed inset-0 z-20 ${backdrop50}`}
+                      onClick={() => setNavigationOpen(false)}
+                    />
+                    <aside
+                      aria-label="Navigation"
+                      aria-modal="true"
+                      className={`fixed inset-y-0 left-0 z-30 flex w-80 max-w-[calc(100vw-2rem)] flex-col overflow-y-auto border-b p-5 shadow-2xl ${railBorder} ${railBg} ${railText}`}
+                      ref={drawer.containerRef}
+                      role="dialog"
+                    >
+                      {navigation}
+                    </aside>
+                  </>
+                ) : null}
+                {iconRailShown ? (
+                  <IconRail
+                    inboxCount={inboxCount}
+                    navigationOpen={navigationOpen}
+                    onOpenNavigation={() => setNavigationOpen(true)}
+                    project={routeProject}
+                    user={user}
+                  />
+                ) : isCompactViewport || issuePage ? null : sidebarHidden ? (
+                  <aside
+                    aria-label="Collapsed sidebar"
+                    className={`fixed inset-y-0 left-0 z-10 flex w-14 justify-center border-r p-2 ${railBorder} ${railBg} ${railText}`}
+                    data-testid="sidebar-rail"
+                  >
+                    <button
+                      aria-label="Show sidebar"
+                      className={`min-h-11 min-w-11 rounded-lg text-sm font-medium ${railHoverBg}`}
+                      onClick={() => setSidebarHidden(false)}
+                      type="button"
+                    >
+                      <span aria-hidden="true">›</span>
+                    </button>
+                  </aside>
+                ) : (
+                  // The sidebar is first in the document and as tall as the viewport, so left to itself
+                  // Chromium's scroll anchoring picks it as the anchor node - and since it never moves,
+                  // nothing is ever compensated. Excluding it makes the browser anchor inside <main>, so
+                  // content growing above the reader (a card's thread loading, Markdown rendering) no
+                  // longer shifts what they are looking at.
+                  <aside
+                    aria-label="Navigation"
+                    className={`relative order-1 w-80 max-w-none border-r [overflow-anchor:none] ${railBorder} ${railBg} ${railText}`}
+                  >
+                    {/* The aside stretches to the page's height, so the navigation is a viewport-tall
                 column that sticks inside it: on a long issue the links stay reachable, and the
                 identity footer sits at the bottom of the screen rather than the bottom of the
                 document. */}
-            <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-5">{navigation}</div>
-          </aside>
-        )}
-        <main
-          className={`min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`}
-          data-shell-layout={fullWidth ? "full-width" : "standard"}
-          data-testid="main-content"
-          id="main-content"
-          ref={mainRef}
-          tabIndex={-1}
-        >
-          <ErrorBoundary region="this page" resetKey={location.pathname}>
-            <Suspense fallback={<IssuePageFallback />}>
-              <Routes>
-                <Route element={<InboxPage />} path="/" />
-                <Route element={<AnswersPage />} path={ANSWERS_PATH} />
-                {/* The Replies page is the Inbox's Reply rows now; an old link lands on them. */}
-                <Route
-                  element={
-                    <Navigate replace to={buildInboxPath({ filters: { type: ["reply"] } })} />
-                  }
-                  path="/replies"
-                />
-                <Route element={<AgentsPage />} path="/agents" />
-                <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
-                <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
-                <Route element={<LiveViewRoute />} path={AGENT_LIVE_PATH} />
-                <Route element={<AgentArtifactPage />} path={AGENT_ARTIFACT_PATH} />
-                <Route element={<MachinesPage />} path="/machines" />
-                <Route element={<MachinePage />} path="/machines/:machine" />
-                <Route element={<IssuePage />} path="/issues/:key/*" />
-                <Route element={<PrioritiesPage />} path="/priorities" />
-                <Route element={<PriorityPage />} path="/priorities/:id" />
-                <Route element={<ProjectPage />} path="/projects/:key" />
-                <Route element={<ProjectPage />} path="/projects/:key/architecture" />
-                <Route element={<ProjectPage />} path="/projects/:key/issues" />
-                <Route element={<ProjectPage />} path="/projects/:key/documents" />
-                <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
-                <Route element={<InboxPage />} path="/credentials/*" />
-                <Route element={<MachineLoginRoute />} path="/credentials/machine" />
-                <Route element={<SettingsPage />} path="/settings" />
-                <Route element={<DeliveryPage />} path="/delivery" />
-                <Route element={<PipelinePage />} path="/pipeline" />
-                <Route element={<NotFoundPage />} path="*" />
-              </Routes>
-            </Suspense>
-          </ErrorBoundary>
-          {/* The live views the person has open, inside `<main>` so each takes the layout and
-              the iOS keyboard fit the live route already has, and beside the routes rather than
-              under them: a view outlives the address that opened it, so neither leaving the
-              live route, nor another page's throw, nor a lazy page suspending may unmount it.
-              The live route's own element renders nothing. */}
-          <MountedLiveViews front={frontLiveView} />
-        </main>
-        <ErrorBoundary region="the margin" resetKey={location.pathname}>
-          <MarginColumn
-            collapsed={marginHidden}
-            onCollapsedChange={setMarginHidden}
-            onWidthChange={setMarginWidth}
-            width={marginWidth}
-          />
-        </ErrorBoundary>
-        <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
-        <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
-        <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
-        {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
-        <RefPreviewHost />
-      </div>
+                    <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-5">
+                      {navigation}
+                    </div>
+                  </aside>
+                )}
+                {/* The frame a page marks as its own: the column it renders into and the margin beside
+            it, which read as one page however the shell mounts them (`features/shell/page-frame.tsx`).
+            It takes <main>'s place in the shell's row, so the sidebar, the compact header and
+            the status corner stay outside whatever a page marks. */}
+                <PageFrameProvider>
+                  {(frameAttributes) => (
+                    <div
+                      className={`flex min-h-0 min-w-0 flex-1 xl:order-2 ${issuePage ? `min-h-dvh ${pagePaperBg}` : ""}`}
+                      {...frameAttributes}
+                    >
+                      {/* The padding is `mainPaddingClass`, above: the issue page keeps its own. */}
+                      <main
+                        className={`min-w-0 flex-1 outline-none ${mainPaddingClass} ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`}
+                        data-shell-layout={fullWidth ? "full-width" : "standard"}
+                        data-testid="main-content"
+                        id="main-content"
+                        ref={mainRef}
+                        tabIndex={-1}
+                      >
+                        <ErrorBoundary region="this page" resetKey={location.pathname}>
+                          <Suspense
+                            fallback={
+                              issuePage ? (
+                                <div className="px-3.5 pt-2 md:px-7">
+                                  <IssuePageFallback />
+                                </div>
+                              ) : (
+                                <IssuePageFallback />
+                              )
+                            }
+                          >
+                            <Routes>
+                              <Route element={<InboxPage />} path="/" />
+                              <Route element={<AnswersPage />} path={ANSWERS_PATH} />
+                              {/* The Replies page is the Inbox's Reply rows now; an old link lands
+                            on them. */}
+                              <Route
+                                element={
+                                  <Navigate
+                                    replace
+                                    to={buildInboxPath({ filters: { type: ["reply"] } })}
+                                  />
+                                }
+                                path="/replies"
+                              />
+                              <Route element={<AgentsPage />} path="/agents" />
+                              <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
+                              <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
+                              <Route element={<LiveViewRoute />} path={AGENT_LIVE_PATH} />
+                              <Route element={<AgentArtifactPage />} path={AGENT_ARTIFACT_PATH} />
+                              <Route element={<MachinesPage />} path="/machines" />
+                              <Route element={<MachinePage />} path="/machines/:machine" />
+                              <Route element={<IssuePage />} path="/issues/:key/*" />
+                              <Route element={<PrioritiesPage />} path="/priorities" />
+                              <Route element={<PriorityPage />} path="/priorities/:id" />
+                              <Route element={<ProjectPage />} path="/projects/:key" />
+                              <Route element={<ProjectPage />} path="/projects/:key/architecture" />
+                              <Route element={<ProjectPage />} path="/projects/:key/issues" />
+                              <Route element={<ProjectPage />} path="/projects/:key/documents" />
+                              <Route
+                                element={<DocumentPage />}
+                                path="/projects/:key/documents/:slug"
+                              />
+                              <Route element={<InboxPage />} path="/credentials/*" />
+                              <Route element={<MachineLoginRoute />} path="/credentials/machine" />
+                              <Route element={<SettingsPage />} path="/settings" />
+                              <Route element={<DeliveryPage />} path="/delivery" />
+                              <Route element={<PipelinePage />} path="/pipeline" />
+                              <Route element={<NotFoundPage />} path="*" />
+                            </Routes>
+                          </Suspense>
+                        </ErrorBoundary>
+                        {/* The live views the person has open, inside `<main>` so each takes the
+                        layout and the iOS keyboard fit the live route already has, and beside
+                        the routes rather than under them: a view outlives the address that
+                        opened it, so neither leaving the live route, nor another page's throw,
+                        nor a lazy page suspending may unmount it. The live route's own element
+                        renders nothing. */}
+                        <MountedLiveViews front={frontLiveView} />
+                      </main>
+                      <ErrorBoundary region="the margin" resetKey={location.pathname}>
+                        <MarginColumn
+                          collapsed={marginHidden}
+                          onCollapsedChange={setMarginHidden}
+                          onWidthChange={setMarginWidth}
+                          width={marginWidth}
+                        />
+                      </ErrorBoundary>
+                    </div>
+                  )}
+                </PageFrameProvider>
+                <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
+                <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
+                <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
+                {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
+                <RefPreviewHost />
+              </div>
+            </ShortcutHelpOpener.Provider>
+          </ShellNavigationContext.Provider>
+        </MarginSlotProvider>
+      </ReferenceNamesProvider>
     </MarginProvider>
   );
 }

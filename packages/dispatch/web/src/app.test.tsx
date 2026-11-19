@@ -898,20 +898,21 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
-  // The issue route reads the issue and its discussion. Nothing here is about the issue, and no
-  // Dispatch answers them, so they are answered at the client with the failure the page has
-  // always seen rather than reaching the network.
-  const unread = new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"));
-  const issueReads = [
-    spyOn(api, "getIssue").mockRejectedValue(unread),
-    spyOn(api, "listComments").mockRejectedValue(unread),
-    spyOn(api, "listIssueAsks").mockRejectedValue(unread),
-  ];
-  // An issue route: the shell's margin controls only exist where the route has a margin, and
-  // this test is about the collapse preferences surviving a remount, not about the Inbox.
+  // The project document route reads its document. Nothing here is about the document, and no
+  // Dispatch answers it, so it is answered at the client with the failure the page has always
+  // seen rather than reaching the network.
+  const unread = new NetworkError(
+    "/api/v1/projects/CORE/artifacts/notes-md",
+    new TypeError("Failed to fetch")
+  );
+  const getProjectArtifact = spyOn(api, "getProjectArtifact").mockRejectedValue(unread);
+  // A project document: the shell's margin controls only exist where the route has a margin,
+  // and the issue page draws its own frame - an icon rail and a Details drawer - in place of
+  // both (dispatch://INFRA-1196 R14); this test is about the collapse preferences surviving a
+  // remount.
   try {
     const first = render(
-      <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <MemoryRouter initialEntries={["/projects/CORE/documents/notes-md"]}>
         <QueryClientProvider
           client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
         >
@@ -945,7 +946,7 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
     }
 
     const second = render(
-      <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <MemoryRouter initialEntries={["/projects/CORE/documents/notes-md"]}>
         <QueryClientProvider
           client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
         >
@@ -972,7 +973,7 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
   } finally {
     // A failure under the first render must not leave these to the rows after it: a spy left in
     // place keeps the calls it recorded here, and `spyOn` on it again hands back the same mock.
-    for (const read of issueReads) read.mockRestore();
+    getProjectArtifact.mockRestore();
     getInbox.mockRestore();
     getMyState.mockRestore();
     listIssues.mockRestore();

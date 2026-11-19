@@ -3,6 +3,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Issue } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 
+/** What one write of the issue's own fields may carry: the three the header holds a draft of -
+ *  the title, the route and the parent - and the status its pill picks. The issues this one
+ *  waits on are written by the panel's own control (`useIssueBlockedBy.ts`). */
 export type IssueUpdateInput = Partial<Pick<Issue, "parent" | "route" | "status" | "title">>;
 
 export interface IssueUpdateMutation {

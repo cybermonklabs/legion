@@ -14,6 +14,7 @@ import {
   issueTabForRoute,
   itemRoute,
   nodeRouteFromHref,
+  openDocumentPath,
   parseAgentArtifactPath,
   parseDispatchReference,
   parseInboxSearch,
@@ -136,6 +137,28 @@ test("an item's document path names the document it belongs to, never the issue'
     "/issues/CORE-1/artifacts/expert-message-v4-md#b-ship-it"
   );
   expect(documentItemPath(projectDocument, { id: "c3", kind: "comment" })).toBe(
+    "/projects/CORE/documents/handbook-md?comment=c3"
+  );
+});
+
+// dispatch://INFRA-1196 R20: `?comment=` and `?ask=` on an issue's address open the outline on
+// the item's node, so a link that means the document - "View in document", an approval's
+// document - opens the document's own address, the spec's `/artifacts/<slug>` included, and
+// names a comment to mark with `?mark=`. A project document's page has no outline.
+test("a document's own path opens the document, and names a comment to mark with ?mark=", () => {
+  const primary = {
+    issue_key: "CORE-1",
+    kind: "doc" as const,
+    primary: true,
+    project: "CORE",
+    session_id: null,
+    slug: "spec",
+  };
+  const projectDocument = { ...primary, issue_key: null, primary: false, slug: "handbook-md" };
+  expect(openDocumentPath(primary)).toBe("/issues/CORE-1/artifacts/spec");
+  expect(openDocumentPath(primary, "c1")).toBe("/issues/CORE-1/artifacts/spec?mark=c1");
+  expect(openDocumentPath(projectDocument)).toBe("/projects/CORE/documents/handbook-md");
+  expect(openDocumentPath(projectDocument, "c3")).toBe(
     "/projects/CORE/documents/handbook-md?comment=c3"
   );
 });
@@ -492,39 +515,24 @@ test("artifacts tab has its own issue route", () => {
   expect(buildIssuePath({ key: "CORE-1", kind: "artifacts" })).toBe("/issues/CORE-1/artifacts");
 });
 
-test("issue routes select Spec and artifact routes select Artifacts unless primary", () => {
-  expect(
-    issueTabForRoute(
-      { key: "CORE-1", kind: "artifact", slug: "diagram" },
-      { kind: "image", primary: false }
-    )
-  ).toBe("artifacts");
-  expect(
-    issueTabForRoute(
-      { key: "CORE-1", kind: "artifact", slug: "spec" },
-      { kind: "doc", primary: true }
-    )
-  ).toBe("spec");
-  expect(issueTabForRoute({ key: "CORE-1", kind: "issue" }, undefined)).toBe("spec");
-  expect(issueTabForRoute({ id: "ask-1", key: "CORE-1", kind: "ask" }, undefined)).toBe(
-    "conversation"
+test("the issue's own address and /spec select Spec, and every document's address its document", () => {
+  expect(issueTabForRoute({ key: "CORE-1", kind: "artifact", slug: "diagram" })).toBe("artifacts");
+  // The spec's own address opens the spec document, as every document's does; `/spec` is the
+  // Spec filter (dispatch://INFRA-1196 R3, R20).
+  expect(issueTabForRoute({ key: "CORE-1", kind: "artifact", slug: "spec" })).toBe("artifacts");
+  expect(issueTabForRoute({ key: "CORE-1", kind: "issue" })).toBe("spec");
+  expect(issueTabForRoute({ id: "ask-1", key: "CORE-1", kind: "ask" })).toBe("conversation");
+  expect(issueTabForRoute({ key: "CORE-1", kind: "spec" })).toBe("spec");
+  expect(issueTabForRoute({ key: "CORE-1", kind: "conversation" })).toBe("conversation");
+  expect(issueTabForRoute({ key: "CORE-1", kind: "children" })).toBe("children");
+  expect(issueTabForRoute({ key: "CORE-1", kind: "artifacts" })).toBe("artifacts");
+  expect(issueTabForRoute({ key: "CORE-1", kind: "activity" })).toBe("activity");
+  expect(issueTabForRoute({ key: "CORE-1", kind: "verification" })).toBe("verification");
+  expect(issueTabForRoute({ key: "CORE-1", kind: "plan" })).toBe("plan");
+  expect(issueTabForRoute({ key: "CORE-1", kind: "collaborators" })).toBe("collaborators");
+  expect(issueTabForRoute({ key: "CORE-1", kind: "artifact", slug: "diagram", version: 2 })).toBe(
+    "artifacts"
   );
-  expect(issueTabForRoute({ key: "CORE-1", kind: "spec" }, undefined)).toBe("spec");
-  expect(issueTabForRoute({ key: "CORE-1", kind: "conversation" }, undefined)).toBe("conversation");
-  expect(issueTabForRoute({ key: "CORE-1", kind: "children" }, undefined)).toBe("children");
-  expect(issueTabForRoute({ key: "CORE-1", kind: "artifacts" }, undefined)).toBe("artifacts");
-  expect(issueTabForRoute({ key: "CORE-1", kind: "activity" }, undefined)).toBe("activity");
-  expect(issueTabForRoute({ key: "CORE-1", kind: "verification" }, undefined)).toBe("verification");
-  expect(issueTabForRoute({ key: "CORE-1", kind: "plan" }, undefined)).toBe("plan");
-  expect(issueTabForRoute({ key: "CORE-1", kind: "collaborators" }, undefined)).toBe(
-    "collaborators"
-  );
-  expect(
-    issueTabForRoute(
-      { key: "CORE-1", kind: "artifact", slug: "diagram", version: 2 },
-      { kind: "image", primary: false }
-    )
-  ).toBe("artifacts");
 });
 
 test("reference builders preserve dispatch version syntax while emitting canonical browser paths", () => {
@@ -550,7 +558,7 @@ test("ask routes round-trip through the dispatch:// reference and the browser pa
   expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/ask/ask-1");
   expect(parseIssuePath("/issues/CORE-1/asks/ask-1")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/asks/ask-1"));
-  expect(issueTabForRoute(route, undefined)).toBe("conversation");
+  expect(issueTabForRoute(route)).toBe("conversation");
 });
 
 test("a document is referenced as the spec, an issue artifact, or a project document; a version pins the artifact form", () => {
@@ -696,7 +704,7 @@ test("the decisions tab owns its path and names the issue's decisions.md", () =>
 
   expect(parseIssuePath("/issues/CORE-1/decisions")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/decisions"));
-  expect(issueTabForRoute(route, undefined)).toBe("decisions");
+  expect(issueTabForRoute(route)).toBe("decisions");
   expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/artifact/decisions-md");
   expect(shortForm(route)).toBe("CORE-1 decisions");
   for (const read of [referenceRouteFromHref, nodeRouteFromHref]) {

@@ -493,12 +493,32 @@ test("RepoControl describes the repository the issue resolves to", async () => {
   }
 });
 
+// A badge in another colour is no state: an inherited repository and one the issue sets of its
+// own are told apart by a word as well (dispatch://INFRA-1196 R15).
+test("RepoControl draws the words saying the repository is not the issue's own", async () => {
+  for (const [own, drawn] of [
+    [{ repo: null, resolvedRepo: "acme/widgets" }, 1],
+    [{ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" }, 0],
+    [{ repo: null, resolvedRepo: null }, 0],
+  ] as const) {
+    const { unmount } = renderControl({ ...own });
+    try {
+      await screen.findByRole("combobox", { name: "Repository of CORE-1" });
+      expect(
+        screen.queryAllByText("inherited or the project's default", { selector: "span" })
+      ).toHaveLength(drawn);
+    } finally {
+      unmount();
+    }
+  }
+});
+
 // With nothing resolved there is no repository for the placeholder, so it says what the box
 // takes, and the description says there is none.
 test("RepoControl says No repository when nothing resolves in a project that maps one", async () => {
   const { listRepoProjects, unmount } = renderControl({ repo: null, resolvedRepo: null });
   try {
-    expect(await screen.findByText("Repository:")).toBeTruthy();
+    await screen.findByLabelText("Repository of CORE-1");
     expect(box().placeholder).toBe("owner/name");
     expect(box()).toHaveAccessibleDescription("No repository");
     expect(listRepoProjects).toHaveBeenCalledTimes(1);
@@ -508,7 +528,8 @@ test("RepoControl says No repository when nothing resolves in a project that map
 });
 
 // A project that maps no repository has nothing to suggest, and its issues take a repository all
-// the same, so the rail carries the item with an empty suggestion list.
+// the same, so the row of Details that holds the control carries the box, with an empty
+// suggestion list, rather than reading None (dispatch://INFRA-1196 R13).
 test("RepoControl shows the item for an issue whose project maps no repository", async () => {
   const others = mappings.filter((mapping) => mapping.project !== "CORE");
   const patchIssue = answerIssuePatches().mockResolvedValue({
@@ -524,7 +545,7 @@ test("RepoControl shows the item for an issue whose project maps no repository",
       expect(queryClient.getQueryData<RepoProject[]>(["repo-projects"])).toEqual(others)
     );
     await act(async () => {});
-    expect(screen.getByText("Repository:")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Repository of CORE-1" })).toBeTruthy();
     expect(suggestions()).toEqual([]);
     await write(user, "zed/unmapped");
     await waitFor(() =>
@@ -546,7 +567,6 @@ test("RepoControl shows a failed mappings read with a retry instead of hiding th
   );
   try {
     expect(await screen.findByText("Could not load the repositories mapped to CORE.")).toBeTruthy();
-    expect(screen.getByText("Repository:")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));

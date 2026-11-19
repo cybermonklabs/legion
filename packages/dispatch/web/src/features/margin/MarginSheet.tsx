@@ -15,6 +15,7 @@ import {
 } from "../../theme/classes";
 import type { ComposerKind } from "../conversation/composer-model";
 import type { SaveCommentEdit } from "../conversation/send-request";
+import { authorText } from "../issue/page-structure";
 import {
   COMPACT_VIEWPORT_QUERY,
   PHONE_VIEWPORT_QUERY,
@@ -23,6 +24,7 @@ import {
 } from "../shell/useDialog";
 import { CommentsTab, type MarginComposer, MarginComposerSlot } from "./CommentsTab";
 import { marginReplySendKey } from "./margin-context";
+import { FilledMarginSlot, useMarginDrawer, useMarginSlotFill } from "./margin-slot";
 import { PinnedTab } from "./PinnedTab";
 import { ThreadCard } from "./ThreadCard";
 import type { CommentActionFailure } from "./useCommentActionQueue";
@@ -95,6 +97,13 @@ export interface MarginSheetModel {
     savingCommentEditId: string | undefined;
     hoveredItemId: string | undefined;
     hoveredMarkId: string | undefined;
+    /** The address's landing on a card beside its document, keyed per navigation, once the
+     *  margin holds that card (`useMarginSheet.ts`); undefined while the address names none. */
+    landedCard: string | undefined;
+    /** The item the address names where it is a node of the issue's outline rather than a card
+     *  beside an open document: marked, as the address's own landing, and never the reader's
+     *  pick, so it opens no Details (`Margin.tsx`). */
+    routeMarkedItemId: string | undefined;
     selectedItemId: string | undefined;
     showResolved: boolean;
   };
@@ -124,12 +133,19 @@ interface MarginSheetProps {
    *  its composer. */
   collapsed?: boolean;
   desktopControl?: ReactNode;
+  /** The sheet is the body of the issue page's Details drawer (`Margin.tsx`'s `DetailsDrawer`):
+   *  a box that scrolls inside the drawer at every width, with no sheet of its own below `xl`,
+   *  drawn once the page has filled the slot and not before, so its content is drawn once per
+   *  load rather than plain first and again inside the page's panel (dispatch://INFRA-1196
+   *  R14, INFRA-2004). */
+  drawer?: boolean;
   model: MarginSheetModel;
 }
 
 export function MarginSheet({
   collapsed = false,
   desktopControl,
+  drawer = false,
   model,
 }: MarginSheetProps): ReactNode {
   const {
@@ -169,11 +185,18 @@ export function MarginSheet({
   } = model;
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
+  // Below `xl` the margin is a sheet at the foot of the screen, except in a drawer, which is
+  // the same box at every width.
+  const compactSheet = isCompactViewport && !drawer;
+  const slotFill = useMarginSlotFill();
+  // A drawer is on screen only while it is open: a composer mounted in a closed Details takes the
+  // focus once the drawer opens for it (`Margin.tsx`), not while it is hidden.
+  const drawerOpen = useMarginDrawer()?.open === true;
   const sheetDragOrigin = useRef<number | undefined>(undefined);
   const sheetDragMoved = useRef(false);
   const dialog = useDialog<HTMLElement>({
     onClose: () => sheet.toggle(false),
-    open: sheet.expanded && isCompactViewport,
+    open: sheet.expanded && compactSheet,
   });
 
   const reviewToggleLabel = `${sheet.expanded ? "Close" : "Open"} review panel (${openAskCount} open ${
@@ -192,7 +215,7 @@ export function MarginSheet({
 
   return (
     <>
-      {sheet.expanded && isCompactViewport ? (
+      {sheet.expanded && compactSheet ? (
         <div
           aria-hidden="true"
           className={`fixed inset-0 z-[9] ${backdrop50}`}
@@ -201,15 +224,19 @@ export function MarginSheet({
       ) : null}
       {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: aria-modal only applies while the compact review sheet is an open dialog */}
       <aside
-        aria-label={isCompactViewport ? "Review panel" : "Review margin"}
-        aria-modal={sheet.expanded && isCompactViewport ? true : undefined}
-        className={`fixed inset-x-0 bottom-0 ${sheet.expanded && isCompactViewport ? "z-30" : "z-10"} border-t shadow-[0_-8px_24px_rgba(15,23,42,0.08)] ${card} ${
-          owner === undefined
-            ? "hidden"
-            : sheet.expanded
-              ? "max-h-[85dvh] overflow-y-auto p-4"
-              : "h-16 overflow-hidden"
-        } xl:sticky xl:top-0 xl:block xl:h-dvh xl:max-h-dvh xl:w-full xl:overflow-y-auto xl:border-t-0 xl:border-l xl:p-4 xl:shadow-none`}
+        aria-label={compactSheet ? "Review panel" : "Review margin"}
+        aria-modal={sheet.expanded && compactSheet ? true : undefined}
+        className={
+          drawer
+            ? "min-h-0 flex-1 overflow-y-auto px-4 pt-1.5 pb-8"
+            : `fixed inset-x-0 bottom-0 ${sheet.expanded && isCompactViewport ? "z-30" : "z-10"} border-t shadow-[0_-8px_24px_rgba(15,23,42,0.08)] ${card} ${
+                owner === undefined
+                  ? "hidden"
+                  : sheet.expanded
+                    ? "max-h-[85dvh] overflow-y-auto p-4"
+                    : "h-16 overflow-hidden"
+              } xl:sticky xl:top-0 xl:block xl:h-dvh xl:max-h-dvh xl:w-full xl:overflow-y-auto xl:border-t-0 xl:border-l xl:p-4 xl:shadow-none`
+        }
         data-expanded={sheet.expanded ? "true" : "false"}
         data-testid="margin-sheet"
         id="review-margin"
@@ -217,9 +244,9 @@ export function MarginSheet({
           dialog.containerRef.current = element;
           marginRef.current = element;
         }}
-        role={sheet.expanded && isCompactViewport ? "dialog" : undefined}
+        role={sheet.expanded && compactSheet ? "dialog" : undefined}
       >
-        {isCompactViewport ? (
+        {compactSheet ? (
           <>
             <div
               aria-hidden="true"
@@ -250,7 +277,10 @@ export function MarginSheet({
               }}
               type="button"
             >
-              <span>Review ({openAskCount})</span>
+              {/* The margin's own name and count, in the margin's words: a page that wraps the
+                  sheet declares its own vocabulary and marks the rest as text it did not write
+                  (`features/issue/page-structure.ts`). */}
+              <span {...authorText}>Review ({openAskCount})</span>
             </button>
           </>
         ) : null}
@@ -258,136 +288,150 @@ export function MarginSheet({
             collapsed rail too, holding only the composer then, so an unsent draft survives
             whatever the margin shows over it; a send it has out, and that send's refusal, are the
             held-send store's, and survive anything. */}
-        <div
-          className={sheet.expanded ? "px-4 pb-4 xl:px-0 xl:pb-0" : "hidden xl:block"}
-          hidden={covered}
-        >
-          {covered ? null : (
-            <>
-              <div className={`flex items-center justify-between border-b ${borderDefault}`}>
-                <div className="flex" role="tablist">
-                  {(owner?.kind === "document"
-                    ? (["comments"] as MarginTab[])
-                    : owner?.kind === "issue"
-                      ? (["comments", "pinned"] as MarginTab[])
-                      : []
-                  ).map((name) => (
-                    <button
-                      aria-selected={tab.value === name}
-                      className={
-                        tab.value === name
-                          ? `min-h-11 border-b-2 px-3 py-2 text-sm font-semibold ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
-                          : `min-h-11 px-3 py-2 text-sm ${textSecondaryOnSurface}`
-                      }
-                      key={name}
-                      onClick={() => tab.set(name)}
-                      role="tab"
-                      type="button"
+        {/* Whatever page filled the margin's slot wraps all of this, so its panel is one panel
+            holding its own properties and this conversation (`margin-slot.tsx`). The fill wraps
+            it while the margin is collapsed to its rail and under a phone thread too, and the
+            page draws only the margin's own cards there: the wrapper above the composer is one
+            shape in every state, so a collapse never remounts the composer and never throws
+            away an unsent comment with it. */}
+        {drawer && slotFill === undefined ? null : (
+          <div
+            className={
+              drawer ? undefined : sheet.expanded ? "px-4 pb-4 xl:px-0 xl:pb-0" : "hidden xl:block"
+            }
+            hidden={covered}
+          >
+            <FilledMarginSlot fill={slotFill}>
+              {covered ? null : (
+                <>
+                  <div className={`flex items-center justify-between border-b ${borderDefault}`}>
+                    <div className="flex" role="tablist">
+                      {(owner?.kind === "document"
+                        ? (["comments"] as MarginTab[])
+                        : owner?.kind === "issue"
+                          ? (["comments", "pinned"] as MarginTab[])
+                          : []
+                      ).map((name) => (
+                        <button
+                          aria-selected={tab.value === name}
+                          className={
+                            tab.value === name
+                              ? `min-h-11 border-b-2 px-3 py-2 text-sm font-semibold ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
+                              : `min-h-11 px-3 py-2 text-sm ${textSecondaryOnSurface}`
+                          }
+                          key={name}
+                          onClick={() => tab.set(name)}
+                          role="tab"
+                          type="button"
+                        >
+                          {name === "comments" ? "Comments" : "Pinned"}
+                        </button>
+                      ))}
+                    </div>
+                    {desktopControl === undefined ? null : (
+                      <span className="hidden xl:block">{desktopControl}</span>
+                    )}
+                  </div>
+                  {owner === undefined ? (
+                    <p className={`pt-3 text-sm ${textMutedOnSurface}`}>
+                      Open an issue or document to review its margin.
+                    </p>
+                  ) : null}
+                  {owner?.kind === "issue" && visibleArtifact === undefined && issuePending ? (
+                    <p className={`pt-3 text-sm ${textMutedOnSurface}`}>Loading margin…</p>
+                  ) : null}
+                  {owner?.kind === "issue" && visibleArtifact === undefined && issueError ? (
+                    <div className="pt-3">
+                      <QueryError
+                        message="Could not load this issue's margin."
+                        onRetry={actions.onRetryIssue}
+                      />
+                    </div>
+                  ) : null}
+                  {tab.value === "pinned" && owner?.kind === "issue" ? (
+                    <PinnedTab
+                      conversations={pinnedConversations}
+                      events={pinned}
+                      onUnpin={actions.onUnpin}
+                      onUnpinConversation={actions.onUnpinConversation}
+                      pinnedIds={pinnedIds}
+                    />
+                  ) : null}
+                  {filter.blockId === undefined ? null : (
+                    <div
+                      className={`mt-3 flex items-center justify-between gap-2 text-sm ${textMutedOnSurface}`}
                     >
-                      {name === "comments" ? "Comments" : "Pinned"}
-                    </button>
-                  ))}
-                </div>
-                {desktopControl === undefined ? null : (
-                  <span className="hidden xl:block">{desktopControl}</span>
-                )}
-              </div>
-              {owner === undefined ? (
-                <p className={`pt-3 text-sm ${textMutedOnSurface}`}>
-                  Open an issue or document to review its margin.
-                </p>
-              ) : null}
-              {owner?.kind === "issue" && visibleArtifact === undefined && issuePending ? (
-                <p className={`pt-3 text-sm ${textMutedOnSurface}`}>Loading margin…</p>
-              ) : null}
-              {owner?.kind === "issue" && visibleArtifact === undefined && issueError ? (
-                <div className="pt-3">
-                  <QueryError
-                    message="Could not load this issue's margin."
-                    onRetry={actions.onRetryIssue}
-                  />
-                </div>
-              ) : null}
-              {tab.value === "pinned" && owner?.kind === "issue" ? (
-                <PinnedTab
-                  conversations={pinnedConversations}
-                  events={pinned}
-                  onUnpin={actions.onUnpin}
-                  onUnpinConversation={actions.onUnpinConversation}
-                  pinnedIds={pinnedIds}
+                      <span>References for this block</span>
+                      <button
+                        className={`min-h-11 font-medium ${textPrimaryOnSurface}`}
+                        onClick={filter.clear}
+                        type="button"
+                      >
+                        Clear filter
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+              {composer === undefined ? null : (
+                <MarginComposerSlot
+                  composer={composer}
+                  hidden={tab.value !== "comments"}
+                  isClosed={isClosed}
+                  key={composer.anchor.artifact}
+                  onClose={actions.closeComposer}
+                  onKindChange={actions.onComposerKindChange}
+                  onScreen={
+                    !covered &&
+                    tab.value === "comments" &&
+                    (drawer ? drawerOpen : sheet.expanded || !isCompactViewport)
+                  }
+                />
+              )}
+              {tab.value === "comments" &&
+              !covered &&
+              owner !== undefined &&
+              visibleArtifact !== undefined ? (
+                <CommentsTab
+                  actionFailure={actionFailure}
+                  answeredAsksPending={answeredAsksPending}
+                  artifactSlug={visibleArtifact.slug}
+                  asksPending={asksPending}
+                  commentsError={commentsError}
+                  commentsPending={commentsPending}
+                  decisions={decisions}
+                  expandedThreadKey={selection.expandedThreadKey}
+                  editingCommentId={selection.editingCommentId}
+                  savingCommentEditId={selection.savingCommentEditId}
+                  onEditingChange={actions.onEditingChange}
+                  historicalAsks={historicalAsks}
+                  hoveredItemId={selection.hoveredItemId}
+                  hoveredMarkId={selection.hoveredMarkId}
+                  isClosed={isClosed}
+                  owner={owner}
+                  markPlacements={placement.markPlacements}
+                  blockPlacements={placement.blockPlacements}
+                  needsYou={needsYou}
+                  onAction={actions.onAction}
+                  onEdit={actions.onEdit}
+                  onRetryAction={actions.onRetryAction}
+                  onRetryAnsweredAsk={actions.onRetryAnsweredAsk}
+                  onRetryComments={actions.onRetryComments}
+                  onSelectCard={onSelectCard}
+                  onToggleResolved={actions.onToggleResolved}
+                  onToggleThread={actions.onToggleThread}
+                  pendingActionIds={pendingActionIds}
+                  resolvedThreads={resolvedThreads}
+                  foldedAskCount={foldedAskCount}
+                  selectedItemId={selection.selectedItemId}
+                  showResolved={selection.showResolved}
+                  threads={threads}
+                  viewerLogin={viewerLogin}
                 />
               ) : null}
-              {filter.blockId === undefined ? null : (
-                <div
-                  className={`mt-3 flex items-center justify-between gap-2 text-sm ${textMutedOnSurface}`}
-                >
-                  <span>References for this block</span>
-                  <button
-                    className={`min-h-11 font-medium ${textPrimaryOnSurface}`}
-                    onClick={filter.clear}
-                    type="button"
-                  >
-                    Clear filter
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-          {composer === undefined ? null : (
-            <MarginComposerSlot
-              composer={composer}
-              hidden={tab.value !== "comments"}
-              isClosed={isClosed}
-              key={composer.anchor.artifact}
-              onClose={actions.closeComposer}
-              onKindChange={actions.onComposerKindChange}
-              onScreen={
-                !covered && tab.value === "comments" && (sheet.expanded || !isCompactViewport)
-              }
-            />
-          )}
-          {tab.value === "comments" &&
-          !covered &&
-          owner !== undefined &&
-          visibleArtifact !== undefined ? (
-            <CommentsTab
-              actionFailure={actionFailure}
-              answeredAsksPending={answeredAsksPending}
-              artifactSlug={visibleArtifact.slug}
-              asksPending={asksPending}
-              commentsError={commentsError}
-              commentsPending={commentsPending}
-              decisions={decisions}
-              expandedThreadKey={selection.expandedThreadKey}
-              editingCommentId={selection.editingCommentId}
-              savingCommentEditId={selection.savingCommentEditId}
-              onEditingChange={actions.onEditingChange}
-              historicalAsks={historicalAsks}
-              hoveredItemId={selection.hoveredItemId}
-              hoveredMarkId={selection.hoveredMarkId}
-              isClosed={isClosed}
-              owner={owner}
-              markPlacements={placement.markPlacements}
-              blockPlacements={placement.blockPlacements}
-              needsYou={needsYou}
-              onAction={actions.onAction}
-              onEdit={actions.onEdit}
-              onRetryAction={actions.onRetryAction}
-              onRetryAnsweredAsk={actions.onRetryAnsweredAsk}
-              onRetryComments={actions.onRetryComments}
-              onSelectCard={onSelectCard}
-              onToggleResolved={actions.onToggleResolved}
-              onToggleThread={actions.onToggleThread}
-              pendingActionIds={pendingActionIds}
-              resolvedThreads={resolvedThreads}
-              foldedAskCount={foldedAskCount}
-              selectedItemId={selection.selectedItemId}
-              showResolved={selection.showResolved}
-              threads={threads}
-              viewerLogin={viewerLogin}
-            />
-          ) : null}
-        </div>
+            </FilledMarginSlot>
+          </div>
+        )}
         {isPhoneViewport &&
         phoneThread !== undefined &&
         owner !== undefined &&

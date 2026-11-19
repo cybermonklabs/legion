@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  What the Dispatch issue page needs to draw an issue as one tree:
+
+  - `GET /api/v1/reference-targets?ref=…&ref=…` resolves many `dispatch://` references in one
+    request, answering each one's kind, the words a reader is shown for its target and whether
+    the target is gone, so a page draws every pointer chip without a request per chip. At most
+    256 references in one request, with an `ETag`; a reference that parses but names nothing is
+    answered as gone rather than refused.
+  - Each `IssueChild` of `GET /api/v1/issues/{key}` carries `needs`, the keys of the issues it
+    waits on, and `claim`, who holds it, each left out when the child has none, so a reader sees
+    what blocks a child and who holds it.
+  - A caller that sent `Dispatch-Trees: 1` is given a block's whole text, every link and
+    `dispatch://` reference kept and nothing cut, as `text_tree`: on each requirement of
+    `GET /api/v1/issues/{key}/coverage`, on each check of `GET /api/v1/issues/{key}/results`, and
+    on each member of `GET /api/v1/reference-targets` that names a block, which is where a plan
+    task's words are read whole. A typed block's tree is of its own content, without its
+    directive line. The `text` a requirement and a check already answered is unchanged.

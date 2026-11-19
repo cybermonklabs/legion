@@ -10,12 +10,14 @@ import { AuthGate } from "../app";
 import { liveViewsOf } from "../features/agent-view/live-views";
 import { jump, onFakeClock } from "./fake-clock";
 import { answerAgentStates } from "./send-answers";
-// The issue page is a lazy route of the app, and the live view's page and the margin lazy parts
-// of the shell (`MountedLiveViews.tsx`, `MarginColumn.tsx`, which mounts the margin on every
-// route). A module's first compile is not what a wait is for, and a load a row starts and ends
-// before lands in a later row as React's report of a suspended resource outside `act`. So the
-// three modules are loaded here, with the test file, and no row starts or waits for that load.
+// The project document page and the issue page are lazy routes of the app, and the live view's
+// page and the margin lazy parts of the shell (`MountedLiveViews.tsx`, `MarginColumn.tsx`, which
+// mounts the margin on every route). A module's first compile is not what a wait is for, and a
+// load a row starts and ends before lands in a later row as React's report of a suspended
+// resource outside `act`. So the four modules are loaded here, with the test file, and no row
+// starts or waits for that load.
 import "../features/agent-view/AgentConversationPage";
+import "../features/document/DocumentPage";
 import "../features/issue-page/IssuePage";
 import "../features/margin/Margin";
 
@@ -78,16 +80,24 @@ const issue: IssueDetails = {
 };
 
 const originalApi = {
+  getArtifactBlocks: api.getArtifactBlocks,
+  getArtifactText: api.getArtifactText,
   getAsk: api.getAsk,
   getInbox: api.getInbox,
   getIssue: api.getIssue,
+  getIssueCoverage: api.getIssueCoverage,
+  getIssueDecisions: api.getIssueDecisions,
+  getIssueReferences: api.getIssueReferences,
+  getIssueResults: api.getIssueResults,
   getIssueSubscribers: api.getIssueSubscribers,
   getMyAgentState: api.getMyAgentState,
   getMyState: api.getMyState,
+  getReferenceTargets: api.getReferenceTargets,
   listAgentMessages: api.listAgentMessages,
   listAgents: api.listAgents,
   listComments: api.listComments,
   listIssueAsks: api.listIssueAsks,
+  listIssueMessages: api.listIssueMessages,
   listIssues: api.listIssues,
   listMyReplies: api.listMyReplies,
   listProjectArchitectureSources: api.listProjectArchitectureSources,
@@ -173,11 +183,15 @@ function renderShellAt(
   ];
   api.listIssueAsks = async () => [];
   api.listComments = async () => [];
+  api.listIssueMessages = async () => [];
   api.listAgents = async () => listedAgents;
-  // The issue page under the shell reads these of its own; no test here asserts them.
-  api.getIssueSubscribers = async () => [];
-  api.listRepoProjects = async () => [];
-  api.listProjectArchitectureSources = async () => [];
+  // The page under the shell is a project document, whose read answers with a failure the page
+  // draws: nothing here is about the document. The issue page draws its own frame - an icon rail
+  // and a Details drawer - in place of the sidebar, the compact header and the review margin
+  // (dispatch://INFRA-1196 R14), so a project document is where the shell these rows read is.
+  api.getProjectArtifact = async () => {
+    throw new Error("the document is no part of these rows");
+  };
   // Each ask card refreshes its own thread; the row the Inbox listed carries the one Dispatch
   // would answer with.
   api.getAsk = async (id) => {
@@ -194,7 +208,7 @@ function renderShellAt(
   });
   render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/issues/CORE-1/children"]}>
+      <MemoryRouter initialEntries={["/projects/CORE/documents/notes-md"]}>
         <AuthGate />
       </MemoryRouter>
     </QueryClientProvider>

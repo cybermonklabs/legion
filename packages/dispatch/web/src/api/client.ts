@@ -1645,6 +1645,7 @@ export class DispatchApiClient {
     );
   }
 
+  /** `GET /api/v1/issues/{key}/references`. */
   getIssueReferences(key: string) {
     return this.read("/api/v1/issues/{key}/references", { key });
   }

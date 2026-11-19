@@ -2,14 +2,9 @@ import { ID_AMBIGUOUS, isIdPrefix } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 
 import { ApiError, type ErrorCandidate } from "../../api/client";
-import type { IDCandidate, IssueDetails } from "../../api/types";
+import type { IDCandidate } from "../../api/types";
 import { askQuery, commentQuery, messageQuery, useWholeRouteRead } from "../refs/reference-target";
-import {
-  buildIssuePath,
-  type DispatchReferenceRoute,
-  documentItemPath,
-  type IssueRoute,
-} from "../refs/routes";
+import { buildIssuePath, type DispatchReferenceRoute, type IssueRoute } from "../refs/routes";
 
 /** The item routes: `/issues/KEY/asks|comments|messages/<id>`. */
 export type ItemRoute = Extract<IssueRoute, { id: string }>;
@@ -17,23 +12,28 @@ export type ItemRoute = Extract<IssueRoute, { id: string }>;
 /**
  * Where an item deep link lands.
  *
- * - `redirect` — the item lives beside a document (an anchored comment or ask, or an ask block),
- *   so its link opens that document with the thread in view.
+ * - `node` — the item is this issue's: the page opens the outline on its node, focused,
+ *   wherever the item is anchored, and never the document it sits in (dispatch://INFRA-1196
+ *   R20). What the address opens is the address's own to say (`issue-address.ts`).
+ * - `approval` — the item is an approval request, which the outline draws no node for: the
+ *   identity block draws the approval of the document it reviews, and the page puts the focus
+ *   on that entry there (`artifactId`).
+ * - `redirect` — the item belongs to another issue, whose own address lands it.
  * - `rewrite` — the address wrote the id short and it named one item: the page replaces the
  *   address with the whole id, and reads the item under that (`useItemLanding`).
  * - `ambiguous` — the address wrote the id short and it names several items, which the server
  *   listed in its refusal; the page shows them for the reader to choose between.
- * - `turn` — the item has no document; the Conversation focuses its turn.
  * - `missing` — the id names nothing openable: the server rejected it as malformed (400) or has
  *   no such item (404). Either way retrying cannot help; the link is dead.
  * - `unavailable` — the lookup itself failed; the reader can retry it.
  */
 export type ItemLanding =
   | { kind: "pending" }
+  | { kind: "node" }
+  | { kind: "approval"; artifactId: string }
   | { kind: "redirect"; to: string }
   | { kind: "rewrite"; to: string }
   | { kind: "ambiguous"; candidates: readonly IDCandidate[] }
-  | { kind: "turn" }
   | { kind: "missing" }
   | { kind: "unavailable"; retry: () => void };
 
@@ -58,8 +58,6 @@ function isIDCandidate(candidate: ErrorCandidate): candidate is IDCandidate {
 
 /**
  * Resolves an item deep link against the item itself. `undefined` for every other issue route.
- * `issue` supplies the artifacts an anchor names; until it arrives the landing stays pending, so
- * an anchored item never flashes its Conversation turn before opening its document.
  *
  * An address whose id is a whole uuid is read exactly as it always was: the item's own read
  * under that id, and nothing else. Only an id written short (`isIdPrefix`) is resolved first, by
@@ -74,10 +72,7 @@ function isIDCandidate(candidate: ErrorCandidate): candidate is IDCandidate {
  * under its own whole id, and resolving it as an item prefix would rewrite - or 404 - a link
  * that already names the item exactly.
  */
-export function useItemLanding(
-  route: IssueRoute,
-  issue: IssueDetails | undefined
-): ItemLanding | undefined {
+export function useItemLanding(route: IssueRoute): ItemLanding | undefined {
   const address = isItemRoute(route) ? route : undefined;
   const short = address !== undefined && isIdPrefix(address.id) ? address : undefined;
   const read = useWholeRouteRead(short);
@@ -126,36 +121,13 @@ export function useItemLanding(
       ? { kind: "missing" }
       : { kind: "rewrite", to: buildIssuePath(whole) };
   }
-  // One decision per route kind: which query answers it, the item it returns, and the document
-  // that item belongs beside.
-  const resolved =
+  // One query per route kind, and the item it returns.
+  const { item, query } =
     route.kind === "comment"
-      ? {
-          artifactID: comment.data?.comment.anchor?.artifact_id,
-          blockID: undefined,
-          item: comment.data?.comment,
-          query: comment,
-        }
+      ? { item: comment.data?.comment, query: comment }
       : route.kind === "ask"
-        ? {
-            // An approval ask carries no anchor or block of its own, but it names the document
-            // it asks about (`approval.artifact_id`); landing there, with the ask in the
-            // margin, beats falling through to the Conversation turn below.
-            artifactID:
-              ask.data?.ask.anchor?.artifact_id ??
-              ask.data?.ask.block_artifact?.id ??
-              ask.data?.ask.approval?.artifact_id,
-            blockID: ask.data?.ask.block_id ?? undefined,
-            item: ask.data?.ask,
-            query: ask,
-          }
-        : {
-            artifactID: undefined,
-            blockID: undefined,
-            item: message.data?.message,
-            query: message,
-          };
-  const { artifactID, blockID, item, query } = resolved;
+        ? { item: ask.data?.ask, query: ask }
+        : { item: message.data?.message, query: message };
   if (query.isPending) {
     return { kind: "pending" };
   }
@@ -176,22 +148,6 @@ export function useItemLanding(
       ? { kind: "missing" }
       : { kind: "redirect", to: buildIssuePath({ ...route, key: item.issue_key }) };
   }
-  if (route.kind === "message") {
-    return { kind: "turn" };
-  }
-
-  if (artifactID === undefined) {
-    return { kind: "turn" };
-  }
-  if (issue === undefined) {
-    return { kind: "pending" };
-  }
-  const artifact = (issue.artifacts ?? []).find((candidate) => candidate.id === artifactID);
-  if (artifact === undefined || artifact.kind !== "doc") {
-    return { kind: "turn" };
-  }
-  return {
-    kind: "redirect",
-    to: documentItemPath(artifact, { blockID, id: route.id, kind: route.kind }),
-  };
+  const reviewed = route.kind === "ask" ? ask.data?.ask.approval?.artifact_id : undefined;
+  return reviewed === undefined ? { kind: "node" } : { artifactId: reviewed, kind: "approval" };
 }

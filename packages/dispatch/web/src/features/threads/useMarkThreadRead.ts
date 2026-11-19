@@ -53,7 +53,7 @@ export interface ThreadRead {
 
 /**
  * Marks one thread read once the reader has seen its newest reply - the rule the issue's
- * Conversation, a document's margin, an ask's card and the Inbox's threads all read by: the
+ * outline, a document's margin, an ask's card and the Inbox's threads all read by: the
  * returned ref goes on that reply's own element, and once it has been three-quarters on screen for
  * a second (`useDwell`, whose one IntersectionObserver every thread on the page shares) the thread
  * is marked read through that reply's timestamp (`PUT /api/v1/me/threads/{id}/read`), once per

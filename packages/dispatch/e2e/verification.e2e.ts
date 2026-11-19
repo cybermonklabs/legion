@@ -1,4 +1,13 @@
 import {
+  BLOCK_ATTRIBUTE_LABELS,
+  EMPTY_STATE_LINES,
+  NODE_FACT_LABELS,
+  NODE_STATE_WORDS,
+  RESULT_STANDS_WORDS,
+  RESULT_VERDICT_WORDS,
+} from "../web/src/features/issue/page-words";
+import { blockNodeId } from "../web/src/features/issue/tree-drafts";
+import {
   createIssue,
   createIssueArtifact,
   createProject,
@@ -10,10 +19,30 @@ import {
 } from "./api";
 import { connectedDot, documentEditor, paste, placeCaret } from "./editor";
 import { fakeGithubCheckRunReads, seedFakeGithub } from "./fake-github-helpers";
+import {
+  branchMoreRows,
+  type DrawnFact,
+  drawnRows,
+  factsOf,
+  gotoIssue,
+  nodeRow,
+  rowBody,
+  rowsOfType,
+  unfoldEveryBranch,
+  visibleText,
+} from "./issue-page";
 import { sql } from "./psql";
-import { expect, test } from "./test";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
+// The issue's checks, on the Verification filter of the redesigned issue page (dispatch://INFRA-1196):
+// each check of the Verification document is a node of the issue's tree, with its state told by
+// a word and a shape, its own attributes in its body, and each result recorded against it a node
+// under it carrying what that run recorded. Until 2026-11-06 this file read the Verification
+// tab's list of cards (`features/verification/VerificationTab.tsx`, `[data-testid=
+// "verification-check"]`), which drew every check a second time under the document; the tree
+// replaced both the tab and its list, so every row below reads the same facts off the tree.
+//
 // A result is compared with the head of the pull request Dispatch holds for the check's
 // issue. The browser harness runs with NATS disabled, so no `pull_request` envelope can reach
 // the server to teach it that head; the record route's own read-through does it instead
@@ -24,6 +53,9 @@ import { asUser } from "./users";
 const repository = "acme/widgets";
 const firstHead = "1".repeat(40);
 const secondHead = "2".repeat(40);
+
+/** The Verification document's slug, which is how its blocks are addressed on the page. */
+const verification = "verification-md";
 
 /** The spec the checks serve. A `serves` pointer is refused unless it names a block that
  *  exists, so the requirements are written with the issue, before any check points at one. */
@@ -55,12 +87,41 @@ async function seedIssue(title: string, head: string) {
   return issue;
 }
 
+/** The whole text of one row's body, which is where a node's facts are drawn: a body opens
+ *  because the keyboard focus is on its row (R2). */
+async function bodyOf(page: Page, id: string): Promise<string> {
+  const row = nodeRow(page, id).first();
+  await row.focus();
+  return (await rowBody(row).innerText()).replace(/\s+/g, " ");
+}
+
+/** The facts one row's body draws, label against value (`e2e/issue-page.ts`'s `factsOf`): what
+ *  a result counted is a `dt`/`dd` pair with nothing between them, so the body's own text
+ *  cannot say whether a count is drawn at all or what it reads. */
+async function factsIn(page: Page, id: string): Promise<DrawnFact[]> {
+  const row = nodeRow(page, id).first();
+  await row.focus();
+  return await factsOf(rowBody(row));
+}
+
+/** Opens every branch the fold left shut and then every branch it left as one row, which is
+ *  where a check's results sit: the page opens folded to the frontier (R1), so a check's own
+ *  branch is shut until a reader opens it, and a check is the third drawn level under the
+ *  issue, so what it holds then folds to a row saying how many they are until the reader opens
+ *  that too. */
+async function openResults(page: Page): Promise<void> {
+  await unfoldEveryBranch(page);
+  for (let opened = 0; opened < 8 && (await branchMoreRows(page).count()) > 0; opened += 1) {
+    await branchMoreRows(page).first().getByRole("button").first().click();
+  }
+}
+
 // SLOW(>=2s): 2.3 s - a project, its default repository, a pull request in the fake GitHub, a
 // Verification document of three checks and two recorded results, each result's record route
-// reading through to that fake for the pull request's head, before one load of the tab, which
+// reading through to that fake for the pull request's head, before one load of the page, which
 // opens the document's live room and draws all three checks with every field of both results.
-// @pr: The Verification tab's own row: every check of the document, each with the results recorded against it.
-test("the Verification tab lists every check of the document, each with the results recorded against it @pr", async ({
+// @pr: The Verification filter's own row: every check of the document, each with the results recorded against it.
+test("the Verification filter draws every check of the document, each with the results recorded against it @pr", async ({
   browser,
 }, testInfo) => {
   const issue = await seedIssue("Verification tab", secondHead);
@@ -106,60 +167,81 @@ A check nobody has run yet reads no result.
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/verification`);
-    await expect(page.getByTestId("verification-tab")).toBeVisible();
+    await gotoIssue(page, `/issues/${issue.key}/verification`);
+    // The page opens folded to the frontier (R1): a requirement whose every check has passed
+    // holds nothing open, so the check under it is a twisty away. The reader opens what the
+    // fold shut, and the preset then draws every check of the document.
+    await unfoldEveryBranch(page);
 
-    // Every check of the document, in document order, whatever anyone has recorded against it.
-    const checks = page.getByTestId("verification-check");
-    await expect(checks).toHaveCount(3);
-    await expect(checks.getByTestId("verification-check-pass-stands")).toHaveText([
-      "A pass stands",
-      "No pass stands",
-      "No pass stands",
+    // Every check of the document, each drawn once, with the state its results give it.
+    await expect(rowsOfType(page, "check")).toHaveCount(3);
+    const checks = (await drawnRows(page)).filter((row) => row.type === "check");
+    expect(checks.map((row) => row.id)).toEqual([
+      blockNodeId(verification, "c-passed"),
+      blockNodeId(verification, "c-failed"),
+      blockNodeId(verification, "c-none"),
+    ]);
+    expect(checks.map((row) => row.state)).toEqual(["passed", "failed", "no-result"]);
+    expect(checks.map((row) => row.stateWord)).toEqual([
+      NODE_STATE_WORDS.check.passed,
+      NODE_STATE_WORDS.check.failed,
+      NODE_STATE_WORDS.check["no-result"],
     ]);
 
-    // The result recorded through the API sits under its own check, and a pass of that check
-    // stands, from the role that recorded it.
-    const passed = checks.filter({ hasText: "The tab lists every check of the document." });
-    await expect(passed).toHaveAttribute("data-pass-stands", "yes");
-    await expect(passed.getByTestId("verification-check-roles")).toHaveText("from tester");
-    await expect(passed.getByTestId("verification-check-when")).toHaveText("before_merge");
-    await expect(passed.getByTestId("verification-check-surface")).toHaveText("browser");
-    const result = passed.getByTestId("verification-result");
-    await expect(result).toHaveCount(1);
-    await expect(result.getByTestId("verification-result-verdict")).toHaveText("Pass");
+    // The check's own attributes are in its body, with `when` as words.
+    const passed = await bodyOf(page, blockNodeId(verification, "c-passed"));
+    expect(passed).toContain("before the merge");
+    expect(passed).toContain("browser");
+    expect(passed).toContain("bun run e2e -- e2e/verification.e2e.ts");
+    expect(passed).toContain("Draw no checks and the row fails.");
+
+    // The result recorded through the API is a node under its own check, and says what it saw.
+    await openResults(page);
+    const results = (await drawnRows(page)).filter((row) => row.type === "result");
+    expect(results.map((row) => row.firstLine)).toEqual(["3 checks listed", "2 failed"]);
+    const current = await bodyOf(page, results[0]?.id ?? "");
+    expect(current).toContain("Pass");
     // The commit the result ran at is the pull request's head, which is what the check
-    // compared with, and the page prints that commit whole.
-    await expect(result.getByTestId("verification-result-commit-stands")).toContainText(
-      `At the head of pull request 7 ${secondHead}`
-    );
-    await expect(result.getByTestId("verification-result-check-words")).toHaveText(
-      /^This check's words \(version \d+\)$/
-    );
-    await expect(result.getByTestId("verification-result-role")).toHaveText("tester");
-    await expect(result.getByTestId("verification-result-surface")).toHaveText("browser");
-    await expect(result.getByTestId("verification-result-observed")).toHaveText("3 checks listed");
-    await expect(result.getByTestId("verification-result-commit")).toHaveText(secondHead);
-    await expect(result.getByTestId("verification-result-negative-control")).toHaveText(
-      "Removed the list and the run failed."
-    );
-    await expect(result.getByTestId("verification-result-failed")).toHaveText("0");
+    // compared with, so the result still stands; the page draws that commit whole.
+    expect(current).toContain(RESULT_STANDS_WORDS.at_basis);
+    expect(current).toContain("tester");
+    expect(current).toContain("browser");
+    expect(current).toContain(secondHead);
+    expect(current).toContain("Removed the list and the run failed.");
+    // A run that counted nothing draws no count at all, where the old tab drew three zeroes.
+    // Read as facts: a `dt` "failed" over a `dd` "0" would leave the body's text saying
+    // "failed 0" with no colon in it, which no reading of that text can tell from a body
+    // drawing no count.
+    const currentFacts = await factsIn(page, results[0]?.id ?? "");
+    for (const label of [
+      NODE_FACT_LABELS.failed,
+      NODE_FACT_LABELS.skipped,
+      NODE_FACT_LABELS.excluded,
+    ]) {
+      expect(
+        currentFacts.map((fact) => fact.label),
+        `the passing result draws ${label}, which that run never counted`
+      ).not.toContain(label);
+    }
 
-    // A check that holds one fail answers that no pass of it stands, and counts what that run
-    // counted.
-    const failed = checks.filter({ hasText: "A check whose one result failed holds no pass" });
-    await expect(failed).toHaveAttribute("data-pass-stands", "no");
-    await expect(failed.getByTestId("verification-result-verdict")).toHaveText("Fail");
-    await expect(failed.getByTestId("verification-result-failed")).toHaveText("2");
+    // A check that holds one fail holds no pass that stands, and the result counts what that
+    // run counted: the count is the `dd` after the `dt` that reads "failed", and not the "2
+    // failed" the result's own observed text says.
+    const failed = await bodyOf(page, results[1]?.id ?? "");
+    expect(failed).toContain("Fail");
+    const failedFacts = await factsIn(page, results[1]?.id ?? "");
+    expect(
+      failedFacts.filter((fact) => fact.label === NODE_FACT_LABELS.failed),
+      "the failing result draws no count of what failed"
+    ).toEqual([{ label: NODE_FACT_LABELS.failed, value: "2" }]);
 
-    // A check nobody has run says so instead of showing an empty list.
-    const none = checks.filter({ hasText: "A check nobody has run yet reads no result." });
-    await expect(none).toHaveAttribute("data-pass-stands", "no");
-    await expect(none.getByTestId("verification-check-no-results")).toHaveText(
-      "No result recorded against this check."
+    // A check nobody has run says so in its state and has no result under it.
+    const none = (await drawnRows(page)).find(
+      (row) => row.id === blockNodeId(verification, "c-none")
     );
-    await expect(none.getByTestId("verification-result")).toHaveCount(0);
-    await page.screenshot({ path: testInfo.outputPath("verification-checks.png") });
+    expect(none?.stateWord).toBe(NODE_STATE_WORDS.check["no-result"]);
+    expect(none?.expanded).toBeNull();
+    await page.screenshot({ path: testInfo.outputPath("checks-preset.png") });
   } finally {
     await alice.close();
   }
@@ -168,12 +250,11 @@ A check nobody has run yet reads no result.
 // SLOW(>=2s): 1.9 s here, over the bar on the four-worker report this rule is read against, and
 // this pod puts it over in a third of runs. Two results recorded against the document's two
 // checks, each one's record route reading through to the fake GitHub for the pull request's
-// head, with the fake re-seeded between them so the first result is left behind; then one
-// load of the Verification tab. Most of it is the floor every row of these files pays,
-// measured on this row: a fresh Chromium context (0.25 s), the cold parse of the dashboard
-// bundle a fresh context cannot cache (0.40 s) and the dashboard's own fifteen boot reads
-// before the first check draws (0.80 s). The row's own seven assertions are 0.26 s of it.
-// INFRA-1109 holds that floor; nothing in the row is removable.
+// head, with the fake re-seeded between them so the first result is left behind; then one load
+// of the issue page. Most of it is the floor every row of these files pays, measured on this
+// row: a fresh Chromium context (0.25 s), the cold parse of the dashboard bundle a fresh
+// context cannot cache (0.40 s) and the dashboard's own fifteen boot reads before the first
+// check draws (0.80 s). INFRA-1109 holds that floor; nothing in the row is removable.
 test("a result the pull request has moved past stands at no commit the check compared with", async ({
   browser,
 }) => {
@@ -223,28 +304,27 @@ A result at the head is a pass that stands.
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/verification`);
-    const checks = page.getByTestId("verification-check");
+    await gotoIssue(page, `/issues/${issue.key}/verification`);
+    // The check that passed at the head is behind the fold, as the row above this one says.
+    await unfoldEveryBranch(page);
+    const checks = (await drawnRows(page)).filter((row) => row.type === "check");
+    const past = checks.find((row) => row.id === blockNodeId(verification, "c-past"));
+    expect(past?.state).toBe("older");
+    expect(past?.stateWord).toBe(NODE_STATE_WORDS.check.older);
+    const head = checks.find((row) => row.id === blockNodeId(verification, "c-head"));
+    expect(head?.state).toBe("passed");
 
-    const past = checks.filter({ hasText: "A result the head has moved past" });
-    await expect(past).toHaveAttribute("data-pass-stands", "no");
-    await expect(past.getByTestId("verification-check-pass-stands")).toHaveText("No pass stands");
-    // The result itself still says it passed; what the page says is that its commit is not one
-    // of the commits the check compared with, and the whole commit is there to read.
-    await expect(past.getByTestId("verification-result-verdict")).toHaveText("Pass");
-    await expect(past.getByTestId("verification-result-commit-stands")).toHaveText(
-      "At another commit"
-    );
-    await expect(past.getByTestId("verification-result-commit")).toHaveText(firstHead);
-
-    const head = checks.filter({ hasText: "A result at the head is a pass that stands." });
-    await expect(head).toHaveAttribute("data-pass-stands", "yes");
-    await expect(head.getByTestId("verification-check-compared-with")).toContainText(
-      `the head of pull request 7 ${secondHead}`
-    );
-    await expect(head.getByTestId("verification-result-commit-stands")).toContainText(
-      `At the head of pull request 7 ${secondHead}`
-    );
+    // The result itself still says it passed; what changed is that its commit is not one of
+    // the commits the check compared with, so it no longer speaks for the work as it stands.
+    await openResults(page);
+    const results = (await drawnRows(page)).filter((row) => row.type === "result");
+    const aged = await bodyOf(page, results[0]?.id ?? "");
+    expect(aged).toContain("Pass");
+    expect(aged).toContain(RESULT_STANDS_WORDS.other_commit);
+    expect(aged).toContain(firstHead);
+    const atHead = await bodyOf(page, results[1]?.id ?? "");
+    expect(atHead).toContain(RESULT_STANDS_WORDS.at_basis);
+    expect(atHead).toContain(secondHead);
   } finally {
     await alice.close();
   }
@@ -252,7 +332,7 @@ A result at the head is a pass that stands.
 
 // SLOW(>=2s): 2.1 s - a project, its default repository, a pull request in the fake GitHub, a
 // Verification document of two checks, three recorded results and one retraction, each record
-// route reading through to that fake for the pull request's head, before one load of the tab.
+// route reading through to that fake for the pull request's head, before one load of the page.
 // The floor the row above measures is most of it.
 test("a check is read over every result of it, never over its newest result alone", async ({
   browser,
@@ -302,35 +382,63 @@ A retracted pass stands for nothing.
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/verification`);
-    const checks = page.getByTestId("verification-check");
+    await gotoIssue(page, `/issues/${issue.key}/verification`);
+    await openResults(page);
+    const rows = await drawnRows(page);
 
-    // Both results are drawn, newest first, each with the reading its role recorded. The
-    // check's own answer is read over both of them: the tester's pass stands at the head, and
-    // the reviewer's later fail takes nothing away from it.
-    const both = checks.filter({ hasText: "A pass at the head stands under a later fail" });
-    await expect(both.getByTestId("verification-result")).toHaveCount(2);
-    await expect(both.getByTestId("verification-result-verdict")).toHaveText(["Fail", "Pass"]);
-    await expect(both.getByTestId("verification-result-role")).toHaveText(["reviewer", "tester"]);
-    await expect(both.getByTestId("verification-result-observed")).toHaveText([
+    // Both results are nodes under their check, newest first, each saying what its run saw.
+    // The check's own state is read over both of them: the tester's pass stands at the head,
+    // and the reviewer's later fail takes nothing away from it.
+    const both = rows.find((row) => row.id === blockNodeId(verification, "c-both"));
+    expect(both?.state).toBe("passed");
+    expect(both?.stateWord).toBe(NODE_STATE_WORDS.check.passed);
+    const results = rows.filter((row) => row.type === "result");
+    expect(results.map((row) => row.firstLine)).toEqual([
       "40 passed, 1 failed",
       "41 passed, 0 failed",
+      "41 passed",
     ]);
-    await expect(both).toHaveAttribute("data-pass-stands", "yes");
-    await expect(both.getByTestId("verification-check-pass-stands")).toHaveText("A pass stands");
-    await expect(both.getByTestId("verification-check-roles")).toHaveText("from tester");
+    expect(
+      (await factsIn(page, results[0]?.id ?? "")).filter(
+        (fact) => fact.label === NODE_FACT_LABELS.role
+      )
+    ).toEqual([{ label: NODE_FACT_LABELS.role, value: "reviewer" }]);
+    expect(
+      (await factsIn(page, results[1]?.id ?? "")).filter(
+        (fact) => fact.label === NODE_FACT_LABELS.role
+      )
+    ).toEqual([{ label: NODE_FACT_LABELS.role, value: "tester" }]);
 
-    // The one pass of the other check is retracted, so no pass of it stands. The result is
-    // neither changed nor hidden: it shows as retracted, with the reason it is wrong.
-    const gone = checks.filter({ hasText: "A retracted pass stands for nothing." });
-    await expect(gone).toHaveAttribute("data-pass-stands", "no");
-    await expect(gone.getByTestId("verification-check-pass-stands")).toHaveText("No pass stands");
-    await expect(gone.getByTestId("verification-result-retracted")).toHaveText("Retracted");
-    await expect(gone.getByTestId("verification-result-retraction")).toContainText(
-      "Retracted: The run was against the wrong branch."
-    );
-    await expect(gone.getByTestId("verification-result-verdict")).toHaveText("Pass");
-    await expect(gone.getByTestId("verification-result-commit")).toHaveText(secondHead);
+    // The one pass of the other check is retracted, so no pass of it stands. What the row says
+    // is "Retracted": the check neither passed nor failed, and a reader who was shown "Failed"
+    // could not tell a run that found a fault from a pass somebody took back. The result is
+    // neither changed nor hidden: it is still a node under its check, still saying it passed.
+    // What the retraction itself says - the mark and the reason the run was wrong
+    // (`e98fc56ef8`) - the preset has nowhere to draw yet.
+    const gone = rows.find((row) => row.id === blockNodeId(verification, "c-retracted"));
+    expect(gone?.state).toBe("retracted");
+    expect(gone?.stateWord).toBe(NODE_STATE_WORDS.check.retracted);
+    expect(await bodyOf(page, results[2]?.id ?? "")).toContain("Pass");
+  } finally {
+    await alice.close();
+  }
+});
+
+test("an issue with no Verification document says the preset holds no check", async ({
+  browser,
+}) => {
+  await createProject({ key: "VER", name: "Verification" });
+  const issue = await createIssue({ project: "VER", title: "Nothing to verify yet" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await gotoIssue(page, `/issues/${issue.key}/verification`);
+
+    // The old tab printed the command that makes the document; the preset says what is absent
+    // and never what the reader should do about it (`EMPTY_STATE_LINES`).
+    expect(await visibleText(page)).toContain(EMPTY_STATE_LINES.verification);
+    await expect(rowsOfType(page, "check")).toHaveCount(0);
   } finally {
     await alice.close();
   }
@@ -391,7 +499,7 @@ Every check of the document is listed.
 }
 
 // SLOW(>=2s): 2.6 s - a project, its default repository, a Verification document, a staged pull
-// request head and a seeded fake GitHub, before one load of the tab, whose results read mints a
+// request head and a seeded fake GitHub, before one load of the page, whose results read mints a
 // token and reads the head's check runs from that fake. The floor the first row of this file
 // pays is most of it.
 test("a check with ci_check shows the pass its CI run concluded at the issue's open head", async ({
@@ -411,28 +519,37 @@ test("a check with ci_check shows the pass its CI run concluded at the issue's o
         answers.push(response.url());
       }
     });
-    await page.goto(`/issues/${issue.key}/verification`);
-    const check = page.getByTestId("verification-check");
-    await expect(check).toHaveCount(1);
+    await gotoIssue(page, `/issues/${issue.key}/verification`);
+    // A check whose pass stands is behind the fold, as the first row of this file says.
+    await unfoldEveryBranch(page);
+    await expect(rowsOfType(page, "check")).toHaveCount(1);
+    const id = blockNodeId(verification, "c-ci");
 
-    // The check names the run that proves it, and a pass of it stands, from ci.
-    await expect(check.getByTestId("verification-check-ci")).toHaveText(ciRun);
-    await expect(check).toHaveAttribute("data-pass-stands", "yes");
-    await expect(check.getByTestId("verification-check-roles")).toHaveText("from ci");
+    // A pass of the check stands, from the run CI concluded, and the check names that run under
+    // the label its document draws `ci_check` under.
+    const drawn = (await drawnRows(page)).find((row) => row.id === id);
+    expect(drawn?.state).toBe("passed");
+    expect(await factsIn(page, id)).toContainEqual({
+      label: BLOCK_ATTRIBUTE_LABELS.ci_check,
+      value: ciRun,
+    });
 
-    // Its one result is the one derived from that run, drawn as a recorded one is.
-    const result = check.getByTestId("verification-result");
-    await expect(result).toHaveCount(1);
-    await expect(result.getByTestId("verification-result-role")).toHaveText("ci");
-    await expect(result.getByTestId("verification-result-verdict")).toHaveText("Pass");
-    await expect(result.getByTestId("verification-result-run")).toHaveText(ciRun);
-    await expect(result.getByTestId("verification-result-observed")).toContainText(
-      "conclusion: success"
-    );
-    await expect(result.getByTestId("verification-result-commit")).toHaveText(secondHead);
-    await expect(result.getByTestId("verification-result-commit-stands")).toContainText(
-      `At the head of pull request 7 ${secondHead}`
-    );
+    // Its one result is the one derived from that run, a node under the check drawn as a
+    // recorded one is: its verdict, where its commit stands, its role, its run and its commit.
+    await openResults(page);
+    const results = (await drawnRows(page)).filter((row) => row.type === "result");
+    expect(results).toHaveLength(1);
+    expect(results[0]?.firstLine).toContain("conclusion: success");
+    const facts = await factsIn(page, results[0]?.id ?? "");
+    for (const fact of [
+      { label: NODE_FACT_LABELS.verdict, value: RESULT_VERDICT_WORDS.pass },
+      { label: NODE_FACT_LABELS.stands, value: RESULT_STANDS_WORDS.at_basis },
+      { label: NODE_FACT_LABELS.role, value: "ci" },
+      { label: NODE_FACT_LABELS.commit, value: secondHead },
+    ]) {
+      expect(facts).toContainEqual(fact);
+    }
+    expect(await bodyOf(page, results[0]?.id ?? "")).toContain(ciRun);
 
     // Each answer of the results route read the head's check runs once, one page of one run.
     await expect
@@ -446,7 +563,7 @@ test("a check with ci_check shows the pass its CI run concluded at the issue's o
   }
 });
 
-// SLOW(>=2s): 2.6 s - the same seeding and the same one load of the tab as the row above, with
+// SLOW(>=2s): 2.6 s - the same seeding and the same one load of the page as the row above, with
 // the fake's run skipped rather than passed.
 test("a check with ci_check whose CI run was skipped says its run proved nothing", async ({
   browser,
@@ -459,15 +576,22 @@ test("a check with ci_check whose CI run was skipped says its run proved nothing
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/verification`);
-    const check = page.getByTestId("verification-check");
-    await expect(check.getByTestId("verification-check-ci")).toHaveText(ciRun);
-    await expect(check.getByTestId("verification-check-ci-unproved")).toHaveText(
-      `CI run ${ciRun} concluded skipped at ${secondHead}, the head of ${repository}#7, which proves nothing.`
-    );
-    await expect(check).toHaveAttribute("data-pass-stands", "no");
-    await expect(check.getByTestId("verification-result")).toHaveCount(0);
-    await expect(check.getByTestId("verification-check-no-results")).toHaveCount(0);
+    await gotoIssue(page, `/issues/${issue.key}/verification`);
+    await unfoldEveryBranch(page);
+    const id = blockNodeId(verification, "c-ci");
+
+    // No pass of it stands and no result is under it, and in place of a body that says nothing
+    // of why, the check draws the server's own sentence saying what its run showed.
+    const drawn = (await drawnRows(page)).find((row) => row.id === id);
+    expect(drawn?.state).toBe("no-result");
+    const facts = await factsIn(page, id);
+    expect(facts).toContainEqual({ label: BLOCK_ATTRIBUTE_LABELS.ci_check, value: ciRun });
+    expect(facts).toContainEqual({
+      label: NODE_FACT_LABELS.ci_unproved,
+      value: `CI run ${ciRun} concluded skipped at ${secondHead}, the head of ${repository}#7, which proves nothing.`,
+    });
+    await openResults(page);
+    expect((await drawnRows(page)).filter((row) => row.type === "result")).toHaveLength(0);
   } finally {
     await alice.close();
   }

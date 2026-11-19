@@ -83,6 +83,7 @@ export function ArtifactHeader({
   showVersionPicker,
   toolbar,
   version,
+  versionControls = true,
 }: {
   artifact: Artifact;
   children: ReactNode;
@@ -93,6 +94,11 @@ export function ArtifactHeader({
   showVersionPicker: boolean;
   toolbar?: DocumentToolbar;
   version: number | undefined;
+  /** Whether the header draws the document's version controls - Name version, the diff and the
+   *  live connection - beside its title. The issue page draws them beside its filters instead
+   *  (`features/issue/VersionControl.tsx`), so its opened document's header draws only what is
+   *  the document's alone: its title, its approval, and correcting or removing it. */
+  versionControls?: boolean;
 }): ReactNode {
   const [highlighted, setHighlighted] = useState(highlight);
   const navigate = useNavigate();
@@ -132,10 +138,18 @@ export function ArtifactHeader({
 
   return (
     <section className="space-y-4">
+      {/* The ring is a two-second cue that the address landed here, so for two seconds this
+          header draws something the page is about to stop drawing. It is marked while it does,
+          as a Markdown body is marked while it still owes its formatting
+          (`data-markdown-pending`): a reader is meant to see the ring, and a layer that reads
+          the page as a reader does has to be able to wait for it to go
+          (`e2e/review-routes.ts`'s `waitForRouteSettled`). The ring is a box shadow and moves
+          nothing, so what it moved was the pixels of one baseline and nothing else. */}
       <header
         className={`flex flex-wrap items-center justify-between gap-3 rounded-lg p-3 ${card} ${
           highlighted ? highlightRing : ""
         }`}
+        data-landing-ring={highlighted || undefined}
         data-testid="artifact-header"
       >
         <div className="min-w-0">
@@ -246,21 +260,23 @@ export function ArtifactHeader({
                     refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
                   />
                 )}
-                {version === undefined ? null : nameVersion}
-                <div className="flex items-center gap-3">
-                  {version === undefined ? (
-                    nameVersion
-                  ) : (
-                    <button
-                      className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-                      onClick={() => onShowDiffChange?.(!showDiff)}
-                      type="button"
-                    >
-                      {showDiff ? "Show version" : "Diff vs current"}
-                    </button>
-                  )}
-                  <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
-                </div>
+                {version === undefined || !versionControls ? null : nameVersion}
+                {versionControls ? (
+                  <div className="flex items-center gap-3">
+                    {version === undefined ? (
+                      nameVersion
+                    ) : (
+                      <button
+                        className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+                        onClick={() => onShowDiffChange?.(!showDiff)}
+                        type="button"
+                      >
+                        {showDiff ? "Show version" : "Diff vs current"}
+                      </button>
+                    )}
+                    <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
+                  </div>
+                ) : null}
               </div>
             )}
           </div>

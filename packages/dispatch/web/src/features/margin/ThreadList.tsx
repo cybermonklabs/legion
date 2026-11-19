@@ -125,7 +125,17 @@ export function ThreadList({
 }: ThreadListProps): ReactNode {
   const anchoredRegion = useRef<HTMLElement>(null);
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
-  const [layoutTops, setLayoutTops] = useState<ReadonlyMap<string, number>>(() => new Map());
+  // Where each anchored card sits, and how tall the region holding them is: both measured from
+  // the cards' own boxes in one pass (`measure`), so a card that grows - its thread opened, its
+  // words arriving, or the whole margin shown after it was drawn hidden, as the issue page's
+  // Details drawer is on every load - grows the region with it. A height read during render
+  // instead kept whatever the cards measured when it last rendered, which in a hidden margin is
+  // nothing, and a card then lay over whatever the margin draws below the region.
+  const [layout, setLayout] = useState<{
+    readonly height: number;
+    readonly tops: ReadonlyMap<string, number>;
+  }>(() => ({ height: 0, tops: new Map() }));
+  const layoutTops = layout.tops;
   // Which section a thread lives in is a property of its data - it has a live (non-orphaned)
   // anchor or it does not - never of whether its mark has been measured yet. Placements arrive
   // after the document renders; deciding membership by them moved a card from Discussion into
@@ -163,11 +173,15 @@ export function ThreadList({
       next.set(thread.key, top);
       previousBottom = top + (cardRefs.current.get(thread.key)?.offsetHeight ?? 0) + 8;
     }
-    setLayoutTops((current) => {
-      if (current.size === next.size && [...next].every(([key, top]) => current.get(key) === top)) {
+    setLayout((current) => {
+      if (
+        current.height === previousBottom &&
+        current.tops.size === next.size &&
+        [...next].every(([key, top]) => current.tops.get(key) === top)
+      ) {
         return current;
       }
-      return next;
+      return { height: previousBottom, tops: next };
     });
   }, [anchored, topFor]);
 
@@ -222,14 +236,7 @@ export function ThreadList({
           aria-label="Anchored comments"
           className="relative"
           ref={anchoredRegion}
-          style={{
-            minHeight: Math.max(
-              ...anchored.map((thread) => {
-                const top = layoutTops.get(thread.key) ?? topFor(thread, renderOrigin);
-                return top + (cardRefs.current.get(thread.key)?.offsetHeight ?? 0) + 8;
-              })
-            ),
-          }}
+          style={{ minHeight: layout.height }}
         >
           {anchored.map((thread) => (
             <div

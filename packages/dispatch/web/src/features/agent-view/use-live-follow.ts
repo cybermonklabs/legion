@@ -9,10 +9,8 @@
  * the transcript makes is this hook's own and arrives nowhere as a scroll event it would have to
  * tell from the reader's.
  *
- * Deliberately not `features/conversation/use-follow-latest.ts`, the issue page's hook: that one
- * scrolls the window with the newest turn pinned at the top under the composer, this one scrolls
- * an element with the newest turn at the bottom, and only a live session rebuilds its whole
- * transcript from a replay (rule: `replayCount`). One shared hook would be a flag per difference.
+ * It scrolls an element with the newest turn at the bottom, and a live session rebuilds its
+ * whole transcript from a replay (rule: `replayCount`), which no other list of the app does.
  *
  * The reader's place belongs to the view's entry in `live-views.ts`, not to this hook: a view
  * that sleeps is unmounted, so the hook takes the place it is given (`initialPlace`) and reports
@@ -433,7 +431,7 @@ export function useLiveFollow({
     return () => sizes.disconnect();
   }, [jumpToEnd, viewport]);
 
-  // One effect for all four inputs, for the reason `use-follow-latest.ts:72-79` documents: a
+  // One effect for all four inputs: a
   // send's own callback and the refreshed transcript land in either order across renders, so an
   // effect that reacted to one of them alone would miss the other's arrival. It measures the
   // viewport rather than trusting the last scroll event, because a server push can commit before

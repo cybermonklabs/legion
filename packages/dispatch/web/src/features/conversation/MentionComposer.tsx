@@ -35,6 +35,7 @@ import { Chip } from "../../components/Chip";
 import { AgentListRefilling, QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useFootInset } from "../../hooks/useFootInset";
 import {
@@ -56,6 +57,7 @@ import {
   inputClasses,
   linkHoverText,
   linkText,
+  pageComposer,
   primaryButtonBg,
   quoteAccentBorder,
   quoteBodyText,
@@ -149,6 +151,9 @@ interface AskOptionDraft {
  *  held send, which is what a reload restores (`write-storage.ts`). Short enough that a reader who
  *  stops typing and reloads keeps their words, long enough that a burst of typing writes once. */
 const KEEP_DRAFT_MS = 300;
+
+/** How tall the issue page's line grows before it scrolls, as the prototype's `#ctext` does. */
+const OUTLINE_LINE_MAX = 150;
 
 let nextAskOptionId = 0;
 
@@ -473,6 +478,35 @@ function refusalMessage(
     : `Couldn't send — ${apiErrorMessage(refusal, "network error")}`;
 }
 
+/** One kind the issue page's line writes, as the chip beside its Send, in the host's own words
+ *  (`OutlineLook`). */
+export interface OutlineKind {
+  readonly kind: Exclude<ComposerKind, "suggestion">;
+  readonly label: ReactNode;
+}
+
+/**
+ * The composer as the issue page's one place to write, at the foot of its outline
+ * (dispatch://INFRA-1196 R16, the prototype's `#composer`, whose look `theme/classes.ts`'s
+ * `pageComposer` holds): one line to write in, which Enter sends and Shift+Enter breaks, the
+ * kinds it writes as chips before Send, and above the line the entry a reply answers, with the
+ * control that ends the reply. The host words every part of it from the page's own vocabulary;
+ * what the composer says in answer to a send - a refusal, a delivery warning, the mention picker
+ * - is the composer's own, as on every surface that draws it.
+ */
+export interface OutlineLook {
+  /** The word of the control that ends the reply, at the right of the target line. */
+  readonly cancelReply: string;
+  /** The kinds the line writes; none while a reply is its target, which is a comment. */
+  readonly kinds: readonly OutlineKind[];
+  /** What the empty line says. */
+  readonly placeholder: string;
+  /** Send's word. */
+  readonly send: string;
+  /** The entry a reply answers, drawn above the line while there is one. */
+  readonly target?: ReactNode;
+}
+
 interface MentionComposerProps {
   readonly agents?: readonly Agent[];
   readonly anchor?: ComposerAnchor;
@@ -524,15 +558,19 @@ interface MentionComposerProps {
   readonly saveEdit?: SaveCommentEdit;
   /** The reply target is this box's own standing address rather than a Reply the reader
    *  pressed: the Inbox reading column's thread box, which is the thread's permanent reply and
-   *  is remounted whenever the column follows the selection onto another row. Taking a target
+   *  is remounted whenever the column follows the selection onto another row, and the reply box
+   *  of a thread a link opened as it landed (`ThreadCard`'s `standingReply`). Taking a target
    *  normally takes the focus, so the reader can write at once; a standing box takes neither,
-   *  since the reader's place is the list the column follows and the next `j` belongs to it. */
+   *  since the reader's place is elsewhere - the list the column follows, whose next `j`
+   *  belongs to it, or the node the link named. */
   readonly standing?: boolean;
   /** Shows the Comment / Suggest / Ask switch and hands each pick to the host, which answers
    *  through `kind` - a selected document mark is the only surface where the kind can change, and
    *  its mark has to change with it (the margin retypes it) - or returns, in the reader's words,
    *  why it refused, which the composer shows under the switch. */
   readonly onKindChange?: (kind: ComposerKind) => string | undefined;
+  /** Draws the composer as the issue page's line at the foot of its outline (`OutlineLook`). */
+  readonly outline?: OutlineLook;
 }
 
 export function MentionComposer({
@@ -553,6 +591,7 @@ export function MentionComposer({
   onClose,
   onKindChange,
   onSent,
+  outline,
   owner,
   replyTo = null,
   saveEdit,
@@ -566,6 +605,7 @@ export function MentionComposer({
     refused: (held) => replaceDraft(held.draft.draft),
   });
   const registerComposer = useComposerRegistry();
+  const tooltips = useTooltips();
   /** This composer's send by name, which is what the margin looks it up by. */
   const composerName = mutationKey === undefined ? undefined : hashKey(mutationKey);
   // Only the mount reads it, so it is computed once rather than on every keystroke: the held
@@ -910,14 +950,24 @@ export function MentionComposer({
     replacement,
     replyTo,
   ]);
-  // A composer fixed at the foot of the screen - the docked one below `sm`, or one a host's frame
-  // places there, as a phone thread's are - says how far up it reaches, so the shell's floating
-  // status sits above it rather than over its controls; a refusal's row grows it upward. One with
-  // neither lays out in the page.
+  // A composer fixed at the foot of the screen - the docked one below `sm`, one a host's frame
+  // places there, as a phone thread's are, and the issue page's line at the foot of its outline -
+  // says how far up it reaches, so the shell's floating status sits above it rather than over its
+  // controls; a refusal's row grows it upward. One with none of these lays out in the page.
   useFootInset(
     frame === undefined ? formRef : frameRef,
-    !dormant && (docked || frame !== undefined)
+    !dormant && (docked || frame !== undefined || outline !== undefined)
   );
+  // The line grows with what is typed, to about six lines, as the prototype's `autosize` does,
+  // and shrinks back once a send or a discard empties it.
+  const outlined = outline !== undefined;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the body is the trigger; the field is read as it stands
+  useLayoutEffect(() => {
+    const field = textarea.current;
+    if (!outlined || field === null) return;
+    field.style.height = "auto";
+    field.style.height = `${Math.min(OUTLINE_LINE_MAX, field.scrollHeight)}px`;
+  }, [body, outlined]);
   const upload = useDraftUpload((text) => {
     setBody((current) => {
       const next = appendToDraft(current, text);
@@ -973,7 +1023,8 @@ export function MentionComposer({
       // unlayered, so it beats `block`): the title and detail stack explicitly and each stretches
       // to the row's width.
       // A session option's full id is its tooltip and accessible description: its name can be the
-      // short form `session:<8>…`, which two sessions may share.
+      // short form `session:<8>…`, which two sessions may share. A page that draws no tooltips -
+      // the issue page - draws none here either (`components/tooltips.tsx`).
       <button
         aria-label={option.title}
         className={`flex min-h-11 w-full flex-col rounded-lg px-3 py-2 text-left text-sm ${surfaceMutedHoverBg}`}
@@ -981,7 +1032,7 @@ export function MentionComposer({
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => addMention(option)}
         role="option"
-        title={isRole ? undefined : option.sessionId}
+        title={isRole || !tooltips ? undefined : option.sessionId}
         type="button"
       >
         <span className={`self-stretch font-medium ${textPrimaryOnSurface}`}>
@@ -989,7 +1040,9 @@ export function MentionComposer({
         </span>
         <TruncatedText
           className={`self-stretch text-xs ${textMutedOnSurface}`}
-          title={isRole ? `${option.holder} · ${option.detail}` : option.detail}
+          title={
+            !tooltips ? undefined : isRole ? `${option.holder} · ${option.detail}` : option.detail
+          }
         >
           {isRole ? (
             <>
@@ -1235,6 +1288,253 @@ export function MentionComposer({
       unsupportedOptions.every((option) => option.capabilities.includes(mode))
   );
 
+  // The parts every look of the composer draws alike, each where its look puts it: the prompt
+  // that asks before a draft is thrown away, the mention suggestions and what a send to the
+  // mentioned sessions would do, the reference picker, and the upload and the send's own state.
+  const discardPrompt = (
+    <>
+      {confirmingDiscard ? (
+        <div
+          className={`flex items-center gap-3 rounded-lg border p-2 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+          role="alert"
+        >
+          <span>Discard draft?</span>
+          <button className="font-semibold underline" onClick={discard} type="button">
+            Discard
+          </button>
+          <button
+            className="underline"
+            onClick={() => {
+              setConfirmingDiscard(false);
+              lastFocusedField.current?.focus();
+            }}
+            type="button"
+          >
+            Keep
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+  const mentionLines = (
+    <>
+      {autocomplete === undefined ? null : (
+        <div
+          aria-label="Mention suggestions"
+          className={`max-h-52 overflow-y-auto rounded-lg border p-1 ${surfaceRecessedBg}`}
+          role="listbox"
+        >
+          {filteredOptions.map(mentionOptionButton)}
+          {/* The issue's Legion roles no live agent holds, after the live options: a mention of
+              one is addressed to its role as any role option is. */}
+          {filteredStoppedOptions.length === 0 ? null : (
+            // biome-ignore lint/a11y/useSemanticElements: a listbox owns only options and groups of options; a fieldset is neither.
+            <div aria-labelledby={notRunningId} role="group">
+              <div
+                className={`px-3 pt-2 pb-1 text-xs font-semibold ${textMutedOnSurface}`}
+                id={notRunningId}
+                role="presentation"
+              >
+                Not running
+              </div>
+              {filteredStoppedOptions.map(mentionOptionButton)}
+            </div>
+          )}
+          {/* Only when the picker offers nothing at all: a "Not running" group with options in
+              it is a match, so saying no agent matches underneath it would contradict the list
+              the reader is looking at. */}
+          {agentsCurrent ? (
+            filteredOptions.length === 0 && filteredStoppedOptions.length === 0 ? (
+              <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>No live agents match.</p>
+            ) : null
+          ) : live.refilling ? (
+            <AgentListRefilling className={`px-3 py-2 text-sm ${textMutedOnSurface}`} />
+          ) : live.isPending ? (
+            <p
+              className={`px-3 py-2 text-sm ${textMutedOnSurface}`}
+              data-testid="agent-list-loading"
+            >
+              Loading live agents…
+            </p>
+          ) : (
+            <p className={`px-3 py-2 text-sm ${dangerText}`} data-testid="agent-list-unreachable">
+              Could not load live agents — Envoy listener unreachable.
+            </p>
+          )}
+        </div>
+      )}
+      {plainNotice.length > 0 ? (
+        <p className={`text-sm ${textMutedOnSurface}`}>
+          Sending as {MODE_LABELS[plainMode]}:{" "}
+          {plainNotice.map((option) => option.title).join(" and ")}{" "}
+          {plainNotice.length > 1 ? "do" : "does"} not advertise Send.
+        </p>
+      ) : null}
+      {deaf ? (
+        <p className={`text-sm ${dangerText}`}>
+          {unsupportedOptions.map((option) => option.title).join(" and ")}{" "}
+          {unsupportedOptions.length > 1 ? "advertise" : "advertises"} no delivery mode, so sending
+          it records a failed attempt. {noDeliveryReasons(unsupportedOptions)}
+        </p>
+      ) : unsupported ? (
+        <p className={`text-sm ${dangerText}`}>
+          {unsupportedOptions.map((option) => option.title).join(" and ")}{" "}
+          {unsupportedOptions.length > 1 ? "do" : "does"} not advertise{" "}
+          {outboundMode === undefined ? null : MODE_LABELS[outboundMode]}, so sending it records a
+          failed attempt.
+          {alternatives.length === 0
+            ? null
+            : ` Prefix with ${alternatives.map((mode) => DELIVERY_COMMANDS[mode]).join(" or ")} to send it as ${alternatives
+                .map((mode) => `${mode === "aside" ? "an" : "a"} ${MODE_LABELS[mode]}`)
+                .join(" or ")} instead.`}
+        </p>
+      ) : null}
+    </>
+  );
+  const referencePicker = (
+    <>
+      {owner.kind === "issue" && referencePickerOpen ? (
+        <ReferencePicker
+          issueKey={owner.issueKey}
+          onClose={() => setReferencePickerOpen(false)}
+          onSelect={(reference) => {
+            setBody((current) => {
+              const next = appendToDraft(current, reference);
+              previousBody.current = next;
+              return next;
+            });
+            setReferencePickerOpen(false);
+            textarea.current?.focus();
+          }}
+        />
+      ) : null}
+    </>
+  );
+  const sendState = (
+    <>
+      {uploadOwner === undefined ? null : <DraftUploadStatus upload={upload} />}
+      {refusal === undefined ? null : (
+        <div className="flex flex-wrap items-center gap-3">
+          <QueryError
+            message={refusalMessage(refusal, anchor, anchorRefusal)}
+            // Retry sends the draft as it stands, so it asks what Send asks of it.
+            onRetry={canSubmit ? send : undefined}
+            retrying={sending}
+          />
+          {/* A kind the closed issue refuses takes no Retry, so the refusal's own way out is to
+              drop the draft it handed back, once the reader has it; a send the reader stopped
+              offers both ways. */}
+          {refusedKind || refusal instanceof SendStoppedError ? (
+            <button
+              className={`text-sm font-medium underline ${dangerText}`}
+              onClick={discard}
+              type="button"
+            >
+              Discard draft
+            </button>
+          ) : null}
+        </div>
+      )}
+    </>
+  );
+  /** Enter on the issue page's line sends, as the prototype's does, and Shift+Enter breaks the
+   *  line; Enter while the mention suggestions are open, or while an input method composes, is
+   *  theirs. Ctrl+K opens the reference picker as on every issue composer. */
+  const outlineKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (
+      owner.kind === "issue" &&
+      (event.ctrlKey || event.metaKey) &&
+      event.key.toLowerCase() === "k"
+    ) {
+      event.preventDefault();
+      setReferencePickerOpen(true);
+      return;
+    }
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+    if (autocomplete !== undefined) return;
+    event.preventDefault();
+    if (upload.pending === 0) event.currentTarget.form?.requestSubmit();
+  };
+  // The issue page's line at the foot of its outline (`OutlineLook`): the entry a reply answers
+  // and the control that ends the reply above it, then the line itself with the kinds it writes
+  // and Send beside it, then whatever answers the reader's act. A question it writes takes the
+  // ask's defaults - no options, the middle urgency - as the prototype's Question chip does.
+  const outlineControls =
+    outline === undefined ? null : (
+      <fieldset
+        className="flex min-w-0 flex-col gap-[3px] border-0 p-0"
+        disabled={sending}
+        onChangeCapture={stopHeldComposerInput}
+        onClickCapture={stopHeldComposerInput}
+        onInputCapture={stopHeldComposerInput}
+        onKeyDownCapture={stopHeldComposerInput}
+      >
+        {outline.target === undefined ? null : (
+          <div className={pageComposer.target} data-composer-target="">
+            <span className="min-w-0 truncate">{outline.target}</span>
+            <button
+              aria-label={outline.cancelReply}
+              className={pageComposer.targetClear}
+              onClick={replyTo === null ? onClose : cancelReply}
+              type="button"
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          </div>
+        )}
+        {discardPrompt}
+        <div className={pageComposer.line}>
+          <textarea
+            aria-label={bodyLabel}
+            className={pageComposer.field}
+            onChange={(event) => onBodyChange(event.target.value, event.target.selectionStart)}
+            onDrop={
+              uploadOwner === undefined
+                ? undefined
+                : (event: DragEvent<HTMLTextAreaElement>) => upload.drop(event, uploadOwner)
+            }
+            onKeyDown={outlineKeyDown}
+            onPaste={
+              uploadOwner === undefined
+                ? undefined
+                : (event: ClipboardEvent<HTMLTextAreaElement>) => upload.paste(event, uploadOwner)
+            }
+            placeholder={outline.placeholder}
+            ref={bodyFieldRef}
+            rows={1}
+            value={body}
+          />
+          <div className={pageComposer.controls}>
+            {outline.kinds.map((choice) => (
+              <button
+                aria-pressed={kind === choice.kind}
+                className={`${pageComposer.chip} ${
+                  kind === choice.kind
+                    ? pageComposer.chipOn[choice.kind]
+                    : pageComposer.chipOff[choice.kind]
+                }`}
+                data-composer-kind={choice.kind}
+                key={choice.kind}
+                onClick={() => onKindChange?.(choice.kind)}
+                type="button"
+              >
+                {choice.label}
+              </button>
+            ))}
+            <RefusableButton
+              busy={sending ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined}
+              refusal={submitReason ?? null}
+              type="submit"
+            >
+              {outline.send}
+            </RefusableButton>
+          </div>
+        </div>
+        {mentionLines}
+        {referencePicker}
+        {sendState}
+      </fieldset>
+    );
   const composerControls = (
     <fieldset
       className={
@@ -1318,27 +1618,7 @@ export function MentionComposer({
           )}
         </>
       ) : null}
-      {confirmingDiscard ? (
-        <div
-          className={`flex items-center gap-3 rounded-lg border p-2 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
-          role="alert"
-        >
-          <span>Discard draft?</span>
-          <button className="font-semibold underline" onClick={discard} type="button">
-            Discard
-          </button>
-          <button
-            className="underline"
-            onClick={() => {
-              setConfirmingDiscard(false);
-              lastFocusedField.current?.focus();
-            }}
-            type="button"
-          >
-            Keep
-          </button>
-        </div>
-      ) : null}
+      {discardPrompt}
       {kind === "suggestion" ? (
         <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
           Replace with
@@ -1409,77 +1689,7 @@ export function MentionComposer({
           ))}
         </ul>
       )}
-      {autocomplete === undefined ? null : (
-        <div
-          aria-label="Mention suggestions"
-          className={`max-h-52 overflow-y-auto rounded-lg border p-1 ${surfaceRecessedBg}`}
-          role="listbox"
-        >
-          {filteredOptions.map(mentionOptionButton)}
-          {/* The issue's Legion roles no live agent holds, after the live options: a mention of
-              one is addressed to its role as any role option is. */}
-          {filteredStoppedOptions.length === 0 ? null : (
-            // biome-ignore lint/a11y/useSemanticElements: a listbox owns only options and groups of options; a fieldset is neither.
-            <div aria-labelledby={notRunningId} role="group">
-              <div
-                className={`px-3 pt-2 pb-1 text-xs font-semibold ${textMutedOnSurface}`}
-                id={notRunningId}
-                role="presentation"
-              >
-                Not running
-              </div>
-              {filteredStoppedOptions.map(mentionOptionButton)}
-            </div>
-          )}
-          {/* Only when the picker offers nothing at all: a "Not running" group with options in
-              it is a match, so saying no agent matches underneath it would contradict the list
-              the reader is looking at. */}
-          {agentsCurrent ? (
-            filteredOptions.length === 0 && filteredStoppedOptions.length === 0 ? (
-              <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>No live agents match.</p>
-            ) : null
-          ) : live.refilling ? (
-            <AgentListRefilling className={`px-3 py-2 text-sm ${textMutedOnSurface}`} />
-          ) : live.isPending ? (
-            <p
-              className={`px-3 py-2 text-sm ${textMutedOnSurface}`}
-              data-testid="agent-list-loading"
-            >
-              Loading live agents…
-            </p>
-          ) : (
-            <p className={`px-3 py-2 text-sm ${dangerText}`} data-testid="agent-list-unreachable">
-              Could not load live agents — Envoy listener unreachable.
-            </p>
-          )}
-        </div>
-      )}
-      {plainNotice.length > 0 ? (
-        <p className={`text-sm ${textMutedOnSurface}`}>
-          Sending as {MODE_LABELS[plainMode]}:{" "}
-          {plainNotice.map((option) => option.title).join(" and ")}{" "}
-          {plainNotice.length > 1 ? "do" : "does"} not advertise Send.
-        </p>
-      ) : null}
-      {deaf ? (
-        <p className={`text-sm ${dangerText}`}>
-          {unsupportedOptions.map((option) => option.title).join(" and ")}{" "}
-          {unsupportedOptions.length > 1 ? "advertise" : "advertises"} no delivery mode, so sending
-          it records a failed attempt. {noDeliveryReasons(unsupportedOptions)}
-        </p>
-      ) : unsupported ? (
-        <p className={`text-sm ${dangerText}`}>
-          {unsupportedOptions.map((option) => option.title).join(" and ")}{" "}
-          {unsupportedOptions.length > 1 ? "do" : "does"} not advertise{" "}
-          {outboundMode === undefined ? null : MODE_LABELS[outboundMode]}, so sending it records a
-          failed attempt.
-          {alternatives.length === 0
-            ? null
-            : ` Prefix with ${alternatives.map((mode) => DELIVERY_COMMANDS[mode]).join(" or ")} to send it as ${alternatives
-                .map((mode) => `${mode === "aside" ? "an" : "a"} ${MODE_LABELS[mode]}`)
-                .join(" or ")} instead.`}
-        </p>
-      ) : null}
+      {mentionLines}
       {kind === "ask" ? (
         <>
           <fieldset>
@@ -1584,46 +1794,10 @@ export function MentionComposer({
           )}
           {/* A picker is a draft control. `send` closes one already open, and Ctrl+K consults the
               submit guard before it can open another in the task before the fieldset disables. */}
-          {owner.kind === "issue" && referencePickerOpen ? (
-            <ReferencePicker
-              issueKey={owner.issueKey}
-              onClose={() => setReferencePickerOpen(false)}
-              onSelect={(reference) => {
-                setBody((current) => {
-                  const next = appendToDraft(current, reference);
-                  previousBody.current = next;
-                  return next;
-                });
-                setReferencePickerOpen(false);
-                textarea.current?.focus();
-              }}
-            />
-          ) : null}
+          {referencePicker}
         </>
       )}
-      {uploadOwner === undefined ? null : <DraftUploadStatus upload={upload} />}
-      {refusal === undefined ? null : (
-        <div className="flex flex-wrap items-center gap-3">
-          <QueryError
-            message={refusalMessage(refusal, anchor, anchorRefusal)}
-            // Retry sends the draft as it stands, so it asks what Send asks of it.
-            onRetry={canSubmit ? send : undefined}
-            retrying={sending}
-          />
-          {/* A kind the closed issue refuses takes no Retry, so the refusal's own way out is to
-              drop the draft it handed back, once the reader has it; a send the reader stopped
-              offers both ways. */}
-          {refusedKind || refusal instanceof SendStoppedError ? (
-            <button
-              className={`text-sm font-medium underline ${dangerText}`}
-              onClick={discard}
-              type="button"
-            >
-              Discard draft
-            </button>
-          ) : null}
-        </div>
-      )}
+      {sendState}
       <RefusableButton
         busy={sending ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined}
         refusal={submitReason ?? null}
@@ -1660,16 +1834,19 @@ export function MentionComposer({
     <form
       aria-label="Comment composer"
       className={
-        compact
-          ? "space-y-2"
-          : docked
-            ? `${autocompleteOpen ? "z-20" : "z-[8]"} fixed inset-x-0 bottom-16 space-y-2 border-t px-4 py-2 sm:sticky sm:top-0 sm:z-20 sm:-mx-2 sm:border-b sm:px-2 ${borderDefault} ${surfaceBg}`
-            : `space-y-3 rounded-xl border p-3 ${calloutInfoBorder} ${calloutInfoBg}`
+        outline !== undefined
+          ? pageComposer.box
+          : compact
+            ? "space-y-2"
+            : docked
+              ? `${autocompleteOpen ? "z-20" : "z-[8]"} fixed inset-x-0 bottom-16 space-y-2 border-t px-4 py-2 sm:sticky sm:top-0 sm:z-20 sm:-mx-2 sm:border-b sm:px-2 ${borderDefault} ${surfaceBg}`
+              : `space-y-3 rounded-xl border p-3 ${calloutInfoBorder} ${calloutInfoBg}`
       }
+      data-issue-composer={outline === undefined ? undefined : ""}
       onSubmit={submit}
       ref={formRef}
     >
-      {composerControls}
+      {outlineControls ?? composerControls}
       {lateStatus}
     </form>
   );

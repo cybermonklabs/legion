@@ -118,14 +118,22 @@ export const anchoredAsk: Ask = {
   urgency: "med",
 };
 
+/** The address a margin landing starts from on the issue page: the document the comment is
+ *  anchored in, opened at its own address with the comment named by `?mark=`, which is what
+ *  "View in document" builds (`refs/routes.ts`'s `openDocumentPath`). Every other address of the
+ *  issue that names the comment - its own route (`/issues/KEY/comments/<id>`), `?comment=` - opens
+ *  the issue's outline on the comment's node, and the margin only marks its card there
+ *  (`useMarginSheet.ts`'s `routeItemBesideDocument`, dispatch://INFRA-1196 R20). */
+export function markedCommentPath(id: string): string {
+  return `${buildIssuePath({ key: "CORE-1", kind: "artifact", slug: "spec" })}?mark=${id}`;
+}
+
+/** A link to the comment beside the document it is anchored in (`markedCommentPath`). */
 export function CommentLink(): ReactNode {
   const navigate = useNavigate();
 
   return (
-    <button
-      onClick={() => navigate(buildIssuePath({ id: "comment-1", key: "CORE-1", kind: "comment" }))}
-      type="button"
-    >
+    <button onClick={() => navigate(markedCommentPath("comment-1"))} type="button">
       Open comment
     </button>
   );
@@ -136,12 +144,7 @@ export function SameCommentLink(): ReactNode {
   const navigate = useNavigate();
 
   return (
-    <button
-      onClick={() =>
-        navigate(`${buildIssuePath({ key: "CORE-1", kind: "spec" })}?comment=comment-1`)
-      }
-      type="button"
-    >
+    <button onClick={() => navigate(markedCommentPath("comment-1"))} type="button">
       Open the same comment
     </button>
   );

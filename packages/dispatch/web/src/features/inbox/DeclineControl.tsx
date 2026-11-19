@@ -151,10 +151,15 @@ function DeclineDialog({
 export function DeclineControl({
   ask,
   decline,
+  look,
   onDeclined,
 }: {
   ask: Ask;
   decline: (id: string, input: DeclineAskInput, bounds: WriteBounds) => Promise<Ask>;
+  /** The control's own box and the classes of the button in it, where a host draws it in its
+   *  own look: the issue page's answer line draws it as one of its quiet controls. A card's own
+   *  look otherwise. */
+  look?: { readonly box: string; readonly button: string };
   /** Called once the server has recorded the decline, as an answer from this card calls it. */
   onDeclined?: (id: string) => void;
 }): ReactNode {
@@ -183,9 +188,12 @@ export function DeclineControl({
   });
 
   return (
-    <div className="mt-3">
+    <div className={look?.box ?? "mt-3"}>
       <button
-        className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
+        className={
+          look?.button ??
+          `min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`
+        }
         disabled={write.isPending}
         onClick={() => setOpen(true)}
         type="button"

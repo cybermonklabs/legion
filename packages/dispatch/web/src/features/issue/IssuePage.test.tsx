@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -9,7 +9,6 @@ import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "rea
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
-import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
@@ -18,27 +17,34 @@ import {
   decisionsAndReadMarkHandlers,
 } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
   Agent,
+  ArtifactBlock,
   ArtifactText,
   ArtifactVersionText,
   Ask,
   GraphReferences,
   InboxRow,
+  IssueAskThreadRow,
+  IssueCheckResults,
   IssueCoverage,
   IssueDetails,
   IssueReferences,
+  Message,
   Project,
+  ReferenceTargets,
   Subscriber,
   UserIssueState,
 } from "../../api/types";
 import type { ConnectionCallbacks } from "../doc/connection";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { FilledMarginSlot, MarginSlotProvider, useMarginSlotFill } from "../margin/margin-slot";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
 import { IssuePage } from "./IssuePage";
+import { EMPTY_STATE_LINES } from "./page-words";
 
 const issue = {
   route_status: null,
@@ -101,8 +107,8 @@ const issue = {
 } satisfies IssueDetails;
 
 const itemComment = {
-  // Anchored: the landing has to wait on the issue to learn which document the anchor names,
-  // which is the case that turned a failed issue read into a permanent "Loading issue…".
+  // Anchored in the spec: a comment's own address opens the outline on its node all the same,
+  // not the document it quotes (R20).
   anchor: {
     artifact_id: "artifact-1",
     block_id: null,
@@ -174,8 +180,24 @@ const openIssueAsk: Ask = {
   question: "Should this ship?",
   state: "open",
   waiting_on: "human",
+  // The person the server resolved the question to: the reader these tests sign in as, so the
+  // header's count of what waits on the reader counts it (`waiting.ts`).
+  waiting_on_person: "alice",
   urgency: "med",
 };
+
+/** An open approval request on the issue's spec whose turn is a person's: it waits on the
+ *  reader, so the header's approval control carries Approve and Request changes (R31). */
+function approvalAsk(): NonNullable<IssueDetails["open_asks"]>[number] {
+  return {
+    ...openIssueAsk,
+    artifact_id: issue.artifacts[0]?.id ?? null,
+    id: "ask-approval",
+    kind: "approval",
+    last_reply: null,
+    question: "Approve the spec?",
+  };
+}
 
 function issueWithExternalLink(url: string): IssueDetails {
   return { ...issue, external_links: [{ url }] };
@@ -262,6 +284,24 @@ function answerIssuePageReads(): void {
       } satisfies IssueCoverage)
     ),
     http.get("/api/v1/issues/:key/artifacts", () => Response.json([])),
+    // The issue's own conversation, which the tree and the panel's list share. A row that
+    // asserts one of them stubs `api` itself; this answers every other render, including one
+    // that moves to a second issue.
+    http.get("/api/v1/issues/:key/asks", () => Response.json([])),
+    http.get("/api/v1/issues/:key/comments", () => Response.json([])),
+    http.get("/api/v1/issues/:key/messages", () => Response.json([])),
+    // The tree's own reads, which every address draws: its check results, and the one batched
+    // read of every `dispatch://` address its nodes hold.
+    http.get("/api/v1/issues/:key/results", ({ params }) =>
+      Response.json({
+        checks: [],
+        issue: String(params.key),
+        verification_artifact_id: "",
+      } satisfies IssueCheckResults)
+    ),
+    http.get("/api/v1/reference-targets", () =>
+      Response.json({ targets: [] } satisfies ReferenceTargets)
+    ),
     http.get("/api/v1/issues/:key/references", () =>
       Response.json({ members: [], truncated: false } satisfies IssueReferences)
     ),
@@ -298,7 +338,21 @@ beforeEach(answerIssuePageReads);
 
 function CurrentRoute() {
   const location = useLocation();
-  return <output data-testid="current-route">{`${location.pathname}${location.search}`}</output>;
+  return (
+    <output data-testid="current-route">{`${location.pathname}${location.search}${location.hash}`}</output>
+  );
+}
+
+/** A stand-in for the shell's margin, which draws whatever the page put in the slot the way
+ *  `MarginSheet` does (`features/margin/margin-slot.tsx`). A row mounts one to watch the panel
+ *  move between the margin's column and the page's own. */
+function StandInMargin(): ReactNode {
+  const fill = useMarginSlotFill();
+  return (
+    <aside data-testid="stand-in-margin">
+      <FilledMarginSlot fill={fill}>{null}</FilledMarginSlot>
+    </aside>
+  );
 }
 
 function renderIssuePage(
@@ -307,7 +361,15 @@ function renderIssuePage(
   seedText?: string,
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  })
+  }),
+  /** Whether the shell's margin is keeping a column for the page's panel. No margin is
+   *  mounted here by default, so the default is the state a collapsed margin and a phone both
+   *  leave the page in: the page draws its panel itself (`features/margin/margin-slot.tsx`). */
+  marginDrawsPanel = false,
+  /** Whether a stand-in for the shell's margin is mounted at all. Off by default: with none
+   *  mounted, a page that hands its panel to the margin draws it nowhere, which is what the
+   *  rows below read. */
+  margin = false
 ) {
   const runtime = fakeDocumentRuntime({ text: seedText });
   // Each document connection is told once that it has synced: by the timer below if the page has
@@ -323,28 +385,61 @@ function renderIssuePage(
     }
   };
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  const view = render(
+  const tree = (drawsSlot: boolean) => (
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <DocumentRuntime.Provider value={runtime.runtime}>
             <MarginProvider>
-              <CurrentRoute />
-              {navigateTo === undefined ? null : (
-                <Link to={navigateTo}>Navigate to test route</Link>
-              )}
-              <Routes>
-                <Route path="/issues/:key/*" element={<IssuePage />} />
-              </Routes>
+              <MarginSlotProvider drawsSlot={drawsSlot}>
+                <CurrentRoute />
+                {navigateTo === undefined ? null : (
+                  <Link to={navigateTo}>Navigate to test route</Link>
+                )}
+                <Routes>
+                  <Route path="/issues/:key/*" element={<IssuePage />} />
+                </Routes>
+                {margin ? <StandInMargin /> : null}
+              </MarginSlotProvider>
             </MarginProvider>
           </DocumentRuntime.Provider>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
+  const view = render(tree(marginDrawsPanel));
   window.setTimeout(syncOpenedDocuments);
-  return { ...view, runtime, syncOpenedDocuments };
+  return {
+    ...view,
+    runtime,
+    syncOpenedDocuments,
+    /** Shows the shell's margin, or collapses it again: the shell answers whether the margin
+     *  keeps a column for the page's panel, and the reader's own control moves that answer. */
+    showMargin: (drawsSlot: boolean) => view.rerender(tree(drawsSlot)),
+  };
 }
+
+/** happy-dom answers every media query against its own 1024 px window, which is a width the
+ *  shell's margin is a sheet at. A test that wants the desktop layout asks for a wider one, as
+ *  `IssueTree.test.tsx` does. */
+function setViewport(width: number): void {
+  window.matchMedia = ((query: string) =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: width <= Number(/max-width:\s*(\d+)/.exec(query)?.[1] ?? 0),
+      media: query,
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+}
+
+const originalMatchMedia = window.matchMedia;
+afterEach(() => {
+  window.matchMedia = originalMatchMedia;
+});
 
 async function openSubscribedAgents(count: number) {
   const user = userEvent.setup();
@@ -355,13 +450,66 @@ async function openSubscribedAgents(count: number) {
   return screen.findByRole("region", { name: "Subscribed agents" });
 }
 
+/** Who opened the issue, where the redesigned page draws it: its row of Details' People
+ *  section, the label in the row's own column and the name beside it as text rather than the
+ *  tooltip the metadata rail carried (dispatch://INFRA-1196 R13). */
 async function expectCreator(label: string): Promise<HTMLElement> {
-  const rail = await screen.findByTestId("issue-metadata-rail");
-  // `AgentName` draws the name; the span around it carries the whole label as its `title`.
-  const creator = await within(rail).findByTitle(label);
+  const row = await openedByRow();
+  const creator = row.querySelector<HTMLElement>("[data-author-text]") as HTMLElement;
   expect(creator.textContent).toBe(label);
-  expect(creator.parentElement?.textContent).toBe(`Opened by:${label}`);
   return creator;
+}
+
+/** The Opened by row of Details: its label, then its value. */
+async function openedByRow(): Promise<HTMLElement> {
+  const panel = await screen.findByTestId("issue-margin");
+  const openedBy = await within(panel).findByText("Opened by");
+  return openedBy.parentElement?.parentElement as HTMLElement;
+}
+
+/**
+ * The control of the filter row the page is on. happy-dom's window is 1024 px wide, which is the
+ * width the row of five becomes one control naming the one on (dispatch://INFRA-1196 R2), so
+ * that one control is what these tests read and press. The control draws the name and its
+ * signal, and so is named by both - a word drawn inside a control belongs in that control's
+ * name (WCAG 2.5.3, `IssuePresets.tsx`) - so the name is read from its own part.
+ */
+async function activePreset(): Promise<string> {
+  const row = await screen.findByTestId("issue-presets");
+  return within(row).getByRole("button").querySelector("[data-preset-name]")?.textContent ?? "";
+}
+
+async function expectPreset(name: string): Promise<void> {
+  await waitFor(async () => {
+    expect(await activePreset()).toBe(name);
+  });
+}
+
+/** One item of that control's menu, by the filter's name: each is a `menuitemradio` named by
+ *  its name and its signal, so the name is matched at the start of it. */
+function presetItem(name: string): RegExp {
+  return new RegExp(`^${name}\\b`, "u");
+}
+
+/** Moves to `name` through that one control's menu. */
+async function openPreset(name: string): Promise<void> {
+  const user = userEvent.setup();
+  const row = await screen.findByTestId("issue-presets");
+  await user.click(within(row).getByRole("button"));
+  await user.click(await screen.findByRole("menuitemradio", { name: presetItem(name) }));
+  await expectPreset(name);
+}
+
+/** Opens the identity block's one actions control, which is where close, reopen and the control
+ *  that sets the parent live now (R11: row one holds the actions, never a property). */
+async function openIssueActions(): Promise<void> {
+  const user = userEvent.setup();
+  const control = await screen.findByRole("button", { name: "Issue actions" });
+  // The control is a toggle and a press inside it closes the group, so this opens it only while
+  // it is closed: two calls in a row leave the actions on screen, not hidden again.
+  if (control.getAttribute("aria-expanded") !== "true") {
+    await user.click(control);
+  }
 }
 
 test("IssuePage shows a session creator's live title and personal-token owner", async () => {
@@ -424,13 +572,99 @@ test("IssuePage shows a human creator by login", async () => {
   }
 });
 
-test("IssuePage omits creator metadata for historical issues", async () => {
+// dispatch://INFRA-1196 R9, R22: the issue page names every author by a name and never by an
+// id, the creator included. A session nothing titles - not the registry, not the write - is
+// "An agent" there, where every other page reads its short id.
+test("IssuePage names an untitled session creator by a word, never by its id", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    created_by: { id: "019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01", kind: "session" },
+  });
+  const view = renderIssuePage();
+
+  try {
+    const creator = await expectCreator("An agent");
+    expect(creator.textContent).not.toMatch(/019a1c01/);
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// dispatch://INFRA-1196 R10, R19: a reader who follows a link to a node lands on that node's
+// row, or the chain is out of their reach: the address moving to the Spec filter's `#b-r1` puts
+// the focus on the statement's row, and so does a fresh load of that same address, which is how
+// a citation pasted elsewhere arrives (the reviewer's finding on `/spec#b-<statement>`).
+test("IssuePage focuses the node its address names, followed on the page or freshly loaded", async () => {
+  const restore = stubIssuePage(issue);
+  answerRequests(
+    http.get("/api/v1/issues/:key/coverage", () =>
+      Response.json({
+        gaps: ["r1 has no check"],
+        has_plan: false,
+        issue: "CORE-1",
+        requirements: [
+          {
+            block_id: "r1",
+            checks: 0,
+            gaps: ["r1 has no check"],
+            plan_tasks: 0,
+            ref: "dispatch://CORE-1/spec#b-r1",
+            text: "The page draws the whole issue in one reading.",
+          },
+        ],
+        spec_artifact_id: "artifact-1",
+      } satisfies IssueCoverage)
+    ),
+    http.get("/api/v1/artifacts/:id/blocks", () =>
+      Response.json([
+        {
+          attributes: [],
+          from: 0,
+          id: "r1",
+          references: { asks: 0, comments: 0 },
+          to: 1,
+          token: "r1",
+          type: "requirement",
+        },
+      ])
+    )
+  );
+  const row = (container: HTMLElement) =>
+    container.querySelector<HTMLElement>('[data-node-row][data-node-id="spec#b-r1"]');
+  const focusedRow = () =>
+    document.activeElement?.closest("[data-node-row]")?.getAttribute("data-node-id");
+  const user = userEvent.setup();
+  try {
+    const followed = renderIssuePage("/issues/CORE-1", "/issues/CORE-1/spec#b-r1");
+    try {
+      await waitFor(() => expect(row(followed.container)).not.toBeNull());
+      await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
+      await waitFor(() => expect(focusedRow()).toBe("spec#b-r1"));
+    } finally {
+      followed.unmount();
+    }
+
+    const loaded = renderIssuePage("/issues/CORE-1/spec#b-r1");
+    try {
+      await waitFor(() => expect(row(loaded.container)).not.toBeNull());
+      await waitFor(() => expect(focusedRow()).toBe("spec#b-r1"));
+    } finally {
+      loaded.unmount();
+    }
+  } finally {
+    restore();
+  }
+});
+
+test("IssuePage reads None for the creator of a historical issue", async () => {
   const restore = stubIssuePage({ ...issue, created_by: null });
   const view = renderIssuePage();
 
   try {
-    await screen.findByText(issue.title);
-    expect(screen.queryByText(/^Opened by/)).not.toBeInTheDocument();
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    // A property with no value reads None in its own row (dispatch://INFRA-1196 R13).
+    expect(await openedByRow()).toHaveTextContent("Opened byNone");
   } finally {
     view.unmount();
     restore();
@@ -438,19 +672,30 @@ test("IssuePage omits creator metadata for historical issues", async () => {
 });
 
 test("IssuePage's header warns when nobody holds the route, and adds nothing when it is live", async () => {
-  // The warning sits in the wrapping state row, not the metadata rail, which clips at every width.
+  // The header keeps one marker where the route reaches nobody; the route itself and its reach
+  // are Details' Route row (dispatch://INFRA-1196 R13).
   const stateRow = async () => {
-    const rail = await screen.findByTestId("issue-metadata-rail");
-    await within(rail).findByRole("button", { name: "Messages default to role:sre" });
-    return screen.getByTestId("issue-state-actions");
+    const row = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-details-row="route"]');
+      if (found === null) throw new Error("Details draws no route row");
+      return found;
+    });
+    await within(row).findByRole("button", { name: "Messages default to role:sre" });
+    return row;
   };
 
   const unheld = stubIssuePage({ ...issue, route: "role:sre", route_status: "no_holder" });
   const unheldView = renderIssuePage();
   try {
-    const marker = within(await stateRow()).getByTestId("issue-route-unreachable");
+    await stateRow();
+    const marker = within(screen.getByTestId("issue-header")).getByTestId(
+      "issue-route-unreachable"
+    );
     expect(marker).toHaveTextContent("role:sre:");
     expect(marker).toHaveTextContent("Nobody holds it right now");
+    expect(
+      within(await stateRow()).getByTestId("issue-details-route-unreachable")
+    ).toHaveTextContent("Nobody holds it right now");
   } finally {
     unheldView.unmount();
     unheld();
@@ -465,7 +710,8 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
   const liveView = renderIssuePage();
   try {
     const row = await stateRow();
-    expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+    expect(within(row).queryByTestId("issue-details-route-unreachable")).not.toBeInTheDocument();
     expect(within(row).queryByTestId("issue-route-unknown")).not.toBeInTheDocument();
   } finally {
     liveView.unmount();
@@ -483,7 +729,7 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
     const row = await stateRow();
     expect(within(row).getByTestId("issue-route-unknown").textContent).toBe("Route reach unknown");
     expect(within(row).queryByTestId("issue-route-refilling")).not.toBeInTheDocument();
-    expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
   } finally {
     unjudgedView.unmount();
     unjudged();
@@ -504,7 +750,7 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
       `Route reach unknown: ${AGENT_LIST_REFILLING}`
     );
     expect(within(row).queryByTestId("issue-route-unknown")).not.toBeInTheDocument();
-    expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
   } finally {
     refillingView.unmount();
     refilling();
@@ -515,11 +761,15 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
 // listener judged it and said the session is stalled, and what is sent to the issue waits for
 // it. Folding that into either of the other two markers tells a reader to re-staff a role that
 // is still held, or hides that anything is wrong at all (dispatch://INFRA-392).
-test("IssuePage's header marks an unresponsive route holder apart from an unheld and a refilling route", async () => {
+test("IssuePage's Details marks an unresponsive route holder apart from an unheld and a refilling route", async () => {
   const stateRow = async () => {
-    const rail = await screen.findByTestId("issue-metadata-rail");
-    await within(rail).findByRole("button", { name: "Messages default to role:sre" });
-    return screen.getByTestId("issue-state-actions");
+    const row = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-details-row="route"]');
+      if (found === null) throw new Error("Details draws no route row");
+      return found;
+    });
+    await within(row).findByRole("button", { name: "Messages default to role:sre" });
+    return row;
   };
 
   const stalled = stubIssuePage({
@@ -532,10 +782,12 @@ test("IssuePage's header marks an unresponsive route holder apart from an unheld
   try {
     const row = await stateRow();
     const marker = within(row).getByTestId("issue-route-unresponsive");
-    expect(marker).toHaveTextContent("role:sre:");
+    // The row names the route itself beside the marker, so the marker says the state alone.
     expect(marker).toHaveTextContent("Unresponsive, still reached");
-    expect(marker.getAttribute("title")).toContain("waits until it answers");
-    expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+    // The page raises no tooltip (dispatch://INFRA-1196 R21), so the marker's explanation is
+    // drawn for a screen reader rather than held in its `title`.
+    expect(marker).toHaveTextContent("waits until it answers");
+    expect(screen.queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
     expect(within(row).queryByTestId("issue-route-unknown")).not.toBeInTheDocument();
     expect(within(row).queryByTestId("issue-route-refilling")).not.toBeInTheDocument();
   } finally {
@@ -561,7 +813,7 @@ test("IssuePage's header marks an unresponsive route holder apart from an unheld
   }
 });
 
-test("IssuePage omits creator metadata when an issue response omits it", async () => {
+test("IssuePage reads None for the creator when an issue response omits it", async () => {
   // IssueDetails models the supported wire contract; this fixture probes a future raw response
   // that omits the optional value rather than serializing it as null.
   const issueWithoutCreator = { ...issue, created_by: undefined } as unknown as IssueDetails;
@@ -569,8 +821,8 @@ test("IssuePage omits creator metadata when an issue response omits it", async (
   const view = renderIssuePage();
 
   try {
-    await screen.findByText(issue.title);
-    expect(screen.queryByText(/^Opened by/)).not.toBeInTheDocument();
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    expect(await openedByRow()).toHaveTextContent("Opened byNone");
   } finally {
     view.unmount();
     restore();
@@ -597,7 +849,9 @@ test("IssuePage shows subscribed agents with their title and their running state
     expect(within(subscribed).getAllByRole("listitem")).toHaveLength(2);
     const planner = within(subscribed).getByRole("link", { name: "Planner (live)" });
     expect(planner).toHaveAttribute("href", "/agents/0123456789abcdef/live");
-    expect(planner.closest("[title]")?.getAttribute("title")).toBe("0123456789abcdef");
+    // The panel raises no tooltip, so the session's own id is nowhere but in the link it
+    // follows and the mark the registry reads (R21, `IssueMargin.tsx`'s `NoTooltips`).
+    expect(planner.closest("[title]")).toBeNull();
     expect(within(subscribed).getByRole("link", { name: "Historical (offline)" })).toBeDefined();
     const states = () =>
       [...subscribed.querySelectorAll("[data-agent-name]")].map((agent) => [
@@ -636,9 +890,17 @@ test("IssuePage disables Unsubscribe and explains why for a subscriber reachable
 
   try {
     const subscribed = await openSubscribedAgents(1);
-    expect(within(subscribed).getByText("via notifications.dispatch.>")).toBeDefined();
+    // Why Unsubscribe is refused, in words: a disabled control takes no focus and raises no
+    // tooltip, so the `title` it carried reached nobody (R21). The line says why in the
+    // reader's words and draws no topic.
+    expect(
+      within(subscribed).getByText(
+        "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone."
+      )
+    ).toBeDefined();
     const unsubscribeButton = within(subscribed).getByRole("button", { name: "Unsubscribe" });
     expect(unsubscribeButton).toHaveProperty("disabled", true);
+    expect(unsubscribeButton.getAttribute("title")).toBeNull();
   } finally {
     view.unmount();
     restore();
@@ -652,7 +914,7 @@ test("IssuePage shortens a subscriber id when its title is blank", async () => {
   try {
     const subscribed = await openSubscribedAgents(1);
     const label = within(subscribed).getByText("session:01234567…");
-    expect(label.closest("[title]")?.getAttribute("title")).toBe("0123456789abcdef");
+    expect(label.closest("[title]")).toBeNull();
   } finally {
     view.unmount();
     restore();
@@ -664,7 +926,7 @@ test("IssuePage hides the Subscribed agents header when there are no subscribers
   const view = renderIssuePage();
 
   try {
-    await screen.findByText(issue.title);
+    await screen.findByRole("heading", { level: 1, name: issue.title });
     await waitFor(() =>
       expect(screen.queryByRole("region", { name: "Subscribed agents" })).not.toBeInTheDocument()
     );
@@ -813,7 +1075,7 @@ test("IssuePage shows a retryable error and hides the section when the subscribe
   const view = renderIssuePage();
 
   try {
-    await screen.findByText(issue.title);
+    await screen.findByRole("heading", { level: 1, name: issue.title });
     await waitFor(() =>
       expect(screen.queryByRole("region", { name: "Subscribed agents" })).not.toBeInTheDocument()
     );
@@ -834,7 +1096,7 @@ test("IssuePage says the agent list is refilling and counts no subscribers from 
   const view = renderIssuePage();
 
   try {
-    await screen.findByText(issue.title);
+    await screen.findByRole("heading", { level: 1, name: issue.title });
     const notice = await screen.findByTestId("agent-list-refilling");
     expect(notice.textContent).toBe(AGENT_LIST_REFILLING);
     expect(
@@ -1050,7 +1312,14 @@ for (const fixture of [
     try {
       await screen.findByText("Merge native Dispatch");
       expect(screen.getByText("merged")).toBeDefined();
-      expect(await screen.findByText(`checks: ${fixture.checks}`)).toBeDefined();
+      // The chip is the page's word and GitHub's own count beside it, each marked as what it
+      // is (dispatch://INFRA-1196 R21), so the chip is read whole rather than as one text node.
+      expect(
+        await screen.findByText(
+          (_text, element) => element?.textContent === `checks: ${fixture.checks}`,
+          { selector: "span[data-page-chrome]" }
+        )
+      ).toBeDefined();
     } finally {
       view.unmount();
       githubRest.mockRestore();
@@ -1100,7 +1369,9 @@ test("IssuePage keeps a pull request's title and state when only its check-runs 
     expect(within(link).getByText("Keep the title when checks vanish")).toBeDefined();
     expect(within(link).getByText("open")).toBeDefined();
     expect(within(link).queryByText(/^checks:/)).not.toBeInTheDocument();
-    expect(link).toHaveAttribute("title", "owner/repository#7: Keep the title when checks vanish");
+    // The link draws its repository, number, title and state; it carries no tooltip, because
+    // the issue page draws none (dispatch://INFRA-1196 R21, `components/tooltips.tsx`).
+    expect(link).not.toHaveAttribute("title");
   } finally {
     view.unmount();
     githubRest.mockRestore();
@@ -1130,7 +1401,8 @@ test("IssuePage continues to unfurl GitHub issues through the issues endpoint", 
   }
 });
 
-test("IssuePage opens the Spec tab and leaves open asks out of the main column", async () => {
+test("IssuePage opens on Conversation and leaves open asks out of the main column", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue, [
     {
       ...openIssueAsk,
@@ -1153,10 +1425,12 @@ test("IssuePage opens the Spec tab and leaves open asks out of the main column",
   const view = renderIssuePage("/issues/CORE-1");
 
   try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
-    expect(screen.getByRole("tab", { name: "Conversation", selected: false })).toBeDefined();
-    expect(screen.getByRole("tab", { name: "Children", selected: false })).toBeDefined();
-    expect(screen.getByRole("tab", { name: "Activity", selected: false })).toBeDefined();
+    await expectPreset("Conversation");
+    await user.click(within(await screen.findByTestId("issue-presets")).getByRole("button"));
+    for (const preset of ["Conversation", "Spec", "Verification", "Plan", "Decisions"] as const) {
+      expect(screen.getByRole("menuitemradio", { name: presetItem(preset) })).toBeDefined();
+    }
+    expect(screen.queryByRole("menuitemradio", { name: "Tree" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Issue board")).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -1164,27 +1438,68 @@ test("IssuePage opens the Spec tab and leaves open asks out of the main column",
   }
 });
 
-// `t a` is already Artifacts, so Activity's chord is `t v`; it reaches the same tablist button a
-// click does, and the route it lands on is the tab's own.
-test("IssuePage opens the Activity tab with the t v chord", async () => {
+// `t a` is already the node menu's address, so Activity's chord is `t v`; the tablist is gone,
+// so the chord opens the address the Activity tab answered and the page still resolves it. What
+// that address draws is the issue's history in the page's column under the tree, and not in
+// the panel, which is what the chord's label says.
+test("IssuePage opens the activity address with the t v chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await expectPreset("Spec");
     await user.keyboard("t");
     await user.keyboard("v");
 
-    await screen.findByRole("tab", { name: "Activity", selected: true });
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity");
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity")
+    );
+    await expectPreset("Conversation");
+    // The history is the panel's (R15): the chord opens Details at it, and the focus is in it.
+    const history = await screen.findByRole("region", { name: "History" });
+    expect(history.closest('[data-testid="issue-margin"]')).not.toBeNull();
+    await waitFor(() => expect(history.contains(document.activeElement)).toBe(true));
   } finally {
     view.unmount();
     restore();
   }
 });
 
-test("IssuePage opens the Decisions tab with the t d chord", async () => {
+// What `?` lists for each chord: the page has no tablist, no Verification, Children, Artifacts
+// or Collaborators tab, so a label naming one would send a reader looking for something the
+// page does not have (dispatch://INFRA-1196 R21, `useIssueKeymap.ts`).
+test("IssuePage names each chord by what it opens on this page", async () => {
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage();
+
+  try {
+    await screen.findByTestId("issue-header");
+    const labels = new Map(
+      appKeymap
+        .describe()
+        .filter((binding) => binding.scope === "issue")
+        .map((binding) => [binding.id, binding.label])
+    );
+    expect(labels.get("tab-tree")).toBeUndefined();
+    expect(labels.get("tab-spec")).toBe("Turn the Spec filter on or off");
+    expect(labels.get("tab-verification")).toBe("Turn the Verification filter on or off");
+    expect(labels.get("tab-plan")).toBe("Turn the Plan filter on or off");
+    expect(labels.get("tab-decisions")).toBe("Turn the Decisions filter on or off");
+    expect(labels.get("tab-conversation")).toBe("Conversation: turn every filter off");
+    expect(labels.get("tab-activity")).toBe("Open the issue's history in Details");
+    expect(labels.get("tab-children")).toBe("Move to the issue's children");
+    expect(labels.get("tab-artifacts")).toBe("Open the Files and documents menu");
+    expect([...labels.values()].filter((label) => label.includes("tab"))).toEqual([]);
+    // `t o` is the collaborators, in the panel (the key table).
+    expect(labels.get("tab-collaborators")).toBe("Open the issue's collaborators in Details");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("IssuePage toggles the Decisions filter with the t d chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
@@ -1195,13 +1510,22 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await expectPreset("Spec");
     await user.keyboard("t");
     await user.keyboard("d");
 
-    await screen.findByRole("tab", { name: "Decisions", selected: true });
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/decisions");
+    await expectPreset("Decisions");
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/decisions")
+    );
     await waitFor(() => expect(decisions).toHaveBeenCalledWith("CORE-1"));
+    // Pressed again, the chord turns the filter it turned on off again (R2).
+    await user.keyboard("t");
+    await user.keyboard("d");
+    await expectPreset("Conversation");
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1")
+    );
   } finally {
     view.unmount();
     decisions.mockRestore();
@@ -1209,62 +1533,31 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   }
 });
 
-// `s` is the Spec's and `t` starts the chord, so the Steps tab takes the next letter of its name.
-test("IssuePage opens the Steps tab with the t e chord", async () => {
-  const user = userEvent.setup();
+// `/collaborators` is the address the Collaborators tab carried. The tab is gone; the address
+// still resolves and still opens the panel's People section on who worked the issue (R12, R20).
+test("IssuePage opens the issue's collaborators at their own address", async () => {
   const restore = stubIssuePage(issue);
-  const steps = spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] });
-  const view = renderIssuePage("/issues/CORE-1/spec");
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+  const view = renderIssuePage("/issues/CORE-1/collaborators");
 
   try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
-    await user.keyboard("t");
-    await user.keyboard("e");
-
-    await screen.findByRole("tab", { name: "Steps", selected: true });
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/steps");
-    await screen.findByText("No step of this issue has run in Legion.");
-    expect(steps).toHaveBeenCalledWith("CORE-1");
+    await screen.findByText("No one has worked this issue yet.");
+    await waitFor(() => expect(collaborators).toHaveBeenCalledWith("CORE-1"));
   } finally {
     view.unmount();
-    steps.mockRestore();
+    collaborators.mockRestore();
     restore();
   }
 });
 
-// The page keeps the Steps tab mounted once shown and hides its panel, so the page tells the tab
-// when it is shown: a Steps tab the reader left reads nothing more, however long the page stays
-// open, and catches up once it is shown again.
-test("IssuePage stops the Steps tab's reads while another tab is shown, and restarts them when Steps is", async () => {
-  await onFakeClock(async () => {
-    const user = userOnFakeClock();
-    const restore = stubIssuePage(issue);
-    const steps = spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] });
-    const view = renderIssuePage("/issues/CORE-1/steps");
-    try {
-      await tick(0);
-      expect(screen.getByRole("tab", { name: "Steps", selected: true })).toBeDefined();
-      expect(steps).toHaveBeenCalledTimes(1);
-
-      await user.click(screen.getByRole("tab", { name: "Activity" }));
-      await tick(0);
-      expect(screen.getByRole("tab", { name: "Activity", selected: true })).toBeDefined();
-      const left = steps.mock.calls.length;
-      await tick(600_000, 1_000);
-      expect(steps).toHaveBeenCalledTimes(left);
-
-      await user.click(screen.getByRole("tab", { name: "Steps" }));
-      await tick(300_000, 1_000);
-      expect(steps).toHaveBeenCalledTimes(left + 7);
-    } finally {
-      view.unmount();
-      steps.mockRestore();
-      restore();
-    }
-  });
-});
-
-test("IssuePage opens the Collaborators tab with the t o chord", async () => {
+// `t o` keeps its target (R11, the key table): the collaborators, in the panel, with the focus
+// on the control that holds their list.
+test("IssuePage opens the collaborators in Details with the t o chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
@@ -1276,13 +1569,19 @@ test("IssuePage opens the Collaborators tab with the t o chord", async () => {
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await expectPreset("Spec");
     await user.keyboard("t");
     await user.keyboard("o");
-
-    await screen.findByRole("tab", { name: "Collaborators", selected: true });
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/collaborators");
-    await waitFor(() => expect(collaborators).toHaveBeenCalledWith("CORE-1"));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/collaborators")
+    );
+    await screen.findByText("No one has worked this issue yet.");
+    await waitFor(() =>
+      expect(
+        document.activeElement?.closest('[data-details-row="collaborators"]'),
+        "t o leaves the focus outside the collaborators' row"
+      ).not.toBeNull()
+    );
   } finally {
     view.unmount();
     collaborators.mockRestore();
@@ -1300,7 +1599,7 @@ test("IssuePage renders a not-found view for an unrecognized tab suffix without 
   try {
     await screen.findByRole("heading", { name: "Page not found" });
     expect(screen.getByRole("link", { name: "Back to inbox" })).toBeDefined();
-    expect(screen.queryByRole("tablist", { name: "Issue detail" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("toolbar", { name: "Filters" })).not.toBeInTheDocument();
     expect(document.title).toBe("Not found · Dispatch");
     expect(getIssueSpy).not.toHaveBeenCalled();
     expect(getMyStateSpy).not.toHaveBeenCalled();
@@ -1311,63 +1610,28 @@ test("IssuePage renders a not-found view for an unrecognized tab suffix without 
   }
 });
 
-test("IssuePage keeps the Spec mounted across tabs", async () => {
-  const user = userEvent.setup();
-  const restore = stubIssuePage(issue);
-  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
-    ...issue.artifacts[0],
-  });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "The mounted specification",
-    version: 1,
-    token: "sha256:mounted-specification",
-  });
-  const view = renderIssuePage("/issues/CORE-1/spec", undefined, "The mounted specification");
-
-  try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
-    // The document draws its text once its connection has synced, and the page opens that
-    // connection only once the document's reads have answered.
-    await waitFor(() => expect(view.runtime.connections).toHaveLength(1));
-    act(() => view.syncOpenedDocuments());
-    await waitFor(() =>
-      expect(within(view.container).getByRole("article")).toHaveTextContent(
-        "The mounted specification"
-      )
-    );
-
-    await user.click(screen.getByRole("tab", { name: "Conversation" }));
-    await screen.findByRole("tab", { name: "Conversation", selected: true });
-    await user.click(screen.getByRole("tab", { name: "Spec" }));
-    await screen.findByRole("tab", { name: "Spec", selected: true });
-
-    expect(within(view.container).getByRole("article")).toHaveTextContent(
-      "The mounted specification"
-    );
-  } finally {
-    view.unmount();
-    getArtifact.mockRestore();
-    getArtifactText.mockRestore();
-    restore();
-  }
-});
-
-test("IssuePage preserves an in-progress Conversation composer draft across a tab round-trip", async () => {
+test("IssuePage preserves an in-progress Conversation composer draft across a filter round-trip", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
-    await screen.findByRole("tab", { name: "Conversation", selected: true });
+    await expectPreset("Conversation");
     const composer = (await screen.findByLabelText("Comment")) as HTMLTextAreaElement;
     await user.click(composer);
     await user.paste("Draft in progress");
     expect(composer.value).toBe("Draft in progress");
 
-    await user.click(screen.getByRole("tab", { name: "Spec" }));
-    await screen.findByRole("tab", { name: "Spec", selected: true });
-    await user.click(screen.getByRole("tab", { name: "Conversation" }));
-    await screen.findByRole("tab", { name: "Conversation", selected: true });
+    await openPreset("Spec");
+    // Conversation turns every filter off, and `t c` does the same from a filter (R2, R11).
+    await openPreset("Conversation");
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1")
+    );
+    await openPreset("Spec");
+    await user.keyboard("t");
+    await user.keyboard("c");
+    await expectPreset("Conversation");
 
     expect((screen.getByLabelText("Comment") as HTMLTextAreaElement).value).toBe(
       "Draft in progress"
@@ -1441,12 +1705,7 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
 
     try {
       await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
-      expect(
-        await screen.findByText(
-          "New asks, comments, and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim."
-        )
-      ).toBeDefined();
-      const routeInput = await screen.findByLabelText("Message route");
+      const routeInput = await screen.findByLabelText("Messages go to");
       await user.click(routeInput);
       await user.paste("role:not-saved-draft");
       await screen.findByDisplayValue("role:not-saved-draft");
@@ -1538,9 +1797,8 @@ test("IssuePage highlights a historical quote from its comment deep link", async
       ).toBe(true)
     );
     expect(view.runtime.editors.some((editor) => editor.focused.includes("comment-1"))).toBe(true);
-    expect(
-      within(within(view.container).getByRole("tabpanel", { name: "Spec" })).getAllByRole("article")
-    ).toHaveLength(1);
+    // The spec's own address opens it in place of the outline, once (R3).
+    expect(within(screen.getByTestId("opened-artifact")).getAllByRole("article")).toHaveLength(1);
   } finally {
     view.unmount();
     getArtifact.mockRestore();
@@ -1620,7 +1878,7 @@ test("IssuePage reports an ambiguous historical quote as changed text", async ()
   }
 });
 
-test("IssuePage renders an image artifact in the Artifacts tab", async () => {
+test("IssuePage renders an image artifact at its own address", async () => {
   const imageArtifact = {
     created_at: "2026-09-09T01:00:00Z",
     created_by: { id: "alice", kind: "user" as const },
@@ -1650,16 +1908,19 @@ test("IssuePage renders an image artifact in the Artifacts tab", async () => {
   const view = renderIssuePage("/issues/CORE-1/artifacts/diagram-png");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
+    await expectPreset("Conversation");
     expect(screen.getByRole("img", { name: "diagram.png version 1" })).not.toBeNull();
     expect(screen.getByTestId("artifact-header").className).toContain("ring-2");
+    // The ring says so to a reader and the mark says so to a layer that reads the page as a
+    // reader does, which waits for both to go (`e2e/review-routes.ts`'s `waitForRouteSettled`).
+    expect(screen.getByTestId("artifact-header").getAttribute("data-landing-ring")).toBe("true");
   } finally {
     view.unmount();
     restore();
   }
 });
 
-test("IssuePage does not mount an image as the hidden Spec document", async () => {
+test("IssuePage reads no document's text on the Spec filter, nor an image's when it opens", async () => {
   const user = userEvent.setup();
   const imageArtifact = {
     created_at: "2026-09-09T01:00:00Z",
@@ -1695,9 +1956,9 @@ test("IssuePage does not mount an image as the hidden Spec document", async () =
   const view = renderIssuePage("/issues/CORE-1/spec", "/issues/CORE-1/artifacts/diagram-png");
 
   try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
-    await waitFor(() => expect(getArtifactText).toHaveBeenCalledWith("artifact-1"));
-    getArtifactText.mockClear();
+    await expectPreset("Spec");
+    // The Spec filter draws no document, so it reads no document's text (R3, R21).
+    expect(getArtifactText).not.toHaveBeenCalled();
     await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
     await screen.findByRole("img", { name: "diagram.png version 1" });
     expect(getArtifactText).not.toHaveBeenCalledWith("artifact-image");
@@ -1747,8 +2008,10 @@ test("IssuePage opens a non-spec document at its version route", async () => {
   const view = renderIssuePage("/issues/CORE-1/artifacts/design");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
+    await expectPreset("Conversation");
     expect(screen.getByRole("heading", { name: "design.md" })).not.toBeNull();
+    // The version control is behind its own small control at the filter row's right end.
+    await user.click(screen.getByRole("button", { name: "Version" }));
     expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
     await user.selectOptions(screen.getByRole("combobox", { name: "Version" }), "1");
     await waitFor(() =>
@@ -1794,7 +2057,7 @@ test("IssuePage shows an unavailable image version instead of the latest image",
   const view = renderIssuePage("/issues/CORE-1/artifacts/diagram-png?v=999");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
+    await expectPreset("Conversation");
     expect(screen.getByText("Version 999 is not available for this artifact.")).not.toBeNull();
     expect(screen.queryByRole("img", { name: "diagram.png version 1" })).not.toBeInTheDocument();
   } finally {
@@ -1813,32 +2076,14 @@ test("IssuePage explains when an artifact slug does not exist", async () => {
       "href",
       "/issues/CORE-1/artifacts"
     );
-    expect(screen.getByRole("tablist", { name: "Issue detail" })).not.toBeNull();
+    await expectPreset("Conversation");
   } finally {
     view.unmount();
     restore();
   }
 });
 
-test("IssuePage hides the Artifacts panel after switching to Spec", async () => {
-  const user = userEvent.setup();
-  const restore = stubIssuePage(issue);
-  const view = renderIssuePage("/issues/CORE-1/artifacts");
-
-  try {
-    await screen.findByRole("tab", { name: "Artifacts 1", selected: true });
-    await user.click(screen.getByRole("tab", { name: "Spec" }));
-    await screen.findByRole("tab", { name: "Spec", selected: true });
-    const artifactsPanel = view.container.querySelector<HTMLDivElement>("#issue-artifacts-panel");
-    expect(artifactsPanel?.hidden).toBe(true);
-    expect(artifactsPanel?.getAttribute("aria-hidden")).toBe("true");
-  } finally {
-    view.unmount();
-    restore();
-  }
-});
-
-test("IssuePage encodes primary-document version selection in the artifact route", async () => {
+test("IssuePage pins a version picked beside the Spec filter on the filter's own address", async () => {
   const user = userEvent.setup();
   const primaryArtifact = issue.artifacts[0];
   if (primaryArtifact === undefined) {
@@ -1879,9 +2124,7 @@ test("IssuePage encodes primary-document version selection in the artifact route
     await screen.findByLabelText("Version");
     await user.selectOptions(screen.getByLabelText("Version"), "1");
     await waitFor(() =>
-      expect(screen.getByTestId("current-route").textContent).toBe(
-        "/issues/CORE-1/artifacts/spec?v=1"
-      )
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/spec?v=1")
     );
   } finally {
     view.unmount();
@@ -1908,8 +2151,9 @@ test("IssuePage renders exactly one Version combobox on the Spec tab", async () 
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    await screen.findByRole("combobox", { name: "Version" });
-    expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
+    // Drawn once, shut behind its small control until the reader opens it.
+    await screen.findByRole("combobox", { hidden: true, name: "Version" });
+    expect(screen.getAllByRole("combobox", { hidden: true, name: "Version" })).toHaveLength(1);
     expect(screen.queryByTestId("artifact-header")).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -1918,8 +2162,7 @@ test("IssuePage renders exactly one Version combobox on the Spec tab", async () 
     restore();
   }
 });
-test("IssuePage keeps version controls in the active Spec tab row", async () => {
-  const user = userEvent.setup();
+test("IssuePage draws the version control beside the filters, with no approval", async () => {
   const restore = stubIssuePage(issue);
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...issue.artifacts[0],
@@ -1932,17 +2175,28 @@ test("IssuePage keeps version controls in the active Spec tab row", async () => 
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    const tabs = await screen.findByTestId("issue-tabs");
-    expect(within(tabs).getByRole("combobox", { name: "Version" })).not.toBeNull();
-    expect(within(tabs).getByRole("button", { name: "Name version" })).not.toBeNull();
-    expect(screen.queryByTestId("spec-document-toolbar")).not.toBeInTheDocument();
+    // The control is drawn shut, behind its small control, and holds what it held open.
+    const control = await screen.findByTestId("issue-version-control");
+    expect(screen.getByRole("button", { name: "Version" })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(within(control).getByRole("combobox", { hidden: true, name: "Version" })).not.toBeNull();
+    expect(
+      within(control).getByRole("button", { hidden: true, name: "Name version" })
+    ).not.toBeNull();
+    expect(within(control).queryByRole("button", { hidden: true, name: /^Approve/ })).toBeNull();
+    // No editor is on the page, so no document's text was read for it (R21).
+    expect(getArtifactText).not.toHaveBeenCalled();
 
-    for (const tab of ["Conversation", "Children", "Artifacts 1", "Activity"] as const) {
-      await user.click(screen.getByRole("tab", { name: tab }));
-      await screen.findByRole("tab", { name: tab, selected: true });
-      expect(screen.queryByRole("combobox", { name: "Version" })).not.toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Name version" })).not.toBeInTheDocument();
-    }
+    // With no filter on no version control is drawn (R2), and the Decisions filter has no
+    // document of its role, so it draws none either.
+    await openPreset("Conversation");
+    expect(screen.queryByTestId("issue-version-control")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Version" })).not.toBeInTheDocument();
+    await openPreset("Decisions");
+    expect(screen.queryByTestId("issue-version-control")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Version" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
     getArtifact.mockRestore();
@@ -1986,15 +2240,21 @@ test("IssuePage copies the issue key on click, its reference on a modifier click
     await user.keyboard("{/Control}");
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1"));
 
-    const tabs = await screen.findByTestId("issue-tabs");
+    await user.click(await screen.findByRole("button", { name: "Version" }));
     await user.click(
-      within(tabs).getByRole("button", { name: "Copy reference dispatch://CORE-1/spec" })
+      within(await screen.findByTestId("issue-version-control")).getByRole("button", {
+        name: "Copy reference dispatch://CORE-1/spec",
+      })
     );
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1/spec"));
 
+    // The spec's own address at a version opens the spec there, and the control beside the
+    // filters reads that version.
     await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
+    // The press on the link was a press outside the version control, which shut it.
+    await user.click(await screen.findByRole("button", { name: "Version" }));
     await user.click(
-      await within(tabs).findByRole("button", {
+      await within(await screen.findByTestId("issue-version-control")).findByRole("button", {
         name: "Copy reference dispatch://CORE-1/artifact/spec@v1",
       })
     );
@@ -2023,7 +2283,9 @@ test("IssuePage updates whose turn when a human clarification is latest", async 
   const view = renderIssuePage("/issues/CORE-1", undefined, undefined, queryClient);
 
   try {
-    expect(await screen.findByText("Waiting on you (1)")).not.toBeNull();
+    // The marker's words are the page's and the count beside them is the issue's, each marked
+    // as what it is (dispatch://INFRA-1196 R21), so the marker is read whole.
+    expect((await screen.findByTestId("issue-whose-turn")).textContent).toBe("Waiting on you (1)");
     act(() => {
       queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
         ...waitingIssue,
@@ -2039,7 +2301,9 @@ test("IssuePage updates whose turn when a human clarification is latest", async 
         ],
       });
     });
-    expect(await screen.findByText("Waiting on agents (1)")).not.toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId("issue-whose-turn").textContent).toBe("Waiting on agents (1)")
+    );
   } finally {
     view.unmount();
     restore();
@@ -2062,6 +2326,7 @@ test("IssuePage hides whose turn when the server sent open asks without waiting_
   }
 });
 test("IssuePage keeps state actions available while approval awaits", async () => {
+  // The request waits on the reader, so its chip carries Approve in the header (R31).
   const restore = stubIssuePage({
     ...issue,
     artifacts: [
@@ -2070,15 +2335,16 @@ test("IssuePage keeps state actions available while approval awaits", async () =
         approval: { latest_version: 1, state: "awaiting" },
       },
     ],
+    open_asks: [approvalAsk()],
   });
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
+    // The pin is one of the overflow menu's actions (dispatch://INFRA-1196 R13).
+    await openIssueActions();
     const pin = screen.getByRole("button", { name: "Pin issue" });
-    expect(pin).not.toBeNull();
     expect(pin).toHaveAttribute("aria-pressed", "false");
-    expect(pin.querySelector("path")?.getAttribute("fill")).toBe("none");
 
     const stateActions = screen.getByTestId("issue-state-actions");
     expect(within(stateActions).getByRole("combobox", { name: "Status" })).not.toBeNull();
@@ -2087,7 +2353,9 @@ test("IssuePage keeps state actions available while approval awaits", async () =
     ).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
-    expect(within(stateActions).getByRole("button", { name: "Close issue" })).not.toBeNull();
+    // Close is an action, not a property, so it sits behind row one's one actions control.
+    await openIssueActions();
+    expect(screen.getByRole("button", { name: "Close issue" })).not.toBeNull();
   } finally {
     view.unmount();
     restore();
@@ -2103,6 +2371,7 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
         approval: { latest_version: 1, state: "awaiting" },
       },
     ],
+    open_asks: [approvalAsk()],
   });
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
@@ -2151,6 +2420,7 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
         approval: { latest_version: 1, state: "awaiting" },
       },
     ],
+    open_asks: [approvalAsk()],
   });
   // A deployment may gate the decisions and the Verification document and not the spec; the
   // spec still has an approval to answer, and only the header's own chip can answer it.
@@ -2187,7 +2457,7 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
   }
 });
 
-test("IssuePage fills and marks the issue pin when it is pinned", async () => {
+test("IssuePage marks the issue pin when it is pinned", async () => {
   const restore = stubIssuePage(issue, [], [], {
     dismissed: [],
     last_read_seq: 0,
@@ -2198,9 +2468,9 @@ test("IssuePage fills and marks the issue pin when it is pinned", async () => {
 
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
+    await openIssueActions();
     const pin = screen.getByRole("button", { name: "Unpin issue" });
     expect(pin).toHaveAttribute("aria-pressed", "true");
-    expect(pin.querySelector("path")?.getAttribute("fill")).toBe("currentColor");
   } finally {
     view.unmount();
     restore();
@@ -2222,6 +2492,7 @@ test("IssuePage's pin refreshes the sidebar's pinned list once the pin is saved"
   try {
     await within(view.container).findByRole("heading", { level: 1, name: issue.title });
     expect(queryClient.getQueryState(["issues", "pinned"])?.isInvalidated).toBe(false);
+    await openIssueActions();
     await user.click(within(view.container).getByRole("button", { name: "Pin issue" }));
     await waitFor(() =>
       expect(queryClient.getQueryState(["issues", "pinned"])?.isInvalidated).toBe(true)
@@ -2314,14 +2585,17 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     const openStatus = (await screen.findByLabelText("Status")) as HTMLSelectElement;
     expect([...openStatus.options].map((option) => option.value)).not.toContain("done");
 
+    await openIssueActions();
     await user.click(screen.getByRole("button", { name: "Close issue" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "done" }, keyedAttempt)
     );
-    // While the write is in flight the control is disabled: no second close can be queued.
-    expect(
-      (screen.getByRole("button", { name: "Close issue" }) as HTMLButtonElement).disabled
-    ).toBe(true);
+    // While the write is in flight the control is disabled and says so: no second close can be
+    // queued, and the words it shows are its name.
+    await openIssueActions();
+    expect((screen.getByRole("button", { name: "Closing…" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
     await act(async () => {
       closeSave.resolve({ ...issue, closed_at: "2026-09-12T10:00:00Z", status: "done" });
       await closeSave.promise;
@@ -2332,13 +2606,17 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     expect(closedStatus.disabled).toBe(true);
     expect(closedStatus.value).toBe("done");
 
-    await user.click(screen.getByRole("button", { name: "Reopen issue" }));
+    await openIssueActions();
+    // The control is named by the words it shows, so a voice user who says what it reads
+    // presses it (WCAG 2.5.3): while the write is out that is "Reopening…".
+    await user.click(screen.getByRole("button", { name: "Reopen into Backlog" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
-    expect(
-      (screen.getByRole("button", { name: "Reopen issue" }) as HTMLButtonElement).disabled
-    ).toBe(true);
+    await openIssueActions();
+    expect((screen.getByRole("button", { name: "Reopening…" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
     await act(async () => {
       reopenSave.resolve({ ...issue, status: "backlog" });
       await reopenSave.promise;
@@ -2394,16 +2672,13 @@ test("IssuePage lets a human move a Todo issue to In progress", async () => {
 });
 
 test("IssuePage reports a failed issue read on an item deep link instead of loading forever", async () => {
-  // The landing waits on the issue to tell it which document an anchor names, so a page that
-  // read the landing's pending state before the issue's error showed "Loading issue…" for good.
+  // The item's own read is still out when the issue's fails, so a page that read the landing's
+  // pending state before the issue's error showed "Loading issue…" for as long as it was.
   const restore = stubIssuePage(issue);
   api.getIssue = async () => {
     throw new ApiError(500, { code: "SERVER_ERROR", error: "boom" });
   };
-  const getComment = spyOn(api, "getComment").mockResolvedValue({
-    comment: { ...itemComment },
-    replies: [],
-  });
+  const getComment = spyOn(api, "getComment").mockReturnValue(new Promise(() => {}));
   const view = renderIssuePage(`/issues/CORE-1/comments/${itemComment.id}`);
 
   try {
@@ -2423,8 +2698,7 @@ const WHOLE_ID = "4c9f3e12-1111-4222-8333-444444444444";
 const OTHER_ID = "4c9f3e12-5555-4666-8777-888888888888";
 const SHORT_ID = "4c9f3e12";
 
-/** The comment the ids above name: unanchored, so the landing opens its Conversation turn
- *  rather than a document. */
+/** The comment the ids above name. */
 const shortIdComment = { ...itemComment, anchor: null, id: WHOLE_ID };
 
 function GoBack(): ReactNode {
@@ -2476,7 +2750,8 @@ test("IssuePage reads an item whose address writes its id whole without resolvin
 
   try {
     await waitFor(() => expect(getComment).toHaveBeenCalledWith(WHOLE_ID));
-    await screen.findByRole("tab", { name: /Conversation/ });
+    // The tabs are gone (R3), and so is the panel's list: the outline is what the landing opens.
+    await screen.findByRole("tree", { name: "Issue tree" });
     // The whole id is read once, under itself, and nothing is resolved for it.
     expect(getComment.mock.calls).toEqual([[WHOLE_ID]]);
     expect(getReferences).not.toHaveBeenCalled();
@@ -2627,6 +2902,678 @@ test("IssuePage shows its not-found view for an id prefix that names nothing", a
     view.unmount();
     getComment.mockRestore();
     getReferences.mockRestore();
+    restore();
+  }
+});
+
+// The panel is drawn wherever the shell's margin is not drawing it: at the width the margin is
+// a sheet, and - this row - from 1280 px up with the reader's margin collapsed to its rail.
+// Without it that reader loses every property in the panel, the history with them, and
+// `/activity`, `/collaborators`, `t v` and `t o` reach nothing.
+test("IssuePage draws its panel in its own column wherever the margin draws none", async () => {
+  const restore = stubIssuePage({ ...issue, blocked_by: ["CORE-9"] });
+  setViewport(1280);
+  const view = renderIssuePage();
+
+  try {
+    const panel = await screen.findByTestId("issue-margin");
+    expect(within(panel).getByText("Opened by")).toBeInTheDocument();
+    expect(within(panel).getByRole("link", { name: "CORE-9" })).toBeInTheDocument();
+    expect(within(panel).getByRole("region", { name: "History" })).toBeInTheDocument();
+    // The panel holds no list of the conversation (R14): no state to pick, no turns.
+    expect(within(panel).queryByRole("listbox", { name: "Conversation" })).toBeNull();
+    expect(within(panel).queryByRole("list", { name: "Conversation turns" })).toBeNull();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The priorities an issue advances and the control that adds and removes one, which
+// dispatch://INFRA-2947 drew on the old header's details rail, are the Details panel's now
+// (dispatch://INFRA-1196 R13, the Design's "Where each thing goes"): its Development section draws
+// them beside the repository and the components, in the page's own words, and the identity block
+// draws neither.
+test("IssuePage draws the priorities an issue advances in the panel's Development section", async () => {
+  const listPriorities = spyOn(api, "listPriorities").mockResolvedValue({
+    priorities: [
+      {
+        description: "",
+        id: "evals-now",
+        made_at: "2026-11-01T00:00:00Z",
+        made_by: { id: "alice", kind: "user" },
+        owner: "alice",
+        rank: "a",
+        state: "live",
+        title: "Evals collecting data now",
+        work: {
+          by_status: {},
+          claimed: 0,
+          closed_last_7_days: 0,
+          newest_event_at: null,
+          open_asks: 0,
+        },
+      },
+    ],
+    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+  });
+  const restore = stubIssuePage({ ...issue, advances: [{ id: "evals-now", inherited: false }] });
+  const view = renderIssuePage();
+
+  try {
+    const panel = await screen.findByTestId("issue-margin");
+    const development = panel.querySelector<HTMLElement>('[data-margin-section="development"]');
+    expect(development).not.toBeNull();
+    const row = within(development as HTMLElement).getByTestId("issue-advances");
+    expect(
+      await within(row).findByRole("link", { name: "P1 Evals collecting data now" })
+    ).toHaveAttribute("href", "/priorities/evals-now");
+    expect(within(row).getByText("Advances")).toHaveAttribute("data-page-chrome", "");
+    expect(
+      within(row).getByRole("button", { name: "Remove P1 Evals collecting data now from CORE-1" })
+    ).toBeEnabled();
+    expect(within(row).getByRole("button", { name: "Add a priority to CORE-1" })).toBeEnabled();
+    expect(
+      within(screen.getByTestId("issue-header")).queryByTestId("issue-advances")
+    ).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listPriorities.mockRestore();
+    restore();
+  }
+});
+
+// An issue that advances none draws no such row, only the control that places it under one, and
+// the identity block's one add control lists the field and opens that control (R13: a field with
+// no value is reachable from one add control).
+test("IssuePage offers a priority from its one add control while the issue advances none", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage();
+
+  try {
+    const row = await screen.findByTestId("issue-advances");
+    expect(row).not.toHaveTextContent("Advances");
+    expect(within(row).getByRole("button", { name: "Add a priority to CORE-1" })).toHaveTextContent(
+      "Add a priority"
+    );
+    // The one add control is Details' (dispatch://INFRA-1196 R13).
+    const panel = screen.getByTestId("issue-margin");
+    await user.click(within(panel).getByRole("button", { name: "Add" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Advances" }));
+    expect(
+      await within(row).findByRole("combobox", { name: "Priority to advance" })
+    ).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("IssuePage leaves the panel to the margin where the margin keeps a column for it", async () => {
+  const restore = stubIssuePage(issue);
+  setViewport(1280);
+  const view = renderIssuePage("/issues/CORE-1", undefined, undefined, undefined, true);
+
+  try {
+    await screen.findByTestId("issue-header");
+    expect(screen.queryByTestId("issue-margin")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+/** The ask a landing row's `/asks/<id>` names, as the conversation lists it. */
+const landingAsk: IssueAskThreadRow = {
+  ...openIssueAsk,
+  last_reply: null,
+  thread: {
+    answers: [],
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+  },
+};
+
+/** The message a landing row's `/messages/<id>` names. */
+const landingMessage: Message = {
+  author: { id: "alice", kind: "user" },
+  body: "A message the link names.",
+  broadcast_id: null,
+  created_at: "2026-09-11T00:00:00Z",
+  deliveries: [],
+  id: "message-landing",
+  in_reply_to: null,
+  issue_key: "CORE-1",
+  reply_block: null,
+  target: null,
+};
+
+/** The comment a landing row's `/comments/<id>` names. */
+const landingComment = { ...itemComment, anchor: null, id: "comment-landing" };
+
+// R20: an item's own address, and an address naming it beside a document (`?comment=`,
+// `?ask=`), opens that node, focused, in the outline, wherever the item is anchored. An
+// anchored comment, an anchored ask and an ask indexed from a block of the spec used to be sent
+// on to the spec's address (`/spec?comment=`, `/spec?ask=`, `/spec#b-`), and those opened the
+// spec in place of the outline, so the node the address named was drawn nowhere.
+test("IssuePage opens an item anchored in a document on its node in the outline, focused", async () => {
+  const anchoredAsk: IssueAskThreadRow = {
+    ...landingAsk,
+    anchor: { ...itemComment.anchor, mark_id: "m-2" },
+    artifact_id: "artifact-1",
+    id: "ask-anchored",
+  };
+  const blockAsk: IssueAskThreadRow = {
+    ...landingAsk,
+    block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
+    block_id: "q1",
+    id: "ask-block",
+  };
+  const links = [
+    { ask: anchoredAsk, node: itemComment.id, path: `/issues/CORE-1/comments/${itemComment.id}` },
+    { ask: anchoredAsk, node: anchoredAsk.id, path: `/issues/CORE-1/asks/${anchoredAsk.id}` },
+    { ask: blockAsk, node: "spec#b-q1", path: `/issues/CORE-1/asks/${blockAsk.id}` },
+    {
+      ask: anchoredAsk,
+      node: itemComment.id,
+      path: `/issues/CORE-1/spec?comment=${itemComment.id}`,
+    },
+    {
+      ask: anchoredAsk,
+      node: itemComment.id,
+      path: `/issues/CORE-1/artifacts/spec?comment=${itemComment.id}`,
+    },
+    { ask: anchoredAsk, node: anchoredAsk.id, path: `/issues/CORE-1/spec?ask=${anchoredAsk.id}` },
+    { ask: blockAsk, node: "spec#b-q1", path: `/issues/CORE-1/artifacts/spec?ask=${blockAsk.id}` },
+  ];
+  for (const { ask, node, path } of links) {
+    const restore = stubIssuePage(issue);
+    api.listComments = async () => [itemComment];
+    api.listIssueAsks = async () => [ask];
+    api.listIssueAskThreads = async () => [ask];
+    const reads = [
+      spyOn(api, "getComment").mockResolvedValue({ comment: itemComment, replies: [] }),
+      spyOn(api, "getAsk").mockResolvedValue({ ...ask.thread, ask }),
+    ];
+    const view = renderIssuePage(path);
+
+    try {
+      await waitFor(
+        () =>
+          expect(
+            document.activeElement?.closest("[data-node-row]")?.getAttribute("data-node-id"),
+            `${path} does not focus its node`
+          ).toBe(node),
+        { timeout: 5_000 }
+      );
+      expect(screen.getByTestId("current-route").textContent, `${path} left its address`).toBe(
+        path
+      );
+      expect(screen.getByRole("tree", { name: "Issue tree" })).toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Document editor" })).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+      for (const read of reads) read.mockRestore();
+      restore();
+    }
+  }
+});
+
+// R20: a comment agents wrote outside every thread a person wrote in lands in the history in the
+// panel, not in the outline (R1, R15): the history marks its entry, and the outline takes no
+// focus for it.
+test("IssuePage lands a comment agents wrote outside every person's thread in the history", async () => {
+  const agentsComment = {
+    ...itemComment,
+    anchor: null,
+    author: { id: "session-1", kind: "session" as const },
+    id: "comment-agents",
+  };
+  for (const path of [
+    `/issues/CORE-1/comments/${agentsComment.id}`,
+    `/issues/CORE-1/spec?comment=${agentsComment.id}`,
+  ]) {
+    const restore = stubIssuePage(issue);
+    api.listComments = async () => [agentsComment];
+    const getComment = spyOn(api, "getComment").mockResolvedValue({
+      comment: agentsComment,
+      replies: [],
+    });
+    const view = renderIssuePage(path);
+
+    try {
+      const history = await screen.findByRole("region", { name: "History" });
+      await waitFor(
+        () =>
+          expect(
+            history
+              .querySelector(`[data-history-item="${agentsComment.id}"]`)
+              ?.getAttribute("aria-current"),
+            `${path} does not mark its entry in the history`
+          ).toBe("true"),
+        { timeout: 5_000 }
+      );
+      expect(
+        document.querySelector(`[data-node-row][data-node-id="${agentsComment.id}"]`),
+        `${path} draws the agents' comment in the outline`
+      ).toBeNull();
+      expect(
+        document.activeElement?.closest("[data-node-row]") ?? null,
+        `${path} puts the focus in the outline`
+      ).toBeNull();
+      expect(screen.getByTestId("current-route").textContent).toBe(path);
+    } finally {
+      view.unmount();
+      getComment.mockRestore();
+      restore();
+    }
+  }
+});
+
+// "View in document" means the document: its address is the document's own with the comment
+// named by `?mark=`, which opens that document with the comment marked in it, where `?comment=`
+// would open the outline on the comment's node (R20, `refs/routes.ts`'s `openDocumentPath`).
+test("IssuePage opens a document's ?mark= address on the document, the comment marked", async () => {
+  const restore = stubIssuePage(issue);
+  const listComments = spyOn(api, "listComments").mockResolvedValue([itemComment]);
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "The spec",
+    token: "sha256:spec",
+    version: 1,
+  });
+  const view = renderIssuePage(`/issues/CORE-1/artifacts/spec?mark=${itemComment.id}`);
+
+  try {
+    expect(await screen.findByTestId("opened-artifact")).toBeInTheDocument();
+    expect(screen.queryByRole("tree", { name: "Issue tree" })).not.toBeInTheDocument();
+    // The document reads its own comments only to mark the one an address names in it
+    // (`ArtifactDocument`'s `commentId`).
+    await waitFor(() => expect(listComments).toHaveBeenCalledWith("CORE-1", "artifact-1"));
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      `/issues/CORE-1/artifacts/spec?mark=${itemComment.id}`
+    );
+  } finally {
+    view.unmount();
+    listComments.mockRestore();
+    getArtifactText.mockRestore();
+    restore();
+  }
+});
+
+// `?mark=` names an ask anchored in a document as it names a comment: the issue's comments do
+// not hold the id, so the document reads the ask and marks it (`ArtifactDocument`'s `askId`).
+test("IssuePage opens a document's ?mark= address naming an ask on the document, the ask marked", async () => {
+  const restore = stubIssuePage(issue);
+  const anchoredAsk: IssueAskThreadRow = {
+    ...landingAsk,
+    anchor: { ...itemComment.anchor, mark_id: "m-2" },
+    artifact_id: "artifact-1",
+    id: "ask-anchored",
+  };
+  const listComments = spyOn(api, "listComments").mockResolvedValue([itemComment]);
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    ...anchoredAsk.thread,
+    ask: anchoredAsk,
+  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "The spec",
+    token: "sha256:spec",
+    version: 1,
+  });
+  const view = renderIssuePage(`/issues/CORE-1/artifacts/spec?mark=${anchoredAsk.id}`);
+
+  try {
+    expect(await screen.findByTestId("opened-artifact")).toBeInTheDocument();
+    expect(screen.queryByRole("tree", { name: "Issue tree" })).not.toBeInTheDocument();
+    await waitFor(() => expect(getAsk).toHaveBeenCalledWith(anchoredAsk.id));
+    // Read as the ask it is, never looked for among the document's comments.
+    expect(listComments).not.toHaveBeenCalledWith("CORE-1", "artifact-1");
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      `/issues/CORE-1/artifacts/spec?mark=${anchoredAsk.id}`
+    );
+  } finally {
+    view.unmount();
+    listComments.mockRestore();
+    getAsk.mockRestore();
+    getArtifactText.mockRestore();
+    restore();
+  }
+});
+
+// `?mark=` written short is resolved as every address's short id is, and the whole id replaces
+// it under `?mark=`: written under `?comment=` the address would open the outline instead.
+test("IssuePage resolves a ?mark= written short and writes the whole id under ?mark=", async () => {
+  const restore = stubIssuePage(issue);
+  const marked = { ...itemComment, id: WHOLE_ID };
+  const listComments = spyOn(api, "listComments").mockResolvedValue([marked]);
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({
+      id: WHOLE_ID,
+      kind: "comment",
+      ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+    }),
+  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "The spec",
+    token: "sha256:spec",
+    version: 1,
+  });
+  const view = renderIssuePage(`/issues/CORE-1/artifacts/spec?mark=${SHORT_ID}`);
+
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe(
+        `/issues/CORE-1/artifacts/spec?mark=${WHOLE_ID}`
+      )
+    );
+    expect(getReferences).toHaveBeenCalledWith(`dispatch://CORE-1/comment/${SHORT_ID}`);
+    expect(await screen.findByTestId("opened-artifact")).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listComments.mockRestore();
+    getReferences.mockRestore();
+    getArtifactText.mockRestore();
+    restore();
+  }
+});
+
+// R20: `?comment=` on an issue's address opens the outline on the comment's node; written short,
+// the id is resolved first and the address replaced with the whole one, which names the node.
+test("IssuePage resolves a ?comment= written short and focuses the comment's node", async () => {
+  const restore = stubIssuePage(issue);
+  const named = { ...itemComment, id: WHOLE_ID };
+  api.listComments = async () => [named];
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({
+      id: WHOLE_ID,
+      kind: "comment",
+      ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+    }),
+  });
+  const view = renderIssuePage(`/issues/CORE-1/spec?comment=${SHORT_ID}`);
+
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe(
+        `/issues/CORE-1/spec?comment=${WHOLE_ID}`
+      )
+    );
+    expect(getReferences).toHaveBeenCalledWith(`dispatch://CORE-1/comment/${SHORT_ID}`);
+    await waitFor(
+      () =>
+        expect(
+          document.activeElement?.closest("[data-node-row]")?.getAttribute("data-node-id")
+        ).toBe(WHOLE_ID),
+      { timeout: 5_000 }
+    );
+    expect(screen.queryByRole("region", { name: "Document editor" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// R20: an approval request is no node of the outline; the identity block draws the approval of
+// the document it reviews, so the request's own address puts the focus on that entry there.
+test("IssuePage focuses an approval request's entry in the identity block", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    artifacts: [{ ...issue.artifacts[0], approval: { latest_version: 1, state: "awaiting" } }],
+  });
+  const approvalAsk: Ask = {
+    ...openIssueAsk,
+    approval: {
+      artifact_id: "artifact-1",
+      documents: null,
+      name: "spec.md",
+      requested_version: 1,
+      version: 1,
+    },
+    id: "ask-approval",
+    kind: "approval",
+  };
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    ...landingAsk.thread,
+    ask: approvalAsk,
+  });
+  const view = renderIssuePage(`/issues/CORE-1/asks/${approvalAsk.id}`);
+
+  try {
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-approval-artifact")).toBe("artifact-1")
+    );
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      `/issues/CORE-1/asks/${approvalAsk.id}`
+    );
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    restore();
+  }
+});
+
+// The panel moves between the shell's margin and the page's own column as the reader shows the
+// margin and collapses it again. It is one panel, drawn once and moved (`IssuePage`'s
+// `panelStage`): drawn afresh in each host, every move remounted it, and a message the reader
+// had typed - which `MentionComposer` holds in its own state - went with it.
+test("IssuePage moves its panel, not a copy of it, when the margin is shown", async () => {
+  const restore = stubIssuePage(issue);
+  setViewport(1280);
+  const view = renderIssuePage("/issues/CORE-1", undefined, undefined, undefined, false, true);
+
+  try {
+    // The panel's own state - here its history, a list the reader may have opened days of - is
+    // the same element once the margin takes the panel, so nothing in it is thrown away.
+    const column = await screen.findByTestId("issue-margin");
+    const history = within(column).getByRole("region", { name: "History" });
+
+    act(() => view.showMargin(true));
+
+    const inTheMargin = await screen.findByTestId("issue-margin");
+    expect(within(await screen.findByTestId("stand-in-margin")).getByTestId("issue-margin")).toBe(
+      inTheMargin
+    );
+    expect(within(inTheMargin).getByRole("region", { name: "History" })).toBe(history);
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// R5: the head reads the spec's summary out of the tree, and the first load draws the tree
+// before the spec's blocks and their words have arrived. A summary not read yet is no spec
+// without a summary, so the head says nothing about one until those reads answer, and then says
+// what they held: the summary's sentences, or the page's line for a spec that carries none.
+test("IssuePage's head says nothing about the summary until the reads that carry it answer", async () => {
+  const restore = stubIssuePage(issue);
+  // The address the tree gives a block of the spec, which is what the batched read is asked for.
+  const summary = "dispatch://CORE-1/artifact/spec#b-summary";
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: ':::callout{#summary title="What this issue is"}\nThe page is one outline.\n:::',
+        ref: summary,
+      },
+    ],
+  });
+  const callout: ArtifactBlock = {
+    attributes: [],
+    from: 0,
+    id: "summary",
+    references: { asks: 0, comments: 0 },
+    to: 1,
+    token: "summary",
+    type: "callout",
+  };
+  try {
+    for (const { blocks, head } of [
+      { blocks: [callout], head: "The page is one outline." },
+      { blocks: [], head: EMPTY_STATE_LINES.spec_summary },
+    ]) {
+      const held = Promise.withResolvers<ArtifactBlock[]>();
+      const read = spyOn(api, "getArtifactBlocks").mockReturnValue(held.promise);
+      const view = renderIssuePage();
+      try {
+        const drawn = await screen.findByTestId("issue-three-things");
+        await waitFor(() => expect(read).toHaveBeenCalled());
+        expect(
+          drawn.textContent,
+          "the head says the spec has no summary before the spec's blocks were read"
+        ).not.toContain(EMPTY_STATE_LINES.spec_summary);
+        act(() => held.resolve(blocks));
+        await waitFor(() => expect(drawn.textContent).toContain(head));
+      } finally {
+        view.unmount();
+        read.mockRestore();
+      }
+    }
+  } finally {
+    names.mockRestore();
+    restore();
+  }
+});
+
+/** Focuses the row of `id` in the outline and waits for it to hold the focus. */
+async function focusRow(id: string): Promise<HTMLElement> {
+  const row = await waitFor(() => {
+    const found = document.querySelector<HTMLElement>(`[data-node-row][data-node-id="${id}"]`);
+    if (found === null) throw new Error(`no row ${id}`);
+    return found;
+  });
+  act(() => row.focus());
+  await waitFor(() => expect(document.activeElement).toBe(row));
+  return row;
+}
+
+// R16: the reader writes where they read. A focused comment's, message's and ask's Reply - `r` -
+// sets the line at the outline's foot to reply to it, naming it above the line, and Enter sends a
+// comment that answers it: `reply_to` for a comment, `in_reply_to` for a message, and `ask_id`
+// for an ask whatever its state, a resolved one included (dispatch://INFRA-3677). The line with
+// nothing set writes a comment on the issue: the outline draws no row of the issue itself (the
+// architect's ruling 5), so the line is where a reader writes on it.
+test("IssuePage replies from the outline to a comment, a message and a resolved ask", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const resolved: Ask = {
+    ...openIssueAsk,
+    id: "ask-resolved",
+    question: "Is it settled?",
+    resolution: {
+      actor: { id: "session-1", kind: "session" },
+      at: "2026-09-11T00:00:00Z",
+      kind: "resolved",
+      reason: "Settled.",
+    },
+    state: "resolved",
+  };
+  api.listComments = async () => [landingComment];
+  api.listIssueMessages = async () => [{ message: landingMessage, replies: [] }];
+  api.listIssueAsks = async () => [{ ...resolved, last_reply: null }];
+  const created = { ...landingComment, id: "comment-new" };
+  const createComment = spyOn(api, "createComment").mockResolvedValue(created);
+  const createMessage = spyOn(api, "createMessage").mockResolvedValue({
+    ...landingMessage,
+    id: "message-new",
+  });
+  const view = renderIssuePage();
+
+  try {
+    for (const [id, words] of [
+      [landingComment.id, "A reply to the comment."],
+      [resolved.id, "A word under the resolved ask."],
+      [landingMessage.id, "A reply to the message."],
+    ] as const) {
+      await focusRow(id);
+      await user.keyboard("r");
+      const composer = await screen.findByRole("region", { name: "Write to the conversation" });
+      await waitFor(() => expect(composer.querySelector("[data-composer-target]")).not.toBeNull());
+      expect(composer.querySelector("[data-composer-target]")?.textContent).toContain(
+        "Replying to:"
+      );
+      const field = within(composer).getByRole("textbox", { name: "Comment" });
+      await waitFor(() => expect(document.activeElement).toBe(field));
+      await user.keyboard(`${words}{Enter}`);
+      await waitFor(() =>
+        expect(
+          [...createComment.mock.calls, ...createMessage.mock.calls].some(
+            ([, input]) => (input as { body?: string }).body === words
+          )
+        ).toBe(true)
+      );
+    }
+    expect(createComment.mock.calls.map(([key, input]) => [key, input])).toEqual([
+      ["CORE-1", { body: "A reply to the comment.", reply_to: landingComment.id }],
+      ["CORE-1", { ask_id: resolved.id, body: "A word under the resolved ask." }],
+    ]);
+    expect(createMessage.mock.calls.map(([key, input]) => [key, input])).toEqual([
+      ["CORE-1", { body: "A reply to the message.", in_reply_to: landingMessage.id }],
+    ]);
+
+    // With nothing set - a send sets the line back - the same line writes a comment on the issue.
+    const composer = screen.getByRole("region", { name: "Write to the conversation" });
+    await waitFor(() => expect(composer.querySelector("[data-composer-target]")).toBeNull());
+    await user.click(within(composer).getByRole("textbox", { name: "Comment" }));
+    await user.keyboard("On the issue.{Enter}");
+    await waitFor(() =>
+      expect(createComment.mock.calls.at(-1)?.[1]).toEqual({ body: "On the issue." })
+    );
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+    createMessage.mockRestore();
+    restore();
+  }
+});
+
+// R16: an open question carries the control that answers it. `a` - or its Answer, or one of its
+// options - sets the line to answer it, the options its chips, and Send answer records the pick
+// and the reader's words.
+test("IssuePage answers an open question from the line at the outline's foot", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const open: Ask = {
+    ...openIssueAsk,
+    options: [{ label: "Ship it" }, { label: "Hold it" }],
+  };
+  api.listIssueAsks = async () => [{ ...open, last_reply: null }];
+  const answerAsk = spyOn(api, "answerAsk").mockResolvedValue({
+    ...open,
+    answer: { at: "2026-09-12T00:00:00Z", selected: ["Hold it"], text: "Not yet.", user: "alice" },
+    state: "answered",
+  });
+  const view = renderIssuePage();
+
+  try {
+    const row = await focusRow(open.id);
+    expect(row.querySelector('[data-row-act="answer"]')?.textContent).toBe("Answer");
+    await user.keyboard("a");
+    const line = await screen.findByRole("form", { name: "Answering:" });
+    await user.click(within(line).getByRole("button", { name: "Hold it" }));
+    expect(within(line).getByRole("button", { name: "Hold it" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    await user.click(within(line).getByRole("textbox", { name: "Answer" }));
+    await user.keyboard("Not yet.{Enter}");
+    await waitFor(() => expect(answerAsk).toHaveBeenCalled());
+    expect(answerAsk.mock.calls[0]?.[0]).toBe(open.id);
+    expect(answerAsk.mock.calls[0]?.[1]).toMatchObject({ selected: ["Hold it"], text: "Not yet." });
+  } finally {
+    view.unmount();
+    answerAsk.mockRestore();
     restore();
   }
 });

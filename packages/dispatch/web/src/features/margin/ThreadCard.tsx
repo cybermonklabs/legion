@@ -126,6 +126,17 @@ export interface ThreadCardProps {
    *  and draft, whatever unmounted the last one; and a host that holds its own Replies while one
    *  of its sends is out (the Conversation tab) holds them for this one too. */
   replyMutationKey?: MutationKey;
+  /** The card was expanded by a link landing on it rather than by the reader, so its reply
+   *  composer takes no focus as it mounts (`MentionComposer`'s `standing`): the issue page
+   *  puts the focus on the item's node in the outline (dispatch://INFRA-1196 R20). */
+  standingReply?: boolean;
+  /** Whether this card is one of the margin's own items, which it is wherever the margin draws
+   *  it and is not where the Conversation draws the same card in its own list. The margin names
+   *  its items (`data-margin-item`) so a landed card is found and placed by its mark, and the
+   *  Conversation's list is drawn inside the same panel, so a card there claiming that name
+   *  would answer as a second margin item for the one comment. Every card, in either host,
+   *  carries its own name instead (`data-thread-card`). */
+  marginItem?: boolean;
   /** Conversation owns the turn-level copy control outside this card. */
   showReference?: boolean;
   /** Document margins pulse an orphaned block; timeline cards link to the document instead. */
@@ -244,6 +255,7 @@ export function ThreadCard({
   onRetryAction,
   onSelect,
   onToggle,
+  marginItem = true,
   owner,
   selected = false,
   showReference = true,
@@ -251,6 +263,7 @@ export function ThreadCard({
   pulseOrphanBlock = true,
   renderDeliveries,
   replyMutationKey,
+  standingReply = false,
   thread,
   viewerLogin,
   editingCommentId: editingId,
@@ -344,6 +357,7 @@ export function ThreadCard({
         onSent={() => {}}
         owner={composerOwner(owner)}
         replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+        standing={standingReply}
       />
     </div>
   ) : null;
@@ -396,8 +410,9 @@ export function ThreadCard({
           event.stopPropagation();
           onSelect?.();
         }}
-        data-margin-item={thread.key}
+        data-margin-item={marginItem ? thread.key : undefined}
         data-testid={`margin-comment-${thread.key}`}
+        data-thread-card={thread.key}
       >
         {rootSuggestion === null ? null : (
           <header className="mb-2 flex flex-wrap items-center justify-between gap-2">

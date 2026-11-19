@@ -225,17 +225,10 @@ export function isProjectRoute(route: DispatchRoute | AgentArtifactRoute): route
   );
 }
 
-export function isPrimaryDocumentArtifactRoute(
-  route: IssueRoute,
-  artifact: Pick<Artifact, "kind" | "primary"> | undefined
-): boolean {
-  return route.kind === "artifact" && artifact?.primary === true && artifact.kind === "doc";
-}
-
-export function issueTabForRoute(
-  route: IssueRoute,
-  artifact: Pick<Artifact, "kind" | "primary"> | undefined
-): IssueTab {
+/** The old tab an issue route named, which says what the page mounts for it. A document's own
+ *  address names the document, the issue's spec included: `/spec` is the Spec filter, and
+ *  `/artifacts/<spec>` opens the spec itself (dispatch://INFRA-1196 R3, R20). */
+export function issueTabForRoute(route: IssueRoute): IssueTab {
   if (isPlainIssueRoute(route)) {
     return route.kind;
   }
@@ -246,7 +239,7 @@ export function issueTabForRoute(
     return "decisions";
   }
   if (route.kind === "artifact") {
-    return isPrimaryDocumentArtifactRoute(route, artifact) ? "spec" : "artifacts";
+    return "artifacts";
   }
   return route.kind === "issue" || route.kind === "spec" ? "spec" : "conversation";
 }
@@ -865,6 +858,27 @@ export function documentItemPath(
     return `${path}${blockFragment(item.blockID)}`;
   }
   return `${path}?${item.kind}=${encodeURIComponent(item.id)}`;
+}
+
+/**
+ * The path that opens `artifact` itself, and `mark` - a comment anchored in it - marked in its
+ * text. An issue's document opens at its own `/artifacts/<slug>`, the spec's included, since
+ * `/spec` is the Spec filter, and the comment is named by `?mark=`: `?comment=` or `?ask=` on an
+ * issue's address names that item's node in the outline, which the address opens instead
+ * (dispatch://INFRA-1196 R20, `issue-address.ts`). A project document's page has no outline, so
+ * it keeps `?comment=` (`documentItemPath`).
+ */
+export function openDocumentPath(
+  artifact: Pick<Artifact, "issue_key" | "kind" | "primary" | "project" | "session_id" | "slug">,
+  mark?: string
+): string {
+  if (artifact.issue_key === null) {
+    return mark === undefined
+      ? buildReferencePath(documentRoute(artifact))
+      : documentItemPath(artifact, { id: mark, kind: "comment" });
+  }
+  const path = buildIssuePath({ key: artifact.issue_key, kind: "artifact", slug: artifact.slug });
+  return mark === undefined ? path : `${path}?mark=${encodeURIComponent(mark)}`;
 }
 
 /** A reference's compact plain-text form: what its link shows until the target's title

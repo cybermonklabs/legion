@@ -112,7 +112,13 @@ const READS = {
     data: { edges: [], node: { id: "artifact-1", kind: "artifact" } },
     key: ["references", "to", "dispatch://CORE/artifact/plan-md"],
   },
-  grandparent: { key: issueQuery("CORE-00").queryKey },
+  // The page's issues as the details read answers them: CORE-1 is CORE-0's child and CORE-00's
+  // grandchild, and CORE-9 stands beside them all. A rule that keeps the details drawing one
+  // issue's holder reads the children (`issueHolderDetails`), so each of them carries its own.
+  grandparent: {
+    data: { children: [{ key: "CORE-0" }], key: "CORE-00" },
+    key: issueQuery("CORE-00").queryKey,
+  },
   handoffs: { key: ["handoffs", "CORE-1"] },
   inbox: { key: inboxQuery().queryKey },
   inboxThreads: { key: inboxThreadsQuery().queryKey },
@@ -152,7 +158,10 @@ const READS = {
   },
   // Another issue's step records, which the Steps tab of CORE-9 reads.
   otherSteps: { key: issueStepsQuery("CORE-9").queryKey },
-  parent: { key: issueQuery("CORE-0").queryKey },
+  parent: {
+    data: { children: [{ key: "CORE-1" }], key: "CORE-0" },
+    key: issueQuery("CORE-0").queryKey,
+  },
   // CORE-1 is CORE-0's child: CORE-0's panel lists the `child_of` edge from it.
   parentPanel: {
     data: {
@@ -250,7 +259,7 @@ const READS = {
     data: { ask: { asked_of: null, id: "ask-6", issue_key: "OTHER-1", state: "open" } },
     key: askThreadQuery("ask-6").queryKey,
   },
-  unrelatedDetail: { key: issueQuery("CORE-9").queryKey },
+  unrelatedDetail: { data: { children: [], key: "CORE-9" }, key: issueQuery("CORE-9").queryKey },
   unrelatedPanel: {
     data: { edges: [], node: { id: "CORE-9", kind: "issue" } },
     key: ["references", "to", "dispatch://CORE-9"],
@@ -722,15 +731,58 @@ const rules: Record<string, Rule> = {
     refreshes: ["parent", "parentPanel"],
     spares: ["issuePanel", "detail"],
   },
-  "a claim refreshes the issue, its collaborators, its steps and its project list only": {
+  // A claim's holder is drawn on the issue itself and on every parent's children section
+  // (`IssueChildren.tsx`), and the payload names no ancestors, so the rule reaches every loaded
+  // issue detail and keeps the ones that draw this holder: the issue's own and `parent`, whose
+  // children hold it. `grandparent` draws CORE-0's holder and not CORE-1's, and
+  // `unrelatedDetail` draws neither. The reads hanging under a detail's key - the references,
+  // the coverage, the results, the collaborators of every loaded issue - are no part of it
+  // either, which `referencesTab` holds the rule to; the collaborators and the steps are
+  // refreshed by their own rules, for this issue alone. The rollups, the lists and the Inbox are
+  // untouched.
+  "a claim refreshes the issue's detail and the details whose children draw its holder": {
     event: event("issue.claimed", {
       claim: { actor: { id: "planner", kind: "session" }, at: "2026-10-26T00:00:00Z" },
       key: "CORE-1",
       reason: "claimed",
       status: "in_progress",
     }),
-    refreshes: ["collaborators", "detail", "log", "projectList", "steps"],
-    spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
+    refreshes: ["collaborators", "detail", "log", "parent", "projectList", "steps"],
+    spares: [
+      "grandparent",
+      "inbox",
+      "pinned",
+      "projects",
+      "referencePicker",
+      "referencesTab",
+      "replies",
+      "summary",
+      "unrelatedDetail",
+      "userState",
+    ],
+  },
+  // A release moves the same holder, and makes nobody a collaborator: the collaborators read
+  // is the claim's alone (`changesCollaborators`).
+  "a release refreshes the same details a claim does": {
+    event: event("issue.released", { key: "CORE-1", reason: "released" }),
+    refreshes: ["detail", "log", "parent", "projectList"],
+    spares: [
+      "grandparent",
+      "inbox",
+      "pinned",
+      "projects",
+      "referencePicker",
+      "referencesTab",
+      "replies",
+      "summary",
+      "unrelatedDetail",
+      "userState",
+    ],
+  },
+  "a deploy refreshes the issue's own reads alone": {
+    event: event("issue.deployed", { number: 7, repo: "acme/widgets" }),
+    refreshes: ["detail", "log", "projectList"],
+    spares: ["parent", "grandparent", "unrelatedDetail", "summary", "pinned", "inbox"],
   },
   "a release refreshes the issue's steps, since a role's run ended": {
     event: event("issue.released", { claim: null, key: "CORE-1" }),
@@ -1583,6 +1635,35 @@ test("an event that makes a collaborator refreshes the issue's collaborators", (
   // A write that makes nobody a collaborator: the priority moved, and the issue's people did not.
   const reprioritised = event("issue.updated", issue({ changed: ["priority"] }));
   expect(refreshesCollaborators(reprioritised)).toBe(false);
+});
+
+/** Whether `incoming` marks stale the References tab's read and the read the issue page's tree
+ *  holds that no tab does: the one batched read every name on the page comes from, keyed by the
+ *  set of addresses it asked for (`features/issue/useIssueTree.ts`), which an `exact` rule on
+ *  the tab's key does not reach. Both are read through the real scheduler. */
+function treeReadsRefreshed(incoming: DispatchEvent): {
+  names: boolean;
+  tab: boolean;
+} {
+  const client = new QueryClient();
+  const names: QueryKey = ["reference-targets", ["dispatch://CORE-1/spec#b-r1"]];
+  client.setQueryData(READS.referencesTab.key, { members: [], truncated: false });
+  client.setQueryData(names, { targets: [] });
+  refreshQueries(client, eventRefreshTargets(incoming, "alice"));
+  return {
+    names: client.getQueryState(names)?.isInvalidated === true,
+    tab: client.getQueryState(READS.referencesTab.key)?.isInvalidated === true,
+  };
+}
+
+// A new version of the spec rewrites the words of every block it changed, and the names are the
+// tree's alone, so until they are named here the page kept the old words for the whole of the
+// read's stale time.
+test("a document version refreshes the references and the tree's batched names", () => {
+  expect(treeReadsRefreshed(event("artifact.version", { artifact_id: "artifact-3" }))).toEqual({
+    names: true,
+    tab: true,
+  });
 });
 
 /** One write of priority linkage-closure by bob, as the server appends it: ownerless and quiet. */

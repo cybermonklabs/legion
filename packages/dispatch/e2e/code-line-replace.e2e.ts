@@ -1,5 +1,5 @@
 import { createIssue, createProject, getArtifactText } from "./api";
-import { connectedDot, selectEditorText } from "./editor";
+import { connectedDot, selectEditorText, specAddress } from "./editor";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -24,7 +24,7 @@ test("typing over the whole last line of a code block replaces that line @firefo
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(connectedDot(page)).toHaveText("connected");
 
     await selectEditorText(page, "let y = 2;");
@@ -54,7 +54,7 @@ test("typing over the text after a paragraph's hard break keeps the break @firef
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(connectedDot(page)).toHaveText("connected");
 
     await selectEditorText(page, "second line");

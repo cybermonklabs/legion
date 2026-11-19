@@ -176,6 +176,8 @@ export const realStackReasons: Record<string, string> = {
     "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
+  "issue-layout.e2e.ts":
+    "its rows write the issue and read the server's own answer back - an ask answered, a claim taken and released, a priority, an approval requested, a subscriber removed, a document version named - and several of them open the document's live room beside the tree",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":
@@ -247,6 +249,8 @@ export const realStackReasons: Record<string, string> = {
   "project-default-assignee.e2e.ts":
     "which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload",
   "project.e2e.ts": "the reference closure is the server's graph walk",
+  "record-page-inventory.e2e.ts":
+    "it records what the page offered rather than reading this build: it drives the base's own nine-tab page from a worktree at the commit before the redesign and writes the fixture c-nothing-lost is read against",
   "recipients-claim.e2e.ts": "claims and routes the server computes, with live card updates",
   "reference-cards.e2e.ts": "opens the spec's live editor and its margin thread",
   "reference-titles.e2e.ts": "asserts drawn titles inside the live editor",

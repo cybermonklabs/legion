@@ -42,11 +42,11 @@
  *    it still are.
  *  - Animations. `toHaveScreenshot` disables CSS animations, CSS transitions and Web Animations
  *    by default (`animations: "disabled"`), so no option is passed for them.
- *  - The 150 ms colour ease. `web/src/styles.css:51-57` transitions `color`, `background-color`
- *    and `border-color` on every button and link, so the frames right after `emulateMedia`
- *    switches the scheme are mid-ease. Two things cover it: the assertion waits until two
- *    consecutive screenshots are identical before it compares, and a finite transition is
- *    fast-forwarded to completion by the default above.
+ *  - The 150 ms colour ease. `web/src/styles.css:284-290`, its `button, a` rule, transitions
+ *    `color`, `background-color` and `border-color` on every button and link, so the frames
+ *    right after `emulateMedia` switches the scheme are mid-ease. Two things cover it: the
+ *    assertion waits until two consecutive screenshots are identical before it compares, and a
+ *    finite transition is fast-forwarded to completion by the default above.
  *  - The caret and the focus ring. No row clicks, types or focuses anything: it signs in,
  *    navigates and waits. A page that focuses an element of its own on load draws the same ring
  *    in the baseline and in the comparison, and the text caret is hidden by `caret: "hide"`,

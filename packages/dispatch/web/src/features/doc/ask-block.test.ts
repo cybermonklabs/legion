@@ -4,6 +4,7 @@ import type { EditorView } from "@milkdown/kit/prose/view";
 import { DOMSerializer, Schema } from "prosemirror-model";
 
 import type { BlockTypeSchema } from "../../api/types";
+import { NODE_TYPE_NAMES } from "../issue/page-words";
 import { askBlockEditingPlugin, editingAskBlockPos } from "./ask-block";
 import { renderTypedBlock } from "./typed-block-drawing";
 
@@ -158,7 +159,8 @@ test("a typed block's header shows the author's attributes and hides the schema'
 
   const text = renderedText(renderTypedBlock(node, calloutType));
 
-  expect(text).toContain("callout");
+  // The page's own word for a `callout` block, which is what a reader is shown (`page-words.ts`).
+  expect(text).toContain(NODE_TYPE_NAMES.callout);
   expect(text).toContain("warning");
   expect(text).toContain("Read this");
   // The block's identity and the schema's server-owned attribute, neither of them written by

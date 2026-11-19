@@ -270,6 +270,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-threads.e2e.ts` | the drawer's own bar is read after a navigation cancels the first agents read, which a recording answers with the cancelled entry |
 | `e2e/inbox-view.e2e.ts` | a priority write must arrive live |
 | `e2e/inbox.e2e.ts` | writes a reply and re-reads the thread; live event feed; lands in the document's live room |
+| `e2e/issue-layout.e2e.ts` | its rows write the issue and read the server's own answer back - an ask answered, a claim taken and released, a priority, an approval requested, a subscriber removed, a document version named - and several of them open the document's live room beside the tree |
 | `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
 | `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
 | `e2e/issue.e2e.ts` | asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read |
@@ -324,6 +325,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/project-default-assignee.e2e.ts` | which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload |
 | `e2e/project.e2e.ts` | the reference closure is the server's graph walk |
 | `e2e/recipients-claim.e2e.ts` | claims and routes the server computes, with live card updates |
+| `e2e/record-page-inventory.e2e.ts` | it records what the page offered rather than reading this build: it drives the base's own nine-tab page from a worktree at the commit before the redesign and writes the fixture c-nothing-lost is read against |
 | `e2e/reference-cards.e2e.ts` | opens the spec's live editor and its margin thread |
 | `e2e/reference-titles.e2e.ts` | asserts drawn titles inside the live editor |
 | `e2e/references.e2e.ts` | the backlink index the server rebuilds after each write |

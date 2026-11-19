@@ -1,5 +1,5 @@
 import { createComment, createIssue, createProject } from "./api";
-import { documentEditor, markSpan } from "./editor";
+import { documentEditor, markSpan, specAddress } from "./editor";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -25,7 +25,7 @@ test("an open Spec suggestion decoration shows its replacement without object-va
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
 
     const markedOriginal = markSpan(page, suggestion.id);
     const replacementDecoration = page.locator(

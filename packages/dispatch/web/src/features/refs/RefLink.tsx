@@ -1,7 +1,14 @@
 import { type ReactNode, useLayoutEffect, useState } from "react";
 
 import { borderDefault } from "../../theme/classes";
-import { useReferencePath, useReferenceTarget } from "./reference-target";
+import { useMarkdownHeadline } from "./markdown-engine";
+import { useKnownReferenceName } from "./reference-names";
+import {
+  blockReferenceOf,
+  TITLE_HEADLINE_MAX,
+  useReferencePath,
+  useReferenceTarget,
+} from "./reference-target";
 import {
   buildDispatchReference,
   buildReferencePath,
@@ -56,7 +63,19 @@ export function RefLink({
    *  author wrote it, or a Markdown link's own text. */
   text: string;
 }): ReactNode {
-  const { picture, title } = useReferenceTarget(route, { text: false });
+  // A link to a block shows the block's own words. Where the page has already read them in one
+  // batched request, the link takes its name from there and makes no read of its own
+  // (`reference-names.tsx`, dispatch://INFRA-1196 R20); anywhere else it reads its target as it
+  // always has, and every other kind of reference is unchanged, because an artifact's own read
+  // also answers the picture the link draws beside its title.
+  const known = useKnownReferenceName(blockReferenceOf(route));
+  const { picture, title } = useReferenceTarget(known === undefined ? route : undefined, {
+    text: false,
+  });
+  // The batched read answers a block's words with no reading of them (`ReferenceTarget.name`),
+  // so they are the headline's markdown fallback, the argument `useMarkdownHeadline` reads where
+  // no tree came with a text.
+  const headline = useMarkdownHeadline(undefined, TITLE_HEADLINE_MAX, known);
   const path = useReferencePath(route);
   useLayoutEffect(() => {
     if (anchor instanceof HTMLAnchorElement) {
@@ -79,11 +98,14 @@ export function RefLink({
           />{" "}
         </>
       )}
-      {/* An issue reads as its key then its title, as the project's issues table writes a key
-          beside one (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the
-          thing`. Until the title resolves, and for an issue the reader cannot read, the words
-          the author wrote stand. */}
-      {title === undefined ? (
+      {/* A block the batched read already named reads as its own words and needs no title.
+          Otherwise an issue reads as its key then its title, as the project's issues table
+          writes a key beside one (`project/IssuesTable.tsx`), so the link's accessible name is
+          `CORE-12 Fix the thing`. Until the title resolves, and for a target the reader cannot
+          read, the words the author wrote stand. */}
+      {headline !== undefined ? (
+        headline.text
+      ) : title === undefined ? (
         text
       ) : route.kind === "issue" ? (
         <>

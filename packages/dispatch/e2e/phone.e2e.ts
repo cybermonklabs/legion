@@ -1,5 +1,5 @@
+import { PRESET_NAMES, PRESET_ORDER } from "../web/src/features/issue/page-words";
 import { setLiveSessions } from "./agents";
-
 import {
   createArtifactAsk,
   createAsk,
@@ -21,12 +21,22 @@ import {
   documentEditor,
   needsYouCards,
   selectEditorText,
+  specAddress,
 } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
+import {
+  closeDetails,
+  expectActivePreset,
+  marginShell,
+  openDetails,
+  openedArtifact,
+  openIssueAddress,
+} from "./issue-page";
 import { expectConsecutiveLinksClear } from "./layout";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
+import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 const session = {
@@ -116,11 +126,12 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     } else {
       await page.goto(`/issues/${issue.key}`);
     }
-    await expect(page.getByRole("tab", { name: "Spec" })).toHaveAttribute("aria-selected", "true");
+    // The issue's own address is the page with no filter on (dispatch://INFRA-1196 R2, R20).
+    await expectActivePreset(page, "Conversation");
     if (isPhone) {
-      const reviewToggle = page.getByRole("button", { name: "Open review panel (1 open ask)" });
-      await expect(reviewToggle).toBeVisible();
-      await reviewToggle.click();
+      // The open ask's card is in Details, the phone's sheet the header's control opens
+      // (dispatch://INFRA-1196 R14).
+      await openDetails(page);
       const askCard = needsYouCards(page).getByTestId(`ask-${openAsk.id}`);
       await askCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
       await askCard.getByLabel("Your answer").fill("Yes.");
@@ -133,9 +144,12 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
       ).toBe(true);
-      await page.getByRole("button", { name: /Close review panel/ }).click();
+      await closeDetails(page);
     }
-    await expect(page.getByRole("tabpanel", { name: "Spec" }).getByRole("article")).toContainText(
+    // The issue's own address draws no document (dispatch://INFRA-1196 R3): the spec opens at its
+    // own address, in place of the outline, and is read there.
+    await navigateInApp(page, await specAddress(issue.key));
+    await expect(openedArtifact(page).getByRole("article")).toContainText(
       "The quick brown fox jumps over the lazy dog"
     );
     await expect(documentEditor(page).locator("table")).toBeVisible();
@@ -159,9 +173,10 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     const commentBody = commentComposer.getByLabel("Comment");
     await expect(commentBody).toBeFocused();
 
-    // D43: on phone the sheet the composer opened in also traps Tab.
+    // D43: on phone the sheet the composer opened in also traps Tab: the issue page's Details,
+    // which the compose opened.
     if (isPhone) {
-      await assertTabTrapped(page, '[data-testid="margin-sheet"]');
+      await assertTabTrapped(page, '[data-testid="desktop-margin-shell"]');
       await commentBody.focus();
     }
 
@@ -185,48 +200,51 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     await commentBody.press("Escape");
     await expect(commentComposer).toHaveCount(0);
     if (isPhone) {
-      await expect(page.getByRole("button", { name: /Close review panel/ })).toBeVisible();
-      await page.getByRole("button", { name: /Close review panel/ }).click();
+      await expect(marginShell(page)).toBeVisible();
+      await closeDetails(page);
     }
 
     // D25: a pinned Conversation turn renders its own description, never the literal "Event <seq>".
-    await page.getByRole("tab", { name: "Conversation" }).click();
+    // The conversation and its Pinned tab are in Details.
+    await openIssueAddress(page, "conversation");
+    await openDetails(page);
     const pinnedTurn = turn(page, pinnedMessage);
     await pinnedTurn.hover();
     await pinnedTurn.getByRole("button", { name: "Pin" }).click();
-    if (isPhone) {
-      await page.getByRole("button", { name: /Open review panel/ }).click();
-    }
     await page.getByRole("tab", { name: "Pinned" }).click();
-    const margin = page.getByTestId("margin-sheet");
-    await expect(margin.getByText(pinnedMessage)).toBeVisible();
-    await expect(margin.getByText(/^Event \d+$/)).toHaveCount(0);
+    // The margin's sheet holds the issue's whole conversation as well as its own cards, so the
+    // pinned message is drawn twice inside it: the reading here is the Pinned panel's own.
+    const pinned = page.getByTestId("margin-sheet").getByRole("region", { name: "Pinned" });
+    await expect(pinned.getByText(pinnedMessage)).toBeVisible();
+    await expect(pinned.getByText(/^Event \d+$/)).toHaveCount(0);
   } finally {
     await alice.close();
   }
 });
 
+// On a project document, whose margin is the phone's bottom sheet: the issue page's margin is its
+// Details drawer now, which holds the page's own panel after the composer (dispatch://INFRA-1196
+// R14), so a held composer's controls are no longer the sheet's last there.
 test("a phone thread trap skips a held composer's disabled controls @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: initialMarkdown,
-    title: "Held composer focus trap",
+  const created = await createProjectDocument("CORE", {
+    content: initialMarkdown,
+    name: "Held composer focus trap",
   });
   const alice = await asUser(browser, "alice");
 
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 844, width: 390 });
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(`/projects/CORE/documents/${created.artifact.slug}`);
     await selectEditorText(page, "brown");
     await barAction(page, "Comment");
     const sheet = page.getByTestId("margin-sheet");
     const form = sheet.getByRole("form", { name: "Comment composer" });
     const body = form.getByLabel("Comment");
-    const refuse = await refusePosts(page, "**/api/v1/issues/*/comments");
+    const refuse = await refusePosts(page, "**/api/v1/artifacts/*/comments");
     await body.fill("Keep this draft");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(body).toBeDisabled();
@@ -271,23 +289,23 @@ test("a phone sheet trap wraps Shift+Tab from its first control past a held comp
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: initialMarkdown,
-    title: "Held composer reverse focus trap",
+  // A project document, for the row above's reason.
+  const created = await createProjectDocument("CORE", {
+    content: initialMarkdown,
+    name: "Held composer reverse focus trap",
   });
   const alice = await asUser(browser, "alice");
 
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 844, width: 390 });
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(`/projects/CORE/documents/${created.artifact.slug}`);
     await selectEditorText(page, "brown");
     await barAction(page, "Comment");
     const sheet = page.getByTestId("margin-sheet");
     const form = sheet.getByRole("form", { name: "Comment composer" });
     const body = form.getByLabel("Comment");
-    const refuse = await refusePosts(page, "**/api/v1/issues/*/comments");
+    const refuse = await refusePosts(page, "**/api/v1/artifacts/*/comments");
     await body.fill("Keep this draft");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(body).toBeDisabled();
@@ -362,6 +380,54 @@ test("a project document has no horizontal overflow, 44px controls, and a Commen
       await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible();
       await expect(page.getByRole("tab", { name: "Pinned" })).toHaveCount(0);
     }
+  } finally {
+    await alice.close();
+  }
+});
+
+// The skeleton the shell draws while the issue page's own chunk loads is the issue page for a
+// moment, and a phone sees it: it has to fit the screen the page it stands in for fits
+// (dispatch://INFRA-1196 R17), and it has to name the presets that page has rather than tabs
+// the redesign dropped (R3), or a retired name flashes on screen at every cold load.
+test("the issue page's skeleton fits a phone and names its presets @phone", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue(
+    { project: "CORE", title: "A skeleton stands in for this page" },
+    session
+  );
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 844, width: 390 });
+    // The route's own chunk, held until the skeleton has been read: it is the only thing
+    // between the address and the page, so holding it is what makes the fallback readable at
+    // all. The navigation is not awaited while it is held, and is let go at the end.
+    const held = Promise.withResolvers<void>();
+    await page.route("**/assets/IssuePage-*.js", async (route) => {
+      await held.promise;
+      await route.continue();
+    });
+    const arrival = page.goto(`/issues/${issue.key}`).catch(() => undefined);
+    const presets = page.locator('[aria-busy="true"] [role="toolbar"]');
+    await expect(presets).toBeVisible();
+    const layout = await page.evaluate(() => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+    }));
+    expect(
+      layout.scroll,
+      `the skeleton made the page ${layout.scroll}px wide in a ${layout.client}px viewport`
+    ).toBeLessThanOrEqual(layout.client);
+    expect(
+      (await presets.innerText())
+        .split("\n")
+        .map((word) => word.trim())
+        .filter((word) => word !== ""),
+      "the skeleton names tabs the page no longer has"
+    ).toEqual(PRESET_ORDER.map((preset) => PRESET_NAMES[preset]));
+    held.resolve();
+    await arrival;
   } finally {
     await alice.close();
   }
@@ -500,8 +566,10 @@ test("an inline link keeps its line and grows its hit box without covering its n
       };
     });
 
+    // The conversation is in Details, which its address opens over the page
+    // (dispatch://INFRA-1196 R14, R20), so its links are read there.
     await navigateInApp(page, `/issues/${issue.key}/conversation`);
-    await expect(page.getByRole("link", { name: "Lower line" }).first()).toBeVisible();
+    await expect(marginShell(page).getByRole("link", { name: "Lower line" }).first()).toBeVisible();
     // The jump to the newest turn, and the unread "New" marks clearing after it, both move the
     // turn after `toBeVisible()`: put the upper link in the middle of the viewport and hold
     // there until its rect has not moved for 300 ms, so the measurement is taken at a position
@@ -509,7 +577,7 @@ test("an inline link keeps its line and grows its hit box without covering its n
     await page.evaluate(async () => {
       // The same link the measurement below takes: outside the ask cards, where a decision
       // block renders the same body in its own card.
-      const upper = [...document.querySelectorAll("main a")]
+      const upper = [...document.querySelectorAll('[data-testid="desktop-margin-shell"] a')]
         .filter((link) => link.closest('[data-testid^="ask-"]') === null)
         .find((link) => (link.textContent ?? "") === "Upper line");
       if (upper === undefined) {
@@ -535,7 +603,7 @@ test("an inline link keeps its line and grows its hit box without covering its n
     });
     const line = await page.evaluate(() => {
       // Outside the ask cards: a decision block renders the same body in its own card.
-      const links = [...document.querySelectorAll("main a")].filter(
+      const links = [...document.querySelectorAll('[data-testid="desktop-margin-shell"] a')].filter(
         (link) => link.closest('[data-testid^="ask-"]') === null
       );
       const upper = links.find((link) => (link.textContent ?? "") === "Upper line");
@@ -599,7 +667,7 @@ test("an inline link keeps its line and grows its hit box without covering its n
     // trial click waits and retries until the link is attached, visible, stable and is what
     // the action point hits, and then performs no click - bounded so a refusal is prompt.
     const upperLink = page
-      .locator('main a:not([data-testid^="ask-"] a)')
+      .locator('[data-testid="desktop-margin-shell"] a:not([data-testid^="ask-"] a)')
       .filter({ hasText: /^Upper line$/ });
     await expect(upperLink).toHaveCount(1);
     // On consecutive lines of one message turn - 16px prose on 24px lines - a tap at the bottom
@@ -643,6 +711,13 @@ test("an inline link keeps its line and grows its hit box without covering its n
     await navigateInApp(page, "/");
     const card = page.getByTestId(`ask-${bodyAsk.id}`);
     await expect(card.getByRole("link", { name: "Second choice" })).toBeVisible();
+    // The hit tests below read `document.elementFromPoint`, which answers for the screen and
+    // nothing below it, so the row places the card it is about rather than trusting where the
+    // Inbox opens - as it places the turn above. The issue page puts the window back at the
+    // top as it unmounts (`features/issue/IssuePage.tsx`), so this ask, the second card of
+    // the Inbox, opens below the fold and every point taken in it reads `null`.
+    await card.scrollIntoViewIfNeeded();
+    await expect(card).toBeInViewport();
 
     const measured = await page.evaluate(() => {
       const links = [...document.querySelectorAll("main a")];
@@ -860,10 +935,23 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
       .soft(row.getByRole("link", { name: longName }).locator("[title]"))
       .toHaveAttribute("title", longName);
 
+    // The node menu took the Artifacts tab's list (dispatch://INFRA-1196 R3), and the issue page
+    // carries no `title` anywhere (R2, R21): the item writes the file's whole name and wraps it.
+    // What this row guards of it is that the long name never reaches past the screen.
     await navigateInApp(page, `/issues/${issue.key}/artifacts`);
-    const artifactLink = page.getByRole("link", { exact: true, name: longName });
-    await expectEllipsis(artifactLink);
-    await expect.soft(artifactLink.locator("[title]")).toHaveAttribute("title", longName);
+    const artifactName = page
+      .getByRole("menu")
+      .getByRole("button", { exact: true, name: longName });
+    await expect(artifactName).toBeVisible();
+    expect
+      .soft(
+        await artifactName.evaluate((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.left >= -1 && rect.right <= window.innerWidth + 1;
+        }),
+        "the file's name in the node menu reaches past the screen"
+      )
+      .toBe(true);
 
     // The long name belongs to a project document, whose ask nobody holds: the cleared filter
     // is where the Inbox lists it. From 1280 px the owner link is on the short row and again
@@ -885,16 +973,37 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
       .soft(authorChip.getByText(longTitle, { exact: true }))
       .toHaveAttribute("title", `${longTitle} · e2e-long-title`);
 
-    await navigateInApp(page, `/issues/${issue.key}`);
-    await expectEllipsis(page.getByRole("link", { name: longUrl }));
+    await navigateInApp(page, await specAddress(issue.key));
+    // The issue page writes a link's whole address and carries no `title` anywhere
+    // (dispatch://INFRA-1196 R2, R21: what a tooltip said is drawn, because a fact a pointer
+    // alone can reach is a fact a reader on a phone does not have). So neither the external
+    // link nor the route control is cut here and neither has a tooltip to read. What this row
+    // guards of them is the thing that still holds: a long name never widens the page. Each
+    // stays inside the screen, and the page scrolls in one dimension only. The external link and
+    // the route control are properties in Details, which a reader opens from the header (R13,
+    // R14).
+    const insideScreen = (locator: Locator) =>
+      locator.first().evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.left >= -1 && rect.right <= window.innerWidth + 1;
+      });
+    await openDetails(page);
+    const routeControl = marginShell(page).getByRole("button", { name: longRoute });
+    await expect(routeControl.first()).toBeVisible();
+    expect.soft(await insideScreen(routeControl), "the route reaches past the screen").toBe(true);
+    const longLink = marginShell(page).getByRole("link", { name: longUrl });
+    await expect(longLink).toBeVisible();
+    expect
+      .soft(await insideScreen(longLink), "the whole address reaches past the screen")
+      .toBe(true);
+    await assertPageFits(page);
+    await closeDetails(page);
+    await assertPageFits(page);
     await expectEllipsis(
       page
         .getByRole("navigation", { name: "Open decisions" })
         .getByRole("link", { name: longQuestion })
     );
-    // A button that is inline-flex by its own classes is the same case as a link below 1280 px.
-    await expectEllipsis(page.locator(`button[title="${longRoute}"]`));
-
     // The @ picker's detail line: a role's detail names the live session that holds it.
     await navigateInApp(page, `/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" });
@@ -909,6 +1018,8 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
 
     // A label picker row.
     await navigateInApp(page, `/issues/${labelled.key}`);
+    // The labels' control is Details' Labels row (dispatch://INFRA-1196 R13).
+    await openDetails(page);
     await page.getByRole("button", { name: "Edit labels" }).click();
     const labelOption = page.getByRole("option", { exact: true, name: longLabel });
     await expectEllipsis(labelOption);

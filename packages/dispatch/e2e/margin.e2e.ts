@@ -5,6 +5,7 @@ import {
   createComment,
   createIssue,
   createProject,
+  createProjectDocument,
   getArtifact,
   getArtifactText,
   getAsk,
@@ -24,7 +25,9 @@ import {
   needsYouCards,
   selectEditorText,
   setSheet,
+  specAddress,
 } from "./editor";
+import { focusedNodeId, historyItem, marginShell, openDetails, pickPreset } from "./issue-page";
 import { commentWithBody } from "./margin-helpers";
 import { setCommentAuthorService } from "./seed";
 import { navigateInApp } from "./sends";
@@ -62,8 +65,8 @@ test("the selection bar comments, suggests, and asks on marks that both users se
     const alicePage = await alice.newPage();
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     await expect(documentEditor(alicePage)).toContainText(initialMarkdown);
     await expect(documentEditor(bobPage)).toContainText(initialMarkdown);
@@ -116,13 +119,14 @@ test("the selection bar comments, suggests, and asks on marks that both users se
       expect(alicePage.locator(`[data-turn="comment:${comment.id}"]`)).toContainText("why?"),
       expect(bobPage.locator(`[data-turn="comment:${comment.id}"]`)).toContainText("why?"),
     ]);
-    // The comment quotes the spec, so its deep link opens the spec with the thread beside it.
+    // The comment quotes the spec, and its deep link opens the issue's outline on the comment's
+    // node, focused, wherever it is anchored (dispatch://INFRA-1196 R20): no redirect to the spec.
     await alicePage.goto(`/issues/${issue.key}/comments/${comment.id}`);
-    await expect(alicePage).toHaveURL(`/issues/${issue.key}/spec?comment=${comment.id}`);
-    // A load, not an in-app step: closing the thread the deep link opened beside the document is
-    // what leaves one composer on the page for the bar action below.
-    await alicePage.goto(`/issues/${issue.key}/spec`);
-    await navigateInApp(bobPage, `/issues/${issue.key}/spec`);
+    await expect(alicePage).toHaveURL(`/issues/${issue.key}/comments/${comment.id}`);
+    await expect.poll(() => focusedNodeId(alicePage)).toBe(comment.id);
+    // A load, not an in-app step, back to the document for the bar action below.
+    await alicePage.goto(await specAddress(issue.key));
+    await navigateInApp(bobPage, await specAddress(issue.key));
     await expect(documentEditor(alicePage)).toContainText(initialMarkdown);
 
     await selectEditorText(alicePage, "quick");
@@ -168,10 +172,10 @@ test("the selection bar comments, suggests, and asks on marks that both users se
   }
 });
 
-// A bar Comment mounts its composer before the margin has come back from its rail or its Pinned
-// tab, out of sight, where a field takes no focus; the composer takes focus once it is on screen.
-// On a phone the sheet opens for it, which `phone.e2e.ts` checks.
-test("a bar Comment focuses its composer from the margin's rail and from its Pinned tab", async ({
+// A bar Comment mounts its composer before Details has opened or the margin has come back from
+// its Pinned tab, out of sight, where a field takes no focus; the composer takes focus once it is
+// on screen. On a phone the sheet opens for it, which `phone.e2e.ts` checks.
+test("a bar Comment focuses its composer from a closed Details and from its Pinned tab", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -179,16 +183,17 @@ test("a bar Comment focuses its composer from the margin's rail and from its Pin
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(documentEditor(page)).toContainText(initialMarkdown);
     await expect(connectedDot(page)).toHaveText("connected");
     const form = page.getByRole("form", { name: "Comment composer" });
 
-    await page.getByRole("button", { name: "Hide margin" }).click();
-    await expect(page.getByTestId("margin-rail")).toBeVisible();
+    // On the issue page the margin is Details, closed on the load, and a compose opens it with
+    // the composer focused (dispatch://INFRA-1196 R14).
+    await expect(marginShell(page)).toBeHidden();
     await selectEditorText(page, "brown");
     await barAction(page, "Comment");
-    await expect(page.getByTestId("margin-rail")).toHaveCount(0);
+    await expect(marginShell(page)).toBeVisible();
     await expect(form.getByLabel("Comment")).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(form).toHaveCount(0);
@@ -222,8 +227,8 @@ test("an agent's quote-anchored comment and ask render as highlights in open edi
     const alicePage = await alice.newPage();
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     await expect(connectedDot(alicePage)).toHaveText("connected");
     await expect(connectedDot(bobPage)).toHaveText("connected");
@@ -271,8 +276,8 @@ test("highlights follow edits in the other browser and preserve their anchor sta
     const alicePage = await alice.newPage();
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     const aliceEditor = documentEditor(alicePage);
     const bobEditor = documentEditor(bobPage);
@@ -352,8 +357,8 @@ test("accepting a suggestion changes the text in both browsers and names a versi
     const alicePage = await alice.newPage();
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     const aliceEditor = documentEditor(alicePage);
     const bobEditor = documentEditor(bobPage);
@@ -393,7 +398,7 @@ test("accepting a suggestion changes the text in both browsers and names a versi
         .getByTestId(`margin-comment-${accepted.id}`)
         .getByRole("button", { name: "Reopen" })
     ).toHaveCount(0);
-    await navigateInApp(alicePage, `/issues/${issue.key}/spec`);
+    await navigateInApp(alicePage, await specAddress(issue.key));
     await Promise.all([
       expect(aliceEditor).toContainText("The quick red fox"),
       expect(bobEditor).toContainText("The quick red fox"),
@@ -446,7 +451,7 @@ test("accepting a suggestion changes the text in both browsers and names a versi
       rejectButton.click(),
     ]);
     expect(response.ok()).toBe(true);
-    await navigateInApp(alicePage, `/issues/${issue.key}/spec`);
+    await navigateInApp(alicePage, await specAddress(issue.key));
     await Promise.all([
       expect(aliceEditor).toContainText("The quick red fox"),
       expect(bobEditor).toContainText("The quick red fox"),
@@ -538,7 +543,7 @@ test("a document mark opens its thread in the margin and stays on the document",
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(connectedDot(page)).toHaveText("connected");
     const comment = await createComment(
       issue.key,
@@ -560,14 +565,21 @@ test("a document mark opens its thread in the margin and stays on the document",
     await expect(
       page.getByTestId("margin-sheet").getByRole("tab", { name: "Comments" })
     ).toHaveAttribute("aria-selected", "true");
-    await expect(page).toHaveURL(`/issues/${issue.key}/spec`);
+    await expect(page).toHaveURL(await specAddress(issue.key));
     await expect(connectedDot(page)).toHaveText("connected");
 
-    // The comment is anchored, so its deep link lands on the document it quotes, with the
-    // thread open beside it — the same place clicking the mark just opened.
+    // The comment is an agent's, in a thread no person wrote in, so its deep link lands in the
+    // history in Details and not the outline (dispatch://INFRA-1196 R15, R20), its turn marked
+    // and drawn whole. No redirect takes the reader to the document; the document's own address
+    // marks the comment beside it there.
     await page.goto(`/issues/${issue.key}/comments/${comment.id}`);
-    await expect(page).toHaveURL(`/issues/${issue.key}/spec?comment=${comment.id}`);
-    const deepLinked = page.getByTestId("margin-sheet").getByTestId(`margin-comment-${comment.id}`);
+    await expect(page).toHaveURL(`/issues/${issue.key}/comments/${comment.id}`);
+    await expect(historyItem(page, comment.id)).toHaveAttribute("aria-current", "true");
+    await expect(historyItem(page, comment.id)).toContainText("focus this");
+    await page.goto(`${await specAddress(issue.key)}?mark=${comment.id}`);
+    const deepLinked = page
+      .getByRole("region", { name: "Anchored comments" })
+      .getByTestId(`margin-comment-${comment.id}`);
     await expect(deepLinked).toHaveAttribute("aria-current", "true");
     await expect(deepLinked).toContainText("focus this");
   } finally {
@@ -634,8 +646,7 @@ test("margin ask composer sends option choices that the inbox records as a selec
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}`);
-    await page.getByRole("tab", { name: "Spec" }).click();
+    await page.goto(await specAddress(issue.key));
     await selectEditorText(page, "brown");
     await barAction(page, "Ask");
 
@@ -714,7 +725,10 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
   try {
     const alicePage = await alice.newPage();
     await alicePage.goto(`/issues/${issue.key}`);
-    await alicePage.getByRole("tab", { name: "Spec" }).click();
+    await pickPreset(alicePage, "Spec");
+    // The margin's cards are in Details, which a reader opens from the header
+    // (dispatch://INFRA-1196 R14).
+    await openDetails(alicePage);
     const aliceCard = marginCard(alicePage, ask.id);
     await expect(aliceCard).toContainText("brown");
     await aliceCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
@@ -726,7 +740,8 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     // cache. He still sees the answered anchored ask in the margin.
     const bobPage = await bob.newPage();
     await bobPage.goto(`/issues/${issue.key}`);
-    await bobPage.getByRole("tab", { name: "Spec" }).click();
+    await pickPreset(bobPage, "Spec");
+    await openDetails(bobPage);
     const bobCard = marginCard(bobPage, ask.id);
     await expect(bobCard).toBeVisible();
     await expect(bobCard).toContainText("brown");
@@ -870,6 +885,9 @@ test("a comment a verified service token wrote names its service account in the 
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/spec`);
+    // The margin's cards are in Details, which a reader opens from the header
+    // (dispatch://INFRA-1196 R14).
+    await openDetails(page);
     const thread = marginCard(page, comment.id);
     // Only an expanded thread carries the author line under each comment.
     await thread.locator('button[aria-expanded="false"]').click();
@@ -899,7 +917,7 @@ test("a browser reconnecting after an accept keeps the accepted text", async ({ 
     const transport = await documentTransport(page);
     // The reconnect draw the sever below arms is spent on the page's clock, not in real time.
     await page.clock.install();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     const connected = connectedDot(page);
     await expect(connected).toHaveText("connected");
     await expect(markSpan(page, suggestion.anchor.mark_id)).not.toHaveCount(0);
@@ -921,5 +939,67 @@ test("a browser reconnecting after an accept keeps the accepted text", async ({ 
     await expect(documentEditor(page)).toHaveText("The quick red fox");
   } finally {
     await bob.close();
+  }
+});
+
+/**
+ * The issue page fills a slot in the shell's margin (dispatch://INFRA-1196 R12,
+ * `web/src/features/margin/margin-slot.tsx`), and the margin is mounted once for every route.
+ * These three rows are what says the slot changed no other page: each one draws its margin
+ * exactly as it did before, and none of them draws the issue page's panel.
+ */
+const ISSUE_PANEL = '[data-testid="issue-margin"]';
+
+test("a project document page draws its margin, and none of the issue page's panel", async ({
+  browser,
+}) => {
+  await createProject({ key: "DOC", name: "Documents" });
+  const document = await createProjectDocument("DOC", {
+    content: "# The handbook\n\nIts margin is the margin every document page has.\n",
+    name: "handbook.md",
+  });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto(`/projects/DOC/documents/${document.artifact.slug}`);
+    await expect(page.getByRole("heading", { level: 1, name: "The handbook" })).toBeVisible();
+    await expect(page.getByTestId("desktop-margin-shell")).toHaveCount(1);
+    await expect(page.getByTestId("margin-sheet")).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible();
+    await expect(page.getByLabel("Resize margin")).toHaveCount(1);
+    await expect(page.locator(ISSUE_PANEL)).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("the Inbox keeps its margin-less layout", async ({ browser }) => {
+  await createProject({ key: "INB", name: "Inbox" });
+  await createIssue({ project: "INB", spec: initialMarkdown, title: "An issue to list" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto("/");
+    await expect(page.getByTestId("main-content")).toBeVisible();
+    // A route with no margin spends no width on one, which is what it did before the slot.
+    await expect(page.getByTestId("desktop-margin-shell")).toHaveCount(0);
+    await expect(page.locator(ISSUE_PANEL)).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("an Agents page keeps its margin-less layout", async ({ browser }) => {
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto("/agents");
+    await expect(page.getByTestId("desktop-margin-shell")).toHaveCount(0);
+    await expect(page.locator(ISSUE_PANEL)).toHaveCount(0);
+  } finally {
+    await alice.close();
   }
 });

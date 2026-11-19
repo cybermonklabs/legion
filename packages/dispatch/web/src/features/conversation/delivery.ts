@@ -226,13 +226,13 @@ export function isSafeRetry(attempt: DeliveryOutcome, now: number = Date.now()):
 export const duplicateText = `Delivered by an earlier attempt, so not delivered again ${unlessRestarted}`;
 
 /** What a queued attempt's session is and when it gets the message, said after the session's
- *  name: the one wording of a queued attempt, which `queuedParts` and the Activity tab's mention
+ *  name: the one wording of a queued attempt, which `queuedParts` and the issue history's mention
  *  and message lines (`activityDescription`) read. The hours are the stream's retention, the
  *  same window in which a repeat is recognised (`DELIVERY_DUPLICATE_WINDOW_MS`). */
 export const queuedWait = `is stopped; it gets the message if it runs again within ${DELIVERY_DUPLICATE_WINDOW_HOURS} hours`;
 
-/** What a queued attempt reads as on the Agents page's card (`TargetedMessageCard`), the
- *  Conversation tab's delivery line (`ConversationTab`) and the search bar's send
+/** What a queued attempt reads as on the Agents page's card (`TargetedMessageCard`), the issue
+ *  page's delivery line under the focused row's facts (`FocusedNodeFacts`) and the search bar's send
  *  (`SendToAgentOffer`): the listener took the message for a session it knows and that is not
  *  running, and stores it until that session runs again. `session` is the recipient as the
  *  surface draws it, so a card names it through `AgentName` and a plain line names it as text. */

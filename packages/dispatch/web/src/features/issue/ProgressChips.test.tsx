@@ -3,21 +3,14 @@ import { render, screen } from "@testing-library/react";
 
 import { ProgressChips } from "./ProgressChips";
 
-test("the header's bar fills to done of total and names each count", () => {
+test("each chip names its count", () => {
   const view = render(
-    <ProgressChips
-      bar
-      progress={{ tasks: { done: 3, total: 4 }, children: { done: 0, total: 5 } }}
-    />
+    <ProgressChips progress={{ tasks: { done: 3, total: 4 }, children: { done: 0, total: 5 } }} />
   );
   try {
     const tasks = screen.getByTestId("issue-progress-tasks");
     expect(tasks.textContent).toBe("3/4 tasks");
     expect(tasks.getAttribute("title")).toContain("3 of 4 task-list items");
-    const fills = [tasks, screen.getByTestId("issue-progress-children")].map(
-      (chip) => (chip.querySelector("[aria-hidden] > span") as HTMLElement).style.width
-    );
-    expect(fills).toEqual(["75%", "0%"]);
     expect(screen.getByTestId("issue-progress-children").textContent).toBe("0/5 children");
   } finally {
     view.unmount();

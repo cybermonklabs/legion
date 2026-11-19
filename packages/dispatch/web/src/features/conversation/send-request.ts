@@ -289,9 +289,18 @@ function attempt(
   const targets = survivingMentions(body, mentions).map((mention) => mention.target);
   const baseBody = kind === "suggestion" && body.trim() === "" ? "Suggested replacement." : body;
   const plan = deliveryPlan(baseBody, targets.length === 0 ? undefined : plainDelivery);
+  // A reply names what it answers: a comment by `reply_to`, and an ask by `ask_id`, which the
+  // server takes under an ask in any state - an open ask's question back, and a word under an
+  // answered or resolved one, which carries no turn (dispatch://INFRA-3677).
+  const parent =
+    replyTo === null
+      ? {}
+      : replyTo.parentKind === "ask"
+        ? { ask_id: replyTo.id }
+        : { reply_to: replyTo.id };
   const comment: CreateCommentInput = {
     body: plan.body,
-    ...(replyTo === null ? {} : { reply_to: replyTo.id }),
+    ...parent,
     ...(kind === "suggestion" ? { suggestion: { replace_with: replacement } } : {}),
     ...(targets.length === 0
       ? {}

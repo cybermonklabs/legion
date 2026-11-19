@@ -1,6 +1,8 @@
 /**
- * The start of a stored text, cut out of the tree Go read it into rather than out of its
- * markdown. A markdown cut can land inside a mark and leave the delimiter it opened as literal
+ * What the browser reads out of the tree Go read a stored text into, rather than out of its
+ * markdown: the start of the text, and its words.
+ *
+ * A markdown cut can land inside a mark and leave the delimiter it opened as literal
  * characters, which is why a cut source had to be balanced before it was parsed; a tree cut
  * drops no delimiter, because a mark is on the node and the node either stays or goes. The rule
  * for a cut the server makes is Go's (`pmdoc/fragment.go`); this is the one cut the browser

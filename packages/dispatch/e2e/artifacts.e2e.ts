@@ -3,7 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
-import { scrollFadeTrailingPx } from "../web/src/theme/classes";
+import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 
 import {
   createAsk,
@@ -14,10 +14,26 @@ import {
   dashboardOrigin,
   editArtifact,
   getArtifactText,
+  listIssueArtifacts,
 } from "./api";
-import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
+import {
+  countDocumentSockets,
+  documentEditor,
+  documentTransport,
+  specAddress,
+  typeAtEnd,
+} from "./editor";
+import {
+  closeDetails,
+  historyEntries,
+  openIssueAddress,
+  presetChooser,
+  presetToggle,
+  presetToggles,
+  presetToolbar,
+  tree,
+} from "./issue-page";
 import { navigateInApp } from "./sends";
-import { expandedState } from "./settled";
 import { expect, type Locator, type Page, type TestInfo, test } from "./test";
 
 const tinyPng =
@@ -38,21 +54,23 @@ async function notesFile(testInfo: TestInfo): Promise<string> {
   return path;
 }
 
-/** The phone's review panel toggle, whose name says Open or Close as the panel is shut or open. */
-function reviewPanelToggle(page: Page): Locator {
-  return page.getByRole("button", { name: /review panel/i });
-}
-
-/** Shuts the phone's review panel where it is open over the page. The toggle says which it is,
- *  and is read once the page has drawn it rather than at the instant it attaches. */
-async function shutReviewPanel(page: Page): Promise<void> {
-  const toggle = reviewPanelToggle(page);
-  if ((await expandedState("the review panel", toggle)) === "open") await toggle.click();
-}
-
+/** Opens the issue's `/artifacts`, closing Details first where it covers a phone's page
+ *  (dispatch://INFRA-1196 R14). */
 async function openArtifacts(page: Page, isPhone: boolean) {
-  if (isPhone) await shutReviewPanel(page);
-  await page.getByRole("tab", { name: "Artifacts" }).click();
+  if (isPhone) await closeDetails(page);
+  await openIssueAddress(page, "artifacts");
+}
+
+/** The node menu's item for the file `name`. The menu took the Artifacts tab's list
+ *  (dispatch://INFRA-1196 R3, the Design's "Where each thing goes"), and its item carries what
+ *  the list's row offered beside the file: the control that opens it, its copy control, its
+ *  latest version's download and, for a document the issue can drop, Remove. The file's versions,
+ *  its picture and what references it are on its own page, which the item opens. */
+function menuItem(page: Page, name: string): Locator {
+  return page
+    .getByRole("menu")
+    .getByRole("menuitem")
+    .filter({ has: page.getByRole("button", { exact: true, name }) });
 }
 
 // Choosing a file only stages it; the row then shows a Summary field plus a confirming
@@ -82,41 +100,41 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   });
   await createAsk(issue.key, { question: "Can this ship?" });
 
-  await page.goto(`/issues/${issue.key}`);
-  await page.getByRole("tab", { name: "Spec" }).click();
+  await page.goto(await specAddress(issue.key));
   await expect(documentEditor(page)).toContainText("The original document.");
   await expect.poll(sockets).toBe(1);
   await openArtifacts(page, testInfo.project.name === "iphone");
 
-  const upload = page.getByLabel("Upload artifact");
+  // The menu's upload stages the picked file, with its Summary, Upload and Cancel.
+  const upload = page.getByLabel(CONTROL_LABELS.upload_file);
   const diagramUpload = await diagramFile(testInfo);
   await upload.setInputFiles(diagramUpload);
   await confirmUpload(page);
-  const diagram = page.getByTestId("artifact-diagram-png");
-  await expect(diagram).toContainText("diagram.png");
-  await expect(diagram).toContainText("1 version");
-  await expect(diagram.getByRole("img", { name: "diagram.png version 1" })).toBeVisible();
+  const diagram = menuItem(page, "diagram.png");
+  await expect(diagram).toBeVisible();
+  await expect(diagram.getByRole("link", { name: "Download version 1" })).toBeVisible();
 
   await upload.setInputFiles(diagramUpload);
   await confirmUpload(page);
-  await expect(diagram).toContainText("2 versions");
   await expect(diagram.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
     "download",
     ""
   );
-  // The tab is a compact row list now — versions, compare, and references live on the
-  // artifact's own page, not stacked under every row.
+  // The menu item is compact: the versions, their count, the picture, the compare and the
+  // references live on the artifact's own page, not under every item.
   await expect(diagram.getByRole("button", { name: "Show all versions" })).toHaveCount(0);
-  await expect(page.getByLabel("Filter artifacts")).toBeVisible();
+  await expect(page.getByLabel(CONTROL_LABELS.filter_files)).toBeVisible();
 
   await navigateInApp(page, `/issues/${issue.key}/artifacts/diagram-png`);
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
   await expect(page.getByTestId("artifact-header")).toContainText("diagram.png");
+  await expect(page.getByRole("img", { name: "diagram.png version 2" })).toBeVisible();
   expect(sockets()).toBe(1);
   await page.getByRole("button", { name: "Show all versions" }).click();
   const versions = page.getByRole("region", { exact: true, name: "Versions for diagram.png" });
   await expect(versions).toContainText("Version 1");
   await expect(versions).toContainText("Version 2");
+  await expect(versions).not.toContainText("Version 3");
   await expect(versions).toContainText("SHA-256");
   await expect(versions.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
     "download",
@@ -134,10 +152,10 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
 
   await upload.setInputFiles(await notesFile(testInfo));
   await confirmUpload(page);
-  const notes = page.getByTestId("artifact-notes-md");
-  await expect(notes).toContainText("notes.md");
+  const notes = menuItem(page, "notes.md");
+  await expect(notes).toBeVisible();
   await expect(notes.getByRole("button", { name: /make primary/i })).toHaveCount(0);
-  await page.getByRole("tab", { name: "Spec" }).click();
+  await navigateInApp(page, await specAddress(issue.key));
   await expect(documentEditor(page)).toContainText("The original document.");
 
   await createComment(issue.key, {
@@ -151,7 +169,7 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   // what the feed left.
   await openArtifacts(page, testInfo.project.name === "iphone");
 
-  await diagram.getByRole("link", { name: "diagram.png" }).click();
+  await diagram.getByRole("button", { exact: true, name: "diagram.png" }).click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
   // The panel names the record that cites this artifact and quotes it; its link goes to that
   // source, not back to the artifact the reader is already on.
@@ -166,7 +184,7 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   // One cold load, so the notes.md panel below is read by a page that cached nothing.
   await page.goto(`/issues/${issue.key}`);
   await openArtifacts(page, testInfo.project.name === "iphone");
-  await notes.getByRole("link", { name: "notes.md" }).click();
+  await notes.getByRole("button", { exact: true, name: "notes.md" }).click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/notes-md`);
   const notesReferencedBy = page.getByRole("region", { name: "Referenced by" });
   await expect(notesReferencedBy).toContainText(`Comment · ${issue.key}`);
@@ -188,8 +206,11 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
     await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
     await page.getByRole("button", { name: "Close navigation" }).click();
     await navigateInApp(page, `/issues/${issue.key}`);
-    const openMargin = reviewPanelToggle(page);
-    await shutReviewPanel(page);
+    // On the issue page the panel is Details, which the header's control opens over the page,
+    // the phone's sheet the whole width (dispatch://INFRA-1196 R14).
+    const openMargin = page
+      .locator("header[data-issue-header]")
+      .getByRole("button", { exact: true, name: "Details" });
     const [navigationBox, marginBox] = await Promise.all([
       openNavigation.boundingBox(),
       openMargin.boundingBox(),
@@ -199,18 +220,18 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
     expect(marginBox?.width).toBeGreaterThanOrEqual(44);
     expect(marginBox?.height).toBeGreaterThanOrEqual(44);
     await openMargin.click();
-    await expect(page.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "true");
-    await page.screenshot({ path: testInfo.outputPath("iphone-margin-sheet.png"), fullPage: true });
+    await expect(page.getByRole("dialog", { exact: true, name: "Details" })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("iphone-details.png"), fullPage: true });
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true);
   }
 });
 
-// The From/To compare of a document shows what changed as the change view, word by word. It is
-// seeded on a document that is not the issue's primary one, because `ArtifactRoutePanel` mounts
-// `ArtifactDetails` - the version history and this compare - only off the primary document's own
-// route (`isPrimaryDocumentArtifactRoute`, `features/refs/routes.ts`).
+// The From/To compare of a document shows what changed as the change view, word by word. Every
+// artifact's own page draws `ArtifactDetails` - the version history and this compare - the spec's
+// as much as any other (`ArtifactRoutePanel`); the row compares a second document so the spec's
+// own text stays out of the comparison.
 test("the version history compares two versions of a document with the change view", async ({
   page,
 }) => {
@@ -250,184 +271,199 @@ test("the version history compares two versions of a document with the change vi
   await expect(changed.locator("ins")).toHaveText(["seven"]);
 });
 
-test("the artifacts tab filter narrows rows by name and kind", async ({ page }, testInfo) => {
+test("the node menu's filter narrows its files by name and kind", async ({ page }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Artifact filtering" });
   await page.goto(`/issues/${issue.key}`);
   await openArtifacts(page, false);
 
-  const upload = page.getByLabel("Upload artifact");
+  const upload = page.getByLabel(CONTROL_LABELS.upload_file);
+  const diagram = menuItem(page, "diagram.png");
+  const notes = menuItem(page, "notes.md");
   await upload.setInputFiles(await diagramFile(testInfo));
   await confirmUpload(page);
-  await expect(page.getByTestId("artifact-diagram-png")).toBeVisible();
+  await expect(diagram).toBeVisible();
   await upload.setInputFiles(await notesFile(testInfo));
   await confirmUpload(page);
-  await expect(page.getByTestId("artifact-notes-md")).toBeVisible();
+  await expect(notes).toBeVisible();
 
-  const filter = page.getByLabel("Filter artifacts");
+  const filter = page.getByLabel(CONTROL_LABELS.filter_files);
   await filter.fill("notes");
-  await expect(page.getByTestId("artifact-notes-md")).toBeVisible();
-  await expect(page.getByTestId("artifact-diagram-png")).toHaveCount(0);
+  await expect(notes).toBeVisible();
+  await expect(diagram).toHaveCount(0);
 
   await filter.fill("image");
-  await expect(page.getByTestId("artifact-diagram-png")).toBeVisible();
-  await expect(page.getByTestId("artifact-notes-md")).toHaveCount(0);
+  await expect(diagram).toBeVisible();
+  await expect(notes).toHaveCount(0);
 
   await filter.fill("");
-  await expect(page.getByTestId("artifact-diagram-png")).toBeVisible();
-  await expect(page.getByTestId("artifact-notes-md")).toBeVisible();
+  await expect(diagram).toBeVisible();
+  await expect(notes).toBeVisible();
 });
 
-// SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of ten
-// tabs with each tab's box and the tablist's fade measured, at 390 px and back, then the comment
-// margin hidden and shown again.
-test("an uploaded document is linked from the Activity tab and counted on its own tab", async ({
+// The node menu's upload stages a picked file as the Artifacts list's did (dispatch://INFRA-1196
+// R19, "nothing lost"): the file's name, an optional Summary for the version it makes, and Upload
+// and Cancel. Cancel sends nothing; Upload sends the file with its summary.
+test("the node menu's upload stages a file with a Summary for its version, and Cancel sends nothing", async ({
+  page,
+}, testInfo) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Staged upload" });
+  const held = (await listIssueArtifacts(issue.key)).length;
+  await page.goto(`/issues/${issue.key}/artifacts`);
+
+  const upload = page.getByLabel(CONTROL_LABELS.upload_file);
+  const summary = page.getByRole("textbox", { name: "Summary (optional)" });
+  await upload.setInputFiles(await notesFile(testInfo));
+  await expect(page.getByText("notes.md", { exact: true })).toBeVisible();
+  await expect(summary).toBeVisible();
+  await page.getByRole("button", { exact: true, name: "Cancel" }).click();
+  await expect(summary).toHaveCount(0);
+  expect(await listIssueArtifacts(issue.key)).toHaveLength(held);
+
+  await upload.setInputFiles(await notesFile(testInfo));
+  await summary.fill("First review notes");
+  await confirmUpload(page);
+  await expect(menuItem(page, "notes.md")).toBeVisible();
+  const notes = (await listIssueArtifacts(issue.key)).find((one) => one.name === "notes.md");
+  expect(notes?.versions?.map((version) => version.summary)).toEqual(["First review notes"]);
+});
+
+// SLOW(>=2s): a real upload the history links, and the keyboard tour of the five presets with
+// each tab's box measured, at 1440 px and at 390 px.
+//
+// The nine tabs are gone (dispatch://INFRA-1196 R3): the row is five presets, and how many
+// artifacts an issue carries is the node menu's, not a tab's badge, so the `Artifacts (N)`
+// assertions this test carried are retired with it - what they proved, that the live feed
+// refreshes the page's own counts without a reload, is proved here on the history, in Details.
+//
+// It is not tagged `@phone`: the row sets 390 px itself, so the iphone project would run the
+// same assertions a second time (#2866, no browser row runs twice).
+test("an uploaded document is linked from the history and the presets fit every width", async ({
   page,
 }, testInfo) => {
   await createProject({ key: "OPS", name: "Ops" });
   const issue = await createIssue({ project: "OPS", title: "Customer update" });
-  await page.goto(`/issues/${issue.key}/conversation`);
-  // Every issue has its own document, so the tab opens counting one.
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 1" })).toBeVisible();
+  await page.goto(`/issues/${issue.key}/activity`);
+
+  // The history is drawn before the upload, so the line below is one the live feed brought and
+  // not one the first read already held: without this the upload can land before that read
+  // answers, and the row would pass with the feed disconnected. This is what the retired
+  // `Artifacts 1` badge reading proved - that the page's own counts move without a reload.
+  const rows = historyEntries(page);
+  await expect(rows.filter({ hasText: "created the issue" })).toHaveCount(1);
 
   const name = "cu-update-2026-09-15.md";
+  const added = rows.filter({ hasText: `added ${name}` });
+  await expect(added).toHaveCount(0);
   const upload = await createIssueArtifact(issue.key, {
     content: "# Draft\n\nHi team, here is this week's update.\n",
     name,
   });
 
-  // The live event feed refreshes the issue and its tabs: no reload.
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
-  const tablist = page.getByRole("tablist", { name: "Issue detail" });
-  const tabs = tablist.getByRole("tab");
-  await expect(tabs).toHaveCount(10);
-  const insideTablist = async (tab: Locator) => {
-    const [listBox, box] = await Promise.all([tablist.boundingBox(), tab.boundingBox()]);
-    expect(listBox).not.toBeNull();
-    expect(box).not.toBeNull();
-    expect(box?.height).toBeLessThanOrEqual(48);
-    expect(box?.x).toBeGreaterThanOrEqual(listBox?.x ?? 0);
-    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
-      (listBox?.x ?? 0) + (listBox?.width ?? 0) + 0.5
-    );
-  };
-  // Ten tabs, one of them counted, no longer fit a 390 px viewport: the tablist scrolls
-  // sideways there (as it already did at 360 px). No label is shortened to buy the room, every
-  // tab is reachable from the keyboard, each is scrolled fully into view as it takes focus, and
-  // each keeps its 44 px touch target. While tabs lie past its trailing edge the tablist wears
-  // the trailing fade, which says the cut is a scroll, and a tab taking focus stops clear of it;
-  // at the end of the scroll the fade is off, since it would hide the last tab. A tablist that
-  // narrows with no change of tab - a narrower window, the comment margin opening - brings the
-  // selected tab back whole and clear of the fade too.
-  const masked = () => tablist.evaluate((node) => getComputedStyle(node).maskImage !== "none");
-  // Polled: the reveal that answers a narrower tablist runs on the browser's next resize
-  // observation, after the change that narrowed it.
-  const wholeAndClearOfFade = (tab: Locator) =>
-    expect
-      .poll(async () => {
-        const [faded, listBox, box] = await Promise.all([
-          masked(),
-          tablist.boundingBox(),
-          tab.boundingBox(),
-        ]);
-        const listLeft = listBox?.x ?? 0;
-        const listRight = listLeft + (listBox?.width ?? 0);
-        const left = box?.x ?? Number.NEGATIVE_INFINITY;
-        const right = left + (box?.width ?? 0);
-        const visibleRight = faded ? listRight - scrollFadeTrailingPx + 1 : listRight + 0.5;
-        return left >= listLeft - 0.5 && right <= visibleRight;
-      })
-      .toBe(true);
-  const viewport = page.viewportSize();
-  await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
-  await expect(tabs).toHaveText([
-    "Spec",
-    "Verification",
-    "Plan",
-    "Steps",
-    "Conversation",
-    "Children",
-    "Artifacts 2",
-    "Activity",
-    "Decisions",
-    "Collaborators",
-  ]);
-  expect(await tablist.evaluate((node) => node.scrollWidth > node.clientWidth + 0.5)).toBe(true);
-  // The row opened on Conversation, which the narrower window left cut off at the edge.
-  const conversationTab = page.getByRole("tab", { exact: true, name: "Conversation" });
-  await expect(conversationTab).toHaveAttribute("aria-selected", "true");
-  await wholeAndClearOfFade(conversationTab);
-  await page.getByRole("tab", { name: "Spec" }).focus();
-  await expect.poll(masked).toBe(true);
-  for (const label of [
-    "Verification",
-    "Plan",
-    "Steps",
-    "Conversation",
-    "Children",
-    "Artifacts 2",
-    "Activity",
-    "Decisions",
-    "Collaborators",
-  ] as const) {
-    await page.keyboard.press("ArrowRight");
-    const tab = page.getByRole("tab", { exact: true, name: label });
-    await expect(tab).toBeFocused();
-    await insideTablist(tab);
-    await wholeAndClearOfFade(tab);
-    expect((await tab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
-  }
-  await page.keyboard.press("Home");
-  const specTab = page.getByRole("tab", { name: "Spec" });
-  await expect(specTab).toBeFocused();
-  await insideTablist(specTab);
-  expect((await specTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
-  await expect.poll(masked).toBe(true);
-  await page.keyboard.press("End");
-  await expect(page.getByRole("tab", { exact: true, name: "Collaborators" })).toBeFocused();
-  await expect.poll(masked).toBe(false);
-  await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
-  // At 1280 px every tab fits beside the hidden margin, and Activity, chosen there, is whole. The
-  // margin coming back narrows the tablist with no change of tab, and Activity, which it left past
-  // the trailing edge, is brought back whole and clear of the fade.
-  await page.getByRole("button", { name: "Hide margin" }).click();
-  await expect(page.getByTestId("margin-rail")).toBeVisible();
-  const activityTab = page.getByRole("tab", { name: "Activity" });
-  await activityTab.click();
-  await expect(activityTab).toHaveAttribute("aria-selected", "true");
-  await expect.poll(masked).toBe(false);
-  await page.getByRole("button", { name: "Show margin" }).click();
-  await expect.poll(masked).toBe(true);
-  await wholeAndClearOfFade(activityTab);
-
-  const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
-  const added = rows.filter({ hasText: `added ${name}` });
+  // The live event feed puts the upload on the open history without a reload.
   await expect(added).toHaveCount(1);
   await page.screenshot({ path: testInfo.outputPath("activity-added-artifact.png") });
 
-  // A second upload under the same name is a new version; its line links that version.
+  // A second upload under the same name is a new version of the document. A document's versions
+  // are its own toolbar's, and the history draws no line for one (dispatch://INFRA-1196 R15,
+  // c-conversation-state), where the Activity list drew `saved <name> v2`: read afresh once
+  // Dispatch holds the version, the history still names the document on its one line.
   await createIssueArtifact(issue.key, { content: "# Draft\n\nRevised.\n", name });
-  const saved = rows.filter({ hasText: `saved ${name} v2` });
-  await expect(saved).toHaveCount(1);
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
-  await expect(saved.getByRole("link", { name })).toHaveAttribute(
-    "href",
-    `/issues/${issue.key}/artifacts/${upload.artifact.slug}?v=2`
-  );
+  await expect
+    .poll(
+      async () =>
+        (await listIssueArtifacts(issue.key)).find((one) => one.name === name)?.versions?.length
+    )
+    .toBe(2);
+  await page.reload();
+  await expect(rows.filter({ hasText: "created the issue" })).toHaveCount(1);
+  await expect(rows.filter({ hasText: name })).toHaveCount(1);
+  await expect(added).toHaveCount(1);
 
-  // The upload is an Activity line and nothing else: the Conversation draws no row for it.
-  await page.getByRole("tab", { name: "Conversation" }).click();
-  await expect(
-    page.getByRole("list", { name: "Conversation turns" }).getByText(`added ${name}`)
-  ).toHaveCount(0);
-  await page.getByRole("tab", { name: "Activity" }).click();
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ height: viewport?.height ?? 800, width: 1440 });
+  const toolbar = presetToolbar(page);
+  const toggles = presetToggles(page);
+  await expect(toggles).toHaveCount(5);
+  const insideToolbar = async (toggle: Locator) => {
+    const [rowBox, box] = await Promise.all([toolbar.boundingBox(), toggle.boundingBox()]);
+    expect(rowBox).not.toBeNull();
+    expect(box).not.toBeNull();
+    expect(box?.x).toBeGreaterThanOrEqual(rowBox?.x ?? 0);
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
+      (rowBox?.x ?? 0) + (rowBox?.width ?? 0) + 0.5
+    );
+  };
+  // What the row promises at 1440 px, which is a pointer's width: each toggle is the
+  // prototype's tab, 35 px tall (`web/src/features/issue/IssuePresets.tsx`), and no taller than
+  // the row it shares. The 44 px floor is a touch rule, read below at the width a finger is what
+  // reaches the filters: these five are not drawn there at all, because at 1024 px and below
+  // the row is one control instead (`ZOOMED_TREE_QUERY`), and that control carries the floor.
+  const fitsTheRow = async (toggle: Locator, label: string) => {
+    const height = (await toggle.boundingBox())?.height ?? 0;
+    expect(
+      height,
+      `the ${label} toggle is ${height} px tall, under the prototype's tab`
+    ).toBeGreaterThanOrEqual(32);
+    expect(
+      height,
+      `the ${label} toggle is ${height} px tall, taller than the row of five`
+    ).toBeLessThanOrEqual(48);
+  };
+  // Every control is reachable from the keyboard, each is inside the row as it takes focus, and
+  // each is drawn at the height the row gives it.
+  const first = presetToggle(page, "conversation");
+  await first.focus();
+  for (const preset of ["spec", "verification", "plan", "decisions"] as const) {
+    await page.keyboard.press("ArrowRight");
+    const toggle = presetToggle(page, preset);
+    await expect(toggle).toBeFocused();
+    await insideToolbar(toggle);
+    await fitsTheRow(toggle, preset);
+  }
+  await page.keyboard.press("Home");
+  await expect(first).toBeFocused();
+  await insideToolbar(first);
+  await fitsTheRow(first, "Conversation");
+
+  // At 390 px the row is one control naming the one on, which opens the five. This is the
+  // width a finger is what reaches the filters, so this is where the 44 px touch target is
+  // read: the one control a reader presses there carries it, and the row fails if it ever
+  // loses it.
+  await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
+  // The history is in Details, which its address opens (dispatch://INFRA-1196 R15) and which on
+  // a phone is a sheet over the whole page, so a reader closes it to reach the filters.
+  await closeDetails(page);
+  await expect(toggles).toHaveCount(0);
+  const chooser = presetChooser(page);
+  await expect(chooser).toBeVisible();
+  const chooserHeight = (await chooser.boundingBox())?.height ?? 0;
+  expect(
+    chooserHeight,
+    `the preset control is ${chooserHeight} px tall at 390 px, under the 44 px a touch needs`
+  ).toBeGreaterThanOrEqual(44);
+  await chooser.click();
+  await expect(page.getByRole("menu").getByRole("menuitem")).toHaveCount(5);
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
+
+  // The upload is a line of the history and nothing else: a document is never a row of the
+  // outline (R3), which draws no row naming it.
+  await page.goto(`/issues/${issue.key}/conversation`);
+  await expect(tree(page)).toBeVisible();
+  await expect(tree(page).getByText(name)).toHaveCount(0);
+  await page.goto(`/issues/${issue.key}/activity`);
 
   await added.getByRole("link", { name }).click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/${upload.artifact.slug}`);
   await expect(page.getByTestId("artifact-header")).toContainText(name);
 });
 
-test("the Artifacts badge counts the rows the tab lists, and a row's details are not truncated @phone", async ({
+// The Artifacts tab's badge and its rows' detail lines went with the tab (dispatch://INFRA-1196
+// R3): the node menu holds one item per file, whose name is never cut, and a file's version, size
+// and upload time are on its own page.
+test("the node menu lists every file of the issue, and an item's name is not truncated @phone", async ({
   page,
 }) => {
   await createProject({ key: "OPS", name: "Ops" });
@@ -439,19 +475,23 @@ test("the Artifacts badge counts the rows the tab lists, and a row's details are
   await createIssueArtifact(issue.key, { content: "# Audit\n\nOne more.\n", name: "audit.md" });
 
   await page.goto(`/issues/${issue.key}/artifacts`);
-  const rows = page.locator("[data-testid^='artifact-']");
-  await expect(rows).toHaveCount(2);
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
+  const files = page
+    .getByRole("menu")
+    .getByRole("menuitem")
+    .filter({ has: page.getByRole("link", { name: /^Download version/ }) });
+  await expect(files).toHaveCount(2);
 
-  // Every row shows its whole detail line: it wraps where it must rather than truncating on a
-  // row with room beside it. The count of two above waited for both rows, so one read lists them.
-  for (const row of await rows.all()) {
-    const details = row.locator("p").first();
-    await expect(details).toContainText("Updated");
-    expect(await details.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
-      true
-    );
+  // Every item shows its whole name: it wraps where it must rather than truncating. The count of
+  // two above waited for both items, so one read lists them.
+  for (const file of await files.all()) {
+    const name = file.getByRole("button").first();
+    expect(await name.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   }
+  await files.getByRole("button", { exact: true, name: "audit.md" }).click();
+  await page.getByRole("button", { name: "Show all versions" }).click();
+  await expect(
+    page.getByRole("region", { exact: true, name: "Versions for audit.md" })
+  ).toContainText("Version 1");
 });
 
 // The repair replaces the unreadable document whatever the picked file is called: a second
@@ -495,8 +535,9 @@ test("an out-of-schema document does not reconnect from cached text", async ({ p
     name: "cached-repair.md",
   });
   const sockets = countDocumentSockets(page, upload.artifact.id);
-  const row = page.getByTestId(`artifact-${upload.artifact.slug}`);
-  const openDocument = () => row.getByRole("link", { name: "cached-repair.md" }).click();
+  const row = menuItem(page, "cached-repair.md");
+  const openDocument = () =>
+    row.getByRole("button", { exact: true, name: "cached-repair.md" }).click();
 
   await page.goto(`/issues/${issue.key}`);
   await openArtifacts(page, false);

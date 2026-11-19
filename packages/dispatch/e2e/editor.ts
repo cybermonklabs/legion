@@ -28,10 +28,23 @@ export function connectedDot(scope: Page | Locator): Locator {
   return scope.getByRole("status", { name: "connected" });
 }
 
+/** The address that opens an issue's spec with its editor: the spec's own address,
+ *  `/issues/KEY/artifacts/<slug>`, which draws it in place of the outline. `/issues/KEY/spec`
+ *  is the Spec filter and the issue's own address the outline, and neither draws the spec's
+ *  text (dispatch://INFRA-1196 R3, R20). */
+export async function specAddress(issueKey: string): Promise<string> {
+  const issue = await getIssue(issueKey);
+  const spec = (issue.artifacts ?? []).find(
+    (artifact) => artifact.id === issue.primary_artifact_id
+  );
+  if (spec === undefined) throw new Error(`${issueKey} has no spec to open`);
+  return `/issues/${issueKey}/artifacts/${spec.slug}`;
+}
+
 /** Opens an issue's spec and waits until its editor shows `text` and its document is connected,
  *  so a selection or a margin card the row reaches for next is live. */
 export async function openSpec(page: Page, issueKey: string, text: string): Promise<void> {
-  await page.goto(`/issues/${issueKey}/spec`);
+  await page.goto(await specAddress(issueKey));
   await expect(documentEditor(page)).toContainText(text);
   await expect(connectedDot(page)).toHaveText("connected");
 }
@@ -46,7 +59,7 @@ export async function openSpecAndAwaitHeadingIds(
   text: string
 ): Promise<string | undefined> {
   const before = (await getArtifactText(artifactId)).token;
-  await page.goto(`/issues/${issueKey}/spec`);
+  await page.goto(await specAddress(issueKey));
   await expect(documentEditor(page)).toContainText(text);
   let after = before;
   await expect
@@ -250,9 +263,33 @@ export function openedThreadCard(page: Page, project: string, rootId: string): L
 // On the phone layout the margin is a bottom sheet over the document. Acting on a selection
 // opens it; close it again before selecting another range, as a person would. The sheet says
 // whether it is open, and is read once the page has drawn it rather than at the instant it
-// attaches.
+// attaches. On the issue page the margin is the Details drawer instead, at every width, which
+// its header control opens and its Close closes (dispatch://INFRA-1196 R14): it is opened
+// wherever a caller reads the margin, and closed again only on a phone, where it is the
+// whole-screen sheet over the document. Which page this is, and whether Details is open, are
+// read the same way: once the page has drawn one of the states, never at one instant.
 export async function setSheet(page: Page, project: string, open: boolean): Promise<void> {
-  if (project !== "iphone") {
+  const shownPage = await settledState("the page holding the margin", [
+    ["issue", page.locator("[data-issue-frame]")],
+    ["document", documentEditor(page)],
+  ]);
+  const issuePage = shownPage === "issue";
+  if (project !== "iphone" && !(issuePage && open)) {
+    return;
+  }
+  if (issuePage) {
+    const drawer = page.getByTestId("desktop-margin-shell");
+    const details = page
+      .locator("header[data-issue-header]")
+      .getByRole("button", { exact: true, name: "Details" });
+    const drawn = await settledState("Details", [
+      ["open", drawer],
+      ["shut", details],
+    ]);
+    if (drawn !== (open ? "open" : "shut")) {
+      await (open ? details : drawer.getByRole("button", { exact: true, name: "Close" })).click();
+    }
+    await (open ? expect(drawer).toBeVisible() : expect(drawer).toBeHidden());
     return;
   }
   const sheet = page.getByTestId("margin-sheet");
@@ -270,10 +307,11 @@ export async function setSheet(page: Page, project: string, open: boolean): Prom
   await expect(sheet).toHaveAttribute("data-expanded", String(open));
 }
 
-/** The thread card rendered inside a Conversation turn (the margin renders the same thread as
- *  its own card, so a bare `[data-margin-item]` lookup would match both). */
+/** The thread card rendered inside a Conversation turn. The margin renders the same thread as
+ *  its own card, so each card carries its own name (`data-thread-card`) and only the margin's
+ *  carry the margin's (`data-margin-item`), which is what places a landed card by its mark. */
 export function threadCard(page: Page, rootId: string): Locator {
-  return page.locator(`[data-turn="comment:${rootId}"]`).locator(`[data-margin-item="${rootId}"]`);
+  return page.locator(`[data-turn="comment:${rootId}"]`).locator(`[data-thread-card="${rootId}"]`);
 }
 
 /** Where a Conversation turn's thread shows once the reader expands it: in place, in the turn,
@@ -322,9 +360,14 @@ export function conversationFilter(page: Page, label: "All" | "Closed" | "Open")
 
 /** The margin's open asks waiting on the reader. Every margin ask card, open or decided, is in one
  *  keyed list - an answered ask moves to the decided ones in place - so the group is each card's
- *  own `data-margin-section`, and a card is found inside it by its `ask-<id>` test id. */
-export function needsYouCards(page: Page): Locator {
-  return page.locator('[data-margin-section="needs-you"]');
+ *  own `data-margin-section`, and a card is found inside it by its `ask-<id>` test id.
+ *
+ *  `scope` is the page, or the one panel the cards are to be read in: the issue page fills the
+ *  margin's slot in an effect (`features/margin/margin-slot.tsx`), so the margin draws once
+ *  plain and again inside that page's panel, and a row that presses a card's own control reads
+ *  it inside the panel rather than taking whichever draw it caught. */
+export function needsYouCards(scope: Locator | Page): Locator {
+  return scope.locator('[data-margin-section="needs-you"]');
 }
 
 /** Document sockets the page has opened since the call, open or closed: every document's, or with
@@ -535,7 +578,7 @@ export async function openIssue(browser: Browser, title: string, spec: string) {
   const issue = await createIssue({ project: "CORE", spec, title });
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
-  await page.goto(`/issues/${issue.key}`);
+  await page.goto(await specAddress(issue.key));
   return { alice, issue, page };
 }
 
@@ -544,7 +587,16 @@ export async function openIssue(browser: Browser, title: string, spec: string) {
 export async function blockId(artifactId: string, text: string): Promise<string> {
   const { markdown } = await getArtifactText(artifactId);
   const blocks = await getArtifactBlocks(artifactId);
-  const block = blocks.find((candidate) => markdown.slice(candidate.from, candidate.to) === text);
+  // `from`/`to` are offsets into the document's bytes, which is what the server slices the same
+  // markdown with (`packages/envoy/internal/dispatch/docs/closed_version_blocks.go`), so the cut
+  // is made over the encoded bytes: a document holding anything outside ASCII puts every later
+  // block's byte offset past its JavaScript string index, and a string slice would read the
+  // wrong text.
+  const bytes = new TextEncoder().encode(markdown);
+  const decoder = new TextDecoder();
+  const block = blocks.find(
+    (candidate) => decoder.decode(bytes.slice(candidate.from, candidate.to)) === text
+  );
   if (block === undefined) {
     throw new Error(`no block of ${artifactId} reads ${JSON.stringify(text)}: ${markdown}`);
   }

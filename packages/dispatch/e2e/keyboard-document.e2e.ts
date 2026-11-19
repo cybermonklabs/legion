@@ -6,6 +6,7 @@ import {
   expectMark,
   placeCaret,
   selectEditorText,
+  specAddress,
 } from "./editor";
 import { nextFrames } from "./frames";
 import { commentWithBody } from "./margin-helpers";
@@ -31,7 +32,7 @@ test("Ctrl+Alt+M comments on the selected text as the bar's Comment does, and on
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(documentEditor(page)).toContainText(initialMarkdown);
     await expect(connectedDot(page)).toHaveText("connected");
     const form = composer(page);

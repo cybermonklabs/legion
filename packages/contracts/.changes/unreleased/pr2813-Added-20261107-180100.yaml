@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `ReferenceTarget` and `ReferenceTargets` are generated from `GET /api/v1/reference-targets`,
+  the batched reference read, as every shape of the route table now is: one member per
+  reference, each with its kind, the words a reader is shown for its target and whether the
+  target is gone. `IssueChild` gains the optional `needs`, the keys of the issues it waits on as
+  `Issue.blocked_by` lists them, and the optional `claim`, in `Issue`'s own shape.
+  `RequirementCoverage`, `CheckBlock` and `ReferenceTarget` carry the optional `text_tree`: a
+  block's whole text, links and references kept, which a server answers to a caller that sent
+  `Dispatch-Trees: 1`.

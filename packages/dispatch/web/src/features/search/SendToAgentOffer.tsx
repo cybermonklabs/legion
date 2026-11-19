@@ -156,8 +156,8 @@ function SendToAgentSaid({
     );
   }
   // Queued is neither sent nor refused: the words are stored for a session that has stopped
-  // since the bar offered it, so the line is `queuedParts`, as on the Agents card and the
-  // Conversation tab, and the row stays gone, since a second press would store a second copy.
+  // since the bar offered it, so the line is `queuedParts`, as on the Agents card and the issue
+  // page's delivery lines, and the row stays gone, since a second press would store a second copy.
   if (state.kind === "queued") {
     return (
       <p className={barNoteClassName} data-testid="search-send-to-agent-said" role="status">

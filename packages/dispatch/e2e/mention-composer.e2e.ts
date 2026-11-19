@@ -300,7 +300,9 @@ test("a docked send out when its issue closes posts", async ({ browser }) => {
     await expect(field).toBeDisabled();
 
     await patchIssue(issue.key, { status: "done" }, { login: "bob" });
-    await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
+    // A closed issue says so in its identity block; reopening it is behind that block's one
+    // actions control (dispatch://INFRA-1196 R11).
+    await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
     await expect(field).toHaveValue("Before the close");
     await expect(field).toBeDisabled();
 
@@ -398,7 +400,9 @@ test("a docked send refused while its issue closes offers Retry, which posts on 
 
     await patchIssue(issue.key, { status: "done" }, { login: "bob" });
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-    await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
+    // What says the page has taken the close in is the line the identity block draws for it:
+    // Reopen sits behind that block's one actions control now (dispatch://INFRA-1196 R11).
+    await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
 
     await expect(field).toHaveValue("Through the close");
     await expect(field).toBeDisabled();

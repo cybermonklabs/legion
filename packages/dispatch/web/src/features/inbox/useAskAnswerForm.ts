@@ -45,7 +45,7 @@ interface UseAskAnswerFormOptions {
 }
 
 /** A failed answer, as the card shows it. */
-interface AskAnswerFailure {
+export interface AskAnswerFailure {
   message: string;
   /** False for a refusal the same answer never gets past. */
   retryable: boolean;
@@ -56,8 +56,9 @@ interface AskAnswerFailure {
  * says for each: the ask was answered or closed elsewhere, its question changed (the card reloads
  * it, so the next answer is to the new wording), or writing even its server state would leave the
  * document's live state past what the server can decode. Any other failure may pass on a retry.
+ * The issue page's answer line reads a refusal the same way (`IssueComposer.tsx`).
  */
-function answerFailure(error: Error): AskAnswerFailure {
+export function answerFailure(error: Error): AskAnswerFailure {
   if (error instanceof ApiError) {
     switch (error.code) {
       case "ASK_ANSWER_CHANGED":

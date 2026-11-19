@@ -149,7 +149,8 @@ test("IssueComponentsLine reads Not attached, and stays read-only without an arc
     undefined
   );
   try {
-    expect(view.q.getByTestId("issue-components").textContent).toBe("Components:Not attached");
+    // The label is the Details row's (`IssueMargin.tsx`), not the line's own.
+    expect(view.q.getByTestId("issue-components").textContent).toBe("Not attached");
     expect(view.q.queryByRole("link")).not.toBeInTheDocument();
     await waitFor(() => expect(view.listProjectArchitectureSources).toHaveBeenCalledTimes(1));
     expect(
@@ -176,11 +177,13 @@ test("IssueComponentsLine lists an explicit set as chips, marks retired ids, and
   try {
     view.q.getByText("dispatch-server");
     view.q.getByText("web");
-    const retired = view.q.getByText("retired: legacy-ui");
-    expect(retired).toHaveAttribute(
-      "title",
-      "legacy-ui is no longer in the project's architecture model"
+    // The chip reads "retired: <id>" and carries no tooltip: the issue page's panel draws none
+    // (dispatch://INFRA-1196 R21, `components/tooltips.tsx`).
+    const retired = view.q.getByText(
+      (_text, element) => element?.textContent === "retired: legacy-ui",
+      { selector: "span[data-page-chrome]" }
     );
+    expect(retired).not.toHaveAttribute("title");
     const ancestor = view.q.getByRole("link", { name: "CORE-1" }) as HTMLAnchorElement;
     expect(ancestor).toHaveAttribute("href", "/issues/CORE-1");
     expect(view.q.getByTestId("issue-components")).toHaveTextContent("inherited from CORE-1");
@@ -195,9 +198,7 @@ test("IssueComponentsLine shows a none attachment with its reason", () => {
     undefined
   );
   try {
-    expect(view.q.getByTestId("issue-components").textContent).toBe(
-      "Components:None — hiring, not code"
-    );
+    expect(view.q.getByTestId("issue-components").textContent).toBe("None — hiring, not code");
     expect(view.q.queryByRole("link")).not.toBeInTheDocument();
   } finally {
     view.unmountAll();
@@ -259,9 +260,7 @@ test("an explicit set naming components of two sources shows each as a bare id c
     tree
   );
   try {
-    expect(view.q.getByTestId("issue-components").textContent).toBe(
-      "Components:dispatch-serverinfra-cluster"
-    );
+    expect(view.q.getByTestId("issue-components").textContent).toBe("dispatch-serverinfra-cluster");
   } finally {
     view.unmountAll();
   }

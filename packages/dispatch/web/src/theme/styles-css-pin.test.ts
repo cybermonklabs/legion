@@ -6,9 +6,12 @@ import { oklchToSrgb8 } from "./contrast";
 import * as P from "./palette";
 
 /**
- * `styles.css` only uses hand-written color literals for the pre-hydration `:root` fallback,
- * outside components' `dark:`-className mechanism. Each literal is annotated with the matching
- * palette swatch so a manual fallback change cannot silently drift from the rendered theme.
+ * `styles.css` writes hand-written color literals in two places outside components'
+ * `dark:`-className mechanism: the pre-hydration `:root` fallback, and the issue page's palette
+ * tokens in `@theme` with their dark-scheme values. Each literal is annotated with the matching
+ * palette swatch - a Tailwind shade (`slate-950`) or one of the page's own (`page-ink`) - so a
+ * manual change cannot silently drift from the rendered theme or from the contrast checks
+ * `classes.ts` registers against those swatches.
  */
 
 const STYLES_CSS_PATH = join(import.meta.dir, "..", "styles.css");

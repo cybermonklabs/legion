@@ -44,9 +44,11 @@ async function readManifest(directory: string): Promise<Record<string, unknown> 
 }
 
 /**
- * The workspace package a module of this repository sits in, when that package carries a license
- * of its own (a copy of someone else's code, such as packages/proof-editor), else null. The walk
- * stops at the workspace root, whose license is the repository's.
+ * The package a module of this repository sits in, read from the nearest manifest above it, when
+ * that package carries a license of its own (a copy of someone else's code, such as
+ * packages/proof-editor, or of someone else's file, such as the typeface under
+ * packages/dispatch/web/src/fonts/inter), else null. The walk stops at the workspace root, whose
+ * license is the repository's.
  */
 async function licensedWorkspaceRootOf(modulePath: string): Promise<string | null> {
   let directory = dirname(modulePath);
@@ -179,7 +181,7 @@ async function readPackage(root: string): Promise<BundledPackage> {
  * The notices text for a bundle built from `inputs`: the module file paths a bundler lists (a Bun
  * metafile's `Object.keys(result.metafile.inputs)`), absolute or relative to `base`. A module
  * installed under node_modules counts as its package's; a module of this repository counts only
- * when its workspace package carries a license file of its own. Packages are sorted by name and
+ * when the package around it carries a license file of its own. Packages are sorted by name and
  * version, so the same inputs always give the same text.
  */
 export async function thirdPartyNotices(inputs: Iterable<string>, base: string): Promise<string> {

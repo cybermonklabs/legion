@@ -16,6 +16,9 @@ interface UseMarginListenersOptions {
   onSelectCard: (id: string, blockID?: string) => void;
   /** Whether the open document has reported where its blocks and marks sit. */
   placementsPublished: boolean;
+  /** Whether the item the address names is the margin's to land on - an item the document the
+   *  page opens is opened at - rather than a node of the issue's outline (`useMarginSheet.ts`). */
+  routeItemBesideDocument: boolean;
   routeItemId: string | undefined;
   /** The link's request: a new navigation to the same item is a new one. */
   routeItemKey: string | undefined;
@@ -32,6 +35,7 @@ export function useMarginListeners({
   margin,
   onSelectCard,
   placementsPublished,
+  routeItemBesideDocument,
   routeItemId,
   routeItemKey,
   setHoveredItemId,
@@ -76,8 +80,31 @@ export function useMarginListeners({
         : { itemId: focusItemId, key: focusSeq },
     [focusItemId, focusSeq]
   );
-  useCardHold({ card: routeCard, composerOpen, margin, placed, sheetExpanded, tab });
-  useCardHold({ card: focusCard, composerOpen, margin, placed, sheetExpanded, tab });
+  // A hold scrolls the margin's scrollport, and on the issue page that is the one scrollport
+  // the whole panel has - the margin's own cards and the issue's conversation together
+  // (dispatch://INFRA-1196 R12). So it holds only what the margin is the landing for: a
+  // passage of the document open beside it, named by a document address (`?mark=`, an item at
+  // a pinned version, a project document's own item) or focused as a mark. An ask or a comment
+  // an issue's address names otherwise - by its own route, `?ask=` or `?comment=` - is a node
+  // of the outline, which the page focuses, and the conversation marks its entry; a hold here
+  // would scroll the reader off that entry and onto the margin's copy of the same item.
+  const lands = visibleArtifact !== undefined;
+  useCardHold({
+    card: lands && routeItemBesideDocument ? routeCard : undefined,
+    composerOpen,
+    margin,
+    placed,
+    sheetExpanded,
+    tab,
+  });
+  useCardHold({
+    card: lands ? focusCard : undefined,
+    composerOpen,
+    margin,
+    placed,
+    sheetExpanded,
+    tab,
+  });
 
   // Opening a composer is the reader taking part, so the corrections above stand down - and the
   // composer itself has to be shown. It renders at the top of the margin's scroll content, and

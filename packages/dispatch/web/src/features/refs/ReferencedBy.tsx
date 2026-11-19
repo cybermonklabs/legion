@@ -11,6 +11,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { compiledBlockSchema } from "../doc/schema";
+import { authorText, PROPERTY_LABELS, pageChrome } from "../issue/page-structure";
 import { blockFragment, isBlockItemKind } from "./block-reference";
 import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery } from "./reference-target";
@@ -75,6 +76,17 @@ const MANIFEST_EDGE_KINDS = new Set(
       .map(([name]) => name)
   )
 );
+
+/** Whether a list of what references a node draws `edge`. During a release a newer Dispatch can
+ *  answer with an edge kind, or a node kind at the other end, that this page does not know; every
+ *  such list - this panel, and a focused row's in Details (`NodeReferences.tsx`) - leaves that
+ *  edge out rather than draw it under another edge's label. */
+export function drawsEdge(edge: GraphEdge): boolean {
+  return (
+    (Object.hasOwn(RENDERED_EDGE_KINDS, edge.kind) || MANIFEST_EDGE_KINDS.has(edge.kind)) &&
+    Object.hasOwn(NODE_LABELS, edge.node.kind)
+  );
+}
 
 /** Beyond this the row clamps the excerpt and offers to expand it. The real clamp is CSS, so
  *  this is the text shape that makes a clamp likely rather than a measurement. */
@@ -216,8 +228,10 @@ export function ReferencedByToggle({
     return (
       <span
         className={`inline-flex min-h-11 shrink-0 items-center px-2 py-1 text-sm ${textMutedOnSurface}`}
+        {...pageChrome}
       >
-        Referenced by (0)
+        {PROPERTY_LABELS.referenced_by}
+        <span {...authorText}>{" (0)"}</span>
       </span>
     );
   }
@@ -229,8 +243,10 @@ export function ReferencedByToggle({
       className={`flex min-h-11 shrink-0 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${linkText} ${linkHoverText}`}
       onClick={onToggle}
       type="button"
+      {...pageChrome}
     >
-      {count === undefined ? "Referenced by" : `Referenced by (${count})`}
+      {PROPERTY_LABELS.referenced_by}
+      {count === undefined ? null : <span {...authorText}>{` (${count})`}</span>}
     </button>
   );
 }
@@ -252,14 +268,7 @@ export function ReferencedBy({
   toggle?: { id: string };
 }): ReactNode {
   const query = useQuery(referencesQuery(reference));
-  // During a release a newer Dispatch can answer with an edge kind, or a node kind at the other
-  // end, that this page does not know; the page leaves such an edge out rather than draw it under
-  // another edge's label.
-  const edges = query.data?.edges?.filter(
-    (edge) =>
-      (Object.hasOwn(RENDERED_EDGE_KINDS, edge.kind) || MANIFEST_EDGE_KINDS.has(edge.kind)) &&
-      Object.hasOwn(NODE_LABELS, edge.node.kind)
-  );
+  const edges = query.data?.edges?.filter(drawsEdge);
   const groups = groupBySource(edges ?? []);
 
   return (
