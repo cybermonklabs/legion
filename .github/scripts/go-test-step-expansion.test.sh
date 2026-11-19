@@ -133,11 +133,11 @@ else:
 done
 
 # Two steps run database-skips.sh, each with the argument list its entry reads: envoy-go's count,
-# which runs the broker's packages and command, and envoy-go-race-api's race step, which runs the
-# API package. Each step is read out of the file that holds it, in the directory GitHub runs it
-# from, so the case holds the entry to
-# the steps as written; an argument list the entry does not list is refused, since what the
-# script runs then is a reading nobody made.
+# which runs the broker's packages less the race lane's, and its command, and envoy-go-race-api's
+# race step, which runs the API package. Each step is read out of the file that holds it, in the
+# directory GitHub runs it from, so the case holds the entry to the steps as written; an argument
+# list the entry does not list is refused, since what the script runs then is a reading nobody
+# made.
 echo "case: a step that runs an audited script is read through its entry, by its argument list"
 read_audited() { py 'import pathlib, yaml
 document = yaml.safe_load(pathlib.Path(ex.ROOT / sys.argv[1]).read_text())
@@ -151,9 +151,9 @@ except ex.Refused:
     print("refused")
 else:
     print(read.workdir, read.script)' "$@"; }
-check "envoy-go's count runs the broker's packages and command" \
+check "envoy-go's count runs the broker's packages less the race lane's, and its command" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Count the database broker suites' skips" "")" \
-    "packages/envoy go test -json -count=1 -timeout 20m ./internal/broker/... ./cmd/broker/")"
+    "packages/envoy go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | xargs go test -json -count=1 -timeout 20m")"
 check "envoy-go-race-api's race step runs the API package under -race through the counter" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" \
     "packages/envoy go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/")"

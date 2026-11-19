@@ -59,9 +59,14 @@ import (
 )
 
 var (
-	ErrNotYours    = errors.New("this request or grant belongs to another session")
-	ErrNotApprover = errors.New("only the grant's approver or its enrollment's operator may revoke it")
-	ErrTerminal    = errors.New("request is already decided")
+	ErrNotYours = errors.New("this request or grant belongs to another session")
+	// ErrNotOwner is the refusal of a caller whose owner did not make the request it names
+	// (OwnerAndState, EnrollmentOwner): the read route's and Cancel's. It is an ErrNotYours to
+	// errors.Is, so every caller that refuses on ErrNotYours refuses on it, in words that name the
+	// owner rule rather than one session.
+	ErrNotOwner    error = notOwnerError{}
+	ErrNotApprover       = errors.New("only the grant's approver or its enrollment's operator may revoke it")
+	ErrTerminal          = errors.New("request is already decided")
 	// ErrExpired is ApplyDecision's refusal for a record that expired undecided: the sweeper
 	// expired its request, or its pending_expires_at has passed before the sweeper got to it.
 	ErrExpired = errors.New("request expired before its approver acted on it")
@@ -108,11 +113,18 @@ var (
 	ErrSessionIDInvalid = errors.New("session id must be at most 128 characters with no whitespace or control character")
 )
 
+// notOwnerError is ErrNotOwner: its own words, and ErrNotYours to errors.Is.
+type notOwnerError struct{}
+
+func (notOwnerError) Error() string { return "this request belongs to another owner" }
+
+func (notOwnerError) Is(target error) bool { return target == ErrNotYours }
+
 // refusals is every sentinel this package refuses a request or a grant with: the ones above and
 // the two of airlock.go. A sentinel added to this package belongs in it, which is why it sits
 // beside them rather than in a caller that reads them.
 var refusals = []error{
-	ErrNotYours, ErrNotApprover, ErrTerminal, ErrExpired, ErrNotExpired, ErrGrantNotLive, ErrGrantChainInvalid,
+	ErrNotYours, ErrNotOwner, ErrNotApprover, ErrTerminal, ErrExpired, ErrNotExpired, ErrGrantNotLive, ErrGrantChainInvalid,
 	ErrSecretNotInStore, ErrMixedApprovers, ErrGrantRequiresLifetime, ErrMintFailed,
 	ErrNarrowingNotApplicable, ErrNarrowingOwnerNotListed, ErrNarrowingBehindAirlock,
 	ErrRequestPending, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape,
@@ -292,6 +304,16 @@ type Machine struct {
 	// credential's service is that one (requester). It is read on every call, so an account
 	// dropped from the setting stops its machines' service secrets at their next one.
 	VMServicesByAccount map[string]string
+	// VMPersonsByAccount is each fleet's person, keyed by its Google service account's email
+	// (BROKER_VM_EXCHANGE_ACCOUNTS' person, an entry that names none left out): whose Dispatch
+	// Inbox lists a request one of its machines' own sessions makes for a shared human-tier
+	// secret (responsiblePerson). It grants nothing: a machine's session acts for no person.
+	VMPersonsByAccount map[string]string
+	// Assignees names a Dispatch issue's assignee, whose Inbox lists a request a Legion pod makes
+	// for a shared human-tier secret when its claim names that issue (claimAssignee); nil reads
+	// nothing, and such a request is listed for everyone. cmd/broker wires the judge's read of
+	// Dispatch where BROKER_JUDGE_DISPATCH_URL is set.
+	Assignees Assignees
 	// Minters maps each policy type (policy.Types) to its Minter. A release never returns the
 	// stored value of a type secret.
 	Minters map[string]Minter
@@ -409,6 +431,10 @@ type enrollmentRow struct {
 	// the grant-log line a committed transaction writes names the session it decided for
 	// without a second query (grantLogEvent).
 	SessionID string
+	// Claim is what a pod's launcher stated the pod runs for (enrollments.claim), "" for none:
+	// for the Legion daemon, the role claim token whose issue's assignee is asked for a shared
+	// secret's request (claimAssignee). The live-enrollment read (enrollment) fills it.
+	Claim string
 }
 
 // requester is enrollment e as the policy sees it, read through q: the person it acts for (none
@@ -471,7 +497,11 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // the session and the write. It then evaluates the policy for the session and writes a granted or
 // denied request, with a granted one's grant, or a pending request and its credential-request
 // record. A second pending request that overlaps one of its names is refused, so an untrusted
-// session cannot flood an approver's Inbox by varying --ttl.
+// session cannot flood an approver's Inbox by varying --ttl. A pending request whose approver is
+// record.AnyoneApprover records the person responsible for the agent that made it
+// (responsiblePerson), whose Inbox alone lists it, or nobody, and then everyone's does; for a
+// Legion pod that person is its claim's issue's assignee, read from Dispatch before the
+// transaction opens (claimAssignee).
 //
 // A request it writes pending is handed to Machine.Judge once the transaction has committed, and
 // one it coalesced onto a pending request is not, so the model judge sees each record once.
@@ -575,6 +605,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			return Request{}, err
 		}
 	}
+	assignee := m.claimAssignee(ctx, enr, set, names, obj.Reason)
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return Request{}, err
@@ -623,6 +654,9 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		id: uuid.NewString(), enrollmentID: enrollmentID, reason: obj.Reason, state: e.state,
 		approver: e.approver, rulesVersion: set.Version, sessionID: sessionID, lifetime: lifetime, decisions: e.decisions,
 		requester: requester, denials: e.denials, unexplained: e.unexplained,
+	}
+	if e.state == "pending" && e.approver == record.AnyoneApprover {
+		r.notify = m.responsiblePerson(enr, requester, assignee)
 	}
 	// Both branches end the same way — commit, then the one grant-log line for the request.created
 	// audit row insertRequest wrote — so only how req is produced differs between them.
@@ -874,6 +908,11 @@ type newRequest struct {
 	// pendingExpiresAt is set only when state == "pending"; it is also the credential-request
 	// record's own ExpiresAt, computed once so the two never drift a few microseconds apart.
 	pendingExpiresAt time.Time
+	// notify is the person whose Inbox alone lists a pending request that waits on
+	// record.AnyoneApprover (responsiblePerson), "" for everyone's; createPending writes it as
+	// credential_requests.notify, which PendingForApprover reads. It is no part of the signed
+	// record: it chooses who is asked, never who may decide.
+	notify string
 	// judgeHolds is whether the model judge holds the pending request: insertRequest then writes
 	// requests.judge_until JudgeHold after the database's own now(), the clock every read of the
 	// hold compares it with, and leaves it null for one a person decides.
@@ -981,7 +1020,7 @@ func (m *Machine) insertRequest(ctx context.Context, tx pgx.Tx, r newRequest) er
 }
 
 // createPending writes, in Create's transaction, a pending request and its credential-request
-// record.
+// record, with the person the record is listed for (r.notify, NULL for everyone).
 func (m *Machine) createPending(ctx context.Context, tx pgx.Tx, enr enrollmentRow, r newRequest, obj record.RequestObject) (Request, error) {
 	body := record.Body{
 		Request:         obj.Compact,
@@ -992,8 +1031,8 @@ func (m *Machine) createPending(ctx context.Context, tx pgx.Tx, enr enrollmentRo
 		ExpiresAt:       r.pendingExpiresAt,
 	}
 	recordID := body.ID()
-	if _, err := tx.Exec(ctx, `insert into credential_requests (id, body, kind, approver, enrollment_id, expires_at) values ($1,$2,'agent_secret',$3,$4,$5)`,
-		recordID, body.Canonical(), body.Approver, r.enrollmentID, body.ExpiresAt); err != nil {
+	if _, err := tx.Exec(ctx, `insert into credential_requests (id, body, kind, approver, enrollment_id, expires_at, notify) values ($1,$2,'agent_secret',$3,$4,$5,$6)`,
+		recordID, body.Canonical(), body.Approver, r.enrollmentID, body.ExpiresAt, nullable(r.notify)); err != nil {
 		return Request{}, err
 	}
 	r.recordID = recordID
@@ -1022,36 +1061,50 @@ func lockPendingNames(ctx context.Context, tx pgx.Tx, enrollmentID string, sorte
 // Cancel ends a still-pending request the requesting session no longer wants, writing the
 // transition, its audit row, and — when the request has a credential-request record — the
 // record's cancelled event, all in one transaction (store.EndPendingRequests).
-// The owner check compares the caller against the requests row's own enrollment_id, which an
-// adoption rewrites, so the moved session cancels the request that moved with it and the box it
-// moved off is ErrNotYours.
+// The owner check compares the caller's owner with the owner of the enrollment the request hangs
+// off now (ownerOf, as OwnerAndState reads it), which an adoption rewrites: any enrollment of the same
+// person, Legion claim or machine cancels it, and an enrollment that records no owner cancels its
+// own requests alone, so the moved session cancels the request that moved with it and a box it
+// moved off that records no owner is ErrNotOwner.
+//
+// The audit row EndPendingRequests writes names the enrollment the request hangs off, and the
+// grant-log line names it too, since the line carries the ids its row names; the actor on both is
+// the caller's session. The request's detail says which of the two cancelled it: its own session,
+// or another session of its owner.
 func (m *Machine) Cancel(ctx context.Context, id, enrollmentID string) error {
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var owner, state string
-	if err := tx.QueryRow(ctx, `select enrollment_id, state from requests where id=$1 for update`, id).Scan(&owner, &state); err != nil {
+	var owner, state, requestEnrollment string
+	if err := tx.QueryRow(ctx, `select `+ownerOf("e")+`, r.state, r.enrollment_id::text from requests r join enrollments e on e.id = r.enrollment_id
+		where r.id=$1 for update of r`, id).Scan(&owner, &state, &requestEnrollment); err != nil {
 		return err
 	}
-	if owner != enrollmentID {
-		return ErrNotYours
+	var caller string
+	if err := tx.QueryRow(ctx, `select `+ownerOf("e")+` from enrollments e where e.id=$1`, enrollmentID).Scan(&caller); err != nil {
+		return err
+	}
+	if owner != caller {
+		return ErrNotOwner
 	}
 	if state != "pending" {
 		return ErrTerminal
 	}
 	actor := "session:" + enrollmentID
-	end := store.RequestEnd{
-		State: "cancelled", Actor: actor, DecidedBy: &actor, Detail: "cancelled by the requesting session",
+	detail := "cancelled by the requesting session"
+	if requestEnrollment != enrollmentID {
+		detail = "cancelled by another session of the owner that made it"
 	}
+	end := store.RequestEnd{State: "cancelled", Actor: actor, DecidedBy: &actor, Detail: detail}
 	if _, err := store.EndPendingRequests(ctx, tx, store.RequestByID, id, end); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	store.LogGrantEvent(endedRequestLogEvent(end, enrollmentID, id))
+	store.LogGrantEvent(endedRequestLogEvent(end, requestEnrollment, id))
 	return nil
 }
 
@@ -1618,7 +1671,9 @@ const enrollmentHoldsForItsSession = `exists (select 1 from grants g where g.enr
 // belongs to, and still holds a live grant or a request nobody has answered. It is
 // enroll.endEnrollment's own dormancy probe — the same two tests, in the same order, around the
 // same holdsForItsSession text — because it has to answer what that probe will answer about the
-// same row a moment later.
+// same row a moment later. Where that end finds a live pod of the row's claim it hands what the
+// row holds to that pod instead of leaving it dormant (enroll.handOver), which is a carry all the
+// same: a grant minted here moves with the rest.
 const enrollmentWouldGoDormant = `coalesce(e.session_id,'') <> '' and e.carry_principal is not null and (
 				` + enrollmentHoldsForItsSession + `)`
 
@@ -2271,10 +2326,10 @@ func mayRevoke(login string, approver, operator *string) (allowed, asOperator bo
 // enrollment reads a live enrollment (not revoked, lease not lapsed); pgx.ErrNoRows otherwise.
 func (m *Machine) enrollment(ctx context.Context, id string) (enrollmentRow, error) {
 	var e enrollmentRow
-	err := m.Store.Pool.QueryRow(ctx, `select e.id, e.kind, e.operator, c.service, c.host, e.subject, e.thumbprint, e.runtime_id, e.slot, coalesce(e.session_id,'') from enrollments e
+	err := m.Store.Pool.QueryRow(ctx, `select e.id, e.kind, e.operator, c.service, c.host, e.subject, e.thumbprint, e.runtime_id, e.slot, coalesce(e.session_id,''), coalesce(e.claim,'') from enrollments e
 		left join launcher_credentials c on c.id = e.launcher_credential_id
 		where e.id=$1 and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)`, id).
-		Scan(&e.ID, &e.Kind, &e.Operator, &e.Service, &e.Host, &e.Subject, &e.Thumbprint, &e.RuntimeID, &e.Slot, &e.SessionID)
+		Scan(&e.ID, &e.Kind, &e.Operator, &e.Service, &e.Host, &e.Subject, &e.Thumbprint, &e.RuntimeID, &e.Slot, &e.SessionID, &e.Claim)
 	return e, err
 }
 

@@ -1320,7 +1320,7 @@ func waitingOn(approver *string, brokerPage string, judging bool) string {
 
 // deniedBecause is what the exec form's denied line adds to name why: ": " and the broker's own
 // sentence about the refusal (RequestResult.Detail), which names the secret that refused the
-// request and the rule that did, as ": GCLOUD_SAMI: requester-not-listed". An agent reading that
+// request and the rule that did, as ": GCLOUD_DEMO: requester-not-listed". An agent reading that
 // line on stderr then knows which secret it may not have and that asking again will not help,
 // rather than only that something was denied. A broker that recorded no detail, and one from
 // before the field, adds nothing, so such a denial reads exactly as it always has.

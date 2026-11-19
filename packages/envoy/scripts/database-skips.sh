@@ -11,7 +11,8 @@
 #
 # PACKAGE is a pattern under packages/envoy: `./dir/`, that package alone, or `./dir/...`, it
 # and every package under it. With none it counts DEFAULT_PACKAGES below, the broker's packages
-# and its command, which need BROKER_TEST_DATABASE_URL. From packages/envoy it runs one
+# and its command, which need BROKER_TEST_DATABASE_URL, less the packages DEFAULT_EXCEPT takes out
+# of them. From packages/envoy it runs one
 #
 #   go test -json -count=1 [-race] -timeout D PACKAGE...
 #
@@ -47,9 +48,16 @@ export LC_ALL=C
 caller="$PWD"
 cd "$(dirname "$0")/.."
 
-# The broker's packages and its command: every package of each opens the broker's Postgres,
-# named by BROKER_TEST_DATABASE_URL, or skips.
+# The broker's packages and its command, less DEFAULT_EXCEPT: every package of each opens the
+# broker's Postgres, named by BROKER_TEST_DATABASE_URL, or skips. DEFAULT_EXCEPT is a `grep -Ev`
+# pattern over the import paths `go list` prints for DEFAULT_PACKAGES, and a run with no PACKAGE
+# runs the packages it keeps. It takes out the race lane's packages under the broker's tree (each
+# a package of ENVOY_RACE_LANE in .github/scripts/ci_job_reads.py, which builds the same pattern
+# as DATABASE_SKIPS_PATTERN and refuses this script when DEFAULT_EXCEPT says otherwise): the auth
+# service's natscallout, the one today, opens no database, and envoy-go-race runs it under the
+# detector, so a run here would be its second in the same CI run.
 DEFAULT_PACKAGES=(./internal/broker/... ./cmd/broker/)
+DEFAULT_EXCEPT='/internal/broker/natscallout$'
 
 # EXPECTED_SKIPS: PACKAGE TEST REASON, one per line: a test that skips in every run that sets the
 # database variables, and why. A skip of a test it names is not counted; a line whose package is
@@ -165,9 +173,24 @@ while [ $# -gt 0 ]; do
     *) usage "unknown argument $1: a package is a pattern under packages/envoy that starts with ./" ;;
   esac
 done
-[ ${#packages[@]} -gt 0 ] || packages=("${DEFAULT_PACKAGES[@]}")
 if [ -n "$report" ] && { [ ${#vars[@]} -gt 0 ] || [ ${#race[@]} -gt 0 ] || [ -n "$timeout" ]; }; then
   usage "--report reads a run made elsewhere, so --var, --race and --timeout, which shape a run of its own, are refused beside it"
+fi
+# runs is what the go list and go test below are given: the patterns as written, or for the
+# default table the import paths go list prints for it under the run's own flags, less
+# DEFAULT_EXCEPT, which they take as they take a pattern. The messages name the patterns.
+if [ ${#packages[@]} -eq 0 ]; then
+  packages=("${DEFAULT_PACKAGES[@]}")
+  go list "${race[@]}" "${DEFAULT_PACKAGES[@]}" >"$work/default" 2>"$work/list" || {
+    echo "database_skips=UNKNOWN"
+    echo "database-skips.sh: go list ${DEFAULT_PACKAGES[*]} failed, so no test ran and no skip was counted:" >&2
+    cat "$work/list" >&2
+    exit 1
+  }
+  mapfile -t runs < <(grep -Ev "$DEFAULT_EXCEPT" "$work/default")
+  [ ${#runs[@]} -gt 0 ] || unknown "DEFAULT_EXCEPT takes every package of ${DEFAULT_PACKAGES[*]} out, so no test ran"
+else
+  runs=("${packages[@]}")
 fi
 [ ${#vars[@]} -gt 0 ] || vars=(BROKER_TEST_DATABASE_URL)
 
@@ -180,7 +203,7 @@ fi
 # The packages the patterns name, as go lists them under the run's own flags (GOFLAGS, -race):
 # each by its canonical import path, which is how the report names it whatever spelling the
 # pattern used, with how many test files it has.
-go list "${race[@]}" -f '{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' "${packages[@]}" >"$work/listed" 2>"$work/list" || {
+go list "${race[@]}" -f '{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' "${runs[@]}" >"$work/listed" 2>"$work/list" || {
   echo "database_skips=UNKNOWN"
   echo "database-skips.sh: go list ${packages[*]} failed, so no test ran and no skip was counted:" >&2
   cat "$work/list" >&2
@@ -193,7 +216,7 @@ under='def under($pkg): $listed[$pkg] == true;'
 if [ -z "$report" ]; then
   report="$work/report.json"
   go_test_exit=0
-  go test -json -count=1 "${race[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${packages[@]}" >"$report" 2>"$work/stderr" || go_test_exit=$?
+  go test -json -count=1 "${race[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${runs[@]}" >"$report" 2>"$work/stderr" || go_test_exit=$?
 fi
 
 [ -e "$report" ] || unknown "the report $report does not exist"

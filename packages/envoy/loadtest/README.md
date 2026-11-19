@@ -807,7 +807,7 @@ fixture, and a meaning search over it would rank a fraction of the seed. So `see
 
 ```bash
 packages/envoy/loadtest/stack.sh loadgen seed-finish (-pg <postgres url> | -pg-file <path>) \
-  -url <dispatch url> (-token <bearer> | -token-file <path>) [-embed-timeout 8h] [-embed-progress <path>]
+  -url <dispatch url> -token-file <path> [-embed-timeout 8h] [-embed-progress <path>]
 ```
 
 Without `-url`, `seed-finish` does what it always did (The seed, above) and says that it is not
@@ -837,7 +837,7 @@ It refuses rather than waits wherever waiting cannot help:
 resource:
 
 ```bash
-packages/envoy/loadtest/stack.sh loadgen stub-embed (-key <api-key> | -key-file <path>) \
+packages/envoy/loadtest/stack.sh loadgen stub-embed -key-file <path> \
   [-listen 127.0.0.1:8443] [-cert-out $LOADTEST_ROOT/stub-embed.pem] [-host <name or address>] [-throttle-every 0]
 ```
 
@@ -866,7 +866,7 @@ stub:
 ```text
 DISPATCH_EMBEDDER=azure
 DISPATCH_AZURE_EMBED_ENDPOINT=https://127.0.0.1:8443
-DISPATCH_AZURE_EMBED_KEY=<the stub's -key>
+DISPATCH_AZURE_EMBED_KEY=<the key in the stub's -key-file>
 DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE=1000000
 SSL_CERT_FILE=<the stub's -cert-out>
 ```
@@ -2044,7 +2044,7 @@ Every percentile in the harness is the lower nearest rank: the value at index
 | --- | --- |
 | `summary.json` | The step's results. Every table cell comes from it (The tables, below). `config.marker_nonce` is the run's marker nonce (Event kinds, above). `config.dashboard` is the dashboard stream the build under test served, `live` or `sse` (The dashboard stream, above), and `config.live` their count. `sessions.stream_consumers` is `ENVOY_NOTIFICATIONS`'s own `consumer_count` at the step's `start` and `end`, beside `sessions.registered`; a count `null`, with `start_error` or `end_error`, is a read that failed. `stack_exits` is there only when a stack process exited during the step: each entry's `name`, `pid` and `first_seen_gone`. Such a step failed. `events.commits_error` is there only when the run's commit rows could not be read (Delivery latency, above). Such a step failed too, and so did a step whose `sessions.stream_consumers.end` is above twice `sessions.registered` (Run one step, above). `live_reconnects`, `restart` and `comment_mentions` are `null` without `--live-resume`, `--restart-at` and `--mention-frac`. |
 | `TABLES.md` | The tables of this step. `loadgen tables` writes it. |
-| `meta.json` | Mode 600 (owner only). The step name and arguments (`args`: the normalized flag list, each flag given to `loadgen run` once as `-name=value` in name order, with the values of `-token` and `-listener-token` replaced by `<redacted>`, the URL of each of `-url`, `-listener`, `-nats-mon` and `-pprof` read whole by Go's `net/url` and written without its userinfo and its `password` parameter, and `-nats` split at commas as nats.go splits it, each server without its own userinfo; the user name goes too, since nats.go takes a user name with no password as the NATS token. `-pg` is written from pgx's own parse of it (`pgconn.ParseConfig`, the parser `pgx.Connect` uses), never from the text given: `postgres://`, each host and port pgx would try, comma-separated (a port the URL leaves out as pgx fills it in, such as 5432), then `/` and the database, such as `postgres://127.0.0.1:15432/dispatch`; never its user, password, `sslpassword` or any other parameter, and `<redacted>` when pgx does not read it as a URL. A credential given as a file (`-token-file`, `-listener-token-file`, `-pg-file`: The guard, above) is recorded as the path it names, which is no credential. No file of the step, and no line that `loadgen run` prints, holds a token, a URL password or a NATS token), `start`, `window_start`, `window_end`, `end`, `nproc`, CPU model, kernel, `box_busy_before` and `box_busy_before_window_s` (5), `GOMAXPROCS` of Dispatch (`unset` by default), the Postgres version (`postgres_version`: empty when it could not be read, and then `postgres_version_error` says why), `build_commit` and `build_dirty` (the Dispatch checkout `stack.sh` built from), `dispatch_commit`, `dispatch_binary_sha256` and `dispatch_build` (the whole of `$LOADTEST_ROOT/bin/envoy-dispatch.json`: the Dispatch binary this step ran, which `--dispatch-commit`/`LOADTEST_DISPATCH_COMMIT` makes another commit than `build_commit`; empty, and `run.log` says so, when that file is absent), the seed meta, the `stack.json` path, `pg_direct` (always `false` under `-allow-foreign`, which takes nothing about the target from `stack.json`), `envoy_rtt` (`--envoy-rtt`; `""` without it, and always under `-allow-foreign`), `allow_foreign`, the pids at the start and `marker_nonce`. `box_busy_before` is the share of the box's CPU time, all CPUs, that was not idle or I/O wait over 5 s just before the step, from two `/proc/stat` reads: `run-step.sh` reads it with `loadgen box-busy` before its reset and passes it as `-box-busy-before`; a `loadgen run` without that flag reads it itself (Requirements, above). `null` when `/proc/stat` gave no ticks. |
+| `meta.json` | Mode 600 (owner only). The step name and arguments (`args`: the normalized flag list, each flag given to `loadgen run` once as `-name=value` in name order, the URL of each of `-url`, `-listener`, `-nats-mon` and `-pprof` read whole by Go's `net/url` and written without its userinfo and its `password` parameter, and `-nats` split at commas as nats.go splits it, each server without its own userinfo; the user name goes too, since nats.go takes a user name with no password as the NATS token. `-pg` is written from pgx's own parse of it (`pgconn.ParseConfig`, the parser `pgx.Connect` uses), never from the text given: `postgres://`, each host and port pgx would try, comma-separated (a port the URL leaves out as pgx fills it in, such as 5432), then `/` and the database, such as `postgres://127.0.0.1:15432/dispatch`; never its user, password, `sslpassword` or any other parameter, and `<redacted>` when pgx does not read it as a URL. The two tokens come only from their files (`-token-file`, `-listener-token-file`), and a Postgres URL with a password only from `-pg-file` (The guard, above); each of those flags is recorded as the path it names, which is no credential. No file of the step, and no line that `loadgen run` prints, holds a token, a URL password or a NATS token), `start`, `window_start`, `window_end`, `end`, `nproc`, CPU model, kernel, `box_busy_before` and `box_busy_before_window_s` (5), `GOMAXPROCS` of Dispatch (`unset` by default), the Postgres version (`postgres_version`: empty when it could not be read, and then `postgres_version_error` says why), `build_commit` and `build_dirty` (the Dispatch checkout `stack.sh` built from), `dispatch_commit`, `dispatch_binary_sha256` and `dispatch_build` (the whole of `$LOADTEST_ROOT/bin/envoy-dispatch.json`: the Dispatch binary this step ran, which `--dispatch-commit`/`LOADTEST_DISPATCH_COMMIT` makes another commit than `build_commit`; empty, and `run.log` says so, when that file is absent), the seed meta, the `stack.json` path, `pg_direct` (always `false` under `-allow-foreign`, which takes nothing about the target from `stack.json`), `envoy_rtt` (`--envoy-rtt`; `""` without it, and always under `-allow-foreign`), `allow_foreign`, the pids at the start and `marker_nonce`. `box_busy_before` is the share of the box's CPU time, all CPUs, that was not idle or I/O wait over 5 s just before the step, from two `/proc/stat` reads: `run-step.sh` reads it with `loadgen box-busy` before its reset and passes it as `-box-busy-before`; a `loadgen run` without that flag reads it itself (Requirements, above). `null` when `/proc/stat` gave no ticks. |
 | `run.log` | `loadgen run`'s log: the configuration with the marker nonce, the guard, the dashboard choice (the stream count, `live` or `sse`, and the URL), a warning when `box_busy_before` is above 10%, the sampler's pids, the NATS subscriptions, the registrations, the stream's consumer count at the step's start and at its end (or why that read failed), the window, the refetch routes under `--live-resume`, the restart's `restart:` lines, failed writes, the first three failed reads of each Postgres probe and of the 5 s sampler's Postgres, pprof and NATS reads (and each one's total, past three), a failed read of the commit rows, of the transaction ids or of the Postgres version, the result line, and the failure line when a stack process exited, the commit rows were not read or the stream gained more consumers over the step than its sessions allow. An endpoint that a line names is written without its URL password. |
 | `samples.json` | The 5 s samples: CPU ticks (each process's ticks across its pids) and RSS per process, `/proc/stat` ticks, Postgres connections by state, goroutines, pool waiters, the heap (every 15 s, under `-heap-samples` alone), NATS `/varz`. With `--restart-at`, one more sample at the restart's start. The heap is `heap_live_bytes` and `heap_live_objects`: the sums of `inuse_space` and `inuse_objects` in Dispatch's binary heap profile (`/debug/pprof/heap`), which the runtime scales from its sampled records to estimates of the live heap as of its last GC. It is not runtime.MemStats `HeapInuse`, and the sampler never reads `?debug=1`: that text formats every heap record, grew past 500 MB, and its reads took 29% of Dispatch's CPU in the r16 replay. Without `-heap-samples`, which is the default, no sample holds a heap read at all and the harness asks Dispatch for no heap profile inside the window (Resources, below). An older run's `samples.json` holds `heap_inuse` (with `heap_alloc` and `heap_sys`, read in each sample, with no `heap_at`), runtime.MemStats from `?debug=1`; `loadgen curves` still reads it, under its own name. `failed_reads` names a sample's reads that failed (`postgres`, `goroutines`, `heap`, `nats`); their values in that sample are 0 (`nats` empty) and enter no statistic. A read that failed once the run had ended is neither named nor counted. Dispatch's pprof reads fail while `--restart-at` restarts it. The heap read runs on its own, one at a time with up to 2 minutes each, so a slow read of a large heap delays no sample: each read lands in the first sample after it ends, with its end in `heap_at`, and enters the window (`heap_in_window`, `resources.heap_live_mib`, `pprof_read_errors`) by that time. |
 | `reconnects.json` | Under `--live-resume`: every reconnect of every live socket, in and out of the window (The restart scenario, above). |
@@ -2671,9 +2671,10 @@ read every endpoint and token from `stack.json`. Never point them at the pod's l
 (`127.0.0.1:9020`) or at production. A step writes comments and document versions at the rate it
 is given. The guard stops a mistaken target before the first write:
 
-1. An endpoint flag (`-url`, `-listener`, `-nats`, `-nats-mon`, `-pprof`, `-pg`, `-token`,
-   `-listener-token`) that differs from `stack.json` is refused before any connection, unless
-   `-allow-foreign` is given. The refusal names the flag and `-allow-foreign`. Under
+1. An endpoint flag (`-url`, `-listener`, `-nats`, `-nats-mon`, `-pprof`, `-pg`, `-token-file`,
+   `-listener-token-file`) that differs from `stack.json` is refused before any connection, unless
+   `-allow-foreign` is given; a token file differs when the token it holds does. The refusal names
+   the flag and `-allow-foreign`. Under
    `-allow-foreign`, every one of these flags is required, and the first one left empty is refused
    by name before any connection; so is a URL flag whose value is not a URL with a scheme and a
    host as Go's `net/url` reads it (for `-nats`, a comma-separated list of servers, each naming a
@@ -2681,19 +2682,36 @@ is given. The guard stops a mistaken target before the first write:
    as pgx checks it) or that pgx's own parser (`pgconn.ParseConfig`) refuses. Each is refused by
    its name and the reason alone, never the value or pgx's error, since an error that printed the
    value would print its credentials.
-2. Every flag that carries a secret has a file form, here and in the four commands that take a
-   credential of their own: the guard's `-token-file`, `-listener-token-file` and `-pg-file`,
-   `loop-seed-check`'s and `loop-seed-export`'s `-pg-file`, `seed-finish`'s `-pg-file` and
-   `-token-file`, and `stub-embed`'s `-key-file`. One reader serves them all
-   (`readCredentials`), so each reads the same way: the file's content, with its trailing white
-   space trimmed, is the value, so a file written with a final newline carries the credential
-   itself. Either form satisfies `-allow-foreign`. A credential given in both forms is refused,
-   naming the two flags; a file that cannot be read, or that holds nothing, is refused by the
-   flag and the path, before any connection. Give the file form wherever the caller can write a
-   file of mode 600: every argument of every process is readable by anything that can list
-   processes (`ps -eo args`), here and on any machine an `ssh` carries the command to. `vm.sh`
-   gives every one of them (Running on the deployment, below); the local stack and `cluster.sh`
-   give the values, which never leave the pod.
+2. No credential is taken on the command line, where every user of the machine reads every
+   argument of every process (`/proc/<pid>/cmdline`, `ps -eo args`) for as long as it runs, here
+   and on any machine an `ssh` carries the command to. Each comes from a file of mode 600 that the
+   caller writes: the guard's `-token-file`, `-listener-token-file` and `-pg-file`,
+   `loop-seed-check`'s, `loop-seed-export`'s, `pg-statements`' and `pg-size`'s `-pg-file`,
+   `seed-finish`'s `-pg-file` and `-token-file`, and `stub-embed`'s `-key-file`. `-token`,
+   `-listener-token` and `stub-embed`'s `-key` are removed: given a value, empty or not, each is
+   refused right after the flags are parsed, before the command checks, reads or opens anything
+   else, naming its file form, and the refusal holds nothing of the value.
+   So is one given after a positional argument or `--`, where the flag package stops reading flags.
+   A `-h`, or a parse error beside one (an unknown flag, a bad number, one of these flags given no value at all),
+   is handled as each command handles its own flag errors,
+   and prints nothing of the value either: these flags never fail their own parse, and the usage shows none of their values.
+   `-pg` still takes a URL that sets no password, as the local
+   stack's own does. Every `-pg` the command line gives is judged, not the last alone, and after
+   a positional argument or `--` too, and as text, before anything reads a file it names: one
+   that sets a password where pgx reads one (a `postgres://` URL's userinfo, which pgx ends at the
+   first `@` before any `/`, or a `password` or `sslpassword` key of a keyword list or of a URL's
+   query, percent-encoded or not) is refused the same way, naming `-pg-file`. The other URL flags
+   are not judged: no caller puts a user or a password in one, so a check of them guards against
+   nothing anyone has seen. One reader serves every credential (`readCredentials`), so
+   each reads the same way: the file's content, with its trailing white space trimmed, is the
+   value, so a file written with a final newline carries the credential itself. The file form
+   satisfies `-allow-foreign`.
+   A `-pg` given with `-pg-file` too is refused, naming the two flags; a file that cannot be read,
+   or that holds nothing, is refused by the flag and the path, before any connection. `vm.sh`
+   writes every credential file on the machine its command runs on (Running on the deployment,
+   below) and `cluster.sh` writes them in the runner for the one job that reads them (Running on
+   a cluster copy, below); the local stack's commands read the tokens from `stack.json` and give
+   `-pg` a URL with no password.
 3. Before its first write, `loadgen` checks:
    - NATS `/varz` `server_name` is the stack name.
    - Dispatch answers `GET /api/v1/projects` with the stack's random agent token.
@@ -2706,7 +2724,7 @@ The pod's live listener and production Dispatch hold other tokens, so a mistaken
 check.
 
 `-allow-foreign` is for a stack that is not local, such as the cluster load test's copy.
-With it, every endpoint and token comes from its flag, and none from `stack.json`. A flag that fell
+With it, every endpoint and token comes from its flag or its file, and none from `stack.json`. A flag that fell
 back to the local stack would have a run write to the remote Dispatch while it counted commits in
 the local database or profiled the local Dispatch, with no error.
 Give `-nats-server-name` to keep the NATS check. The sampler gets no pids. `meta.json` records
@@ -2918,6 +2936,23 @@ a file read in the runner or a container) and fails on a transient API server er
 dialing backend`, as in `Error from server: error dialing backend: dial timeout, backstop`, or a
 refused or reset connection to the API server) is retried once, 5 s later, with one line saying
 so. A write (`drop database`, a `kubectl cp`, a start in the runner) is never retried.
+
+No credential of the copy is an argument of anything, on this pod or in the runner, where every
+argument of every process is readable by every user of the machine (`/proc/<pid>/cmdline`). `up`
+makes the copy's four secrets (the Postgres password, the two tokens, the signing key) and gives
+each to the `jq` that writes `state.json` as a file it reads (`--rawfile` from a pipe), never as
+a value; each manifest takes them through `sed`'s standard input. Each `loadgen` job that reads
+the Dispatch agent token, the listener token or the Postgres URL with its password — `seed`,
+`seed-refs` and `seed-finish`, a step's and a replay's `loadgen run`, and `replay-checksum` —
+gets them on the standard input of the `kubectl exec` that starts it. The
+runner's `sh` writes them into `/work/secrets/<job>.<random>`, a directory of mode 700 that one
+start alone claims (its `mkdir` fails on one that is there, and then nothing is written, removed
+or started), each in a file of mode 600, and `loadgen` is given `-token-file`,
+`-listener-token-file` and `-pg-file` (The guard, above). The `sh` that waits on the job removes
+the directory once the job has ended, however it ended, and on a `HUP` or `TERM` of its own
+(a detached job's shell ignores `INT`, as `sh` does in every background job, so an `INT` leaves
+it running with its job), so no credential outlives the job that read it, and two starts of one
+job name never share a directory. Browser typing is given none.
 
 | Subcommand | What it does |
 | --- | --- |

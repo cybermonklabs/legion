@@ -215,6 +215,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	case issue.Generation > maxInt64:
 		return fmt.Errorf("put issue %s: generation %d does not fit a bigint", issue.Key, issue.Generation)
 	}
+	noteIssueWrite(ctx, issue.Key)
 	var heldFrom any
 	var holdReason HoldReason
 	if issue.Hold != nil {
@@ -850,6 +851,7 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: encode check runs: %w", pr.Issue, err)
 	}
+	noteIssueWrite(ctx, pr.Issue)
 	statuses, err := json.Marshal(append([]CommitStatus{}, pr.Statuses...))
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: encode commit statuses: %w", pr.Issue, err)

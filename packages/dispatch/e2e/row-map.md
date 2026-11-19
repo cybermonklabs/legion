@@ -337,6 +337,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/signins.e2e.ts` | the broker's machine list and a Revoke decided there |
 | `e2e/smoke.e2e.ts` | the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami |
 | `e2e/spec-suggestion-decoration.e2e.ts` | reads the decoration's DOM inside the live editor |
+| `e2e/steps.e2e.ts` | the attempt is the server's count of the daemon's writes, and a start written twice keeps the server's first |
 | `e2e/stored-text-reading.e2e.ts` | each row reads a body the live server stored and drew as its own tree, and the server's reading is what the row compares against the browser's: a recording would answer a tree recorded elsewhere rather than the one this server sends for those bytes |
 | `e2e/task-items.e2e.ts` | asserts inside the live document editor |
 | `e2e/text-typed-blocks.e2e.ts` | the live document editor, including typing a new option |

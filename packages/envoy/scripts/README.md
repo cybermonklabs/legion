@@ -332,6 +332,44 @@ for the stack's start under a short one. The stack runs in a session of its own 
 is stopped as one process group, so a stop during the build — the script's exit, a
 wait that ran out, Ctrl-C — ends that build with the stack.
 
+## callout-check.sh
+
+Proves, on the whole local stack behind the NATS auth service, what the hub lets a
+connection reach: `check c-callout-live` of the NATS auth service's verification.
+`dev-stack.sh --callout` is that stack: natsd behind the auth callout, the service in two
+brokers on one database, and the listener and Dispatch connecting as services with the
+NATS-audience tokens the issuer writes them. All of what `--callout` adds is in
+`lib/callout-stack.sh`, which `dev-stack.sh` sources on every run; without the option each
+addition is empty. The check prints one line per property:
+a session subscribes its own delivery channel; it is refused another session's, in
+nats-server's own words (`Permissions Violation for Subscription to "..."`); a connection
+with no credential is refused, and a token neither broker issued is refused (a stand-in token
+endpoint plays the other broker), each in nats-server's own `Authorization Violation`, the only
+answer `natsprobe` exits 4 for; the hub lists the listener's connection authorized as
+`listener/<its machine id>`; and with one broker killed, three new sessions are each
+admitted within 2 s, the first counted from the kill. A session opened before the hub has
+read the killed broker's close can be routed to the dead replica and refused at the hub's
+authorization timeout, so the check opens the first session once the hub lists one
+`envoy-broker-callout` connection fewer (both brokers' connections carry that name), and says
+how long the drop took. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
+assertions failed` (exit 1); a probe that reports nothing reads `UNKNOWN` and fails.
+
+```bash
+LEGION_TEST_PG_DSN=postgres://... bash scripts/callout-check.sh   # starts and stops its own stack
+# or, in a shell that exported a `dev-stack.sh --callout` banner:
+bash scripts/callout-check.sh
+```
+
+With nothing exported it starts `dev-stack.sh --callout` itself, passing on its own
+arguments (`--database-url`, `--binaries`), and stops it on exit, which drops its
+databases; against an exported stack it kills that stack's second broker, which the stack
+outlives. Each probe is `natsprobe` (`cmd/natsprobe`), which tries any one subject by
+hand too: as a session it trades the stack's pod token for a broker token, as a service
+it presents `--service-token-file`, and `--no-credential` presents nothing.
+`callout-check.test.sh` holds the verdicts to fakes, including the negative control:
+`CALLOUT_CHECK_GRANT_ALL=1`, a service granting every session's channel, fails line 2, and
+a hub that never drops the killed broker's connection fails line 6.
+
 ## backend-count.sh
 
 Counts, for each test it names, the runs that passed on each store backend: the test's
@@ -371,10 +409,14 @@ packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
 A `PACKAGE` is a pattern under `packages/envoy`, `./dir/` or `./dir/...`. With none it runs
-its default table, `./internal/broker/...` and `./cmd/broker/`: one `go test -json -count=1
--timeout 15m` from `packages/envoy`, then it reads that report. `--var NAME` names a
-variable the packages need, and repeats; with none it is `BROKER_TEST_DATABASE_URL`. A named
-variable that is unset or empty prints `database_skips=UNKNOWN` naming it, and nothing runs.
+its default table, `./internal/broker/...` and `./cmd/broker/`, less the packages its
+`DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
+auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
+in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
+anything else). That is one `go test -json -count=1 -timeout 15m` from `packages/envoy`, then it
+reads that report. `--var NAME` names a variable the packages need, and repeats; with none it is
+`BROKER_TEST_DATABASE_URL`. A named variable that is unset or empty prints
+`database_skips=UNKNOWN` naming it, and nothing runs.
 `--race` adds `-race`, and `--timeout D` replaces the `-timeout`, as `GO_TEST_TIMEOUT` does
 when `--timeout` is not given; it bounds each package's test binary and not the run, since
 the packages run several at a time, so one that starts late ends later. `--report` reads a
@@ -616,15 +658,15 @@ packages/envoy/scripts/daemon-release-gate.sh --listeners <commit>
 ```
 
 Without `--listeners` it reads the image each Legion daemon runs: each entry of
-theorem-labs/agent-infra `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
+example-org/deployment `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
 `image`; an entry at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
 `runtime: tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from
-its `image` (agent-infra `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
+its `image` (deployment `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
 by name, as does an entry on any runtime but `kubernetes`, the default. With `--listeners`
 it reads the three listener pins: envoy's `listenerImage`, envoy-cluster's `envoyImage`, and
 dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`, the
 Dispatch server's; a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
-that key (agent-infra `dispatch/main.go`) and the listener runs no other image. Each pin's
+that key (deployment `dispatch/main.go`) and the listener runs no other image. Each pin's
 `org.opencontainers.image.source` and `.revision`
 labels are read with `docker buildx imagetools inspect`, an OCI image index one platform at a time
 (its `.Image.Config.Labels` is `null`), its `unknown/unknown` attestation entries left out, every
