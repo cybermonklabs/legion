@@ -191,19 +191,32 @@ the hook wrote, for the ports and for psql's database alike.
 A stack's Postgres comes from one of two variables, and a run of more than one
 stack that sets neither is refused. On a machine with Docker and no Postgres
 binaries, `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest you
-name; CI's visual job uses it too, since it runs on the runner with only its
-Playwright command in a container. On a machine with a Postgres installation
-and no Docker, such as an issue pod or CI's shard and alone jobs, which run in
-a container carrying PostgreSQL 18 with `vector`, `DISPATCH_E2E_PG_BIN` is a
-directory holding `initdb` and `pg_ctl`.
+name; CI's visual, multiprocess and embedder jobs and the two-build job's
+browser half use it too, since they run on the runner. On a machine with a
+Postgres installation and no Docker, such as an issue pod or CI's shard and
+alone jobs, which run in a container carrying PostgreSQL 18 with `vector`,
+`DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`.
 Each stack's data lives in its own `worker-<i>` directory under the run's own
-temporary directory and goes with the run.
+temporary directory and goes with the run. Either way the server runs with
+crash safety off (`fsync`, `full_page_writes`, `synchronous_commit`), so no
+commit waits for the disk: a database you name in `DATABASE_URL` keeps its
+own settings, and where its commits wait for a disk that stalls, a write a
+closed page left in flight can hold a table past the reset's 5 s.
 
 ```bash
 cd packages/dispatch
 DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin \
   bun run e2e -- --workers 4
 ```
+
+`DISPATCH_E2E_PG_STALL_DIR`, an absolute directory, makes either provider
+build `e2e/fsync-stall.c` into it with `cc` and start the server with that
+library preloaded: while `stalled` exists in the directory, every `fsync` and
+`fdatasync` of the server waits, as on a disk that has stopped answering.
+`e2e/read-marker-disk-stall.multiprocess.e2e.ts` stalls it so, and is skipped
+without the variable (`e2e/disk-stall.ts`). A server you start yourself takes
+part when it preloads `<dir>/fsync-stall.so` with `PG_STALL_FILE=<dir>/stalled`
+and sees the directory at the same path.
 
 A run of more than one worker is one stack per worker, each with a Postgres, a
 file-store bucket and ports of its own, so five variables that name one of
@@ -253,6 +266,15 @@ the way a rolling release serves a browser from two builds at once:
 cd packages/dispatch
 DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslmode=disable' \
   bun run e2e:multiprocess
+```
+
+CI's multiprocess job runs it on the harness's own Postgres instead, with the disk stall the
+read-mark row needs, which a run by hand can do the same way:
+
+```bash
+cd packages/dispatch
+DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
+  DISPATCH_E2E_PG_STALL_DIR="$(mktemp -d)" bun run e2e:multiprocess
 ```
 
 It builds the dashboard twice (`web/dist`, and `web/dist-b` under another build id), then runs

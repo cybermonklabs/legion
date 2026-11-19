@@ -27,7 +27,11 @@
  *  and its pgvector extension, which migration 0072 needs, and not the migrations: the server
  *  applies those at boot, as it does today against a fresh database, and a template the same pod
  *  measured with them applied cost 5.7-6.2 s at 2 stacks and 7.7-8.7 s at 4 — more than it saves,
- *  since the 1.0 s of migrations it takes out of a stack's boot runs in every stack at once. */
+ *  since the 1.0 s of migrations it takes out of a stack's boot runs in every stack at once.
+ *
+ *  With `DISPATCH_E2E_PG_STALL_DIR` set, each provider builds e2e/fsync-stall.c into that
+ *  directory and starts every server with it preloaded, at the same path, so a row can make the
+ *  disk stop answering (e2e/disk-stall.ts). */
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
@@ -36,6 +40,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { buildStallLibrary, diskStallDir, stallEnvironment } from "./disk-stall";
 import { Interrupted } from "./local-instance-support";
 import { sqlAt } from "./psql";
 
@@ -120,7 +125,12 @@ function positiveWholeNumber(text: string): number | undefined {
 const settings = [
   // Crash safety. Nothing here survives the run, so a cluster that dies loses nothing anyone
   // reads: a real database would lose committed transactions (`synchronous_commit`) or the
-  // whole cluster (`fsync`, `full_page_writes`) to a power cut.
+  // whole cluster (`fsync`, `full_page_writes`) to a power cut. With these off no commit waits
+  // for the disk, and that is what keeps a runner's disk that stalls for a few seconds out of
+  // the reset: a backend flushing its commit record holds its interrupts and its locks, so a
+  // read mark a closed page left in flight held `user_document_reads` past the reset's 5 s in
+  // merge-group run 44456291758, whose database kept these on
+  // (e2e/read-marker-disk-stall.multiprocess.e2e.ts reproduces it).
   "fsync=off",
   "full_page_writes=off",
   "synchronous_commit=off",
@@ -243,13 +253,15 @@ async function ready(url: string, what: string, signal?: AbortSignal): Promise<v
 }
 
 /** Starts the cluster in `data`, with its log and its unix socket in `dir`, and returns the port
- *  it serves on. Returns or throws with no postmaster of `data` left running. */
+ *  it serves on. Returns or throws with no postmaster of `data` left running. `server` is the
+ *  environment pg_ctl, and so the postmaster, runs with. */
 async function startCluster(
   bin: string,
   data: string,
   dir: string,
   what: string,
-  env: NodeJS.ProcessEnv
+  env: NodeJS.ProcessEnv,
+  server: NodeJS.ProcessEnv
 ): Promise<number> {
   let last = "";
   const started = await serverSettings(env);
@@ -257,16 +269,11 @@ async function startCluster(
     const port = await freePort();
     const options = [`-p ${port}`, "-h 127.0.0.1", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
     try {
-      await execFileAsync(join(bin, "pg_ctl"), [
-        "-D",
-        data,
-        "-l",
-        join(dir, "postgres.log"),
-        "-o",
-        options.join(" "),
-        "-w",
-        "start",
-      ]);
+      await execFileAsync(
+        join(bin, "pg_ctl"),
+        ["-D", data, "-l", join(dir, "postgres.log"), "-o", options.join(" "), "-w", "start"],
+        { env: server }
+      );
       return port;
     } catch (error) {
       last = error instanceof Error ? error.message : String(error);
@@ -287,7 +294,35 @@ async function startCluster(
   );
 }
 
-function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): StackPostgres {
+/** The disk stall a run asked for (`DISPATCH_E2E_PG_STALL_DIR`, e2e/disk-stall.ts): its
+ *  directory, what each server is started with, and the library's build, made once, before the
+ *  first server, whichever stack starts first. */
+interface Stall {
+  readonly dir: string;
+  readonly environment: Readonly<Record<string, string>>;
+  built(): Promise<void>;
+}
+
+function stallOf(env: NodeJS.ProcessEnv): Stall | undefined {
+  const dir = diskStallDir(env);
+  if (dir === undefined) return undefined;
+  let build: Promise<void> | undefined;
+  return {
+    built: () => {
+      build ??= buildStallLibrary(dir);
+      return build;
+    },
+    dir,
+    environment: stallEnvironment(dir),
+  };
+}
+
+function binariesProvider(
+  dir: string,
+  bin: string,
+  env: NodeJS.ProcessEnv,
+  stall: Stall | undefined
+): StackPostgres {
   for (const tool of ["initdb", "pg_ctl"]) {
     if (!existsSync(join(bin, tool))) {
       throw new Error(
@@ -296,6 +331,9 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
       );
     }
   }
+  /** What pg_ctl, and so each postmaster, runs with. */
+  const server: NodeJS.ProcessEnv =
+    stall === undefined ? process.env : { ...process.env, ...stall.environment };
   /** The one `initdb` of the run, with the stack database and its pgvector extension, copied per
    *  stack. Started once however many stacks ask for it. */
   let template: Promise<string> | undefined;
@@ -313,7 +351,15 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
       "-E",
       "UTF8",
     ]);
-    const port = await startCluster(bin, data, templateDir, "the stacks' Postgres template", env);
+    await stall?.built();
+    const port = await startCluster(
+      bin,
+      data,
+      templateDir,
+      "the stacks' Postgres template",
+      env,
+      server
+    );
     try {
       const admin = `postgres://postgres@127.0.0.1:${port}/postgres?sslmode=disable`;
       await ready(admin, "the stacks' Postgres template", signal);
@@ -342,7 +388,7 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
         // `cp -a` keeps the 0700 a data directory's server refuses to start without.
         await execFileAsync("cp", ["-a", await template, data]);
         const what = `stack ${index}'s Postgres`;
-        const port = await startCluster(bin, data, stackDir, what, env);
+        const port = await startCluster(bin, data, stackDir, what, env, server);
         const stop = async (): Promise<void> => {
           await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]);
         };
@@ -375,7 +421,25 @@ async function containerLog(container: string): Promise<string> {
   }
 }
 
-function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): StackPostgres {
+function imageProvider(
+  image: string,
+  run: string,
+  env: NodeJS.ProcessEnv,
+  stall: Stall | undefined
+): StackPostgres {
+  // The stall's directory, read-only at its own path, and the library preloaded into every
+  // process of the container, the server's among them.
+  const stalled =
+    stall === undefined
+      ? []
+      : [
+          "--volume",
+          `${stall.dir}:${stall.dir}:ro`,
+          ...Object.entries(stall.environment).flatMap(([name, value]) => [
+            "--env",
+            `${name}=${value}`,
+          ]),
+        ];
   return {
     name: `the Postgres image ${image}`,
     start: (index, signal) =>
@@ -383,6 +447,7 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
         const what = `stack ${index}'s Postgres`;
         let refused = "";
         const started = await serverSettings(env);
+        await stall?.built();
         for (let attempt = 1; attempt <= bindAttempts; attempt++) {
           // The name carries the attempt: a container whose port was taken keeps its name until it
           // is removed, and the run removes it with the stack.
@@ -414,6 +479,7 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
               // /var/lib/postgresql/data, which this image's Postgres 18 entrypoint reports as
               // "an unused mount/volume" and then exits, since 18 wants one mount a level up
               // (docker-library/postgres#1259).
+              ...stalled,
               image,
               ...started.flatMap((setting) => ["-c", setting]),
             ]);
@@ -459,7 +525,9 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
 }
 
 /** The provider this run starts its stacks' Postgres from, or undefined when the caller named
- *  none, which is a run against the `DATABASE_URL` it was given. */
+ *  none, which is a run against the `DATABASE_URL` it was given. A disk stall the run asked for
+ *  goes to whichever provider it names; a run against a `DATABASE_URL` starts no server to give it
+ *  to (e2e/disk-stall.ts). */
 export function stackPostgres(options: {
   /** The run's own temporary directory, which it removes when it ends. */
   readonly dir: string;
@@ -477,7 +545,8 @@ export function stackPostgres(options: {
         "from its initdb and pg_ctl."
     );
   }
-  if (image !== "") return imageProvider(image, options.run, env);
-  if (bin !== "") return binariesProvider(options.dir, bin, env);
+  const stall = stallOf(env);
+  if (image !== "") return imageProvider(image, options.run, env, stall);
+  if (bin !== "") return binariesProvider(options.dir, bin, env, stall);
   return undefined;
 }
