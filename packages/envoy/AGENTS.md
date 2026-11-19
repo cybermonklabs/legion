@@ -2866,7 +2866,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a first request, on a document nobody approved, carries no `approved` key, and a version move re-encodes the whole approval, so it survives it.
   Its question is `Approve <name> (version <N>)?`, followed by the request's `summary`:
   what the human is approving and nothing else, since an approval request carries nothing new.
-  A summary is trimmed and must hold text (`400 SUMMARY_INPUT`), and one that would take the question past the ask cap is `400 CAP_EXCEEDED` naming `summary` and the characters left for it, counted against the longest version the request can reach (ten digits, the most `asks_approval_kind_check` admits), so no later version move takes the question past the cap;
+  A summary is trimmed and must hold text (`400 SUMMARY_INPUT`), and one that would take the question past the ask cap is `400 CAP_EXCEEDED` naming `summary` and the UTF-16 code units left for it, counted against the longest version the request can reach (ten digits, the most `asks_approval_kind_check` admits), so no later version move takes the question past the cap;
   both are checked on every request, including one that opens nothing, and a request without one gets the bare question.
   An open approval ask follows every document version in the same transaction, preserving its thread and summary:
   the move rewords its question to the new version, stamps `edited_at` and appends `ask.edited`, while `requested_version` remains the version the agent last handed to the human, so a moved request is Waiting on agents.
@@ -2973,7 +2973,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   by the two sequences when both carry one, a sequenced request after one that carries none, and by `(created_at, id)` when neither does.
 
 - `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept up to 20 labels.
-  Dispatch trims labels, preserves case, removes case-insensitive duplicates, and returns `400 LABELS_INPUT` for blank or over-40-character labels;
+  Dispatch trims labels, preserves case, removes case-insensitive duplicates, and returns `400 LABELS_INPUT` for blank labels or labels over 40 UTF-16 code units;
   every label update emits `issue.updated` with its labels.
   `PATCH` also takes `labels_add` instead of `labels` (both together are `400 LABELS_INPUT`):
   the labels it names are merged, under the issue's row lock, into the labels the issue holds when the write commits, normalized as above and held to the same 20, so a label another writer added after the caller read the issue survives.

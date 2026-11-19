@@ -446,7 +446,7 @@ test("a hit in a long-named document previews that document", async () => {
   }
 });
 
-test("does not query below two characters", async () => {
+test("does not query below two UTF-16 code units", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
   const view = renderPalette();

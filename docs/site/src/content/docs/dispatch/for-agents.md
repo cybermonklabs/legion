@@ -175,7 +175,7 @@ a bound of its own:
   document, as a decision block, or in an ask opened with `dispatch ask`. To show one as an
   example, put it in a fenced code block;
 - a comment anchored to a document is also projected into that document's margin, which is bounded
-  in bytes and not by that character limit: 256 KiB per thread, and 1 MiB per document margin. A
+  in bytes and not by that UTF-16 code unit limit: 256 KiB per thread, and 1 MiB per document margin. A
   few long anchored comments therefore fill a thread or a margin where many short ones used to
   fit, and a comment or suggestion past either bound is refused `413 CAP_EXCEEDED`; a document
   keeps every comment it has had, so one whose margin is full takes more once it is split;
