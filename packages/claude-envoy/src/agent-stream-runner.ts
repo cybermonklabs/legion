@@ -285,7 +285,7 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
     const retry = setTimeout(() => {
       // Taken again meanwhile: by a `/clear`'s new id, or on the connection the server swapped in.
       if (stopped || session !== forSession || subscription !== undefined) return
-      subscribe()
+      subscribeWhenAdmitted(forSession)
     }, AGENT_STREAM_RESUBSCRIBE_MS)
     retry.unref()
   }
@@ -298,6 +298,21 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
     const taken = connection.subscribe(agentStreamControlSubject(session))
     subscription = taken
     void pump(taken, session)
+  }
+
+  /** Takes `forSession`'s control subject once the connection may take it
+   *  (`AgentStreamOptions.admitted`), unless the stream moved on or took it meanwhile: a `/clear`
+   *  whose move has not landed leaves the connection unable to take the new id's subjects, on the
+   *  connection it began on and on any the server swaps in before the move lands. */
+  function subscribeWhenAdmitted(forSession: string): void {
+    const admitted = options.admitted?.(forSession)
+    if (admitted === undefined) {
+      subscribe()
+      return
+    }
+    void admitted.then(() => {
+      if (!stopped && session === forSession && subscription === undefined) subscribe()
+    })
   }
 
   // A `/clear` ends the conversation and the process goes on under a new id: the ring holds the
@@ -317,12 +332,7 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
     // may take it (`AgentStreamOptions.admitted`): a later `/clear` before then takes its own.
     subscription?.unsubscribe()
     subscription = undefined
-    const admitted = options.admitted?.(next)
-    if (admitted === undefined) subscribe()
-    else
-      void admitted.then(() => {
-        if (!stopped && session === next) subscribe()
-      })
+    subscribeWhenAdmitted(next)
   })
 
   const reading = (async (): Promise<void> => {
@@ -368,7 +378,11 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
     },
     useConnection(next: ChannelConnection): void {
       connection = next
-      subscribe()
+      if (stopped) return
+      // The subscription on the closed connection is dead; the new one is taken through the gate.
+      subscription?.unsubscribe()
+      subscription = undefined
+      subscribeWhenAdmitted(session)
     },
   }
 }

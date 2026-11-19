@@ -14,7 +14,11 @@ body: |-
   connection, and the session received nothing until Claude Code started the server again. A role
   whose reassertion another live session refuses no longer leaves its record behind (the record's
   write and its removal are ordered in the registry chain), and a session that is shutting down no
-  longer tells itself that it receives nothing.
+  longer tells itself that it receives nothing. A Codex session's NATS connection that closes for
+  good is replaced in the same way. In both, a relay subscription the server ends with an error is
+  told as an outage naming why and taken again at the next heartbeat, at a new epoch; a `/clear` or
+  `/new` made during an outage completes on the new connection; and the live view takes a new id's
+  control subject only once the connection is admitted as that id.
 time: 2026-11-17T21:43:12Z
 custom:
     Issue: pr4353

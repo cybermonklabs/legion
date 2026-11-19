@@ -365,6 +365,43 @@ test("an admission that lands for an id the session has left takes nothing", asy
   live.runner.stop()
 })
 
+// A connection that closes for good while a `/clear`'s move is still to land is replaced by one
+// that presents the token of the id the move was for, or of the id before it, so the connection
+// the server swaps in may still not take the new id's subjects: the server refuses a subscribe it
+// may not take and closes the subscription, and a live view that took it at once was refused and
+// took it again every second until the move landed.
+test("on a connection swapped in while a clear's move is pending, the new id's control subject waits for the admission", async () => {
+  const admission = sessionAdmission(SESSION)
+  const live = running(admission.admitted)
+  live.mod.moveSession(CLEARED)
+  await settle()
+  // The connection closes for good, and the server swaps in a new one.
+  await live.nats.closeForGood()
+  const swapped = new FakeNats()
+  live.runner.useConnection(swapped)
+  await settle()
+  expect([...swapped.subscriptions.keys()]).toEqual([])
+
+  admission.admit(CLEARED)
+  await settle()
+  expect([...swapped.subscriptions.keys()]).toEqual([agentStreamControlSubject(CLEARED)])
+  // The subject is taken once, on the new connection alone.
+  expect(swapped.calls.filter((call) => call.startsWith("nats.subscribe"))).toHaveLength(1)
+  expect([...live.nats.subscriptions.keys()]).toEqual([])
+  live.runner.stop()
+})
+
+test("on a connection swapped in for an admitted id, the control subject is taken at once", async () => {
+  const admission = sessionAdmission(SESSION)
+  const live = running(admission.admitted)
+  await live.nats.closeForGood()
+  const swapped = new FakeNats()
+  live.runner.useConnection(swapped)
+  await settle()
+  expect([...swapped.subscriptions.keys()]).toEqual([agentStreamControlSubject(SESSION)])
+  live.runner.stop()
+})
+
 test("a stopped runner answers nothing more", async () => {
   const live = running()
   await live.control(SESSION, watchRequest)

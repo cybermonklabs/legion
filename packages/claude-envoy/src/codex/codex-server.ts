@@ -24,8 +24,10 @@ import { name as CODEX_PACKAGE_NAME } from "../../codex/package.json" with { typ
 import type { ChannelConnection } from "../channel-topics"
 import { configuredValue } from "../claude-session"
 import {
+  admittingMoves,
   type ChannelSession,
   type ChannelToolRuntime,
+  channelReopener,
   channelToolDefinitions,
   dialChannelNats,
   executeEnvoyTool,
@@ -533,29 +535,34 @@ export async function runCodexEnvoyServer(): Promise<void> {
     } else {
       // Dialled as the Claude Code session's connection is (`dialChannelNats`): with a seed, no
       // credential, or the session's broker token, which is then kept renewed and, at a `/new`,
-      // moved to the new session's (`followSession`) before that session's subjects are taken.
-      const dialled = await dialChannelNats(
-        inbound,
-        `codex-envoy-channel-${id.id}`,
-        warn,
-        connect,
-        stopping.signal,
-      )
+      // moved to the new session's (`followSession`) before that session's subjects are taken. A
+      // connection that closes for good is replaced as the Claude Code one is (`channelReopener`):
+      // Codex starts no plugin server again for a thread whose server lost its connection.
+      const natsName = `codex-envoy-channel-${id.id}`
+      const dialled = await dialChannelNats(inbound, natsName, warn, connect, stopping.signal)
       connection = dialled.connection
       stopNatsKeeper = dialled.stop
       // Which id the connection is admitted as, where its broker token admits one session at a
       // time: the dial's, then each `/new`'s once its move lands. The live view takes a new id's
       // control subject only then (`CodexAgentStreamOptions.admitted`).
       const admission = dialled.followSession === undefined ? undefined : sessionAdmission(id.id)
-      const follow = dialled.followSession
-      const followSession =
-        follow === undefined || admission === undefined
-          ? undefined
-          : async (): Promise<void> => {
-              const forSession = id.id
-              await follow()
-              admission.admit(forSession)
-            }
+      const admitting = admittingMoves(admission, id)
+      const followSession = admitting(dialled.followSession)
+      const reopen = channelReopener({
+        inbound,
+        name: natsName,
+        signal: stopping.signal,
+        stopping: () => isStopping,
+        swapKeeper: (stop) => {
+          stopNatsKeeper()
+          stopNatsKeeper = stop
+        },
+        admitting,
+        useConnection: (next) => {
+          connection = next
+          stream?.useConnection(next)
+        },
+      })
       session = await startChannelSession({
         capabilities: () => CODEX_CAPABILITIES,
         client,
@@ -592,6 +599,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
             state,
             warn,
           }),
+        reopen,
         stateDirectory,
         title,
         ...(dispatch.enabled ? { stampTitle } : {}),

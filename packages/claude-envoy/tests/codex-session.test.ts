@@ -155,12 +155,14 @@ describe("the Codex session record", () => {
 })
 
 /** A connection that records what is published, the subjects subscribed and given up, and hands
- *  control messages to the stream. */
+ *  control messages to the stream. `closeForGood` closes it as nats.js closes one for good. */
 function fakeConnection() {
   const published: { subject: string; payload: unknown }[] = []
   const queues: { push(message: { data: Uint8Array; reply?: string }): void }[] = []
   const subscribed = new Set<string>()
+  let closedForGood = false
   const connection = {
+    isClosed: () => closedForGood,
     publish(subject: string, data: Uint8Array) {
       published.push({ payload: JSON.parse(new TextDecoder().decode(data)), subject })
     },
@@ -201,7 +203,15 @@ function fakeConnection() {
       })
     }
   }
-  return { connection, control, published, subscribed }
+  return {
+    connection,
+    control,
+    published,
+    subscribed,
+    closeForGood: () => {
+      closedForGood = true
+    },
+  }
 }
 
 describe("the Codex live view", () => {
@@ -340,6 +350,48 @@ describe("the Codex live view", () => {
     waits.get("s10")?.resolve()
     await Bun.sleep(10)
     expect([...subscribed]).toEqual([agentStreamControlSubject("s10")])
+    stream.stop()
+  })
+
+  // A connection that closes for good while a `/new`'s move is still to land is replaced by one
+  // that may still not take the new id's subjects, so the stream takes them through the same gate.
+  test("on a connection swapped in while a /new's move is pending, the new id's control subject waits for the admission", async () => {
+    const first = fakeConnection()
+    const admission = sessionAdmission("s11")
+    const stream = startCodexAgentStream({
+      admitted: admission.admitted,
+      connection: first.connection,
+      sessionId: "s11",
+    })
+    stream.rebind("s12")
+    first.closeForGood()
+    const swapped = fakeConnection()
+    stream.useConnection(swapped.connection)
+    await Bun.sleep(10)
+    expect([...swapped.subscribed]).toEqual([])
+    admission.admit("s12")
+    await Bun.sleep(10)
+    expect([...swapped.subscribed]).toEqual([agentStreamControlSubject("s12")])
+    expect([...first.subscribed]).toEqual([])
+    stream.stop()
+  })
+
+  test("on a connection swapped in for an admitted id, the control subject is taken at once, and frames go out on it", async () => {
+    const first = fakeConnection()
+    const stream = startCodexAgentStream({
+      admitted: sessionAdmission("s13").admitted,
+      connection: first.connection,
+      sessionId: "s13",
+    })
+    first.closeForGood()
+    const swapped = fakeConnection()
+    stream.useConnection(swapped.connection)
+    await Bun.sleep(10)
+    expect([...swapped.subscribed]).toEqual([agentStreamControlSubject("s13")])
+    swapped.control("watch")
+    await Bun.sleep(10)
+    stream.event({ at: 1, id: "u1", kind: "user", text: "after the swap" })
+    expect(swapped.published.length).toBeGreaterThan(0)
     stream.stop()
   })
 })

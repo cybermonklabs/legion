@@ -32,6 +32,10 @@ export interface CodexAgentStream {
   expect(text: string, dispatchMessageId: string): void
   /** Moves the stream to another session id (`/new`): the conversation starts empty. */
   rebind(sessionId: string): void
+  /** The session's NATS connection closed for good and the server opened `connection` in its
+   *  place (`channelReopener`): frames go out on it from now on, and the control subject is taken
+   *  on it again once the connection is admitted as the session (`admitted`). */
+  useConnection(connection: ChannelConnection): void
   stop(): void
 }
 
@@ -61,13 +65,19 @@ const EXPECTED_MAX = 16
 const CODEX_PROVIDER = "openai"
 
 export function startCodexAgentStream(options: CodexAgentStreamOptions): CodexAgentStream {
-  const { connection } = options
+  /** The session's connection now; the server swaps in a new one when it closes for good. */
+  let connection = options.connection
   const now = options.now ?? Date.now
   const warn =
     options.warn ?? ((text: string): void => void process.stderr.write(`envoy-channel: ${text}\n`))
   const publisher = new AgentStreamPublisher({
     now,
-    publish: (subject, payload) => connection.publish(subject, encoder.encode(payload)),
+    // A closed connection throws on a publish, and a throw here would end the transcript's reader.
+    // Its frames are dropped until the server swaps in a new connection; the ring keeps them for a
+    // replay.
+    publish: (subject, payload) => {
+      if (!connection.isClosed()) connection.publish(subject, encoder.encode(payload))
+    },
   })
   let session = options.sessionId
   let subscription: ChannelTopicSubscription | undefined
@@ -137,16 +147,34 @@ export function startCodexAgentStream(options: CodexAgentStreamOptions): CodexAg
     if (subscription === taken) subscription = undefined
     if (stopped || session !== forSession) return
     setTimeout(() => {
-      if (!stopped && session === forSession) subscribe()
+      // Taken again meanwhile: by a `/new`'s new id, or on the connection the server swapped in.
+      if (!stopped && session === forSession && subscription === undefined) {
+        subscribeWhenAdmitted(forSession)
+      }
     }, RESUBSCRIBE_MS).unref?.()
   }
 
+  /** Takes the control subject on the connection held now. A closed one throws on a subscribe, so
+   *  the subject waits for the connection the server swaps in (`useConnection`). */
   function subscribe(): void {
-    if (stopped) return
+    if (stopped || connection.isClosed()) return
     subscription?.unsubscribe()
     const taken = connection.subscribe(agentStreamControlSubject(session))
     subscription = taken
     void pump(taken, session)
+  }
+
+  /** Takes `forSession`'s control subject once the connection may take it
+   *  (`CodexAgentStreamOptions.admitted`), unless the stream moved on or took it meanwhile. */
+  function subscribeWhenAdmitted(forSession: string): void {
+    const admitted = options.admitted?.(forSession)
+    if (admitted === undefined) {
+      subscribe()
+      return
+    }
+    void admitted.then(() => {
+      if (!stopped && session === forSession && subscription === undefined) subscribe()
+    })
   }
   subscribe()
   publishSettings()
@@ -243,12 +271,16 @@ export function startCodexAgentStream(options: CodexAgentStreamOptions): CodexAg
       // may take it (`CodexAgentStreamOptions.admitted`): a later `/new` before then takes its own.
       subscription?.unsubscribe()
       subscription = undefined
-      const admitted = options.admitted?.(next)
-      if (admitted === undefined) subscribe()
-      else
-        void admitted.then(() => {
-          if (!stopped && session === next) subscribe()
-        })
+      subscribeWhenAdmitted(next)
+    },
+    useConnection(next) {
+      connection = next
+      if (stopped) return
+      // The subscription on the closed connection is dead; the new one is taken through the gate,
+      // since a `/new` whose move had not landed when the connection closed is still not admitted.
+      subscription?.unsubscribe()
+      subscription = undefined
+      subscribeWhenAdmitted(session)
     },
     stop() {
       stopped = true

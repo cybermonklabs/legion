@@ -700,6 +700,33 @@ export function sessionAdmission(first: string): SessionAdmission {
   }
 }
 
+/** A connection's credential move (`followSession`), wrapped so that it records, once it lands,
+ *  the id it admitted the connection as (`admittingMoves`). */
+export type AdmittingMove = (
+  follow: (() => Promise<void>) | undefined,
+) => (() => Promise<void>) | undefined
+
+/**
+ * Wraps each connection's credential move so that it records, once it lands, the id it admits the
+ * connection as: the id the session had as the move began, which a later `/clear` or `/new` does
+ * not change. Each server wraps its first connection's move and each one a reopen dials in its
+ * place (`channelReopener`). A connection that presents no broker token has no move to wrap, and
+ * `admission` is then undefined.
+ */
+export function admittingMoves(
+  admission: SessionAdmission | undefined,
+  identity: SessionIdentity,
+): AdmittingMove {
+  return (follow) =>
+    follow === undefined || admission === undefined
+      ? undefined
+      : async (): Promise<void> => {
+          const forSession = identity.id
+          await follow()
+          admission.admit(forSession)
+        }
+}
+
 /** The channel server's NATS connection, as `dialChannelNats` opened it. */
 export interface ChannelNats {
   readonly connection: NatsConnection
@@ -723,6 +750,14 @@ export const CHANNEL_DIAL_PLAN: NatsDialPlan = {
   budgetMs: Number.POSITIVE_INFINITY,
 }
 
+/** What `dialChannelNats` dials: the session's NATS servers, the setting that names them, and the
+ *  credential the connection presents (`EnvoyInbound` where inbound messages are on). */
+export interface ChannelNatsSettings {
+  readonly natsUrls: readonly string[]
+  readonly natsServersSetting: string
+  readonly natsCredential: NatsCredential
+}
+
 /**
  * Opens the session's NATS connection with the credential `inbound` resolved. A broker token is
  * signed into the CONNECT itself, so a live one is taken before the dial; and the connection is
@@ -744,11 +779,7 @@ export const CHANNEL_DIAL_PLAN: NatsDialPlan = {
  * closed.
  */
 export async function dialChannelNats(
-  inbound: {
-    readonly natsUrls: readonly string[]
-    readonly natsServersSetting: string
-    readonly natsCredential: NatsCredential
-  },
+  inbound: ChannelNatsSettings,
   name: string,
   warn: (text: string, dialError?: unknown) => void,
   dial: (options: ConnectionOptions) => Promise<NatsConnection> = connect,
@@ -835,6 +866,68 @@ const START_STOPPING = "the channel server stopped before its NATS subscriptions
 const START_CLOSED = "the NATS connection closed before its subscriptions reached the server"
 /** How long a start that failed waits for its connection to drain before closing it. */
 const START_DRAIN_BOUND_MS = 2_000
+
+/** What a server hands `channelReopener`. */
+export interface ChannelReopenerOptions {
+  /** What the server's first connection was dialed with. */
+  readonly inbound: ChannelNatsSettings
+  /** The connection name every connection of the server presents. */
+  readonly name: string
+  /** Aborts when the server stops: it ends a dial's waits and its redials. */
+  readonly signal: AbortSignal
+  /** Whether the server is stopping, read once a dial opened a connection. */
+  readonly stopping: () => boolean
+  /** Stops the token keeper the server holds now and holds `stop` in its place: the one the
+   *  server's teardown stops. */
+  readonly swapKeeper: (stop: () => void) => void
+  /** The server's wrapper of a connection's credential move (`admittingMoves`). */
+  readonly admitting: AdmittingMove
+  /** Moves what else the server holds on its connection, its live view, to `connection`. */
+  readonly useConnection: (connection: ChannelConnection) => void
+}
+
+/**
+ * A server's `ChannelSessionOptions.reopen`: a new connection once the session's closed for good,
+ * dialed as the server's first one was, warning of each redial on stderr, until one opens or the
+ * server stops. The closed connection's token keeper stops before the dial, and the new one's is
+ * the one the teardown stops; the live view moves to the new connection. Under a broker token the
+ * new connection presents the token the session's credential holds as it dials, the one traded
+ * last (a lapsed one is traded again for the id the session has now): through a `/clear`, the old
+ * id's until the `/clear`'s move has traded the new id's, and the new id's from then on, even
+ * where the connection closed before the move reconnected with it. The admission is left as it
+ * is either way: a `/clear` whose move had not ended runs it again on the new connection
+ * (`register`), and that admits the new id once the connection presents its token, at once where
+ * it already does. A connection a dial opens after the server began stopping is closed. Both
+ * servers take theirs from here: Claude Code's (`runEnvoyChannelServer`) and Codex's
+ * (`./codex/codex-server`).
+ */
+export function channelReopener(options: ChannelReopenerOptions): ReopenConnection {
+  return async (failed) => {
+    options.swapKeeper(() => undefined)
+    const next = await dialChannelNats(
+      options.inbound,
+      options.name,
+      (text, dialError) => {
+        process.stderr.write(`envoy-channel: ${text}\n`)
+        if (dialError !== undefined) failed(dialError)
+      },
+      connect,
+      options.signal,
+    )
+    if (options.stopping()) {
+      next.stop()
+      void next.connection.close().catch(() => undefined)
+      throw new Error(START_STOPPING)
+    }
+    options.swapKeeper(next.stop)
+    options.useConnection(next.connection)
+    const followSession = options.admitting(next.followSession)
+    return {
+      connection: next.connection,
+      ...(followSession === undefined ? {} : { followSession }),
+    }
+  }
+}
 
 /** Why a session holds no live NATS connection: the error it closed with, and the last dial of a
  *  new one that failed. */
@@ -1129,8 +1222,15 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     readonly delivery: ConsumerDelivery
     /** The id's state file, which also holds the relay's snapshot. */
     readonly state: ReplayStateWriter
-    /** Undefined while the session holds no live connection (`connectionLost`). */
+    /** Undefined while the session holds no live connection (`connectionLost`), and once the
+     *  subscription ended with an error of its own (`stopped`). */
     subscription: ChannelTopicSubscription | undefined
+    /**
+     * The error the relay subscription ended with on a live connection: the server refused it, say.
+     * Until the heartbeat takes the subject again (`resubscribeRelay`), the session holds no relay
+     * subject, and its registration is refused naming why (`relayMissing`).
+     */
+    stopped: { readonly error: unknown } | undefined
   }
   let relay: Relay | undefined
 
@@ -1240,19 +1340,31 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       delivery: consumer,
       state,
       subscription: undefined,
+      stopped: undefined,
     }
     relay = owner
     subscribeRelay(owner)
   }
 
-  /** Subscribes `owner`'s subject on the connection held now, each message to the relay. */
+  /** Subscribes `owner`'s subject on the connection held now, each message to the relay. Throws
+   *  where the connection cannot take a subscription (it is closed or draining). */
   const subscribeRelay = (owner: Relay): void => {
     const subscription = connection.subscribe(owner.delivery.subject)
     owner.subscription = subscription
+    owner.stopped = undefined
     void pumpRelay(owner, subscription)
   }
 
-  /** Each relay message goes to the relay, which answers `received` at once and queues it. */
+  /**
+   * Each relay message goes to the relay, which answers `received` at once and queues it. A
+   * subscription nats.js ends with an error of its own (a refusal from the server) leaves the
+   * session with no relay subject while its connection stays up: nothing else takes it again, and a
+   * registration that asked for it would be answered with a consumer relayed to nobody. So the
+   * error is kept (`Relay.stopped`), the session registers at once with no relay, which tells it
+   * once that it receives nothing and names why, and the next heartbeat takes the subject again
+   * (`resubscribeRelay`). A subscription that ends with no error is one this process unsubscribed
+   * or whose connection closed, which `closeRelay` and `connectionClosed` see to.
+   */
   const pumpRelay = async (owner: Relay, subscription: ChannelTopicSubscription): Promise<void> => {
     try {
       for await (const message of subscription) {
@@ -1262,7 +1374,47 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       process.stderr.write(
         `envoy-channel: the relay subscription of ${owner.sessionID} stopped — ${natsFailureReason(error)}\n`,
       )
+      if (owner.subscription !== subscription) return
+      owner.subscription = undefined
+      owner.stopped = { error }
+      if (shuttingDown || relay !== owner) return
+      serialized(register).catch(() => {
+        registrationFailed = true
+      })
     }
+  }
+
+  /**
+   * Takes the relay subject again after its subscription ended with an error of its own, while the
+   * connection is up: before each heartbeat's registration. A new epoch begins once the server has
+   * the subscription, so the listener restarts the relay at its ack floor. A subscription the
+   * server refuses again ends before the bounded flush returns, and then the registration still
+   * goes out with no relay: the session stays told it receives nothing, rather than told it
+   * receives again a heartbeat before the refusal comes back.
+   */
+  const resubscribeRelay = async (): Promise<void> => {
+    const owner = relay
+    if (owner?.stopped === undefined || owner.sessionID !== identity.id) return
+    if (connectionLost !== undefined || connection.isClosed()) return
+    try {
+      subscribeRelay(owner)
+    } catch (error) {
+      owner.stopped = { error }
+      return
+    }
+    const taken = owner.subscription
+    await withTimeout(
+      connection.flush(),
+      options.handoffFlushTimeoutMs ?? HANDOFF_FLUSH_TIMEOUT_MS,
+      "flushing NATS",
+    ).catch(() => undefined)
+    // nats.js ends a refused subscription as it reads the server's refusal, before the flush's
+    // answer; the pump sees the end a turn of the event loop later.
+    const turn = Promise.withResolvers<void>()
+    setImmediate(turn.resolve)
+    await turn.promise
+    if (relay !== owner || owner.subscription !== taken) return
+    owner.delivery.beginEpoch()
   }
 
   /**
@@ -1451,12 +1603,21 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       }
     }
     const sessionID = identity.id
-    // While no connection is live the session holds no relay subject, and the refusal names why.
+    // While no connection is live, or the relay's subscription ended with an error of its own, the
+    // session holds no relay subject, and the refusal names why.
     const lost = connectionLost
-    const asking = lost === undefined && relay?.sessionID === sessionID ? relay : undefined
+    const stopped = relay?.stopped
+    // The subscription's own error, in the words Oh My Pi names it in (`Relay.missing`).
+    const relayMissing =
+      lost !== undefined
+        ? lostConnectionReason(lost)
+        : stopped === undefined
+          ? undefined
+          : natsFailureReason(stopped.error)
+    const asking = relayMissing === undefined && relay?.sessionID === sessionID ? relay : undefined
     await registerWithRelay({
       relay: asking?.delivery,
-      ...(lost === undefined ? {} : { relayMissing: lostConnectionReason(lost) }),
+      ...(relayMissing === undefined ? {} : { relayMissing }),
       ownAgentSubject: directSubject,
       followed: followedTopics.topics(),
       roles: heldRole === undefined ? [] : [heldRole],
@@ -1879,6 +2040,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     try {
       await serialized(async () => {
         await adoptHandoff()
+        // A relay subscription that ended with an error of its own is taken again first, so this
+        // registration asks for it.
+        await resubscribeRelay()
         try {
           await register()
         } catch (error) {
@@ -1945,7 +2109,12 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   // dropped against it. The topics it followed come back with it: a session the listener reaped
   // (ten minutes after it stopped) still follows them, and its consumer still holds them. Its
   // relay comes with it too, restored and subscribed before the first registration asks for it.
-  const remembered = await restoreDelivery()
+  // nats.js refuses a subscribe on a connection closed for good, and the start then fails naming
+  // that, as the flush below does for a connection that closes after the subscribe.
+  const remembered = await restoreDelivery().catch((error: unknown) => {
+    if (!connection.isClosed()) throw error
+    throw new Error(`${START_CLOSED}: ${natsFailureReason(error)}`)
+  })
   // What this session has already done with the messages Dispatch sent it, before any frame can
   // arrive: an attempt a process before this one spent must not be spent again.
   await restoreTurns()
@@ -2815,52 +2984,23 @@ export async function runEnvoyChannelServer(): Promise<void> {
       // control subject only then (`AgentStreamOptions.admitted`).
       const admission =
         dialled.followSession === undefined ? undefined : sessionAdmission(identity.id)
-      /** A connection's credential move, which records the id it admits the connection as once it
-       *  lands: the start's connection's, and each one `reopen` dials in its place. */
-      const admitting = (
-        follow: (() => Promise<void>) | undefined,
-      ): (() => Promise<void>) | undefined =>
-        follow === undefined || admission === undefined
-          ? undefined
-          : async (): Promise<void> => {
-              const forSession = identity.id
-              await follow()
-              admission.admit(forSession)
-            }
+      const admitting = admittingMoves(admission, identity)
       const followSession = admitting(dialled.followSession)
-      /**
-       * A new connection once the session's closed for good: dialed as the start's was, warning of
-       * each redial, until one opens or the server stops (`booting`). The closed connection's
-       * token keeper stops, the new one's is the one the teardown stops, and the live view takes
-       * its control subject on the new connection. The new connection presents the token the
-       * broker holds now, the id the last move admitted, so the admission stands as it is.
-       */
-      const reopen: ReopenConnection = async (failed) => {
-        stopNatsKeeper()
-        const next = await dialChannelNats(
-          inbound,
-          natsName,
-          (text, dialError) => {
-            process.stderr.write(`envoy-channel: ${text}\n`)
-            if (dialError !== undefined) failed(dialError)
-          },
-          connect,
-          booting.signal,
-        )
-        if (stopping) {
-          next.stop()
-          void next.connection.close().catch(() => undefined)
-          throw new Error(START_STOPPING)
-        }
-        connection = next.connection
-        stopNatsKeeper = next.stop
-        agentStream?.useConnection(next.connection)
-        const nextFollow = admitting(next.followSession)
-        return {
-          connection: next.connection,
-          ...(nextFollow === undefined ? {} : { followSession: nextFollow }),
-        }
-      }
+      const reopen = channelReopener({
+        inbound,
+        name: natsName,
+        signal: booting.signal,
+        stopping: () => stopping,
+        swapKeeper: (stop) => {
+          stopNatsKeeper()
+          stopNatsKeeper = stop
+        },
+        admitting,
+        useConnection: (next) => {
+          connection = next
+          agentStream?.useConnection(next)
+        },
+      })
       const started = await startChannelSession({
         identity,
         connection,

@@ -35,6 +35,16 @@ interface Queue {
   waiter: PromiseWithResolvers<ChannelBrokerMessage | null> | undefined
   /** Set by unsubscribe: the iterator ends at its next pull, even when a message was mid-delivery. */
   closed: boolean
+  /** Set by `failSubscription`: the iterator throws it at its next pull. */
+  failed: Error | undefined
+}
+
+/** nats.js's error for a call on a connection closed for good, as `natsFailureReason` reads it. */
+export function connectionClosedError(): Error {
+  return Object.assign(new Error("CONNECTION_CLOSED"), {
+    name: "NatsError",
+    code: "CONNECTION_CLOSED",
+  })
 }
 
 export class FakeNats implements ChannelConnection {
@@ -50,9 +60,21 @@ export class FakeNats implements ChannelConnection {
 
   constructor(readonly calls: string[] = []) {}
 
+  /** Every subscribe asked for, those a closed connection refused included. */
+  subscribes = 0
+
+  /** Throws on a connection closed for good, as nats.js does. */
   subscribe(subject: string): ChannelTopicSubscription {
     this.calls.push(`nats.subscribe ${subject}`)
-    const queue: Queue = { subject, messages: [], waiter: undefined, closed: false }
+    this.subscribes += 1
+    if (this.closedForGood) throw connectionClosedError()
+    const queue: Queue = {
+      subject,
+      messages: [],
+      waiter: undefined,
+      closed: false,
+      failed: undefined,
+    }
     this.subscriptions.set(subject, queue)
     return {
       unsubscribe: () => {
@@ -64,6 +86,7 @@ export class FakeNats implements ChannelConnection {
       },
       async *[Symbol.asyncIterator]() {
         for (;;) {
+          if (queue.failed !== undefined) throw queue.failed
           if (queue.closed) return
           const message = queue.messages.shift()
           if (message !== undefined) {
@@ -74,6 +97,7 @@ export class FakeNats implements ChannelConnection {
           queue.waiter = waiter
           const next = await waiter.promise
           queue.waiter = undefined
+          if (queue.failed !== undefined) throw queue.failed
           if (next === null) return
           yield next
         }
@@ -81,9 +105,21 @@ export class FakeNats implements ChannelConnection {
     }
   }
 
+  /** Throws on a connection closed for good, as nats.js does. */
   publish(subject: string, data: Uint8Array): void {
+    if (this.closedForGood) throw connectionClosedError()
     this.order.push("publish")
     this.published.push({ subject, data })
+  }
+
+  /** The server ends `subject`'s subscription with `error`, as nats.js ends one the server refused
+   *  (a permissions violation): its iterator throws it, and the connection stays up. */
+  failSubscription(subject: string, error: Error): void {
+    const queue = this.subscriptions.get(subject)
+    if (queue === undefined) throw new Error(`no subscription for ${subject}`)
+    this.subscriptions.delete(subject)
+    queue.failed = error
+    queue.waiter?.resolve(null)
   }
 
   /** When set, a flush never settles, as on a stalled connection. */
@@ -94,8 +130,10 @@ export class FakeNats implements ChannelConnection {
   /** Every flush asked for, the failed ones included. */
   flushes = 0
 
+  /** Rejects on a connection closed for good, as nats.js does. */
   flush(): Promise<void> {
     this.flushes += 1
+    if (this.closedForGood) return Promise.reject(connectionClosedError())
     if (this.failFlushes > 0) {
       this.failFlushes -= 1
       return Promise.reject(new Error("DISCONNECT"))
@@ -115,10 +153,16 @@ export class FakeNats implements ChannelConnection {
     return this.closeForGood()
   }
 
-  /** The connection closes for good, as nats.js closes one, with the error that closed it. */
+  /** The connection closes for good, as nats.js closes one, with the error that closed it: every
+   *  subscription ends, with no error, and every later subscribe, publish and flush fails. */
   closeForGood(error?: Error): Promise<void> {
     if (this.closedForGood) return Promise.resolve()
     this.closedForGood = true
+    for (const queue of this.subscriptions.values()) {
+      queue.closed = true
+      queue.waiter?.resolve(null)
+    }
+    this.subscriptions.clear()
     this.ended.resolve(error)
     this.statusWaiter?.resolve()
     return Promise.resolve()
