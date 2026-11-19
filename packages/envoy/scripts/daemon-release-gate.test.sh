@@ -21,7 +21,7 @@ mkdir -p "${temporary_dir}/bin"
 
 readonly commit="52b3cf5c1b6c7f42f6b8d2a1e3c4d5e6f7a8b9c0"
 readonly legion="https://github.com/cybermonklabs/legion"
-readonly agent_infra="https://github.com/theorem-labs/agent-infra"
+readonly other_source="https://github.com/example-org/deployment"
 readonly old_name="https://github.com/sjawhar/legion"
 readonly ahead_rev="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 readonly identical_rev="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -180,13 +180,13 @@ is() { [ "$1" = "$2" ] && echo true || echo false; }
 readonly worker_a="ghcr.io/cybermonklabs/legion-worker@sha256:aaaa"
 readonly worker_b="ghcr.io/cybermonklabs/legion-worker@sha256:bbbb"
 readonly worker_smoke="ghcr.io/cybermonklabs/legion-worker@sha256:5555"
-readonly infra_image="us-west1-docker.pkg.dev/theorem-agent-infra/legion/worker-infra@sha256:1111"
+readonly infra_image="us-west1-docker.pkg.dev/example-project/legion/worker-infra@sha256:1111"
 readonly fleet="    - key: SMOKE
       replicas: 0
       image: ${worker_smoke}
     - key: LINUX
       replicas: 1
-      image: us-west1-docker.pkg.dev/theorem-agent-infra/legion/worker-lean@sha256:2222
+      image: us-west1-docker.pkg.dev/example-project/legion/worker-lean@sha256:2222
       daemonImage: ${worker_a}
     - key: INFRA
       replicas: 1
@@ -267,15 +267,15 @@ check "refuses UNKNOWN naming the pin and GitHub's answer" "$(has_line "UNKNOWN:
 check "the verdict is UNKNOWN" "$(last_line_is "UNKNOWN")"
 
 echo "case: a daemon image built from another repository"
-new_case agent-infra
+new_case deployment
 legion_stack "$fleet"
-single "$worker_a" "$agent_infra" "$other_rev"
+single "$worker_a" "$other_source" "$other_rev"
 single "$worker_b" "$legion" "$identical_rev"
 compare "$identical_rev" identical 0
 compare "$other_rev" ahead 0
 run_gate -- "$commit"
 check "exits 1" "$(is "$status" 1)"
-check "refuses naming the source" "$(has_line "GATE SHUT: LINUX runs an image built from ${agent_infra}")"
+check "refuses naming the source" "$(has_line "GATE SHUT: LINUX runs an image built from ${other_source}")"
 check "makes no compare call for that revision" "$(lacks "...${other_rev}" "$calls")"
 
 echo "case: an image the registry does not answer for"
@@ -295,7 +295,7 @@ run_gate -- "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the entry" "$(has_line "UNKNOWN: LINUX runs a daemon and names neither daemonImage nor image")"
 
-# agent-infra legion/host.go: an entry at `runtime: tmux` runs its daemon on the project's host VM
+# The deployment's legion/host.go: an entry at `runtime: tmux` runs its daemon on the project's host VM
 # from host.legionWorker's legion (checkHost refuses daemonImage, replicas and daemon on it), so its
 # `image` says nothing about the daemon. The gate reads no image for it: it is UNKNOWN by name. So is
 # a runtime the gate does not know; an entry that names `runtime: kubernetes` is read as before.
@@ -388,7 +388,7 @@ check "dispatch's server image is never read" "$(lacks "$server_pin" "$calls")"
 check "each real platform is read, and no attestation entry" \
   "$(grep -qF '(index .Image "linux/arm64")' "$calls" && grep -qF '(index .Image "linux/amd64")' "$calls" && lacks '(index .Image "unknown/unknown")' "$calls")"
 
-# The deployment requires dispatch's listenerImage (agent-infra dispatch/main.go loadSettings; its
+# The deployment requires dispatch's listenerImage (its dispatch/main.go loadSettings; its
 # pinListenerImage reads that key and no other), so a stack that sets none runs no listener this
 # gate can read. Reading the server's envoyImage in its place would open the gate on an image the
 # listener does not run, and for a configuration the deployment itself refuses.
@@ -524,14 +524,14 @@ echo "case: --listeners, a recorded rename makes no other repository one with th
 new_case listeners-renamed-other-source
 legion_stack "$renamed_fleet"
 listener_stacks "$envoy_pin" "$cluster_pin" "$server_pin" "$dispatch_listener_pin"
-index "$envoy_pin" "$agent_infra" "$other_rev"
+index "$envoy_pin" "$other_source" "$other_rev"
 index "$cluster_pin" "$legion" "$ahead_rev"
 index "$dispatch_listener_pin" "$legion" "$ahead_rev"
 compare "$ahead_rev" ahead 0
 compare "$other_rev" ahead 0
 run_gate -- --listeners "$commit"
 check "exits 1" "$(is "$status" 1)"
-check "refuses naming the source" "$(has_line "GATE SHUT: envoy runs an image built from ${agent_infra}")"
+check "refuses naming the source" "$(has_line "GATE SHUT: envoy runs an image built from ${other_source}")"
 check "makes no compare call for its revision" "$(lacks "...${other_rev}" "$calls")"
 
 echo "case: a daemon built under the old name, the rename recorded on another project's entry"

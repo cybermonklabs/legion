@@ -1108,7 +1108,7 @@ test("routeIsInbox covers every path that renders the Inbox, and not the machine
 // exactly as a session id's is.
 test("a machine path percent-encodes its name and reads it back", () => {
   for (const host of [
-    "sami-devbox",
+    "sand-devbox",
     "example-host-devbox.example-tailnet.ts.net",
     "legion infra/daemon",
     "box%2F1",

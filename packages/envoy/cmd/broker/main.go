@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -456,11 +457,14 @@ func main() {
 		VMServicesByAccount: cfg.VMServicesByAccount,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry))
+	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
+	// machine and the model judge share it, its token cache and its client.
+	dispatch := judgeDispatch(cfg)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
-	wireJudge(ctx, cfg, rules, reqMachine)
+	wireJudge(ctx, cfg, rules, reqMachine, dispatch)
 	credentialLifetime := time.Duration(cfg.LauncherCredentialSeconds) * time.Second
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -990,15 +994,17 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 // validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
 // that the boot and airlock-check refuse the same file in the same words: a host the proxy
 // never compares a request's host with (ruleHostRefusal), then airlock.Validate's answer, which
-// is the Lean model's, then an entry whose name is not a name a session can ask for. The hosts
-// come first because ruleHostRefusal names each host's reason and repeats no text of the file,
-// where Validate's refusal of a host HostShapeOK refuses quotes the host as written; and because
-// every host ruleHostRefusal accepts HostShapeOK accepts too, Validate then refuses no host. So a
-// file with two faults reports its first bad host ahead of any other fault Validate finds (a
-// repeated name, an entry with no host, a judge above 900 seconds, another kind). Two of the host
-// refusals are this program's own and not the Lean model's: a last label that is 0x and hex
-// digits (0x1f, a.0x7f000001), which HostShapeOK accepts as no all-digit label but clients read
-// as an IPv4 address, and a wildcard over one.
+// is the Lean model's, then the two refusals that are this program's own and not that model's —
+// an entry whose name is not a name a session can ask for, and guidance longer than the judge is
+// shown (maxGuidanceRunes). The hosts come first because ruleHostRefusal names each host's reason
+// and repeats no text of the file, where Validate's refusal of a host HostShapeOK refuses quotes
+// the host as written; and because every host ruleHostRefusal accepts HostShapeOK accepts too,
+// Validate then refuses no host. So a file with two faults reports its first bad host ahead of
+// any other fault Validate finds (a repeated name, a judge above 900 seconds, another kind). An
+// entry with no hosts has no host to refuse, and Validate accepts it: it says who decides its key
+// and binds the value nowhere. Two of the host refusals are this program's own and not the Lean
+// model's: a last label that is 0x and hex digits (0x1f, a.0x7f000001), which HostShapeOK accepts
+// as no all-digit label but clients read as an IPv4 address, and a wildcard over one.
 //
 // Rules.Lookup compares an entry's name with a released name exactly, and a released name is
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
@@ -1021,9 +1027,18 @@ func validateRulesFile(rules airlock.Rules) error {
 		if _, err := policy.NameToSlug(s.Name); err != nil {
 			return fmt.Errorf("secrets[%d] %q: %w, so the entry matches no name a session can ask for and holds nothing back", i, s.Name, err)
 		}
+		if n := utf8.RuneCountInString(s.Guidance); n > maxGuidanceRunes {
+			return fmt.Errorf("secrets[%d] %q: guidance is %d characters, longer than the %d the judge is shown", i, s.Name, n, maxGuidanceRunes)
+		}
 	}
 	return nil
 }
+
+// maxGuidanceRunes is the longest guidance a rules entry may give the judge. The judge shows the
+// whole text to its model beside the request's reason and what Dispatch holds of it, all within
+// one bounded prompt, so a text past this would be cut rather than read; it is refused instead,
+// at the boot and in airlock-check, where its author reads why.
+const maxGuidanceRunes = 2000
 
 // ruleHostRefusal is why validateRulesFile refuses one host of an entry, h as fold.ASCII writes
 // it, or "" for a host it serves.
@@ -1197,7 +1212,8 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // newRequestMachine builds the requests.Machine the broker decides every secret request with, from
 // its configuration: the audience and skew every request object is checked against, and, for each
 // service account, the registered service a pod running as it proves, for each Google
-// service account, the one a machine of that fleet proves, and, for each google-service-account
+// service account, the one a machine of that fleet proves and the person its exchange entry
+// names, and, for each google-service-account
 // secret, the one account the deployment binds it to and so the only one its release mints a
 // token for. A grant lasts the lifetime its request signed, or until its session ends. rules and
 // caCertificate are the airlock's, read at boot: a name the rules name is released as
@@ -1205,14 +1221,18 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // one retry policy and process-wide retry budget of the three minters that call an upstream over
 // HTTP (main's is secrets.NewRetry on the process's registry, which broker_mint_attempts_total is
 // counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
-// unretried too: each holds the one pointer, which typeMinters' copies keep.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
+// unretried too: each holds the one pointer, which typeMinters' copies keep. dispatch is the
+// broker's one read of Dispatch (judgeDispatch), nil where BROKER_JUDGE_DISPATCH_URL is unset;
+// where it is set it also names a Legion pod's issue's assignee, whose Inbox lists that pod's
+// request for a shared secret.
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch) *requests.Machine {
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
+		VMPersonsByAccount:  vmPersonsByAccount(cfg.ExchangeGoogleAccounts),
 		// The two types whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
@@ -1241,7 +1261,38 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		SignInOff: cfg.SignInOff,
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
+	if dispatch != nil {
+		m.Assignees = dispatch
+	}
 	return m
+}
+
+// vmPersonsByAccount is the person each BROKER_VM_EXCHANGE_ACCOUNTS entry names, keyed by its
+// account, an entry that names none left out: whose Inbox lists a request one of that fleet's
+// machines makes for a shared human-tier secret. The entry's person reaches no secret.
+func vmPersonsByAccount(entries []exchange.GoogleEntry) map[string]string {
+	persons := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if e.Person != "" {
+			persons[e.Account] = e.Person
+		}
+	}
+	return persons
+}
+
+// judgeDispatch is the broker's one read of Dispatch, at BROKER_JUDGE_DISPATCH_URL under the token
+// BROKER_JUDGE_DISPATCH_TOKEN_FILE holds, and nil where that URL is unset: the model judge reads a
+// request's issue with it, and the request machine a Legion pod's issue's assignee. main builds it
+// once and hands both the same one, so they share its token cache and its client.
+func judgeDispatch(cfg config.Config) *judge.Dispatch {
+	if cfg.JudgeDispatchURL == "" {
+		return nil
+	}
+	return &judge.Dispatch{
+		BaseURL: cfg.JudgeDispatchURL,
+		Account: brokertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
+		HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
+	}
 }
 
 // The request machine answers every question the model judge asks of the broker. The assertion
@@ -1254,12 +1305,14 @@ var _ judge.Requests = (*requests.Machine)(nil)
 // budget already ends a read whose server never answers, but that budget is shared with the
 // 20-second model call, so a client with no timeout of its own would let one stalled read eat
 // the whole run. Ten seconds is wake.Envoy's own bound for the same kind of call, an authorized
-// GET against a service inside the cluster.
+// GET against a service inside the cluster. The request machine's assignee read holds itself to
+// a shorter bound of its own (requests' assigneeBound).
 const judgeDispatchTimeout = 10 * time.Second
 
 // wireJudge gives m the broker's model judge, when this deployment configures one, and logs in
 // one line which of the two brokers this is. The five settings are all-or-none (config.Load
-// refuses a start that sets some of them), so the model URL alone says whether there is a judge.
+// refuses a start that sets some of them), so the model URL alone says whether there is a judge,
+// and a judge always has dispatch, the read of Dispatch main built once and gave m as well.
 //
 // ctx is main's own signal.NotifyContext, which the first SIGTERM cancels, and not boot's
 // `serving`, which outlives the drain: every run hangs off it, so one in flight when the broker
@@ -1267,7 +1320,7 @@ const judgeDispatchTimeout = 10 * time.Second
 // request pending for the person who decides it today. That is the right way round for a judge
 // where it is not for the policy reload — a half-finished reload costs a pod stale tags for its
 // drain, while a half-finished run would approve a credential as the pod goes away.
-func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine) {
+func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine, dispatch *judge.Dispatch) {
 	if cfg.JudgeModelURL == "" {
 		// config.Load refuses a judge beside BROKER_SIGNIN=off, so an off broker always lands here,
 		// and its line says what such a broker does with a request a person would decide.
@@ -1279,12 +1332,8 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 		return
 	}
 	runner := judge.New(ctx, judge.Options{
-		Rules: rules,
-		Dispatch: judge.Dispatch{
-			BaseURL: cfg.JudgeDispatchURL,
-			Account: brokertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
-			HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
-		},
+		Rules:      rules,
+		Dispatch:   *dispatch,
 		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, cfg.JudgeModelAudience),
 		Requests:   m,
 		SkipChecks: cfg.JudgeTestSkipChecks,

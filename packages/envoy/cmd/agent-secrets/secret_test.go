@@ -1492,6 +1492,46 @@ func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 	}
 }
 
+// TestSecretShowSaysWhoDecidesAndOnWhatGuidance: show prints who decides a request for the key and
+// the guidance the judge decides it on, so an agent can meet the guidance on its first request.
+// The model judge for a key the broker's rules give a judge entry (GET /v1/settings's judge_keys),
+// whoever owns it, with its seconds and its guidance; a person, on the broker page, for a key with
+// no entry, and for an administrator's key even where the rules name it; and, for an agent-tier
+// key, nobody for a session its tags allow, since only another session's request waits at all.
+func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
+	admin := policytest.Secret("ADMIN_JUDGED_KEY", "ada@example.com", policy.TierHuman, "a")
+	admin.Tags[policy.TagAdmin] = "true"
+	local := secrets.NewLocal(
+		policytest.Secret("JUDGED_KEY", "ada@example.com", policy.TierHuman, "j"),
+		policytest.Secret("PAGE_KEY", "ada@example.com", policy.TierHuman, "p"),
+		admin,
+		policytest.Secret("SHARED_JUDGED_KEY", policy.OwnerShared, policy.TierHuman, "s"),
+		policytest.Secret("AGENT_KEY", "ada@example.com", policy.TierAgent, "g"),
+	)
+	startSecretBrokerWith(t, Settings{
+		SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1",
+		JudgeKeys: map[string]JudgeKey{
+			"JUDGED_KEY":        {Seconds: 900, Guidance: "grant for the release job named in the reason"},
+			"ADMIN_JUDGED_KEY":  {Seconds: 900, Guidance: "grant for anything"},
+			"SHARED_JUDGED_KEY": {Seconds: 300},
+		},
+	}, servedBy(local))
+	useAWS(t, local, testAccount, adaSignIn)
+	const person = "decides: a person, on the broker page\nguidance: -\n"
+	for name, want := range map[string]string{
+		"JUDGED_KEY":        "decides: the model judge, up to 15m0s, against its guidance; the key's person only if the judge cannot decide\nguidance: grant for the release job named in the reason\n",
+		"PAGE_KEY":          person,
+		"ADMIN_JUDGED_KEY":  "decides: a person, on the broker page: an administrator's key, which the judge never decides\nguidance: -\n",
+		"SHARED_JUDGED_KEY": "decides: the model judge, up to 5m0s, against its guidance; the key's person only if the judge cannot decide\nguidance: -\n",
+		"AGENT_KEY":         "decides: nobody, for a session its tags allow; otherwise a person, on the broker page\nguidance: -\n",
+	} {
+		stdout, stderr, code := runSecret("show", name)
+		if code != 0 || !strings.Contains(stdout, want) {
+			t.Errorf("show %s = exit %d stdout %q stderr %q; want it to print %q", name, code, stdout, stderr, want)
+		}
+	}
+}
+
 // TestSecretShowAndListNameNoShape: this CLI reads no shape tag, so a secret a writer left one
 // on prints as any other secret does: show writes no line opening `shape:`, its --json object
 // holds no `shape` key, and list's header carries no SHAPE column. The leftover tag is left in
