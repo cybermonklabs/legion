@@ -1949,6 +1949,32 @@ describe("the dispatch CLI's envoy.json", () => {
     expect(code).toBe(0);
   });
 
+  // The warning a checkout's OpenCode-era file adds is printed before the result, so Claude Code's
+  // bound on the whole output counts it too.
+  test("Claude Code's whole output stays under its read-back limit with a warning line before the result", async () => {
+    const limit = 25_000;
+    const old = join(stateDir, ".opencode", "envoy.json");
+    mkdirSync(join(stateDir, ".opencode"), { recursive: true });
+    writeFileSync(old, JSON.stringify({ dispatch: { enabled: true } }));
+    replyLength = limit;
+    try {
+      const claude = await run(["read", "--message", LONG_THREAD], {
+        DISPATCH_HOST: "claude",
+        CLAUDE_CODE_SESSION_ID: "ses-long-5",
+        ENVOY_CONFIG_FILE: serverConfig(join(stateDir, ".config", "legion")),
+        DISPATCH_URL: undefined,
+        DISPATCH_TOKEN: undefined,
+      });
+      expect(claude.code).toBe(0);
+      expect(claude.stdout).toStartWith(`dispatch: ${old} is not read: `);
+      expect(claude.stdout).toContain("(the full result, ");
+      // print() ends the output with one newline.
+      expect(claude.stdout.length).toBeLessThanOrEqual(limit + 1);
+    } finally {
+      replyLength = 1;
+    }
+  });
+
   test("a profile's missing file tells dispatch where the old file belongs without running its token", async () => {
     const profile = join(stateDir, "profile");
     mkdirSync(profile);

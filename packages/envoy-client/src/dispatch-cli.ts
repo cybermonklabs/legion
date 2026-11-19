@@ -203,7 +203,14 @@ export async function runDispatchCli(
   rawEnv: Readonly<Record<string, string | undefined>>,
   io: DispatchCliIo
 ): Promise<number> {
-  const print = (text: string): void => io.stdout(text.endsWith("\n") ? text : `${text}\n`);
+  // Every line printed before the result counts against Claude Code's limit (`printed`), so the
+  // whole output stays under it: fitOutput is given what is left.
+  let printed = 0;
+  const print = (text: string): void => {
+    const line = text.endsWith("\n") ? text : `${text}\n`;
+    printed += line.length;
+    io.stdout(line);
+  };
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(rawEnv)) {
     if (value !== undefined && value !== "") env[name] = value;
@@ -562,7 +569,7 @@ export async function runDispatchCli(
       text,
       pictures,
       kept,
-      host === "claude" ? CLAUDE_OUTPUT_MAX : Number.POSITIVE_INFINITY,
+      host === "claude" ? Math.max(0, CLAUDE_OUTPUT_MAX - printed) : Number.POSITIVE_INFINITY,
       writeFull
     )
   );
