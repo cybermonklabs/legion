@@ -1693,8 +1693,8 @@ export const dispatchToolSpecs = [
       "recorded before. A record prints the pull-request body line it implies. Write that line " +
       "into the pull-request body unchanged: it is the one grammar every writer uses, and it " +
       "carries no link to Dispatch, no private host and no issue key: Dispatch keeps only words " +
-      "of letters, digits and plain punctuation, and of those leaves out every word that holds a " +
-      "link, a private or Dispatch host, or an issue key of one of its projects; the record keeps " +
+      "of letters, digits and plain punctuation, and of those leaves out every word that holds " +
+      "`://`, a private or Dispatch host, or an issue key of one of its projects; the record keeps " +
       "the whole reading. --dry-run prints the line the record would print, and records nothing. " +
       "Name the check by its block id. Where two Verification documents in reach hold that id, " +
       "name it by its canonical reference (dispatch://KEY/artifact/verification-md#b-<id>). " +

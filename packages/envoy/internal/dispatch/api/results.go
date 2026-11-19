@@ -1090,7 +1090,9 @@ func plainWord(word, punctuation string) bool {
 // read in any case as that script reads them: a host below `.internal.`, and a Tailscale MagicDNS
 // host, a DNS label then `.ts.net` with no ASCII letter or digit after it. privateHost also takes
 // a host that ends in `.internal` with no ASCII letter or digit after it (a full stop, a
-// parenthesis or a hyphen included), which the script does not refuse: the script guards the
+// parenthesis or a hyphen included). Both read case-insensitively, so the Kelvin sign U+212A and
+// the long s U+017F, which fold to `k` and `s`, count as letters after a host too, while `é` does
+// not. privateHost's trailing `.internal` is what the script does not refuse: the script guards the
 // whole repository, where names such as metadata.google.internal and host.docker.internal are
 // well known and not private, while the line is pasted into public text with no reader in
 // between, so it is stricter on purpose. The line drops every word holding one, written without a

@@ -514,10 +514,11 @@ func TestThePlainPunctuationIsWhatItsDocCommentLists(t *testing.T) {
 }
 
 // hostTexts are a reading or a check's words that hold a host written with no scheme: a bare
-// `www.` address and a schemeless host and path.
-var hostTexts = []struct{ name, text string }{
-	{"a bare www. address", "see www.example.com for logs"},
-	{"a schemeless host and path", "example.com/logs"},
+// `www.` address and a schemeless host and path. parsed is what the markdown parse and blockWords
+// leave of text, as measured: the parse reads a bare `www.` address as a link.
+var hostTexts = []struct{ name, text, parsed string }{
+	{"a bare www. address", "see www.example.com for logs", "see for logs"},
+	{"a schemeless host and path", "example.com/logs", "example.com/logs"},
 }
 
 // A host written with no scheme, through both lines, with and without the markdown parse a
@@ -560,14 +561,10 @@ func TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt(t *testing.T) {
 		}
 		ciPrefix := "- Check " + check.BlockID + " (before_merge): pass at " + headCommit + ", from CI run " + ciCheckRun + ". "
 		raw := model.CheckBlock{BlockID: check.BlockID, When: check.When, Text: host.text}
-		parsedTail := host.text
-		if host.name == "a bare www. address" {
-			parsedTail = "see for logs"
-		}
 		for _, pairing := range []struct{ line, parse, got, want string }{
 			{"recorded", "unparsed", recordedLine(host.text), recordedPrefix + host.text},
-			{"recorded", "parsed", recordedLine(check.Text), recordedPrefix + parsedTail},
-			{"CI", "parsed", check.CI.Line, ciPrefix + parsedTail},
+			{"recorded", "parsed", recordedLine(check.Text), recordedPrefix + host.parsed},
+			{"CI", "parsed", check.CI.Line, ciPrefix + host.parsed},
 			{"CI", "unparsed", ciVerdictLine(raw, ciCheckRun, "pass", headCommit, lineWordsFor(nil, testServerURL)), ciPrefix + host.text},
 		} {
 			t.Logf("%s | %s line | %s -> %q", host.name, pairing.line, pairing.parse, pairing.got)
@@ -625,28 +622,18 @@ func wholeTextKept(w lineWords, text string) string {
 	return strings.Join(kept, " ")
 }
 
-// lineTail is kept cut, or nothing when kept is empty: the tail ciVerdictLine prints, and the tail
-// checkResultLine prints when it keeps a word (with none kept it says the reading holds only words
-// the line leaves out). keepThrough keeps a word before it can stop, so kept is empty on the same
-// bodies whichever way it was judged.
-func lineTail(w lineWords, kept string) string {
-	if kept == "" {
-		return ""
-	}
-	return w.cut(kept)
-}
-
 // earlyStopBodies is how many bodies TestTheEarlyStopPrintsWhatWholeTextJudgingPrints judges.
 const earlyStopBodies = 50000
 
 // The line judges a text's words only until its kept text passes the cut (keepThrough), and the
-// tail it prints equals the tail judging the whole text prints (wholeTextKept), over
-// earlyStopBodies random bodies from a seeded generator, so every run judges the same bodies. The
-// run counts the bodies where the stop left out a word that whole-text judging keeps (a lower bound
-// on the bodies where judging stopped early) and the bodies whose tail was cut, and fails on none
-// of either, which would mean it tested nothing. Its control stops judging one rune early
-// (budget 79, as `runes >= budget` would): that tail must differ from the whole text's on some
-// body, which shows the comparison can fail.
+// tail it prints, the kept text cut (cut), equals the tail judging the whole text prints
+// (wholeTextKept), over earlyStopBodies random bodies from a seeded generator, so every run judges
+// the same bodies. With nothing kept both tails are empty, since cut of an empty text is empty and
+// keepThrough keeps a word before it can stop. The run counts the bodies where the stop left out a
+// word that whole-text judging keeps (a lower bound on the bodies where judging stopped early) and
+// the bodies whose tail was cut, and fails on none of either, which would mean it tested nothing.
+// Its control stops judging one rune early (budget 79, as `runes >= budget` would): that tail must
+// differ from the whole text's on some body, which shows the comparison can fail.
 func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
 	words := lineWordsFor([]string{"ACME", "RESK"}, testServerURL)
 	r := rand.New(rand.NewPCG(4517, 50))
@@ -654,7 +641,7 @@ func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
 	for range earlyStopBodies {
 		body := earlyStopBody(r)
 		wholeKept := wholeTextKept(words, body)
-		whole := lineTail(words, wholeKept)
+		whole := words.cut(wholeKept)
 		stoppedKept := words.keepThrough(body, checkResultReadingRunes)
 		if stoppedKept != wholeKept {
 			stopped++
@@ -662,13 +649,13 @@ func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
 		if strings.HasSuffix(whole, "…") {
 			cut++
 		}
-		if got := lineTail(words, stoppedKept); got != whole {
+		if got := words.cut(stoppedKept); got != whole {
 			mismatches++
 			if mismatches <= 3 {
 				t.Errorf("for %q the early stop prints %q, judging the whole text prints %q", body, got, whole)
 			}
 		}
-		if lineTail(words, words.keepThrough(body, checkResultReadingRunes-1)) != whole {
+		if words.cut(words.keepThrough(body, checkResultReadingRunes-1)) != whole {
 			controlMismatches++
 		}
 	}
