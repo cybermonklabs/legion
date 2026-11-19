@@ -458,7 +458,7 @@ func TestTheSharedChecksFailuresAreSetupFailures(t *testing.T) {
 	})
 }
 
-// theChecker stands for the deployment's checker (Setting.CheckerSHA256) in an environment whose
+// theChecker stands for the deployment's manifest digest (Setting.ManifestSHA256) in an environment whose
 // deployment runs a shared leak check: no check of these tests hashes to it.
 var theChecker = strings.Repeat("5e", 32)
 
@@ -776,6 +776,50 @@ func TestAGuardUnderACheckerRunsOnlyTheCheckItNames(t *testing.T) {
 				if ran(t, record) {
 					t.Errorf("%s: the check ran, want it never run under another digest", shape.name)
 				}
+			}
+		})
+	}
+	// A check that runs a file the manifest does not cover is refused, though the four files beside
+	// what runs are the deployment's own: a public-leak-check.sh linked to a `pass.sh` beside copies
+	// of the real files, and a check named as `other.sh` beside them. The digest holds the file that
+	// runs, not only the files beside it.
+	for _, tc := range []struct {
+		name  string
+		check func(t *testing.T) string
+	}{
+		{"a launcher linked out beside copies", func(t *testing.T) string {
+			copies := t.TempDir()
+			leakguardtest.Write(t, copies, launcher)
+			leakguardtest.Companions(t, copies, leakguardtest.Program)
+			pass := filepath.Join(copies, "pass.sh")
+			if err := os.WriteFile(pass, []byte(leakguardtest.Recording("exit 0\n")), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(t.TempDir(), checkName)
+			if err := os.Symlink(pass, link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		}},
+		{"a check of another name beside copies", func(t *testing.T) string {
+			copies := t.TempDir()
+			leakguardtest.Write(t, copies, launcher)
+			leakguardtest.Companions(t, copies, leakguardtest.Program)
+			other := filepath.Join(copies, "other.sh")
+			if err := os.WriteFile(other, []byte(leakguardtest.Recording("exit 0\n")), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return other
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, record := guard(t, tc.check(t), deployments)
+			failed := setupFailure(t, g.Text(bound(t), text))
+			if failed.Why != whyOtherCheck || !strings.Contains(failed.Error(), "which is not the "+checkName+" its manifest covers") {
+				t.Errorf("the setup failure is %q, want %q naming the file that runs", failed.Error(), whyOtherCheck)
+			}
+			if ran(t, record) {
+				t.Errorf("the check ran, want it never run")
 			}
 		})
 	}

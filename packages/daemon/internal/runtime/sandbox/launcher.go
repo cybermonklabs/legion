@@ -94,8 +94,10 @@ type launcherSession struct {
 	// own pin ("" for a launcher that takes no check from the daemon), and leakCheckInstalled
 	// whether this launcher process holds that tag installed: as its hello said, or as its answer
 	// to the push on this connection did (serveLeakCheck). leakCheckHeld is what the hello said
-	// alone, and never changes: an install the launcher held before this connection, which no
-	// push of this daemon made (heldLeakCheck).
+	// alone, and never changes: an install the launcher held before this connection, whether an
+	// earlier daemon pushed it or this daemon did on an earlier connection of the same launcher
+	// (heldLeakCheck). A role told none for such an install, in a kept pod that records no digest,
+	// runs the check that was pushed then, unhashed, until the pod is next replaced.
 	leakCheckTag       string
 	leakCheckInstalled bool
 	leakCheckHeld      bool

@@ -587,11 +587,75 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 			spoil: func(t *testing.T, dir string) { remove(t, filepath.Join(dir, theFixture)) },
 			want:  []string{TagVariable + "=" + theTag, "cannot be read to compare with " + CheckerVar, theFixture},
 		},
+		{
+			// A role swaps the shared install's launcher for a link to a pass.sh it wrote beside
+			// copies of the four real files: the file that runs is not the one the manifest holds.
+			name: "a launcher linked out beside copies",
+			spoil: func(t *testing.T, dir string) {
+				copies := t.TempDir()
+				for _, name := range ManifestFiles {
+					body, err := os.ReadFile(filepath.Join(dir, name))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(copies, name), body, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				pass := filepath.Join(copies, "pass.sh")
+				if err := os.WriteFile(pass, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				remove(t, filepath.Join(dir, checkName))
+				if err := os.Symlink(pass, filepath.Join(dir, checkName)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{TagVariable + "=" + theTag, "cannot be read to compare with " + CheckerVar, "which is not the " + checkName + " its manifest covers"},
+		},
+		{
+			// A file the manifest covers that is a link is not followed, even to the real bytes.
+			name: "a program that is a link to the real one",
+			spoil: func(t *testing.T, dir string) {
+				real := filepath.Join(t.TempDir(), theNeighbour)
+				body, err := os.ReadFile(filepath.Join(dir, theNeighbour))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(real, body, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				remove(t, filepath.Join(dir, theNeighbour))
+				if err := os.Symlink(real, filepath.Join(dir, theNeighbour)); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{TagVariable + "=" + theTag, "cannot be read to compare with " + CheckerVar, "is a symlink"},
+		},
+		{
+			// A fifo nobody writes, where a plain read would wait for ever, holding the role's start.
+			name: "a README that is a fifo",
+			spoil: func(t *testing.T, dir string) {
+				remove(t, filepath.Join(dir, leakguardtest.ReadmeName))
+				if err := syscall.Mkfifo(filepath.Join(dir, leakguardtest.ReadmeName), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{TagVariable + "=" + theTag, "cannot be read to compare with " + CheckerVar, "is a fifo"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := installedAt(t)
 			tc.spoil(t, dir)
-			check, err := Installed(pinned, dir)
+			done := make(chan struct{})
+			var check string
+			var err error
+			go func() { check, err = Installed(pinned, dir); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Installed was still reading %s after 5s", dir)
+			}
 			failed := setupFailure(t, err)
 			for _, want := range tc.want {
 				if !strings.Contains(failed.Error(), want) {

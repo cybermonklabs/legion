@@ -92,11 +92,14 @@ export function sharedPublicLeakCheck(
   try {
     pointed = readFileSync(pointer, "utf8").trim();
   } catch {
+    // Only a pointer file that is not there at all names nothing; any other failure to read it (a
+    // directory, a parent that is a file, a file it may not read) is a broken setup at its path, as
+    // the guard's own `os.Lstat` reads it.
     try {
       lstatSync(pointer);
       return pointer;
-    } catch {
-      return unusable;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? unusable : pointer;
     }
   }
   return pointed === "" ? pointer : pointed;

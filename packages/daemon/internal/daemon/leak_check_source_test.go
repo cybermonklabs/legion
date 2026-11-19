@@ -392,8 +392,8 @@ func TestADaemonWithNoAppsOrNoLeakCheckSettingHasNoLeakCheckSource(t *testing.T)
 // is told. A daemon that dropped either would start roles that never ran the deployment's check.
 func TestTheLeakCheckSettingReachesEitherRuntime(t *testing.T) {
 	cfg := config.Config{Runtime: config.Runtime{Name: "tmux"}, LeakCheck: leakCheckSetting}
-	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).LeakCheckSHA256; got != leakCheckSetting.ManifestSHA256 {
-		t.Errorf("tmux LeakCheckSHA256 = %q, want the deployment's checker %q", got, leakCheckSetting.ManifestSHA256)
+	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).LeakCheckManifestSHA256; got != leakCheckSetting.ManifestSHA256 {
+		t.Errorf("tmux LeakCheckManifestSHA256 = %q, want the deployment's manifest digest %q", got, leakCheckSetting.ManifestSHA256)
 	}
 	k := kubernetesConfig(t, "https://127.0.0.1:1")
 	k.LeakCheck = leakCheckSetting

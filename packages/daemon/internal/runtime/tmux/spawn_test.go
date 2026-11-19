@@ -471,7 +471,7 @@ func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 		EnvoyURL: "http://127.0.0.1:9020", NATSURLs: []string{"nats://a:4222"},
 		DispatchURL: "http://127.0.0.1:18766", DispatchTokenFile: "/state/secrets/" + runtime.DispatchTokenFileName,
 		GHOwnersDir: "/state/secrets/legion-omp-legion-43-tester-gh", GHDefault: "acme", GH: "/usr/bin/gh",
-		LeakCheckSHA256: strings.Repeat("5e", 32),
+		LeakCheckManifestSHA256: strings.Repeat("5e", 32),
 	}
 	owned := maps.Clone(runtimeOwned)
 	maps.Copy(owned, composed)
@@ -519,7 +519,7 @@ func TestAPaneIsToldTheDeploymentsCheckerOnlyWhereItNamesOne(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := testSpec()
-			in := PaneInputs{StateDir: "/state", Workspace: "/state/workspaces/LEGION-43", LeakCheckSHA256: tc.sha}
+			in := PaneInputs{StateDir: "/state", Workspace: "/state/workspaces/LEGION-43", LeakCheckManifestSHA256: tc.sha}
 			var told []string
 			for _, pair := range panePairs(spec, in, secretFiles("/state", spec)) {
 				if value, ok := strings.CutPrefix(pair, leakguard.CheckerVar+"="); ok {

@@ -459,7 +459,7 @@ func TestTwoStartsOnOneConnectionPushTheLeakCheckOnce(t *testing.T) {
 
 // A role's environment, as the runtime builds it for a deployment that names a shared leak check,
 // carries the deployment's checker under the role's own name (leakguard.CheckerVar) and neither of
-// the daemon's two variables (leakguard.RepositoryVar, leakguard.SHA256Var), so a configuration
+// the daemon's two variables (leakguard.RepositoryVar, leakguard.ManifestVar), so a configuration
 // loaded in the role — `legion config check` in a pod, which reads the process
 // environment — loads with no refusal of a leak_check half-set.
 func TestARolesEnvironmentLoadsAConfigurationWithNoLeakCheckRefusal(t *testing.T) {

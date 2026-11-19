@@ -1603,15 +1603,16 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// (launchers.serveLeakCheck; each role's shim only reads that install) — so what is named here
 	// is the installed copy, under the scratch the roles of this pod share. The path is the
 	// installer's own constant, so the path a role is told and the path the install writes are
-	// one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls). The checker is
-	// the sha256 of the check's public_leak_check.py the deployment names, as the pod the role
-	// starts in was built under (launch.leakChecker): a kept pod holds the install of its own
-	// image's pin, so its role is told the checker that install hashes to, and a pod recording
-	// none is told none. It is the sign, to the shim and the guard, that the deployment runs a
-	// check at all; `legion gh` trusts its read rule under the program that rule was proven
-	// against, whose digest it compiles in, and not under this checker. A deployment that names
-	// none (Options.LeakCheckSetting) tells neither: its pods are pushed no check, and its roles
-	// start without one and refuse no write for its absence.
+	// one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls). The digest is
+	// the manifest digest of the check the deployment names (leakguard.Manifest), as the pod the
+	// role starts in was built under (launch.leakChecker): a kept pod holds the install of its own
+	// image's pin, so its role is told the digest that install has; a pod recording none is told
+	// the setting's where its launcher holds no install, since the check pushed into it then is the
+	// setting's, and none where it holds one from before (relaunch). It is the sign, to the shim
+	// and the guard, that the deployment runs a check at all; `legion gh` trusts its read rule
+	// under the program that rule was proven against, whose digest it compiles in, and not under
+	// this digest. A deployment that names none (Options.LeakCheckSetting) tells neither: its pods
+	// are pushed no check, and its roles start without one and refuse no write for its absence.
 	if r.leakCheck.Configured() {
 		add(leakguard.CheckVar, leakguard.InstalledCheck)
 		if checker := l.leakChecker(r); checker != "" {

@@ -4,11 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // Setting is the deployment's shared public leak check as its operator names it: the daemon's
@@ -87,13 +87,41 @@ func Manifest(read func(name string) ([]byte, error)) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-// manifestSHA256 is the manifest digest (Manifest) of the check installed at check: of the files
-// in the script's own directory once its symbolic links are followed, since the script finds its
-// program beside itself there (readlink -f).
-func manifestSHA256(check string) (string, error) {
-	dir := filepath.Dir(check)
-	if followed, err := filepath.EvalSymlinks(check); err == nil {
-		dir = filepath.Dir(followed)
+// manifestFileLimit bounds each read of a file the manifest covers: the program, the largest, is
+// about 300 KB, and a file past the bound is refused rather than read whole.
+const manifestFileLimit = 8 << 20
+
+// runningCheckDir is the directory of the check that runs at check: check with its symbolic links
+// followed, whose name must be the launcher's (checkName), since the launcher finds its program
+// beside itself there (readlink -f) and the manifest covers the launcher by that name. A check that
+// runs a file of another name — a PUBLIC_LEAK_CHECK or pointer naming `other.sh`, or a
+// public-leak-check.sh linked to `pass.sh` beside copies of the real files — runs a file no
+// manifest holds, and is refused.
+func runningCheckDir(check string) (string, error) {
+	followed, err := filepath.EvalSymlinks(check)
+	if err != nil {
+		return "", err
 	}
-	return Manifest(func(name string) ([]byte, error) { return os.ReadFile(filepath.Join(dir, name)) })
+	if filepath.Base(followed) != checkName {
+		return "", fmt.Errorf("%s runs %s, which is not the %s its manifest covers", check, followed, checkName)
+	}
+	return filepath.Dir(followed), nil
+}
+
+// readManifestFile reads the file name of the check in dir as a file a role can write is read
+// (rolefile.Read): no symbolic link followed, no fifo waited on, and bounded by
+// manifestFileLimit. A link there would hash a file outside the directory, and a fifo or a link to
+// /dev/zero would hold every role start and every guarded write of the pod.
+func readManifestFile(dir, name string) ([]byte, error) {
+	return rolefile.Read(filepath.Join(dir, name), manifestFileLimit)
+}
+
+// manifestSHA256 is the manifest digest (Manifest) of the check that runs at check: of the four
+// files in its directory (runningCheckDir), each read as readManifestFile reads it.
+func manifestSHA256(check string) (string, error) {
+	dir, err := runningCheckDir(check)
+	if err != nil {
+		return "", err
+	}
+	return Manifest(func(name string) ([]byte, error) { return readManifestFile(dir, name) })
 }

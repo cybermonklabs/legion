@@ -66,9 +66,11 @@ const pointerFile = "public-leak-check/path"
 // PATH that is no executable, and a pointer file that cannot be read or names nothing.
 //
 // A file of the check's name on PATH that does not run hides nothing behind it: the pointer file
-// is still read, as the check's own pre-push hook reads it when `command -v` finds nothing, and a
-// check it names is the answer. The unusable PATH file is the answer only where nothing else names
-// a check.
+// is still read, and a check it names is the answer. For a dangling link or a directory there,
+// that is the check's own pre-push hook's order too, since its `command -v` finds nothing. For a
+// file with no execute bit, the hook's `command -v` finds it and the hook refuses, where the guard
+// runs the pointer's check: each either runs a check or refuses. The unusable PATH file is the
+// answer only where nothing else names a check.
 //
 // Every call resolves again, and no answer is kept. The check is published often, and a guard
 // that resolved one copy at start would keep running it: a text the current check refuses would

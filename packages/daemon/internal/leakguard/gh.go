@@ -11,7 +11,6 @@ import (
 	"io/fs"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -90,25 +89,22 @@ func provenCheck(check, proven string) bool {
 	return err == nil && strings.EqualFold(held, proven)
 }
 
-// programSHA256 is the sha256, in lowercase hex, of the public_leak_check.py beside check, in the
-// script's own directory once its symbolic links are followed. `legion gh` reads it alone
-// (provenCheck): the read rule was proven against that program. The deployment's pin is the
-// manifest digest of every file the check runs from (manifestSHA256), not this.
+// programSHA256 is the sha256, in lowercase hex, of the public_leak_check.py beside the check that
+// runs at check (runningCheckDir), read without following a link or waiting on a fifo
+// (readManifestFile). `legion gh` reads it alone (provenCheck): the read rule was proven against
+// that program. The deployment's pin is the manifest digest of every file the check runs from
+// (manifestSHA256), not this.
 func programSHA256(check string) (string, error) {
-	dir := filepath.Dir(check)
-	if followed, err := filepath.EvalSymlinks(check); err == nil {
-		dir = filepath.Dir(followed)
-	}
-	program, err := os.Open(filepath.Join(dir, checkProgram))
+	dir, err := runningCheckDir(check)
 	if err != nil {
 		return "", err
 	}
-	defer program.Close()
-	sum := sha256.New()
-	if _, err := io.Copy(sum, program); err != nil {
+	program, err := readManifestFile(dir, checkProgram)
+	if err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(sum.Sum(nil)), nil
+	sum := sha256.Sum256(program)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // whatGhCall is what a refusal and a setup failure of this shape call the write. Both halves of

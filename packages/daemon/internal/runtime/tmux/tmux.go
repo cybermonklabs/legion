@@ -136,7 +136,7 @@ type Options struct {
 	// overlays a pane of that role alone names in PI_CONFIG_FILES, after PiConfigFiles, so each
 	// outranks those, by role, the controller's pane included. Nil is none.
 	RoleConfigFiles map[claim.Role][]string
-	// LeakCheckSHA256 is the manifest digest of the deployment's shared public leak check
+	// LeakCheckManifestSHA256 is the manifest digest of the deployment's shared public leak check
 	// (leakguard.Setting.ManifestSHA256, config's leak_check), which every pane is told as
 	// leakguard.CheckerVar (panePairs): it is the sign that the deployment runs a check, under
 	// which a pane's guard refuses a write for want of a check or under a check whose manifest
@@ -144,7 +144,7 @@ type Options struct {
 	// rule was proven against, whose digest it compiles in, and not under this digest. "" is a
 	// deployment that runs no shared leak check, whose panes are told nothing of it and refuse no
 	// write for its absence.
-	LeakCheckSHA256 string
+	LeakCheckManifestSHA256 string
 	// ExperimentVariants is every arm of every experiment the project declares
 	// (config.Project.ExperimentsDeclared), in the order the file declares the experiments and,
 	// within one experiment, the order it declares the arms. A pane names the overlays of the
@@ -221,8 +221,8 @@ type Runtime struct {
 	// takeOver is the runtime whose locators this runtime takes over (Options.TakeOver):
 	// runtime.RuntimeSandbox under TakeOverKubernetes, "" for none.
 	takeOver string
-	// leakCheckSHA256 is Options.LeakCheckSHA256, the checker every pane is told.
-	leakCheckSHA256 string
+	// leakCheckManifestSHA256 is Options.LeakCheckManifestSHA256, the digest every pane is told.
+	leakCheckManifestSHA256 string
 
 	// run executes one tmux argv. A field so an in-package test can record every argv the
 	// runtime hands tmux; New sets it to runTmux.
@@ -344,42 +344,42 @@ func New(opts Options) (*Runtime, error) {
 	}
 	markers, agents := agentMarkers(opts.Launchers)
 	r := &Runtime{
-		socket:               "legion-" + opts.Project,
-		stateDir:             opts.StateDir,
-		streamAddress:        opts.StreamAddress,
-		daemonURL:            opts.DaemonURL,
-		envoyURL:             opts.EnvoyURL,
-		natsURLs:             opts.NatsURLs,
-		dispatchURL:          opts.DispatchURL,
-		dispatchToken:        opts.DispatchTokenFile,
-		gitHubCredential:     opts.GitHubCredential,
-		controllerCredential: opts.ControllerCredential,
-		gh:                   opts.GH,
-		claimRepository:      opts.ClaimRepository,
-		launchers:            opts.Launchers,
-		markers:              markers,
-		agents:               agents,
-		stopGrace:            opts.StopGrace,
-		probeInterval:        opts.ProbeInterval,
-		adoptTimeout:         opts.AdoptTimeout,
-		commandTimeout:       opts.CommandTimeout,
-		conns:                opts.Conns,
-		paneEnv:              paneEnv,
-		ownEnviron:           environ,
-		tmuxPath:             tmuxPath,
-		legion:               legion,
-		now:                  opts.Now,
-		log:                  opts.Log,
-		providerEnvDir:       opts.ProviderEnvDir,
-		providerKeys:         providerKeys,
-		operatorEnv:          opts.PaneEnv,
-		piConfigFiles:        opts.PiConfigFiles,
-		roleConfigFiles:      opts.RoleConfigFiles,
-		takeOver:             takeOver,
-		leakCheckSHA256:      opts.LeakCheckSHA256,
-		readProc:             os.ReadFile,
-		tracked:              map[string]*trackedProcess{},
-		displaced:            map[claim.Token]runtime.Locator{},
+		socket:                  "legion-" + opts.Project,
+		stateDir:                opts.StateDir,
+		streamAddress:           opts.StreamAddress,
+		daemonURL:               opts.DaemonURL,
+		envoyURL:                opts.EnvoyURL,
+		natsURLs:                opts.NatsURLs,
+		dispatchURL:             opts.DispatchURL,
+		dispatchToken:           opts.DispatchTokenFile,
+		gitHubCredential:        opts.GitHubCredential,
+		controllerCredential:    opts.ControllerCredential,
+		gh:                      opts.GH,
+		claimRepository:         opts.ClaimRepository,
+		launchers:               opts.Launchers,
+		markers:                 markers,
+		agents:                  agents,
+		stopGrace:               opts.StopGrace,
+		probeInterval:           opts.ProbeInterval,
+		adoptTimeout:            opts.AdoptTimeout,
+		commandTimeout:          opts.CommandTimeout,
+		conns:                   opts.Conns,
+		paneEnv:                 paneEnv,
+		ownEnviron:              environ,
+		tmuxPath:                tmuxPath,
+		legion:                  legion,
+		now:                     opts.Now,
+		log:                     opts.Log,
+		providerEnvDir:          opts.ProviderEnvDir,
+		providerKeys:            providerKeys,
+		operatorEnv:             opts.PaneEnv,
+		piConfigFiles:           opts.PiConfigFiles,
+		roleConfigFiles:         opts.RoleConfigFiles,
+		takeOver:                takeOver,
+		leakCheckManifestSHA256: opts.LeakCheckManifestSHA256,
+		readProc:                os.ReadFile,
+		tracked:                 map[string]*trackedProcess{},
+		displaced:               map[claim.Token]runtime.Locator{},
 	}
 	if r.commandTimeout == 0 {
 		r.commandTimeout = defaultCommandTimeout
