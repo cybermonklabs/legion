@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -456,8 +457,13 @@ func pendingID(p *Delivery) string {
 // launch where it arrives, and retires the replaced delivery itself before it does — the launch
 // takes the ladder's wait with the claim's timers and every prompt's wait for a result with the
 // process (letGo), so the claim reaching here then holds no delivery at all.
+//
+// The task is taken as the store keeps it (storetext.Text): an operator's task can hold a NUL,
+// which the stored delivery holds as U+FFFD and a restart reads back. So the comparison with the
+// pending task, the delivery written and the prompt the agent is sent all read the stored text,
+// before a restart as after one.
 func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
-	id, task := request.ID, request.Task
+	id, task := request.ID, storetext.Text(request.Task)
 	queued := m.given(request)
 	if pending := m.claim.Pending; pending != nil {
 		if (id != "" && pending.ID == id && pending.Task == task) || queued {

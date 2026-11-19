@@ -2733,11 +2733,13 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // event at every tick while the round runs, so the action is idempotent.
 //
 // A round the claim is not in yet starts its clock here — UpdateOpenedAt — with the reasons the
-// post carries, and clears what an earlier round left: the ask it published, the signal it got,
-// the head that signal reported, and the notice it wrote. The same round again changes nothing,
-// its reasons included: the round's terms are fixed when it opens (dispatch://INFRA-2981 R9), so
-// the ask the sweep publishes and the record an operator reads name the same reasons for one
-// round id, however the drift the sweep reads moves while the round runs.
+// post carries, as the store keeps them (storetext.Text: they quote what the runtime read of the
+// pod, so the claim the operator's answers read holds the reasons the store holds), and clears
+// what an earlier round left: the ask it published, the signal it got, the head that signal
+// reported, and the notice it wrote. The same round again changes nothing, its reasons included:
+// the round's terms are fixed when it opens (dispatch://INFRA-2981 R9), so the ask the sweep
+// publishes and the record an operator reads name the same reasons for one round id, however the
+// drift the sweep reads moves while the round runs.
 //
 // The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
 // topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
@@ -2774,7 +2776,7 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 	}
 	opened := m.deps.Clock.Now()
 	m.clearUpdate()
-	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateOpenedAt = open.Round, open.Reasons, &opened
+	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateOpenedAt = open.Round, storetext.Text(open.Reasons), &opened
 	if err := m.persist(ctx); err != nil {
 		return err
 	}
@@ -3016,6 +3018,8 @@ func (m *Machine) clearUpdate() {
 // The line it logs is the one durable record of the head: the claim's UpdateHead goes with the
 // round that ends (clearUpdate), and the answer is what an operator reads the replacement back
 // against — `git ls-remote` of each head a worker reported says whether the work survived the pod.
+// The head is the worker's word, so the claim holds it as the store keeps it (storetext.Text),
+// and the operator's answers read the head the store holds.
 func podUpdateSignalled(m *Machine, ctx context.Context, ev Event) error {
 	signal := ev.(PodUpdateSignalled)
 	if signal.Round != m.claim.UpdateRound {
@@ -3030,7 +3034,7 @@ func podUpdateSignalled(m *Machine, ctx context.Context, ev Event) error {
 	}
 	at := m.deps.Clock.Now()
 	m.claim.UpdateSignalledAt = &at
-	m.claim.UpdateHead = signal.Head
+	m.claim.UpdateHead = storetext.Text(signal.Head)
 	m.log.Info("supervise: the worker answered the update round; its work is pushed and its process may be replaced",
 		"round", m.claim.UpdateRound, "head", signal.Head)
 	return m.persist(ctx)

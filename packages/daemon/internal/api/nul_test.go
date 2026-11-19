@@ -159,6 +159,50 @@ func TestALeakCheckRefusalWithNULIsStoredWithReplacementCharacter(t *testing.T) 
 	}
 }
 
+// plantedQueryToken is a credential a far side's text carries in a URL's query, which the claim
+// and the store keep the text without (storetext.FarSideText).
+const plantedQueryToken = "planted-query-token-5c1e"
+
+// listedClaim is token's claim as the operator's listing answers it: the machine's own claim, as
+// GET /legion/v1/operator/claims serves it.
+func listedClaim(t *testing.T, h *harness, token claim.Token) OperatorClaim {
+	t.Helper()
+	recorder := h.operator(http.MethodGet, "/legion/v1/operator/claims", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list the claims = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	var list OperatorClaims
+	decodeInto(t, recorder, &list)
+	for _, c := range list.Claims {
+		if c.Token == token {
+			return c
+		}
+	}
+	t.Fatalf("the listing carries no %s: %s", token, recorder.Body)
+	return OperatorClaim{}
+}
+
+// A leak-check cause the launcher wrote with a NUL and a URL that carries a token is held by the
+// claim as the store holds it: the operator's listing, which reads the machine's claim, answers
+// the stored cause, with U+FFFD for the NUL and the URL without its query, before any restart.
+func TestALeakCheckCauseWithNULAndAQueryTokenIsHeldInMemoryAsItIsStored(t *testing.T) {
+	h := newHarness(t)
+	cause := "the shared public leak check could not be installed: the launcher answered \x00 reading " +
+		"https://codeload.example.test/legion/tar.gz/v3?token=" + plantedQueryToken + " for its slice"
+	const want = "the shared public leak check could not be installed: the launcher answered \uFFFD reading " +
+		"https://codeload.example.test/legion/tar.gz/v3 for its slice"
+	refusal := fmt.Errorf("start through its authenticated launcher: %w", runtime.LeakCheckRefusal{Cause: cause})
+
+	stored := refusedStart(t, h, "LEGION-209", refusal)
+
+	if stored.LeakCheckCause != want {
+		t.Errorf("the stored leak-check cause is %q, want %q", stored.LeakCheckCause, want)
+	}
+	if listed := listedClaim(t, h, stored.Token).LeakCheckCause; listed != stored.LeakCheckCause {
+		t.Errorf("the operator's listing answers the leak-check cause %q, want %q, the cause as stored", listed, stored.LeakCheckCause)
+	}
+}
+
 // A death whose runtime account holds a NUL and a lone 0xff is stored with U+FFFD for each as the
 // claim's last death cause, and the death's own write of the claim is taken.
 func TestADeathDetailWithNULAndAnInvalidByteIsStoredWithReplacementCharacters(t *testing.T) {
@@ -276,5 +320,71 @@ func TestADeliveredTaskWithNULReachesTheAgentAsItIsStored(t *testing.T) {
 	}
 	if prompts := conn.Prompts(); len(prompts) != 1 || prompts[0].Message != want {
 		t.Errorf("the agent was sent %q, want one prompt of %q, the task as stored", prompts, want)
+	}
+}
+
+// A refused turn's message, the provider's words with a NUL and a URL that carries a token, is
+// held in the claim's window of turn outcomes as the store holds it: U+FFFD for the NUL and the
+// URL without its query, so the refusal the claim's failure would name is the stored one.
+func TestARefusedTurnsMessageWithNULAndAQueryTokenIsHeldInMemoryAsItIsStored(t *testing.T) {
+	h := newHarness(t)
+	token, _ := h.launch("LEGION-209", claim.RoleImplementer)
+	h.ready(token, "ses_implementer", 1)
+	m, ok := h.supervisor.Machine(token)
+	if !ok {
+		t.Fatalf("no machine for %s", token)
+	}
+	message := "the content filter refused\x00 the turn; see https://provider.example.test/refusals?token=" + plantedQueryToken + " for why"
+	const want = "the content filter refused\uFFFD the turn; see https://provider.example.test/refusals for why"
+
+	if err := m.Handle(h.ctx, supervise.RequestTurnOutcome{Claim: token, Generation: m.Claim().Generation, Sequence: 1,
+		Refused: true, Message: message}); err != nil {
+		t.Fatalf("the refused turn's outcome: %v", err)
+	}
+
+	stored, held := h.stored(token).TurnOutcomes, m.Claim().TurnOutcomes
+	if len(stored) != 1 || len(held) != 1 {
+		t.Fatalf("the store holds the turn outcomes %+v and the claim %+v, want the one refused turn in each", stored, held)
+	}
+	if held[0].Message != stored[0].Message {
+		t.Errorf("the claim holds the refused turn's message %q, want %q, the message as stored", held[0].Message, stored[0].Message)
+	}
+	if stored[0].Message != want {
+		t.Errorf("the stored refused turn's message is %q, want %q", stored[0].Message, want)
+	}
+}
+
+// An update round's reasons, which quote what the runtime read of the pod, and the head the
+// worker answered it with are held by the claim as the store holds them, U+FFFD for each NUL:
+// the operator's listing answers the stored head, and the claim holds the stored reasons.
+func TestAnUpdateRoundsReasonsAndHeadWithNULAreHeldInMemoryAsTheyAreStored(t *testing.T) {
+	h := newHarness(t)
+	token, _ := h.launch("LEGION-209", claim.RoleImplementer)
+	h.ready(token, "ses_implementer", 1)
+	m, ok := h.supervisor.Machine(token)
+	if !ok {
+		t.Fatalf("no machine for %s", token)
+	}
+	round := supervise.PodRound("pod-uid-209")
+	const reasons, head = "image legion:old\x00, now legion:new", "9f2b7c0d\x001e3a4b5c"
+	const wantReasons, wantHead = "image legion:old\uFFFD, now legion:new", "9f2b7c0d\uFFFD1e3a4b5c"
+
+	if err := m.Handle(h.ctx, supervise.PodUpdateOpen{Claim: token, Round: round, Reasons: reasons}); err != nil {
+		t.Fatalf("open the update round: %v", err)
+	}
+	if err := m.Handle(h.ctx, supervise.PodUpdateSignalled{Claim: token, Generation: m.Claim().Generation,
+		Session: "ses_implementer", Round: round, Head: head}); err != nil {
+		t.Fatalf("the worker's answer to the round: %v", err)
+	}
+
+	stored := h.stored(token)
+	if stored.UpdateReasons != wantReasons || stored.UpdateHead != wantHead {
+		t.Fatalf("the stored round names reasons %q and head %q, want %q and %q", stored.UpdateReasons, stored.UpdateHead, wantReasons, wantHead)
+	}
+	if held := m.Claim().UpdateReasons; held != stored.UpdateReasons {
+		t.Errorf("the claim holds the round's reasons %q, want %q, the reasons as stored", held, stored.UpdateReasons)
+	}
+	if listed := listedClaim(t, h, token).UpdateHead; listed != stored.UpdateHead {
+		t.Errorf("the operator's listing answers the head %q, want %q, the head as stored", listed, stored.UpdateHead)
 	}
 }

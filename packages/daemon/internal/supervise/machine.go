@@ -2529,10 +2529,13 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			}
 		}
 		loc, err := m.start(starting, token)
-		// A start cut short by its own context was refused by nothing, so it records no cause.
+		// A start cut short by its own context was refused by nothing, so it records no cause. The
+		// cause is a launcher's sentence, which can come from the pod, so the claim keeps it as the
+		// daemon keeps a far side's text (storetext.FarSideText, the rule leakguard.Cause applies):
+		// the claim the operator's answers read holds the cause the store holds.
 		m.claim.LeakCheckCause = ""
 		if starting.Err() == nil {
-			m.claim.LeakCheckCause = runtime.LeakCheckCause(err)
+			m.claim.LeakCheckCause = storetext.FarSideText(runtime.LeakCheckCause(err))
 		}
 		if err == nil {
 			m.previous = nil
